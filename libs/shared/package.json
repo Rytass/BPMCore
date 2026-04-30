@@ -1,0 +1,33 @@
+{
+  "name": "@bpm/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "commonjs",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./condition": {
+      "types": "./src/lib/condition.d.ts",
+      "default": "./src/lib/condition.js"
+    },
+    "./form": {
+      "types": "./src/lib/form.d.ts",
+      "default": "./src/lib/form.js"
+    },
+    "./status": {
+      "types": "./src/lib/status.d.ts",
+      "default": "./src/lib/status.js"
+    },
+    "./workflow": {
+      "types": "./src/lib/workflow.d.ts",
+      "default": "./src/lib/workflow.js"
+    }
+  },
+  "dependencies": {
+    "tslib": "^2.3.0"
+  }
+}
