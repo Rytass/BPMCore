@@ -1,0 +1,25 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "es2015",
+    "module": "esnext",
+    "lib": ["es2020", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "paths": {
+      "@bpm/shared": ["./libs/shared/src/index.ts"],
+      "@bpm/shared/condition": ["./libs/shared/src/lib/condition.ts"],
+      "@bpm/shared/form": ["./libs/shared/src/lib/form.ts"],
+      "@bpm/shared/status": ["./libs/shared/src/lib/status.ts"],
+      "@bpm/shared/workflow": ["./libs/shared/src/lib/workflow.ts"]
+    }
+  },
+  "exclude": ["node_modules", "tmp"]
+}
