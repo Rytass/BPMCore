@@ -6,7 +6,7 @@ Internal BPM approval engine workspace.
 
 - Nx monorepo
 - `apps/api`: NestJS, GraphQL Code-First, TypeORM, PostgreSQL
-- `apps/web`: Next.js App Router, React Flow, `@mezzanine-ui/react`
+- `apps/client`: Next.js App Router, React Flow, `@mezzanine-ui/react`
 - `libs/shared`: workflow, form, CEL context, and status types
 
 ## Planning Docs
@@ -22,9 +22,14 @@ model, execution behavior, frontend workflow schema, and roadmap.
 pnpm install
 docker compose up -d postgres minio adminer
 pnpm migration:run
-pnpm dev:api
-pnpm dev:web
+pnpm api
+pnpm client
 ```
+
+Local defaults:
+
+- API: `http://localhost:17601/api`
+- Client: `http://localhost:17602`
 
 The user starts dev servers manually by default. Do not start them automatically
 unless explicitly requested.
@@ -36,7 +41,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm nx build api
-pnpm nx build web
+pnpm nx build client
 docker compose config
 ```
 

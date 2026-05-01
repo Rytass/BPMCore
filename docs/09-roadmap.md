@@ -2,14 +2,14 @@
 
 ## 里程碑總覽
 
-| 里程碑 | 主題 | 預估 | 累計 |
-|---|---|---|---|
-| **M0** | 專案初始化 | 1 週 | 1 |
-| **M1** | 基礎骨架（Identity / Org / Form / Template） | 3 週 | 4 |
-| **M2** | 流程引擎核心 | 4 週 | 8 |
-| **M3** | 人本能力（代理、通知、SLA、簽章、附件、Inbox） | 3 週 | 11 |
-| **M4** | 管理與優化（Dry Run、欄位權限、Dashboard、加簽） | 2 週 | 13 |
-| **M5** | 內部試運行 + 修正 | 2 週 | 15 |
+| 里程碑 | 主題                                             | 預估 | 累計 |
+| ------ | ------------------------------------------------ | ---- | ---- |
+| **M0** | 專案初始化                                       | 1 週 | 1    |
+| **M1** | 基礎骨架（Identity / Org / Form / Template）     | 3 週 | 4    |
+| **M2** | 流程引擎核心                                     | 4 週 | 8    |
+| **M3** | 人本能力（代理、通知、SLA、簽章、附件、Inbox）   | 3 週 | 11   |
+| **M4** | 管理與優化（Dry Run、欄位權限、Dashboard、加簽） | 2 週 | 13   |
+| **M5** | 內部試運行 + 修正                                | 2 週 | 15   |
 
 > 預估以一位資深全端 + 一位後端 + 一位前端為基準。可平行工作的部分已標註。
 
@@ -18,7 +18,8 @@
 ## M0 — 專案初始化（1 週）
 
 ### 任務
-- [ ] Nx Monorepo 初始化（`apps/api`, `apps/web`, `libs/shared`）
+
+- [ ] Nx Monorepo 初始化（`apps/api`, `apps/client`, `libs/shared`）
 - [ ] NestJS API 專案骨架（health check、logging、global exception filter）
 - [ ] Next.js Web 專案骨架（基礎 layout、auth middleware）
 - [ ] PostgreSQL 連線（TypeORM 或 Prisma — 建議 TypeORM 配合 NestJS 慣例）
@@ -29,7 +30,8 @@
 - [ ] 共用型別 lib（`@bpm/shared-types`：Workflow JSON Schema、Form Schema、CEL Context Types）
 
 ### 驗收
-- 本機 `pnpm dev` 啟動 web + api + db
+
+- 本機 `pnpm api` / `pnpm client` 啟動 API + client + db
 - `pnpm typecheck`、`pnpm lint`、`pnpm test` 通過
 
 ---
@@ -39,6 +41,7 @@
 ### W1 — Identity + Organization
 
 **Backend**
+
 - [ ] `member_metadata_cache` 表 + migration
 - [ ] `MemberResolver` interface + Mock 實作（給開發用）
 - [ ] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
@@ -47,6 +50,7 @@
 - [ ] 主管解析 service（含優先序邏輯）
 
 **Frontend**
+
 - [ ] `/admin/orgs` 組織樹維護介面
 - [ ] `/admin/users` 會員清單（從 mock resolver 拉）
 - [ ] 共用元件：`<MemberPicker>`, `<OrgUnitPicker>`
@@ -56,12 +60,14 @@
 ### W2 — Form Builder
 
 **Backend**
+
 - [ ] `form_definitions`、`form_definition_versions` 表
 - [ ] `FormModule`：CRUD + 版本管理（fork、publish、archive、rollback）
 - [ ] FormSchema 驗證器（內含欄位類型 registry）
 - [ ] 表單 schema lint API（給 designer 用）
 
 **Frontend**
+
 - [ ] `/forms` 列表頁
 - [ ] `/forms/[id]/builder` 表單設計器
   - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file / textarea）
@@ -74,6 +80,7 @@
 ### W3 — Approval Template + 版本管理
 
 **Backend**
+
 - [ ] `approval_templates`、`approval_template_versions` 表
 - [ ] `TemplateModule`：CRUD + 版本管理（fork、publish、rollback）
 - [ ] 流程結構靜態驗證器（先做基本：唯一 Start、連通性、AND Join 配對）
@@ -83,6 +90,7 @@
   - 簡易型別檢查
 
 **Frontend**
+
 - [ ] `/templates` 列表頁
 - [ ] `/templates/[id]/designer` 流程設計器（**核心，本週重點**）
   - React Flow 整合
@@ -102,6 +110,7 @@
 ### W4 — 引擎基礎結構
 
 **Backend**
+
 - [ ] `approval_instances`、`workflow_tokens`、`tasks`、`task_decisions` 表
 - [ ] `WorkflowEngineModule` 骨架
 - [ ] Instance 發起（submit）：驗證 + snapshot（template, form, initiator metadata）
@@ -114,6 +123,7 @@
 ### W5 — 線性節點處理
 
 **Backend**
+
 - [ ] Start Event / End Event 處理
 - [ ] User Task 處理（含 Approver Resolver 5 種類型，先不含 Delegation）
 - [ ] Service Task — `NOTIFY` 類型（先不接外部）
@@ -123,6 +133,7 @@
 - [ ] Instance 完成判定
 
 **Frontend**
+
 - [ ] `/instances/new?templateId=xxx` 發起頁（FormRenderer）
 - [ ] `/instances/[id]` 簽核操作頁（基礎版）
   - 顯示表單快照（唯讀）
@@ -136,6 +147,7 @@
 ### W6 — Gateway + 平行/條件
 
 **Backend**
+
 - [ ] Exclusive Gateway 處理（含 default flow）
 - [ ] Parallel Gateway Split / Join（含 race condition 處理）
 - [ ] Decision Policy: PARALLEL_ALL / PARALLEL_ANY / QUORUM
@@ -146,12 +158,14 @@
 ### W7 — 退回 / 重送 / Dry Run
 
 **Backend**
+
 - [ ] 退回（target = previous / initiator / specific node）
 - [ ] 退回後重新提交（重跑 vs 從退回點繼續，依模板設定）
 - [ ] 撤銷 instance
 - [ ] **Dry Run** API：給定假 initiator + 表單值 → 純記憶體模擬流程
 
 **Frontend**
+
 - [ ] 退回 / 撤銷 UI
 - [ ] Dry Run 介面（在設計器內）
 
@@ -164,12 +178,14 @@
 ### W8 — Delegation + Transfer
 
 **Backend**
+
 - [ ] `delegation_rules` 表
 - [ ] `DelegationModule`：規則 CRUD
 - [ ] 引擎整合：建立 task 時套用 delegation 解析（含循環防護、CEL scope）
 - [ ] Task 轉派（manual transfer）
 
 **Frontend**
+
 - [ ] `/admin/delegations` 代理規則維護
 - [ ] 個人代理設定頁（自助）
 - [ ] Task 轉派 UI
@@ -179,6 +195,7 @@
 ### W9 — 通知 + SLA
 
 **Backend**
+
 - [ ] `notifications`、`notification_preferences` 表
 - [ ] `NotificationModule`：in-app + email（用 nodemailer 或 SES）+ webhook
 - [ ] 通知模板系統（簡單 Handlebars）
@@ -187,6 +204,7 @@
 - [ ] Boundary Timer Event 處理
 
 **Frontend**
+
 - [ ] In-app 通知中心（鈴鐺 + 列表）
 - [ ] 通知偏好設定頁
 - [ ] Inbox 顯示 SLA due 倒數
@@ -196,6 +214,7 @@
 ### W10 — 簽章 + 附件
 
 **Backend**
+
 - [ ] `signatures` 表
 - [ ] `SignatureModule`：L1 HMAC（含金鑰版本管理 / 輪替支援）
 - [ ] RFC 3161 TSA client（可選實作 — 先 mock）
@@ -207,6 +226,7 @@
 - [ ] 加密儲存
 
 **Frontend**
+
 - [ ] FormRenderer 整合附件上傳
 - [ ] PDF 預覽元件（react-pdf）
 - [ ] 簽核操作頁顯示附件 + 預覽
@@ -220,21 +240,25 @@
 ### W11 — 進階能力 1
 
 **Backend**
+
 - [ ] 加簽 / 減簽 / 跳簽 API
 - [ ] 表單欄位節點級權限（依 fieldPermissions 過濾）
 - [ ] ABAC 發起權限細化（initiator policy 完整支援）
 
 **Frontend**
+
 - [ ] 加簽 / 減簽 / 跳簽 UI
 - [ ] FormRenderer 套用欄位權限（visible / editable）
 
 ### W12 — 進階能力 2 + Dashboard
 
 **Backend**
+
 - [ ] 統計 API（流程平均耗時、卡關熱點、SLA 達成率）
 - [ ] 全文搜尋（pg_trgm 或 tsvector）
 
 **Frontend**
+
 - [ ] `/sent`、`/cc`、`/search` 完整版
 - [ ] `/dashboard` — 流程效能、卡關熱點
 - [ ] 模板列表頁的「使用情況」統計
@@ -258,31 +282,31 @@
 
 ## 不在 MVP 範圍（後期）
 
-| 功能 | 預估時程 |
-|---|---|
-| Inclusive Gateway | 1 週（含 OR Join 死鎖偵測） |
-| Sub-Process | 2 週 |
-| BPMN XML import / export | 1 週 |
-| 多語言 i18n | 1 週 |
-| L2 / L3 進階簽章（PKI / 自然人憑證） | 2 週 |
-| PDF 上視覺化蓋章覆蓋（PAdES） | 2 週 |
-| 行動端原生 App | 6+ 週 |
-| 多租戶改造 | 2 週 |
-| 流程圖版本 diff 工具 | 1 週 |
-| 進階表達式編輯器（Monaco + IntelliSense） | 1 週 |
+| 功能                                      | 預估時程                    |
+| ----------------------------------------- | --------------------------- |
+| Inclusive Gateway                         | 1 週（含 OR Join 死鎖偵測） |
+| Sub-Process                               | 2 週                        |
+| BPMN XML import / export                  | 1 週                        |
+| 多語言 i18n                               | 1 週                        |
+| L2 / L3 進階簽章（PKI / 自然人憑證）      | 2 週                        |
+| PDF 上視覺化蓋章覆蓋（PAdES）             | 2 週                        |
+| 行動端原生 App                            | 6+ 週                       |
+| 多租戶改造                                | 2 週                        |
+| 流程圖版本 diff 工具                      | 1 週                        |
+| 進階表達式編輯器（Monaco + IntelliSense） | 1 週                        |
 
 ---
 
 ## 風險與緩解
 
-| 風險 | 緩解 |
-|---|---|
-| `cel-js` 成熟度不足 | 早期準備好降版方案：純 TS function-based 條件 |
-| AND Join 並發 race | 提早設計 advisory lock；做壓力測試 |
-| 流程設計器體驗 | 投入時間 / 找專人做 UX，不要把它當小元件 |
-| 模板版本暴增 | UI 上區分「已用過 / 未用過」版本，並加歸檔工具 |
+| 風險                   | 緩解                                               |
+| ---------------------- | -------------------------------------------------- |
+| `cel-js` 成熟度不足    | 早期準備好降版方案：純 TS function-based 條件      |
+| AND Join 並發 race     | 提早設計 advisory lock；做壓力測試                 |
+| 流程設計器體驗         | 投入時間 / 找專人做 UX，不要把它當小元件           |
+| 模板版本暴增           | UI 上區分「已用過 / 未用過」版本，並加歸檔工具     |
 | 外部 SSO Resolver 不穩 | 加 cache、加 fallback 用最後一次 metadata snapshot |
-| 簽章鏈完整性 | 簽章寫入 transaction 內，並做定期完整性掃描 |
+| 簽章鏈完整性           | 簽章寫入 transaction 內，並做定期完整性掃描        |
 
 ---
 
@@ -298,6 +322,7 @@
 ## 跨里程碑共通
 
 每個里程碑結束都應該：
+
 - 撰寫該里程碑的整合測試（Playwright e2e + Jest 單元）
 - 更新 docs（如本目錄）
 - Demo 給內部使用者看一次（避免閉門造車）
