@@ -9,6 +9,13 @@ Internal BPM approval engine workspace.
 - `apps/web`: Next.js App Router, React Flow, `@mezzanine-ui/react`
 - `libs/shared`: workflow, form, CEL context, and status types
 
+## Planning Docs
+
+The BPM planning documents are stored in [`docs/`](./docs/). Start from
+[`docs/README.md`](./docs/README.md), then follow the numbered files for system
+decisions, domain model, BPMN engine rules, versioning, CEL conditions, data
+model, execution behavior, frontend workflow schema, and roadmap.
+
 ## Local Commands
 
 ```bash
