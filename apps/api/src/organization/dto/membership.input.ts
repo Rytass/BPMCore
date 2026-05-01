@@ -17,7 +17,7 @@ export class CreateMembershipInput {
   @Field()
   effectiveFrom!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 }
 
@@ -32,12 +32,12 @@ export class UpdateMembershipInput {
   @Field(() => ID, { nullable: true })
   positionId!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => Boolean, { nullable: true })
   isPrimary!: boolean | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveFrom!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 }

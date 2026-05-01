@@ -12,10 +12,10 @@ export class MemberProfileObject {
   @Field()
   email!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   primaryOrgUnitId!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   positionId!: string | null;
 
   @Field()

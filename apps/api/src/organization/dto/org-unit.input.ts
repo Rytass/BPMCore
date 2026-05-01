@@ -27,15 +27,15 @@ export class UpdateOrgUnitInput {
   @Field(() => ID, { nullable: true })
   parentId!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   code!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   name!: string | null;
 
   @Field(() => OrgUnitTypeEnum, { nullable: true })
   type!: OrgUnitTypeEnum | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   metadataJson!: string | null;
 }

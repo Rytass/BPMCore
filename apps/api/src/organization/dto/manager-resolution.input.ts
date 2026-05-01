@@ -18,7 +18,7 @@ export class CreateManagerResolutionInput {
   @Field()
   effectiveFrom!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 }
 
@@ -30,18 +30,18 @@ export class UpdateManagerResolutionInput {
   @Field(() => ManagerResolutionScopeTypeEnum, { nullable: true })
   scopeType!: ManagerResolutionScopeTypeEnum | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   scopeId!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   managerMemberId!: string | null;
 
   @Field(() => Int, { nullable: true })
   priority!: number | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveFrom!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 }

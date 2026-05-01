@@ -20,15 +20,15 @@ export class UpdatePositionInput {
   @Field(() => ID)
   id!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   code!: string | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   name!: string | null;
 
   @Field(() => Int, { nullable: true })
   level!: number | null;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   metadataJson!: string | null;
 }

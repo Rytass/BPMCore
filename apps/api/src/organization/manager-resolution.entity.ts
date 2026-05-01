@@ -1,5 +1,10 @@
 import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 import { ManagerResolutionScopeTypeEnum } from './organization.enums';
 
 @Entity('manager_resolutions')
@@ -30,7 +35,7 @@ export class ManagerResolutionEntity {
   effectiveFrom!: string;
 
   @Column('date', { name: 'effective_to', nullable: true })
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })

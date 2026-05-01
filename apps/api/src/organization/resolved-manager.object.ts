@@ -5,6 +5,6 @@ export class ResolvedManagerObject {
   @Field()
   memberId!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   managerMemberId!: string | null;
 }

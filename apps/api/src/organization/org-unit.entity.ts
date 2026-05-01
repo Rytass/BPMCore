@@ -40,7 +40,7 @@ export class OrgUnitEntity {
   metadata!: Readonly<Record<string, unknown>>;
 
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz' })
-  @Field({ nullable: true })
+  @Field(() => Date, { nullable: true })
   deletedAt!: Date | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })

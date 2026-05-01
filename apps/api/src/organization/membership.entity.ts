@@ -37,7 +37,7 @@ export class MembershipEntity {
   effectiveFrom!: string;
 
   @Column('date', { name: 'effective_to', nullable: true })
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   effectiveTo!: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
