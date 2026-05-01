@@ -4,6 +4,8 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { HealthController } from '../health/health.controller';
+import { IdentityModule } from '../identity/identity.module';
+import { OrganizationModule } from '../organization/organization.module';
 import { buildTypeOrmModuleOptions } from '../database/typeorm.config';
 import { SystemResolver } from '../system/system.resolver';
 
@@ -25,6 +27,8 @@ import { SystemResolver } from '../system/system.resolver';
       playground: false,
       sortSchema: true,
     }),
+    IdentityModule,
+    OrganizationModule,
   ],
   controllers: [HealthController],
   providers: [SystemResolver],
