@@ -28,6 +28,8 @@ node_modules
 /.sass-cache
 /connect.lock
 /coverage
+/.env
+/.env.*
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log
@@ -42,6 +44,8 @@ Thumbs.db
 .nx/workspace-data
 .claude/worktrees
 .claude/settings.local.json
+/tools/vault-secret-*.yml
+!/tools/vault-secret-*.example.yml
 
 # Next.js
 .next

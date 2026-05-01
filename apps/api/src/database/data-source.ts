@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
-import { buildDataSourceOptions } from './typeorm.config';
+import { buildDataSourceOptionsFromVaultEnv } from './typeorm.config';
 
-export default new DataSource(buildDataSourceOptions(process.env));
+export default buildDataSourceOptionsFromVaultEnv(process.env).then(
+  (options) => new DataSource(options),
+);

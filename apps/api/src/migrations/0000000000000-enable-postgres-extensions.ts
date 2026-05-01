@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class EnablePostgresExtensions0000000000000 implements MigrationInterface {
-  readonly name = 'EnablePostgresExtensions0000000000000';
+export class EnablePostgresExtensions2026043000000 implements MigrationInterface {
+  readonly name = 'EnablePostgresExtensions2026043000000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');

@@ -1,0 +1,16 @@
+node_modules
+dist
+tmp
+out-tsc
+.next
+coverage
+.nx/cache
+.nx/workspace-data
+.git
+.github
+.claude
+.DS_Store
+.env
+.env.*
+tools/vault-secret-*.yml
+!tools/vault-secret-*.example.yml

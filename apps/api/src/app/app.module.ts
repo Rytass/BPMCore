@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { GraphQLModule } from '@nestjs/graphql';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { HealthController } from '../health/health.controller';
 import { IdentityModule } from '../identity/identity.module';
 import { OrganizationModule } from '../organization/organization.module';
@@ -11,12 +11,12 @@ import { SystemResolver } from '../system/system.resolver';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      cache: true,
-      envFilePath: ['.env.local', '.env'],
-      isGlobal: true,
+    VaultModule.forRoot({
+      path: process.env.VAULT_PATH ?? 'bpm_core/develop',
     }),
     TypeOrmModule.forRootAsync({
+      imports: [VaultModule],
+      inject: [VaultService],
       useFactory: buildTypeOrmModuleOptions,
     }),
     GraphQLModule.forRoot<ApolloDriverConfig>({

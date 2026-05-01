@@ -48,3 +48,4 @@
 - Frontend: Next.js App Router + React Flow + Mezzanine UI
 - Shared types live in `libs/shared` and expose workflow, form, condition, and status contracts.
 - M0 is local-only. Do not create cloud DB, Vault, GKE, GitHub repo, DNS, commits, or pushes without explicit instruction.
+- Infrastructure target: Vault paths `bpm_core/develop` and `bpm_core/staging`, Cloud SQL database `bpm_core`, schemas/users `bpm_core_develop` and `bpm_core_staging`, staging DNS `bpm-core-staging.rytass.info`; develop is DB/Vault only, staging is deployable.

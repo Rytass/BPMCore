@@ -1,0 +1,146 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bpm-core
+  namespace: bpm-core-staging
+  labels:
+    app: bpm-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bpm-core
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  minReadySeconds: 15
+  template:
+    metadata:
+      labels:
+        app: bpm-core
+    spec:
+      restartPolicy: Always
+      initContainers:
+        - name: migrate
+          image: asia-east1-docker.pkg.dev/develop-server/bpm-core/api:v0.0.0
+          envFrom:
+            - secretRef:
+                name: vault-secret
+          command: ['pnpm']
+          args: ['migration:run']
+      containers:
+        - name: api
+          image: asia-east1-docker.pkg.dev/develop-server/bpm-core/api:v0.0.0
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 1000m
+          envFrom:
+            - secretRef:
+                name: vault-secret
+          env:
+            - name: PORT
+              value: '6001'
+          ports:
+            - name: api-http
+              containerPort: 6001
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 6001
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 6001
+            initialDelaySeconds: 8
+            periodSeconds: 10
+
+        - name: client
+          image: asia-east1-docker.pkg.dev/develop-server/bpm-core/client:v0.0.0
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+          env:
+            - name: PORT
+              value: '7001'
+            - name: API_URL
+              value: 'http://localhost:6001'
+          ports:
+            - name: client-http
+              containerPort: 7001
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7001
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7001
+            initialDelaySeconds: 8
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: main
+  namespace: bpm-core-staging
+spec:
+  selector:
+    app: bpm-core
+  ports:
+    - name: api
+      port: 6001
+      targetPort: 6001
+    - name: client
+      port: 7001
+      targetPort: 7001
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ingress
+  namespace: bpm-core-staging
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/graphql`)
+      kind: Rule
+      priority: 20
+      services:
+        - name: main
+          port: 6001
+    - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/api`)
+      kind: Rule
+      priority: 10
+      services:
+        - name: main
+          port: 6001
+    - match: Host(`bpm-core-staging.rytass.info`)
+      kind: Rule
+      priority: 5
+      services:
+        - name: main
+          port: 7001

@@ -3,6 +3,8 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app/app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
+const DEFAULT_API_PORT = 17601;
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
@@ -17,7 +19,7 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  const port = Number(process.env.PORT ?? 3000);
+  const port = Number(process.env.PORT ?? DEFAULT_API_PORT);
   await app.listen(port);
   Logger.log(`API is running on http://localhost:${port}/${globalPrefix}`);
 }
