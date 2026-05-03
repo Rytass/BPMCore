@@ -16,6 +16,7 @@ interface BaseFormFieldDefinition<TType extends string> {
   readonly description?: string;
   readonly fieldKey: string;
   readonly label: string;
+  readonly placeholder?: string;
   readonly readonlyWhen?: string;
   readonly required: boolean;
   readonly requiredWhen?: string;

@@ -8,6 +8,15 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 
+interface HttpRequestLike {
+  readonly url?: string;
+}
+
+interface HttpResponseLike {
+  readonly json?: (body: ErrorResponseBody) => unknown;
+  readonly status?: (statusCode: number) => HttpResponseLike;
+}
+
 interface ErrorResponseBody {
   readonly error: string;
   readonly message: string;
@@ -22,8 +31,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const context = host.switchToHttp();
-    const response = context.getResponse<Response>();
-    const request = context.getRequest<{ readonly url: string }>();
+    const response = context.getResponse<Response | undefined>();
+    const request = context.getRequest<HttpRequestLike | undefined>();
+
+    if (!this.isWritableHttpResponse(response)) {
+      throw exception;
+    }
+
     const statusCode =
       exception instanceof HttpException
         ? exception.getStatus()
@@ -35,7 +49,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
           ? 'Internal Server Error'
           : 'Request Error',
       message,
-      path: request.url,
+      path: request?.url ?? host.getType<string>(),
       statusCode,
       timestamp: new Date().toISOString(),
     };
@@ -48,6 +62,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     response.status(statusCode).json(body);
+  }
+
+  private isWritableHttpResponse(
+    response: Response | undefined,
+  ): response is Response {
+    const candidate = response as HttpResponseLike | undefined;
+
+    return (
+      typeof candidate?.status === 'function' &&
+      typeof candidate.json === 'function'
+    );
   }
 
   private resolveMessage(exception: unknown): string {
