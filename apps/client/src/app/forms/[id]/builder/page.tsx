@@ -36,7 +36,6 @@ import {
   Textarea,
   Toggle,
   Typography,
-  Upload,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import {
@@ -65,7 +64,6 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
-  FormFieldValue,
   FormUiSchema,
   NumberFieldDefinition,
   SelectFieldDefinition,
@@ -82,6 +80,25 @@ import {
   updateFormDefinition,
   updateFormDefinitionDraft,
 } from '../../_lib/form-api';
+import {
+  buildConditionExpression,
+  buildFormRendererValues,
+  clampOptionalNumber,
+  FormRendererValues,
+  isDateFieldDefinition,
+  isNumberFieldDefinition,
+  isSelectFieldDefinition,
+  parseConditionRule,
+  parseOptionalNumberInput,
+  readConditionInputType,
+  readConditionOperatorOption,
+  readConditionOperatorOptions,
+  readDefaultConditionOperator,
+  readDefaultConditionValue,
+  readFieldOptionAsSelectOption,
+  readSelectOption,
+} from '../../_lib/form-rendering';
+import { FormRenderer } from '../../_components/form-renderer';
 import { FormNameModal } from '../../_components/form-name-modal';
 import { JsonCodeEditor } from './json-code-editor';
 
@@ -114,13 +131,6 @@ type FieldTypeOption = Readonly<{
 }>;
 
 type ConditionRuleTarget = 'readonlyWhen' | 'requiredWhen' | 'visibleWhen';
-type ConditionOperator =
-  | 'equals'
-  | 'greaterThan'
-  | 'greaterThanOrEqual'
-  | 'lessThan'
-  | 'lessThanOrEqual'
-  | 'notEquals';
 
 type ConditionRuleConfig = Readonly<{
   label: string;
@@ -128,14 +138,6 @@ type ConditionRuleConfig = Readonly<{
   supportingText: string;
   target: ConditionRuleTarget;
 }>;
-
-type ParsedConditionRule = Readonly<{
-  fieldKey: string;
-  operator: ConditionOperator;
-  value: string;
-}>;
-
-type PreviewFormValues = Readonly<Record<string, FormFieldValue | undefined>>;
 
 const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
   {
@@ -411,24 +413,6 @@ const OPTION_ACTIONS_STYLE: CSSProperties = {
   justifyContent: 'flex-end',
 };
 
-const PREVIEW_FIELD_ROW_STYLE: CSSProperties = {
-  alignItems: 'start',
-  display: 'grid',
-  gap: 12,
-  gridTemplateColumns: '112px minmax(0, 1fr)',
-  width: '100%',
-};
-
-const PREVIEW_FIELD_LABEL_STYLE: CSSProperties = {
-  minHeight: 32,
-  paddingTop: 6,
-};
-
-const PREVIEW_FIELD_CONTROL_STYLE: CSSProperties = {
-  minWidth: 0,
-  width: '100%',
-};
-
 const REQUIRED_ASTERISK_STYLE: CSSProperties = {
   color: 'var(--mzn-color-text-error)',
   fontSize: '0.72em',
@@ -493,18 +477,6 @@ const CONDITION_RULE_CONFIGS: readonly ConditionRuleConfig[] = [
   },
 ];
 
-const CONDITION_OPERATOR_OPTIONS: readonly {
-  readonly id: ConditionOperator;
-  readonly name: string;
-}[] = [
-  { id: 'equals', name: '等於' },
-  { id: 'notEquals', name: '不等於' },
-  { id: 'greaterThan', name: '大於' },
-  { id: 'greaterThanOrEqual', name: '大於等於' },
-  { id: 'lessThan', name: '小於' },
-  { id: 'lessThanOrEqual', name: '小於等於' },
-];
-
 export default function FormBuilderPage(): ReactElement {
   const params = useParams<{ readonly id: string }>();
   const router = useRouter();
@@ -519,7 +491,7 @@ export default function FormBuilderPage(): ReactElement {
   const [uiSchemaJsonText, setUiSchemaJsonText] = useState(
     stringifyJson(EMPTY_UI_SCHEMA),
   );
-  const [previewValues, setPreviewValues] = useState<PreviewFormValues>({});
+  const [previewValues, setPreviewValues] = useState<FormRendererValues>({});
   const [advancedSchemaMessage, setAdvancedSchemaMessage] = useState<
     string | null
   >(null);
@@ -549,7 +521,7 @@ export default function FormBuilderPage(): ReactElement {
 
   useEffect((): void => {
     setPreviewValues((currentValues) =>
-      buildPreviewValues(schema.fields, currentValues),
+      buildFormRendererValues(schema.fields, currentValues),
     );
   }, [schema.fields]);
 
@@ -892,14 +864,8 @@ export default function FormBuilderPage(): ReactElement {
     );
   }
 
-  function updatePreviewValue(
-    fieldKey: string,
-    value: FormFieldValue | undefined,
-  ): void {
-    setPreviewValues((currentValues) => ({
-      ...currentValues,
-      [fieldKey]: value,
-    }));
+  function updatePreviewValues(values: FormRendererValues): void {
+    setPreviewValues(values);
   }
 
   function updateFieldRequired(fieldKey: string, required: boolean): void {
@@ -2034,33 +2000,17 @@ export default function FormBuilderPage(): ReactElement {
   }
 
   function renderPreviewTab(): ReactElement {
-    const visibleFields = schema.fields.filter((field) =>
-      isPreviewFieldVisible(field, schema.fields, previewValues),
-    );
-
     return (
       <div style={STACK_STYLE}>
         <Typography component="h2" variant="h3">
           填寫預覽
         </Typography>
-        {visibleFields.length > 0 ? (
-          visibleFields.map((field) => (
-            <PreviewField
-              field={field}
-              fields={schema.fields}
-              key={field.fieldKey}
-              onChange={updatePreviewValue}
-              value={previewValues[field.fieldKey]}
-              values={previewValues}
-            />
-          ))
-        ) : (
-          <Typography color="text-neutral" variant="body">
-            {schema.fields.length > 0
-              ? '目前條件下沒有可填寫欄位。'
-              : '尚未建立欄位。'}
-          </Typography>
-        )}
+        <FormRenderer
+          onChange={updatePreviewValues}
+          schema={schema}
+          uiSchema={uiSchema}
+          value={previewValues}
+        />
       </div>
     );
   }
@@ -2157,191 +2107,6 @@ export default function FormBuilderPage(): ReactElement {
   }
 }
 
-function PreviewField({
-  field,
-  fields,
-  onChange,
-  value,
-  values,
-}: {
-  readonly field: FormFieldDefinition;
-  readonly fields: readonly FormFieldDefinition[];
-  readonly onChange: (
-    fieldKey: string,
-    value: FormFieldValue | undefined,
-  ) => void;
-  readonly value: FormFieldValue | undefined;
-  readonly values: PreviewFormValues;
-}): ReactElement {
-  const required = isPreviewFieldRequired(field, fields, values);
-  const readonly = isPreviewFieldReadonly(field, fields, values);
-
-  return (
-    <div style={PREVIEW_FIELD_ROW_STYLE}>
-      <Typography
-        color="text-neutral"
-        component="span"
-        style={PREVIEW_FIELD_LABEL_STYLE}
-        variant="label-primary"
-      >
-        {field.label}
-        {required ? (
-          <sup aria-label="必填" style={REQUIRED_ASTERISK_STYLE}>
-            *
-          </sup>
-        ) : null}
-      </Typography>
-      <div style={PREVIEW_FIELD_CONTROL_STYLE}>
-        <FormField
-          density={FormFieldDensity.WIDE}
-          fullWidth
-          layout={FormFieldLayout.STRETCH}
-          name={field.fieldKey}
-          required={required}
-        >
-          {renderPreviewControl(field, value, readonly, onChange)}
-        </FormField>
-      </div>
-    </div>
-  );
-}
-
-function renderPreviewControl(
-  field: FormFieldDefinition,
-  value: FormFieldValue | undefined,
-  readonly: boolean,
-  onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
-): ReactElement {
-  if (field.type === 'textarea') {
-    return (
-      <Textarea
-        onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
-          onChange(field.fieldKey, event.target.value)
-        }
-        placeholder={field.placeholder ?? '請輸入多行文字'}
-        readOnly={readonly}
-        rows={3}
-        value={readPreviewStringValue(value)}
-      />
-    );
-  }
-
-  if (field.type === 'boolean') {
-    return (
-      <Toggle
-        checked={value === true}
-        disabled={readonly}
-        label="啟用"
-        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-          onChange(field.fieldKey, event.target.checked)
-        }
-      />
-    );
-  }
-
-  if (field.type === 'checkbox') {
-    const options = field.options.map(readFieldOptionAsSelectOption);
-
-    return (
-      <Select
-        mode="multiple"
-        onChange={(options): void =>
-          onChange(
-            field.fieldKey,
-            options.length ? options.map((option) => option.id) : undefined,
-          )
-        }
-        options={options}
-        placeholder={field.placeholder ?? '請選擇一或多個選項'}
-        readOnly={readonly}
-        value={options.filter((option) =>
-          readPreviewStringArrayValue(value).includes(option.id),
-        )}
-      />
-    );
-  }
-
-  if (field.type === 'select' || field.type === 'radio') {
-    const options = field.options.map(readFieldOptionAsSelectOption);
-
-    return (
-      <Select
-        onChange={(option): void =>
-          onChange(field.fieldKey, option?.id ?? undefined)
-        }
-        options={options}
-        placeholder={field.placeholder ?? '請選擇'}
-        readOnly={readonly}
-        value={readSelectOption(options, readPreviewStringValue(value))}
-      />
-    );
-  }
-
-  if (field.type === 'file_upload') {
-    return (
-      <Upload
-        accept={field.acceptedMimeTypes?.join(',')}
-        disabled={readonly}
-        maxFiles={field.maxFiles}
-        mode="button-list"
-        {...((field.maxFiles ?? 1) > 1 ? { multiple: true } : {})}
-        onChange={(files): void =>
-          onChange(
-            field.fieldKey,
-            files.length ? files.map((file) => file.id) : undefined,
-          )
-        }
-        onUpload={(files): { readonly id: string }[] =>
-          files.map((file, index) => ({
-            id: `${file.name}-${file.lastModified}-${index}`,
-          }))
-        }
-        size="sub"
-      />
-    );
-  }
-
-  if (field.type === 'number' || field.type === 'money') {
-    return (
-      <Input
-        fullWidth
-        max={field.maximum}
-        min={field.minimum}
-        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-          onChange(
-            field.fieldKey,
-            clampOptionalNumber(parseOptionalNumberInput(event.target.value), {
-              max: field.maximum,
-              min: field.minimum,
-            }),
-          )
-        }
-        placeholder={
-          field.placeholder ?? readPreviewInputPlaceholder(field.type)
-        }
-        {...(readonly ? { readonly: true as const } : {})}
-        showSpinner
-        value={readPreviewNumberInputValue(value)}
-        variant="measure"
-      />
-    );
-  }
-
-  return (
-    <Input
-      fullWidth
-      inputType={readPreviewTextInputType(field)}
-      onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-        onChange(field.fieldKey, event.target.value)
-      }
-      placeholder={field.placeholder ?? readPreviewInputPlaceholder(field.type)}
-      {...(readonly ? { readonly: true as const } : {})}
-      value={readPreviewStringValue(value)}
-      variant="base"
-    />
-  );
-}
-
 function readFieldTypeLabel(type: FieldType): string {
   return (
     FIELD_TYPE_OPTIONS.find((option) => option.type === type)?.label ?? type
@@ -2350,339 +2115,6 @@ function readFieldTypeLabel(type: FieldType): string {
 
 function hasConditionRules(field: FormFieldDefinition): boolean {
   return Boolean(field.visibleWhen || field.requiredWhen || field.readonlyWhen);
-}
-
-function buildPreviewValues(
-  fields: readonly FormFieldDefinition[],
-  currentValues: PreviewFormValues,
-): PreviewFormValues {
-  return fields.reduce<PreviewFormValues>(
-    (values, field) => ({
-      ...values,
-      [field.fieldKey]:
-        typeof currentValues[field.fieldKey] === 'undefined'
-          ? readInitialPreviewValue(field)
-          : currentValues[field.fieldKey],
-    }),
-    {},
-  );
-}
-
-function readInitialPreviewValue(
-  field: FormFieldDefinition,
-): FormFieldValue | undefined {
-  if (typeof field.defaultValue !== 'undefined') {
-    return field.defaultValue;
-  }
-
-  if (field.type === 'boolean') {
-    return false;
-  }
-
-  if (field.type === 'checkbox' || field.type === 'file_upload') {
-    return [];
-  }
-
-  return undefined;
-}
-
-function isPreviewFieldVisible(
-  field: FormFieldDefinition,
-  fields: readonly FormFieldDefinition[],
-  values: PreviewFormValues,
-): boolean {
-  return field.visibleWhen
-    ? evaluateConditionExpression(field.visibleWhen, fields, values, true)
-    : true;
-}
-
-function isPreviewFieldRequired(
-  field: FormFieldDefinition,
-  fields: readonly FormFieldDefinition[],
-  values: PreviewFormValues,
-): boolean {
-  return (
-    field.required ||
-    Boolean(
-      field.requiredWhen
-        ? evaluateConditionExpression(field.requiredWhen, fields, values, false)
-        : false,
-    )
-  );
-}
-
-function isPreviewFieldReadonly(
-  field: FormFieldDefinition,
-  fields: readonly FormFieldDefinition[],
-  values: PreviewFormValues,
-): boolean {
-  return field.readonlyWhen
-    ? evaluateConditionExpression(field.readonlyWhen, fields, values, false)
-    : false;
-}
-
-function evaluateConditionExpression(
-  expression: string,
-  fields: readonly FormFieldDefinition[],
-  values: PreviewFormValues,
-  fallback: boolean,
-): boolean {
-  const rule = parseConditionRule(expression);
-
-  if (!rule) {
-    return fallback;
-  }
-
-  const field = fields.find(
-    (candidate) => candidate.fieldKey === rule.fieldKey,
-  );
-
-  if (!field) {
-    return fallback;
-  }
-
-  return evaluateConditionRule(rule, field, values[field.fieldKey]);
-}
-
-function evaluateConditionRule(
-  rule: ParsedConditionRule,
-  field: FormFieldDefinition,
-  value: FormFieldValue | undefined,
-): boolean {
-  if (Array.isArray(value)) {
-    return evaluateArrayCondition(value, rule);
-  }
-
-  if (field.type === 'boolean') {
-    return compareConditionValues(
-      value === true ? 'true' : 'false',
-      rule.value,
-      rule.operator,
-    );
-  }
-
-  if (isNumberFieldDefinition(field)) {
-    return compareNumericCondition(value, rule);
-  }
-
-  return compareConditionValues(
-    typeof value === 'undefined' || value === null ? '' : String(value),
-    rule.value,
-    rule.operator,
-  );
-}
-
-function evaluateArrayCondition(
-  value: readonly string[],
-  rule: ParsedConditionRule,
-): boolean {
-  if (rule.operator === 'equals') {
-    return value.includes(rule.value);
-  }
-
-  if (rule.operator === 'notEquals') {
-    return !value.includes(rule.value);
-  }
-
-  return false;
-}
-
-function compareNumericCondition(
-  value: FormFieldValue | undefined,
-  rule: ParsedConditionRule,
-): boolean {
-  const actualValue = typeof value === 'number' ? value : Number(value);
-  const expectedValue = Number(rule.value);
-
-  if (!Number.isFinite(actualValue) || !Number.isFinite(expectedValue)) {
-    return false;
-  }
-
-  return compareConditionValues(actualValue, expectedValue, rule.operator);
-}
-
-function compareConditionValues(
-  actualValue: number | string,
-  expectedValue: number | string,
-  operator: ConditionOperator,
-): boolean {
-  if (operator === 'equals') {
-    return actualValue === expectedValue;
-  }
-
-  if (operator === 'notEquals') {
-    return actualValue !== expectedValue;
-  }
-
-  if (operator === 'greaterThan') {
-    return actualValue > expectedValue;
-  }
-
-  if (operator === 'greaterThanOrEqual') {
-    return actualValue >= expectedValue;
-  }
-
-  if (operator === 'lessThan') {
-    return actualValue < expectedValue;
-  }
-
-  return actualValue <= expectedValue;
-}
-
-function parseConditionRule(expression: string): ParsedConditionRule | null {
-  const match = expression
-    .trim()
-    .match(/^form\.([A-Za-z][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(.+)$/u);
-
-  if (!match) {
-    return null;
-  }
-
-  const operator = readConditionOperatorFromSymbol(match[2]);
-
-  if (!operator) {
-    return null;
-  }
-
-  return {
-    fieldKey: match[1],
-    operator,
-    value: parseConditionLiteral(match[3]),
-  };
-}
-
-function buildConditionExpression(
-  field: FormFieldDefinition,
-  operator: ConditionOperator,
-  value: string,
-): string {
-  return `form.${field.fieldKey} ${readConditionOperatorSymbol(operator)} ${formatConditionLiteral(field, value)}`;
-}
-
-function readDefaultConditionOperator(
-  field: FormFieldDefinition,
-): ConditionOperator {
-  return isComparableConditionField(field) ? 'greaterThan' : 'equals';
-}
-
-function readDefaultConditionValue(field: FormFieldDefinition): string {
-  if (field.type === 'boolean') {
-    return 'true';
-  }
-
-  if (isSelectFieldDefinition(field)) {
-    return field.options[0]?.value ?? '';
-  }
-
-  return '';
-}
-
-function readConditionOperatorOptions(
-  field: FormFieldDefinition,
-): readonly { readonly id: ConditionOperator; readonly name: string }[] {
-  const operatorIds: readonly ConditionOperator[] = isComparableConditionField(
-    field,
-  )
-    ? [
-        'equals',
-        'notEquals',
-        'greaterThan',
-        'greaterThanOrEqual',
-        'lessThan',
-        'lessThanOrEqual',
-      ]
-    : ['equals', 'notEquals'];
-
-  return CONDITION_OPERATOR_OPTIONS.filter((option) =>
-    operatorIds.includes(option.id),
-  );
-}
-
-function readConditionOperatorOption(
-  value: string | undefined,
-): ConditionOperator | null {
-  return CONDITION_OPERATOR_OPTIONS.some((option) => option.id === value)
-    ? (value as ConditionOperator)
-    : null;
-}
-
-function readConditionOperatorFromSymbol(
-  symbol: string | undefined,
-): ConditionOperator | null {
-  const operators: Readonly<Record<string, ConditionOperator>> = {
-    '!=': 'notEquals',
-    '<': 'lessThan',
-    '<=': 'lessThanOrEqual',
-    '==': 'equals',
-    '>': 'greaterThan',
-    '>=': 'greaterThanOrEqual',
-  };
-
-  return symbol ? (operators[symbol] ?? null) : null;
-}
-
-function readConditionOperatorSymbol(operator: ConditionOperator): string {
-  const symbols: Readonly<Record<ConditionOperator, string>> = {
-    equals: '==',
-    greaterThan: '>',
-    greaterThanOrEqual: '>=',
-    lessThan: '<',
-    lessThanOrEqual: '<=',
-    notEquals: '!=',
-  };
-
-  return symbols[operator];
-}
-
-function parseConditionLiteral(value: string): string {
-  const trimmedValue = value.trim();
-
-  if (
-    (trimmedValue.startsWith('"') && trimmedValue.endsWith('"')) ||
-    (trimmedValue.startsWith("'") && trimmedValue.endsWith("'"))
-  ) {
-    return trimmedValue.slice(1, -1);
-  }
-
-  return trimmedValue;
-}
-
-function formatConditionLiteral(
-  field: FormFieldDefinition,
-  value: string,
-): string {
-  if (field.type === 'boolean') {
-    return value === 'false' ? 'false' : 'true';
-  }
-
-  if (isNumberFieldDefinition(field)) {
-    return String(parseOptionalNumberInput(value) ?? 0);
-  }
-
-  return JSON.stringify(value);
-}
-
-function isComparableConditionField(field: FormFieldDefinition): boolean {
-  return (
-    field.type === 'date' ||
-    field.type === 'datetime' ||
-    field.type === 'money' ||
-    field.type === 'number'
-  );
-}
-
-function readConditionInputType(
-  field: FormFieldDefinition,
-): 'date' | 'datetime-local' | 'text' {
-  if (field.type === 'date') {
-    return 'date';
-  }
-
-  if (field.type === 'datetime') {
-    return 'datetime-local';
-  }
-
-  return 'text';
 }
 
 function readFieldAsConditionSelectOption(field: FormFieldDefinition): {
@@ -2695,135 +2127,16 @@ function readFieldAsConditionSelectOption(field: FormFieldDefinition): {
   };
 }
 
-function readPreviewStringValue(value: FormFieldValue | undefined): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function readPreviewStringArrayValue(
-  value: FormFieldValue | undefined,
-): readonly string[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function readPreviewNumberInputValue(
-  value: FormFieldValue | undefined,
-): string {
-  return typeof value === 'number' ? String(value) : '';
-}
-
-function readPreviewTextInputType(
-  field: FormFieldDefinition,
-): 'date' | 'datetime-local' | 'text' {
-  if (field.type === 'date') {
-    return 'date';
-  }
-
-  if (field.type === 'datetime') {
-    return 'datetime-local';
-  }
-
-  return 'text';
-}
-
-function readPreviewInputPlaceholder(type: FieldType): string {
-  const placeholders: Readonly<Record<FieldType, string>> = {
-    boolean: '',
-    checkbox: '請選擇一或多個選項',
-    date: '請選擇日期',
-    datetime: '請選擇日期與時間',
-    file_upload: '請上傳附件',
-    money: '請輸入金額',
-    number: '請輸入數字',
-    radio: '請選擇一個選項',
-    select: '請選擇一個選項',
-    text: '請輸入文字',
-    textarea: '請輸入多行文字',
-  };
-
-  return placeholders[type];
-}
-
 function isTextFieldDefinition(
   field: FormFieldDefinition,
 ): field is TextFieldDefinition {
   return field.type === 'text' || field.type === 'textarea';
 }
 
-function isNumberFieldDefinition(
-  field: FormFieldDefinition,
-): field is NumberFieldDefinition {
-  return field.type === 'number' || field.type === 'money';
-}
-
-function isDateFieldDefinition(
-  field: FormFieldDefinition,
-): field is DateFieldDefinition {
-  return field.type === 'date' || field.type === 'datetime';
-}
-
-function isSelectFieldDefinition(
-  field: FormFieldDefinition,
-): field is SelectFieldDefinition {
-  return (
-    field.type === 'select' ||
-    field.type === 'radio' ||
-    field.type === 'checkbox'
-  );
-}
-
-function readSelectOption<TOption extends { readonly id: string }>(
-  options: readonly TOption[],
-  id: string,
-): TOption | null {
-  return options.find((option) => option.id === id) ?? null;
-}
-
-function readFieldOptionAsSelectOption(option: FormFieldOption): {
-  readonly id: string;
-  readonly name: string;
-} {
-  return {
-    id: option.value,
-    name: option.label,
-  };
-}
-
-function readStringDefaultValue(value: FormFieldValue | undefined): string {
+function readStringDefaultValue(
+  value: FormFieldDefinition['defaultValue'],
+): string {
   return typeof value === 'string' ? value : '';
-}
-
-function parseOptionalNumberInput(value: string): number | undefined {
-  const trimmedValue = value.trim();
-
-  if (!trimmedValue) {
-    return undefined;
-  }
-
-  const nextValue = Number(trimmedValue);
-
-  return Number.isFinite(nextValue) ? nextValue : undefined;
-}
-
-function clampOptionalNumber(
-  value: number | undefined,
-  range: {
-    readonly max?: number;
-    readonly min?: number;
-  },
-): number | undefined {
-  if (typeof value === 'undefined') {
-    return undefined;
-  }
-
-  if (typeof range.min === 'number' && value < range.min) {
-    return range.min;
-  }
-
-  if (typeof range.max === 'number' && value > range.max) {
-    return range.max;
-  }
-
-  return value;
 }
 
 function parseStringList(value: string): readonly string[] | undefined {
