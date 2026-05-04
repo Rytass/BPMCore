@@ -1,0 +1,189 @@
+'use client';
+
+import { ReactElement, useEffect, useMemo, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import {
+  Button,
+  Layout,
+  Section,
+  SectionGroup,
+  Table,
+  Typography,
+} from '@mezzanine-ui/react';
+import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { renderAppNavigation } from '../../../app-navigation';
+import {
+  readTemplateDesigner,
+  rollbackApprovalTemplateVersion,
+  TemplateDesignerRecord,
+} from '../../_lib/template-api';
+
+type VersionRow = Readonly<
+  Record<string, unknown> & {
+    formVersion: string;
+    key: string;
+    publishedAt: string;
+    status: string;
+    updatedAt: string;
+    version: string;
+    versionId: string;
+  }
+>;
+
+export default function TemplateVersionsPage(): ReactElement {
+  const params = useParams<{ readonly id: string }>();
+  const router = useRouter();
+  const templateId = params.id;
+  const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [rollingBack, setRollingBack] = useState(false);
+
+  useEffect((): void => {
+    void refreshVersions();
+  }, [templateId]);
+
+  const rows = useMemo(
+    (): VersionRow[] =>
+      (record?.versions ?? []).map((version) => ({
+        formVersion:
+          record?.formVersions.find(
+            (formVersion) => formVersion.id === version.formDefinitionVersionId,
+          )?.label ?? '未綁定',
+        key: version.id,
+        publishedAt: formatDateTime(version.publishedAt),
+        status: version.status,
+        updatedAt: formatDateTime(version.updatedAt),
+        version: `v${version.version}`,
+        versionId: version.id,
+      })),
+    [record],
+  );
+  const columns = useMemo(
+    (): TableColumn<VersionRow>[] => [
+      { dataIndex: 'version', key: 'version', title: '版本', width: 100 },
+      { dataIndex: 'status', key: 'status', title: '狀態', width: 140 },
+      {
+        dataIndex: 'formVersion',
+        key: 'formVersion',
+        title: '表單版本',
+        width: 220,
+      },
+      {
+        dataIndex: 'publishedAt',
+        key: 'publishedAt',
+        title: '發布時間',
+        width: 200,
+      },
+      {
+        dataIndex: 'updatedAt',
+        key: 'updatedAt',
+        title: '更新時間',
+        width: 200,
+      },
+    ],
+    [],
+  );
+  const actions = useMemo(
+    (): TableActions<VersionRow> => ({
+      render: (row): ReturnType<TableActions<VersionRow>['render']> => [
+        {
+          disabled: (): boolean => rollingBack || row.status === 'DRAFT',
+          name: 'Rollback',
+          onClick: (): void => void handleRollback(row.versionId),
+        },
+      ],
+      variant: 'base-secondary',
+      width: 104,
+    }),
+    [rollingBack],
+  );
+
+  async function refreshVersions(): Promise<void> {
+    setLoading(true);
+    setError(null);
+
+    try {
+      setRecord(await readTemplateDesigner(templateId));
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRollback(versionId: string): Promise<void> {
+    setRollingBack(true);
+    setError(null);
+
+    try {
+      await rollbackApprovalTemplateVersion(versionId);
+      await refreshVersions();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setRollingBack(false);
+    }
+  }
+
+  return (
+    <Layout>
+      {renderAppNavigation('/templates')}
+
+      <Layout.Main>
+        <SectionGroup>
+          <Section>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div>
+                <Typography component="h1" variant="h2">
+                  {record?.template.name ?? '模板版本'}
+                </Typography>
+                <Typography color="text-neutral" variant="body">
+                  查看發布、歸檔與 rollback 狀態。
+                </Typography>
+              </div>
+              <Button
+                onClick={(): void =>
+                  router.push(`/templates/${templateId}/designer`)
+                }
+                variant="base-secondary"
+              >
+                回設計器
+              </Button>
+            </div>
+          </Section>
+
+          <Section>
+            {error ? (
+              <Typography color="text-error" variant="body">
+                {error}
+              </Typography>
+            ) : null}
+            <Table
+              actions={actions}
+              columns={columns}
+              dataSource={rows}
+              fullWidth
+              loading={loading}
+            />
+          </Section>
+        </SectionGroup>
+      </Layout.Main>
+    </Layout>
+  );
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) {
+    return '尚未發布';
+  }
+
+  return new Intl.DateTimeFormat('zh-TW', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
+
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '發生未知錯誤';
+}
