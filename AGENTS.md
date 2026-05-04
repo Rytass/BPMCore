@@ -53,3 +53,4 @@
 ## Progress Notes
 
 - 2026-05-04: M1 W2 Form Builder is complete with reusable `FormRenderer`, builder preview integration, unit tests, and `pnpm e2e:client` Playwright coverage.
+- 2026-05-04: M1 W3 Approval Template foundation is implemented with template/version GraphQL APIs, workflow validation, React Flow designer, version history, and `pnpm e2e:client` Playwright coverage.
