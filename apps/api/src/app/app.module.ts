@@ -7,6 +7,7 @@ import { HealthController } from '../health/health.controller';
 import { IdentityModule } from '../identity/identity.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { FormModule } from '../form/form.module';
+import { TemplateModule } from '../template/template.module';
 import { buildTypeOrmModuleOptions } from '../database/typeorm.config';
 import { SystemResolver } from '../system/system.resolver';
 
@@ -31,6 +32,7 @@ import { SystemResolver } from '../system/system.resolver';
     IdentityModule,
     OrganizationModule,
     FormModule,
+    TemplateModule,
   ],
   controllers: [HealthController],
   providers: [SystemResolver],
