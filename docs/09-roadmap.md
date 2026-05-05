@@ -127,7 +127,7 @@
 - [ ] Start Event / End Event 處理
 - [ ] User Task 處理（含 Approver Resolver 5 種類型，先不含 Delegation）
 - [ ] Service Task — `NOTIFY` 類型（先不接外部）
-- [ ] Decision Policy: SINGLE / SEQUENTIAL
+- [ ] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
 - [ ] Task 決策 API（同意 / 拒絕，先無簽章）
 - [ ] Token advance / consume
 - [ ] Instance 完成判定
@@ -149,11 +149,11 @@
 **Backend**
 
 - [ ] Exclusive Gateway 處理（含 default flow）
-- [ ] Parallel Gateway Split / Join（含 race condition 處理）
-- [ ] Decision Policy: PARALLEL_ALL / PARALLEL_ANY / QUORUM
+- [ ] 多分支 outgoing edge 處理
+- [ ] 節點前置條件 `AND` / `OR` 處理（全部前置完成 / 任一前置完成）
 - [ ] CEL 在 Edge / Entry Condition / Approver Resolver 整合
 
-**驗收**：能跑通含 XOR + AND + 會簽的流程；條件分歧基於表單內容正確路由。
+**驗收**：能跑通含 XOR + 多前置節點 AND/OR 的流程；條件分歧基於表單內容正確路由。
 
 ### W7 — 退回 / 重送 / Dry Run
 
@@ -244,6 +244,7 @@
 - [ ] 加簽 / 減簽 / 跳簽 API
 - [ ] 表單欄位節點級權限（依 fieldPermissions 過濾）
 - [ ] ABAC 發起權限細化（initiator policy 完整支援）
+- [ ] 角色 / 組織代碼目錄查詢 API，並將開始節點發起權限 AutoComplete 改為 server-controlled async
 
 **Frontend**
 

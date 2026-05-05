@@ -31,15 +31,15 @@
          RUNNING ─── 退回到發起人 ───▶ RETURNED ─── resubmit ───▶ RUNNING
 ```
 
-| 狀態 | 描述 | 終態 |
-|---|---|---|
-| **DRAFT** | 暫存（可選功能） | ❌ |
-| **RUNNING** | 流程進行中 | ❌ |
-| **APPROVED** | 所有 token 走到 End | ✅ |
-| **REJECTED** | 任一 task 拒絕（不可恢復） | ✅ |
-| **RETURNED** | 退回到發起人（可重編輯後再送） | ❌ |
-| **CANCELLED** | 發起人主動撤銷 | ✅ |
-| **EXPIRED** | SLA 終止策略觸發 | ✅ |
+| 狀態          | 描述                           | 終態 |
+| ------------- | ------------------------------ | ---- |
+| **DRAFT**     | 暫存（可選功能）               | ❌   |
+| **RUNNING**   | 流程進行中                     | ❌   |
+| **APPROVED**  | 所有 token 走到 End            | ✅   |
+| **REJECTED**  | 任一 task 拒絕（不可恢復）     | ✅   |
+| **RETURNED**  | 退回到發起人（可重編輯後再送） | ❌   |
+| **CANCELLED** | 發起人主動撤銷                 | ✅   |
+| **EXPIRED**   | SLA 終止策略觸發               | ✅   |
 
 ### 1.2 Token 狀態
 
@@ -93,12 +93,12 @@ COMPLETED  TRANSFERRED         CANCELLED         (timeout 處理)
 
 引擎以 **事件驅動** 方式運作：
 
-| 觸發 | 動作 |
-|---|---|
-| `submitInstance()` | 在 Start Event 建立 token，加入 advance queue |
+| 觸發                         | 動作                                                    |
+| ---------------------------- | ------------------------------------------------------- |
+| `submitInstance()`           | 在 Start Event 建立 token，加入 advance queue           |
 | `decideTask(taskId, action)` | task 完成 → 對應 token 從 WAITING → ACTIVE → 加入 queue |
-| Cron (每分鐘) | 檢查 SLA 到期 task → 觸發 boundary timer event |
-| `cancelInstance()` | 終止所有 active/waiting token，instance → CANCELLED |
+| Cron (每分鐘)                | 檢查 SLA 到期 task → 觸發 boundary timer event          |
+| `cancelInstance()`           | 終止所有 active/waiting token，instance → CANCELLED     |
 
 主迴圈虛擬碼：
 
@@ -121,24 +121,24 @@ async function processInstance(instanceId: string): Promise<void> {
           break;
 
         case 'userTask':
-          await createTasksForNode(node, token);  // 解析 approver + delegation
+          await createTasksForNode(node, token); // 解析 approver + delegation
           markTokenWaiting(token);
           break;
 
         case 'serviceTask':
-          await executeServiceAction(node, token);  // webhook / 知會通知
+          await executeServiceAction(node, token); // webhook / 知會通知
           advanceTokenToNext(token);
           break;
 
         case 'exclusiveGateway':
-          handleExclusiveGateway(node, token);  // 走第一條 true 的邊
+          handleExclusiveGateway(node, token); // 走第一條 true 的邊
           break;
 
         case 'parallelGateway':
           if (node.gatewayDirection === 'split') {
-            handleParallelSplit(node, token);  // 一顆變多顆
+            handleParallelSplit(node, token); // 一顆變多顆
           } else {
-            handleParallelJoin(node, token);   // 等所有入邊到齊
+            handleParallelJoin(node, token); // 等所有入邊到齊
           }
           break;
       }
@@ -159,8 +159,8 @@ async function processInstance(instanceId: string): Promise<void> {
 ```typescript
 function handleExclusiveGateway(node, token) {
   const outgoing = workflow.outgoingEdges(node.id);
-  const conditional = outgoing.filter(e => e.data.condition);
-  const defaultEdge = outgoing.find(e => e.data.isDefault);
+  const conditional = outgoing.filter((e) => e.data.condition);
+  const defaultEdge = outgoing.find((e) => e.data.isDefault);
 
   for (const edge of conditional) {
     if (cel.evaluate(edge.data.condition, buildFlowContext(token))) {
@@ -182,7 +182,7 @@ function handleExclusiveGateway(node, token) {
 function handleParallelSplit(node, token) {
   const outgoing = workflow.outgoingEdges(node.id);
 
-  consumeToken(token);  // 原 token 消滅
+  consumeToken(token); // 原 token 消滅
   for (const edge of outgoing) {
     createToken({
       instanceId: token.instanceId,
@@ -248,12 +248,12 @@ node.approverResolver
            │
            ▼
 ┌───────────────────────────┐
-│ 套用 Decision Policy       │
-│ → 決定建立幾筆 task        │
+│ 建立單一簽核 task          │
+│ → 一個 User Task 一位責任人 │
 └──────────┬────────────────┘
            │
            ▼
-      建立 tasks
+      建立 task
        發通知
 ```
 
@@ -262,7 +262,7 @@ node.approverResolver
 ```typescript
 async function resolveApprovers(
   resolver: ApproverResolver,
-  context: ResolverContext,  // form, initiator, instance
+  context: ResolverContext, // form, initiator, instance
 ): Promise<string[]> {
   switch (resolver.type) {
     case 'DIRECT':
@@ -274,10 +274,7 @@ async function resolveApprovers(
 
     case 'ORG_MANAGER':
       // 從 initiator 的 org_unit 向上走 N 層後的 manager
-      return [await managerResolution.findManager(
-        context.initiator.org.id,
-        resolver.levelsUp,
-      )];
+      return [await managerResolution.findManager(context.initiator.org.id, resolver.levelsUp)];
 
     case 'DYNAMIC_FORM':
       // 從表單欄位（user_picker / org_picker）取
@@ -296,7 +293,7 @@ async function resolveApprovers(
 ```typescript
 async function applyDelegation(
   originalAssigneeId: string,
-  context: DelegationContext,  // task + instance + template + env
+  context: DelegationContext, // task + instance + template + env
 ): Promise<{ finalAssignee: string; chain: DelegationStep[] }> {
   const visited = new Set<string>();
   const chain: DelegationStep[] = [];
@@ -313,9 +310,7 @@ async function applyDelegation(
     const rules = await delegationRules.findActive(current, env.now);
 
     // 2. 過濾符合 scope 的規則（依 priority 排序）
-    const applicable = rules
-      .filter(r => matchesScope(r, context))
-      .sort((a, b) => a.priority - b.priority);
+    const applicable = rules.filter((r) => matchesScope(r, context)).sort((a, b) => a.priority - b.priority);
 
     if (applicable.length === 0) break;
 
@@ -337,40 +332,38 @@ async function applyDelegation(
 }
 ```
 
-| Scope 類型 | matchesScope() 邏輯 |
-|---|---|
-| `ALL` | 永遠 true |
-| `TEMPLATE_LIST` | `template_id in rule.scope_template_ids` |
+| Scope 類型        | matchesScope() 邏輯                                        |
+| ----------------- | ---------------------------------------------------------- |
+| `ALL`             | 永遠 true                                                  |
+| `TEMPLATE_LIST`   | `template_id in rule.scope_template_ids`                   |
 | `CONDITION_BASED` | `cel.evaluate(rule.scope_condition_cel, context) === true` |
 
-### 4.3 Decision Policy 套用
+### 4.3 User Task 派工
 
 ```typescript
 async function createTasksForNode(node, token) {
   const candidates = await resolveApprovers(node.approverResolver, ctx);
-  const policy = node.decisionPolicy;
+  const assignee = candidates[0];
 
-  if (policy.type === 'SINGLE') {
-    // 取第一個（其實 candidates 應該只有 1 個）
-    await createTask({ token, assignee: candidates[0] });
+  assert(assignee, 'User Task must resolve one primary approver');
 
-  } else if (policy.type === 'SEQUENTIAL') {
-    // 一次只開一個，等該人完成再開下一個
-    await createTask({ token, assignee: candidates[0] });
-    // 完成後在 onTaskCompleted 內 advance to next candidate
-
-  } else if (policy.type === 'PARALLEL_ALL'
-          || policy.type === 'PARALLEL_ANY'
-          || policy.type === 'QUORUM') {
-    // 全部同時派發
-    for (const c of candidates) {
-      await createTask({ token, assignee: c });
-    }
-  }
+  await createTask({ token, assignee });
 }
 ```
 
-每個建立 task 前都要呼叫 `applyDelegation` 替換 assignee。
+設計器語意是「一個 User Task 代表一位主要簽核責任人」。多人簽核不放在同一個節點內用 `DecisionPolicy` 表示，而是拆成多個 User Task 節點與連線。
+
+例如：
+
+```text
+A -> B -> D
+A -> C -> D
+```
+
+- D 設定 `triggerMode: 'AND'`：B 與 C 都完成後才進入 D。
+- D 設定 `triggerMode: 'OR'`：B 或 C 任一完成即可進入 D。
+
+每個建立 task 前都要呼叫 `applyDelegation` 替換 assignee。`decisionPolicy` 保留為相容欄位，設計器固定寫入 `{ type: 'SINGLE' }`。
 
 ---
 
@@ -425,54 +418,26 @@ async function decideTask(taskId, action: 'APPROVED'|'REJECTED'|'RETURNED'|'TRAN
 }
 ```
 
-### 5.1 Decision Policy 完成判定（同意 case）
+### 5.1 User Task 完成判定（同意 case）
 
 ```typescript
 async function handleApproval(task) {
   await tasks.update(task.id, { status: 'COMPLETED' });
 
-  const allTasksAtNode = await tasks.findByTokenAndNode(task.token_id, task.node_id);
-  const policy = workflow.findNode(task.node_id).decisionPolicy;
-
-  const approvedCount = allTasksAtNode.filter(t => latestAction(t) === 'APPROVED').length;
-  const totalCount = allTasksAtNode.length;
-
-  let nodeFinished = false;
-
-  switch (policy.type) {
-    case 'SINGLE':
-      nodeFinished = true;
-      break;
-    case 'SEQUENTIAL':
-      // 還有下一個候選人？
-      const next = pickNextSequential(allTasksAtNode);
-      if (next) await createTaskFor(next);
-      else nodeFinished = true;
-      break;
-    case 'PARALLEL_ALL':
-      nodeFinished = approvedCount === totalCount;
-      break;
-    case 'PARALLEL_ANY':
-      nodeFinished = approvedCount >= 1;
-      // 取消其他還沒決策的 task
-      await cancelPendingTasks(allTasksAtNode);
-      break;
-    case 'QUORUM':
-      nodeFinished = approvedCount >= policy.threshold;
-      if (nodeFinished) await cancelPendingTasks(allTasksAtNode);
-      break;
-  }
-
-  if (nodeFinished) {
-    // Token 從 WAITING → ACTIVE，引擎將推進到下個節點
-    await tokens.update(task.token_id, { status: 'ACTIVE' });
-  }
+  // 一個 User Task 只有一個主要簽核 task；完成後 token 交回引擎推進。
+  await tokens.update(task.token_id, { status: 'ACTIVE' });
 }
 ```
+
+多前置節點的等待邏輯不在 User Task 內處理，而在下一個節點的 `triggerMode` 判定：
+
+- `AND`：所有 incoming predecessor node 都完成後才啟動。
+- `OR`：任一 incoming predecessor node 完成即可啟動。
 
 ### 5.2 拒絕
 
 依模板設定：
+
 - **預設**：流程立即終止 → instance.state = REJECTED
 - 可設「拒絕視同退回上一關」（少見，模板可選）
 
@@ -501,6 +466,7 @@ async function handleReturn(task, targetNodeId) {
 ```
 
 退回到發起人後，instance 狀態為 RETURNED。發起人可：
+
 - 編輯 form_data → 再次 submit → state 回 RUNNING
 - 主動撤銷 → state = CANCELLED
 
@@ -536,8 +502,9 @@ async function handleTransfer(task, transferToMemberId) {
 ### 6.1 計算 due_at
 
 Task 建立時：
+
 ```typescript
-sla_due_at = task.created_at + node.sla.duration
+sla_due_at = task.created_at + node.sla.duration;
 ```
 
 可選用「工作時間」（排除週末/假日）— MVP 用日曆時間。
@@ -589,14 +556,14 @@ async function scanSlaBreaches() {
 
 ## 7. ABAC 評估點整理
 
-| 何時評估 | Context 內容 | 失敗行為 |
-|---|---|---|
-| 發起時驗證 initiator policy | subject + env | 拒絕 submit |
-| Form 欄位 visible/required/readonly | form (即時更新) + initiator | 隱藏/標示 |
-| 節點 entryCondition | form + initiator + instance | 跳過此節點 |
-| Edge condition | form + initiator + instance + lastDecision | 不走此邊 |
-| Approver resolver expression | form + initiator + instance | 解出空集合 → 拋例外 |
-| Delegation scope_condition_cel | subject + task + instance + template | 規則不適用 |
+| 何時評估                            | Context 內容                               | 失敗行為            |
+| ----------------------------------- | ------------------------------------------ | ------------------- |
+| 發起時驗證 initiator policy         | subject + env                              | 拒絕 submit         |
+| Form 欄位 visible/required/readonly | form (即時更新) + initiator                | 隱藏/標示           |
+| 節點 entryCondition                 | form + initiator + instance                | 跳過此節點          |
+| Edge condition                      | form + initiator + instance + lastDecision | 不走此邊            |
+| Approver resolver expression        | form + initiator + instance                | 解出空集合 → 拋例外 |
+| Delegation scope_condition_cel      | subject + task + instance + template       | 規則不適用          |
 
 ---
 
@@ -620,14 +587,14 @@ async function checkInstanceCompletion(instanceId) {
 
 ## 9. 防呆與保護
 
-| 風險 | 對策 |
-|---|---|
-| Token 處理進入無限迴圈 | 單次 processInstance 最多處理 N 步（例：500），超過拋例外並寫 audit |
-| AND Join race condition | DB row lock + serializable txn |
-| 代理鏈無限遞迴 | visited Set 防循環 |
-| 重複決策 | task.status 檢查（PENDING/IN_PROGRESS 才能決策） |
-| 重複提交（按鈕雙擊） | submit 時帶 client_idempotency_key |
-| 流程定義動態被改 | Instance 用 workflow_snapshot，不查 versions 表 |
+| 風險                    | 對策                                                                |
+| ----------------------- | ------------------------------------------------------------------- |
+| Token 處理進入無限迴圈  | 單次 processInstance 最多處理 N 步（例：500），超過拋例外並寫 audit |
+| AND Join race condition | DB row lock + serializable txn                                      |
+| 代理鏈無限遞迴          | visited Set 防循環                                                  |
+| 重複決策                | task.status 檢查（PENDING/IN_PROGRESS 才能決策）                    |
+| 重複提交（按鈕雙擊）    | submit 時帶 client_idempotency_key                                  |
+| 流程定義動態被改        | Instance 用 workflow_snapshot，不查 versions 表                     |
 
 ---
 
