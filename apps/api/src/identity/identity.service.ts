@@ -64,4 +64,25 @@ export class IdentityService {
   async listCachedMembers(): Promise<readonly MemberMetadataCacheEntity[]> {
     return this.cacheRepository.find({ order: { memberId: 'ASC' } });
   }
+
+  async searchMembers(searchText: string): Promise<readonly MemberMetadata[]> {
+    if (this.memberResolver.search) {
+      return this.memberResolver.search(searchText);
+    }
+
+    const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+    const cachedMembers = await this.listCachedMembers();
+
+    return cachedMembers
+      .map((member) => member.metadata)
+      .filter((metadata) => {
+        if (!normalizedSearchText) {
+          return true;
+        }
+
+        return [metadata.email, metadata.memberId, metadata.name].some((value) =>
+          value.toLocaleLowerCase().includes(normalizedSearchText),
+        );
+      });
+  }
 }

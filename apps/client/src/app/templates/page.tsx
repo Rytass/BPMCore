@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation';
 import {
   Button,
   Layout,
+  PageHeader,
   Section,
   SectionGroup,
   Table,
   Typography,
 } from '@mezzanine-ui/react';
+import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { renderAppNavigation } from '../app-navigation';
@@ -122,29 +124,24 @@ export default function TemplatesPage(): ReactElement {
         {renderAppNavigation('/templates')}
 
         <Layout.Main>
-          <SectionGroup>
-            <Section>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <div>
-                  <Typography component="h1" variant="h2">
-                    簽核模板
-                  </Typography>
-                  <Typography color="text-neutral" variant="body">
-                    建立流程模板、維護草稿與發布版本。
-                  </Typography>
-                </div>
-                <Button
-                  disabled={creating}
-                  icon={PlusIcon}
-                  iconType="leading"
-                  onClick={(): void => setCreateModalOpen(true)}
-                  variant="base-primary"
-                >
-                  建立模板
-                </Button>
-              </div>
-            </Section>
+          <PageHeader>
+            <ContentHeader
+              description="建立流程模板、維護草稿與發布版本。"
+              title="簽核模板"
+            >
+              <Button
+                disabled={creating}
+                icon={PlusIcon}
+                iconType="leading"
+                onClick={(): void => setCreateModalOpen(true)}
+                variant="base-primary"
+              >
+                建立模板
+              </Button>
+            </ContentHeader>
+          </PageHeader>
 
+          <SectionGroup>
             <Section>
               {error ? (
                 <Typography color="text-error" variant="body">

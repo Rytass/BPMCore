@@ -58,4 +58,18 @@ export class LocalMockMemberResolver implements MemberResolver {
 
     return new Map(entries);
   }
+
+  async search(searchText: string): Promise<readonly MemberMetadata[]> {
+    const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+
+    return MOCK_MEMBERS.filter((member) => {
+      if (!normalizedSearchText) {
+        return true;
+      }
+
+      return [member.email, member.memberId, member.name].some((value) =>
+        value.toLocaleLowerCase().includes(normalizedSearchText),
+      );
+    });
+  }
 }

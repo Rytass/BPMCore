@@ -24,7 +24,10 @@ export interface NodePosition {
 
 export interface BaseNodeData {
   readonly label: string;
+  readonly triggerMode?: WorkflowNodeTriggerMode;
 }
+
+export type WorkflowNodeTriggerMode = 'AND' | 'OR';
 
 export interface BaseWorkflowNode<
   TType extends string,
@@ -159,12 +162,27 @@ export interface WorkflowEdge {
   readonly data: WorkflowEdgeData;
   readonly id: string;
   readonly source: string;
+  readonly sourceHandle?: string | null;
   readonly target: string;
+  readonly targetHandle?: string | null;
   readonly type?: 'smoothstep';
 }
 
 export interface WorkflowEdgeData {
   readonly condition?: string;
+  readonly conditionFieldKey?: string;
+  readonly conditionOperator?: WorkflowEdgeConditionOperator;
+  readonly conditionValue?: string;
   readonly isDefault?: boolean;
   readonly label?: string;
 }
+
+export type WorkflowEdgeConditionOperator =
+  | 'EQUALS'
+  | 'GREATER_THAN'
+  | 'GREATER_THAN_OR_EQUALS'
+  | 'IS_EMPTY'
+  | 'IS_FILLED'
+  | 'LESS_THAN'
+  | 'LESS_THAN_OR_EQUALS'
+  | 'NOT_EQUALS';

@@ -1,3 +1,4 @@
+import { FormDefinitionSchema } from '@bpm/shared/form';
 import { WorkflowDefinition } from '@bpm/shared/workflow';
 
 const GRAPHQL_ENDPOINT =
@@ -38,6 +39,8 @@ export interface FormDefinitionVersionRecord {
   readonly formDefinitionId: string;
   readonly id: string;
   readonly publishedAt: string | null;
+  readonly schema: FormDefinitionSchema;
+  readonly schemaJson: string;
   readonly status: 'ARCHIVED' | 'DRAFT' | 'PUBLISHED';
   readonly version: number;
 }
@@ -47,7 +50,14 @@ export interface PublishedFormVersionOption {
   readonly formName: string;
   readonly id: string;
   readonly label: string;
+  readonly schema: FormDefinitionSchema;
   readonly version: number;
+}
+
+export interface MemberProfileRecord {
+  readonly email: string;
+  readonly memberId: string;
+  readonly name: string;
 }
 
 export interface TemplateDesignerRecord {
@@ -83,6 +93,14 @@ interface FormVersionsQueryData {
   readonly formDefinitionVersions: readonly FormDefinitionVersionRecord[];
 }
 
+interface MembersQueryData {
+  readonly members: readonly MemberProfileRecord[];
+}
+
+interface SearchMembersQueryData {
+  readonly searchMembers: readonly MemberProfileRecord[];
+}
+
 interface UpdateTemplateDraftMutationData {
   readonly updateApprovalTemplateDraft: VersionJsonRecord;
 }
@@ -99,8 +117,10 @@ interface ForkTemplateMutationData {
   readonly forkApprovalTemplate: VersionJsonRecord;
 }
 
-interface VersionJsonRecord
-  extends Omit<ApprovalTemplateVersionRecord, 'workflowDefinition'> {
+interface VersionJsonRecord extends Omit<
+  ApprovalTemplateVersionRecord,
+  'workflowDefinition'
+> {
   readonly workflowDefinitionJson: string;
 }
 
@@ -194,12 +214,92 @@ export async function readTemplateDesigner(
           formName: definition.name,
           id: version.id,
           label: `${definition.name} v${version.version}`,
+          schema: version.schema,
           version: version.version,
         })),
     ),
     template: data.approvalTemplate,
     versions: data.approvalTemplateVersions.map(parseVersionJson),
   };
+}
+
+export async function searchPublishedFormVersionOptions(
+  searchText: string,
+): Promise<readonly PublishedFormVersionOption[]> {
+  const data = await requestGraphQl<
+    Pick<TemplateDesignerQueryData, 'formDefinitions'>
+  >(
+    `query PublishedFormVersionOptions {
+      formDefinitions {
+        currentVersionId
+        id
+        name
+        updatedAt
+      }
+    }`,
+  );
+  const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+  const matchedDefinitions = data.formDefinitions.filter((definition) =>
+    normalizedSearchText
+      ? definition.name.toLocaleLowerCase().includes(normalizedSearchText)
+      : true,
+  );
+  const formVersionLists = await Promise.all(
+    matchedDefinitions.map((definition) =>
+      readFormDefinitionVersions(definition.id),
+    ),
+  );
+
+  return matchedDefinitions.flatMap((definition, index) =>
+    formVersionLists[index]
+      .filter((version) => version.status === 'PUBLISHED')
+      .map((version) => ({
+        formDefinitionId: definition.id,
+        formName: definition.name,
+        id: version.id,
+        label: `${definition.name} v${version.version}`,
+        schema: version.schema,
+        version: version.version,
+      })),
+  );
+}
+
+export async function resolveMemberOptions(
+  memberIds: readonly string[],
+): Promise<readonly MemberProfileRecord[]> {
+  if (memberIds.length === 0) {
+    return [];
+  }
+
+  const data = await requestGraphQl<MembersQueryData>(
+    `query SelectedMembers($memberIds: [String!]!) {
+      members(memberIds: $memberIds) {
+        email
+        memberId
+        name
+      }
+    }`,
+    { memberIds },
+  );
+
+  return data.members;
+}
+
+export async function searchMemberOptions(
+  searchText: string,
+): Promise<readonly MemberProfileRecord[]> {
+  const data = await requestGraphQl<SearchMembersQueryData>(
+    `query MemberOptions($searchText: String!) {
+      searchMembers(searchText: $searchText) {
+        email
+        memberId
+        name
+      }
+    }`,
+    { searchText },
+  );
+
+  return data.searchMembers;
 }
 
 export async function updateApprovalTemplateDraft({
@@ -328,6 +428,7 @@ async function readFormDefinitionVersions(
         formDefinitionId
         id
         publishedAt
+        schemaJson
         status
         version
       }
@@ -335,7 +436,10 @@ async function readFormDefinitionVersions(
     { formDefinitionId },
   );
 
-  return data.formDefinitionVersions;
+  return data.formDefinitionVersions.map((version) => ({
+    ...version,
+    schema: parseFormDefinitionSchema(version.schemaJson),
+  }));
 }
 
 async function requestGraphQl<TData>(
@@ -374,4 +478,8 @@ function parseVersionJson(
       version.workflowDefinitionJson,
     ) as WorkflowDefinition,
   };
+}
+
+function parseFormDefinitionSchema(schemaJson: string): FormDefinitionSchema {
+  return JSON.parse(schemaJson) as FormDefinitionSchema;
 }

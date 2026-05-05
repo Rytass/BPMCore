@@ -34,7 +34,11 @@ test.describe('M1 W3 template designer', () => {
 
     await expect(page.getByText('E2E 簽核模板')).toBeVisible();
     await page.getByRole('button', { name: '簽核節點' }).click();
-    await expect(page.getByText('簽核 · userTask_1')).toBeVisible();
+    await expect(
+      page
+        .locator('.react-flow__node')
+        .filter({ hasText: 'lin.ceo@example.internal' }),
+    ).toBeVisible();
 
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await page.getByRole('button', { name: '發布版本' }).click();
@@ -108,8 +112,60 @@ async function mockTemplateGraphQl(page: Page): Promise<void> {
             formDefinitionId: FORM_ID,
             id: FORM_VERSION_ID,
             publishedAt: UPDATED_AT,
+            schemaJson: JSON.stringify({
+              fields: [
+                {
+                  fieldKey: 'amount',
+                  label: '申請金額',
+                  required: true,
+                  type: 'money',
+                },
+                {
+                  fieldKey: 'department',
+                  label: '申請部門',
+                  options: [
+                    { label: '財務部', value: 'finance' },
+                    { label: '營運部', value: 'operations' },
+                  ],
+                  required: true,
+                  type: 'select',
+                },
+              ],
+              schemaVersion: 1,
+            }),
             status: 'PUBLISHED',
             version: 1,
+          },
+        ],
+      });
+      return;
+    }
+
+    if (query.includes('query SelectedMembers')) {
+      await fulfillGraphQl(route, {
+        members: [
+          {
+            email: 'lin.ceo@example.internal',
+            memberId: 'member-001',
+            name: '林執行長',
+          },
+        ],
+      });
+      return;
+    }
+
+    if (query.includes('query MemberOptions')) {
+      await fulfillGraphQl(route, {
+        searchMembers: [
+          {
+            email: 'lin.ceo@example.internal',
+            memberId: 'member-001',
+            name: '林執行長',
+          },
+          {
+            email: 'chen.manager@example.internal',
+            memberId: 'member-101',
+            name: '陳財務主管',
           },
         ],
       });
@@ -178,15 +234,7 @@ function readTemplateVersion({
 
 function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
   return {
-    edges: [
-      {
-        data: {},
-        id: 'edge_start_end',
-        source: 'start',
-        target: 'end',
-        type: 'smoothstep',
-      },
-    ],
+    edges: [],
     meta: { schemaVersion: 1 },
     nodes: [
       {
@@ -196,7 +244,7 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
         type: 'startEvent',
       },
       {
-        data: { endState: 'APPROVED', label: '完成' },
+        data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
         id: 'end',
         position: { x: 560, y: 160 },
         type: 'endEvent',

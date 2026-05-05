@@ -12,15 +12,7 @@ export interface WorkflowDefinitionLintResult {
 }
 
 export const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
-  edges: [
-    {
-      data: {},
-      id: 'edge_start_end',
-      source: 'start',
-      target: 'end',
-      type: 'smoothstep',
-    },
-  ],
+  edges: [],
   meta: { schemaVersion: 1 },
   nodes: [
     {
@@ -30,7 +22,7 @@ export const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
       type: 'startEvent',
     },
     {
-      data: { endState: 'APPROVED', label: '完成' },
+      data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
       id: 'end',
       position: { x: 520, y: 160 },
       type: 'endEvent',
@@ -74,6 +66,7 @@ export function lintWorkflowDefinition(
     ...lintEdges(edges, nodeIds),
     ...lintUserTaskNodes(nodes),
     ...lintServiceTaskNodes(nodes),
+    ...lintAsyncNotifyOutgoingEdges(nodes, edges),
     ...lintExclusiveGateways(nodes, edges),
     ...lintParallelGateways(nodes, edges),
   ];
@@ -146,6 +139,11 @@ function lintNodeShape(node: WorkflowNode, index: number): readonly string[] {
     ...(typeof node.data?.label === 'string' && node.data.label.trim()
       ? []
       : [`${path}.data.label must be a non-empty string`]),
+    ...(!node.data?.triggerMode ||
+    node.data.triggerMode === 'AND' ||
+    node.data.triggerMode === 'OR'
+      ? []
+      : [`${path}.data.triggerMode must be AND or OR`]),
     ...(typeof node.position?.x === 'number' &&
     typeof node.position?.y === 'number'
       ? []
@@ -213,6 +211,12 @@ function lintApproverResolver(
     return [`workflow.nodes.${nodeId}.approverResolver.memberIds is required`];
   }
 
+  if (resolver.type === 'DIRECT' && resolver.memberIds.length > 1) {
+    return [
+      `workflow.nodes.${nodeId}.approverResolver.memberIds must include exactly one primary approver`,
+    ];
+  }
+
   if (resolver.type === 'POSITION' && !resolver.positionId.trim()) {
     return [`workflow.nodes.${nodeId}.approverResolver.positionId is required`];
   }
@@ -252,7 +256,60 @@ function lintServiceAction(
     return [`workflow.nodes.${nodeId}.action.fieldPath is required`];
   }
 
+  if (action.type === 'NOTIFY') {
+    return lintNotifyRecipients(action.recipients, nodeId);
+  }
+
   return [];
+}
+
+function lintNotifyRecipients(
+  recipients: ApproverResolver,
+  nodeId: string,
+): readonly string[] {
+  if (!recipients?.type) {
+    return [`workflow.nodes.${nodeId}.action.recipients is required`];
+  }
+
+  if (recipients.type === 'DIRECT' && recipients.memberIds.length === 0) {
+    return [`workflow.nodes.${nodeId}.action.recipients.memberIds is required`];
+  }
+
+  if (recipients.type === 'POSITION' && !recipients.positionId.trim()) {
+    return [
+      `workflow.nodes.${nodeId}.action.recipients.positionId is required`,
+    ];
+  }
+
+  if (recipients.type === 'DYNAMIC_FORM' && !recipients.formPath.trim()) {
+    return [`workflow.nodes.${nodeId}.action.recipients.formPath is required`];
+  }
+
+  if (recipients.type === 'EXPRESSION' && !recipients.expression.trim()) {
+    return [
+      `workflow.nodes.${nodeId}.action.recipients.expression is required`,
+    ];
+  }
+
+  return [];
+}
+
+function lintAsyncNotifyOutgoingEdges(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): readonly string[] {
+  const asyncNotifyNodeIds = new Set(
+    nodes
+      .filter((node) => isAsyncNotifyServiceTask(node))
+      .map((node) => node.id),
+  );
+
+  return edges
+    .filter((edge) => asyncNotifyNodeIds.has(edge.source))
+    .map(
+      (edge) =>
+        `workflow.edges.${edge.id}.source cannot be a NOTIFY serviceTask`,
+    );
 }
 
 function lintExclusiveGateways(
@@ -306,6 +363,7 @@ function lintReachability(
     .filter(
       (node) =>
         node.type !== 'endEvent' &&
+        !isAsyncNotifyServiceTask(node) &&
         !hasPathToEnd(node.id, nodes, edges, new Set<string>()),
     )
     .map(
@@ -313,6 +371,10 @@ function lintReachability(
     );
 
   return [...unreachableErrors, ...noEndPathErrors];
+}
+
+function isAsyncNotifyServiceTask(node: WorkflowNode): boolean {
+  return node.type === 'serviceTask' && node.data.action.type === 'NOTIFY';
 }
 
 function readReachableNodeIds(

@@ -32,4 +32,13 @@ export class IdentityQueries {
   async cachedMembers(): Promise<readonly MemberMetadataCacheEntity[]> {
     return this.identityService.listCachedMembers();
   }
+
+  @Query(() => [MemberProfileObject])
+  async searchMembers(
+    @Args('searchText', { type: () => String }) searchText: string,
+  ): Promise<readonly MemberProfileObject[]> {
+    const metadataList = await this.identityService.searchMembers(searchText);
+
+    return metadataList.map(toMemberProfileObject);
+  }
 }
