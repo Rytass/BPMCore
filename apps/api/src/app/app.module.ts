@@ -8,6 +8,7 @@ import { IdentityModule } from '../identity/identity.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { FormModule } from '../form/form.module';
 import { TemplateModule } from '../template/template.module';
+import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
 import { buildTypeOrmModuleOptions } from '../database/typeorm.config';
 import { SystemResolver } from '../system/system.resolver';
 
@@ -33,6 +34,7 @@ import { SystemResolver } from '../system/system.resolver';
     OrganizationModule,
     FormModule,
     TemplateModule,
+    WorkflowEngineModule,
   ],
   controllers: [HealthController],
   providers: [SystemResolver],
