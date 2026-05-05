@@ -26,6 +26,7 @@ spec:
       initContainers:
         - name: migrate
           image: asia-east1-docker.pkg.dev/develop-server/bpm-core/api:v0.0.0
+          imagePullPolicy: Always
           envFrom:
             - secretRef:
                 name: vault-secret
@@ -34,7 +35,7 @@ spec:
       containers:
         - name: api
           image: asia-east1-docker.pkg.dev/develop-server/bpm-core/api:v0.0.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           resources:
             requests:
               memory: 128Mi
@@ -67,7 +68,7 @@ spec:
 
         - name: client
           image: asia-east1-docker.pkg.dev/develop-server/bpm-core/client:v0.0.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           resources:
             requests:
               memory: 64Mi
