@@ -123,6 +123,11 @@ type VersionRow = Readonly<
   }
 >;
 
+type BuilderSnapshot = Readonly<{
+  schemaJson: string;
+  uiSchemaJson: string;
+}>;
+
 type FieldTypeOption = Readonly<{
   description: string;
   icon: IconDefinition;
@@ -499,6 +504,9 @@ export default function FormBuilderPage(): ReactElement {
   const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [loadedSnapshot, setLoadedSnapshot] = useState<BuilderSnapshot>(
+    readBuilderSnapshot(EMPTY_SCHEMA, EMPTY_UI_SCHEMA),
+  );
   const [loading, setLoading] = useState(true);
   const [renaming, setRenaming] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -571,6 +579,40 @@ export default function FormBuilderPage(): ReactElement {
     ],
     [],
   );
+  const currentSnapshot = useMemo(
+    (): BuilderSnapshot => readBuilderSnapshot(schema, uiSchema),
+    [schema, uiSchema],
+  );
+  const hasUnsavedChanges =
+    currentSnapshot.schemaJson !== loadedSnapshot.schemaJson ||
+    currentSnapshot.uiSchemaJson !== loadedSnapshot.uiSchemaJson;
+  const latestPublishedVersion = useMemo(
+    (): FormDefinitionVersionRecord | null =>
+      readPublishedVersion(
+        record?.versions ?? [],
+        record?.definition.currentVersionId,
+      ),
+    [record?.definition.currentVersionId, record?.versions],
+  );
+  const openedVersion =
+    draft ?? latestPublishedVersion ?? record?.versions[0] ?? null;
+  const openedContentPublished =
+    !hasUnsavedChanges && openedVersion?.status === 'PUBLISHED';
+  const headerDescription = readHeaderDescription({
+    hasUnsavedChanges,
+    latestPublishedVersion,
+    openedContentPublished,
+    openedVersion,
+  });
+  const publishDisabled =
+    saving || (!hasUnsavedChanges && openedContentPublished && !draft);
+  const publishButtonText = hasUnsavedChanges
+    ? '保存並發布'
+    : draft
+      ? '發布草稿'
+      : openedContentPublished
+        ? '已發布'
+        : '發布版本';
 
   async function refreshBuilder(): Promise<void> {
     setLoading(true);
@@ -593,6 +635,7 @@ export default function FormBuilderPage(): ReactElement {
 
       setSchema(nextSchema);
       setUiSchema(nextUiSchema);
+      setLoadedSnapshot(readBuilderSnapshot(nextSchema, nextUiSchema));
       setSchemaJsonText(stringifyJson(nextSchema));
       setUiSchemaJsonText(stringifyJson(nextUiSchema));
       setSelectedFieldKey(
@@ -608,19 +651,25 @@ export default function FormBuilderPage(): ReactElement {
     }
   }
 
+  async function saveCurrentDraft(): Promise<FormDefinitionVersionRecord> {
+    const targetDraft = draft ?? (await forkFormDefinition(formDefinitionId));
+    const nextDraft = await updateFormDefinitionDraft(
+      targetDraft.id,
+      schema,
+      uiSchema,
+    );
+
+    setDraft(nextDraft);
+
+    return nextDraft;
+  }
+
   async function handleSaveDraft(): Promise<void> {
     setSaving(true);
     setError(null);
 
     try {
-      const targetDraft = draft ?? (await forkFormDefinition(formDefinitionId));
-      const nextDraft = await updateFormDefinitionDraft(
-        targetDraft.id,
-        schema,
-        uiSchema,
-      );
-
-      setDraft(nextDraft);
+      await saveCurrentDraft();
       await refreshBuilder();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -630,16 +679,12 @@ export default function FormBuilderPage(): ReactElement {
   }
 
   async function handlePublish(): Promise<void> {
-    if (!draft) {
-      setError('請先建立草稿版本');
-      return;
-    }
-
     setSaving(true);
     setError(null);
 
     try {
-      await publishFormDefinitionVersion(draft.id);
+      const savedDraft = await saveCurrentDraft();
+      await publishFormDefinitionVersion(savedDraft.id);
       await refreshBuilder();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -911,7 +956,7 @@ export default function FormBuilderPage(): ReactElement {
         <Layout.Main>
           <PageHeader>
             <ContentHeader
-              description="設計欄位、預覽填寫結果，發布後即可供簽核模板使用。"
+              description={headerDescription}
               onBackClick={(): void => router.push('/forms')}
               title={record?.definition.name ?? '表單設計器'}
             >
@@ -927,7 +972,7 @@ export default function FormBuilderPage(): ReactElement {
               </Button>
               <Button
                 aria-label="儲存草稿"
-                disabled={saving}
+                disabled={saving || !hasUnsavedChanges}
                 icon={SaveIcon}
                 iconType="icon-only"
                 onClick={(): void => void handleSaveDraft()}
@@ -936,13 +981,13 @@ export default function FormBuilderPage(): ReactElement {
                 儲存草稿
               </Button>
               <Button
-                disabled={saving || !draft}
+                disabled={publishDisabled}
                 icon={CheckedIcon}
                 iconType="leading"
                 onClick={(): void => void handlePublish()}
                 variant="base-primary"
               >
-                發布版本
+                {publishButtonText}
               </Button>
             </ContentHeader>
           </PageHeader>
@@ -955,13 +1000,6 @@ export default function FormBuilderPage(): ReactElement {
                     {error}
                   </Typography>
                 ) : null}
-                <Typography color="text-neutral" variant="body">
-                  {draft ? `草稿 v${draft.version}` : '尚未建立草稿'} ·
-                  {record?.definition.currentVersionId
-                    ? ' 已發布版本'
-                    : ' 尚未發布'}{' '}
-                  ·{` ${schema.fields.length} 個欄位`}
-                </Typography>
                 <Tab
                   activeKey={activeTab}
                   onChange={handleTabChange}
@@ -2186,6 +2224,81 @@ function readNextOptionValue(
   return options.some((option) => option.value === value)
     ? readNextOptionValue(options, index + 1)
     : value;
+}
+
+function readBuilderSnapshot(
+  schema: FormDefinitionSchema,
+  uiSchema: FormUiSchema,
+): BuilderSnapshot {
+  return {
+    schemaJson: stringifyJson(schema),
+    uiSchemaJson: stringifyJson(uiSchema),
+  };
+}
+
+function readPublishedVersion(
+  versions: readonly FormDefinitionVersionRecord[],
+  currentVersionId: string | null | undefined,
+): FormDefinitionVersionRecord | null {
+  return (
+    (currentVersionId
+      ? versions.find((version) => version.id === currentVersionId)
+      : null) ??
+    versions.find((version) => version.status === 'PUBLISHED') ??
+    null
+  );
+}
+
+function readHeaderDescription({
+  hasUnsavedChanges,
+  latestPublishedVersion,
+  openedContentPublished,
+  openedVersion,
+}: {
+  readonly hasUnsavedChanges: boolean;
+  readonly latestPublishedVersion: FormDefinitionVersionRecord | null;
+  readonly openedContentPublished: boolean;
+  readonly openedVersion: FormDefinitionVersionRecord | null;
+}): string {
+  const editState = hasUnsavedChanges ? '有未儲存修改' : '沒有未儲存修改';
+  const openedState = readOpenedVersionState({
+    hasUnsavedChanges,
+    openedContentPublished,
+    openedVersion,
+  });
+  const publishedState = latestPublishedVersion
+    ? `目前發布 v${latestPublishedVersion.version}：${formatDateTime(
+        latestPublishedVersion.publishedAt,
+      )}`
+    : '目前沒有已發布版本';
+
+  return `${editState} · ${openedState} · ${publishedState}`;
+}
+
+function readOpenedVersionState({
+  hasUnsavedChanges,
+  openedContentPublished,
+  openedVersion,
+}: {
+  readonly hasUnsavedChanges: boolean;
+  readonly openedContentPublished: boolean;
+  readonly openedVersion: FormDefinitionVersionRecord | null;
+}): string {
+  if (hasUnsavedChanges) {
+    return openedVersion
+      ? `修改尚未發布，來源 v${openedVersion.version}`
+      : '修改尚未發布';
+  }
+
+  if (openedContentPublished && openedVersion) {
+    return `當前內容已發布 v${openedVersion.version}`;
+  }
+
+  if (openedVersion) {
+    return `當前內容尚未發布 v${openedVersion.version}`;
+  }
+
+  return '當前內容尚未發布';
 }
 
 function formatDateTime(value: string | null): string {

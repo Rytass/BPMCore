@@ -53,12 +53,28 @@ test.describe('M1 W2 form builder', () => {
 
     await page.getByRole('button', { name: '設計' }).click();
     await page.getByLabel('儲存草稿').click();
-    await page.getByRole('button', { name: '發布版本' }).click();
+    await page.getByRole('button', { name: /發布/u }).click();
 
-    await expect(page.getByText(/已發布版本/u)).toBeVisible();
+    await expect(page.getByText(/當前內容已發布/u)).toBeVisible();
 
     await page.getByRole('button', { exact: true, name: '版本' }).click();
     await expect(page.getByText('PUBLISHED')).toBeVisible();
+  });
+
+  test('saves current edits before publishing a form version', async ({
+    page,
+  }): Promise<void> => {
+    await mockFormBuilderGraphQl(page);
+
+    await page.goto(`/forms/${FORM_ID}/builder`);
+
+    await page.getByRole('button', { name: /^文字$/u }).click();
+    await expect(page.getByText('文字 1')).toBeVisible();
+
+    await page.getByRole('button', { name: /發布/u }).click();
+
+    await expect(page.getByText(/當前內容已發布/u)).toBeVisible();
+    await expect(page.getByText('文字 1')).toBeVisible();
   });
 });
 
