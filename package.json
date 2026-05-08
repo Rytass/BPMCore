@@ -2,6 +2,7 @@
   "name": "@bpm/source",
   "version": "0.0.0",
   "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "nx run-many -t build",
     "api": "PORT=17601 nx serve api",
@@ -109,5 +110,17 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,mjs,cjs,json,md,scss,css}": "prettier --write"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@apollo/protobufjs",
+      "@nestjs/core",
+      "@parcel/watcher",
+      "@swc/core",
+      "less",
+      "nx",
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }

@@ -3,6 +3,7 @@
 import {
   CSSProperties,
   ReactElement,
+  Suspense,
   useEffect,
   useMemo,
   useState,
@@ -49,6 +50,14 @@ type LaunchableTemplateRow = Readonly<
 >;
 
 export default function NewApprovalInstancePage(): ReactElement {
+  return (
+    <Suspense fallback={<NewApprovalInstanceLoading />}>
+      <NewApprovalInstanceContent />
+    </Suspense>
+  );
+}
+
+function NewApprovalInstanceContent(): ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
   const templateId = searchParams.get('templateId');
@@ -244,6 +253,31 @@ export default function NewApprovalInstancePage(): ReactElement {
                 )
               ) : null}
             </div>
+          </Section>
+        </SectionGroup>
+      </Layout.Main>
+    </Layout>
+  );
+}
+
+function NewApprovalInstanceLoading(): ReactElement {
+  return (
+    <Layout>
+      {renderAppNavigation('/')}
+
+      <Layout.Main>
+        <PageHeader>
+          <ContentHeader
+            description="選擇可發起的已發布模板後填寫表單內容。"
+            title="發起簽核"
+          />
+        </PageHeader>
+
+        <SectionGroup>
+          <Section>
+            <Typography color="text-neutral" variant="body">
+              載入中...
+            </Typography>
           </Section>
         </SectionGroup>
       </Layout.Main>

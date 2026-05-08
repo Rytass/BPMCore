@@ -1,11 +1,15 @@
 node_modules
+**/node_modules
 dist
+**/dist
 tmp
 out-tsc
 .next
+**/.next
 coverage
-.nx/cache
-.nx/workspace-data
+.nx
+test-results
+playwright-report
 .git
 .github
 .claude
