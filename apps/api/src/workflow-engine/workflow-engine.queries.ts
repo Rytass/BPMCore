@@ -36,6 +36,22 @@ export class WorkflowEngineQueries {
     return this.workflowEngineService.listTasks(instanceId);
   }
 
+  @Query(() => [TaskEntity])
+  async inboxTasks(
+    @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
+    return this.workflowEngineService.listInboxTasks(assigneeMemberId);
+  }
+
+  @Query(() => [TaskEntity])
+  async approvalHistoryTasks(
+    @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
+    return this.workflowEngineService.listApprovalHistoryTasks(
+      assigneeMemberId,
+    );
+  }
+
   @Query(() => [TaskDecisionEntity])
   async taskDecisions(
     @Args('taskId', { type: () => String }) taskId: string,

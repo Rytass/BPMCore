@@ -1,6 +1,8 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { DecideTaskInput } from './dto/decide-task.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
+import { TaskDecisionEntity } from './task-decision.entity';
 import { WorkflowEngineService } from './workflow-engine.service';
 
 @Resolver()
@@ -21,5 +23,12 @@ export class WorkflowEngineMutations {
     await this.workflowEngineService.processInstance(instanceId);
 
     return true;
+  }
+
+  @Mutation(() => TaskDecisionEntity)
+  async decideTask(
+    @Args('input') input: DecideTaskInput,
+  ): Promise<TaskDecisionEntity> {
+    return this.workflowEngineService.decideTask(input);
   }
 }
