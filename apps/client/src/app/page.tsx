@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactElement } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   BaseCard,
   Button,
@@ -34,6 +35,8 @@ const metrics: readonly Metric[] = [
 ];
 
 export default function Page(): ReactElement {
+  const router = useRouter();
+
   return (
     <Layout>
       {renderAppNavigation('/')}
@@ -41,11 +44,16 @@ export default function Page(): ReactElement {
       <Layout.Main>
         <PageHeader>
           <ContentHeader
-            description="本機開發骨架已對齊 NestJS、Next.js、GraphQL、TypeORM 與 Mezzanine UI。"
-            title="BPM Project M0"
+            description="查看待簽任務、發起新的簽核案件，並追蹤流程運作狀態。"
+            title="工作台"
           >
-            <Button icon={PlusIcon} iconType="leading" variant="base-primary">
-              建立模板
+            <Button
+              icon={PlusIcon}
+              iconType="leading"
+              onClick={(): void => router.push('/instances/new')}
+              variant="base-primary"
+            >
+              發起簽核
             </Button>
           </ContentHeader>
         </PageHeader>

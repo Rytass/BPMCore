@@ -1,0 +1,1815 @@
+'use client';
+
+import {
+  ChangeEvent,
+  CSSProperties,
+  Fragment,
+  RefCallback,
+  ReactElement,
+  forwardRef,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
+import { useParams } from 'next/navigation';
+import {
+  Background,
+  Controls,
+  Handle,
+  Position,
+  ReactFlow,
+  type Edge as FlowEdge,
+  type Node as FlowNode,
+  type NodeProps,
+} from '@xyflow/react';
+import * as dagre from 'dagre';
+import {
+  Button,
+  FormField,
+  Layout,
+  Modal,
+  PageHeader,
+  Section,
+  SectionGroup,
+  Stepper,
+  Table,
+  Textarea,
+  Tooltip,
+  Typography,
+  type StepProps,
+} from '@mezzanine-ui/react';
+import ContentHeader from '@mezzanine-ui/react/ContentHeader';
+import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import { stepClasses } from '@mezzanine-ui/core/stepper';
+import {
+  CheckedIcon,
+  DangerousOutlineIcon,
+  ShareIcon,
+} from '@mezzanine-ui/icons';
+import type { TableColumn } from '@mezzanine-ui/core/table';
+import { WorkflowDefinition, WorkflowNode } from '@bpm/shared/workflow';
+import { formatDateTime } from '../../_lib/date-time';
+import { renderAppNavigation } from '../../app-navigation';
+import { FormRenderer } from '../../forms/_components/form-renderer';
+import {
+  ActivityLogRecord,
+  ApprovalInstanceRecord,
+  CURRENT_MEMBER_ID,
+  MemberProfileRecord,
+  decideTask,
+  listTaskDecisions,
+  readApprovalInstance,
+  resolveMemberProfiles,
+  TaskDecisionRecord,
+  TaskRecord,
+  WorkflowTokenRecord,
+} from '../_lib/workflow-api';
+
+const SECTION_BODY_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 16,
+};
+
+const FLOW_NODE_LAYOUT_WIDTH = 184;
+const FLOW_NODE_LAYOUT_HEIGHT = 96;
+
+const FLOW_MODAL_BODY_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 16,
+};
+
+const REJECT_REASON_FORM_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 12,
+  width: '100%',
+};
+
+const REJECT_REASON_TEXTAREA_STYLE: CSSProperties = {
+  minWidth: '100%',
+  width: '100%',
+};
+
+const FLOW_CANVAS_STYLE: CSSProperties = {
+  background: '#f8fafc',
+  border: '1px solid #e2e8f0',
+  borderRadius: 8,
+  height: 'min(64vh, 620px)',
+  minHeight: 440,
+  overflow: 'hidden',
+  width: 'min(80vw, 1040px)',
+};
+
+const NODE_STYLE: CSSProperties = {
+  background: '#ffffff',
+  border: '1px solid #cbd5e1',
+  borderRadius: 8,
+  boxShadow: '0 8px 18px rgba(15, 23, 42, 0.08)',
+  display: 'grid',
+  gap: 6,
+  minHeight: 82,
+  padding: 12,
+  width: 184,
+};
+
+const NODE_STATUS_STYLE: CSSProperties = {
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 600,
+  justifySelf: 'start',
+  lineHeight: '18px',
+  padding: '0 8px',
+};
+
+const NODE_SECONDARY_STYLE: CSSProperties = {
+  color: '#64748b',
+  fontSize: 12,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const NODE_HANDLE_STYLE: CSSProperties = {
+  opacity: 0,
+};
+
+const EDGE_SUMMARY_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+};
+
+const EDGE_SUMMARY_ITEM_STYLE: CSSProperties = {
+  alignItems: 'center',
+  background: '#ffffff',
+  border: '1px solid #cbd5e1',
+  borderRadius: 8,
+  color: '#334155',
+  display: 'inline-flex',
+  fontSize: 12,
+  fontWeight: 600,
+  gap: 6,
+  lineHeight: '20px',
+  padding: '4px 8px',
+};
+
+const HISTORY_MEMBER_NAME_STYLE: CSSProperties = {
+  cursor: 'help',
+  textDecoration: 'underline dotted',
+  textUnderlineOffset: 3,
+};
+
+const HISTORY_DANGER_TEXT_STYLE: CSSProperties = {
+  color: 'var(--mzn-color-text-error)',
+};
+
+function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
+  if (!element) {
+    return;
+  }
+
+  element.style.width = '100%';
+}
+
+const READONLY_FLOW_NODE_TYPES = {
+  workflowRuntime: WorkflowRuntimeNodeCard,
+};
+
+type RuntimeTone = 'cancelled' | 'completed' | 'current' | 'neutral' | 'waiting';
+
+interface RuntimeNodeData extends Record<string, unknown> {
+  readonly kindLabel: string;
+  readonly label: string;
+  readonly secondaryLabel: string;
+  readonly statusLabel: string;
+  readonly tone: RuntimeTone;
+}
+
+type RuntimeFlowNode = FlowNode<RuntimeNodeData, 'workflowRuntime'>;
+type RuntimeFlowEdge = FlowEdge<Readonly<Record<string, unknown>>, 'smoothstep'>;
+
+type TaskRow = Readonly<
+  Record<string, unknown> &
+    TaskRecord & {
+      key: string;
+      nodeLabel: string;
+      statusLabel: string;
+    }
+>;
+
+interface ActivityStepRecord {
+  readonly descriptionParts: readonly ActivityStepDescriptionPart[];
+  readonly error: boolean;
+  readonly forcePending?: boolean;
+  readonly id: string;
+  readonly title: string;
+}
+
+type ActivityStepDescriptionPart =
+  | Readonly<{ text: string; type: 'text' }>
+  | Readonly<{ text: string; type: 'dangerText' }>
+  | Readonly<{
+      email: string | null;
+      label: string;
+      prefix: string;
+      type: 'member';
+    }>;
+
+export default function ApprovalInstancePage(): ReactElement {
+  const params = useParams<{ id: string }>();
+  const instanceId = params.id;
+  const [activityLogs, setActivityLogs] = useState<
+    readonly ActivityLogRecord[]
+  >([]);
+  const [instance, setInstance] = useState<ApprovalInstanceRecord | null>(null);
+  const [taskDecisions, setTaskDecisions] = useState<
+    readonly TaskDecisionRecord[]
+  >([]);
+  const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
+  const [workflowTokens, setWorkflowTokens] = useState<
+    readonly WorkflowTokenRecord[]
+  >([]);
+  const [memberProfiles, setMemberProfiles] = useState<
+    readonly MemberProfileRecord[]
+  >([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deciding, setDeciding] = useState(false);
+  const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectReasonError, setRejectReasonError] = useState<string | null>(
+    null,
+  );
+  const [rejectReasonModalOpen, setRejectReasonModalOpen] = useState(false);
+  const trimmedRejectReason = rejectReason.trim();
+
+  useEffect((): void => {
+    void refreshInstance();
+  }, [instanceId]);
+
+  const currentTask = useMemo(
+    (): TaskRecord | null =>
+      tasks.find(
+        (task) =>
+          task.assigneeMemberId === CURRENT_MEMBER_ID &&
+          (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
+      ) ?? null,
+    [tasks],
+  );
+  const taskRows = useMemo(
+    (): TaskRow[] =>
+      tasks.map((task) => ({
+        ...task,
+        key: task.id,
+        nodeLabel: readNodeDisplayLabel(
+          task.nodeId,
+          instance?.workflowSnapshot ?? null,
+        ),
+        statusLabel: readTaskStatusLabel(task.status),
+      })),
+    [instance, tasks],
+  );
+  const memberProfilesById = useMemo(
+    (): ReadonlyMap<string, MemberProfileRecord> =>
+      new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
+    [memberProfiles],
+  );
+  const taskDecisionsByTaskId = useMemo(
+    (): ReadonlyMap<string, TaskDecisionRecord> =>
+      readLatestTaskDecisionsByTaskId(taskDecisions),
+    [taskDecisions],
+  );
+  const activitySteps = useMemo(
+    (): ActivityStepRecord[] =>
+      readActivityStepRecords(
+        activityLogs,
+        tasks,
+        workflowTokens,
+        instance?.workflowSnapshot ?? null,
+        instance?.state ?? 'RUNNING',
+        memberProfilesById,
+        taskDecisionsByTaskId,
+      ),
+    [
+      activityLogs,
+      instance,
+      memberProfilesById,
+      taskDecisionsByTaskId,
+      tasks,
+      workflowTokens,
+    ],
+  );
+  const currentActivityStep = useMemo(
+    (): number => readCurrentActivityStep(activitySteps),
+    [activitySteps],
+  );
+  const layoutedWorkflowSnapshot = useMemo(
+    (): WorkflowDefinition | null =>
+      instance
+        ? layoutRuntimeWorkflowDefinition(instance.workflowSnapshot)
+        : null,
+    [instance],
+  );
+  const flowNodes = useMemo(
+    (): RuntimeFlowNode[] =>
+      instance && layoutedWorkflowSnapshot
+        ? readRuntimeFlowNodes(
+            layoutedWorkflowSnapshot,
+            tasks,
+            workflowTokens,
+            instance.state,
+          )
+        : [],
+    [instance, layoutedWorkflowSnapshot, tasks, workflowTokens],
+  );
+  const flowEdges = useMemo(
+    (): RuntimeFlowEdge[] =>
+      layoutedWorkflowSnapshot
+        ? readRuntimeFlowEdges(layoutedWorkflowSnapshot)
+        : [],
+    [layoutedWorkflowSnapshot],
+  );
+  const edgeSummaries = useMemo(
+    (): readonly string[] =>
+      instance ? readEdgeSummaries(instance.workflowSnapshot) : [],
+    [instance],
+  );
+  const taskColumns = useMemo(
+    (): TableColumn<TaskRow>[] => [
+      { dataIndex: 'nodeLabel', key: 'nodeLabel', title: '節點', width: 180 },
+      { dataIndex: 'assigneeMemberId', key: 'assigneeMemberId', title: '處理者', width: 180 },
+      { dataIndex: 'statusLabel', key: 'statusLabel', title: '狀態', width: 120 },
+      {
+        key: 'createdAt',
+        render: (record: TaskRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {formatDateTime(record.createdAt)}
+          </Typography>
+        ),
+        title: '建立時間',
+        width: 220,
+      },
+    ],
+    [],
+  );
+
+  async function refreshInstance(): Promise<void> {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const nextRecord = await readApprovalInstance(instanceId);
+      setActivityLogs(nextRecord.activityLogs);
+      setInstance(nextRecord.instance);
+      setTasks(nextRecord.tasks);
+      setWorkflowTokens(nextRecord.workflowTokens);
+      setTaskDecisions(await readTaskDecisionsForTasks(nextRecord.tasks));
+      setMemberProfiles(await readMemberProfilesForTimeline(nextRecord));
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDecision({
+    action,
+    comment,
+  }: Readonly<{
+    action: 'APPROVED' | 'REJECTED';
+    comment: string | null;
+  }>): Promise<void> {
+    if (!currentTask) {
+      return;
+    }
+
+    setDeciding(true);
+    setError(null);
+
+    try {
+      await decideTask({
+        action,
+        comment,
+        decidedByMemberId: CURRENT_MEMBER_ID,
+        taskId: currentTask.id,
+      });
+      setRejectReasonModalOpen(false);
+      setRejectReason('');
+      setRejectReasonError(null);
+      await refreshInstance();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  function openRejectReasonModal(): void {
+    setRejectReason('');
+    setRejectReasonError(null);
+    setRejectReasonModalOpen(true);
+  }
+
+  function closeRejectReasonModal(): void {
+    if (deciding) {
+      return;
+    }
+
+    setRejectReasonModalOpen(false);
+    setRejectReason('');
+    setRejectReasonError(null);
+  }
+
+  async function handleRejectConfirm(): Promise<void> {
+    if (!trimmedRejectReason) {
+      setRejectReasonError('請輸入拒絕原因');
+      return;
+    }
+
+    await handleDecision({
+      action: 'REJECTED',
+      comment: trimmedRejectReason,
+    });
+  }
+
+  return (
+    <Layout>
+      {renderAppNavigation('/inbox')}
+
+      <Layout.Main>
+        <PageHeader>
+          <ContentHeader
+            description={
+              instance
+                ? `${readInstanceStateLabel(instance.state)} · ${formatDateTime(
+                    instance.startedAt,
+                  )}`
+                : '載入案件內容。'
+            }
+            title={instance?.title ?? '簽核案件'}
+          >
+            {instance ? (
+              <Button
+                aria-label="查看流程圖"
+                icon={ShareIcon}
+                iconType="icon-only"
+                onClick={(): void => setWorkflowModalOpen(true)}
+                title="查看流程圖"
+                variant="base-secondary"
+              >
+                流程圖
+              </Button>
+            ) : null}
+            {currentTask ? (
+              <>
+                <Button
+                  disabled={deciding}
+                  icon={DangerousOutlineIcon}
+                  iconType="leading"
+                  onClick={openRejectReasonModal}
+                  variant="destructive-secondary"
+                >
+                  拒絕
+                </Button>
+                <Button
+                  disabled={deciding}
+                  icon={CheckedIcon}
+                  iconType="leading"
+                  onClick={(): void =>
+                    void handleDecision({ action: 'APPROVED', comment: null })
+                  }
+                  variant="base-primary"
+                >
+                  同意
+                </Button>
+              </>
+            ) : null}
+          </ContentHeader>
+        </PageHeader>
+
+        <SectionGroup>
+          <Section>
+            <div style={SECTION_BODY_STYLE}>
+              {error ? (
+                <Typography color="text-error" variant="body">
+                  {error}
+                </Typography>
+              ) : null}
+              {loading ? (
+                <Typography color="text-neutral" variant="body">
+                  載入中...
+                </Typography>
+              ) : null}
+              {instance?.formDefinitionSnapshot.schema &&
+              instance.formDefinitionSnapshot.uiSchema ? (
+                <FormRenderer
+                  readonly
+                  schema={instance.formDefinitionSnapshot.schema}
+                  uiSchema={instance.formDefinitionSnapshot.uiSchema}
+                  value={instance.formData}
+                />
+              ) : (
+                <Typography color="text-neutral" variant="body">
+                  此案件沒有可顯示的表單快照。
+                </Typography>
+              )}
+            </div>
+          </Section>
+
+          <Section>
+            <Typography component="h2" variant="h3">
+              任務
+            </Typography>
+            <Table columns={taskColumns} dataSource={taskRows} fullWidth />
+          </Section>
+
+          <Section>
+            <div style={SECTION_BODY_STYLE}>
+              <Typography component="h2" variant="h3">
+                歷程
+              </Typography>
+              {activitySteps.length > 0 ? (
+                <Stepper
+                  currentStep={currentActivityStep}
+                  orientation="vertical"
+                  type="dot"
+                >
+                  {activitySteps.map((activityStep) => (
+                    <ActivityHistoryStep
+                      descriptionParts={activityStep.descriptionParts}
+                      error={activityStep.error}
+                      forcePending={activityStep.forcePending}
+                      key={activityStep.id}
+                      title={activityStep.title}
+                    />
+                  ))}
+                </Stepper>
+              ) : (
+                <Typography color="text-neutral" variant="body">
+                  尚無歷程紀錄。
+                </Typography>
+              )}
+            </div>
+          </Section>
+        </SectionGroup>
+
+        {instance ? (
+          <Modal
+            modalType="standard"
+            onClose={(): void => setWorkflowModalOpen(false)}
+            open={workflowModalOpen}
+            showModalHeader
+            size="wide"
+            supportingText={`${readInstanceStateLabel(
+              instance.state,
+            )} · ${formatDateTime(instance.startedAt)}`}
+            title="流程圖"
+          >
+            <div style={FLOW_MODAL_BODY_STYLE}>
+              <div style={FLOW_CANVAS_STYLE}>
+                <ReactFlow
+                  edges={flowEdges}
+                  fitView
+                  fitViewOptions={{ padding: 0.18 }}
+                  maxZoom={1.2}
+                  minZoom={0.2}
+                  nodes={flowNodes}
+                  nodesDraggable={false}
+                  nodesFocusable={false}
+                  nodeTypes={READONLY_FLOW_NODE_TYPES}
+                  panOnDrag
+                  proOptions={{ hideAttribution: true }}
+                >
+                  <Background />
+                  <Controls showInteractive={false} />
+                </ReactFlow>
+              </div>
+              {edgeSummaries.length > 0 ? (
+                <div style={EDGE_SUMMARY_STYLE}>
+                  {edgeSummaries.map((summary) => (
+                    <span key={summary} style={EDGE_SUMMARY_ITEM_STYLE}>
+                      {summary}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </Modal>
+        ) : null}
+        <Modal
+          cancelText="取消"
+          confirmButtonProps={{
+            disabled: !trimmedRejectReason,
+            variant: 'destructive-primary',
+          }}
+          confirmText="送出拒絕"
+          loading={deciding}
+          modalStatusType="error"
+          modalType="standard"
+          onCancel={closeRejectReasonModal}
+          onClose={closeRejectReasonModal}
+          onConfirm={(): void => void handleRejectConfirm()}
+          open={rejectReasonModalOpen}
+          showModalFooter
+          showModalHeader
+          size="regular"
+          supportingText="拒絕案件時必須留下原因，供發起人與後續追蹤查看。"
+          title="拒絕原因"
+        >
+          <div style={REJECT_REASON_FORM_STYLE}>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              label="拒絕原因"
+              layout={FormFieldLayout.STRETCH}
+              name="rejectReason"
+              required
+            >
+              <Textarea
+                autoFocus
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>): void => {
+                  setRejectReason(event.target.value);
+                  setRejectReasonError(null);
+                }}
+                placeholder="請說明拒絕原因"
+                ref={applyFullWidthTextareaHost}
+                resize="vertical"
+                rows={4}
+                style={REJECT_REASON_TEXTAREA_STYLE}
+                type={rejectReasonError ? 'error' : 'default'}
+                value={rejectReason}
+              />
+            </FormField>
+            {rejectReasonError ? (
+              <Typography color="text-error" variant="body">
+                {rejectReasonError}
+              </Typography>
+            ) : null}
+          </div>
+        </Modal>
+      </Layout.Main>
+    </Layout>
+  );
+}
+
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '發生未知錯誤';
+}
+
+function joinClassNames(
+  ...classNames: readonly (string | null | undefined)[]
+): string {
+  return classNames
+    .filter((className): className is string => isPresentText(className ?? null))
+    .join(' ');
+}
+
+interface ActivityHistoryStepProps extends StepProps {
+  readonly descriptionParts: readonly ActivityStepDescriptionPart[];
+  readonly forcePending?: boolean;
+}
+
+const ActivityHistoryStep = forwardRef<HTMLDivElement, ActivityHistoryStepProps>(
+  function ActivityHistoryStep(
+    {
+      className,
+      descriptionParts,
+      error,
+      forcePending = false,
+      index = 0,
+      orientation,
+      status = 'pending',
+      title,
+      type = 'number',
+      ...rest
+    },
+    ref,
+  ): ReactElement {
+    const displayStatus = forcePending ? 'pending' : status;
+
+    return (
+      <div
+        {...rest}
+        className={joinClassNames(
+          stepClasses.host,
+          type === 'dot' ? stepClasses.dot : null,
+          error && displayStatus !== 'processing' ? stepClasses.error : null,
+          orientation === 'horizontal' ? stepClasses.horizontal : null,
+          type === 'number' ? stepClasses.number : null,
+          displayStatus === 'pending' ? stepClasses.pending : null,
+          displayStatus === 'processing' ? stepClasses.processing : null,
+          error && displayStatus === 'processing'
+            ? stepClasses.processingError
+            : null,
+          !error && displayStatus === 'succeeded'
+            ? stepClasses.succeeded
+            : null,
+          orientation === 'vertical' ? stepClasses.vertical : null,
+          className,
+        )}
+        ref={ref}
+      >
+        {type === 'dot' ? (
+          <span
+            className={joinClassNames(
+              stepClasses.statusIndicator,
+              stepClasses.statusIndicatorDot,
+            )}
+          />
+        ) : (
+          <span className={stepClasses.statusIndicator}>{index + 1}</span>
+        )}
+        <div className={stepClasses.textContainer}>
+          <Typography
+            className={stepClasses.title}
+            variant="label-primary-highlight"
+          >
+            {title}
+            <span className={stepClasses.titleConnectLine} />
+          </Typography>
+          {descriptionParts.length > 0 ? (
+            <Typography className={stepClasses.description} variant="caption">
+              {descriptionParts.map((part, partIndex) => (
+                <Fragment key={`${part.type}-${partIndex}`}>
+                  {partIndex > 0 ? ' · ' : null}
+                  {renderActivityDescriptionPart(part)}
+                </Fragment>
+              ))}
+            </Typography>
+          ) : null}
+        </div>
+      </div>
+    );
+  },
+);
+
+function renderActivityDescriptionPart(
+  part: ActivityStepDescriptionPart,
+): ReactElement | string {
+  if (part.type === 'text') {
+    return part.text;
+  }
+
+  if (part.type === 'dangerText') {
+    return <span style={HISTORY_DANGER_TEXT_STYLE}>{part.text}</span>;
+  }
+
+  if (!part.email) {
+    return `${part.prefix}：${part.label}`;
+  }
+
+  return (
+    <>
+      {part.prefix}：
+      <Tooltip title={part.email}>
+        {({ onMouseEnter, onMouseLeave, ref }): ReactElement => (
+          <span
+            onMouseEnter={onMouseEnter}
+            onMouseLeave={onMouseLeave}
+            ref={ref as RefCallback<HTMLSpanElement>}
+            style={HISTORY_MEMBER_NAME_STYLE}
+          >
+            {part.label}
+          </span>
+        )}
+      </Tooltip>
+    </>
+  );
+}
+
+async function readMemberProfilesForTimeline({
+  activityLogs,
+  tasks,
+}: {
+  readonly activityLogs: readonly ActivityLogRecord[];
+  readonly tasks: readonly TaskRecord[];
+}): Promise<readonly MemberProfileRecord[]> {
+  const memberIds = [
+    ...new Set(
+      [
+        ...activityLogs.map((activityLog) => activityLog.actorMemberId),
+        ...tasks.map((task) => task.assigneeMemberId),
+      ].filter(isPresentText),
+    ),
+  ];
+
+  try {
+    return await resolveMemberProfiles(memberIds);
+  } catch {
+    return [];
+  }
+}
+
+async function readTaskDecisionsForTasks(
+  tasks: readonly TaskRecord[],
+): Promise<readonly TaskDecisionRecord[]> {
+  const decisionLists = await Promise.all(
+    tasks.map((task) => listTaskDecisions(task.id)),
+  );
+
+  return decisionLists.flat();
+}
+
+function readLatestTaskDecisionsByTaskId(
+  taskDecisions: readonly TaskDecisionRecord[],
+): ReadonlyMap<string, TaskDecisionRecord> {
+  return taskDecisions.reduce<ReadonlyMap<string, TaskDecisionRecord>>(
+    (decisionsByTaskId, decision) => {
+      const currentDecision = decisionsByTaskId.get(decision.taskId);
+      const nextDecision =
+        !currentDecision ||
+        new Date(decision.decidedAt).getTime() >
+          new Date(currentDecision.decidedAt).getTime()
+          ? decision
+          : currentDecision;
+
+      return new Map(decisionsByTaskId).set(decision.taskId, nextDecision);
+    },
+    new Map(),
+  );
+}
+
+function readActivityStepRecords(
+  activityLogs: readonly ActivityLogRecord[],
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  workflow: WorkflowDefinition | null,
+  instanceState: ApprovalInstanceRecord['state'],
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+  taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
+): ActivityStepRecord[] {
+  const historySteps = activityLogs
+    .filter(isUserMeaningfulActivity)
+    .map((activityLog): ActivityStepRecord => {
+      const payload = readActivityPayload(activityLog);
+      const nodeLabel = readActivityNodeLabel(activityLog.nodeId, workflow);
+      const descriptionParts = [
+        readTextDescriptionPart(
+          nodeLabel ? `節點：${nodeLabel}` : '節點：全流程',
+        ),
+        readMemberDescriptionPart(
+          '操作者',
+          activityLog.actorMemberId,
+          memberProfilesById,
+          '系統',
+        ),
+        readTextDescriptionPart(
+          `時間：${formatActivityDateTime(activityLog.createdAt)}`,
+        ),
+        ...readActivityDetailParts(
+          activityLog,
+          payload,
+          workflow,
+          taskDecisionsByTaskId,
+        ),
+      ].filter(isActivityDescriptionPart);
+
+      return {
+        descriptionParts,
+        error: isActivityError(activityLog, payload),
+        id: activityLog.id,
+        title: readActivityEventLabel(activityLog.eventType, payload),
+      };
+    });
+  const pendingTaskSteps = tasks
+    .filter(isPendingTask)
+    .map(
+      (task): ActivityStepRecord => ({
+        descriptionParts: [
+          readTextDescriptionPart(
+            `節點：${readNodeDisplayLabel(task.nodeId, workflow)}`,
+          ),
+          readMemberDescriptionPart(
+            '處理者',
+            task.assigneeMemberId,
+            memberProfilesById,
+            '未指定',
+          ),
+          readTextDescriptionPart(
+            `建立時間：${formatActivityDateTime(task.createdAt)}`,
+          ),
+        ].filter(isActivityDescriptionPart),
+        error: false,
+        id: `pending-task-${task.id}`,
+        title:
+          task.status === 'IN_PROGRESS'
+            ? '簽核處理中'
+            : '等待簽核處理',
+      }),
+    );
+  const representedNodeIds = new Set(
+    [
+      ...activityLogs
+        .filter(isUserMeaningfulActivity)
+        .map((activityLog) => activityLog.nodeId),
+      ...tasks.map((task) => task.nodeId),
+    ].filter(isPresentText),
+  );
+  const futureNodeSteps = workflow
+    ? readFutureTimelineNodes(
+        workflow,
+        tasks,
+        tokens,
+        instanceState,
+        representedNodeIds,
+      )
+        .map(
+          (node): ActivityStepRecord => ({
+            descriptionParts: [
+              readTextDescriptionPart(
+                `${readNodeKindLabel(node.type)} · 尚未抵達`,
+              ),
+            ].filter(isActivityDescriptionPart),
+            error: false,
+            forcePending: true,
+            id: `future-node-${node.id}`,
+            title: readFutureNodeStepTitle(node),
+          }),
+        )
+    : [];
+
+  return [...historySteps, ...pendingTaskSteps, ...futureNodeSteps];
+}
+
+function readTextDescriptionPart(
+  text: string | null,
+): ActivityStepDescriptionPart | null {
+  return isPresentText(text) ? { text, type: 'text' } : null;
+}
+
+function readDangerTextDescriptionPart(
+  text: string | null,
+): ActivityStepDescriptionPart | null {
+  return isPresentText(text) ? { text, type: 'dangerText' } : null;
+}
+
+function readMemberDescriptionPart(
+  prefix: string,
+  memberId: string | null,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+  fallbackLabel: string,
+): ActivityStepDescriptionPart {
+  const profile = memberId ? memberProfilesById.get(memberId) : null;
+
+  return {
+    email: profile?.email ?? null,
+    label: profile?.name ?? memberId ?? fallbackLabel,
+    prefix,
+    type: 'member',
+  };
+}
+
+function isActivityDescriptionPart(
+  part: ActivityStepDescriptionPart | null,
+): part is ActivityStepDescriptionPart {
+  return Boolean(part);
+}
+
+function readCurrentActivityStep(
+  activitySteps: readonly ActivityStepRecord[],
+): number {
+  const firstPendingStepIndex = activitySteps.findIndex((activityStep) =>
+    activityStep.id.startsWith('pending-task-') ||
+    activityStep.id.startsWith('future-node-'),
+  );
+
+  return firstPendingStepIndex === -1
+    ? activitySteps.length
+    : firstPendingStepIndex;
+}
+
+function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolean {
+  return (
+    activityLog.eventType === 'INSTANCE_STARTED' ||
+    activityLog.eventType === 'TASK_DECIDED' ||
+    activityLog.eventType === 'SLA_TRIGGERED'
+  );
+}
+
+function isFutureTimelineNode(
+  node: WorkflowNode,
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  instanceState: ApprovalInstanceRecord['state'],
+  representedNodeIds: ReadonlySet<string>,
+): boolean {
+  if (node.type === 'startEvent' || representedNodeIds.has(node.id)) {
+    return false;
+  }
+
+  if (instanceState === 'REJECTED') {
+    return true;
+  }
+
+  const state = readNodeRuntimeState(node, tasks, tokens, instanceState);
+
+  return state.tone === 'neutral' || state.tone === 'waiting';
+}
+
+function readFutureTimelineNodes(
+  workflow: WorkflowDefinition,
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  instanceState: ApprovalInstanceRecord['state'],
+  representedNodeIds: ReadonlySet<string>,
+): readonly WorkflowNode[] {
+  if (instanceState !== 'RUNNING' && instanceState !== 'REJECTED') {
+    return [];
+  }
+
+  const futureNodes = workflow.nodes.filter((node) =>
+    isFutureTimelineNode(node, tasks, tokens, instanceState, representedNodeIds),
+  );
+  const reachableDistances = readReachableFutureNodeDistances(
+    workflow,
+    futureNodes,
+    tasks,
+    tokens,
+    representedNodeIds,
+  );
+  const originalNodeIndexes = new Map(
+    workflow.nodes.map((node, index) => [node.id, index]),
+  );
+
+  return futureNodes
+    .filter((node) => reachableDistances.has(node.id))
+    .sort((left, right) => {
+      const leftDistance = reachableDistances.get(left.id) ?? 0;
+      const rightDistance = reachableDistances.get(right.id) ?? 0;
+
+      if (leftDistance !== rightDistance) {
+        return leftDistance - rightDistance;
+      }
+
+      if (left.position.x !== right.position.x) {
+        return left.position.x - right.position.x;
+      }
+
+      if (left.position.y !== right.position.y) {
+        return left.position.y - right.position.y;
+      }
+
+      return (
+        (originalNodeIndexes.get(left.id) ?? 0) -
+        (originalNodeIndexes.get(right.id) ?? 0)
+      );
+    });
+}
+
+function readReachableFutureNodeDistances(
+  workflow: WorkflowDefinition,
+  futureNodes: readonly WorkflowNode[],
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  representedNodeIds: ReadonlySet<string>,
+): ReadonlyMap<string, number> {
+  const futureNodeIds = new Set(futureNodes.map((node) => node.id));
+  const outgoingNodeIds = workflow.edges.reduce<ReadonlyMap<string, readonly string[]>>(
+    (groups, edge) => {
+      const nextTargets = [...(groups.get(edge.source) ?? []), edge.target];
+
+      return new Map(groups).set(edge.source, nextTargets);
+    },
+    new Map(),
+  );
+  const frontierNodeIds = readFutureTimelineFrontierNodeIds(
+    workflow,
+    tasks,
+    tokens,
+    representedNodeIds,
+  );
+
+  return frontierNodeIds.reduce<ReadonlyMap<string, number>>(
+    (distances, nodeId) =>
+      mergeFutureNodeDistances(
+        distances,
+        readFutureNodeDistancesFrom(nodeId, outgoingNodeIds, futureNodeIds),
+      ),
+    new Map(),
+  );
+}
+
+function readFutureTimelineFrontierNodeIds(
+  workflow: WorkflowDefinition,
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  representedNodeIds: ReadonlySet<string>,
+): readonly string[] {
+  const tokenNodeIds = tokens
+    .filter((token) => token.status === 'ACTIVE' || token.status === 'WAITING')
+    .map((token) => token.currentNodeId);
+  const pendingTaskNodeIds = tasks.filter(isPendingTask).map((task) => task.nodeId);
+  const representedFrontierNodeIds = workflow.nodes
+    .filter((node) => representedNodeIds.has(node.id))
+    .map((node) => node.id);
+  const activeFrontierNodeIds = [
+    ...new Set([
+      ...tokenNodeIds,
+      ...pendingTaskNodeIds,
+      ...representedFrontierNodeIds,
+    ]),
+  ];
+  const startNodeIds = workflow.nodes
+    .filter((node) => node.type === 'startEvent')
+    .map((node) => node.id);
+
+  return activeFrontierNodeIds.length > 0 ? activeFrontierNodeIds : startNodeIds;
+}
+
+function readFutureNodeDistancesFrom(
+  startNodeId: string,
+  outgoingNodeIds: ReadonlyMap<string, readonly string[]>,
+  futureNodeIds: ReadonlySet<string>,
+): ReadonlyMap<string, number> {
+  const initialQueue: readonly {
+    readonly distance: number;
+    readonly nodeId: string;
+  }[] = [{ distance: 0, nodeId: startNodeId }];
+
+  return walkFutureNodeDistances(initialQueue, outgoingNodeIds, futureNodeIds);
+}
+
+function walkFutureNodeDistances(
+  queue: readonly { readonly distance: number; readonly nodeId: string }[],
+  outgoingNodeIds: ReadonlyMap<string, readonly string[]>,
+  futureNodeIds: ReadonlySet<string>,
+  visitedNodeIds: ReadonlySet<string> = new Set(),
+  distances: ReadonlyMap<string, number> = new Map(),
+): ReadonlyMap<string, number> {
+  const [current, ...restQueue] = queue;
+
+  if (!current) {
+    return distances;
+  }
+
+  if (visitedNodeIds.has(current.nodeId)) {
+    return walkFutureNodeDistances(
+      restQueue,
+      outgoingNodeIds,
+      futureNodeIds,
+      visitedNodeIds,
+      distances,
+    );
+  }
+
+  const nextVisitedNodeIds = new Set(visitedNodeIds).add(current.nodeId);
+  const nextDistances = futureNodeIds.has(current.nodeId)
+    ? new Map(distances).set(
+        current.nodeId,
+        Math.min(distances.get(current.nodeId) ?? current.distance, current.distance),
+      )
+    : distances;
+  const nextQueue = [
+    ...restQueue,
+    ...(outgoingNodeIds.get(current.nodeId) ?? []).map((nodeId) => ({
+      distance: current.distance + 1,
+      nodeId,
+    })),
+  ];
+
+  return walkFutureNodeDistances(
+    nextQueue,
+    outgoingNodeIds,
+    futureNodeIds,
+    nextVisitedNodeIds,
+    nextDistances,
+  );
+}
+
+function mergeFutureNodeDistances(
+  currentDistances: ReadonlyMap<string, number>,
+  nextDistances: ReadonlyMap<string, number>,
+): ReadonlyMap<string, number> {
+  return [...nextDistances.entries()].reduce<ReadonlyMap<string, number>>(
+    (mergedDistances, [nodeId, distance]) =>
+      new Map(mergedDistances).set(
+        nodeId,
+        Math.min(mergedDistances.get(nodeId) ?? distance, distance),
+      ),
+    currentDistances,
+  );
+}
+
+function readFutureNodeStepTitle(node: WorkflowNode): string {
+  if (node.type === 'userTask') {
+    return `未來簽核：${node.data.label}`;
+  }
+
+  if (node.type === 'serviceTask') {
+    return `未來知會：${node.data.label}`;
+  }
+
+  if (node.type === 'exclusiveGateway') {
+    return `未來分流：${node.data.label}`;
+  }
+
+  if (node.type === 'parallelGateway') {
+    return `未來匯合：${node.data.label}`;
+  }
+
+  if (node.type === 'endEvent') {
+    return `流程完成：${node.data.label}`;
+  }
+
+  return `未來節點：${node.data.label}`;
+}
+
+function readActivityPayload(
+  activityLog: ActivityLogRecord,
+): Readonly<Record<string, unknown>> {
+  try {
+    const payload = JSON.parse(activityLog.payloadJson) as unknown;
+
+    return isRecord(payload) ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+function readActivityEventLabel(
+  eventType: string,
+  payload: Readonly<Record<string, unknown>>,
+): string {
+  if (eventType === 'INSTANCE_STARTED') {
+    return '案件已發起';
+  }
+
+  if (eventType === 'TOKEN_CREATED') {
+    return '流程路徑已建立';
+  }
+
+  if (eventType === 'ENGINE_PROCESS_REQUESTED') {
+    return '流程引擎已處理';
+  }
+
+  if (eventType === 'TOKEN_ADVANCED') {
+    return '流程已前進';
+  }
+
+  if (eventType === 'TASK_CREATED') {
+    return '待簽任務已建立';
+  }
+
+  if (eventType === 'TASK_DECIDED') {
+    return readTaskDecisionEventLabel(readStringField(payload, 'action'));
+  }
+
+  if (eventType === 'SLA_TRIGGERED') {
+    return '時限提醒已觸發';
+  }
+
+  return eventType;
+}
+
+function readTaskDecisionEventLabel(action: string | null): string {
+  if (action === 'APPROVED') {
+    return '已同意';
+  }
+
+  if (action === 'REJECTED') {
+    return '已拒絕';
+  }
+
+  if (action === 'RETURNED') {
+    return '已退回';
+  }
+
+  if (action === 'TRANSFERRED') {
+    return '已轉派';
+  }
+
+  return '簽核已決議';
+}
+
+function readActivityDetail(
+  activityLog: ActivityLogRecord,
+  payload: Readonly<Record<string, unknown>>,
+  workflow: WorkflowDefinition | null,
+): string | null {
+  if (activityLog.eventType === 'TASK_CREATED') {
+    const assigneeMemberId = readStringField(payload, 'assigneeMemberId');
+
+    return assigneeMemberId ? `待簽人：${assigneeMemberId}` : null;
+  }
+
+  if (activityLog.eventType === 'TASK_DECIDED') {
+    const action = readStringField(payload, 'action');
+    const comment = readStringField(payload, 'comment');
+    const decisionLabel = action
+      ? `決議：${readTaskDecisionActionLabel(action)}`
+      : null;
+
+    return action === 'REJECTED' && comment
+      ? [decisionLabel, `拒絕原因：${comment}`].filter(isPresentText).join(' · ')
+      : decisionLabel;
+  }
+
+  if (activityLog.eventType === 'TOKEN_ADVANCED') {
+    const action = readStringField(payload, 'action');
+
+    if (action) {
+      return `流程結果：${readTaskDecisionActionLabel(action)}`;
+    }
+
+    const arrivedCount = readNumberField(payload, 'arrivedCount');
+    const requiredCount = readNumberField(payload, 'requiredCount');
+
+    if (arrivedCount !== null && requiredCount !== null) {
+      return `等待匯合：${arrivedCount}/${requiredCount}`;
+    }
+
+    const fromNodeId = readStringField(payload, 'fromNodeId');
+    const toNodeId = readStringField(payload, 'toNodeId');
+
+    if (fromNodeId && toNodeId) {
+      return `由 ${readNodeDisplayLabel(fromNodeId, workflow)} 前進至 ${readNodeDisplayLabel(toNodeId, workflow)}`;
+    }
+  }
+
+  if (activityLog.eventType === 'ENGINE_PROCESS_REQUESTED') {
+    const state = readStringField(payload, 'state');
+
+    return state ? `案件狀態：${readInstanceStateLabel(state)}` : null;
+  }
+
+  return null;
+}
+
+function readActivityDetailParts(
+  activityLog: ActivityLogRecord,
+  payload: Readonly<Record<string, unknown>>,
+  workflow: WorkflowDefinition | null,
+  taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
+): readonly ActivityStepDescriptionPart[] {
+  if (activityLog.eventType !== 'TASK_DECIDED') {
+    return [
+      readTextDescriptionPart(
+        readActivityDetail(activityLog, payload, workflow),
+      ),
+    ].filter(isActivityDescriptionPart);
+  }
+
+  const taskDecision = activityLog.taskId
+    ? taskDecisionsByTaskId.get(activityLog.taskId)
+    : null;
+  const action =
+    readStringField(payload, 'action') ?? taskDecision?.action ?? null;
+  const comment =
+    readStringField(payload, 'comment') ?? taskDecision?.comment ?? null;
+  const decisionLabel = action
+    ? `決議：${readTaskDecisionActionLabel(action)}`
+    : null;
+
+  return [
+    readTextDescriptionPart(decisionLabel),
+    action === 'REJECTED'
+      ? readDangerTextDescriptionPart(`拒絕原因：${comment ?? '-'}`)
+      : null,
+  ].filter(isActivityDescriptionPart);
+}
+
+function readActivityNodeLabel(
+  nodeId: string | null,
+  workflow: WorkflowDefinition | null,
+): string | null {
+  return nodeId ? readNodeDisplayLabel(nodeId, workflow) : null;
+}
+
+function readNodeDisplayLabel(
+  nodeId: string,
+  workflow: WorkflowDefinition | null,
+): string {
+  return (
+    workflow?.nodes.find((node) => node.id === nodeId)?.data.label ?? nodeId
+  );
+}
+
+function readTaskDecisionActionLabel(action: string): string {
+  if (action === 'APPROVED') {
+    return '同意';
+  }
+
+  if (action === 'REJECTED') {
+    return '拒絕';
+  }
+
+  if (action === 'RETURNED') {
+    return '退回';
+  }
+
+  if (action === 'TRANSFERRED') {
+    return '轉派';
+  }
+
+  return action;
+}
+
+function readTaskStatusLabel(status: TaskRecord['status']): string {
+  if (status === 'PENDING') {
+    return '待處理';
+  }
+
+  if (status === 'IN_PROGRESS') {
+    return '處理中';
+  }
+
+  if (status === 'COMPLETED') {
+    return '已完成';
+  }
+
+  if (status === 'CANCELLED') {
+    return '已取消';
+  }
+
+  if (status === 'TRANSFERRED') {
+    return '已轉派';
+  }
+
+  return status;
+}
+
+function readInstanceStateLabel(state: string): string {
+  if (state === 'APPROVED') {
+    return '已同意';
+  }
+
+  if (state === 'CANCELLED') {
+    return '已取消';
+  }
+
+  if (state === 'DRAFT') {
+    return '草稿';
+  }
+
+  if (state === 'EXPIRED') {
+    return '已逾期';
+  }
+
+  if (state === 'REJECTED') {
+    return '已拒絕';
+  }
+
+  if (state === 'RETURNED') {
+    return '已退回';
+  }
+
+  if (state === 'RUNNING') {
+    return '進行中';
+  }
+
+  return state;
+}
+
+function isActivityError(
+  activityLog: ActivityLogRecord,
+  payload: Readonly<Record<string, unknown>>,
+): boolean {
+  return (
+    activityLog.eventType === 'SLA_TRIGGERED' ||
+    readStringField(payload, 'action') === 'REJECTED' ||
+    readStringField(payload, 'instanceState') === 'REJECTED'
+  );
+}
+
+function formatActivityDateTime(value: string): string {
+  return formatDateTime(value);
+}
+
+function readStringField(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): string | null {
+  const value = record[key];
+
+  return typeof value === 'string' ? value : null;
+}
+
+function readNumberField(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): number | null {
+  const value = record[key];
+
+  return typeof value === 'number' ? value : null;
+}
+
+function isPresentText(value: string | null): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isPendingTask(task: TaskRecord): boolean {
+  return task.status === 'PENDING' || task.status === 'IN_PROGRESS';
+}
+
+function WorkflowRuntimeNodeCard({
+  data,
+}: NodeProps<RuntimeFlowNode>): ReactElement {
+  return (
+    <div style={readNodeStyle(data.tone)}>
+      <Handle
+        isConnectable={false}
+        position={Position.Left}
+        style={NODE_HANDLE_STYLE}
+        type="target"
+      />
+      <Typography component="span" ellipsis title={data.label} variant="label-primary">
+        {data.label}
+      </Typography>
+      <span style={readNodeStatusStyle(data.tone)}>{data.statusLabel}</span>
+      <span title={data.secondaryLabel} style={NODE_SECONDARY_STYLE}>
+        {data.secondaryLabel || data.kindLabel}
+      </span>
+      <Handle
+        isConnectable={false}
+        position={Position.Right}
+        style={NODE_HANDLE_STYLE}
+        type="source"
+      />
+    </div>
+  );
+}
+
+function readRuntimeFlowNodes(
+  workflow: WorkflowDefinition,
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  instanceState: string,
+): RuntimeFlowNode[] {
+  return workflow.nodes.map((node): RuntimeFlowNode => {
+    const state = readNodeRuntimeState(node, tasks, tokens, instanceState);
+
+    return {
+      data: {
+        kindLabel: readNodeKindLabel(node.type),
+        label: node.data.label,
+        secondaryLabel: state.secondaryLabel,
+        statusLabel: state.statusLabel,
+        tone: state.tone,
+      },
+      id: node.id,
+      position: node.position,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      type: 'workflowRuntime',
+    };
+  });
+}
+
+function layoutRuntimeWorkflowDefinition(
+  workflow: WorkflowDefinition,
+): WorkflowDefinition {
+  const graph = new dagre.graphlib.Graph();
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({
+    nodesep: 56,
+    rankdir: 'LR',
+    ranksep: 120,
+  });
+  workflow.nodes.forEach((node): void => {
+    graph.setNode(node.id, {
+      height: FLOW_NODE_LAYOUT_HEIGHT,
+      width: FLOW_NODE_LAYOUT_WIDTH,
+    });
+  });
+  workflow.edges.forEach((edge): void => {
+    graph.setEdge(edge.source, edge.target);
+  });
+  dagre.layout(graph);
+
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node): WorkflowNode => {
+      const positionedNode = graph.node(node.id) as
+        | { readonly x: number; readonly y: number }
+        | undefined;
+
+      return positionedNode
+        ? {
+            ...node,
+            position: {
+              x: positionedNode.x - FLOW_NODE_LAYOUT_WIDTH / 2,
+              y: positionedNode.y - FLOW_NODE_LAYOUT_HEIGHT / 2,
+            },
+          }
+        : node;
+    }),
+  };
+}
+
+function readRuntimeFlowEdges(
+  workflow: WorkflowDefinition,
+): RuntimeFlowEdge[] {
+  return workflow.edges.map((edge): RuntimeFlowEdge => {
+    const label = readEdgeLabel(edge);
+
+    return {
+      animated: false,
+      id: edge.id,
+      label,
+      labelBgBorderRadius: 6,
+      labelBgPadding: [8, 4],
+      labelBgStyle: {
+        fill: edge.data.isDefault ? '#f8fafc' : '#eff6ff',
+        stroke: edge.data.isDefault ? '#64748b' : '#2563eb',
+        strokeWidth: 1,
+      },
+      labelShowBg: Boolean(label),
+      labelStyle: {
+        fill: edge.data.isDefault ? '#475569' : '#2563eb',
+        fontSize: 12,
+        fontWeight: 600,
+      },
+      source: edge.source,
+      style: {
+        stroke: '#475569',
+        strokeWidth: 1.5,
+      },
+      target: edge.target,
+      type: edge.type ?? 'smoothstep',
+    };
+  });
+}
+
+function readNodeRuntimeState(
+  node: WorkflowNode,
+  tasks: readonly TaskRecord[],
+  tokens: readonly WorkflowTokenRecord[],
+  instanceState: string,
+): Readonly<{
+  secondaryLabel: string;
+  statusLabel: string;
+  tone: RuntimeTone;
+}> {
+  const nodeTasks = tasks.filter((task) => task.nodeId === node.id);
+  const pendingTask = nodeTasks.find(
+    (task) => task.status === 'PENDING' || task.status === 'IN_PROGRESS',
+  );
+  const cancelledTask = nodeTasks.find((task) => task.status === 'CANCELLED');
+  const completedTask = nodeTasks.find((task) => task.status === 'COMPLETED');
+  const nodeTokens = tokens.filter((token) => token.currentNodeId === node.id);
+  const activeToken = nodeTokens.find((token) => token.status === 'ACTIVE');
+  const waitingToken = nodeTokens.find((token) => token.status === 'WAITING');
+
+  if (pendingTask) {
+    return {
+      secondaryLabel: `處理者 ${pendingTask.assigneeMemberId}`,
+      statusLabel: '待處理',
+      tone: 'current',
+    };
+  }
+
+  if (cancelledTask) {
+    return {
+      secondaryLabel: `已取消 ${cancelledTask.assigneeMemberId}`,
+      statusLabel: '已取消',
+      tone: 'cancelled',
+    };
+  }
+
+  if (completedTask) {
+    return {
+      secondaryLabel: `已完成 ${completedTask.assigneeMemberId}`,
+      statusLabel: '已完成',
+      tone: 'completed',
+    };
+  }
+
+  if (activeToken) {
+    return {
+      secondaryLabel: `token ${activeToken.id}`,
+      statusLabel: '執行中',
+      tone: 'current',
+    };
+  }
+
+  if (waitingToken) {
+    return {
+      secondaryLabel: `token ${waitingToken.id}`,
+      statusLabel: '等待前置',
+      tone: 'waiting',
+    };
+  }
+
+  if (node.type === 'startEvent') {
+    return {
+      secondaryLabel: '流程已發起',
+      statusLabel: '已發起',
+      tone: 'completed',
+    };
+  }
+
+  if (node.type === 'endEvent' && instanceState !== 'RUNNING') {
+    return {
+      secondaryLabel: instanceState,
+      statusLabel: instanceState === 'REJECTED' ? '已拒絕' : '已完成',
+      tone: instanceState === 'REJECTED' ? 'cancelled' : 'completed',
+    };
+  }
+
+  return {
+    secondaryLabel: readNodeKindLabel(node.type),
+    statusLabel: '未抵達',
+    tone: 'neutral',
+  };
+}
+
+function readNodeKindLabel(type: WorkflowNode['type']): string {
+  if (type === 'startEvent') {
+    return '開始';
+  }
+
+  if (type === 'endEvent') {
+    return '完成';
+  }
+
+  if (type === 'userTask') {
+    return '簽核節點';
+  }
+
+  if (type === 'serviceTask') {
+    return '知會節點';
+  }
+
+  if (type === 'exclusiveGateway') {
+    return '條件分流';
+  }
+
+  return '平行處理';
+}
+
+function readNodeStyle(tone: RuntimeTone): CSSProperties {
+  if (tone === 'current') {
+    return {
+      ...NODE_STYLE,
+      border: '1px solid var(--mzn-color-primary, #0057ff)',
+      boxShadow: '0 0 0 3px rgba(0, 87, 255, 0.14)',
+    };
+  }
+
+  if (tone === 'completed') {
+    return {
+      ...NODE_STYLE,
+      border: '1px solid #16a34a',
+    };
+  }
+
+  if (tone === 'cancelled') {
+    return {
+      ...NODE_STYLE,
+      border: '1px solid #dc2626',
+      opacity: 0.72,
+    };
+  }
+
+  if (tone === 'waiting') {
+    return {
+      ...NODE_STYLE,
+      border: '1px dashed #64748b',
+    };
+  }
+
+  return NODE_STYLE;
+}
+
+function readNodeStatusStyle(tone: RuntimeTone): CSSProperties {
+  const baseStyle = NODE_STATUS_STYLE;
+
+  if (tone === 'current') {
+    return { ...baseStyle, background: '#eff6ff', color: '#2563eb' };
+  }
+
+  if (tone === 'completed') {
+    return { ...baseStyle, background: '#f0fdf4', color: '#15803d' };
+  }
+
+  if (tone === 'cancelled') {
+    return { ...baseStyle, background: '#fef2f2', color: '#dc2626' };
+  }
+
+  if (tone === 'waiting') {
+    return { ...baseStyle, background: '#f8fafc', color: '#475569' };
+  }
+
+  return { ...baseStyle, background: '#f1f5f9', color: '#64748b' };
+}
+
+function readEdgeLabel(edge: WorkflowDefinition['edges'][number]): string {
+  if (edge.data.label) {
+    return edge.data.label;
+  }
+
+  if (edge.data.isDefault) {
+    return '其他情況';
+  }
+
+  return edge.data.condition ?? '';
+}
+
+function readEdgeSummaries(workflow: WorkflowDefinition): readonly string[] {
+  return workflow.edges
+    .map(readEdgeLabel)
+    .filter((label) => label.trim().length > 0);
+}

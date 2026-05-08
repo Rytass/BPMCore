@@ -11,6 +11,7 @@ import {
   FileIcon,
   FolderIcon,
   HomeIcon,
+  MailUnreadIcon,
   SystemIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
@@ -24,6 +25,7 @@ interface NavigationItem {
 
 const mainItems: readonly NavigationItem[] = [
   { href: '/', icon: HomeIcon, label: '工作台' },
+  { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
   { href: '/templates', icon: FolderIcon, label: '簽核模板' },
   { href: '/forms', icon: FileIcon, label: '表單設計' },
   { href: '/admin/orgs', icon: SystemIcon, label: '組織管理' },
