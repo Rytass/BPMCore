@@ -156,6 +156,15 @@ async function processInstance(instanceId: string): Promise<void> {
 
 ### 3.1 Exclusive Gateway (XOR) Split
 
+目前 W6 runtime 已支援設計器產出的結構化條件欄位：
+
+- `edge.data.conditionFieldKey`
+- `edge.data.conditionOperator`
+- `edge.data.conditionValue`
+- `edge.data.isDefault`
+
+引擎會用 instance 的 `formData` 判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。`edge.data.condition` 目前保留作為畫布顯示與相容欄位，尚未作為完整 CEL runtime parser 執行。
+
 ```typescript
 function handleExclusiveGateway(node, token) {
   const outgoing = workflow.outgoingEdges(node.id);
@@ -178,6 +187,8 @@ function handleExclusiveGateway(node, token) {
 
 ### 3.2 Parallel Gateway (AND) Split
 
+W6 MVP 不要求設計器使用 Parallel Gateway 節點。任何可輸出的節點只要有多條 outgoing edge，runtime 就會把目前 token consume，並為每條 outgoing edge 建立一個 child `ACTIVE` token。這讓「一個簽核節點往後拉兩條線」可直接表達平行分支。
+
 ```typescript
 function handleParallelSplit(node, token) {
   const outgoing = workflow.outgoingEdges(node.id);
@@ -195,6 +206,11 @@ function handleParallelSplit(node, token) {
 ```
 
 ### 3.3 Parallel Gateway (AND) Join
+
+W6 runtime 將 join 語意放在目標節點的 `data.triggerMode`，而不是要求額外的 join gateway：
+
+- `AND`：多條 incoming edge 都抵達後才觸發該節點；先抵達的 token 會暫時轉為 `WAITING`。
+- `OR`：任一 incoming edge 抵達就觸發該節點；其他仍可能抵達同一節點的 sibling branch 會被 consume，相關 pending task 會被標記為 `CANCELLED`。
 
 ```typescript
 function handleParallelJoin(node, token) {

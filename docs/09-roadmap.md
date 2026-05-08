@@ -134,24 +134,38 @@
 
 **Frontend**
 
-- [ ] `/instances/new?templateId=xxx` 發起頁（FormRenderer）
-- [ ] `/instances/[id]` 簽核操作頁（基礎版）
+- [x] `/instances/new?templateId=xxx` 發起頁（FormRenderer）
+- [x] 發起入口補強
+  - [x] `/instances/new` 無 `templateId` 時顯示「可發起模板」列表，使用者選模板後進入填表。
+  - [x] 工作台 `/` 的主操作改為「發起簽核」，導向 `/instances/new`。
+  - [x] `/templates` 列表在已發布模板上提供「發起」捷徑，導向 `/instances/new?templateId=xxx`。
+  - [x] `/inbox` 提供次要「發起簽核」入口，導向 `/instances/new`，但不作為唯一入口。
+  - [x] 未發布、未綁定已發布表單版本、或沒有 current published version 的模板不得作為可發起選項。
+- [x] `/instances/[id]` 簽核操作頁（基礎版）
   - 顯示表單快照（唯讀）
   - 顯示流程圖（React Flow 唯讀模式 + token 位置標示）
   - 顯示歷程（task_decisions + activity_logs）
   - 同意 / 拒絕按鈕（限該 task 的 assignee）
-- [ ] Inbox 雛型（`/inbox`）
+- [x] Inbox 雛型（`/inbox`）
 
-**驗收**：能跑通「請假流程」線性 case：發起 → 主管簽 → 完成。
+**驗收**：能從工作台或已發布模板進入發起頁，跑通「請假流程」線性 case：發起 → 主管簽 → 完成。
 
 ### W6 — Gateway + 平行/條件
 
 **Backend**
 
-- [ ] Exclusive Gateway 處理（含 default flow）
-- [ ] 多分支 outgoing edge 處理
-- [ ] 節點前置條件 `AND` / `OR` 處理（全部前置完成 / 任一前置完成）
+- [x] Exclusive Gateway 處理（含 default flow）
+- [x] 多分支 outgoing edge 處理
+- [x] 節點前置條件 `AND` / `OR` 處理（全部前置完成 / 任一前置完成）
 - [ ] CEL 在 Edge / Entry Condition / Approver Resolver 整合
+
+**Frontend**
+
+- [x] `/instances/[id]` 唯讀流程圖，顯示節點 runtime 狀態
+- [x] 條件線 / default flow label 顯示
+- [x] pending / completed / cancelled / waiting 節點狀態顯示
+
+> W6 runtime 目前執行設計器產出的 structured edge condition 欄位，不直接執行完整 CEL parser。`edge.data.condition` 保留作為畫布顯示與相容欄位；完整 CEL runtime 整合延後到 Dry Run / expression runtime 階段一併收斂。
 
 **驗收**：能跑通含 XOR + 多前置節點 AND/OR 的流程；條件分歧基於表單內容正確路由。
 
