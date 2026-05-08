@@ -194,12 +194,16 @@ jest.mock('@mezzanine-ui/icons', () => ({
   UserIcon: { name: 'user' },
 }));
 
+jest.mock('next/navigation', () => ({
+  useRouter: (): Readonly<{ push: jest.Mock<void, [string]> }> => ({
+    push: jest.fn(),
+  }),
+}));
+
 describe('Page', () => {
   it('should render successfully', () => {
     const { getByText } = render(<Page />);
 
-    expect(
-      getByText((content) => content.includes('BPM Project M0')),
-    ).toBeTruthy();
+    expect(getByText((content) => content.includes('發起簽核'))).toBeTruthy();
   });
 });

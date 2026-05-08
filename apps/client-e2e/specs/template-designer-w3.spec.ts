@@ -33,12 +33,18 @@ test.describe('M1 W3 template designer', () => {
     ]);
 
     await expect(page.getByText('E2E 簽核模板')).toBeVisible();
+    await expect(page.getByText('未設定')).toBeVisible();
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await expect(page.getByRole('combobox', { name: '所有人' })).toBeVisible();
+
     await page.getByRole('button', { name: '簽核節點' }).click();
     await expect(
       page
         .locator('.react-flow__node')
         .filter({ hasText: 'lin.ceo@example.internal' }),
     ).toBeVisible();
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2);
 
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await page.getByRole('button', { name: '發布版本' }).click();
@@ -47,6 +53,28 @@ test.describe('M1 W3 template designer', () => {
     await page.goto(`/templates/${TEMPLATE_ID}/versions`);
     await expect(page.getByText('PUBLISHED')).toBeVisible();
     await expect(page.getByText('E2E 表單 v1')).toBeVisible();
+  });
+
+  test('edits condition edges from the side panel', async ({
+    page,
+  }): Promise<void> => {
+    await mockTemplateGraphQl(page);
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '條件分流' }).click();
+
+    const defaultEdgeLabel = page
+      .locator('.react-flow__edge-text')
+      .filter({ hasText: '其他情況' });
+
+    await expect(defaultEdgeLabel).toBeVisible();
+    await page.getByRole('button', { name: '完成' }).click();
+    await expect(page.getByRole('heading', { name: '條件設定' })).toBeVisible();
+    await expect(page.getByText('其他條件都不符合時')).toBeVisible();
+    await page.keyboard.press('Delete');
+    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
   });
 });
 
@@ -176,6 +204,11 @@ async function mockTemplateGraphQl(page: Page): Promise<void> {
       const input = readUpdateTemplateDraftInput(payload.variables?.input);
       formDefinitionVersionId = input.formDefinitionVersionId;
       workflowDefinitionJson = input.workflowDefinitionJson;
+
+      if (!workflowDefinitionHasLinearTask(workflowDefinitionJson)) {
+        throw new Error('Workflow draft must contain start -> userTask -> end');
+      }
+
       await fulfillGraphQl(route, {
         updateApprovalTemplateDraft: readTemplateVersion({
           formDefinitionVersionId,
@@ -251,6 +284,35 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
       },
     ],
   };
+}
+
+function workflowDefinitionHasLinearTask(workflowDefinitionJson: string): boolean {
+  const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
+
+  if (!isRecord(parsedValue) || !Array.isArray(parsedValue.edges)) {
+    return false;
+  }
+
+  const edges = parsedValue.edges.filter(isWorkflowEdgeRecord);
+
+  return (
+    edges.some(
+      (edge) => edge.source === 'start' && edge.target.startsWith('userTask_'),
+    ) &&
+    edges.some(
+      (edge) => edge.source.startsWith('userTask_') && edge.target === 'end',
+    )
+  );
+}
+
+function isWorkflowEdgeRecord(
+  value: unknown,
+): value is Readonly<{ source: string; target: string }> {
+  return (
+    isRecord(value) &&
+    typeof value.source === 'string' &&
+    typeof value.target === 'string'
+  );
 }
 
 function readGraphQlPayload(route: Route): GraphQlPayload {
