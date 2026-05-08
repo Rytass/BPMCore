@@ -203,18 +203,30 @@ export function readConditionOperatorOption(
     : null;
 }
 
-export function readConditionInputType(
-  field: FormFieldDefinition,
-): 'date' | 'datetime-local' | 'text' {
-  if (field.type === 'date') {
-    return 'date';
-  }
+export function readDatePickerValue(
+  value: FormFieldValue | string | undefined,
+): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
 
-  if (field.type === 'datetime') {
-    return 'datetime-local';
-  }
+export function formatDatePickerValue(
+  value: string | undefined,
+): string | undefined {
+  const date = value ? parseDatePickerValue(value) : null;
 
-  return 'text';
+  return date ? formatDateParts(date) : undefined;
+}
+
+export function formatDateTimePickerValue(
+  value: string | undefined,
+): string | undefined {
+  const date = value ? parseDatePickerValue(value) : null;
+
+  return date
+    ? `${formatDateParts(date)}T${padDatePart(date.getHours())}:${padDatePart(
+        date.getMinutes(),
+      )}`
+    : undefined;
 }
 
 export function isNumberFieldDefinition(
@@ -468,4 +480,37 @@ function isComparableConditionField(field: FormFieldDefinition): boolean {
     field.type === 'money' ||
     field.type === 'number'
   );
+}
+
+const DATE_VALUE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+const DATE_TIME_VALUE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/u;
+
+function parseDatePickerValue(value: string): Date | null {
+  if (DATE_TIME_VALUE_PATTERN.test(value)) {
+    const [datePart = '', timePart = '00:00'] = value.split('T');
+    const [year = 0, month = 1, day = 1] = datePart.split('-').map(Number);
+    const [hour = 0, minute = 0] = timePart.split(':').map(Number);
+
+    return new Date(year, month - 1, day, hour, minute);
+  }
+
+  if (DATE_VALUE_PATTERN.test(value)) {
+    const [year = 0, month = 1, day = 1] = value.split('-').map(Number);
+
+    return new Date(year, month - 1, day);
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateParts(date: Date): string {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(
+    date.getDate(),
+  )}`;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0');
 }

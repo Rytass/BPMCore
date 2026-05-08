@@ -128,7 +128,7 @@ type MemberSelectOption = Readonly<{
   memberId: string;
   name: string;
 }>;
-type InitiatorPolicyMode = 'ALL' | 'CUSTOM' | 'ORG' | 'ROLE';
+type InitiatorPolicyMode = 'ALL' | 'CUSTOM' | 'NONE' | 'ORG' | 'ROLE';
 type InitiatorPolicyDraft = Readonly<{
   mode: InitiatorPolicyMode;
   value: string;
@@ -393,6 +393,7 @@ const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperato
     'NOT_EQUALS',
   ];
 const INITIATOR_POLICY_MODE_OPTIONS: readonly InitiatorPolicyModeOption[] = [
+  { id: 'NONE', name: '未設定' },
   { id: 'ALL', name: '所有人' },
   { id: 'ROLE', name: '指定角色' },
   { id: 'ORG', name: '指定組織代碼' },
@@ -551,6 +552,17 @@ export default function TemplateDesignerPage(): ReactElement {
         : null,
     [selectedEdgeIds, workflowDefinition.edges],
   );
+  const selectedEdges = useMemo(
+    (): readonly WorkflowEdge[] =>
+      selectedEdgeIds
+        .map(
+          (edgeId) =>
+            workflowDefinition.edges.find((edge) => edge.id === edgeId) ??
+            null,
+        )
+        .filter((edge): edge is WorkflowEdge => Boolean(edge)),
+    [selectedEdgeIds, workflowDefinition.edges],
+  );
   const initiatorPolicyDraft = useMemo(
     (): InitiatorPolicyDraft =>
       readInitiatorPolicyUiDraft(initiatorPolicyCel, initiatorPolicyModeDraft),
@@ -637,7 +649,14 @@ export default function TemplateDesignerPage(): ReactElement {
           null,
       );
       setInitiatorPolicyCel(sourceVersion?.initiatorPolicyCel ?? null);
-      setInitiatorPolicyModeDraft(null);
+      setInitiatorPolicyModeDraft(
+        sourceVersion &&
+          !nextRecord.template.currentVersionId &&
+          !sourceVersion.initiatorPolicyCel &&
+          isEmptyDesignerWorkflowDefinition(sourceVersion.workflowDefinition)
+          ? 'NONE'
+          : null,
+      );
       setSelectedNodeId(
         sourceVersion?.workflowDefinition.nodes[0]?.id ?? 'start',
       );
@@ -789,15 +808,11 @@ export default function TemplateDesignerPage(): ReactElement {
       (node) =>
         node.id === connection.source && node.type === 'exclusiveGateway',
     );
-    const nextEdge: WorkflowEdge = {
-      data: {},
-      id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
-      source: connection.source,
-      sourceHandle: connection.sourceHandle,
-      target: connection.target,
-      targetHandle: connection.targetHandle,
-      type: 'smoothstep',
-    };
+    const nextEdge = createWorkflowEdge(
+      connection.source,
+      connection.target,
+      {},
+    );
 
     setWorkflowDefinition((currentDefinition) => ({
       ...currentDefinition,
@@ -824,16 +839,28 @@ export default function TemplateDesignerPage(): ReactElement {
   }
 
   function addWorkflowNode(type: NodePaletteType): void {
-    const nodeIndex =
-      workflowDefinition.nodes.filter((node) => node.type === type).length + 1;
+    const nodeIndex = readNextWorkflowNodeIndex(workflowDefinition.nodes, type);
     const node = createWorkflowNode(type, nodeIndex);
+    const inserted = insertWorkflowNodeIntoDefinition({
+      definition: workflowDefinition,
+      node,
+      selectedEdgeId: selectedEdgeIds.length === 1 ? selectedEdgeIds[0] : null,
+      selectedNodeId,
+    });
+    const nextDefinition = layoutWorkflowDefinition(inserted.definition);
+    const nextViewport = readWorkflowViewport(
+      nextDefinition,
+      flowCanvasRef.current,
+    );
 
-    setWorkflowDefinition((currentDefinition) => ({
-      ...currentDefinition,
-      nodes: [...currentDefinition.nodes, node],
-    }));
-    setSelectedNodeId(node.id);
-    setSelectedEdgeIds([]);
+    setWorkflowDefinition(nextDefinition);
+    setSelectedNodeId(inserted.selectedNodeId);
+    setSelectedEdgeIds(inserted.selectedEdgeIds);
+    setEditingEdgeId(inserted.editingEdgeId);
+
+    if (nextViewport) {
+      setFlowViewport(nextViewport);
+    }
   }
 
   function updateSelectedNodeLabel(label: string): void {
@@ -1153,6 +1180,8 @@ export default function TemplateDesignerPage(): ReactElement {
                     }
                     nodeTypes={nodeTypes}
                     nodes={flowNodes}
+                    deleteKeyCode={null}
+                    multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
                     onConnect={handleConnect}
                     onEdgeClick={handleEdgeClick}
                     onNodeClick={(_, node): void => {
@@ -1230,9 +1259,14 @@ export default function TemplateDesignerPage(): ReactElement {
                       ))}
                     </div>
                   </div>
-                  {selectedNode ? renderNodePanel(selectedNode) : null}
-                  {!selectedNode && selectedEdge
+                  {selectedEdges.length > 1
+                    ? renderSelectedEdgesPanel(selectedEdges)
+                    : null}
+                  {selectedEdges.length === 1 && selectedEdge
                     ? renderEdgePanel(selectedEdge)
+                    : null}
+                  {selectedEdges.length === 0 && selectedNode
+                    ? renderNodePanel(selectedNode)
                     : null}
                 </div>
               </div>
@@ -1534,20 +1568,40 @@ export default function TemplateDesignerPage(): ReactElement {
     );
   }
 
-  function renderEdgePanel(edge: WorkflowEdge): ReactElement | null {
-    if (!isExclusiveGatewaySourceEdge(edge, workflowDefinition.nodes)) {
-      return null;
-    }
+  function renderSelectedEdgesPanel(edges: readonly WorkflowEdge[]): ReactElement {
+    return (
+      <div style={FORM_STACK_STYLE}>
+        <Typography component="h2" variant="h3">
+          已選取線段
+        </Typography>
+        <Typography color="text-neutral" variant="body">
+          已選取 {edges.length} 條線段，可使用 Delete 或控制面板刪除。
+        </Typography>
+      </div>
+    );
+  }
+
+  function renderEdgePanel(edge: WorkflowEdge): ReactElement {
+    const isConditionPath = isExclusiveGatewaySourceEdge(
+      edge,
+      workflowDefinition.nodes,
+    );
 
     return (
       <div style={FORM_STACK_STYLE}>
         <Typography component="h2" variant="h3">
-          條件設定
+          {isConditionPath ? '條件設定' : '線段屬性'}
         </Typography>
         <Typography color="text-neutral" variant="body">
           {edge.source} → {edge.target}
         </Typography>
-        {renderConditionEdgeSettingsForm(edge)}
+        {isConditionPath ? (
+          renderConditionEdgeSettingsForm(edge)
+        ) : (
+          <Typography color="text-neutral" variant="body">
+            這條線會直接把流程送到下一個節點。
+          </Typography>
+        )}
       </div>
     );
   }
@@ -2251,6 +2305,224 @@ function createWorkflowNode(
   };
 }
 
+function readNextWorkflowNodeIndex(
+  nodes: readonly WorkflowNode[],
+  type: NodePaletteType,
+): number {
+  const usedIndexes = new Set(
+    nodes
+      .filter((node) => node.type === type)
+      .map((node) => Number(node.id.replace(`${type}_`, '')))
+      .filter((index) => Number.isInteger(index) && index > 0),
+  );
+
+  return (
+    Array.from({ length: nodes.length + 1 }, (_, index) => index + 1).find(
+      (index) => !usedIndexes.has(index),
+    ) ?? nodes.length + 1
+  );
+}
+
+function insertWorkflowNodeIntoDefinition({
+  definition,
+  node,
+  selectedEdgeId,
+  selectedNodeId,
+}: {
+  readonly definition: WorkflowDefinition;
+  readonly node: WorkflowNode;
+  readonly selectedEdgeId: string | null;
+  readonly selectedNodeId: string | null;
+}): Readonly<{
+  definition: WorkflowDefinition;
+  editingEdgeId: string | null;
+  selectedEdgeIds: readonly string[];
+  selectedNodeId: string | null;
+}> {
+  const selectedEdge = selectedEdgeId
+    ? (definition.edges.find((edge) => edge.id === selectedEdgeId) ?? null)
+    : null;
+  const selectedNode = selectedNodeId
+    ? (definition.nodes.find((candidate) => candidate.id === selectedNodeId) ??
+      null)
+    : null;
+
+  if (selectedEdge) {
+    return insertWorkflowNodeAtEdge(definition, node, selectedEdge);
+  }
+
+  if (selectedNode) {
+    return insertWorkflowNodeAfterNode(definition, node, selectedNode);
+  }
+
+  return {
+    definition: { ...definition, nodes: [...definition.nodes, node] },
+    editingEdgeId: null,
+    selectedEdgeIds: [],
+    selectedNodeId: node.id,
+  };
+}
+
+function insertWorkflowNodeAtEdge(
+  definition: WorkflowDefinition,
+  node: WorkflowNode,
+  edge: WorkflowEdge,
+): Readonly<{
+  definition: WorkflowDefinition;
+  editingEdgeId: string | null;
+  selectedEdgeIds: readonly string[];
+  selectedNodeId: string | null;
+}> {
+  if (!isWorkflowNodeInputConnectable(node)) {
+    return {
+      definition,
+      editingEdgeId: null,
+      selectedEdgeIds: [edge.id],
+      selectedNodeId: null,
+    };
+  }
+
+  if (!isWorkflowNodeOutputConnectable(node)) {
+    const incomingEdge = createWorkflowEdge(edge.source, node.id, {});
+
+    return {
+      definition: {
+        ...definition,
+        edges: [...definition.edges, incomingEdge],
+        nodes: [...definition.nodes, node],
+      },
+      editingEdgeId: null,
+      selectedEdgeIds: [],
+      selectedNodeId: node.id,
+    };
+  }
+
+  const incomingEdge = createWorkflowEdge(edge.source, node.id, edge.data);
+  const outgoingEdge = createWorkflowEdge(
+    node.id,
+    edge.target,
+    readInsertedOutgoingEdgeData(node, edge),
+  );
+  const shouldEditOutgoingEdge = isExclusiveGatewaySourceEdge(outgoingEdge, [
+    ...definition.nodes,
+    node,
+  ]);
+
+  return {
+    definition: {
+      ...definition,
+      edges: definition.edges.flatMap((currentEdge) =>
+        currentEdge.id === edge.id ? [incomingEdge, outgoingEdge] : [currentEdge],
+      ),
+      nodes: [...definition.nodes, node],
+    },
+    editingEdgeId: shouldEditOutgoingEdge ? outgoingEdge.id : null,
+    selectedEdgeIds: shouldEditOutgoingEdge ? [outgoingEdge.id] : [],
+    selectedNodeId: shouldEditOutgoingEdge ? null : node.id,
+  };
+}
+
+function insertWorkflowNodeAfterNode(
+  definition: WorkflowDefinition,
+  node: WorkflowNode,
+  sourceNode: WorkflowNode,
+): Readonly<{
+  definition: WorkflowDefinition;
+  editingEdgeId: string | null;
+  selectedEdgeIds: readonly string[];
+  selectedNodeId: string | null;
+}> {
+  if (!isWorkflowNodeOutputConnectable(sourceNode)) {
+    return {
+      definition: { ...definition, nodes: [...definition.nodes, node] },
+      editingEdgeId: null,
+      selectedEdgeIds: [],
+      selectedNodeId: node.id,
+    };
+  }
+
+  const firstOutgoingEdge =
+    definition.edges.find((edge) => edge.source === sourceNode.id) ?? null;
+
+  if (firstOutgoingEdge && isWorkflowNodeOutputConnectable(node)) {
+    return insertWorkflowNodeAtEdge(definition, node, firstOutgoingEdge);
+  }
+
+  const endNode = definition.nodes.find(
+    (candidate) => candidate.type === 'endEvent',
+  );
+
+  if (
+    endNode &&
+    sourceNode.id !== endNode.id &&
+    isWorkflowNodeOutputConnectable(node)
+  ) {
+    const incomingEdge = createWorkflowEdge(sourceNode.id, node.id, {});
+    const outgoingEdge = createWorkflowEdge(
+      node.id,
+      endNode.id,
+      readInsertedOutgoingEdgeData(node, incomingEdge),
+    );
+    const shouldEditOutgoingEdge = isExclusiveGatewaySourceEdge(outgoingEdge, [
+      ...definition.nodes,
+      node,
+    ]);
+
+    return {
+      definition: {
+        ...definition,
+        edges: [...definition.edges, incomingEdge, outgoingEdge],
+        nodes: [...definition.nodes, node],
+      },
+      editingEdgeId: shouldEditOutgoingEdge ? outgoingEdge.id : null,
+      selectedEdgeIds: shouldEditOutgoingEdge ? [outgoingEdge.id] : [],
+      selectedNodeId: shouldEditOutgoingEdge ? null : node.id,
+    };
+  }
+
+  const incomingEdge = createWorkflowEdge(sourceNode.id, node.id, {});
+
+  return {
+    definition: {
+      ...definition,
+      edges: [...definition.edges, incomingEdge],
+      nodes: [...definition.nodes, node],
+    },
+    editingEdgeId: null,
+    selectedEdgeIds: [],
+    selectedNodeId: node.id,
+  };
+}
+
+function createWorkflowEdge(
+  source: string,
+  target: string,
+  data: WorkflowEdgeData,
+): WorkflowEdge {
+  return {
+    data,
+    id: `edge_${source}_${target}_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+    source,
+    sourceHandle: WORKFLOW_OUTPUT_HANDLE_ID,
+    target,
+    targetHandle: WORKFLOW_INPUT_HANDLE_ID,
+    type: 'smoothstep',
+  };
+}
+
+function readInsertedOutgoingEdgeData(
+  node: WorkflowNode,
+  _replacedEdge: WorkflowEdge,
+): WorkflowEdgeData {
+  if (node.type === 'exclusiveGateway') {
+    return { isDefault: true, label: '其他情況' };
+  }
+
+  return {};
+}
+
 function readFallbackWorkflowDefinition(): WorkflowDefinition {
   return {
     edges: [],
@@ -2270,6 +2542,17 @@ function readFallbackWorkflowDefinition(): WorkflowDefinition {
       },
     ],
   };
+}
+
+function isEmptyDesignerWorkflowDefinition(
+  definition: WorkflowDefinition,
+): boolean {
+  return (
+    definition.edges.length === 0 &&
+    definition.nodes.length === 2 &&
+    definition.nodes.some((node) => node.type === 'startEvent') &&
+    definition.nodes.some((node) => node.type === 'endEvent')
+  );
 }
 
 function layoutWorkflowDefinition(
@@ -2322,7 +2605,11 @@ function readWorkflowNodeTriggerMode(
 function readInitiatorPolicyMode(
   value: string | null,
 ): Exclude<InitiatorPolicyMode, 'CUSTOM'> {
-  return value === 'ROLE' || value === 'ORG' ? value : 'ALL';
+  if (value === 'ROLE' || value === 'ORG' || value === 'NONE') {
+    return value;
+  }
+
+  return 'ALL';
 }
 
 function readInitiatorPolicyValueOptions(
@@ -2387,8 +2674,10 @@ function readInitiatorPolicyUiDraft(
 ): InitiatorPolicyDraft {
   const persistedDraft = readInitiatorPolicyDraft(initiatorPolicyCel);
 
-  if (!modeDraft || modeDraft === 'ALL') {
-    return modeDraft === 'ALL' ? { mode: 'ALL', value: '' } : persistedDraft;
+  if (!modeDraft || modeDraft === 'ALL' || modeDraft === 'NONE') {
+    return modeDraft === 'ALL' || modeDraft === 'NONE'
+      ? { mode: modeDraft, value: '' }
+      : persistedDraft;
   }
 
   return persistedDraft.mode === modeDraft
@@ -2399,6 +2688,10 @@ function readInitiatorPolicyUiDraft(
 function readInitiatorPolicyIssue(
   policyDraft: InitiatorPolicyDraft,
 ): string | null {
+  if (policyDraft.mode === 'NONE') {
+    return '發起權限需要選擇誰可以發起。';
+  }
+
   if (policyDraft.mode === 'ROLE' && !policyDraft.value.trim()) {
     return '指定角色發起時，需要填寫角色代碼。';
   }
@@ -2440,7 +2733,7 @@ function readInitiatorPolicyCel(
 ): string | null {
   const value = draft.value.trim();
 
-  if (draft.mode === 'ALL') {
+  if (draft.mode === 'ALL' || draft.mode === 'NONE') {
     return null;
   }
 
@@ -2456,6 +2749,10 @@ function readInitiatorPolicyCel(
 }
 
 function readInitiatorPolicySummary(policyDraft: InitiatorPolicyDraft): string {
+  if (policyDraft.mode === 'NONE') {
+    return '未設定';
+  }
+
   if (policyDraft.mode === 'ROLE') {
     return policyDraft.value ? `角色：${policyDraft.value}` : '指定角色';
   }

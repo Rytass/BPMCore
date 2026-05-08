@@ -14,6 +14,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { formatDateTime } from '../_lib/date-time';
 import { renderAppNavigation } from '../app-navigation';
 import {
   createFormDefinition,
@@ -48,6 +49,7 @@ export default function FormsPage(): ReactElement {
         ...form,
         key: form.id,
         status: form.currentVersionId ? '已發布' : '草稿',
+        updatedAt: formatDateTime(form.updatedAt),
       })),
     [forms],
   );

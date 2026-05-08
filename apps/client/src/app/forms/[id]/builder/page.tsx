@@ -22,6 +22,8 @@ import {
   BaseCard,
   Badge,
   Button,
+  DatePicker,
+  DateTimePicker,
   FormField,
   Icon,
   Input,
@@ -69,6 +71,7 @@ import {
   SelectFieldDefinition,
   TextFieldDefinition,
 } from '@bpm/shared/form';
+import { formatDateTime } from '../../../_lib/date-time';
 import { renderAppNavigation } from '../../../app-navigation';
 import {
   createFieldDefinition,
@@ -84,15 +87,17 @@ import {
   buildConditionExpression,
   buildFormRendererValues,
   clampOptionalNumber,
+  formatDatePickerValue,
+  formatDateTimePickerValue,
   FormRendererValues,
   isDateFieldDefinition,
   isNumberFieldDefinition,
   isSelectFieldDefinition,
   parseConditionRule,
   parseOptionalNumberInput,
-  readConditionInputType,
   readConditionOperatorOption,
   readConditionOperatorOptions,
+  readDatePickerValue,
   readDefaultConditionOperator,
   readDefaultConditionValue,
   readFieldOptionAsSelectOption,
@@ -1368,20 +1373,11 @@ export default function FormBuilderPage(): ReactElement {
     return renderSettingsFormRow(
       '預設值',
       'fieldDefaultValue',
-      <Input
-        fullWidth
-        inputType={field.type === 'datetime' ? 'datetime-local' : 'date'}
-        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-          updateSelectedDateField({
-            defaultValue: event.target.value || undefined,
-          })
-        }
-        placeholder={
-          field.type === 'datetime' ? '選擇預設日期與時間' : '選擇預設日期'
-        }
-        value={readStringDefaultValue(field.defaultValue)}
-        variant="base"
-      />,
+      renderDateValuePicker(
+        field,
+        readStringDefaultValue(field.defaultValue),
+        (value): void => updateSelectedDateField({ defaultValue: value }),
+      ),
       saving,
     );
   }
@@ -1727,10 +1723,15 @@ export default function FormBuilderPage(): ReactElement {
       );
     }
 
+    if (isDateFieldDefinition(conditionField)) {
+      return renderDateValuePicker(conditionField, value, (nextValue): void =>
+        onChange(nextValue ?? ''),
+      );
+    }
+
     return (
       <Input
         fullWidth
-        inputType={readConditionInputType(conditionField)}
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
           onChange(event.target.value)
         }
@@ -1801,6 +1802,41 @@ export default function FormBuilderPage(): ReactElement {
         step={options.step ?? 1}
         value={typeof value === 'number' ? String(value) : ''}
         variant="measure"
+      />
+    );
+  }
+
+  function renderDateValuePicker(
+    field: DateFieldDefinition,
+    value: string,
+    onChange: (value: string | undefined) => void,
+  ): ReactElement {
+    if (field.type === 'datetime') {
+      return (
+        <DateTimePicker
+          formatDate="YYYY-MM-DD"
+          formatTime="HH:mm"
+          fullWidth
+          hideSecond
+          onChange={(nextValue): void =>
+            onChange(formatDateTimePickerValue(nextValue))
+          }
+          placeholderLeft="選擇日期"
+          placeholderRight="選擇時間"
+          value={readDatePickerValue(value)}
+        />
+      );
+    }
+
+    return (
+      <DatePicker
+        format="YYYY-MM-DD"
+        fullWidth
+        onChange={(nextValue): void =>
+          onChange(formatDatePickerValue(nextValue))
+        }
+        placeholder="選擇日期"
+        value={readDatePickerValue(value)}
       />
     );
   }
@@ -2299,17 +2335,6 @@ function readOpenedVersionState({
   }
 
   return '當前內容尚未發布';
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) {
-    return '尚未發布';
-  }
-
-  return new Intl.DateTimeFormat('zh-TW', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
 }
 
 function moveItemByIndex<TItem>(

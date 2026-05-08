@@ -14,6 +14,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { formatDateTime } from '../_lib/date-time';
 import { renderAppNavigation } from '../app-navigation';
 import { TemplateNameModal } from './_components/template-name-modal';
 import {
@@ -21,6 +22,7 @@ import {
   createApprovalTemplate,
   listApprovalTemplates,
 } from './_lib/template-api';
+import { listLaunchableTemplates } from '../instances/_lib/workflow-api';
 
 type TemplateRow = Readonly<
   Record<string, unknown> &
@@ -35,6 +37,9 @@ export default function TemplatesPage(): ReactElement {
   const [templates, setTemplates] = useState<readonly ApprovalTemplateRecord[]>(
     [],
   );
+  const [launchableTemplateIds, setLaunchableTemplateIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +55,7 @@ export default function TemplatesPage(): ReactElement {
         ...template,
         key: template.id,
         status: template.currentVersionId ? '已發布' : '草稿',
+        updatedAt: formatDateTime(template.updatedAt),
       })),
     [templates],
   );
@@ -78,6 +84,14 @@ export default function TemplatesPage(): ReactElement {
     (): TableActions<TemplateRow> => ({
       render: (record): ReturnType<TableActions<TemplateRow>['render']> => [
         {
+          disabled: (template): boolean =>
+            !launchableTemplateIds.has(template.id),
+          name: '發起',
+          onClick: (): void =>
+            router.push(`/instances/new?templateId=${record.id}`),
+          variant: 'base-primary',
+        },
+        {
           name: '設計',
           onClick: (): void => router.push(`/templates/${record.id}/designer`),
         },
@@ -87,9 +101,9 @@ export default function TemplatesPage(): ReactElement {
         },
       ],
       variant: 'base-secondary',
-      width: 128,
+      width: 192,
     }),
-    [router],
+    [launchableTemplateIds, router],
   );
 
   async function refreshTemplates(): Promise<void> {
@@ -97,7 +111,15 @@ export default function TemplatesPage(): ReactElement {
     setError(null);
 
     try {
-      setTemplates(await listApprovalTemplates());
+      const [nextTemplates, nextLaunchableTemplates] = await Promise.all([
+        listApprovalTemplates(),
+        listLaunchableTemplates(),
+      ]);
+
+      setTemplates(nextTemplates);
+      setLaunchableTemplateIds(
+        new Set(nextLaunchableTemplates.map((template) => template.id)),
+      );
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {

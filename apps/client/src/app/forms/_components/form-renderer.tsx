@@ -9,6 +9,8 @@ import {
   useState,
 } from 'react';
 import {
+  DatePicker,
+  DateTimePicker,
   FormField,
   Input,
   Select,
@@ -27,10 +29,13 @@ import {
 import {
   buildFormRendererValues,
   clampOptionalNumber,
+  formatDatePickerValue,
+  formatDateTimePickerValue,
   FormRendererValues,
   isFormRendererFieldReadonly,
   isFormRendererFieldRequired,
   parseOptionalNumberInput,
+  readDatePickerValue,
   readFieldOptionAsSelectOption,
   readSelectOption,
   readVisibleFormRendererFields,
@@ -38,9 +43,11 @@ import {
 
 export interface FormRendererProps {
   readonly emptyText?: string;
+  readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
+  readonly singleColumn?: boolean;
   readonly uiSchema: FormUiSchema;
   readonly value?: FormRendererValues;
 }
@@ -71,11 +78,26 @@ const REQUIRED_ASTERISK_STYLE: CSSProperties = {
   verticalAlign: 'super',
 };
 
+const TEXTAREA_STYLE: CSSProperties = {
+  minWidth: '100%',
+  width: '100%',
+};
+
+function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
+  if (!element) {
+    return;
+  }
+
+  element.style.width = '100%';
+}
+
 export function FormRenderer({
   emptyText = '尚未建立欄位。',
+  maxWidth,
   onChange,
   readonly = false,
   schema,
+  singleColumn = false,
   uiSchema,
   value,
 }: FormRendererProps): ReactElement {
@@ -130,7 +152,12 @@ export function FormRenderer({
   }
 
   return (
-    <div style={FORM_RENDERER_GRID_STYLE}>
+    <div
+      style={{
+        ...FORM_RENDERER_GRID_STYLE,
+        ...(singleColumn ? { maxWidth, width: '100%' } : {}),
+      }}
+    >
       {visibleFields.map((field) => (
         <FormRendererField
           field={field}
@@ -140,7 +167,9 @@ export function FormRenderer({
           readonly={readonly}
           style={{
             ...FORM_RENDERER_FIELD_STYLE,
-            gridColumn: `span ${readFieldColumnSpan(field, uiSchema)}`,
+            gridColumn: `span ${
+              singleColumn ? 12 : readFieldColumnSpan(field, uiSchema)
+            }`,
           }}
           value={values[field.fieldKey]}
           values={values}
@@ -211,7 +240,9 @@ function renderControl(
         }
         placeholder={field.placeholder ?? '請輸入多行文字'}
         readOnly={readonly}
+        ref={applyFullWidthTextareaHost}
         rows={3}
+        style={TEXTAREA_STYLE}
         value={readStringValue(value)}
       />
     );
@@ -292,6 +323,39 @@ function renderControl(
     );
   }
 
+  if (field.type === 'date') {
+    return (
+      <DatePicker
+        format="YYYY-MM-DD"
+        fullWidth
+        onChange={(nextValue): void =>
+          onChange(field.fieldKey, formatDatePickerValue(nextValue))
+        }
+        placeholder={field.placeholder ?? readInputPlaceholder(field.type)}
+        readOnly={readonly}
+        value={readDatePickerValue(value)}
+      />
+    );
+  }
+
+  if (field.type === 'datetime') {
+    return (
+      <DateTimePicker
+        formatDate="YYYY-MM-DD"
+        formatTime="HH:mm"
+        fullWidth
+        hideSecond
+        onChange={(nextValue): void =>
+          onChange(field.fieldKey, formatDateTimePickerValue(nextValue))
+        }
+        placeholderLeft="選擇日期"
+        placeholderRight="選擇時間"
+        readOnly={readonly}
+        value={readDatePickerValue(value)}
+      />
+    );
+  }
+
   if (field.type === 'number' || field.type === 'money') {
     return (
       <Input
@@ -319,7 +383,6 @@ function renderControl(
   return (
     <Input
       fullWidth
-      inputType={readTextInputType(field)}
       onChange={(event: ChangeEvent<HTMLInputElement>): void =>
         onChange(field.fieldKey, event.target.value)
       }
@@ -359,20 +422,6 @@ function readStringArrayValue(
 
 function readNumberInputValue(value: FormFieldValue | undefined): string {
   return typeof value === 'number' ? String(value) : '';
-}
-
-function readTextInputType(
-  field: FormFieldDefinition,
-): 'date' | 'datetime-local' | 'text' {
-  if (field.type === 'date') {
-    return 'date';
-  }
-
-  if (field.type === 'datetime') {
-    return 'datetime-local';
-  }
-
-  return 'text';
 }
 
 function readInputPlaceholder(type: FormFieldDefinition['type']): string {

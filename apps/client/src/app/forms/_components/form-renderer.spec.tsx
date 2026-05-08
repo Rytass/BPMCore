@@ -15,6 +15,46 @@ jest.mock('@mezzanine-ui/react', () => {
     return React.createElement('div', { 'data-field-name': name }, children);
   }
 
+  function DatePicker({
+    onChange,
+    placeholder,
+    value,
+  }: {
+    readonly onChange?: (value?: string) => void;
+    readonly placeholder?: string;
+    readonly value?: string;
+  }): React.ReactElement {
+    return React.createElement('input', {
+      'data-component': 'DatePicker',
+      onChange: (event: React.ChangeEvent<HTMLInputElement>): void =>
+        onChange?.(event.target.value || undefined),
+      placeholder,
+      type: 'text',
+      value: value ?? '',
+    });
+  }
+
+  function DateTimePicker({
+    onChange,
+    placeholderLeft,
+    placeholderRight,
+    value,
+  }: {
+    readonly onChange?: (value?: string) => void;
+    readonly placeholderLeft?: string;
+    readonly placeholderRight?: string;
+    readonly value?: string;
+  }): React.ReactElement {
+    return React.createElement('input', {
+      'data-component': 'DateTimePicker',
+      onChange: (event: React.ChangeEvent<HTMLInputElement>): void =>
+        onChange?.(event.target.value || undefined),
+      placeholder: `${placeholderLeft ?? ''} ${placeholderRight ?? ''}`.trim(),
+      type: 'text',
+      value: value ?? '',
+    });
+  }
+
   function Input({
     inputType,
     onChange,
@@ -73,6 +113,8 @@ jest.mock('@mezzanine-ui/react', () => {
   }
 
   return {
+    DatePicker,
+    DateTimePicker,
     FormField,
     Input,
     Select,
@@ -148,6 +190,64 @@ describe('FormRenderer', () => {
 
     expect(handleChange).toHaveBeenCalledWith(
       expect.objectContaining({ amount: 240 }),
+    );
+  });
+
+  it('uses Mezzanine pickers for date and datetime fields', (): void => {
+    const handleChange = jest.fn<void, [Readonly<Record<string, unknown>>]>();
+    const dateSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'startDate',
+          label: '開始日期',
+          required: false,
+          type: 'date',
+        },
+        {
+          fieldKey: 'startAt',
+          label: '開始時間',
+          required: false,
+          type: 'datetime',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const dateUiSchema: FormUiSchema = {
+      layout: [
+        { fieldKey: 'startDate', width: 'FULL' },
+        { fieldKey: 'startAt', width: 'FULL' },
+      ],
+      schemaVersion: 1,
+    };
+    const { getByPlaceholderText } = render(
+      <FormRenderer
+        onChange={handleChange}
+        schema={dateSchema}
+        uiSchema={dateUiSchema}
+        value={{}}
+      />,
+    );
+
+    const dateInput = getByPlaceholderText('請選擇日期');
+    const dateTimeInput = getByPlaceholderText('選擇日期 選擇時間');
+
+    expect(dateInput.getAttribute('data-component')).toBe('DatePicker');
+    expect(dateTimeInput.getAttribute('data-component')).toBe(
+      'DateTimePicker',
+    );
+
+    fireEvent.change(dateInput, {
+      target: { value: '2026-05-08' },
+    });
+    fireEvent.change(dateTimeInput, {
+      target: { value: '2026-05-07T14:30' },
+    });
+
+    expect(handleChange).toHaveBeenCalledWith(
+      expect.objectContaining({ startDate: '2026-05-08' }),
+    );
+    expect(handleChange).toHaveBeenCalledWith(
+      expect.objectContaining({ startAt: '2026-05-07T14:30' }),
     );
   });
 });

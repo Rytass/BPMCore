@@ -17,6 +17,7 @@ import {
   rollbackApprovalTemplateVersion,
   TemplateDesignerRecord,
 } from '../../_lib/template-api';
+import { formatDateTime } from '../../../_lib/date-time';
 
 type VersionRow = Readonly<
   Record<string, unknown> & {
@@ -171,17 +172,6 @@ export default function TemplateVersionsPage(): ReactElement {
       </Layout.Main>
     </Layout>
   );
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) {
-    return '尚未發布';
-  }
-
-  return new Intl.DateTimeFormat('zh-TW', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
 }
 
 function readErrorMessage(error: unknown): string {
