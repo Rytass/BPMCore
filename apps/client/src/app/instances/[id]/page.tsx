@@ -24,6 +24,7 @@ import {
 } from '@xyflow/react';
 import * as dagre from 'dagre';
 import {
+  AutoComplete,
   Button,
   FormField,
   Layout,
@@ -47,6 +48,7 @@ import {
   DangerousOutlineIcon,
   RefreshCcwIcon,
   ShareIcon,
+  UserIcon,
 } from '@mezzanine-ui/icons';
 import type { TableColumn } from '@mezzanine-ui/core/table';
 import { WorkflowDefinition, WorkflowNode } from '@bpm/shared/workflow';
@@ -64,6 +66,7 @@ import {
   readApprovalInstance,
   resubmitApprovalInstance,
   resolveMemberProfiles,
+  searchMembers,
   TaskDecisionRecord,
   TaskRecord,
   WorkflowFormData,
@@ -215,11 +218,18 @@ type RuntimeFlowEdge = FlowEdge<
 type TaskRow = Readonly<
   Record<string, unknown> &
     TaskRecord & {
+      assigneeLabel: string;
       key: string;
       nodeLabel: string;
       statusLabel: string;
     }
 >;
+
+type MemberOption = Readonly<{
+  email: string | null;
+  id: string;
+  name: string;
+}>;
 
 interface ActivityStepRecord {
   readonly descriptionParts: readonly ActivityStepDescriptionPart[];
@@ -270,11 +280,21 @@ export default function ApprovalInstancePage(): ReactElement {
   const [returnTargetNodeId, setReturnTargetNodeId] = useState<string | null>(
     null,
   );
+  const [transferComment, setTransferComment] = useState('');
+  const [transferMember, setTransferMember] = useState<MemberOption | null>(
+    null,
+  );
+  const [transferMemberLoading, setTransferMemberLoading] = useState(false);
+  const [transferMemberOptions, setTransferMemberOptions] = useState<
+    readonly MemberOption[]
+  >([]);
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
   const trimmedRejectReason = rejectReason.trim();
   const trimmedReturnComment = returnComment.trim();
+  const trimmedTransferComment = transferComment.trim();
 
   useEffect((): void => {
     void refreshInstance();
@@ -330,6 +350,7 @@ export default function ApprovalInstancePage(): ReactElement {
     (): TaskRow[] =>
       tasks.map((task) => ({
         ...task,
+        assigneeLabel: readTaskAssigneeLabel(task),
         key: task.id,
         nodeLabel: readNodeDisplayLabel(
           task.nodeId,
@@ -408,9 +429,13 @@ export default function ApprovalInstancePage(): ReactElement {
     (): TableColumn<TaskRow>[] => [
       { dataIndex: 'nodeLabel', key: 'nodeLabel', title: '節點', width: 180 },
       {
-        dataIndex: 'assigneeMemberId',
         key: 'assigneeMemberId',
         title: '處理者',
+        render: (record: TaskRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {record.assigneeLabel}
+          </Typography>
+        ),
         width: 180,
       },
       {
@@ -456,10 +481,12 @@ export default function ApprovalInstancePage(): ReactElement {
     action,
     comment,
     returnToNodeId = null,
+    transferToMemberId = null,
   }: Readonly<{
-    action: 'APPROVED' | 'REJECTED' | 'RETURNED';
+    action: 'APPROVED' | 'REJECTED' | 'RETURNED' | 'TRANSFERRED';
     comment: string | null;
     returnToNodeId?: string | null;
+    transferToMemberId?: string | null;
   }>): Promise<void> {
     if (!currentTask) {
       return;
@@ -475,11 +502,15 @@ export default function ApprovalInstancePage(): ReactElement {
         decidedByMemberId: CURRENT_MEMBER_ID,
         returnToNodeId,
         taskId: currentTask.id,
+        transferToMemberId,
       });
       setRejectReasonModalOpen(false);
       setReturnModalOpen(false);
+      setTransferModalOpen(false);
       setRejectReason('');
       setReturnComment('');
+      setTransferComment('');
+      setTransferMember(null);
       setReturnTargetNodeId(null);
       setRejectReasonError(null);
       await refreshInstance();
@@ -522,6 +553,41 @@ export default function ApprovalInstancePage(): ReactElement {
     setReturnTargetNodeId(null);
   }
 
+  function openTransferModal(): void {
+    setTransferComment('');
+    setTransferMember(null);
+    setTransferModalOpen(true);
+    void handleSearchTransferMembers('');
+  }
+
+  function closeTransferModal(): void {
+    if (deciding) {
+      return;
+    }
+
+    setTransferModalOpen(false);
+    setTransferComment('');
+    setTransferMember(null);
+  }
+
+  async function handleSearchTransferMembers(
+    searchText: string,
+  ): Promise<void> {
+    setTransferMemberLoading(true);
+
+    try {
+      setTransferMemberOptions(
+        (await searchMembers(searchText))
+          .filter((member) => member.memberId !== CURRENT_MEMBER_ID)
+          .map(readMemberOption),
+      );
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setTransferMemberLoading(false);
+    }
+  }
+
   async function handleRejectConfirm(): Promise<void> {
     if (!trimmedRejectReason) {
       setRejectReasonError('請輸入拒絕原因');
@@ -531,6 +597,19 @@ export default function ApprovalInstancePage(): ReactElement {
     await handleDecision({
       action: 'REJECTED',
       comment: trimmedRejectReason,
+    });
+  }
+
+  async function handleTransferConfirm(): Promise<void> {
+    if (!transferMember) {
+      setError('請選擇轉派對象');
+      return;
+    }
+
+    await handleDecision({
+      action: 'TRANSFERRED',
+      comment: trimmedTransferComment || null,
+      transferToMemberId: transferMember.id,
     });
   }
 
@@ -639,6 +718,15 @@ export default function ApprovalInstancePage(): ReactElement {
                     退回
                   </Button>
                 ) : null}
+                <Button
+                  disabled={deciding}
+                  icon={UserIcon}
+                  iconType="leading"
+                  onClick={openTransferModal}
+                  variant="base-secondary"
+                >
+                  轉派
+                </Button>
                 <Button
                   disabled={deciding}
                   icon={DangerousOutlineIcon}
@@ -845,6 +933,87 @@ export default function ApprovalInstancePage(): ReactElement {
         <Modal
           cancelText="取消"
           confirmButtonProps={{
+            disabled: !transferMember,
+          }}
+          confirmText="送出轉派"
+          loading={deciding}
+          modalType="standard"
+          onCancel={closeTransferModal}
+          onClose={closeTransferModal}
+          onConfirm={(): void => void handleTransferConfirm()}
+          open={transferModalOpen}
+          showModalFooter
+          showModalHeader
+          size="regular"
+          supportingText="轉派後，原任務會保留轉派紀錄，新的待簽任務會指派給指定成員。"
+          title="轉派簽核"
+        >
+          <div style={MODAL_FORM_STYLE}>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              label="轉派對象"
+              layout={FormFieldLayout.STRETCH}
+              name="transferToMemberId"
+              required
+            >
+              <AutoComplete
+                asyncData
+                disabledOptionsFilter
+                emptyText="沒有符合的成員"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'transfer-member-search',
+                  spellCheck: false,
+                }}
+                loading={transferMemberLoading}
+                loadingText="搜尋成員中..."
+                mode="single"
+                onChange={(option): void =>
+                  setTransferMember(readMemberOptionFromValue(option))
+                }
+                onSearch={handleSearchTransferMembers}
+                onSearchTextChange={(searchText): void =>
+                  setTransferMember(
+                    readUniqueMemberOption(searchText, transferMemberOptions),
+                  )
+                }
+                onVisibilityChange={(open): void => {
+                  if (open) {
+                    void handleSearchTransferMembers('');
+                  }
+                }}
+                options={[...transferMemberOptions]}
+                placeholder="搜尋姓名、信箱或 member_id"
+                searchDebounceTime={300}
+                value={transferMember}
+              />
+            </FormField>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              label="轉派說明"
+              layout={FormFieldLayout.STRETCH}
+              name="transferComment"
+            >
+              <Textarea
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                  setTransferComment(event.target.value)
+                }
+                placeholder="可補充轉派原因"
+                ref={applyFullWidthTextareaHost}
+                resize="vertical"
+                rows={4}
+                style={REJECT_REASON_TEXTAREA_STYLE}
+                value={transferComment}
+              />
+            </FormField>
+          </div>
+        </Modal>
+        <Modal
+          cancelText="取消"
+          confirmButtonProps={{
             disabled: !selectedReturnTargetOption,
           }}
           confirmText="送出退回"
@@ -1044,6 +1213,13 @@ async function readMemberProfilesForTimeline({
       [
         ...activityLogs.map((activityLog) => activityLog.actorMemberId),
         ...tasks.map((task) => task.assigneeMemberId),
+        ...tasks.map((task) => task.originalAssigneeMemberId),
+        ...tasks.flatMap((task) =>
+          readDelegationChain(task.delegationChainJson).flatMap((step) => [
+            step.from,
+            step.to,
+          ]),
+        ),
       ].filter(isPresentText),
     ),
   ];
@@ -1550,8 +1726,19 @@ function readActivityDetail(
 ): string | null {
   if (activityLog.eventType === 'TASK_CREATED') {
     const assigneeMemberId = readStringField(payload, 'assigneeMemberId');
+    const originalAssigneeMemberId = readStringField(
+      payload,
+      'originalAssigneeMemberId',
+    );
 
-    return assigneeMemberId ? `待簽人：${assigneeMemberId}` : null;
+    if (!assigneeMemberId) {
+      return null;
+    }
+
+    return originalAssigneeMemberId &&
+      originalAssigneeMemberId !== assigneeMemberId
+      ? `待簽人：${assigneeMemberId}（原簽核人：${originalAssigneeMemberId}）`
+      : `待簽人：${assigneeMemberId}`;
   }
 
   if (activityLog.eventType === 'TASK_DECIDED') {
@@ -1561,11 +1748,17 @@ function readActivityDetail(
       ? `決議：${readTaskDecisionActionLabel(action)}`
       : null;
 
+    const transferToMemberId = readStringField(payload, 'transferToMemberId');
+
     return action === 'REJECTED' && comment
       ? [decisionLabel, `拒絕原因：${comment}`]
           .filter(isPresentText)
           .join(' · ')
-      : decisionLabel;
+      : action === 'TRANSFERRED'
+        ? [decisionLabel, `轉派給：${transferToMemberId ?? '-'}`]
+            .filter(isPresentText)
+            .join(' · ')
+        : decisionLabel;
   }
 
   if (activityLog.eventType === 'TOKEN_ADVANCED') {
@@ -1620,6 +1813,10 @@ function readActivityDetailParts(
     readStringField(payload, 'action') ?? taskDecision?.action ?? null;
   const comment =
     readStringField(payload, 'comment') ?? taskDecision?.comment ?? null;
+  const transferToMemberId =
+    readStringField(payload, 'transferToMemberId') ??
+    taskDecision?.transferToMemberId ??
+    null;
   const decisionLabel = action
     ? `決議：${readTaskDecisionActionLabel(action)}`
     : null;
@@ -1631,6 +1828,12 @@ function readActivityDetailParts(
       : null,
     action === 'RETURNED'
       ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
+      : null,
+    action === 'TRANSFERRED'
+      ? readTextDescriptionPart(`轉派給：${transferToMemberId ?? '-'}`)
+      : null,
+    action === 'TRANSFERRED'
+      ? readTextDescriptionPart(`轉派說明：${comment ?? '-'}`)
       : null,
   ].filter(isActivityDescriptionPart);
 }
@@ -1732,6 +1935,19 @@ function readTaskStatusLabel(status: TaskRecord['status']): string {
   return status;
 }
 
+function readTaskAssigneeLabel(task: TaskRecord): string {
+  const delegationChain = readDelegationChain(task.delegationChainJson);
+
+  if (
+    delegationChain.length === 0 ||
+    task.originalAssigneeMemberId === task.assigneeMemberId
+  ) {
+    return task.assigneeMemberId;
+  }
+
+  return `${task.assigneeMemberId}（原：${task.originalAssigneeMemberId}）`;
+}
+
 function readInstanceStateLabel(state: string): string {
   if (state === 'APPROVED') {
     return '已同意';
@@ -1786,6 +2002,89 @@ function readStringField(
   const value = record[key];
 
   return typeof value === 'string' ? value : null;
+}
+
+function readMemberOption(member: MemberProfileRecord): MemberOption {
+  return {
+    email: member.email,
+    id: member.memberId,
+    name: `${member.name} · ${member.email}`,
+  };
+}
+
+function readMemberOptionFromValue(value: unknown): MemberOption | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const email = value.email;
+  const id = value.id;
+  const name = value.name;
+
+  return typeof id === 'string' && typeof name === 'string'
+    ? { email: typeof email === 'string' ? email : null, id, name }
+    : null;
+}
+
+function readUniqueMemberOption(
+  searchText: string,
+  options: readonly MemberOption[],
+): MemberOption | null {
+  const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+
+  if (!normalizedSearchText) {
+    return null;
+  }
+
+  const matches = options.filter((option) =>
+    [option.id, option.name, option.email ?? ''].some((value) =>
+      value.toLocaleLowerCase().includes(normalizedSearchText),
+    ),
+  );
+
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+interface DelegationChainStep {
+  readonly from: string;
+  readonly reason: string;
+  readonly ruleId: string | null;
+  readonly to: string;
+}
+
+function readDelegationChain(value: string): readonly DelegationChainStep[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    return Array.isArray(parsed)
+      ? parsed
+          .map((item): DelegationChainStep | null =>
+            isRecord(item) ? readDelegationChainStep(item) : null,
+          )
+          .filter((item): item is DelegationChainStep => item !== null)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function readDelegationChainStep(
+  item: Readonly<Record<string, unknown>>,
+): DelegationChainStep | null {
+  const from = readStringField(item, 'from');
+  const to = readStringField(item, 'to');
+  const reason = readStringField(item, 'reason');
+
+  if (!from || !to || !reason) {
+    return null;
+  }
+
+  return {
+    from,
+    reason,
+    ruleId: readStringField(item, 'ruleId'),
+    to,
+  };
 }
 
 function readNumberField(

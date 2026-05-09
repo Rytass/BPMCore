@@ -66,6 +66,7 @@ export interface TaskRecord {
   readonly assigneeMemberId: string;
   readonly completedAt: string | null;
   readonly createdAt: string;
+  readonly delegationChainJson: string;
   readonly id: string;
   readonly instanceId: string;
   readonly nodeId: string;
@@ -111,6 +112,29 @@ export interface MemberProfileRecord {
   readonly email: string;
   readonly memberId: string;
   readonly name: string;
+}
+
+export type DelegationScopeType = 'ALL' | 'CONDITION_BASED' | 'TEMPLATE_LIST';
+
+export type DelegationRuleStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+
+export interface DelegationRuleRecord {
+  readonly agentMemberId: string;
+  readonly createdAt: string;
+  readonly createdByMemberId: string | null;
+  readonly endAt: string | null;
+  readonly id: string;
+  readonly principalMemberId: string;
+  readonly priority: number;
+  readonly requiresConfirmation: boolean;
+  readonly revokedAt: string | null;
+  readonly revokedByMemberId: string | null;
+  readonly scopeConditionCel: string | null;
+  readonly scopeTemplateIds: readonly string[];
+  readonly scopeType: DelegationScopeType;
+  readonly startAt: string;
+  readonly status: DelegationRuleStatus;
+  readonly updatedAt: string;
 }
 
 export interface ApprovalTemplateRecord {
@@ -181,6 +205,22 @@ interface TaskDecisionsQueryData {
 
 interface MembersQueryData {
   readonly members: readonly MemberProfileRecord[];
+}
+
+interface SearchMembersQueryData {
+  readonly searchMembers: readonly MemberProfileRecord[];
+}
+
+interface DelegationRulesQueryData {
+  readonly delegationRules: readonly DelegationRuleRecord[];
+}
+
+interface CreateDelegationRuleMutationData {
+  readonly createDelegationRule: DelegationRuleRecord;
+}
+
+interface RevokeDelegationRuleMutationData {
+  readonly revokeDelegationRule: DelegationRuleRecord;
 }
 
 interface SubmitApprovalInstanceMutationData {
@@ -399,6 +439,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         assigneeMemberId
         completedAt
         createdAt
+        delegationChainJson
         id
         instanceId
         nodeId
@@ -447,6 +488,7 @@ export async function listInboxTasks(
         assigneeMemberId
         completedAt
         createdAt
+        delegationChainJson
         id
         instanceId
         nodeId
@@ -472,6 +514,7 @@ export async function listApprovalHistoryTasks(
         assigneeMemberId
         completedAt
         createdAt
+        delegationChainJson
         id
         instanceId
         nodeId
@@ -529,6 +572,133 @@ export async function resolveMemberProfiles(
   );
 
   return data.members;
+}
+
+export async function searchMembers(
+  searchText: string,
+): Promise<readonly MemberProfileRecord[]> {
+  const data = await requestGraphQl<SearchMembersQueryData>(
+    `query SearchMembers($searchText: String!) {
+      searchMembers(searchText: $searchText) {
+        email
+        memberId
+        name
+      }
+    }`,
+    { searchText },
+  );
+
+  return data.searchMembers;
+}
+
+export async function listDelegationRules({
+  includeInactive = true,
+  principalMemberId = null,
+}: {
+  readonly includeInactive?: boolean;
+  readonly principalMemberId?: string | null;
+} = {}): Promise<readonly DelegationRuleRecord[]> {
+  const data = await requestGraphQl<DelegationRulesQueryData>(
+    `query DelegationRules($includeInactive: Boolean, $principalMemberId: String) {
+      delegationRules(
+        includeInactive: $includeInactive
+        principalMemberId: $principalMemberId
+      ) {
+        agentMemberId
+        createdAt
+        createdByMemberId
+        endAt
+        id
+        principalMemberId
+        priority
+        requiresConfirmation
+        revokedAt
+        revokedByMemberId
+        scopeConditionCel
+        scopeTemplateIds
+        scopeType
+        startAt
+        status
+        updatedAt
+      }
+    }`,
+    { includeInactive, principalMemberId },
+  );
+
+  return data.delegationRules;
+}
+
+export async function createDelegationRule(input: {
+  readonly agentMemberId: string;
+  readonly createdByMemberId: string | null;
+  readonly endAt: string | null;
+  readonly principalMemberId: string;
+  readonly priority: number;
+  readonly requiresConfirmation: boolean;
+  readonly scopeConditionCel: string | null;
+  readonly scopeTemplateIds: readonly string[];
+  readonly scopeType: DelegationScopeType;
+  readonly startAt: string | null;
+}): Promise<DelegationRuleRecord> {
+  const data = await requestGraphQl<CreateDelegationRuleMutationData>(
+    `mutation CreateDelegationRule($input: CreateDelegationRuleInput!) {
+      createDelegationRule(input: $input) {
+        agentMemberId
+        createdAt
+        createdByMemberId
+        endAt
+        id
+        principalMemberId
+        priority
+        requiresConfirmation
+        revokedAt
+        revokedByMemberId
+        scopeConditionCel
+        scopeTemplateIds
+        scopeType
+        startAt
+        status
+        updatedAt
+      }
+    }`,
+    { input },
+  );
+
+  return data.createDelegationRule;
+}
+
+export async function revokeDelegationRule({
+  id,
+  revokedByMemberId,
+}: {
+  readonly id: string;
+  readonly revokedByMemberId: string | null;
+}): Promise<DelegationRuleRecord> {
+  const data = await requestGraphQl<RevokeDelegationRuleMutationData>(
+    `mutation RevokeDelegationRule($id: String!, $revokedByMemberId: String) {
+      revokeDelegationRule(id: $id, revokedByMemberId: $revokedByMemberId) {
+        agentMemberId
+        createdAt
+        createdByMemberId
+        endAt
+        id
+        principalMemberId
+        priority
+        requiresConfirmation
+        revokedAt
+        revokedByMemberId
+        scopeConditionCel
+        scopeTemplateIds
+        scopeType
+        startAt
+        status
+        updatedAt
+      }
+    }`,
+    { id, revokedByMemberId },
+  );
+
+  return data.revokeDelegationRule;
 }
 
 export async function submitApprovalInstance({

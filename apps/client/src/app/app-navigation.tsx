@@ -12,6 +12,7 @@ import {
   FolderIcon,
   HomeIcon,
   MailUnreadIcon,
+  ShareIcon,
   SystemIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
@@ -30,6 +31,7 @@ const mainItems: readonly NavigationItem[] = [
   { href: '/forms', icon: FileIcon, label: '表單設計' },
   { href: '/admin/orgs', icon: SystemIcon, label: '組織管理' },
   { href: '/admin/users', icon: UserIcon, label: '會員對照' },
+  { href: '/admin/delegations', icon: ShareIcon, label: '代理設定' },
 ];
 
 export function renderAppNavigation(activeHref: string): ReactElement {
