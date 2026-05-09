@@ -45,6 +45,18 @@ test.describe('M1 W3 template designer', () => {
         .filter({ hasText: 'lin.ceo@example.internal' }),
     ).toBeVisible();
     await expect(page.locator('.react-flow__edge')).toHaveCount(2);
+    await expect(page.getByText('重送策略')).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: '重新送出後從開始重跑' }),
+    ).toBeVisible();
+    await page.getByRole('combobox', { name: '重新送出後從開始重跑' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '重新送出後回到退回節點' })
+      .click();
+    await expect(
+      page.getByRole('combobox', { name: '重新送出後回到退回節點' }),
+    ).toBeVisible();
 
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await page.getByRole('button', { name: '發布版本' }).click();
@@ -75,6 +87,28 @@ test.describe('M1 W3 template designer', () => {
     await expect(page.getByText('其他條件都不符合時')).toBeVisible();
     await page.keyboard.press('Delete');
     await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+  });
+
+  test('shows readable dry run routing details', async ({
+    page,
+  }): Promise<void> => {
+    await mockTemplateGraphQl(page);
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+    await page.getByRole('button', { name: '試跑流程' }).click();
+    await page.getByRole('button', { name: '執行試跑' }).click();
+
+    await expect(page.getByText('試跑通過')).toBeVisible();
+    await expect(page.getByText('來源線段：其他情況')).toBeVisible();
+    await expect(
+      page.getByText('其他條件不符合時採用預設路徑。'),
+    ).toBeVisible();
+    await expect(
+      page.getByText('進入條件：符合 · form.amount > 0'),
+    ).toBeVisible();
   });
 });
 
@@ -235,6 +269,50 @@ async function mockTemplateGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('mutation DryRunApprovalWorkflow')) {
+      await fulfillGraphQl(route, {
+        dryRunApprovalWorkflow: {
+          errors: [],
+          steps: [
+            {
+              assigneeMemberId: null,
+              edgeDefault: null,
+              edgeId: null,
+              edgeLabel: null,
+              edgeMatched: null,
+              edgeReason: null,
+              entryCondition: null,
+              entryConditionMatched: null,
+              id: 'dry-run-step-1',
+              message: '節點條件通過。',
+              nodeId: 'start',
+              nodeLabel: '開始',
+              nodeType: 'startEvent',
+              status: 'PASSED',
+            },
+            {
+              assigneeMemberId: 'member-001',
+              edgeDefault: true,
+              edgeId: 'edge_gateway_default',
+              edgeLabel: '其他情況',
+              edgeMatched: true,
+              edgeReason: '其他條件不符合時採用預設路徑。',
+              entryCondition: 'form.amount > 0',
+              entryConditionMatched: true,
+              id: 'dry-run-step-2',
+              message: '將建立待簽任務。',
+              nodeId: 'task_default',
+              nodeLabel: '一般簽核',
+              nodeType: 'userTask',
+              status: 'WAITING',
+            },
+          ],
+          valid: true,
+        },
+      });
+      return;
+    }
+
     await fulfillGraphQl(route, {});
   });
 }
@@ -286,7 +364,9 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
   };
 }
 
-function workflowDefinitionHasLinearTask(workflowDefinitionJson: string): boolean {
+function workflowDefinitionHasLinearTask(
+  workflowDefinitionJson: string,
+): boolean {
   const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
 
   if (!isRecord(parsedValue) || !Array.isArray(parsedValue.edges)) {
