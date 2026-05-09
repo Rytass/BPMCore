@@ -486,7 +486,10 @@ async function handleReturn(task, targetNodeId) {
 - 編輯 form_data → 再次 submit → state 回 RUNNING
 - 主動撤銷 → state = CANCELLED
 
-> 重新提交時是否「**重跑全程**」由模板設定決定（預設重跑）。
+重新提交策略由節點的 `returnBehavior.resubmitStrategy` 決定：
+
+- `RESTART`：預設策略，發起人重新送出後從 Start 重跑。
+- `FROM_RETURN_POINT`：發起人重新送出後，直接回到原本執行退回的簽核節點。
 
 ### 5.4 轉派
 

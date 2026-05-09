@@ -59,3 +59,4 @@
 - 2026-05-06: M2 W6 workflow branching runtime is implemented in the engine with structured edge condition evaluation, exclusive gateway routing, multi-outgoing token fork, AND/OR predecessor joins, sibling cancellation for OR joins, and API unit coverage.
 - 2026-05-06: Workflow launch entry UI is implemented with a `/instances/new` launch center, dashboard/inbox/template shortcuts, launchability filtering, and Playwright coverage.
 - 2026-05-08: W7 1/2 scope completed with CEL-backed policy/condition evaluation, approver resolver support, return/cancel/resubmit instance controls, workflow dry run API/UI, and full lint/typecheck/build/e2e/browser verification.
+- 2026-05-09: W7 completed with configurable return resubmit strategy (`RESTART` / `FROM_RETURN_POINT`), richer workflow dry run routing diagnostics, designer UI controls, API regression coverage, and full lint/typecheck/test/build/e2e verification.

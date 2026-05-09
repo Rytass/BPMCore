@@ -110,6 +110,7 @@ interface UserTaskNode extends BaseNode {
     returnBehavior: {
       allowReturn: boolean;
       allowedTargets: 'PREVIOUS' | 'INITIATOR' | 'ANY'; // 可退回的範圍
+      resubmitStrategy?: 'RESTART' | 'FROM_RETURN_POINT'; // 發起人重送後的續跑策略
     };
 
     // 加簽 / 轉派
@@ -127,6 +128,9 @@ interface UserTaskNode extends BaseNode {
     notification?: NotificationOverride;
   };
 }
+
+// returnBehavior.resubmitStrategy 預設 RESTART，代表退回發起人後重新送出會從 Start 重跑。
+// 若設為 FROM_RETURN_POINT，發起人修正後會直接回到原本執行退回的簽核節點。
 
 type ApproverResolver =
   | { type: 'DIRECT'; memberIds: string[] } // 設計器 DIRECT 模式只放一位主要簽核者
