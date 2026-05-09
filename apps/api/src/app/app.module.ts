@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { HealthController } from '../health/health.controller';
+import { DelegationModule } from '../delegation/delegation.module';
 import { IdentityModule } from '../identity/identity.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { FormModule } from '../form/form.module';
@@ -34,6 +35,7 @@ import { SystemResolver } from '../system/system.resolver';
     OrganizationModule,
     FormModule,
     TemplateModule,
+    DelegationModule,
     WorkflowEngineModule,
   ],
   controllers: [HealthController],

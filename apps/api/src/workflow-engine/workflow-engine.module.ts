@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConditionModule } from '../condition/condition.module';
+import { DelegationModule } from '../delegation/delegation.module';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { MembershipEntity } from '../organization/membership.entity';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
@@ -17,6 +18,7 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
 @Module({
   imports: [
     ConditionModule,
+    DelegationModule,
     TypeOrmModule.forFeature([
       ActivityLogEntity,
       ApprovalInstanceEntity,

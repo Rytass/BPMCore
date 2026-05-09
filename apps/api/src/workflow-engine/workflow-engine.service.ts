@@ -15,6 +15,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, Repository } from 'typeorm';
+import {
+  DelegationService,
+  DelegationStep,
+} from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { ConditionService } from '../condition/condition.service';
@@ -90,6 +94,7 @@ export class WorkflowEngineService {
     @InjectRepository(FormDefinitionVersionEntity)
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
     private readonly conditionService: ConditionService,
+    private readonly delegationService: DelegationService,
   ) {}
 
   async submitApprovalInstance(
@@ -284,7 +289,8 @@ export class WorkflowEngineService {
         if (
           input.action !== TaskDecisionActionEnum.APPROVED &&
           input.action !== TaskDecisionActionEnum.REJECTED &&
-          input.action !== TaskDecisionActionEnum.RETURNED
+          input.action !== TaskDecisionActionEnum.RETURNED &&
+          input.action !== TaskDecisionActionEnum.TRANSFERRED
         ) {
           throw new ConflictException(
             `Task decision action ${input.action} is not supported yet`,
@@ -297,6 +303,23 @@ export class WorkflowEngineService {
           !decisionComment
         ) {
           throw new BadRequestException('Reject decision comment is required');
+        }
+        const transferToMemberId = input.transferToMemberId?.trim() || null;
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          !transferToMemberId
+        ) {
+          throw new BadRequestException('Transfer target member is required');
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          transferToMemberId === task.assigneeMemberId
+        ) {
+          throw new ConflictException(
+            'Transfer target must be a different member',
+          );
         }
 
         const instance = await instanceRepository.findOne({
@@ -333,9 +356,24 @@ export class WorkflowEngineService {
             returnToNodeId,
             signatureId: null,
             taskId: task.id,
-            transferToMemberId: input.transferToMemberId?.trim() || null,
+            transferToMemberId,
           }),
         );
+
+        if (input.action === TaskDecisionActionEnum.TRANSFERRED) {
+          await this.transferTask(
+            manager,
+            instance,
+            task,
+            decision,
+            transferToMemberId,
+            decisionComment,
+            decidedAt,
+          );
+
+          return decision;
+        }
+
         const completedTask = await taskRepository.save({
           ...task,
           completedAt: decidedAt,
@@ -1417,11 +1455,25 @@ export class WorkflowEngineService {
       instance,
       node,
     );
+    const delegationResolution = await this.delegationService.resolveAssignee(
+      assigneeMemberId,
+      {
+        formData: instance.formData,
+        initiatorMemberId: instance.initiatorMemberId,
+        initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
+        instanceId: instance.id,
+        nodeId: node.id,
+        state: instance.state,
+        templateId: instance.templateId,
+        templateVersionId: instance.templateVersionId,
+        title: instance.title,
+      },
+    );
     const task = await taskRepository.save(
       taskRepository.create({
-        assigneeMemberId,
+        assigneeMemberId: delegationResolution.finalAssigneeMemberId,
         completedAt: null,
-        delegationChain: [],
+        delegationChain: delegationResolution.delegationChain,
         instanceId: instance.id,
         nodeId: node.id,
         openedAt: null,
@@ -1443,12 +1495,90 @@ export class WorkflowEngineService {
         instanceId: instance.id,
         nodeId: node.id,
         payload: {
-          assigneeMemberId,
+          assigneeMemberId: delegationResolution.finalAssigneeMemberId,
+          delegationChain: delegationResolution.delegationChain,
+          originalAssigneeMemberId: assigneeMemberId,
           tokenId: token.id,
         },
         taskId: task.id,
       }),
     );
+  }
+
+  private async transferTask(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    task: TaskEntity,
+    decision: TaskDecisionEntity,
+    transferToMemberId: string | null,
+    decisionComment: string | null,
+    decidedAt: Date,
+  ): Promise<void> {
+    if (!transferToMemberId) {
+      throw new BadRequestException('Transfer target member is required');
+    }
+
+    const taskRepository = manager.getRepository(TaskEntity);
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const nextDelegationChain: readonly DelegationStep[] = [
+      ...readDelegationSteps(task.delegationChain),
+      {
+        from: task.assigneeMemberId,
+        reason: 'MANUAL_TRANSFER',
+        ruleId: null,
+        to: transferToMemberId,
+      },
+    ];
+    const transferredTask = await taskRepository.save({
+      ...task,
+      completedAt: decidedAt,
+      delegationChain: nextDelegationChain,
+      status: TaskStatusEnum.TRANSFERRED,
+    });
+    const nextTask = await taskRepository.save(
+      taskRepository.create({
+        assigneeMemberId: transferToMemberId,
+        completedAt: null,
+        delegationChain: nextDelegationChain,
+        instanceId: task.instanceId,
+        nodeId: task.nodeId,
+        openedAt: null,
+        originalAssigneeMemberId: task.originalAssigneeMemberId,
+        slaDueAt: task.slaDueAt,
+        status: TaskStatusEnum.PENDING,
+        tokenId: task.tokenId,
+      }),
+    );
+
+    await activityRepository.save([
+      activityRepository.create({
+        actorMemberId: task.assigneeMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: decisionComment,
+          decisionId: decision.id,
+          transferToMemberId,
+        },
+        taskId: transferredTask.id,
+      }),
+      activityRepository.create({
+        actorMemberId: task.assigneeMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          assigneeMemberId: transferToMemberId,
+          delegationChain: nextDelegationChain,
+          originalAssigneeMemberId: task.originalAssigneeMemberId,
+          tokenId: task.tokenId,
+          transferredFromTaskId: task.id,
+        },
+        taskId: nextTask.id,
+      }),
+    ]);
   }
 
   private async resolveAssigneeMemberId(
@@ -2105,6 +2235,33 @@ function buildWorkflowExpressionContext(
       title: instance.title,
     },
   };
+}
+
+function readDelegationSteps(
+  value: readonly Readonly<Record<string, unknown>>[],
+): readonly DelegationStep[] {
+  return value
+    .map((step): DelegationStep | null => {
+      const from = readStringValue(step.from);
+      const to = readStringValue(step.to);
+      const reason = readStringValue(step.reason);
+
+      if (!from || !to || !reason) {
+        return null;
+      }
+
+      return {
+        from,
+        reason,
+        ruleId: readStringValue(step.ruleId),
+        to,
+      };
+    })
+    .filter((step): step is DelegationStep => step !== null);
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
 }
 
 function buildDryRunExpressionContext(

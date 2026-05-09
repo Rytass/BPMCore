@@ -1,5 +1,9 @@
 import { WorkflowDefinition } from '@bpm/shared/workflow';
 import { ConditionService } from '../condition/condition.service';
+import {
+  DelegationResolution,
+  DelegationService,
+} from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
@@ -122,6 +126,52 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('applies delegation when creating a user task', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      delegationResolution: {
+        delegationChain: [
+          {
+            from: 'member-finance',
+            reason: 'ALL',
+            ruleId: 'delegation-rule-1',
+            to: 'member-101',
+          },
+        ],
+        finalAssigneeMemberId: 'member-101',
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks).toEqual([
+      expect.objectContaining({
+        assigneeMemberId: 'member-101',
+        delegationChain: [
+          {
+            from: 'member-finance',
+            reason: 'ALL',
+            ruleId: 'delegation-rule-1',
+            to: 'member-101',
+          },
+        ],
+        originalAssigneeMemberId: 'member-finance',
+      }),
+    ]);
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        payload: expect.objectContaining({
+          assigneeMemberId: 'member-101',
+          originalAssigneeMemberId: 'member-finance',
+        }),
+      }),
+    );
+  });
+
   it('approves a task and completes the linear instance', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -232,6 +282,64 @@ describe('WorkflowEngineService', () => {
       completedAt: expect.any(Date),
       state: ApprovalInstanceStateEnum.REJECTED,
     });
+  });
+
+  it('transfers a task without advancing the token', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const decision = await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: '請改由財務主管處理',
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-101',
+    });
+
+    expect(decision).toMatchObject({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      transferToMemberId: 'member-101',
+    });
+    expect(fixture.savedTasks).toEqual([
+      expect.objectContaining({
+        id: 'task-1',
+        status: TaskStatusEnum.TRANSFERRED,
+      }),
+      expect.objectContaining({
+        assigneeMemberId: 'member-101',
+        delegationChain: [
+          {
+            from: 'member-finance',
+            reason: 'MANUAL_TRANSFER',
+            ruleId: null,
+            to: 'member-101',
+          },
+        ],
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+    ]);
+    expect(fixture.savedProcessToken).toBeNull();
+    expect(fixture.savedActivityLogs.map((log) => log.eventType)).toEqual([
+      ActivityLogEventTypeEnum.TASK_DECIDED,
+      ActivityLogEventTypeEnum.TASK_CREATED,
+    ]);
   });
 
   it('lists pending inbox tasks by assignee', async (): Promise<void> => {
@@ -530,6 +638,7 @@ interface ServiceFixture {
 
 function createServiceFixture({
   currentVersionId,
+  delegationResolution,
   decisionTask,
   decisionToken,
   formVersionStatus,
@@ -540,6 +649,7 @@ function createServiceFixture({
   templateVersionStatus,
 }: {
   readonly currentVersionId: string | null;
+  readonly delegationResolution?: DelegationResolution;
   readonly decisionTask?: TaskEntity;
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
@@ -585,6 +695,17 @@ function createServiceFixture({
   });
   const taskDecisionRepository = createRepository<TaskDecisionEntity>({});
   const activityLogRepository = createRepository<ActivityLogEntity>({});
+  const delegationService = {
+    resolveAssignee: jest.fn(
+      (assigneeMemberId: string): Promise<DelegationResolution> =>
+        Promise.resolve(
+          delegationResolution ?? {
+            delegationChain: [],
+            finalAssigneeMemberId: assigneeMemberId,
+          },
+        ),
+    ),
+  };
   const templateRepository = createRepository<ApprovalTemplateEntity>({
     findOne: jest.fn(() => Promise.resolve(template)),
   });
@@ -916,6 +1037,7 @@ function createServiceFixture({
       templateVersionRepository,
       formVersionRepository,
       new ConditionService(),
+      delegationService as unknown as DelegationService,
     ),
   };
 }
