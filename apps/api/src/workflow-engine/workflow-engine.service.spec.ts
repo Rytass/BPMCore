@@ -6,6 +6,7 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { NotificationService } from '../notification/notification.service';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
@@ -124,6 +125,30 @@ describe('WorkflowEngineService', () => {
         ActivityLogEventTypeEnum.TASK_CREATED,
       ],
     );
+    expect(
+      fixture.notificationService.createTaskAssignedNotification,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instance: expect.objectContaining({ id: 'instance-1' }),
+        node: expect.objectContaining({ id: 'task_finance' }),
+        task: expect.objectContaining({ assigneeMemberId: 'member-finance' }),
+      }),
+    );
+  });
+
+  it('sets task SLA due time from user task SLA config', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        slaDuration: 'PT2H',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks[0]?.slaDueAt).toBeInstanceOf(Date);
   });
 
   it('applies delegation when creating a user task', async (): Promise<void> => {
@@ -620,6 +645,10 @@ interface ServiceFixture {
     Promise<unknown>,
     [string, readonly unknown[]]
   >;
+  readonly notificationService: Pick<
+    NotificationService,
+    'createTaskAssignedNotification'
+  >;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
@@ -705,6 +734,9 @@ function createServiceFixture({
           },
         ),
     ),
+  };
+  const notificationService = {
+    createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
   };
   const templateRepository = createRepository<ApprovalTemplateEntity>({
     findOne: jest.fn(() => Promise.resolve(template)),
@@ -1038,7 +1070,9 @@ function createServiceFixture({
       formVersionRepository,
       new ConditionService(),
       delegationService as unknown as DelegationService,
+      notificationService as unknown as NotificationService,
     ),
+    notificationService,
   };
 }
 
@@ -1229,7 +1263,11 @@ function createTask(value: Partial<TaskEntity>): TaskEntity {
   });
 }
 
-function createLinearUserTaskWorkflow(): WorkflowDefinition {
+function createLinearUserTaskWorkflow({
+  slaDuration = null,
+}: {
+  readonly slaDuration?: string | null;
+} = {}): WorkflowDefinition {
   return {
     edges: [
       {
@@ -1270,6 +1308,15 @@ function createLinearUserTaskWorkflow(): WorkflowDefinition {
             allowReturn: false,
             allowedTargets: 'PREVIOUS',
           },
+          ...(slaDuration
+            ? {
+                sla: {
+                  duration: slaDuration,
+                  onTimeout: 'REMIND' as const,
+                  warningAt: 0.5,
+                },
+              }
+            : {}),
         },
         id: 'task_finance',
         position: { x: 300, y: 160 },

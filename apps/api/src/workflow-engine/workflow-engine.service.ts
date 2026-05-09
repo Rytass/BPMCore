@@ -21,6 +21,10 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import {
+  calculateTaskSlaDueAt,
+  NotificationService,
+} from '../notification/notification.service';
 import { ConditionService } from '../condition/condition.service';
 import { MembershipEntity } from '../organization/membership.entity';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
@@ -95,6 +99,7 @@ export class WorkflowEngineService {
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
     private readonly conditionService: ConditionService,
     private readonly delegationService: DelegationService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async submitApprovalInstance(
@@ -1469,16 +1474,18 @@ export class WorkflowEngineService {
         title: instance.title,
       },
     );
+    const now = new Date();
     const task = await taskRepository.save(
       taskRepository.create({
         assigneeMemberId: delegationResolution.finalAssigneeMemberId,
         completedAt: null,
+        createdAt: now,
         delegationChain: delegationResolution.delegationChain,
         instanceId: instance.id,
         nodeId: node.id,
         openedAt: null,
         originalAssigneeMemberId: assigneeMemberId,
-        slaDueAt: null,
+        slaDueAt: calculateTaskSlaDueAt({ node, now }),
         status: TaskStatusEnum.PENDING,
         tokenId: token.id,
       }),
@@ -1503,6 +1510,12 @@ export class WorkflowEngineService {
         taskId: task.id,
       }),
     );
+    await this.notificationService.createTaskAssignedNotification({
+      instance,
+      manager,
+      node,
+      task,
+    });
   }
 
   private async transferTask(
@@ -1579,6 +1592,20 @@ export class WorkflowEngineService {
         taskId: nextTask.id,
       }),
     ]);
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
+
+    if (node.type === 'userTask') {
+      await this.notificationService.createTaskAssignedNotification({
+        instance,
+        manager,
+        node,
+        task: nextTask,
+        transferred: true,
+      });
+    }
   }
 
   private async resolveAssigneeMemberId(

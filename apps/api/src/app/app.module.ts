@@ -6,6 +6,7 @@ import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { HealthController } from '../health/health.controller';
 import { DelegationModule } from '../delegation/delegation.module';
 import { IdentityModule } from '../identity/identity.module';
+import { NotificationModule } from '../notification/notification.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { FormModule } from '../form/form.module';
 import { TemplateModule } from '../template/template.module';
@@ -36,6 +37,7 @@ import { SystemResolver } from '../system/system.resolver';
     FormModule,
     TemplateModule,
     DelegationModule,
+    NotificationModule,
     WorkflowEngineModule,
   ],
   controllers: [HealthController],

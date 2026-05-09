@@ -1,0 +1,39 @@
+import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { NotificationPreferenceEntity } from './notification-preference.entity';
+import { NotificationEntity } from './notification.entity';
+import { NotificationService } from './notification.service';
+
+@Resolver()
+export class NotificationQueries {
+  constructor(private readonly notificationService: NotificationService) {}
+
+  @Query(() => [NotificationEntity])
+  async notifications(
+    @Args('recipientMemberId', { type: () => String })
+    recipientMemberId: string,
+    @Args('includeRead', { nullable: true, type: () => Boolean })
+    includeRead?: boolean | null,
+  ): Promise<readonly NotificationEntity[]> {
+    return this.notificationService.listNotifications({
+      includeRead: includeRead ?? false,
+      recipientMemberId,
+    });
+  }
+
+  @Query(() => Int)
+  async unreadNotificationCount(
+    @Args('recipientMemberId', { type: () => String })
+    recipientMemberId: string,
+  ): Promise<number> {
+    return this.notificationService.countUnreadNotifications(
+      recipientMemberId,
+    );
+  }
+
+  @Query(() => NotificationPreferenceEntity)
+  async notificationPreference(
+    @Args('memberId', { type: () => String }) memberId: string,
+  ): Promise<NotificationPreferenceEntity> {
+    return this.notificationService.getPreference(memberId);
+  }
+}
