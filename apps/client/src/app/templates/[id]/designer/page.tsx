@@ -75,6 +75,7 @@ import {
   WorkflowEdgeData,
   WorkflowNode,
   WorkflowNodeTriggerMode,
+  ReturnResubmitStrategy,
 } from '@bpm/shared/workflow';
 import { renderAppNavigation } from '../../../app-navigation';
 import {
@@ -143,6 +144,10 @@ type InitiatorPolicyModeOption = Readonly<{
 }>;
 type InitiatorPolicyValueOption = Readonly<{
   id: string;
+  name: string;
+}>;
+type ReturnResubmitStrategyOption = Readonly<{
+  id: ReturnResubmitStrategy;
   name: string;
 }>;
 type WorkflowConnectionCandidate = Readonly<{
@@ -394,6 +399,11 @@ const NODE_TRIGGER_MODE_OPTIONS: readonly {
   { id: 'AND', name: '全部前置完成' },
   { id: 'OR', name: '任一前置完成' },
 ];
+const RETURN_RESUBMIT_STRATEGY_OPTIONS: readonly ReturnResubmitStrategyOption[] =
+  [
+    { id: 'RESTART', name: '重新送出後從開始重跑' },
+    { id: 'FROM_RETURN_POINT', name: '重新送出後回到退回節點' },
+  ];
 const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
   { id: 'EQUALS', name: '等於' },
   { id: 'NOT_EQUALS', name: '不等於' },
@@ -969,6 +979,29 @@ export default function TemplateDesignerPage(): ReactElement {
     );
   }
 
+  function updateUserTaskReturnResubmitStrategy(
+    resubmitStrategy: ReturnResubmitStrategy,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    updateNode(selectedNode.id, (node) =>
+      node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              returnBehavior: {
+                ...node.data.returnBehavior,
+                resubmitStrategy,
+              },
+            },
+          }
+        : node,
+    );
+  }
+
   function updateServiceAction(action: ServiceAction): void {
     if (!selectedNode || selectedNode.type !== 'serviceTask') {
       return;
@@ -1431,8 +1464,20 @@ export default function TemplateDesignerPage(): ReactElement {
                     {step.assigneeMemberId
                       ? ` · 處理者：${step.assigneeMemberId}`
                       : ''}
-                    {step.edgeId ? ` · 線段：${step.edgeId}` : ''}
+                    {step.edgeLabel ? ` · 來源線段：${step.edgeLabel}` : ''}
                   </Typography>
+                  {step.edgeReason ? (
+                    <Typography color="text-neutral" variant="caption">
+                      {step.edgeReason}
+                    </Typography>
+                  ) : null}
+                  {step.entryCondition ? (
+                    <Typography color="text-neutral" variant="caption">
+                      進入條件：
+                      {step.entryConditionMatched ? '符合' : '不符合'} ·{' '}
+                      {step.entryCondition}
+                    </Typography>
+                  ) : null}
                   <Typography color="text-neutral" variant="body">
                     {step.message}
                   </Typography>
@@ -1645,44 +1690,74 @@ export default function TemplateDesignerPage(): ReactElement {
       resolver.type === 'DIRECT'
         ? readPrimaryMemberOption(resolver.memberIds, memberOptions)
         : null;
+    const resubmitStrategy =
+      node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
 
     return (
-      <FormField
-        density={FormFieldDensity.WIDE}
-        fullWidth
-        label="簽核者"
-        layout={FormFieldLayout.STRETCH}
-        name="memberId"
-        required
-      >
-        <AutoComplete
-          asyncData
-          disabledOptionsFilter
-          emptyText="沒有符合的成員"
-          inputProps={{
-            autoCapitalize: 'none',
-            autoCorrect: 'off',
-            name: 'workflow-approver-search',
-            spellCheck: false,
-          }}
-          loading={memberLoading}
-          loadingText="搜尋成員中..."
-          mode="single"
-          onChange={(option): void =>
-            updateUserTaskResolver(option?.id ?? null)
-          }
-          onSearch={handleSearchMembers}
-          onVisibilityChange={(open): void => {
-            if (open) {
-              void handleSearchMembers('');
+      <>
+        <FormField
+          density={FormFieldDensity.WIDE}
+          fullWidth
+          label="簽核者"
+          layout={FormFieldLayout.STRETCH}
+          name="memberId"
+          required
+        >
+          <AutoComplete
+            asyncData
+            disabledOptionsFilter
+            emptyText="沒有符合的成員"
+            inputProps={{
+              autoCapitalize: 'none',
+              autoCorrect: 'off',
+              name: 'workflow-approver-search',
+              spellCheck: false,
+            }}
+            loading={memberLoading}
+            loadingText="搜尋成員中..."
+            mode="single"
+            onChange={(option): void =>
+              updateUserTaskResolver(option?.id ?? null)
             }
-          }}
-          options={[...memberOptions]}
-          placeholder="搜尋姓名或信箱"
-          searchDebounceTime={300}
-          value={selectedMember}
-        />
-      </FormField>
+            onSearch={handleSearchMembers}
+            onVisibilityChange={(open): void => {
+              if (open) {
+                void handleSearchMembers('');
+              }
+            }}
+            options={[...memberOptions]}
+            placeholder="搜尋姓名或信箱"
+            searchDebounceTime={300}
+            value={selectedMember}
+          />
+        </FormField>
+        {node.data.returnBehavior.allowReturn ? (
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            hintText="退回發起人後，重新送出時要從流程開始重跑，或直接回到退回的簽核節點。"
+            label="重送策略"
+            layout={FormFieldLayout.STRETCH}
+            name="returnResubmitStrategy"
+            required
+          >
+            <Select
+              clearable={false}
+              fullWidth
+              onChange={(option): void =>
+                updateUserTaskReturnResubmitStrategy(
+                  readReturnResubmitStrategy(option?.id ?? null),
+                )
+              }
+              options={[...RETURN_RESUBMIT_STRATEGY_OPTIONS]}
+              value={readSelectOption(
+                RETURN_RESUBMIT_STRATEGY_OPTIONS,
+                resubmitStrategy,
+              )}
+            />
+          </FormField>
+        ) : null}
+      </>
     );
   }
 
@@ -2440,6 +2515,7 @@ function createWorkflowNode(
         returnBehavior: {
           allowReturn: true,
           allowedTargets: 'INITIATOR',
+          resubmitStrategy: 'RESTART',
         },
         triggerMode: 'AND',
       },
@@ -2771,6 +2847,12 @@ function readWorkflowNodeTriggerMode(
   value: string | null,
 ): WorkflowNodeTriggerMode {
   return value === 'OR' ? 'OR' : 'AND';
+}
+
+function readReturnResubmitStrategy(
+  value: string | null,
+): ReturnResubmitStrategy {
+  return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
 }
 
 function readInitiatorPolicyMode(

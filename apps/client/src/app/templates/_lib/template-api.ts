@@ -62,7 +62,13 @@ export interface MemberProfileRecord {
 
 export interface WorkflowDryRunStepRecord {
   readonly assigneeMemberId: string | null;
+  readonly edgeDefault: boolean | null;
   readonly edgeId: string | null;
+  readonly edgeLabel: string | null;
+  readonly edgeMatched: boolean | null;
+  readonly edgeReason: string | null;
+  readonly entryCondition: string | null;
+  readonly entryConditionMatched: boolean | null;
   readonly id: string;
   readonly message: string;
   readonly nodeId: string;
@@ -458,7 +464,13 @@ export async function dryRunApprovalWorkflow({
         valid
         steps {
           assigneeMemberId
+          edgeDefault
           edgeId
+          edgeLabel
+          edgeMatched
+          edgeReason
+          entryCondition
+          entryConditionMatched
           id
           message
           nodeId
