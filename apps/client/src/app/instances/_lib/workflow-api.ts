@@ -118,6 +118,45 @@ export type DelegationScopeType = 'ALL' | 'CONDITION_BASED' | 'TEMPLATE_LIST';
 
 export type DelegationRuleStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED';
 
+export type NotificationChannel = 'EMAIL' | 'IN_APP' | 'WEBHOOK';
+
+export type NotificationDigestMode = 'DAILY' | 'INSTANT';
+
+export type NotificationStatus = 'FAILED' | 'PENDING' | 'READ' | 'SENT';
+
+export type NotificationType =
+  | 'INSTANCE_COMPLETED'
+  | 'SLA_OVERDUE'
+  | 'SLA_WARNING'
+  | 'TASK_ASSIGNED'
+  | 'TASK_TRANSFERRED';
+
+export interface NotificationRecord {
+  readonly body: string;
+  readonly channel: NotificationChannel;
+  readonly createdAt: string;
+  readonly id: string;
+  readonly instanceId: string | null;
+  readonly payloadJson: string;
+  readonly readAt: string | null;
+  readonly recipientMemberId: string;
+  readonly sentAt: string | null;
+  readonly status: NotificationStatus;
+  readonly taskId: string | null;
+  readonly title: string;
+  readonly type: NotificationType;
+}
+
+export interface NotificationPreferenceRecord {
+  readonly emailDigestMode: NotificationDigestMode;
+  readonly emailEnabled: boolean;
+  readonly inAppEnabled: boolean;
+  readonly memberId: string;
+  readonly quietHoursEnd: string | null;
+  readonly quietHoursStart: string | null;
+  readonly updatedAt: string;
+}
+
 export interface DelegationRuleRecord {
   readonly agentMemberId: string;
   readonly createdAt: string;
@@ -215,12 +254,29 @@ interface DelegationRulesQueryData {
   readonly delegationRules: readonly DelegationRuleRecord[];
 }
 
+interface NotificationsQueryData {
+  readonly notifications: readonly NotificationRecord[];
+  readonly unreadNotificationCount: number;
+}
+
+interface NotificationPreferenceQueryData {
+  readonly notificationPreference: NotificationPreferenceRecord;
+}
+
 interface CreateDelegationRuleMutationData {
   readonly createDelegationRule: DelegationRuleRecord;
 }
 
 interface RevokeDelegationRuleMutationData {
   readonly revokeDelegationRule: DelegationRuleRecord;
+}
+
+interface MarkNotificationReadMutationData {
+  readonly markNotificationRead: NotificationRecord;
+}
+
+interface UpdateNotificationPreferenceMutationData {
+  readonly updateNotificationPreference: NotificationPreferenceRecord;
 }
 
 interface SubmitApprovalInstanceMutationData {
@@ -699,6 +755,126 @@ export async function revokeDelegationRule({
   );
 
   return data.revokeDelegationRule;
+}
+
+export async function listNotifications({
+  includeRead = true,
+  recipientMemberId,
+}: {
+  readonly includeRead?: boolean;
+  readonly recipientMemberId: string;
+}): Promise<{
+  readonly notifications: readonly NotificationRecord[];
+  readonly unreadCount: number;
+}> {
+  const data = await requestGraphQl<NotificationsQueryData>(
+    `query Notifications($recipientMemberId: String!, $includeRead: Boolean) {
+      notifications(
+        includeRead: $includeRead
+        recipientMemberId: $recipientMemberId
+      ) {
+        body
+        channel
+        createdAt
+        id
+        instanceId
+        payloadJson
+        readAt
+        recipientMemberId
+        sentAt
+        status
+        taskId
+        title
+        type
+      }
+      unreadNotificationCount(recipientMemberId: $recipientMemberId)
+    }`,
+    { includeRead, recipientMemberId },
+  );
+
+  return {
+    notifications: data.notifications,
+    unreadCount: data.unreadNotificationCount,
+  };
+}
+
+export async function markNotificationRead({
+  id,
+  readerMemberId,
+}: {
+  readonly id: string;
+  readonly readerMemberId: string;
+}): Promise<NotificationRecord> {
+  const data = await requestGraphQl<MarkNotificationReadMutationData>(
+    `mutation MarkNotificationRead($id: String!, $readerMemberId: String) {
+      markNotificationRead(id: $id, readerMemberId: $readerMemberId) {
+        body
+        channel
+        createdAt
+        id
+        instanceId
+        payloadJson
+        readAt
+        recipientMemberId
+        sentAt
+        status
+        taskId
+        title
+        type
+      }
+    }`,
+    { id, readerMemberId },
+  );
+
+  return data.markNotificationRead;
+}
+
+export async function readNotificationPreference(
+  memberId: string,
+): Promise<NotificationPreferenceRecord> {
+  const data = await requestGraphQl<NotificationPreferenceQueryData>(
+    `query NotificationPreference($memberId: String!) {
+      notificationPreference(memberId: $memberId) {
+        emailDigestMode
+        emailEnabled
+        inAppEnabled
+        memberId
+        quietHoursEnd
+        quietHoursStart
+        updatedAt
+      }
+    }`,
+    { memberId },
+  );
+
+  return data.notificationPreference;
+}
+
+export async function updateNotificationPreference(input: {
+  readonly emailDigestMode: NotificationDigestMode;
+  readonly emailEnabled: boolean;
+  readonly inAppEnabled: boolean;
+  readonly memberId: string;
+  readonly quietHoursEnd: string | null;
+  readonly quietHoursStart: string | null;
+}): Promise<NotificationPreferenceRecord> {
+  const data =
+    await requestGraphQl<UpdateNotificationPreferenceMutationData>(
+      `mutation UpdateNotificationPreference($input: UpdateNotificationPreferenceInput!) {
+        updateNotificationPreference(input: $input) {
+          emailDigestMode
+          emailEnabled
+          inAppEnabled
+          memberId
+          quietHoursEnd
+          quietHoursStart
+          updatedAt
+        }
+      }`,
+      { input },
+    );
+
+  return data.updateNotificationPreference;
 }
 
 export async function submitApprovalInstance({

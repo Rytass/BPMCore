@@ -37,6 +37,8 @@ type InboxTaskRow = Readonly<
     TaskRecord & {
       caseTitle: string;
       key: string;
+      slaStatusColor: 'text-error' | 'text-neutral' | 'text-success';
+      slaStatusText: string;
       statusLabel: string;
     }
 >;
@@ -71,6 +73,20 @@ export default function InboxPage(): ReactElement {
       { dataIndex: 'caseTitle', key: 'caseTitle', title: '案件', width: 280 },
       { dataIndex: 'nodeId', key: 'nodeId', title: '節點', width: 180 },
       { dataIndex: 'statusLabel', key: 'statusLabel', title: '狀態', width: 120 },
+      {
+        key: 'slaDueAt',
+        render: (record: InboxTaskRow): ReactElement => (
+          <Typography
+            color={record.slaStatusColor}
+            component="span"
+            variant="body"
+          >
+            {record.slaStatusText}
+          </Typography>
+        ),
+        title: 'SLA',
+        width: 180,
+      },
       {
         key: 'createdAt',
         render: (record: InboxTaskRow): ReactElement => (
@@ -248,6 +264,8 @@ async function readInboxTaskRows(
     ...task,
     caseTitle: readTaskCaseTitle(task, instances[index] ?? null),
     key: task.id,
+    slaStatusColor: readSlaStatusColor(task.slaDueAt),
+    slaStatusText: readSlaStatusText(task.slaDueAt),
     statusLabel: readTaskStatusLabel(task.status),
   }));
 }
@@ -356,6 +374,48 @@ function readDecisionCommentText(comment: string | null): string {
 
 function formatHistoryDateTime(value: string | null): string {
   return formatDateTime(value);
+}
+
+function readSlaStatusText(value: string | null): string {
+  if (!value) {
+    return '-';
+  }
+
+  const dueAt = new Date(value).getTime();
+  const now = Date.now();
+  const diffMs = Math.abs(dueAt - now);
+  const label = formatDuration(diffMs);
+
+  return dueAt < now ? `已逾期 ${label}` : `剩餘 ${label}`;
+}
+
+function readSlaStatusColor(
+  value: string | null,
+): 'text-error' | 'text-neutral' | 'text-success' {
+  if (!value) {
+    return 'text-neutral';
+  }
+
+  return new Date(value).getTime() < Date.now()
+    ? 'text-error'
+    : 'text-success';
+}
+
+function formatDuration(value: number): string {
+  const totalMinutes = Math.max(1, Math.ceil(value / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days}天 ${hours}小時`;
+  }
+
+  if (hours > 0) {
+    return `${hours}小時 ${minutes}分鐘`;
+  }
+
+  return `${minutes}分鐘`;
 }
 
 function readTaskStatusLabel(status: TaskRecord['status']): string {
