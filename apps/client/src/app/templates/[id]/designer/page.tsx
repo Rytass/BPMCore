@@ -45,6 +45,7 @@ import {
   Section,
   SectionGroup,
   Select,
+  Textarea,
   Toggle,
   Typography,
 } from '@mezzanine-ui/react';
@@ -53,6 +54,7 @@ import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import {
   CheckedIcon,
   DotGridIcon,
+  EyeIcon,
   FilterIcon,
   MailIcon,
   SaveIcon,
@@ -77,6 +79,8 @@ import {
 import { renderAppNavigation } from '../../../app-navigation';
 import {
   ApprovalTemplateVersionRecord,
+  WorkflowDryRunResultRecord,
+  dryRunApprovalWorkflow,
   forkApprovalTemplate,
   MemberProfileRecord,
   publishApprovalTemplateVersion,
@@ -258,6 +262,23 @@ const FORM_STACK_STYLE: CSSProperties = {
   gap: 12,
 };
 
+const DRY_RUN_RESULT_STYLE: CSSProperties = {
+  border: '1px solid var(--mzn-color-border-neutral)',
+  borderRadius: 6,
+  display: 'grid',
+  gap: 8,
+  maxHeight: 360,
+  overflow: 'auto',
+  padding: 12,
+};
+
+const DRY_RUN_STEP_STYLE: CSSProperties = {
+  borderBottom: '1px solid var(--mzn-color-border-neutral)',
+  display: 'grid',
+  gap: 4,
+  padding: '0 0 8px',
+};
+
 const BUTTON_ROW_STYLE: CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
@@ -412,6 +433,7 @@ const INITIATOR_ORG_OPTIONS: readonly InitiatorPolicyValueOption[] = [
   { id: 'BPM-HQ', name: 'BPM-HQ' },
   { id: 'FIN-TW', name: 'FIN-TW' },
 ];
+const DRY_RUN_MEMBER_ID = 'member-001';
 
 const nodeTypes: NodeTypes = {
   endEvent: WorkflowNodeCard,
@@ -454,6 +476,12 @@ export default function TemplateDesignerPage(): ReactElement {
   const [memberOptions, setMemberOptions] = useState<
     readonly MemberSelectOption[]
   >([]);
+  const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
+  const [dryRunRunning, setDryRunRunning] = useState(false);
+  const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
+  const [dryRunResult, setDryRunResult] =
+    useState<WorkflowDryRunResultRecord | null>(null);
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
   const [flowViewport, setFlowViewport] = useState<Viewport | undefined>(
     undefined,
   );
@@ -557,8 +585,7 @@ export default function TemplateDesignerPage(): ReactElement {
       selectedEdgeIds
         .map(
           (edgeId) =>
-            workflowDefinition.edges.find((edge) => edge.id === edgeId) ??
-            null,
+            workflowDefinition.edges.find((edge) => edge.id === edgeId) ?? null,
         )
         .filter((edge): edge is WorkflowEdge => Boolean(edge)),
     [selectedEdgeIds, workflowDefinition.edges],
@@ -779,6 +806,55 @@ export default function TemplateDesignerPage(): ReactElement {
       setError(readErrorMessage(requestError));
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openDryRunModal(): void {
+    setDryRunFormDataJson(
+      JSON.stringify(
+        readDryRunSampleFormData(selectedFormVersionOption),
+        null,
+        2,
+      ),
+    );
+    setDryRunResult(null);
+    setDryRunError(null);
+    setDryRunModalOpen(true);
+  }
+
+  function closeDryRunModal(): void {
+    if (dryRunRunning) {
+      return;
+    }
+
+    setDryRunModalOpen(false);
+  }
+
+  async function handleDryRun(): Promise<void> {
+    setDryRunRunning(true);
+    setDryRunError(null);
+    setDryRunResult(null);
+
+    try {
+      const formData = parseDryRunFormData(dryRunFormDataJson);
+      const result = await dryRunApprovalWorkflow({
+        formData,
+        initiatorMemberId: DRY_RUN_MEMBER_ID,
+        initiatorMetadataSnapshot: {
+          customFields: {},
+          managerMemberId: 'member-002',
+          memberId: DRY_RUN_MEMBER_ID,
+          orgCode: 'HQ',
+          roles: ['manager'],
+        },
+        workflowDefinition,
+      });
+
+      setDryRunResult(result);
+    } catch (requestError: unknown) {
+      setDryRunError(readErrorMessage(requestError));
+    } finally {
+      setDryRunRunning(false);
     }
   }
 
@@ -1084,6 +1160,19 @@ export default function TemplateDesignerPage(): ReactElement {
             </Button>
             <Button
               disabled={
+                loading ||
+                Boolean(workflowIssue) ||
+                Boolean(initiatorPolicyIssue)
+              }
+              icon={EyeIcon}
+              iconType="leading"
+              onClick={openDryRunModal}
+              variant="base-secondary"
+            >
+              試跑流程
+            </Button>
+            <Button
+              disabled={
                 saving ||
                 !draft ||
                 Boolean(workflowIssue) ||
@@ -1274,9 +1363,87 @@ export default function TemplateDesignerPage(): ReactElement {
           </Section>
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
+        {renderDryRunModal()}
       </Layout.Main>
     </Layout>
   );
+
+  function renderDryRunModal(): ReactElement {
+    return (
+      <Modal
+        cancelText="關閉"
+        confirmText="執行試跑"
+        loading={dryRunRunning}
+        modalType="standard"
+        onCancel={closeDryRunModal}
+        onClose={closeDryRunModal}
+        onConfirm={(): void => void handleDryRun()}
+        open={dryRunModalOpen}
+        showModalFooter
+        showModalHeader
+        size="wide"
+        supportingText={`使用 ${DRY_RUN_MEMBER_ID} 與範例表單資料模擬目前畫布流程，不會建立案件。`}
+        title="試跑流程"
+      >
+        <div style={FORM_STACK_STYLE}>
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            label="表單資料 JSON"
+            layout={FormFieldLayout.STRETCH}
+            name="dryRunFormDataJson"
+            required
+          >
+            <Textarea
+              onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                setDryRunFormDataJson(event.target.value)
+              }
+              resize="vertical"
+              rows={8}
+              value={dryRunFormDataJson}
+            />
+          </FormField>
+          {dryRunError ? (
+            <Typography color="text-error" variant="body">
+              {dryRunError}
+            </Typography>
+          ) : null}
+          {dryRunResult ? (
+            <div style={DRY_RUN_RESULT_STYLE}>
+              <Typography
+                color={dryRunResult.valid ? 'text-success' : 'text-error'}
+                variant="label-primary-highlight"
+              >
+                {dryRunResult.valid ? '試跑通過' : '試跑失敗'}
+              </Typography>
+              {dryRunResult.errors.map((resultError) => (
+                <Typography color="text-error" key={resultError} variant="body">
+                  {resultError}
+                </Typography>
+              ))}
+              {dryRunResult.steps.map((step) => (
+                <div key={step.id} style={DRY_RUN_STEP_STYLE}>
+                  <Typography variant="label-primary-highlight">
+                    {step.nodeLabel} · {readDryRunStatusLabel(step.status)}
+                  </Typography>
+                  <Typography color="text-neutral" variant="caption">
+                    {readWorkflowNodeTypeLabel(step.nodeType)}
+                    {step.assigneeMemberId
+                      ? ` · 處理者：${step.assigneeMemberId}`
+                      : ''}
+                    {step.edgeId ? ` · 線段：${step.edgeId}` : ''}
+                  </Typography>
+                  <Typography color="text-neutral" variant="body">
+                    {step.message}
+                  </Typography>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
+    );
+  }
 
   function renderNodePanel(node: WorkflowNode): ReactElement {
     return (
@@ -1568,7 +1735,9 @@ export default function TemplateDesignerPage(): ReactElement {
     );
   }
 
-  function renderSelectedEdgesPanel(edges: readonly WorkflowEdge[]): ReactElement {
+  function renderSelectedEdgesPanel(
+    edges: readonly WorkflowEdge[],
+  ): ReactElement {
     return (
       <div style={FORM_STACK_STYLE}>
         <Typography component="h2" variant="h3">
@@ -2412,7 +2581,9 @@ function insertWorkflowNodeAtEdge(
     definition: {
       ...definition,
       edges: definition.edges.flatMap((currentEdge) =>
-        currentEdge.id === edge.id ? [incomingEdge, outgoingEdge] : [currentEdge],
+        currentEdge.id === edge.id
+          ? [incomingEdge, outgoingEdge]
+          : [currentEdge],
       ),
       nodes: [...definition.nodes, node],
     },
@@ -2837,6 +3008,92 @@ function readFormVersionSelectOptions(
     name: `${option.formName} ｜ v${option.version}`,
     schema: option.schema,
   }));
+}
+
+function readDryRunSampleFormData(
+  option: FormVersionSelectOption | null,
+): Readonly<Record<string, unknown>> {
+  return (option?.schema.fields ?? []).reduce<
+    Readonly<Record<string, unknown>>
+  >(
+    (formData, field) => ({
+      ...formData,
+      [field.fieldKey]: readDryRunSampleFieldValue(field),
+    }),
+    {},
+  );
+}
+
+function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
+  if (field.type === 'number') {
+    return 1000;
+  }
+
+  if (field.type === 'boolean') {
+    return true;
+  }
+
+  if (field.type === 'select') {
+    return field.options[0]?.value ?? '';
+  }
+
+  if (field.type === 'checkbox') {
+    return field.options[0] ? [field.options[0].value] : [];
+  }
+
+  if (field.type === 'date') {
+    return '2026-05-08';
+  }
+
+  if (field.type === 'datetime') {
+    return '2026-05-08T09:00:00+08:00';
+  }
+
+  return field.placeholder ?? field.label;
+}
+
+function parseDryRunFormData(value: string): Readonly<Record<string, unknown>> {
+  const parsedValue = JSON.parse(value) as unknown;
+
+  if (!isRecord(parsedValue)) {
+    throw new Error('表單資料 JSON 必須是物件。');
+  }
+
+  return parsedValue;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readDryRunStatusLabel(status: string): string {
+  if (status === 'COMPLETED') {
+    return '完成';
+  }
+
+  if (status === 'PASSED') {
+    return '通過';
+  }
+
+  if (status === 'SKIPPED') {
+    return '略過';
+  }
+
+  if (status === 'STOPPED') {
+    return '已停止';
+  }
+
+  if (status === 'WAITING') {
+    return '將等待簽核';
+  }
+
+  return status;
+}
+
+function readWorkflowNodeTypeLabel(nodeType: string): string {
+  return nodeType in NODE_TYPE_LABELS
+    ? NODE_TYPE_LABELS[nodeType as WorkflowNode['type']]
+    : nodeType;
 }
 
 function mergeSelectedOption(

@@ -60,6 +60,23 @@ export interface MemberProfileRecord {
   readonly name: string;
 }
 
+export interface WorkflowDryRunStepRecord {
+  readonly assigneeMemberId: string | null;
+  readonly edgeId: string | null;
+  readonly id: string;
+  readonly message: string;
+  readonly nodeId: string;
+  readonly nodeLabel: string;
+  readonly nodeType: string;
+  readonly status: string;
+}
+
+export interface WorkflowDryRunResultRecord {
+  readonly errors: readonly string[];
+  readonly steps: readonly WorkflowDryRunStepRecord[];
+  readonly valid: boolean;
+}
+
 export interface TemplateDesignerRecord {
   readonly formVersions: readonly PublishedFormVersionOption[];
   readonly template: ApprovalTemplateRecord;
@@ -115,6 +132,10 @@ interface RollbackTemplateVersionMutationData {
 
 interface ForkTemplateMutationData {
   readonly forkApprovalTemplate: VersionJsonRecord;
+}
+
+interface DryRunApprovalWorkflowMutationData {
+  readonly dryRunApprovalWorkflow: WorkflowDryRunResultRecord;
 }
 
 interface VersionJsonRecord extends Omit<
@@ -417,6 +438,49 @@ export async function rollbackApprovalTemplateVersion(
   );
 
   return parseVersionJson(data.rollbackApprovalTemplateVersion);
+}
+
+export async function dryRunApprovalWorkflow({
+  formData,
+  initiatorMemberId,
+  initiatorMetadataSnapshot,
+  workflowDefinition,
+}: {
+  readonly formData: Readonly<Record<string, unknown>>;
+  readonly initiatorMemberId: string;
+  readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>> | null;
+  readonly workflowDefinition: WorkflowDefinition;
+}): Promise<WorkflowDryRunResultRecord> {
+  const data = await requestGraphQl<DryRunApprovalWorkflowMutationData>(
+    `mutation DryRunApprovalWorkflow($input: DryRunApprovalWorkflowInput!) {
+      dryRunApprovalWorkflow(input: $input) {
+        errors
+        valid
+        steps {
+          assigneeMemberId
+          edgeId
+          id
+          message
+          nodeId
+          nodeLabel
+          nodeType
+          status
+        }
+      }
+    }`,
+    {
+      input: {
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId,
+        initiatorMetadataSnapshotJson: initiatorMetadataSnapshot
+          ? JSON.stringify(initiatorMetadataSnapshot)
+          : null,
+        workflowDefinitionJson: JSON.stringify(workflowDefinition),
+      },
+    },
+  );
+
+  return data.dryRunApprovalWorkflow;
 }
 
 async function readFormDefinitionVersions(
