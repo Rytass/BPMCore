@@ -58,3 +58,4 @@
 - 2026-05-06: M2 W5 linear approval execution is implemented with task decision GraphQL APIs, submit/process/approve client flows, inbox/detail pages, API unit coverage, and `pnpm e2e:client` Playwright coverage.
 - 2026-05-06: M2 W6 workflow branching runtime is implemented in the engine with structured edge condition evaluation, exclusive gateway routing, multi-outgoing token fork, AND/OR predecessor joins, sibling cancellation for OR joins, and API unit coverage.
 - 2026-05-06: Workflow launch entry UI is implemented with a `/instances/new` launch center, dashboard/inbox/template shortcuts, launchability filtering, and Playwright coverage.
+- 2026-05-08: W7 1/2 scope completed with CEL-backed policy/condition evaluation, approver resolver support, return/cancel/resubmit instance controls, workflow dry run API/UI, and full lint/typecheck/build/e2e/browser verification.
