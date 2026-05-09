@@ -19,5 +19,15 @@ export class DecideTaskInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  comment!: string | null;
+  comment?: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  returnToNodeId?: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  transferToMemberId?: string | null;
 }

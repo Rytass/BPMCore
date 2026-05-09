@@ -1,4 +1,5 @@
 import { WorkflowDefinition } from '@bpm/shared/workflow';
+import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
@@ -572,7 +573,8 @@ function createServiceFixture({
             ...processTokens.filter((token) => !entityIds.has(token.id)),
             ...entitiesWithIds,
           ];
-          savedProcessToken = entitiesWithIds[entitiesWithIds.length - 1] ?? null;
+          savedProcessToken =
+            entitiesWithIds[entitiesWithIds.length - 1] ?? null;
 
           return Promise.resolve(
             Array.isArray(entityOrEntities)
@@ -608,22 +610,23 @@ function createServiceFixture({
     ),
   });
   const transactionalTaskRepository = createRepository<TaskEntity>({
-    create: jest.fn((entity: Partial<TaskEntity>): TaskEntity =>
-      Object.assign(new TaskEntity(), {
-        assigneeMemberId: entity.assigneeMemberId ?? 'member-finance',
-        completedAt: entity.completedAt ?? null,
-        createdAt: new Date('2026-05-04T09:00:00.000Z'),
-        delegationChain: entity.delegationChain ?? [],
-        id: entity.id ?? `task-${(taskSequence += 1)}`,
-        instanceId: entity.instanceId ?? 'instance-1',
-        nodeId: entity.nodeId ?? 'task_finance',
-        openedAt: entity.openedAt ?? null,
-        originalAssigneeMemberId:
-          entity.originalAssigneeMemberId ?? 'member-finance',
-        slaDueAt: entity.slaDueAt ?? null,
-        status: entity.status ?? TaskStatusEnum.PENDING,
-        tokenId: entity.tokenId ?? 'token-1',
-      }),
+    create: jest.fn(
+      (entity: Partial<TaskEntity>): TaskEntity =>
+        Object.assign(new TaskEntity(), {
+          assigneeMemberId: entity.assigneeMemberId ?? 'member-finance',
+          completedAt: entity.completedAt ?? null,
+          createdAt: new Date('2026-05-04T09:00:00.000Z'),
+          delegationChain: entity.delegationChain ?? [],
+          id: entity.id ?? `task-${(taskSequence += 1)}`,
+          instanceId: entity.instanceId ?? 'instance-1',
+          nodeId: entity.nodeId ?? 'task_finance',
+          openedAt: entity.openedAt ?? null,
+          originalAssigneeMemberId:
+            entity.originalAssigneeMemberId ?? 'member-finance',
+          slaDueAt: entity.slaDueAt ?? null,
+          status: entity.status ?? TaskStatusEnum.PENDING,
+          tokenId: entity.tokenId ?? 'token-1',
+        }),
     ),
     find: jest.fn(() => Promise.resolve(processTasks)),
     findOne: jest.fn(
@@ -695,10 +698,8 @@ function createServiceFixture({
           Object.assign(new TaskDecisionEntity(), {
             action: entity.action ?? TaskDecisionActionEnum.APPROVED,
             comment: entity.comment ?? null,
-            decidedAt:
-              entity.decidedAt ?? new Date('2026-05-04T09:00:00.000Z'),
-            decidedByMemberId:
-              entity.decidedByMemberId ?? 'member-finance',
+            decidedAt: entity.decidedAt ?? new Date('2026-05-04T09:00:00.000Z'),
+            decidedByMemberId: entity.decidedByMemberId ?? 'member-finance',
             id: entity.id ?? 'decision-1',
             returnToNodeId: entity.returnToNodeId ?? null,
             signatureId: entity.signatureId ?? null,
@@ -739,7 +740,10 @@ function createServiceFixture({
         }
 
         savedProcessLog = entityOrEntities;
-        savedSingleActivityLogs = [...savedSingleActivityLogs, entityOrEntities];
+        savedSingleActivityLogs = [
+          ...savedSingleActivityLogs,
+          entityOrEntities,
+        ];
 
         return Promise.resolve(entityOrEntities);
       },
@@ -824,6 +828,7 @@ function createServiceFixture({
       templateRepository,
       templateVersionRepository,
       formVersionRepository,
+      new ConditionService(),
     ),
   };
 }

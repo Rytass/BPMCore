@@ -1,9 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { evaluate, parse, type Failure, type ParseResult } from 'cel-js';
 
 interface ConditionExpression {
   readonly expression: string | null | undefined;
   readonly label: string;
 }
+
+export type CelEvaluationContext = Readonly<Record<string, unknown>>;
 
 @Injectable()
 export class ConditionService {
@@ -29,23 +32,57 @@ export class ConditionService {
       return [`${label} must not be blank`];
     }
 
-    return hasBalancedQuotes(trimmedExpression)
-      ? []
-      : [`${label} has unbalanced string quotes`];
+    const parseResult = parse(trimmedExpression);
+
+    if (isParseFailure(parseResult)) {
+      return parseResult.errors.map((error) => `${label}: ${error}`);
+    }
+
+    return [];
+  }
+
+  evaluateBoolean(
+    expression: string | null | undefined,
+    context: CelEvaluationContext,
+    label: string,
+  ): boolean {
+    if (typeof expression !== 'string' || !expression.trim()) {
+      return true;
+    }
+
+    const value = this.evaluateValue(expression, context, label);
+
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    throw new BadRequestException(`${label} must evaluate to a boolean`);
+  }
+
+  evaluateValue(
+    expression: string,
+    context: CelEvaluationContext,
+    label: string,
+  ): unknown {
+    const trimmedExpression = expression.trim();
+    const parseResult = parse(trimmedExpression);
+
+    if (isParseFailure(parseResult)) {
+      throw new BadRequestException(
+        parseResult.errors.map((error) => `${label}: ${error}`).join('; '),
+      );
+    }
+
+    try {
+      return evaluate(parseResult.cst, { ...context });
+    } catch (error: unknown) {
+      throw new BadRequestException(
+        error instanceof Error ? `${label}: ${error.message}` : label,
+      );
+    }
   }
 }
 
-function hasBalancedQuotes(expression: string): boolean {
-  return countUnescaped(expression, "'") % 2 === 0 &&
-    countUnescaped(expression, '"') % 2 === 0;
-}
-
-function countUnescaped(value: string, character: string): number {
-  return Array.from(value).reduce(
-    (count, current, index, characters): number =>
-      current === character && characters[index - 1] !== '\\'
-        ? count + 1
-        : count,
-    0,
-  );
+function isParseFailure(parseResult: ParseResult): parseResult is Failure {
+  return !parseResult.isSuccess;
 }

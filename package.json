@@ -95,6 +95,7 @@
     "@rytass/secret-adapter-vault-nestjs": "^0.4.5",
     "@uiw/react-codemirror": "^4.25.9",
     "@xyflow/react": "^12.10.2",
+    "cel-js": "^0.8.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dagre": "^0.8.5",
