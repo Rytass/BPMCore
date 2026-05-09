@@ -92,7 +92,9 @@ export interface TaskDecisionRecord {
   readonly decidedAt: string;
   readonly decidedByMemberId: string;
   readonly id: string;
+  readonly returnToNodeId: string | null;
   readonly taskId: string;
+  readonly transferToMemberId: string | null;
 }
 
 export interface ActivityLogRecord {
@@ -191,6 +193,17 @@ interface ProcessApprovalInstanceMutationData {
 
 interface DecideTaskMutationData {
   readonly decideTask: TaskDecisionRecord;
+}
+
+interface CancelApprovalInstanceMutationData {
+  readonly cancelApprovalInstance: Pick<ApprovalInstanceRecord, 'id' | 'state'>;
+}
+
+interface ResubmitApprovalInstanceMutationData {
+  readonly resubmitApprovalInstance: Pick<
+    ApprovalInstanceRecord,
+    'id' | 'state'
+  >;
 }
 
 interface LaunchTemplateQueryData {
@@ -486,7 +499,9 @@ export async function listTaskDecisions(
         decidedAt
         decidedByMemberId
         id
+        returnToNodeId
         taskId
+        transferToMemberId
       }
     }`,
     { taskId },
@@ -564,12 +579,16 @@ export async function decideTask({
   action,
   comment,
   decidedByMemberId,
+  returnToNodeId = null,
   taskId,
+  transferToMemberId = null,
 }: {
   readonly action: TaskDecisionAction;
   readonly comment: string | null;
   readonly decidedByMemberId: string;
+  readonly returnToNodeId?: string | null;
   readonly taskId: string;
+  readonly transferToMemberId?: string | null;
 }): Promise<TaskDecisionRecord> {
   const data = await requestGraphQl<DecideTaskMutationData>(
     `mutation DecideTask($input: DecideTaskInput!) {
@@ -579,7 +598,9 @@ export async function decideTask({
         decidedAt
         decidedByMemberId
         id
+        returnToNodeId
         taskId
+        transferToMemberId
       }
     }`,
     {
@@ -587,12 +608,69 @@ export async function decideTask({
         action,
         comment,
         decidedByMemberId,
+        returnToNodeId,
         taskId,
+        transferToMemberId,
       },
     },
   );
 
   return data.decideTask;
+}
+
+export async function cancelApprovalInstance({
+  cancelledByMemberId,
+  comment,
+  instanceId,
+}: {
+  readonly cancelledByMemberId: string;
+  readonly comment: string | null;
+  readonly instanceId: string;
+}): Promise<void> {
+  await requestGraphQl<CancelApprovalInstanceMutationData>(
+    `mutation CancelApprovalInstance($input: CancelApprovalInstanceInput!) {
+      cancelApprovalInstance(input: $input) {
+        id
+        state
+      }
+    }`,
+    {
+      input: {
+        cancelledByMemberId,
+        comment,
+        instanceId,
+      },
+    },
+  );
+}
+
+export async function resubmitApprovalInstance({
+  formData,
+  initiatorMemberId,
+  instanceId,
+  title,
+}: {
+  readonly formData: Readonly<Record<string, unknown>>;
+  readonly initiatorMemberId: string;
+  readonly instanceId: string;
+  readonly title: string | null;
+}): Promise<void> {
+  await requestGraphQl<ResubmitApprovalInstanceMutationData>(
+    `mutation ResubmitApprovalInstance($input: ResubmitApprovalInstanceInput!) {
+      resubmitApprovalInstance(input: $input) {
+        id
+        state
+      }
+    }`,
+    {
+      input: {
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId,
+        instanceId,
+        title,
+      },
+    },
+  );
 }
 
 export function readApprovalInstanceCaseTitle(
@@ -623,7 +701,10 @@ export function readFormDataCaseTitle({
     return fallbackTitle;
   }
 
-  const valueLabel = readFieldValueLabel(firstField, formData[firstField.fieldKey]);
+  const valueLabel = readFieldValueLabel(
+    firstField,
+    formData[firstField.fieldKey],
+  );
 
   return valueLabel ? `${firstField.label}：${valueLabel}` : fallbackTitle;
 }
@@ -728,8 +809,7 @@ function readSelectOptionLabel(
   value: string,
 ): string {
   return (
-    field.options.find((option) => option.value === value)?.label ??
-    value
+    field.options.find((option) => option.value === value)?.label ?? value
   ).trim();
 }
 

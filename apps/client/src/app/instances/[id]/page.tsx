@@ -31,6 +31,7 @@ import {
   PageHeader,
   Section,
   SectionGroup,
+  Select,
   Stepper,
   Table,
   Textarea,
@@ -44,6 +45,7 @@ import { stepClasses } from '@mezzanine-ui/core/stepper';
 import {
   CheckedIcon,
   DangerousOutlineIcon,
+  RefreshCcwIcon,
   ShareIcon,
 } from '@mezzanine-ui/icons';
 import type { TableColumn } from '@mezzanine-ui/core/table';
@@ -56,18 +58,27 @@ import {
   ApprovalInstanceRecord,
   CURRENT_MEMBER_ID,
   MemberProfileRecord,
+  cancelApprovalInstance,
   decideTask,
   listTaskDecisions,
   readApprovalInstance,
+  resubmitApprovalInstance,
   resolveMemberProfiles,
   TaskDecisionRecord,
   TaskRecord,
+  WorkflowFormData,
   WorkflowTokenRecord,
 } from '../_lib/workflow-api';
 
 const SECTION_BODY_STYLE: CSSProperties = {
   display: 'grid',
   gap: 16,
+};
+
+const BUTTON_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
 };
 
 const FLOW_NODE_LAYOUT_WIDTH = 184;
@@ -86,6 +97,12 @@ const REJECT_REASON_FORM_STYLE: CSSProperties = {
 
 const REJECT_REASON_TEXTAREA_STYLE: CSSProperties = {
   minWidth: '100%',
+  width: '100%',
+};
+
+const MODAL_FORM_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 12,
   width: '100%',
 };
 
@@ -174,7 +191,12 @@ const READONLY_FLOW_NODE_TYPES = {
   workflowRuntime: WorkflowRuntimeNodeCard,
 };
 
-type RuntimeTone = 'cancelled' | 'completed' | 'current' | 'neutral' | 'waiting';
+type RuntimeTone =
+  | 'cancelled'
+  | 'completed'
+  | 'current'
+  | 'neutral'
+  | 'waiting';
 
 interface RuntimeNodeData extends Record<string, unknown> {
   readonly kindLabel: string;
@@ -185,7 +207,10 @@ interface RuntimeNodeData extends Record<string, unknown> {
 }
 
 type RuntimeFlowNode = FlowNode<RuntimeNodeData, 'workflowRuntime'>;
-type RuntimeFlowEdge = FlowEdge<Readonly<Record<string, unknown>>, 'smoothstep'>;
+type RuntimeFlowEdge = FlowEdge<
+  Readonly<Record<string, unknown>>,
+  'smoothstep'
+>;
 
 type TaskRow = Readonly<
   Record<string, unknown> &
@@ -240,11 +265,24 @@ export default function ApprovalInstancePage(): ReactElement {
     null,
   );
   const [rejectReasonModalOpen, setRejectReasonModalOpen] = useState(false);
+  const [returnComment, setReturnComment] = useState('');
+  const [returnModalOpen, setReturnModalOpen] = useState(false);
+  const [returnTargetNodeId, setReturnTargetNodeId] = useState<string | null>(
+    null,
+  );
+  const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
+    {},
+  );
   const trimmedRejectReason = rejectReason.trim();
+  const trimmedReturnComment = returnComment.trim();
 
   useEffect((): void => {
     void refreshInstance();
   }, [instanceId]);
+
+  useEffect((): void => {
+    setResubmitFormData(instance?.formData ?? {});
+  }, [instance]);
 
   const currentTask = useMemo(
     (): TaskRecord | null =>
@@ -254,6 +292,39 @@ export default function ApprovalInstancePage(): ReactElement {
           (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
       ) ?? null,
     [tasks],
+  );
+  const currentTaskNode = useMemo(
+    (): WorkflowNode | null =>
+      currentTask && instance
+        ? (instance.workflowSnapshot.nodes.find(
+            (node) => node.id === currentTask.nodeId,
+          ) ?? null)
+        : null,
+    [currentTask, instance],
+  );
+  const returnTargetOptions = useMemo(
+    (): readonly { readonly id: string; readonly name: string }[] =>
+      currentTaskNode && instance
+        ? readReturnTargetOptions(instance.workflowSnapshot, currentTaskNode)
+        : [],
+    [currentTaskNode, instance],
+  );
+  const canReturnCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.returnBehavior.allowReturn;
+  const selectedReturnTargetOption =
+    returnTargetOptions.find((option) => option.id === returnTargetNodeId) ??
+    returnTargetOptions[0] ??
+    null;
+  const canCancelInstance = Boolean(
+    instance &&
+    instance.initiatorMemberId === CURRENT_MEMBER_ID &&
+    (instance.state === 'RUNNING' || instance.state === 'RETURNED'),
+  );
+  const canResubmitInstance = Boolean(
+    instance &&
+    instance.initiatorMemberId === CURRENT_MEMBER_ID &&
+    instance.state === 'RETURNED',
   );
   const taskRows = useMemo(
     (): TaskRow[] =>
@@ -336,8 +407,18 @@ export default function ApprovalInstancePage(): ReactElement {
   const taskColumns = useMemo(
     (): TableColumn<TaskRow>[] => [
       { dataIndex: 'nodeLabel', key: 'nodeLabel', title: '節點', width: 180 },
-      { dataIndex: 'assigneeMemberId', key: 'assigneeMemberId', title: '處理者', width: 180 },
-      { dataIndex: 'statusLabel', key: 'statusLabel', title: '狀態', width: 120 },
+      {
+        dataIndex: 'assigneeMemberId',
+        key: 'assigneeMemberId',
+        title: '處理者',
+        width: 180,
+      },
+      {
+        dataIndex: 'statusLabel',
+        key: 'statusLabel',
+        title: '狀態',
+        width: 120,
+      },
       {
         key: 'createdAt',
         render: (record: TaskRow): ReactElement => (
@@ -374,9 +455,11 @@ export default function ApprovalInstancePage(): ReactElement {
   async function handleDecision({
     action,
     comment,
+    returnToNodeId = null,
   }: Readonly<{
-    action: 'APPROVED' | 'REJECTED';
+    action: 'APPROVED' | 'REJECTED' | 'RETURNED';
     comment: string | null;
+    returnToNodeId?: string | null;
   }>): Promise<void> {
     if (!currentTask) {
       return;
@@ -390,10 +473,14 @@ export default function ApprovalInstancePage(): ReactElement {
         action,
         comment,
         decidedByMemberId: CURRENT_MEMBER_ID,
+        returnToNodeId,
         taskId: currentTask.id,
       });
       setRejectReasonModalOpen(false);
+      setReturnModalOpen(false);
       setRejectReason('');
+      setReturnComment('');
+      setReturnTargetNodeId(null);
       setRejectReasonError(null);
       await refreshInstance();
     } catch (requestError: unknown) {
@@ -419,6 +506,22 @@ export default function ApprovalInstancePage(): ReactElement {
     setRejectReasonError(null);
   }
 
+  function openReturnModal(): void {
+    setReturnComment('');
+    setReturnTargetNodeId(returnTargetOptions[0]?.id ?? null);
+    setReturnModalOpen(true);
+  }
+
+  function closeReturnModal(): void {
+    if (deciding) {
+      return;
+    }
+
+    setReturnModalOpen(false);
+    setReturnComment('');
+    setReturnTargetNodeId(null);
+  }
+
   async function handleRejectConfirm(): Promise<void> {
     if (!trimmedRejectReason) {
       setRejectReasonError('請輸入拒絕原因');
@@ -429,6 +532,59 @@ export default function ApprovalInstancePage(): ReactElement {
       action: 'REJECTED',
       comment: trimmedRejectReason,
     });
+  }
+
+  async function handleReturnConfirm(): Promise<void> {
+    await handleDecision({
+      action: 'RETURNED',
+      comment: trimmedReturnComment || null,
+      returnToNodeId: selectedReturnTargetOption?.id ?? null,
+    });
+  }
+
+  async function handleCancelInstance(): Promise<void> {
+    if (!instance || !canCancelInstance) {
+      return;
+    }
+
+    setDeciding(true);
+    setError(null);
+
+    try {
+      await cancelApprovalInstance({
+        cancelledByMemberId: CURRENT_MEMBER_ID,
+        comment: null,
+        instanceId: instance.id,
+      });
+      await refreshInstance();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  async function handleResubmitInstance(): Promise<void> {
+    if (!instance || !canResubmitInstance) {
+      return;
+    }
+
+    setDeciding(true);
+    setError(null);
+
+    try {
+      await resubmitApprovalInstance({
+        formData: resubmitFormData,
+        initiatorMemberId: CURRENT_MEMBER_ID,
+        instanceId: instance.id,
+        title: instance.title,
+      });
+      await refreshInstance();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setDeciding(false);
+    }
   }
 
   return (
@@ -459,8 +615,30 @@ export default function ApprovalInstancePage(): ReactElement {
                 流程圖
               </Button>
             ) : null}
+            {canCancelInstance ? (
+              <Button
+                disabled={deciding}
+                icon={DangerousOutlineIcon}
+                iconType="leading"
+                onClick={(): void => void handleCancelInstance()}
+                variant="destructive-secondary"
+              >
+                取消案件
+              </Button>
+            ) : null}
             {currentTask ? (
               <>
+                {canReturnCurrentTask ? (
+                  <Button
+                    disabled={deciding}
+                    icon={RefreshCcwIcon}
+                    iconType="leading"
+                    onClick={openReturnModal}
+                    variant="base-secondary"
+                  >
+                    退回
+                  </Button>
+                ) : null}
                 <Button
                   disabled={deciding}
                   icon={DangerousOutlineIcon}
@@ -501,12 +679,30 @@ export default function ApprovalInstancePage(): ReactElement {
               ) : null}
               {instance?.formDefinitionSnapshot.schema &&
               instance.formDefinitionSnapshot.uiSchema ? (
-                <FormRenderer
-                  readonly
-                  schema={instance.formDefinitionSnapshot.schema}
-                  uiSchema={instance.formDefinitionSnapshot.uiSchema}
-                  value={instance.formData}
-                />
+                <>
+                  <FormRenderer
+                    onChange={setResubmitFormData}
+                    readonly={!canResubmitInstance}
+                    schema={instance.formDefinitionSnapshot.schema}
+                    uiSchema={instance.formDefinitionSnapshot.uiSchema}
+                    value={
+                      canResubmitInstance ? resubmitFormData : instance.formData
+                    }
+                  />
+                  {canResubmitInstance ? (
+                    <div style={BUTTON_ROW_STYLE}>
+                      <Button
+                        disabled={deciding}
+                        icon={RefreshCcwIcon}
+                        iconType="leading"
+                        onClick={(): void => void handleResubmitInstance()}
+                        variant="base-primary"
+                      >
+                        重新送出
+                      </Button>
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <Typography color="text-neutral" variant="body">
                   此案件沒有可顯示的表單快照。
@@ -646,6 +842,65 @@ export default function ApprovalInstancePage(): ReactElement {
             ) : null}
           </div>
         </Modal>
+        <Modal
+          cancelText="取消"
+          confirmButtonProps={{
+            disabled: !selectedReturnTargetOption,
+          }}
+          confirmText="送出退回"
+          loading={deciding}
+          modalType="standard"
+          onCancel={closeReturnModal}
+          onClose={closeReturnModal}
+          onConfirm={(): void => void handleReturnConfirm()}
+          open={returnModalOpen}
+          showModalFooter
+          showModalHeader
+          size="regular"
+          supportingText="退回後，流程會回到指定節點並等待重新處理。"
+          title="退回簽核"
+        >
+          <div style={MODAL_FORM_STYLE}>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              label="退回節點"
+              layout={FormFieldLayout.STRETCH}
+              name="returnTargetNodeId"
+              required
+            >
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  setReturnTargetNodeId(option?.id ?? null)
+                }
+                options={[...returnTargetOptions]}
+                placeholder="選擇退回節點"
+                value={selectedReturnTargetOption}
+              />
+            </FormField>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              label="退回說明"
+              layout={FormFieldLayout.STRETCH}
+              name="returnComment"
+            >
+              <Textarea
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                  setReturnComment(event.target.value)
+                }
+                placeholder="可補充需要修改的內容"
+                ref={applyFullWidthTextareaHost}
+                resize="vertical"
+                rows={4}
+                style={REJECT_REASON_TEXTAREA_STYLE}
+                value={returnComment}
+              />
+            </FormField>
+          </div>
+        </Modal>
       </Layout.Main>
     </Layout>
   );
@@ -659,7 +914,9 @@ function joinClassNames(
   ...classNames: readonly (string | null | undefined)[]
 ): string {
   return classNames
-    .filter((className): className is string => isPresentText(className ?? null))
+    .filter((className): className is string =>
+      isPresentText(className ?? null),
+    )
     .join(' ');
 }
 
@@ -668,79 +925,78 @@ interface ActivityHistoryStepProps extends StepProps {
   readonly forcePending?: boolean;
 }
 
-const ActivityHistoryStep = forwardRef<HTMLDivElement, ActivityHistoryStepProps>(
-  function ActivityHistoryStep(
-    {
-      className,
-      descriptionParts,
-      error,
-      forcePending = false,
-      index = 0,
-      orientation,
-      status = 'pending',
-      title,
-      type = 'number',
-      ...rest
-    },
-    ref,
-  ): ReactElement {
-    const displayStatus = forcePending ? 'pending' : status;
-
-    return (
-      <div
-        {...rest}
-        className={joinClassNames(
-          stepClasses.host,
-          type === 'dot' ? stepClasses.dot : null,
-          error && displayStatus !== 'processing' ? stepClasses.error : null,
-          orientation === 'horizontal' ? stepClasses.horizontal : null,
-          type === 'number' ? stepClasses.number : null,
-          displayStatus === 'pending' ? stepClasses.pending : null,
-          displayStatus === 'processing' ? stepClasses.processing : null,
-          error && displayStatus === 'processing'
-            ? stepClasses.processingError
-            : null,
-          !error && displayStatus === 'succeeded'
-            ? stepClasses.succeeded
-            : null,
-          orientation === 'vertical' ? stepClasses.vertical : null,
-          className,
-        )}
-        ref={ref}
-      >
-        {type === 'dot' ? (
-          <span
-            className={joinClassNames(
-              stepClasses.statusIndicator,
-              stepClasses.statusIndicatorDot,
-            )}
-          />
-        ) : (
-          <span className={stepClasses.statusIndicator}>{index + 1}</span>
-        )}
-        <div className={stepClasses.textContainer}>
-          <Typography
-            className={stepClasses.title}
-            variant="label-primary-highlight"
-          >
-            {title}
-            <span className={stepClasses.titleConnectLine} />
-          </Typography>
-          {descriptionParts.length > 0 ? (
-            <Typography className={stepClasses.description} variant="caption">
-              {descriptionParts.map((part, partIndex) => (
-                <Fragment key={`${part.type}-${partIndex}`}>
-                  {partIndex > 0 ? ' · ' : null}
-                  {renderActivityDescriptionPart(part)}
-                </Fragment>
-              ))}
-            </Typography>
-          ) : null}
-        </div>
-      </div>
-    );
+const ActivityHistoryStep = forwardRef<
+  HTMLDivElement,
+  ActivityHistoryStepProps
+>(function ActivityHistoryStep(
+  {
+    className,
+    descriptionParts,
+    error,
+    forcePending = false,
+    index = 0,
+    orientation,
+    status = 'pending',
+    title,
+    type = 'number',
+    ...rest
   },
-);
+  ref,
+): ReactElement {
+  const displayStatus = forcePending ? 'pending' : status;
+
+  return (
+    <div
+      {...rest}
+      className={joinClassNames(
+        stepClasses.host,
+        type === 'dot' ? stepClasses.dot : null,
+        error && displayStatus !== 'processing' ? stepClasses.error : null,
+        orientation === 'horizontal' ? stepClasses.horizontal : null,
+        type === 'number' ? stepClasses.number : null,
+        displayStatus === 'pending' ? stepClasses.pending : null,
+        displayStatus === 'processing' ? stepClasses.processing : null,
+        error && displayStatus === 'processing'
+          ? stepClasses.processingError
+          : null,
+        !error && displayStatus === 'succeeded' ? stepClasses.succeeded : null,
+        orientation === 'vertical' ? stepClasses.vertical : null,
+        className,
+      )}
+      ref={ref}
+    >
+      {type === 'dot' ? (
+        <span
+          className={joinClassNames(
+            stepClasses.statusIndicator,
+            stepClasses.statusIndicatorDot,
+          )}
+        />
+      ) : (
+        <span className={stepClasses.statusIndicator}>{index + 1}</span>
+      )}
+      <div className={stepClasses.textContainer}>
+        <Typography
+          className={stepClasses.title}
+          variant="label-primary-highlight"
+        >
+          {title}
+          <span className={stepClasses.titleConnectLine} />
+        </Typography>
+        {descriptionParts.length > 0 ? (
+          <Typography className={stepClasses.description} variant="caption">
+            {descriptionParts.map((part, partIndex) => (
+              <Fragment key={`${part.type}-${partIndex}`}>
+                {partIndex > 0 ? ' · ' : null}
+                {renderActivityDescriptionPart(part)}
+              </Fragment>
+            ))}
+          </Typography>
+        ) : null}
+      </div>
+    </div>
+  );
+});
 
 function renderActivityDescriptionPart(
   part: ActivityStepDescriptionPart,
@@ -870,32 +1126,27 @@ function readActivityStepRecords(
         title: readActivityEventLabel(activityLog.eventType, payload),
       };
     });
-  const pendingTaskSteps = tasks
-    .filter(isPendingTask)
-    .map(
-      (task): ActivityStepRecord => ({
-        descriptionParts: [
-          readTextDescriptionPart(
-            `節點：${readNodeDisplayLabel(task.nodeId, workflow)}`,
-          ),
-          readMemberDescriptionPart(
-            '處理者',
-            task.assigneeMemberId,
-            memberProfilesById,
-            '未指定',
-          ),
-          readTextDescriptionPart(
-            `建立時間：${formatActivityDateTime(task.createdAt)}`,
-          ),
-        ].filter(isActivityDescriptionPart),
-        error: false,
-        id: `pending-task-${task.id}`,
-        title:
-          task.status === 'IN_PROGRESS'
-            ? '簽核處理中'
-            : '等待簽核處理',
-      }),
-    );
+  const pendingTaskSteps = tasks.filter(isPendingTask).map(
+    (task): ActivityStepRecord => ({
+      descriptionParts: [
+        readTextDescriptionPart(
+          `節點：${readNodeDisplayLabel(task.nodeId, workflow)}`,
+        ),
+        readMemberDescriptionPart(
+          '處理者',
+          task.assigneeMemberId,
+          memberProfilesById,
+          '未指定',
+        ),
+        readTextDescriptionPart(
+          `建立時間：${formatActivityDateTime(task.createdAt)}`,
+        ),
+      ].filter(isActivityDescriptionPart),
+      error: false,
+      id: `pending-task-${task.id}`,
+      title: task.status === 'IN_PROGRESS' ? '簽核處理中' : '等待簽核處理',
+    }),
+  );
   const representedNodeIds = new Set(
     [
       ...activityLogs
@@ -911,20 +1162,19 @@ function readActivityStepRecords(
         tokens,
         instanceState,
         representedNodeIds,
+      ).map(
+        (node): ActivityStepRecord => ({
+          descriptionParts: [
+            readTextDescriptionPart(
+              `${readNodeKindLabel(node.type)} · 尚未抵達`,
+            ),
+          ].filter(isActivityDescriptionPart),
+          error: false,
+          forcePending: true,
+          id: `future-node-${node.id}`,
+          title: readFutureNodeStepTitle(node),
+        }),
       )
-        .map(
-          (node): ActivityStepRecord => ({
-            descriptionParts: [
-              readTextDescriptionPart(
-                `${readNodeKindLabel(node.type)} · 尚未抵達`,
-              ),
-            ].filter(isActivityDescriptionPart),
-            error: false,
-            forcePending: true,
-            id: `future-node-${node.id}`,
-            title: readFutureNodeStepTitle(node),
-          }),
-        )
     : [];
 
   return [...historySteps, ...pendingTaskSteps, ...futureNodeSteps];
@@ -967,9 +1217,10 @@ function isActivityDescriptionPart(
 function readCurrentActivityStep(
   activitySteps: readonly ActivityStepRecord[],
 ): number {
-  const firstPendingStepIndex = activitySteps.findIndex((activityStep) =>
-    activityStep.id.startsWith('pending-task-') ||
-    activityStep.id.startsWith('future-node-'),
+  const firstPendingStepIndex = activitySteps.findIndex(
+    (activityStep) =>
+      activityStep.id.startsWith('pending-task-') ||
+      activityStep.id.startsWith('future-node-'),
   );
 
   return firstPendingStepIndex === -1
@@ -1017,7 +1268,13 @@ function readFutureTimelineNodes(
   }
 
   const futureNodes = workflow.nodes.filter((node) =>
-    isFutureTimelineNode(node, tasks, tokens, instanceState, representedNodeIds),
+    isFutureTimelineNode(
+      node,
+      tasks,
+      tokens,
+      instanceState,
+      representedNodeIds,
+    ),
   );
   const reachableDistances = readReachableFutureNodeDistances(
     workflow,
@@ -1063,14 +1320,13 @@ function readReachableFutureNodeDistances(
   representedNodeIds: ReadonlySet<string>,
 ): ReadonlyMap<string, number> {
   const futureNodeIds = new Set(futureNodes.map((node) => node.id));
-  const outgoingNodeIds = workflow.edges.reduce<ReadonlyMap<string, readonly string[]>>(
-    (groups, edge) => {
-      const nextTargets = [...(groups.get(edge.source) ?? []), edge.target];
+  const outgoingNodeIds = workflow.edges.reduce<
+    ReadonlyMap<string, readonly string[]>
+  >((groups, edge) => {
+    const nextTargets = [...(groups.get(edge.source) ?? []), edge.target];
 
-      return new Map(groups).set(edge.source, nextTargets);
-    },
-    new Map(),
-  );
+    return new Map(groups).set(edge.source, nextTargets);
+  }, new Map());
   const frontierNodeIds = readFutureTimelineFrontierNodeIds(
     workflow,
     tasks,
@@ -1097,7 +1353,9 @@ function readFutureTimelineFrontierNodeIds(
   const tokenNodeIds = tokens
     .filter((token) => token.status === 'ACTIVE' || token.status === 'WAITING')
     .map((token) => token.currentNodeId);
-  const pendingTaskNodeIds = tasks.filter(isPendingTask).map((task) => task.nodeId);
+  const pendingTaskNodeIds = tasks
+    .filter(isPendingTask)
+    .map((task) => task.nodeId);
   const representedFrontierNodeIds = workflow.nodes
     .filter((node) => representedNodeIds.has(node.id))
     .map((node) => node.id);
@@ -1112,7 +1370,9 @@ function readFutureTimelineFrontierNodeIds(
     .filter((node) => node.type === 'startEvent')
     .map((node) => node.id);
 
-  return activeFrontierNodeIds.length > 0 ? activeFrontierNodeIds : startNodeIds;
+  return activeFrontierNodeIds.length > 0
+    ? activeFrontierNodeIds
+    : startNodeIds;
 }
 
 function readFutureNodeDistancesFrom(
@@ -1155,7 +1415,10 @@ function walkFutureNodeDistances(
   const nextDistances = futureNodeIds.has(current.nodeId)
     ? new Map(distances).set(
         current.nodeId,
-        Math.min(distances.get(current.nodeId) ?? current.distance, current.distance),
+        Math.min(
+          distances.get(current.nodeId) ?? current.distance,
+          current.distance,
+        ),
       )
     : distances;
   const nextQueue = [
@@ -1299,7 +1562,9 @@ function readActivityDetail(
       : null;
 
     return action === 'REJECTED' && comment
-      ? [decisionLabel, `拒絕原因：${comment}`].filter(isPresentText).join(' · ')
+      ? [decisionLabel, `拒絕原因：${comment}`]
+          .filter(isPresentText)
+          .join(' · ')
       : decisionLabel;
   }
 
@@ -1364,6 +1629,9 @@ function readActivityDetailParts(
     action === 'REJECTED'
       ? readDangerTextDescriptionPart(`拒絕原因：${comment ?? '-'}`)
       : null,
+    action === 'RETURNED'
+      ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
+      : null,
   ].filter(isActivityDescriptionPart);
 }
 
@@ -1381,6 +1649,43 @@ function readNodeDisplayLabel(
   return (
     workflow?.nodes.find((node) => node.id === nodeId)?.data.label ?? nodeId
   );
+}
+
+function readReturnTargetOptions(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+): readonly { readonly id: string; readonly name: string }[] {
+  if (node.type !== 'userTask' || !node.data.returnBehavior.allowReturn) {
+    return [];
+  }
+
+  if (node.data.returnBehavior.allowedTargets === 'ANY') {
+    return workflow.nodes
+      .filter((candidate) => candidate.id !== node.id)
+      .map((candidate) => ({
+        id: candidate.id,
+        name: `${candidate.data.label}（${readNodeKindLabel(candidate.type)}）`,
+      }));
+  }
+
+  const targetNodeId =
+    node.data.returnBehavior.allowedTargets === 'INITIATOR'
+      ? workflow.nodes.find((candidate) => candidate.type === 'startEvent')?.id
+      : workflow.edges.find((edge) => edge.target === node.id)?.source;
+  const targetNode = workflow.nodes.find(
+    (candidate) => candidate.id === targetNodeId,
+  );
+
+  return targetNode
+    ? [
+        {
+          id: targetNode.id,
+          name: `${targetNode.data.label}（${readNodeKindLabel(
+            targetNode.type,
+          )}）`,
+        },
+      ]
+    : [];
 }
 
 function readTaskDecisionActionLabel(action: string): string {
@@ -1515,7 +1820,12 @@ function WorkflowRuntimeNodeCard({
         style={NODE_HANDLE_STYLE}
         type="target"
       />
-      <Typography component="span" ellipsis title={data.label} variant="label-primary">
+      <Typography
+        component="span"
+        ellipsis
+        title={data.label}
+        variant="label-primary"
+      >
         {data.label}
       </Typography>
       <span style={readNodeStatusStyle(data.tone)}>{data.statusLabel}</span>
@@ -1599,9 +1909,7 @@ function layoutRuntimeWorkflowDefinition(
   };
 }
 
-function readRuntimeFlowEdges(
-  workflow: WorkflowDefinition,
-): RuntimeFlowEdge[] {
+function readRuntimeFlowEdges(workflow: WorkflowDefinition): RuntimeFlowEdge[] {
   return workflow.edges.map((edge): RuntimeFlowEdge => {
     const label = readEdgeLabel(edge);
 
