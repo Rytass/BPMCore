@@ -89,7 +89,10 @@ export type DecisionPolicy =
 export interface ReturnBehavior {
   readonly allowReturn: boolean;
   readonly allowedTargets: 'PREVIOUS' | 'INITIATOR' | 'ANY';
+  readonly resubmitStrategy?: ReturnResubmitStrategy;
 }
+
+export type ReturnResubmitStrategy = 'FROM_RETURN_POINT' | 'RESTART';
 
 export interface SlaConfig {
   readonly duration: string;

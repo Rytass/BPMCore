@@ -5,6 +5,7 @@ import {
   UserTaskNode,
   ServiceTaskNode,
   ApproverResolver,
+  ReturnResubmitStrategy,
 } from '@bpm/shared/workflow';
 import {
   BadRequestException,
@@ -56,11 +57,17 @@ interface DryRunSimulationInput {
 
 interface DryRunPathInput extends DryRunSimulationInput {
   readonly depth: number;
-  readonly edgeId: string | null;
+  readonly incomingEdge: WorkflowEdge | null;
   readonly lastDecision: Readonly<Record<string, unknown>> | null;
   readonly nodeId: string;
   readonly steps: readonly WorkflowDryRunStepObject[];
   readonly visitedNodeIds: ReadonlySet<string>;
+}
+
+interface ReturnedInstanceContext {
+  readonly resubmitStrategy: ReturnResubmitStrategy;
+  readonly returnedFromNodeId: string;
+  readonly returnToNodeId: string;
 }
 
 @Injectable()
@@ -514,6 +521,19 @@ export class WorkflowEngineService {
           state: ApprovalInstanceStateEnum.RUNNING,
           title: input.title?.trim() || instance.title,
         });
+        const returnedContext = await this.readLatestReturnedInstanceContext(
+          manager,
+          instance.id,
+        );
+        const runtimeInstance =
+          returnedContext?.resubmitStrategy === 'FROM_RETURN_POINT'
+            ? await this.resumeReturnedInstanceFromReturnPoint(
+                manager,
+                resubmittedInstance,
+                returnedContext,
+                new Date(),
+              )
+            : resubmittedInstance;
 
         await manager.getRepository(ActivityLogEntity).save(
           manager.getRepository(ActivityLogEntity).create({
@@ -521,13 +541,15 @@ export class WorkflowEngineService {
             eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
             instanceId: instance.id,
             nodeId: null,
-            payload: {},
+            payload: {
+              resubmitStrategy: returnedContext?.resubmitStrategy ?? 'RESTART',
+            },
             taskId: null,
           }),
         );
-        await this.processRunningInstance(manager, resubmittedInstance);
+        await this.processRunningInstance(manager, runtimeInstance);
 
-        return resubmittedInstance;
+        return runtimeInstance;
       },
     );
   }
@@ -580,7 +602,7 @@ export class WorkflowEngineService {
     return this.simulateWorkflowPath({
       ...input,
       depth: 0,
-      edgeId: null,
+      incomingEdge: null,
       lastDecision: null,
       nodeId: startNode.id,
       steps: [],
@@ -599,14 +621,19 @@ export class WorkflowEngineService {
       input.workflowDefinition,
       input.nodeId,
     );
-    const visitKey = `${input.nodeId}:${input.edgeId ?? 'start'}`;
+    const visitKey = `${input.nodeId}:${input.incomingEdge?.id ?? 'start'}`;
+    const entryCondition = readNodeEntryCondition(node);
 
     if (input.visitedNodeIds.has(visitKey)) {
       return [
         ...input.steps,
         createDryRunStep({
           assigneeMemberId: null,
-          edgeId: input.edgeId,
+          edge: input.incomingEdge,
+          edgeMatched: null,
+          edgeReason: null,
+          entryCondition,
+          entryConditionMet: null,
           message: '偵測到循環路徑，已停止此分支。',
           node,
           status: 'STOPPED',
@@ -616,7 +643,6 @@ export class WorkflowEngineService {
     }
 
     const nextVisitedNodeIds = new Set([...input.visitedNodeIds, visitKey]);
-    const entryCondition = readNodeEntryCondition(node);
     const entryConditionMet = this.conditionService.evaluateBoolean(
       entryCondition,
       buildDryRunExpressionContext(input, input.lastDecision),
@@ -642,7 +668,11 @@ export class WorkflowEngineService {
       ...input.steps,
       createDryRunStep({
         assigneeMemberId,
-        edgeId: input.edgeId,
+        edge: input.incomingEdge,
+        edgeMatched: input.incomingEdge ? true : null,
+        edgeReason: readDryRunEdgeReason(input.incomingEdge),
+        entryCondition,
+        entryConditionMet,
         message: readDryRunStepMessage(node, entryConditionMet),
         node,
         status: readDryRunStepStatus(node, entryConditionMet),
@@ -660,7 +690,7 @@ export class WorkflowEngineService {
           this.simulateWorkflowPath({
             ...input,
             depth: input.depth + 1,
-            edgeId: edge.id,
+            incomingEdge: edge,
             lastDecision: nextLastDecision,
             nodeId: edge.target,
             steps,
@@ -681,7 +711,7 @@ export class WorkflowEngineService {
         this.simulateWorkflowPath({
           ...input,
           depth: input.depth + 1,
-          edgeId: edge.id,
+          incomingEdge: edge,
           lastDecision: nextLastDecision,
           nodeId: edge.target,
           steps,
@@ -1644,6 +1674,7 @@ export class WorkflowEngineService {
           ? ApprovalInstanceStateEnum.RETURNED
           : ApprovalInstanceStateEnum.RUNNING,
     });
+    const resubmitStrategy = readReturnResubmitStrategy(task, instance);
     const returnToken = await tokenRepository.save(
       tokenRepository.create({
         consumedAt: null,
@@ -1661,6 +1692,8 @@ export class WorkflowEngineService {
         instanceId: instance.id,
         nodeId: task.nodeId,
         payload: {
+          resubmitStrategy,
+          returnedFromNodeId: task.nodeId,
           returnToNodeId: targetNode.id,
           taskId: task.id,
         },
@@ -1682,6 +1715,97 @@ export class WorkflowEngineService {
     if (returnedInstance.state === ApprovalInstanceStateEnum.RUNNING) {
       await this.processRunningInstance(manager, returnedInstance);
     }
+  }
+
+  private async readLatestReturnedInstanceContext(
+    manager: EntityManager,
+    instanceId: string,
+  ): Promise<ReturnedInstanceContext | null> {
+    const activity = await manager.getRepository(ActivityLogEntity).findOne({
+      order: { createdAt: 'DESC' },
+      where: {
+        eventType: ActivityLogEventTypeEnum.INSTANCE_RETURNED,
+        instanceId,
+      },
+    });
+
+    if (!activity) {
+      return null;
+    }
+
+    const returnToNodeId = readStringPayloadValue(
+      activity.payload,
+      'returnToNodeId',
+    );
+    const returnedFromNodeId =
+      readStringPayloadValue(activity.payload, 'returnedFromNodeId') ??
+      activity.nodeId;
+
+    if (!returnToNodeId || !returnedFromNodeId) {
+      return null;
+    }
+
+    return {
+      resubmitStrategy: readReturnResubmitStrategyFromPayload(activity.payload),
+      returnedFromNodeId,
+      returnToNodeId,
+    };
+  }
+
+  private async resumeReturnedInstanceFromReturnPoint(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    context: ReturnedInstanceContext,
+    resubmittedAt: Date,
+  ): Promise<ApprovalInstanceEntity> {
+    const targetNode = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      context.returnToNodeId,
+    );
+
+    if (targetNode.type !== 'startEvent') {
+      return instance;
+    }
+
+    readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      context.returnedFromNodeId,
+    );
+
+    await this.consumeOpenRuntimeState(
+      manager,
+      instance,
+      resubmittedAt,
+      TaskStatusEnum.CANCELLED,
+    );
+
+    const tokenRepository = manager.getRepository(WorkflowTokenEntity);
+    const returnPointToken = await tokenRepository.save(
+      tokenRepository.create({
+        consumedAt: null,
+        currentNodeId: context.returnedFromNodeId,
+        instanceId: instance.id,
+        parentTokenId: null,
+        status: WorkflowTokenStatusEnum.ACTIVE,
+      }),
+    );
+
+    await manager.getRepository(ActivityLogEntity).save(
+      manager.getRepository(ActivityLogEntity).create({
+        actorMemberId: null,
+        eventType: ActivityLogEventTypeEnum.TOKEN_CREATED,
+        instanceId: instance.id,
+        nodeId: context.returnedFromNodeId,
+        payload: {
+          resubmitStrategy: context.resubmitStrategy,
+          resumedFromNodeId: context.returnToNodeId,
+          tokenId: returnPointToken.id,
+        },
+        taskId: null,
+      }),
+    );
+
+    return instance;
   }
 
   private async consumeOpenRuntimeState(
@@ -2146,6 +2270,36 @@ function readDefaultReturnTargetNodeId(
   return previousNodeId;
 }
 
+function readReturnResubmitStrategy(
+  task: TaskEntity,
+  instance: ApprovalInstanceEntity,
+): ReturnResubmitStrategy {
+  const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+
+  if (node.type !== 'userTask') {
+    return 'RESTART';
+  }
+
+  return node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
+}
+
+function readReturnResubmitStrategyFromPayload(
+  payload: Readonly<Record<string, unknown>>,
+): ReturnResubmitStrategy {
+  return payload.resubmitStrategy === 'FROM_RETURN_POINT'
+    ? 'FROM_RETURN_POINT'
+    : 'RESTART';
+}
+
+function readStringPayloadValue(
+  payload: Readonly<Record<string, unknown>>,
+  key: string,
+): string | null {
+  const value = payload[key];
+
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 function readNodeEntryCondition(node: WorkflowNode): string | null {
   if (node.type === 'userTask' || node.type === 'serviceTask') {
     return node.data.entryCondition?.trim() || null;
@@ -2227,7 +2381,11 @@ function toDateOnlyString(value: Date): string {
 
 function createDryRunStep(input: {
   readonly assigneeMemberId: string | null;
-  readonly edgeId: string | null;
+  readonly edge: WorkflowEdge | null;
+  readonly edgeMatched: boolean | null;
+  readonly edgeReason: string | null;
+  readonly entryCondition: string | null;
+  readonly entryConditionMet: boolean | null;
   readonly message: string;
   readonly node: WorkflowNode;
   readonly status: string;
@@ -2235,7 +2393,13 @@ function createDryRunStep(input: {
 }): WorkflowDryRunStepObject {
   return Object.assign(new WorkflowDryRunStepObject(), {
     assigneeMemberId: input.assigneeMemberId,
-    edgeId: input.edgeId,
+    edgeDefault: input.edge ? Boolean(input.edge.data.isDefault) : null,
+    edgeId: input.edge?.id ?? null,
+    edgeLabel: input.edge ? readDryRunEdgeLabel(input.edge) : null,
+    edgeMatched: input.edgeMatched,
+    edgeReason: input.edgeReason,
+    entryCondition: input.entryCondition,
+    entryConditionMatched: input.entryConditionMet,
     id: `dry-run-step-${input.stepIndex + 1}`,
     message: input.message,
     nodeId: input.node.id,
@@ -2243,6 +2407,34 @@ function createDryRunStep(input: {
     nodeType: input.node.type,
     status: input.status,
   });
+}
+
+function readDryRunEdgeLabel(edge: WorkflowEdge): string {
+  return edge.data.label?.trim() || edge.id;
+}
+
+function readDryRunEdgeReason(edge: WorkflowEdge | null): string | null {
+  if (!edge) {
+    return null;
+  }
+
+  if (edge.data.isDefault) {
+    return '其他條件不符合時採用預設路徑。';
+  }
+
+  const expression = edge.data.condition?.trim();
+
+  if (expression) {
+    return `條件成立：${expression}`;
+  }
+
+  if (edge.data.conditionFieldKey && edge.data.conditionOperator) {
+    return `條件成立：${edge.data.conditionFieldKey} ${edge.data.conditionOperator}${
+      edge.data.conditionValue ? ` ${edge.data.conditionValue}` : ''
+    }`;
+  }
+
+  return '無條件路徑。';
 }
 
 function readDryRunStepStatus(

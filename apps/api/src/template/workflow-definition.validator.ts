@@ -195,6 +195,13 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
         ...(data.returnBehavior?.allowedTargets
           ? []
           : [`workflow.nodes.${node.id}.returnBehavior is required`]),
+        ...(!data.returnBehavior?.resubmitStrategy ||
+        data.returnBehavior.resubmitStrategy === 'RESTART' ||
+        data.returnBehavior.resubmitStrategy === 'FROM_RETURN_POINT'
+          ? []
+          : [
+              `workflow.nodes.${node.id}.returnBehavior.resubmitStrategy is invalid`,
+            ]),
       ];
     });
 }

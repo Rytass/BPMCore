@@ -310,6 +310,87 @@ describe('WorkflowEngineService', () => {
     ]);
   });
 
+  it('reports dry run edge labels, default routing, and entry condition results', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{"amount":500}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      workflowDefinitionJson: JSON.stringify(createExclusiveGatewayWorkflow()),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          edgeDefault: true,
+          edgeLabel: '其他情況',
+          edgeMatched: true,
+          edgeReason: '其他條件不符合時採用預設路徑。',
+          nodeId: 'task_default',
+          status: 'WAITING',
+        }),
+      ]),
+    );
+  });
+
+  it('resubmits returned instances from the return point when configured', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      latestReturnActivity: createActivityLog({
+        eventType: ActivityLogEventTypeEnum.INSTANCE_RETURNED,
+        nodeId: 'task_finance',
+        payload: {
+          resubmitStrategy: 'FROM_RETURN_POINT',
+          returnedFromNodeId: 'task_finance',
+          returnToNodeId: 'start',
+          taskId: 'task-1',
+        },
+      }),
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.resubmitApprovalInstance({
+      formDataJson: '{"amount":1200}',
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    });
+
+    expect(fixture.savedWorkflowTokens).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+      ]),
+    );
+    expect(fixture.savedTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+        }),
+      ]),
+    );
+    expect(fixture.savedSingleActivityLogs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+          payload: { resubmitStrategy: 'FROM_RETURN_POINT' },
+        }),
+      ]),
+    );
+  });
+
   it('forks a token across multiple outgoing edges and creates parallel tasks', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -452,6 +533,8 @@ function createServiceFixture({
   decisionTask,
   decisionToken,
   formVersionStatus,
+  instanceState,
+  latestReturnActivity,
   processFormData,
   processWorkflowSnapshot,
   templateVersionStatus,
@@ -460,6 +543,8 @@ function createServiceFixture({
   readonly decisionTask?: TaskEntity;
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
+  readonly instanceState?: ApprovalInstanceStateEnum;
+  readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
@@ -520,6 +605,7 @@ function createServiceFixture({
         Promise.resolve(
           createApprovalInstance({
             formData: processFormData,
+            state: instanceState,
             workflowSnapshot: processWorkflowSnapshot,
           }),
         ),
@@ -729,6 +815,7 @@ function createServiceFixture({
           taskId: entity.taskId ?? null,
         }),
     ),
+    findOne: jest.fn(() => Promise.resolve(latestReturnActivity ?? null)),
     save: jest.fn(
       (
         entityOrEntities: ActivityLogEntity | ActivityLogEntity[],
@@ -936,9 +1023,11 @@ function createFormVersion(
 
 function createApprovalInstance({
   formData,
+  state,
   workflowSnapshot,
 }: {
   readonly formData?: Readonly<Record<string, unknown>>;
+  readonly state?: ApprovalInstanceStateEnum;
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
@@ -950,7 +1039,7 @@ function createApprovalInstance({
     initiatorMemberId: 'member-001',
     initiatorMetadataSnapshot: {},
     startedAt: new Date('2026-05-04T09:00:00.000Z'),
-    state: ApprovalInstanceStateEnum.RUNNING,
+    state: state ?? ApprovalInstanceStateEnum.RUNNING,
     templateId: 'template-1',
     templateVersionId: 'template-version-1',
     title: '費用申請',
@@ -960,6 +1049,22 @@ function createApprovalInstance({
       meta: { schemaVersion: 1 },
       nodes: [],
     },
+  });
+}
+
+function createActivityLog(
+  value: Partial<ActivityLogEntity>,
+): ActivityLogEntity {
+  return Object.assign(new ActivityLogEntity(), {
+    actorMemberId: value.actorMemberId ?? null,
+    createdAt: value.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
+    eventType:
+      value.eventType ?? ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
+    id: value.id ?? 'activity-log',
+    instanceId: value.instanceId ?? 'instance-1',
+    nodeId: value.nodeId ?? null,
+    payload: value.payload ?? {},
+    taskId: value.taskId ?? null,
   });
 }
 
