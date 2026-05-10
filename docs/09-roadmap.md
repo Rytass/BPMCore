@@ -1,5 +1,7 @@
 # 09 — 開發路線圖
 
+> 盤點更新：2026-05-10。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
+
 ## 里程碑總覽
 
 | 里程碑 | 主題                                             | 預估 | 累計 |
@@ -19,15 +21,16 @@
 
 ### 任務
 
-- [ ] Nx Monorepo 初始化（`apps/api`, `apps/client`, `libs/shared`）
-- [ ] NestJS API 專案骨架（health check、logging、global exception filter）
-- [ ] Next.js Web 專案骨架（基礎 layout、auth middleware）
-- [ ] PostgreSQL 連線（TypeORM 或 Prisma — 建議 TypeORM 配合 NestJS 慣例）
-- [ ] Migration 工具設定
-- [ ] ESLint / Prettier / commitlint / Husky
-- [ ] Docker compose（PG + minio + adminer）
-- [ ] CI: GitHub Actions（lint + build + test）
-- [ ] 共用型別 lib（`@bpm/shared-types`：Workflow JSON Schema、Form Schema、CEL Context Types）
+- [x] Nx Monorepo 初始化（`apps/api`, `apps/client`, `libs/shared`）
+- [x] NestJS API 專案骨架（health check、logging、global exception filter）
+- [x] Next.js Web 專案骨架（基礎 layout）
+- [ ] auth middleware（目前尚未導入真實登入攔截）
+- [x] PostgreSQL 連線（TypeORM）
+- [x] Migration 工具設定
+- [x] ESLint / Prettier / commitlint / Husky
+- [x] Docker compose（PG + minio + adminer）
+- [ ] CI: GitHub Actions（lint + build + test；目前已有 staging deploy workflow，但不是完整驗證 CI）
+- [x] 共用型別 lib（`@bpm/shared`：Workflow JSON Schema、Form Schema、CEL Context Types）
 
 ### 驗收
 
@@ -42,17 +45,17 @@
 
 **Backend**
 
-- [ ] `member_metadata_cache` 表 + migration
-- [ ] `MemberResolver` interface + Mock 實作（給開發用）
-- [ ] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
-- [ ] `org_units`、`positions`、`memberships`、`manager_resolutions` 表 + migration
-- [ ] `OrganizationModule`：CRUD + 樹狀查詢（用 ltree）
-- [ ] 主管解析 service（含優先序邏輯）
+- [x] `member_metadata_cache` 表 + migration
+- [x] `MemberResolver` interface + Mock 實作（給開發用）
+- [x] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
+- [x] `org_units`、`positions`、`memberships`、`manager_resolutions` 表 + migration
+- [x] `OrganizationModule`：CRUD + 樹狀查詢（path-based hierarchy）
+- [x] 主管解析 service（含優先序邏輯）
 
 **Frontend**
 
-- [ ] `/admin/orgs` 組織樹維護介面
-- [ ] `/admin/users` 會員清單（從 mock resolver 拉）
+- [ ] `/admin/orgs` 組織樹維護介面（目前為靜態 starter，尚未接 GraphQL CRUD）
+- [ ] `/admin/users` 會員清單（目前為靜態 mock table，尚未接 member resolver）
 - [ ] 共用元件：`<MemberPicker>`, `<OrgUnitPicker>`
 
 **驗收**：能維護組織樹、查到任一 member 的所屬組織與主管。
@@ -61,19 +64,19 @@
 
 **Backend**
 
-- [ ] `form_definitions`、`form_definition_versions` 表
-- [ ] `FormModule`：CRUD + 版本管理（fork、publish、archive、rollback）
-- [ ] FormSchema 驗證器（內含欄位類型 registry）
-- [ ] 表單 schema lint API（給 designer 用）
+- [x] `form_definitions`、`form_definition_versions` 表
+- [x] `FormModule`：CRUD + 版本管理（fork、publish、archive、rollback）
+- [x] FormSchema 驗證器（內含欄位類型 registry）
+- [x] 表單 schema lint API（給 designer 用）
 
 **Frontend**
 
-- [ ] `/forms` 列表頁
-- [ ] `/forms/[id]/builder` 表單設計器
+- [x] `/forms` 列表頁
+- [x] `/forms/[id]/builder` 表單設計器
   - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file / textarea）
   - 屬性面板（標籤、必填、預設值）
   - 條件邏輯（顯示/必填/唯讀，先用簡單表達式輸入框）
-- [ ] FormRenderer 元件（根據 schema 渲染表單）
+- [x] FormRenderer 元件（根據 schema 渲染表單）
 
 **驗收**：能建立表單、發布版本、用 FormRenderer 渲染並填寫。
 
@@ -81,25 +84,25 @@
 
 **Backend**
 
-- [ ] `approval_templates`、`approval_template_versions` 表
-- [ ] `TemplateModule`：CRUD + 版本管理（fork、publish、rollback）
-- [ ] 流程結構靜態驗證器（先做基本：唯一 Start、連通性、AND Join 配對）
-- [ ] `ConditionModule` 雛型：CEL evaluator + Context Schema registry
+- [x] `approval_templates`、`approval_template_versions` 表
+- [x] `TemplateModule`：CRUD + 版本管理（fork、publish、rollback）
+- [x] 流程結構靜態驗證器（唯一 Start、連通性、Join / service task 基礎檢查）
+- [x] `ConditionModule` 雛型：CEL evaluator + Context Schema registry
   - 整合 `cel-js`
   - 註冊核心 Context Types
   - 簡易型別檢查
 
 **Frontend**
 
-- [ ] `/templates` 列表頁
-- [ ] `/templates/[id]/designer` 流程設計器（**核心，本週重點**）
+- [x] `/templates` 列表頁
+- [x] `/templates/[id]/designer` 流程設計器（**核心，本週重點**）
   - React Flow 整合
   - 6 種節點類型 + 自訂渲染
   - 節點屬性面板
   - Edge 條件編輯
   - 自動排版（dagre）
   - 儲存 / 發布按鈕
-- [ ] `/templates/[id]/versions` 版本歷程
+- [x] `/templates/[id]/versions` 版本歷程
 
 **驗收**：能用設計器拉出流程、設定簽核者、發布模板版本、查看版本歷程。
 
@@ -111,12 +114,12 @@
 
 **Backend**
 
-- [ ] `approval_instances`、`workflow_tokens`、`tasks`、`task_decisions` 表
-- [ ] `WorkflowEngineModule` 骨架
-- [ ] Instance 發起（submit）：驗證 + snapshot（template, form, initiator metadata）
-- [ ] Token 建立（Start Event）
-- [ ] 引擎主迴圈骨架（含 Advisory Lock 並發保護）
-- [ ] Activity Log 寫入
+- [x] `approval_instances`、`workflow_tokens`、`tasks`、`task_decisions` 表
+- [x] `WorkflowEngineModule` 骨架
+- [x] Instance 發起（submit）：驗證 + snapshot（template, form, initiator metadata）
+- [x] Token 建立（Start Event）
+- [x] 引擎主迴圈骨架（含 Advisory Lock 並發保護）
+- [x] Activity Log 寫入
 
 **驗收**：能建立 instance、Start Event 產生 token、紀錄 activity log。
 
@@ -124,13 +127,13 @@
 
 **Backend**
 
-- [ ] Start Event / End Event 處理
-- [ ] User Task 處理（含 Approver Resolver 5 種類型，先不含 Delegation）
-- [ ] Service Task — `NOTIFY` 類型（先不接外部）
-- [ ] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
-- [ ] Task 決策 API（同意 / 拒絕，先無簽章）
-- [ ] Token advance / consume
-- [ ] Instance 完成判定
+- [x] Start Event / End Event 處理
+- [x] User Task 處理（含 Approver Resolver 5 種類型）
+- [x] Service Task — `NOTIFY` 類型（先不接外部）
+- [x] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
+- [x] Task 決策 API（同意 / 拒絕，先無簽章）
+- [x] Token advance / consume
+- [x] Instance 完成判定
 
 **Frontend**
 
@@ -157,7 +160,8 @@
 - [x] Exclusive Gateway 處理（含 default flow）
 - [x] 多分支 outgoing edge 處理
 - [x] 節點前置條件 `AND` / `OR` 處理（全部前置完成 / 任一前置完成）
-- [ ] CEL 在 Edge / Entry Condition / Approver Resolver 整合
+- [x] CEL 在 Entry Condition / Approver Resolver / initiator policy 整合
+- [ ] Edge Condition 完整 CEL expression runtime（目前執行 structured field/operator condition）
 
 **Frontend**
 
@@ -173,15 +177,15 @@
 
 **Backend**
 
-- [ ] 退回（target = previous / initiator / specific node）
-- [ ] 退回後重新提交（重跑 vs 從退回點繼續，依模板設定）
-- [ ] 撤銷 instance
-- [ ] **Dry Run** API：給定假 initiator + 表單值 → 純記憶體模擬流程
+- [x] 退回（target = previous / initiator / specific node）
+- [x] 退回後重新提交（從退回點繼續）
+- [x] 撤銷 instance
+- [x] **Dry Run** API：給定假 initiator + 表單值 → 純記憶體模擬流程
 
 **Frontend**
 
-- [ ] 退回 / 撤銷 UI
-- [ ] Dry Run 介面（在設計器內）
+- [x] 退回 / 撤銷 UI
+- [x] Dry Run 介面（在設計器內）
 
 **驗收**：完整流程行為符合預期；模板設計者可 Dry Run 驗證。
 
@@ -193,16 +197,16 @@
 
 **Backend**
 
-- [ ] `delegation_rules` 表
-- [ ] `DelegationModule`：規則 CRUD
-- [ ] 引擎整合：建立 task 時套用 delegation 解析（含循環防護、CEL scope）
-- [ ] Task 轉派（manual transfer）
+- [x] `delegation_rules` 表
+- [x] `DelegationModule`：規則 CRUD
+- [x] 引擎整合：建立 task 時套用 delegation 解析（含循環防護、CEL scope）
+- [x] Task 轉派（manual transfer）
 
 **Frontend**
 
-- [ ] `/admin/delegations` 代理規則維護
+- [x] `/admin/delegations` 代理規則維護
 - [ ] 個人代理設定頁（自助）
-- [ ] Task 轉派 UI
+- [x] Task 轉派 UI
 
 **驗收**：A 設定代理給 B → 派給 A 的 task 自動派給 B；代理鏈正確紀錄。
 
@@ -210,18 +214,22 @@
 
 **Backend**
 
-- [ ] `notifications`、`notification_preferences` 表
-- [ ] `NotificationModule`：in-app + email（用 nodemailer 或 SES）+ webhook
-- [ ] 通知模板系統（簡單 Handlebars）
-- [ ] SLA Scheduler（cron 每分鐘）
-  - 預警 / 逾時 / 自動同意 / 升級 / 終止
+- [x] `notifications`、`notification_preferences` 表
+- [x] `NotificationModule`：in-app notification
+- [ ] email / webhook 外部通知（目前保留 hook + console log）
+- [x] 通知模板 placeholder renderer
+- [ ] Handlebars template engine
+- [x] SLA Scheduler（cron 每分鐘）
+  - [x] 預警 / 逾時通知
+  - [ ] 自動同意 / 升級 / 終止動作（目前保留 hook + console log）
 - [ ] Boundary Timer Event 處理
 
 **Frontend**
 
-- [ ] In-app 通知中心（鈴鐺 + 列表）
-- [ ] 通知偏好設定頁
-- [ ] Inbox 顯示 SLA due 倒數
+- [x] In-app 通知中心列表（`/notifications`）
+- [ ] Header 鈴鐺入口
+- [x] 通知偏好設定頁
+- [x] Inbox 顯示 SLA due 倒數
 
 **驗收**：派任務有通知、SLA 預警與逾時行為符合預期。
 

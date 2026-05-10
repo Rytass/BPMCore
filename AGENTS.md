@@ -54,11 +54,11 @@
 
 - 2026-05-04: M1 W2 Form Builder is complete with reusable `FormRenderer`, builder preview integration, unit tests, and `pnpm e2e:client` Playwright coverage.
 - 2026-05-04: M1 W3 Approval Template foundation is implemented with template/version GraphQL APIs, workflow validation, React Flow designer, version history, and `pnpm e2e:client` Playwright coverage.
-- 2026-05-04: M2 W4 Workflow Engine foundation is in progress with instance/token/task/activity entities, submit snapshot flow, advisory-lock processing skeleton, and API unit coverage.
+- 2026-05-04: M2 W4 Workflow Engine foundation is implemented with instance/token/task/activity entities, submit snapshot flow, advisory-lock processing, activity logging, and API unit coverage.
 - 2026-05-06: M2 W5 linear approval execution is implemented with task decision GraphQL APIs, submit/process/approve client flows, inbox/detail pages, API unit coverage, and `pnpm e2e:client` Playwright coverage.
 - 2026-05-06: M2 W6 workflow branching runtime is implemented in the engine with structured edge condition evaluation, exclusive gateway routing, multi-outgoing token fork, AND/OR predecessor joins, sibling cancellation for OR joins, and API unit coverage.
 - 2026-05-06: Workflow launch entry UI is implemented with a `/instances/new` launch center, dashboard/inbox/template shortcuts, launchability filtering, and Playwright coverage.
 - 2026-05-08: W7 1/2 scope completed with CEL-backed policy/condition evaluation, approver resolver support, return/cancel/resubmit instance controls, workflow dry run API/UI, and full lint/typecheck/build/e2e/browser verification.
-- 2026-05-09: W9 notification/SLA foundation is in progress with in-app notification storage/API, task-assigned notifications, SLA due calculation/scanning, notification center UI, and inbox SLA countdown; email/webhook/timeout actions are currently hook + console logging only.
+- 2026-05-09: W9 notification/SLA foundation is implemented for in-app notification storage/API, task-assigned notifications, SLA due calculation/scanning, notification center UI, preference UI, and inbox SLA countdown; email/webhook/timeout actions remain hook + console logging only.
 - 2026-05-09: W8 delegation and transfer is implemented with delegation rule CRUD, automatic task assignee resolution, manual task transfer, admin UI, task detail transfer UI, API unit coverage, and Playwright browser coverage.
 - 2026-05-09: W7 completed with configurable return resubmit strategy (`RESTART` / `FROM_RETURN_POINT`), richer workflow dry run routing diagnostics, designer UI controls, API regression coverage, and full lint/typecheck/test/build/e2e verification.
