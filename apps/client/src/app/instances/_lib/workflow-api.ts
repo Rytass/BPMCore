@@ -6,9 +6,7 @@ import {
   SelectFieldDefinition,
 } from '@bpm/shared/form';
 import { WorkflowDefinition } from '@bpm/shared/workflow';
-
-const GRAPHQL_ENDPOINT =
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:17601/graphql';
+import { requestGraphQl } from '../../_lib/graphql-client';
 
 export const CURRENT_MEMBER_ID = 'member-001';
 
@@ -94,6 +92,7 @@ export interface TaskDecisionRecord {
   readonly decidedByMemberId: string;
   readonly id: string;
   readonly returnToNodeId: string | null;
+  readonly signatureId: string | null;
   readonly taskId: string;
   readonly transferToMemberId: string | null;
 }
@@ -112,6 +111,16 @@ export interface MemberProfileRecord {
   readonly email: string;
   readonly memberId: string;
   readonly name: string;
+}
+
+export interface MemberDirectoryRecord extends MemberProfileRecord {
+  readonly positionId: string | null;
+  readonly primaryOrgUnitId: string | null;
+}
+
+export interface MemberDirectoryPage {
+  readonly members: readonly MemberDirectoryRecord[];
+  readonly totalCount: number;
 }
 
 export type DelegationScopeType = 'ALL' | 'CONDITION_BASED' | 'TEMPLATE_LIST';
@@ -176,6 +185,44 @@ export interface DelegationRuleRecord {
   readonly updatedAt: string;
 }
 
+export interface AttachmentRecord {
+  readonly checksumSha256: string;
+  readonly createdAt: string;
+  readonly encryptionKeyId: string | null;
+  readonly filename: string;
+  readonly formFieldPath: string | null;
+  readonly id: string;
+  readonly instanceId: string | null;
+  readonly mimeType: string;
+  readonly sizeBytes: string;
+  readonly storageKey: string;
+  readonly storageProvider: string;
+  readonly taskId: string | null;
+  readonly uploaderMemberId: string;
+}
+
+export interface SignatureRecord {
+  readonly algorithm: string;
+  readonly id: string;
+  readonly instanceId: string;
+  readonly keyVersion: number;
+  readonly previousSignatureHash: string | null;
+  readonly signature: string;
+  readonly signedAt: string;
+  readonly signedPayloadHash: string;
+  readonly signedPayloadJson: string;
+  readonly signerMemberId: string;
+  readonly taskId: string | null;
+  readonly timestampTokenBase64: string | null;
+}
+
+export interface SignatureVerificationRecord {
+  readonly checkedCount: number;
+  readonly errors: readonly string[];
+  readonly instanceId: string;
+  readonly valid: boolean;
+}
+
 export interface ApprovalTemplateRecord {
   readonly currentVersionId: string | null;
   readonly id: string;
@@ -210,15 +257,6 @@ export interface LaunchableTemplateRecord {
   readonly version: number;
 }
 
-interface GraphQlError {
-  readonly message: string;
-}
-
-interface GraphQlResponse<TData> {
-  readonly data?: TData;
-  readonly errors?: readonly GraphQlError[];
-}
-
 interface ApprovalInstancesQueryData {
   readonly approvalInstances: readonly InstanceJsonRecord[];
 }
@@ -242,6 +280,27 @@ interface TaskDecisionsQueryData {
   readonly taskDecisions: readonly TaskDecisionRecord[];
 }
 
+interface AttachmentsQueryData {
+  readonly attachments: readonly AttachmentRecord[];
+}
+
+interface AttachmentDownloadUrlQueryData {
+  readonly attachmentDownloadUrl: string;
+}
+
+interface AttachmentPreviewUrlQueryData {
+  readonly attachmentPreviewUrl: string;
+}
+
+interface SignaturesQueryData {
+  readonly signatures: readonly SignatureRecord[];
+  readonly verifySignatureChain: SignatureVerificationRecord;
+}
+
+interface UploadAttachmentMutationData {
+  readonly uploadAttachment: AttachmentRecord;
+}
+
 interface MembersQueryData {
   readonly members: readonly MemberProfileRecord[];
 }
@@ -250,11 +309,21 @@ interface SearchMembersQueryData {
   readonly searchMembers: readonly MemberProfileRecord[];
 }
 
+interface MemberDirectoryPageQueryData {
+  readonly memberCount: number;
+  readonly searchMembers: readonly MemberDirectoryRecord[];
+}
+
 interface DelegationRulesQueryData {
   readonly delegationRules: readonly DelegationRuleRecord[];
 }
 
+interface DelegationRulesPageQueryData extends DelegationRulesQueryData {
+  readonly delegationRuleCount: number;
+}
+
 interface NotificationsQueryData {
+  readonly notificationCount: number;
   readonly notifications: readonly NotificationRecord[];
   readonly unreadNotificationCount: number;
 }
@@ -272,7 +341,10 @@ interface RevokeDelegationRuleMutationData {
 }
 
 interface MarkNotificationReadMutationData {
-  readonly markNotificationRead: NotificationRecord;
+  readonly markNotificationRead: Pick<
+    NotificationRecord,
+    'id' | 'readAt' | 'status'
+  >;
 }
 
 interface UpdateNotificationPreferenceMutationData {
@@ -599,6 +671,7 @@ export async function listTaskDecisions(
         decidedByMemberId
         id
         returnToNodeId
+        signatureId
         taskId
         transferToMemberId
       }
@@ -607,6 +680,155 @@ export async function listTaskDecisions(
   );
 
   return data.taskDecisions;
+}
+
+export async function listAttachments(
+  instanceId: string,
+): Promise<readonly AttachmentRecord[]> {
+  const data = await requestGraphQl<AttachmentsQueryData>(
+    `query InstanceAttachments($instanceId: String!) {
+      attachments(instanceId: $instanceId) {
+        checksumSha256
+        createdAt
+        encryptionKeyId
+        filename
+        formFieldPath
+        id
+        instanceId
+        mimeType
+        sizeBytes
+        storageKey
+        storageProvider
+        taskId
+        uploaderMemberId
+      }
+    }`,
+    { instanceId },
+  );
+
+  return data.attachments ?? [];
+}
+
+export async function uploadAttachment({
+  file,
+  formFieldPath,
+  uploaderMemberId,
+}: {
+  readonly file: File;
+  readonly formFieldPath: string;
+  readonly uploaderMemberId: string;
+}): Promise<AttachmentRecord> {
+  const contentBase64 = await readFileBase64(file);
+  const checksumSha256 = await hashFileSha256(file);
+  const data = await requestGraphQl<UploadAttachmentMutationData>(
+    `mutation UploadAttachment($input: UploadAttachmentInput!) {
+      uploadAttachment(input: $input) {
+        checksumSha256
+        createdAt
+        encryptionKeyId
+        filename
+        formFieldPath
+        id
+        instanceId
+        mimeType
+        sizeBytes
+        storageKey
+        storageProvider
+        taskId
+        uploaderMemberId
+      }
+    }`,
+    {
+      input: {
+        checksumSha256,
+        contentBase64,
+        filename: file.name,
+        formFieldPath,
+        instanceId: null,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+        taskId: null,
+        uploaderMemberId,
+      },
+    },
+  );
+
+  return data.uploadAttachment;
+}
+
+export async function readAttachmentDownloadUrl({
+  id,
+  requestedByMemberId,
+}: {
+  readonly id: string;
+  readonly requestedByMemberId: string;
+}): Promise<string> {
+  const data = await requestGraphQl<AttachmentDownloadUrlQueryData>(
+    `query AttachmentDownloadUrl($id: String!, $requestedByMemberId: String!) {
+      attachmentDownloadUrl(id: $id, requestedByMemberId: $requestedByMemberId)
+    }`,
+    { id, requestedByMemberId },
+  );
+
+  return data.attachmentDownloadUrl;
+}
+
+export async function readAttachmentPreviewUrl({
+  id,
+  requestedByMemberId,
+}: {
+  readonly id: string;
+  readonly requestedByMemberId: string;
+}): Promise<string> {
+  const data = await requestGraphQl<AttachmentPreviewUrlQueryData>(
+    `query AttachmentPreviewUrl($id: String!, $requestedByMemberId: String!) {
+      attachmentPreviewUrl(id: $id, requestedByMemberId: $requestedByMemberId)
+    }`,
+    { id, requestedByMemberId },
+  );
+
+  return data.attachmentPreviewUrl;
+}
+
+export async function readInstanceSignatures(instanceId: string): Promise<{
+  readonly signatures: readonly SignatureRecord[];
+  readonly verification: SignatureVerificationRecord;
+}> {
+  const data = await requestGraphQl<SignaturesQueryData>(
+    `query InstanceSignatures($instanceId: String!) {
+      signatures(instanceId: $instanceId) {
+        algorithm
+        id
+        instanceId
+        keyVersion
+        previousSignatureHash
+        signature
+        signedAt
+        signedPayloadHash
+        signedPayloadJson
+        signerMemberId
+        taskId
+        timestampTokenBase64
+      }
+      verifySignatureChain(instanceId: $instanceId) {
+        checkedCount
+        errors
+        instanceId
+        valid
+      }
+    }`,
+    { instanceId },
+  );
+
+  return {
+    signatures: data.signatures ?? [],
+    verification: data.verifySignatureChain ?? {
+      checkedCount: 0,
+      errors: [],
+      instanceId,
+      valid: true,
+    },
+  };
 }
 
 export async function resolveMemberProfiles(
@@ -647,6 +869,35 @@ export async function searchMembers(
   return data.searchMembers;
 }
 
+export async function listMemberDirectoryPage({
+  page,
+  pageSize,
+  searchText = '',
+}: {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly searchText?: string;
+}): Promise<MemberDirectoryPage> {
+  const data = await requestGraphQl<MemberDirectoryPageQueryData>(
+    `query MemberDirectoryPage($page: Int, $pageSize: Int, $searchText: String!) {
+      searchMembers(page: $page, pageSize: $pageSize, searchText: $searchText) {
+        email
+        memberId
+        name
+        positionId
+        primaryOrgUnitId
+      }
+      memberCount(searchText: $searchText)
+    }`,
+    { page, pageSize, searchText },
+  );
+
+  return {
+    members: data.searchMembers,
+    totalCount: data.memberCount,
+  };
+}
+
 export async function listDelegationRules({
   includeInactive = true,
   principalMemberId = null,
@@ -682,6 +933,87 @@ export async function listDelegationRules({
   );
 
   return data.delegationRules;
+}
+
+export async function listDelegationRulesPage({
+  agentMemberId = null,
+  includeInactive = true,
+  page = 1,
+  pageSize = 10,
+  principalMemberId = null,
+  scopeType = null,
+  status = null,
+}: {
+  readonly agentMemberId?: string | null;
+  readonly includeInactive?: boolean;
+  readonly page?: number;
+  readonly pageSize?: number;
+  readonly principalMemberId?: string | null;
+  readonly scopeType?: DelegationScopeType | null;
+  readonly status?: DelegationRuleStatus | null;
+} = {}): Promise<{
+  readonly rules: readonly DelegationRuleRecord[];
+  readonly totalCount: number;
+}> {
+  const data = await requestGraphQl<DelegationRulesPageQueryData>(
+    `query DelegationRulesPage(
+      $includeInactive: Boolean
+      $page: Int
+      $pageSize: Int
+      $principalMemberId: String
+      $agentMemberId: String
+      $scopeType: DelegationScopeType
+      $status: DelegationRuleStatus
+    ) {
+      delegationRules(
+        agentMemberId: $agentMemberId
+        includeInactive: $includeInactive
+        page: $page
+        pageSize: $pageSize
+        principalMemberId: $principalMemberId
+        scopeType: $scopeType
+        status: $status
+      ) {
+        agentMemberId
+        createdAt
+        createdByMemberId
+        endAt
+        id
+        principalMemberId
+        priority
+        requiresConfirmation
+        revokedAt
+        revokedByMemberId
+        scopeConditionCel
+        scopeTemplateIds
+        scopeType
+        startAt
+        status
+        updatedAt
+      }
+      delegationRuleCount(
+        agentMemberId: $agentMemberId
+        includeInactive: $includeInactive
+        principalMemberId: $principalMemberId
+        scopeType: $scopeType
+        status: $status
+      )
+    }`,
+    {
+      agentMemberId,
+      includeInactive,
+      page,
+      pageSize,
+      principalMemberId,
+      scopeType,
+      status,
+    },
+  );
+
+  return {
+    rules: data.delegationRules,
+    totalCount: data.delegationRuleCount,
+  };
 }
 
 export async function createDelegationRule(input: {
@@ -759,18 +1091,30 @@ export async function revokeDelegationRule({
 
 export async function listNotifications({
   includeRead = true,
+  page = 1,
+  pageSize = 10,
   recipientMemberId,
 }: {
   readonly includeRead?: boolean;
+  readonly page?: number;
+  readonly pageSize?: number;
   readonly recipientMemberId: string;
 }): Promise<{
   readonly notifications: readonly NotificationRecord[];
+  readonly totalCount: number;
   readonly unreadCount: number;
 }> {
   const data = await requestGraphQl<NotificationsQueryData>(
-    `query Notifications($recipientMemberId: String!, $includeRead: Boolean) {
+    `query Notifications(
+      $recipientMemberId: String!
+      $includeRead: Boolean
+      $page: Int
+      $pageSize: Int
+    ) {
       notifications(
         includeRead: $includeRead
+        page: $page
+        pageSize: $pageSize
         recipientMemberId: $recipientMemberId
       ) {
         body
@@ -787,13 +1131,18 @@ export async function listNotifications({
         title
         type
       }
+      notificationCount(
+        includeRead: $includeRead
+        recipientMemberId: $recipientMemberId
+      )
       unreadNotificationCount(recipientMemberId: $recipientMemberId)
     }`,
-    { includeRead, recipientMemberId },
+    { includeRead, page, pageSize, recipientMemberId },
   );
 
   return {
     notifications: data.notifications,
+    totalCount: data.notificationCount,
     unreadCount: data.unreadNotificationCount,
   };
 }
@@ -804,23 +1153,13 @@ export async function markNotificationRead({
 }: {
   readonly id: string;
   readonly readerMemberId: string;
-}): Promise<NotificationRecord> {
+}): Promise<Pick<NotificationRecord, 'id' | 'readAt' | 'status'>> {
   const data = await requestGraphQl<MarkNotificationReadMutationData>(
     `mutation MarkNotificationRead($id: String!, $readerMemberId: String) {
       markNotificationRead(id: $id, readerMemberId: $readerMemberId) {
-        body
-        channel
-        createdAt
         id
-        instanceId
-        payloadJson
         readAt
-        recipientMemberId
-        sentAt
         status
-        taskId
-        title
-        type
       }
     }`,
     { id, readerMemberId },
@@ -858,9 +1197,8 @@ export async function updateNotificationPreference(input: {
   readonly quietHoursEnd: string | null;
   readonly quietHoursStart: string | null;
 }): Promise<NotificationPreferenceRecord> {
-  const data =
-    await requestGraphQl<UpdateNotificationPreferenceMutationData>(
-      `mutation UpdateNotificationPreference($input: UpdateNotificationPreferenceInput!) {
+  const data = await requestGraphQl<UpdateNotificationPreferenceMutationData>(
+    `mutation UpdateNotificationPreference($input: UpdateNotificationPreferenceInput!) {
         updateNotificationPreference(input: $input) {
           emailDigestMode
           emailEnabled
@@ -871,8 +1209,8 @@ export async function updateNotificationPreference(input: {
           updatedAt
         }
       }`,
-      { input },
-    );
+    { input },
+  );
 
   return data.updateNotificationPreference;
 }
@@ -945,6 +1283,7 @@ export async function decideTask({
         decidedByMemberId
         id
         returnToNodeId
+        signatureId
         taskId
         transferToMemberId
       }
@@ -1055,33 +1394,6 @@ export function readFormDataCaseTitle({
   return valueLabel ? `${firstField.label}：${valueLabel}` : fallbackTitle;
 }
 
-async function requestGraphQl<TData>(
-  query: string,
-  variables?: Readonly<Record<string, unknown>>,
-): Promise<TData> {
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    body: JSON.stringify({ query, variables }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(`GraphQL request failed with HTTP ${response.status}`);
-  }
-
-  const payload = (await response.json()) as GraphQlResponse<TData>;
-
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join('; '));
-  }
-
-  if (!payload.data) {
-    throw new Error('GraphQL response did not include data');
-  }
-
-  return payload.data;
-}
-
 function parseInstanceJson(record: InstanceJsonRecord): ApprovalInstanceRecord {
   return {
     ...record,
@@ -1093,6 +1405,31 @@ function parseInstanceJson(record: InstanceJsonRecord): ApprovalInstanceRecord {
       record.workflowSnapshotJson,
     ) as WorkflowDefinition,
   };
+}
+
+async function readFileBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  const chunks = Array.from(
+    { length: Math.ceil(bytes.length / chunkSize) },
+    (_, index): string =>
+      String.fromCharCode(
+        ...bytes.slice(index * chunkSize, (index + 1) * chunkSize),
+      ),
+  );
+
+  return btoa(chunks.join(''));
+}
+
+async function hashFileSha256(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    await file.arrayBuffer(),
+  );
+  const bytes = Array.from(new Uint8Array(digest));
+
+  return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function readFirstCaseTitleField(

@@ -1,9 +1,23 @@
 'use client';
 
-import { ChangeEvent, ReactElement, useEffect, useMemo, useState } from 'react';
+import {
+  ChangeEvent,
+  Key,
+  ReactElement,
+  RefCallback,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import {
   AutoComplete,
+  Badge,
   Button,
+  DateTimePicker,
+  Filter,
+  FilterArea,
+  FilterLine,
   FormField,
   Input,
   Layout,
@@ -12,29 +26,43 @@ import {
   Section,
   SectionGroup,
   Select,
+  Tab,
+  TabItem,
   Table,
-  Textarea,
+  Tooltip,
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import styles from './delegations.module.scss';
 import { formatDateTime } from '../../_lib/date-time';
 import { renderAppNavigation } from '../../app-navigation';
 import {
   CURRENT_MEMBER_ID,
   DelegationRuleRecord,
+  DelegationRuleStatus,
   DelegationScopeType,
   MemberProfileRecord,
   createDelegationRule,
-  listDelegationRules,
+  listDelegationRulesPage,
   revokeDelegationRule,
   searchMembers,
 } from '../../instances/_lib/workflow-api';
+import {
+  ApprovalTemplateRecord,
+  listApprovalTemplates,
+} from '../../templates/_lib/template-api';
 
 type MemberOption = Readonly<{
+  displayName: string;
   email: string | null;
+  id: string;
+  name: string;
+}>;
+
+type TemplateOption = Readonly<{
   id: string;
   name: string;
 }>;
@@ -44,32 +72,52 @@ type ScopeOption = Readonly<{
   name: string;
 }>;
 
+type ScopeFilterOption = Readonly<{
+  id: 'ALL_SCOPES' | DelegationScopeType;
+  name: string;
+  scopeType: DelegationScopeType | null;
+}>;
+
 type DelegationRuleRow = Readonly<
   Record<string, unknown> &
     DelegationRuleRecord & {
-      agentLabel: string;
+      agentEmail: string | null;
+      agentName: string;
       key: string;
-      principalLabel: string;
+      principalEmail: string | null;
+      principalName: string;
       scopeLabel: string;
-      statusLabel: string;
     }
 >;
 
-const FORM_STACK_STYLE = {
-  display: 'grid',
-  gap: 12,
-  width: '100%',
-};
+const DELEGATION_MODAL_FIELD_DENSITY = FormFieldDensity.WIDE;
+const DELEGATION_MODAL_FIELD_LAYOUT = FormFieldLayout.HORIZONTAL;
+const DELEGATION_PAGE_SIZE_OPTIONS = [10, 20, 50];
+const DELEGATION_STATUS_TABS: readonly {
+  readonly key: DelegationStatusTabKey;
+  readonly label: string;
+}[] = [
+  { key: 'ALL', label: '全部' },
+  { key: 'ACTIVE', label: '啟用中' },
+  { key: 'REVOKED', label: '已撤銷' },
+  { key: 'EXPIRED', label: '已過期' },
+];
+
+type DelegationStatusTabKey = 'ALL' | DelegationRuleStatus;
 
 const SCOPE_OPTIONS: readonly ScopeOption[] = [
   { id: 'ALL', name: '全部簽核' },
   { id: 'TEMPLATE_LIST', name: '指定模板' },
-  { id: 'CONDITION_BASED', name: '條件式' },
+];
+
+const SCOPE_FILTER_OPTIONS: readonly ScopeFilterOption[] = [
+  { id: 'ALL_SCOPES', name: '全部範圍', scopeType: null },
+  { id: 'ALL', name: '全部簽核', scopeType: 'ALL' },
+  { id: 'TEMPLATE_LIST', name: '指定模板', scopeType: 'TEMPLATE_LIST' },
 ];
 
 export default function AdminDelegationsPage(): ReactElement {
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
-  const [conditionCel, setConditionCel] = useState('');
   const [endAt, setEndAt] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,44 +125,94 @@ export default function AdminDelegationsPage(): ReactElement {
   const [memberOptions, setMemberOptions] = useState<readonly MemberOption[]>(
     [],
   );
+  const [principalFilterMember, setPrincipalFilterMember] =
+    useState<MemberOption | null>(null);
+  const [agentFilterMember, setAgentFilterMember] =
+    useState<MemberOption | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [principalMember, setPrincipalMember] = useState<MemberOption | null>(
     null,
   );
   const [priority, setPriority] = useState('100');
+  const [rulePage, setRulePage] = useState(1);
+  const [rulePageSize, setRulePageSize] = useState(10);
+  const [ruleStatus, setRuleStatus] = useState<DelegationStatusTabKey>('ALL');
+  const [ruleTotalCount, setRuleTotalCount] = useState(0);
   const [rules, setRules] = useState<readonly DelegationRuleRecord[]>([]);
   const [saving, setSaving] = useState(false);
-  const [scopeTemplateIds, setScopeTemplateIds] = useState('');
+  const [scopeTemplates, setScopeTemplates] = useState<
+    readonly TemplateOption[]
+  >([]);
+  const [scopeFilterType, setScopeFilterType] = useState<ScopeFilterOption>(
+    SCOPE_FILTER_OPTIONS[0],
+  );
   const [scopeType, setScopeType] = useState<ScopeOption>(SCOPE_OPTIONS[0]);
+  const [startAt, setStartAt] = useState('');
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateOptions, setTemplateOptions] = useState<
+    readonly TemplateOption[]
+  >([]);
+
+  const refreshRules = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const [rulePageResult, members] = await Promise.all([
+        listDelegationRulesPage({
+          agentMemberId: agentFilterMember?.id ?? null,
+          includeInactive: true,
+          page: rulePage,
+          pageSize: rulePageSize,
+          principalMemberId: principalFilterMember?.id ?? null,
+          scopeType: scopeFilterType.scopeType,
+          status: ruleStatus === 'ALL' ? null : ruleStatus,
+        }),
+        searchMembers(''),
+      ]);
+
+      setRules(rulePageResult.rules);
+      setRuleTotalCount(rulePageResult.totalCount);
+      setMemberOptions(members.map(readMemberOption));
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    agentFilterMember,
+    principalFilterMember,
+    rulePage,
+    rulePageSize,
+    ruleStatus,
+    scopeFilterType,
+  ]);
 
   useEffect((): void => {
     void refreshRules();
-  }, []);
+  }, [refreshRules]);
 
-  const memberLabelsById = useMemo(
-    (): ReadonlyMap<string, string> =>
-      new Map(
-        memberOptions.map((option) => [
-          option.id,
-          `${option.name}（${option.id}）`,
-        ]),
-      ),
+  const membersById = useMemo(
+    (): ReadonlyMap<string, MemberOption> =>
+      new Map(memberOptions.map((option) => [option.id, option])),
     [memberOptions],
   );
   const rows = useMemo(
     (): DelegationRuleRow[] =>
       rules.map((rule) => ({
         ...rule,
-        agentLabel:
-          memberLabelsById.get(rule.agentMemberId) ?? rule.agentMemberId,
+        agentEmail: membersById.get(rule.agentMemberId)?.email ?? null,
+        agentName:
+          membersById.get(rule.agentMemberId)?.displayName ??
+          rule.agentMemberId,
         key: rule.id,
-        principalLabel:
-          memberLabelsById.get(rule.principalMemberId) ??
+        principalEmail: membersById.get(rule.principalMemberId)?.email ?? null,
+        principalName:
+          membersById.get(rule.principalMemberId)?.displayName ??
           rule.principalMemberId,
         scopeLabel: readScopeLabel(rule),
-        statusLabel: readDelegationStatusLabel(rule.status),
       })),
-    [memberLabelsById, rules],
+    [membersById, rules],
   );
   const selectedScopeType =
     SCOPE_OPTIONS.find((option) => option.id === scopeType.id) ??
@@ -122,14 +220,36 @@ export default function AdminDelegationsPage(): ReactElement {
   const columns = useMemo(
     (): TableColumn<DelegationRuleRow>[] => [
       {
-        dataIndex: 'principalLabel',
         key: 'principal',
+        render: (record: DelegationRuleRow): ReactElement => (
+          <MemberNameWithEmailTooltip
+            email={record.principalEmail}
+            name={record.principalName}
+          />
+        ),
         title: '原簽核人',
         width: 220,
       },
-      { dataIndex: 'agentLabel', key: 'agent', title: '代理人', width: 220 },
+      {
+        key: 'agent',
+        render: (record: DelegationRuleRow): ReactElement => (
+          <MemberNameWithEmailTooltip
+            email={record.agentEmail}
+            name={record.agentName}
+          />
+        ),
+        title: '代理人',
+        width: 220,
+      },
       { dataIndex: 'scopeLabel', key: 'scope', title: '代理範圍', width: 220 },
-      { dataIndex: 'statusLabel', key: 'status', title: '狀態', width: 120 },
+      {
+        key: 'status',
+        render: (record: DelegationRuleRow): ReactElement => (
+          <DelegationStatusBadge status={record.status} />
+        ),
+        title: '狀態',
+        width: 120,
+      },
       { dataIndex: 'priority', key: 'priority', title: '優先序', width: 100 },
       {
         key: 'startAt',
@@ -154,6 +274,22 @@ export default function AdminDelegationsPage(): ReactElement {
     ],
     [],
   );
+  const handleRevoke = useCallback(
+    async (id: string): Promise<void> => {
+      setError(null);
+
+      try {
+        await revokeDelegationRule({
+          id,
+          revokedByMemberId: CURRENT_MEMBER_ID,
+        });
+        await refreshRules();
+      } catch (requestError: unknown) {
+        setError(readErrorMessage(requestError));
+      }
+    },
+    [refreshRules],
+  );
   const tableActions = useMemo(
     (): TableActions<DelegationRuleRow> => ({
       render: (
@@ -170,27 +306,8 @@ export default function AdminDelegationsPage(): ReactElement {
       variant: 'destructive-secondary',
       width: 88,
     }),
-    [],
+    [handleRevoke],
   );
-
-  async function refreshRules(): Promise<void> {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const [nextRules, members] = await Promise.all([
-        listDelegationRules({ includeInactive: true }),
-        searchMembers(''),
-      ]);
-
-      setRules(nextRules);
-      setMemberOptions(members.map(readMemberOption));
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function handleSearchMembers(searchText: string): Promise<void> {
     setMemberLoading(true);
@@ -204,14 +321,40 @@ export default function AdminDelegationsPage(): ReactElement {
     }
   }
 
+  async function handleSearchTemplates(
+    searchText: string,
+    selectedOptions: readonly TemplateOption[] = scopeTemplates,
+  ): Promise<void> {
+    setTemplateLoading(true);
+
+    try {
+      const nextOptions = (await listApprovalTemplates()).map(
+        readTemplateOption,
+      );
+
+      setTemplateOptions(
+        mergeTemplateOptions(
+          selectedOptions,
+          filterTemplateOptions(nextOptions, searchText),
+        ),
+      );
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setTemplateLoading(false);
+    }
+  }
+
   function openCreateModal(): void {
     setAgentMember(null);
-    setConditionCel('');
     setEndAt('');
     setPrincipalMember(null);
     setPriority('100');
-    setScopeTemplateIds('');
+    setScopeTemplates([]);
     setScopeType(SCOPE_OPTIONS[0]);
+    setStartAt('');
+    setTemplateOptions([]);
+    void handleSearchTemplates('', []);
     setModalOpen(true);
   }
 
@@ -229,6 +372,16 @@ export default function AdminDelegationsPage(): ReactElement {
       return;
     }
 
+    if (selectedScopeType.id === 'TEMPLATE_LIST' && scopeTemplates.length < 1) {
+      setError('請選擇至少一個簽核模板');
+      return;
+    }
+
+    if (isInvalidDelegationDateRange(startAt, endAt)) {
+      setError('結束時間必須晚於起始時間');
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
@@ -236,41 +389,28 @@ export default function AdminDelegationsPage(): ReactElement {
       await createDelegationRule({
         agentMemberId: agentMember.id,
         createdByMemberId: CURRENT_MEMBER_ID,
-        endAt: endAt.trim() || null,
+        endAt: endAt || null,
         principalMemberId: principalMember.id,
         priority: Number(priority) || 100,
         requiresConfirmation: false,
-        scopeConditionCel:
-          selectedScopeType.id === 'CONDITION_BASED'
-            ? conditionCel.trim()
-            : null,
+        scopeConditionCel: null,
         scopeTemplateIds:
           selectedScopeType.id === 'TEMPLATE_LIST'
-            ? readTemplateIds(scopeTemplateIds)
+            ? scopeTemplates.map((template) => template.id)
             : [],
         scopeType: selectedScopeType.id,
-        startAt: null,
+        startAt: startAt || null,
       });
       setModalOpen(false);
-      await refreshRules();
+      if (rulePage === 1) {
+        await refreshRules();
+      } else {
+        setRulePage(1);
+      }
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleRevoke(id: string): Promise<void> {
-    setError(null);
-
-    try {
-      await revokeDelegationRule({
-        id,
-        revokedByMemberId: CURRENT_MEMBER_ID,
-      });
-      await refreshRules();
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
     }
   }
 
@@ -296,7 +436,81 @@ export default function AdminDelegationsPage(): ReactElement {
         </PageHeader>
 
         <SectionGroup>
-          <Section>
+          <Section
+            filterArea={
+              <FilterArea className={styles.delegationFilterArea}>
+                <FilterLine>
+                  <Filter span={2}>
+                    <MemberAutoCompleteField
+                      label="原簽核人"
+                      loading={memberLoading}
+                      name="principalFilterMemberId"
+                      onChange={(option): void => {
+                        setPrincipalFilterMember(option);
+                        setRulePage(1);
+                      }}
+                      onSearch={handleSearchMembers}
+                      options={memberOptions}
+                      required={false}
+                      layout={FormFieldLayout.VERTICAL}
+                      size="sub"
+                      value={principalFilterMember}
+                    />
+                  </Filter>
+                  <Filter span={2}>
+                    <MemberAutoCompleteField
+                      label="代理人"
+                      loading={memberLoading}
+                      name="agentFilterMemberId"
+                      onChange={(option): void => {
+                        setAgentFilterMember(option);
+                        setRulePage(1);
+                      }}
+                      onSearch={handleSearchMembers}
+                      options={memberOptions}
+                      required={false}
+                      layout={FormFieldLayout.VERTICAL}
+                      size="sub"
+                      value={agentFilterMember}
+                    />
+                  </Filter>
+                  <Filter span={2}>
+                    <FormField
+                      fullWidth
+                      label="代理範圍"
+                      layout={FormFieldLayout.VERTICAL}
+                      name="scopeFilterType"
+                    >
+                      <Select
+                        clearable={false}
+                        fullWidth
+                        onChange={(option): void => {
+                          setScopeFilterType(readScopeFilterOption(option));
+                          setRulePage(1);
+                        }}
+                        options={[...SCOPE_FILTER_OPTIONS]}
+                        size="sub"
+                        value={scopeFilterType}
+                      />
+                    </FormField>
+                  </Filter>
+                </FilterLine>
+              </FilterArea>
+            }
+            tab={
+              <Tab
+                activeKey={ruleStatus}
+                onChange={(activeKey): void => {
+                  setRuleStatus(readDelegationStatusTabKey(activeKey));
+                  setRulePage(1);
+                }}
+              >
+                {DELEGATION_STATUS_TABS.map((statusTab) => (
+                  <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
+                ))}
+              </Tab>
+            }
+          >
             {error ? (
               <Typography color="text-error" variant="body">
                 {error}
@@ -308,6 +522,23 @@ export default function AdminDelegationsPage(): ReactElement {
               dataSource={rows}
               fullWidth
               loading={loading}
+              pagination={{
+                current: rulePage,
+                onChange: (page): void => {
+                  setRulePage(page);
+                },
+                onChangePageSize: (pageSize): void => {
+                  setRulePage(1);
+                  setRulePageSize(pageSize);
+                },
+                pageSize: rulePageSize,
+                pageSizeLabel: '每頁筆數',
+                pageSizeOptions: DELEGATION_PAGE_SIZE_OPTIONS,
+                renderResultSummary: (from, to, total): string =>
+                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+                showPageSizeOptions: true,
+                total: ruleTotalCount,
+              }}
             />
           </Section>
         </SectionGroup>
@@ -330,7 +561,7 @@ export default function AdminDelegationsPage(): ReactElement {
           supportingText="代理生效後，後續建立的待簽任務會依範圍自動指派。"
           title="建立代理"
         >
-          <div style={FORM_STACK_STYLE}>
+          <div className={styles.delegationModalFields}>
             <MemberAutoCompleteField
               label="原簽核人"
               loading={memberLoading}
@@ -350,10 +581,10 @@ export default function AdminDelegationsPage(): ReactElement {
               value={agentMember}
             />
             <FormField
-              density={FormFieldDensity.WIDE}
+              density={DELEGATION_MODAL_FIELD_DENSITY}
               fullWidth
               label="代理範圍"
-              layout={FormFieldLayout.STRETCH}
+              layout={DELEGATION_MODAL_FIELD_LAYOUT}
               name="scopeType"
               required
             >
@@ -369,49 +600,54 @@ export default function AdminDelegationsPage(): ReactElement {
             </FormField>
             {selectedScopeType.id === 'TEMPLATE_LIST' ? (
               <FormField
-                density={FormFieldDensity.WIDE}
+                density={DELEGATION_MODAL_FIELD_DENSITY}
                 fullWidth
-                label="模板 ID"
-                layout={FormFieldLayout.STRETCH}
+                label="簽核模板"
+                layout={DELEGATION_MODAL_FIELD_LAYOUT}
                 name="scopeTemplateIds"
                 required
               >
-                <Textarea
-                  onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
-                    setScopeTemplateIds(event.target.value)
-                  }
-                  placeholder="多個模板 ID 可用逗號或換行分隔"
-                  resize="vertical"
-                  rows={3}
-                  value={scopeTemplateIds}
-                />
-              </FormField>
-            ) : null}
-            {selectedScopeType.id === 'CONDITION_BASED' ? (
-              <FormField
-                density={FormFieldDensity.WIDE}
-                fullWidth
-                label="CEL 條件"
-                layout={FormFieldLayout.STRETCH}
-                name="conditionCel"
-                required
-              >
-                <Textarea
-                  onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
-                    setConditionCel(event.target.value)
-                  }
-                  placeholder="例如 form.amount > 10000"
-                  resize="vertical"
-                  rows={3}
-                  value={conditionCel}
+                <AutoComplete
+                  asyncData
+                  disabledOptionsFilter
+                  emptyText="沒有符合的模板"
+                  inputProps={{
+                    autoCapitalize: 'none',
+                    autoCorrect: 'off',
+                    name: 'scopeTemplateIds',
+                    spellCheck: false,
+                  }}
+                  loading={templateLoading}
+                  loadingText="搜尋模板中..."
+                  mode="multiple"
+                  onChange={(nextTemplates): void => {
+                    const selectedTemplates =
+                      readTemplateOptionsFromValue(nextTemplates);
+
+                    setScopeTemplates(selectedTemplates);
+                    setTemplateOptions((currentOptions) =>
+                      mergeTemplateOptions(selectedTemplates, currentOptions),
+                    );
+                  }}
+                  onSearch={handleSearchTemplates}
+                  onVisibilityChange={(open): void => {
+                    if (open) {
+                      void handleSearchTemplates('');
+                    }
+                  }}
+                  options={[...templateOptions]}
+                  overflowStrategy="wrap"
+                  placeholder="搜尋並選取簽核模板"
+                  searchDebounceTime={300}
+                  value={[...scopeTemplates]}
                 />
               </FormField>
             ) : null}
             <FormField
-              density={FormFieldDensity.WIDE}
+              density={DELEGATION_MODAL_FIELD_DENSITY}
               fullWidth
               label="優先序"
-              layout={FormFieldLayout.STRETCH}
+              layout={DELEGATION_MODAL_FIELD_LAYOUT}
               name="priority"
             >
               <Input
@@ -424,19 +660,43 @@ export default function AdminDelegationsPage(): ReactElement {
               />
             </FormField>
             <FormField
-              density={FormFieldDensity.WIDE}
+              density={DELEGATION_MODAL_FIELD_DENSITY}
+              fullWidth
+              label="起始時間"
+              layout={DELEGATION_MODAL_FIELD_LAYOUT}
+              name="startAt"
+            >
+              <DateTimePicker
+                formatDate="YYYY-MM-DD"
+                formatTime="HH:mm"
+                fullWidth
+                hideSecond
+                onChange={(nextValue): void =>
+                  setStartAt(formatDelegationDateTimePickerValue(nextValue))
+                }
+                placeholderLeft="留空立即生效"
+                placeholderRight="選擇時間"
+                value={readDelegationDateTimePickerValue(startAt)}
+              />
+            </FormField>
+            <FormField
+              density={DELEGATION_MODAL_FIELD_DENSITY}
               fullWidth
               label="結束時間"
-              layout={FormFieldLayout.STRETCH}
+              layout={DELEGATION_MODAL_FIELD_LAYOUT}
               name="endAt"
             >
-              <Input
-                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                  setEndAt(event.target.value)
+              <DateTimePicker
+                formatDate="YYYY-MM-DD"
+                formatTime="HH:mm"
+                fullWidth
+                hideSecond
+                onChange={(nextValue): void =>
+                  setEndAt(formatDelegationDateTimePickerValue(nextValue))
                 }
-                placeholder="YYYY-MM-DD HH:mm:ss，可留空"
-                value={endAt}
-                variant="base"
+                placeholderLeft="可留空"
+                placeholderRight="選擇時間"
+                value={readDelegationDateTimePickerValue(endAt)}
               />
             </FormField>
           </div>
@@ -448,29 +708,35 @@ export default function AdminDelegationsPage(): ReactElement {
 
 function MemberAutoCompleteField({
   label,
+  layout = DELEGATION_MODAL_FIELD_LAYOUT,
   loading,
   name,
   onChange,
   onSearch,
   options,
+  required = true,
+  size,
   value,
 }: {
   readonly label: string;
+  readonly layout?: FormFieldLayout;
   readonly loading: boolean;
   readonly name: string;
   readonly onChange: (option: MemberOption | null) => void;
   readonly onSearch: (searchText: string) => Promise<void>;
   readonly options: readonly MemberOption[];
+  readonly required?: boolean;
+  readonly size?: 'main' | 'sub';
   readonly value: MemberOption | null;
 }): ReactElement {
   return (
     <FormField
-      density={FormFieldDensity.WIDE}
+      density={DELEGATION_MODAL_FIELD_DENSITY}
       fullWidth
       label={label}
-      layout={FormFieldLayout.STRETCH}
+      layout={layout}
       name={name}
-      required
+      required={required}
     >
       <AutoComplete
         asyncData
@@ -498,6 +764,7 @@ function MemberAutoCompleteField({
         options={[...options]}
         placeholder="搜尋姓名、信箱或 member_id"
         searchDebounceTime={300}
+        size={size}
         value={value}
       />
     </FormField>
@@ -506,6 +773,7 @@ function MemberAutoCompleteField({
 
 function readMemberOption(member: MemberProfileRecord): MemberOption {
   return {
+    displayName: member.name,
     email: member.email,
     id: member.memberId,
     name: `${member.name} · ${member.email}`,
@@ -520,10 +788,43 @@ function readMemberOptionFromValue(value: unknown): MemberOption | null {
   const id = value.id;
   const name = value.name;
   const email = value.email;
+  const displayName = value.displayName;
 
   return typeof id === 'string' && typeof name === 'string'
-    ? { email: typeof email === 'string' ? email : null, id, name }
+    ? {
+        displayName: typeof displayName === 'string' ? displayName : name,
+        email: typeof email === 'string' ? email : null,
+        id,
+        name,
+      }
     : null;
+}
+
+function MemberNameWithEmailTooltip({
+  email,
+  name,
+}: {
+  readonly email: string | null;
+  readonly name: string;
+}): ReactElement {
+  if (!email) {
+    return <span>{name}</span>;
+  }
+
+  return (
+    <Tooltip title={email}>
+      {({ onMouseEnter, onMouseLeave, ref }): ReactElement => (
+        <span
+          className={styles.memberNameWithTooltip}
+          onMouseEnter={onMouseEnter}
+          onMouseLeave={onMouseLeave}
+          ref={ref as RefCallback<HTMLSpanElement>}
+        >
+          {name}
+        </span>
+      )}
+    </Tooltip>
+  );
 }
 
 function readUniqueMemberOption(
@@ -545,8 +846,62 @@ function readUniqueMemberOption(
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
+function readTemplateOption(template: ApprovalTemplateRecord): TemplateOption {
+  return {
+    id: template.id,
+    name: template.name,
+  };
+}
+
+function readTemplateOptionsFromValue(
+  value: readonly unknown[],
+): readonly TemplateOption[] {
+  return value.flatMap((item): readonly TemplateOption[] => {
+    if (!isRecord(item)) {
+      return [];
+    }
+
+    const id = item.id;
+    const name = item.name;
+
+    return typeof id === 'string' && typeof name === 'string'
+      ? [{ id, name }]
+      : [];
+  });
+}
+
+function filterTemplateOptions(
+  options: readonly TemplateOption[],
+  searchText: string,
+): readonly TemplateOption[] {
+  const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+
+  if (!normalizedSearchText) {
+    return options;
+  }
+
+  return options.filter((option) =>
+    [option.id, option.name].some((value) =>
+      value.toLocaleLowerCase().includes(normalizedSearchText),
+    ),
+  );
+}
+
+function mergeTemplateOptions(
+  selectedOptions: readonly TemplateOption[],
+  availableOptions: readonly TemplateOption[],
+): readonly TemplateOption[] {
+  return [...selectedOptions, ...availableOptions].reduce<TemplateOption[]>(
+    (options, option) =>
+      options.some((currentOption) => currentOption.id === option.id)
+        ? options
+        : [...options, option],
+    [],
+  );
+}
+
 function readScopeOptionFromValue(value: unknown): ScopeOption {
-  if (!isRecord(value) || !isDelegationScopeType(value.id)) {
+  if (!isRecord(value) || !isSelectableDelegationScopeType(value.id)) {
     return SCOPE_OPTIONS[0];
   }
 
@@ -555,17 +910,23 @@ function readScopeOptionFromValue(value: unknown): ScopeOption {
   );
 }
 
-function isDelegationScopeType(value: unknown): value is DelegationScopeType {
+function readScopeFilterOption(value: unknown): ScopeFilterOption {
+  if (!isRecord(value)) {
+    return SCOPE_FILTER_OPTIONS[0];
+  }
+
+  const id = value.id;
+
   return (
-    value === 'ALL' || value === 'TEMPLATE_LIST' || value === 'CONDITION_BASED'
+    SCOPE_FILTER_OPTIONS.find((option) => option.id === id) ??
+    SCOPE_FILTER_OPTIONS[0]
   );
 }
 
-function readTemplateIds(value: string): readonly string[] {
-  return value
-    .split(/[\s,]+/u)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+function isSelectableDelegationScopeType(
+  value: unknown,
+): value is ScopeOption['id'] {
+  return value === 'ALL' || value === 'TEMPLATE_LIST';
 }
 
 function readScopeLabel(rule: DelegationRuleRecord): string {
@@ -580,22 +941,90 @@ function readScopeLabel(rule: DelegationRuleRecord): string {
   return rule.scopeConditionCel ? `條件：${rule.scopeConditionCel}` : '條件式';
 }
 
-function readDelegationStatusLabel(
-  status: DelegationRuleRecord['status'],
-): string {
+function DelegationStatusBadge({
+  status,
+}: {
+  readonly status: DelegationRuleRecord['status'];
+}): ReactElement {
   if (status === 'ACTIVE') {
-    return '啟用中';
+    return <Badge size="sub" text="啟用中" variant="dot-success" />;
   }
 
   if (status === 'REVOKED') {
-    return '已撤銷';
+    return <Badge size="sub" text="已撤銷" variant="dot-inactive" />;
   }
 
   if (status === 'EXPIRED') {
-    return '已過期';
+    return <Badge size="sub" text="已過期" variant="dot-warning" />;
   }
 
-  return status;
+  return <Badge size="sub" text={status} variant="dot-info" />;
+}
+
+function readDelegationStatusTabKey(activeKey: Key): DelegationStatusTabKey {
+  if (
+    activeKey === 'ACTIVE' ||
+    activeKey === 'REVOKED' ||
+    activeKey === 'EXPIRED'
+  ) {
+    return activeKey;
+  }
+
+  return 'ALL';
+}
+
+function readDelegationDateTimePickerValue(value: string): string | undefined {
+  const date = value ? parseDelegationDateTimeValue(value) : null;
+
+  return date
+    ? `${formatDateParts(date)}T${padDatePart(date.getHours())}:${padDatePart(
+        date.getMinutes(),
+      )}`
+    : undefined;
+}
+
+function formatDelegationDateTimePickerValue(
+  value: string | undefined,
+): string {
+  const date = value ? parseDelegationDateTimeValue(value) : null;
+
+  return date ? date.toISOString() : '';
+}
+
+function isInvalidDelegationDateRange(startAt: string, endAt: string): boolean {
+  if (!startAt || !endAt) {
+    return false;
+  }
+
+  const startDate = parseDelegationDateTimeValue(startAt);
+  const endDate = parseDelegationDateTimeValue(endAt);
+
+  return !!startDate && !!endDate && endDate.getTime() <= startDate.getTime();
+}
+
+function parseDelegationDateTimeValue(value: string): Date | null {
+  if (value.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(value)) {
+    const parsedDate = new Date(value);
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  }
+
+  const [datePart = '', timePart = '00:00'] = value.split('T');
+  const [year = 0, month = 1, day = 1] = datePart.split('-').map(Number);
+  const [hour = 0, minute = 0] = timePart.split(':').map(Number);
+  const parsedDate = new Date(year, month - 1, day, hour, minute);
+
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+}
+
+function formatDateParts(date: Date): string {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(
+    date.getDate(),
+  )}`;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0');
 }
 
 function readErrorMessage(error: unknown): string {

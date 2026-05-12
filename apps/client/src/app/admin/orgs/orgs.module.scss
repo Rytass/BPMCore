@@ -1,0 +1,135 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  padding: 24px 24px 0;
+}
+
+.headerTitle {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.headerTitle > * {
+  overflow-wrap: anywhere;
+}
+
+.tableIntro > :global(.mzn-button) {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.summaryItem {
+  display: grid;
+  gap: 4px;
+}
+
+.modalFields {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+
+  :global(.mzn-form-field--horizontal) {
+    align-items: flex-start;
+  }
+
+  :global(.mzn-form-field--horizontal .mzn-form-field__label-area) {
+    flex: 0 0 120px;
+    width: 120px;
+    min-width: 120px;
+    white-space: nowrap;
+  }
+
+  :global(.mzn-form-field--horizontal .mzn-form-field__label) {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+
+  :global(.mzn-form-field--horizontal .mzn-form-field__data-entry) {
+    flex: 1 1 auto;
+    align-items: stretch;
+    min-width: 0;
+    max-width: none;
+  }
+
+  :global(.mzn-form-field__control-field-slot--main) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  :global(.mzn-auto-complete) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  :global(.mzn-input),
+  :global(.mzn-input-container),
+  :global(.mzn-picker),
+  :global(.mzn-select),
+  :global(.mzn-select-trigger),
+  :global(.mzn-text-field) {
+    width: 100%;
+    min-width: 0 !important;
+  }
+
+  :global(.mzn-select-trigger__input) {
+    width: 100%;
+    min-width: 0 !important;
+    text-overflow: ellipsis;
+  }
+}
+
+.tableIntro {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 12px;
+}
+
+.tableIntro > div {
+  min-width: 0;
+}
+
+.tableIntro > div > * {
+  overflow-wrap: anywhere;
+}
+
+.tableFrame {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.scopeLabel {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+@media (max-width: 960px) {
+  .header,
+  .tableIntro {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

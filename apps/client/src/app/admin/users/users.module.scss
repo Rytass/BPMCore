@@ -1,0 +1,42 @@
+.memberFilterArea {
+  :global(.mzn-filter-area__actions) {
+    display: none;
+  }
+
+  :global(.mzn-form-field__label) {
+    white-space: nowrap;
+  }
+
+  :global(.mzn-form-field__control-field-slot--main) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  :global(.mzn-input),
+  :global(.mzn-input-container),
+  :global(.mzn-text-field) {
+    width: 100%;
+    min-width: 0 !important;
+  }
+}
+
+.header {
+  display: grid;
+  gap: 4px;
+  padding: 24px 24px 0;
+}
+
+.detailFields {
+  display: grid;
+  gap: 16px;
+}
+
+.detailSection {
+  display: grid;
+  gap: 8px;
+}
+
+.membershipList {
+  display: grid;
+  gap: 8px;
+}
