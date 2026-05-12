@@ -14,6 +14,10 @@
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "paths": {
+      "@bpm/core": ["./libs/bpm-core/src/index.ts"],
+      "@bpm/core/organization": [
+        "./libs/bpm-core/src/lib/organization/index.ts"
+      ],
       "@bpm/shared": ["./libs/shared/src/index.ts"],
       "@bpm/shared/condition": ["./libs/shared/src/lib/condition.ts"],
       "@bpm/shared/form": ["./libs/shared/src/lib/form.ts"],

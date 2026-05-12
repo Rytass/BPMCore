@@ -1,0 +1,33 @@
+{
+  "name": "bpm-core",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/bpm-core/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/libs/bpm-core",
+        "main": "libs/bpm-core/src/index.ts",
+        "tsConfig": "libs/bpm-core/tsconfig.lib.json",
+        "assets": ["libs/bpm-core/*.md"]
+      }
+    },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/libs/bpm-core"],
+      "options": {
+        "jestConfig": "libs/bpm-core/jest.config.cts",
+        "passWithNoTests": true
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p libs/bpm-core/tsconfig.lib.json"
+      }
+    }
+  }
+}

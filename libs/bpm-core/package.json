@@ -1,0 +1,29 @@
+{
+  "name": "@bpm/core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "commonjs",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "dependencies": {
+    "@bpm/shared": "workspace:*",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/graphql": "^13.4.0",
+    "@nestjs/typeorm": "^11.0.1",
+    "@rytass/secret-adapter-vault-nestjs": "^0.4.5",
+    "@rytass/storages": "^0.2.6",
+    "@rytass/storages-adapter-local": "^0.2.9",
+    "cel-js": "^0.8.2",
+    "class-validator": "^0.15.1",
+    "express": "^5.2.1",
+    "reflect-metadata": "^0.1.14",
+    "tslib": "^2.3.0",
+    "typeorm": "^0.3.28"
+  }
+}

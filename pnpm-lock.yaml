@@ -59,6 +59,12 @@ importers:
       '@rytass/secret-adapter-vault-nestjs':
         specifier: ^0.4.5
         version: 0.4.5(@nestjs/common@11.1.19(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.1.19(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))(reflect-metadata@0.1.14)
+      '@rytass/storages':
+        specifier: ^0.2.6
+        version: 0.2.6
+      '@rytass/storages-adapter-local':
+        specifier: ^0.2.9
+        version: 0.2.9
       '@uiw/react-codemirror':
         specifier: ^4.25.9
         version: 4.25.9(@babel/runtime@7.29.2)(@codemirror/autocomplete@6.20.1)(@codemirror/language@6.12.3)(@codemirror/lint@6.9.5)(@codemirror/search@6.7.0)(@codemirror/state@6.6.0)(@codemirror/theme-one-dark@6.1.3)(@codemirror/view@6.41.1)(codemirror@6.0.2)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -3059,6 +3065,9 @@ packages:
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
 
+  '@rytass/file-converter@0.1.5':
+    resolution: {integrity: sha512-r5S4+lwkjwBs/3DGFXPpithxY0aFTCcUIbMpYI9zNcjKhIjFHMwiOy5BK2EhXMlcoGqAtJE6xS45u3H6kwUIKQ==}
+
   '@rytass/secret-adapter-vault-nestjs@0.4.5':
     resolution: {integrity: sha512-Vt6j7x3/7qADtz5cKooiCyYAu7oBarEobc/JMwAzrLpUlh114HzFCczE0xPpO1koK3oAfuKHWD3c622CEGCYAw==}
     peerDependencies:
@@ -3071,6 +3080,12 @@ packages:
 
   '@rytass/secret@0.1.3':
     resolution: {integrity: sha512-cb3WyGpMAF/iamCdWDvs+m/qrzNlbSwyxe0WQPgoQvxZsh7EFUou3FZR3ffHmkDgMnwOpmvPcPwLeAMKm9B54A==}
+
+  '@rytass/storages-adapter-local@0.2.9':
+    resolution: {integrity: sha512-Va3o+9dwdnNTSuMdbj5mabLHgOV4CWTdNWCdKNMQOt6arNULYYe8ENFG/r69nkDaymf+c0Nt7DVKxcUJLPI6zA==}
+
+  '@rytass/storages@0.2.6':
+    resolution: {integrity: sha512-V4qXGE4vfwkViLxrDbXv5GN7TctnwwXlGGxD/8ouFcnrNDDYu8fpJRUcr9oMndNqySq/+4mUGbu/HWc+NzKy8w==}
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
@@ -8936,6 +8951,10 @@ packages:
     resolution: {integrity: sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==}
     hasBin: true
 
+  uuid@13.0.2:
+    resolution: {integrity: sha512-vzi9uRZ926x4XV73S/4qQaTwPXM2JBj6/6lI/byHH1jOpCzb0zDbfytgA9LcN/hzb2l7WQSQnxITOVx5un/wGw==}
+    hasBin: true
+
   uuid@8.3.2:
     resolution: {integrity: sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==}
     deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
@@ -12747,6 +12766,8 @@ snapshots:
 
   '@rtsao/scc@1.1.0': {}
 
+  '@rytass/file-converter@0.1.5': {}
+
   '@rytass/secret-adapter-vault-nestjs@0.4.5(@nestjs/common@11.1.19(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.1.19(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))(reflect-metadata@0.1.14)':
     dependencies:
       '@nestjs/common': 11.1.19(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2)
@@ -12765,6 +12786,20 @@ snapshots:
       - debug
 
   '@rytass/secret@0.1.3': {}
+
+  '@rytass/storages-adapter-local@0.2.9':
+    dependencies:
+      '@rytass/storages': 0.2.6
+      uuid: 13.0.2
+    transitivePeerDependencies:
+      - supports-color
+
+  '@rytass/storages@0.2.6':
+    dependencies:
+      '@rytass/file-converter': 0.1.5
+      file-type: 21.3.4
+    transitivePeerDependencies:
+      - supports-color
 
   '@sec-ant/readable-stream@0.4.1': {}
 
@@ -19423,6 +19458,8 @@ snapshots:
   utils-merge@1.0.1: {}
 
   uuid@11.1.1: {}
+
+  uuid@13.0.2: {}
 
   uuid@8.3.2: {}
 

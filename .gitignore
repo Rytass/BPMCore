@@ -46,6 +46,7 @@ Thumbs.db
 .claude/settings.local.json
 /tools/vault-secret-*.yml
 !/tools/vault-secret-*.example.yml
+/.storage
 
 # Next.js
 .next

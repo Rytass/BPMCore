@@ -3,19 +3,24 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
-import { HealthController } from '../health/health.controller';
-import { DelegationModule } from '../delegation/delegation.module';
-import { IdentityModule } from '../identity/identity.module';
-import { NotificationModule } from '../notification/notification.module';
-import { OrganizationModule } from '../organization/organization.module';
-import { FormModule } from '../form/form.module';
-import { TemplateModule } from '../template/template.module';
-import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
-import { buildTypeOrmModuleOptions } from '../database/typeorm.config';
-import { SystemResolver } from '../system/system.resolver';
+import { BPMRootModule } from '@bpm/core';
+import { buildTypeOrmModuleOptions } from '@bpm/core';
+import { BPM_MEMBER_RESOLVER } from '@bpm/core';
+import type { Request } from 'express';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import {
+  buildApiBPMAuthContextFromExecutionContext,
+  buildApiBPMAuthContextFromRequest,
+} from './api-auth';
+import { ApiAuthModule } from './api-auth.module';
+import { ApiDemoOrganizationSeedService } from './api-demo-organization-seed.service';
+import { ApiMemberResolver } from './api-member.resolver';
+import { ApiSessionService } from './api-session.service';
 
 @Module({
   imports: [
+    ApiAuthModule,
     VaultModule.forRoot({
       path: process.env.VAULT_PATH ?? 'bpm_core/develop',
     }),
@@ -24,23 +29,38 @@ import { SystemResolver } from '../system/system.resolver';
       inject: [VaultService],
       useFactory: buildTypeOrmModuleOptions,
     }),
-    GraphQLModule.forRoot<ApolloDriverConfig>({
-      autoSchemaFile: true,
+    GraphQLModule.forRootAsync<ApolloDriverConfig>({
       driver: ApolloDriver,
-      introspection: process.env.NODE_ENV !== 'production',
-      path: '/graphql',
-      playground: false,
-      sortSchema: true,
+      imports: [ApiAuthModule],
+      inject: [ApiSessionService],
+      useFactory: (
+        sessionService: ApiSessionService,
+      ): ApolloDriverConfig => ({
+        autoSchemaFile: true,
+        context: ({ req }: { readonly req?: Request }) => ({
+          bpmAuthContext:
+            sessionService.readBPMAuthContextFromRequest(req) ??
+            buildApiBPMAuthContextFromRequest(req),
+          req,
+        }),
+        driver: ApolloDriver,
+        introspection: process.env.NODE_ENV !== 'production',
+        path: '/graphql',
+        playground: false,
+        sortSchema: true,
+      }),
     }),
-    IdentityModule,
-    OrganizationModule,
-    FormModule,
-    TemplateModule,
-    DelegationModule,
-    NotificationModule,
-    WorkflowEngineModule,
+    BPMRootModule.forRoot({
+      auth: {
+        contextFactory: buildApiBPMAuthContextFromExecutionContext,
+      },
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useClass: ApiMemberResolver,
+      },
+    }),
   ],
-  controllers: [HealthController],
-  providers: [SystemResolver],
+  controllers: [AppController],
+  providers: [AppService, ApiDemoOrganizationSeedService],
 })
 export class AppModule {}

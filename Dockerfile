@@ -24,11 +24,11 @@ RUN mkdir -p /tmp/runtime && \
     cp -r apps/client/.next/static /tmp/runtime/apps/client/.next/static && \
     cp -r apps/client/public /tmp/runtime/apps/client/public; \
   else \
-    cp -r dist/apps/api/* /tmp/runtime/ && \
+    cp -r dist/apps/${TARGET}/* /tmp/runtime/ && \
     cp -r node_modules /tmp/runtime/node_modules && \
-    mkdir -p /tmp/runtime/apps/api/src && \
-    cp -r apps/api/src/database /tmp/runtime/apps/api/src/database && \
-    cp -r apps/api/src/migrations /tmp/runtime/apps/api/src/migrations && \
+    mkdir -p /tmp/runtime/libs/bpm-core/src/lib && \
+    cp -r libs/bpm-core/src/lib/database /tmp/runtime/libs/bpm-core/src/lib/database && \
+    cp -r libs/bpm-core/src/lib/migrations /tmp/runtime/libs/bpm-core/src/lib/migrations && \
     cp package.json pnpm-lock.yaml tsconfig.base.json /tmp/runtime/; \
   fi
 
