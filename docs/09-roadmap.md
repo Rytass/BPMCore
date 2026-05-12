@@ -1,6 +1,6 @@
 # 09 — 開發路線圖
 
-> 盤點更新：2026-05-10。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
+> 盤點更新：2026-05-11。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
 
 ## 里程碑總覽
 
@@ -21,20 +21,20 @@
 
 ### 任務
 
-- [x] Nx Monorepo 初始化（`apps/api`, `apps/client`, `libs/shared`）
+- [x] Nx Monorepo 初始化（`apps/api`, `apps/client`, `libs/bpm-core`, `libs/shared`）
 - [x] NestJS API 專案骨架（health check、logging、global exception filter）
 - [x] Next.js Web 專案骨架（基礎 layout）
-- [ ] auth middleware（目前尚未導入真實登入攔截）
+- [x] auth middleware（`apps/api` 提供登入/session cookie，client 未登入會導向 `/login`）
 - [x] PostgreSQL 連線（TypeORM）
 - [x] Migration 工具設定
 - [x] ESLint / Prettier / commitlint / Husky
 - [x] Docker compose（PG + minio + adminer）
-- [ ] CI: GitHub Actions（lint + build + test；目前已有 staging deploy workflow，但不是完整驗證 CI）
+- [x] CI: GitHub Actions（PR / `main` / `staging` 會跑 typecheck + lint + test + build；2026-05-11 已在 GitHub Actions 驗證通過）
 - [x] 共用型別 lib（`@bpm/shared`：Workflow JSON Schema、Form Schema、CEL Context Types）
 
 ### 驗收
 
-- 本機 `pnpm api` / `pnpm client` 啟動 API + client + db
+- 本機 `pnpm api` / `pnpm client` 啟動 API + client，DB 設定來自 Vault-backed develop secrets
 - `pnpm typecheck`、`pnpm lint`、`pnpm test` 通過
 
 ---
@@ -46,7 +46,7 @@
 **Backend**
 
 - [x] `member_metadata_cache` 表 + migration
-- [x] `MemberResolver` interface + Mock 實作（給開發用）
+- [x] `BPMMemberResolver` interface + host provider 注入（`apps/api` 提供 local demo member resolver）
 - [x] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
 - [x] `org_units`、`positions`、`memberships`、`manager_resolutions` 表 + migration
 - [x] `OrganizationModule`：CRUD + 樹狀查詢（path-based hierarchy）
@@ -54,9 +54,9 @@
 
 **Frontend**
 
-- [ ] `/admin/orgs` 組織樹維護介面（目前為靜態 starter，尚未接 GraphQL CRUD）
-- [ ] `/admin/users` 會員清單（目前為靜態 mock table，尚未接 member resolver）
-- [ ] 共用元件：`<MemberPicker>`, `<OrgUnitPicker>`
+- [x] `/admin/orgs` 組織樹維護介面（接 GraphQL CRUD，可維護組織、職位、會員歸屬與主管規則）
+- [x] `/admin/users` 會員清單（接 member resolver，可檢視 BPM 組織歸屬與主管解析）
+- [x] 共用元件：`<MemberPicker>`, `<OrgUnitPicker>`, `<PositionPicker>`
 
 **驗收**：能維護組織樹、查到任一 member 的所屬組織與主管。
 
@@ -237,21 +237,23 @@
 
 **Backend**
 
-- [ ] `signatures` 表
-- [ ] `SignatureModule`：L1 HMAC（含金鑰版本管理 / 輪替支援）
-- [ ] RFC 3161 TSA client（可選實作 — 先 mock）
-- [ ] 鏈式簽章邏輯（`previous_signature_hash`）
-- [ ] Decision API 整合簽章
-- [ ] `attachments` 表
-- [ ] `AttachmentModule`：上傳 / 下載 / 預覽 signed URL
-- [ ] 整合 MinIO / S3
+- [x] `signatures` 表
+- [x] `SignatureModule`：L1 HMAC（含 key version）
+- [x] RFC 3161 TSA client mock token
+- [x] 鏈式簽章邏輯（`previous_signature_hash`）
+- [x] Decision API 整合簽章
+- [x] `attachments` 表
+- [x] `AttachmentModule`：上傳 / 下載 / 預覽 signed URL
+- [x] 整合 `@rytass/storages-adapter-local`，保留 storage adapter 替換邊界
+- [ ] 整合 MinIO / S3 adapter
 - [ ] 加密儲存
 
 **Frontend**
 
-- [ ] FormRenderer 整合附件上傳
+- [x] FormRenderer 整合附件上傳
+- [x] PDF signed URL modal 預覽
 - [ ] PDF 預覽元件（react-pdf）
-- [ ] 簽核操作頁顯示附件 + 預覽
+- [x] 簽核操作頁顯示附件 + 預覽
 
 **驗收**：每筆決策有簽章紀錄；附件可上傳、PDF 可預覽。
 
