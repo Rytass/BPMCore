@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactElement } from 'react';
+import Image from 'next/image';
 import {
   Navigation,
   NavigationHeader,
@@ -18,6 +19,7 @@ import {
   UserIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
+import styles from './app-navigation.module.scss';
 
 interface NavigationItem {
   readonly href: string;
@@ -39,7 +41,16 @@ const mainItems: readonly NavigationItem[] = [
 export function renderAppNavigation(activeHref: string): ReactElement {
   return (
     <Navigation exactActivatedMatch>
-      <NavigationHeader title="BPM Admin">B</NavigationHeader>
+      <NavigationHeader title="BPM Admin">
+        <Image
+          alt=""
+          className={styles.logo}
+          height={24}
+          priority
+          src="/rytass-logo.png"
+          width={24}
+        />
+      </NavigationHeader>
       <NavigationOptionCategory title="Approval Engine">
         {mainItems.map((item) => (
           <NavigationOption

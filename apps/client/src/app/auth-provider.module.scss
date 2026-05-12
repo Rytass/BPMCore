@@ -1,0 +1,28 @@
+.authLoading {
+  align-items: center;
+  display: flex;
+  min-height: 100vh;
+  justify-content: center;
+}
+
+.accountBar {
+  align-items: center;
+  background: var(--mzn-color-bg-container);
+  border: 1px solid var(--mzn-color-border);
+  border-radius: 8px;
+  bottom: 16px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 10%);
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  position: fixed;
+  right: 16px;
+  z-index: 1000;
+}
+
+.accountMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 88px;
+}
