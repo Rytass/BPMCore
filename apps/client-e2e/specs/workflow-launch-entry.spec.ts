@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -13,6 +14,10 @@ const FORM_VERSION_ID = 'launchable-form-version';
 const UPDATED_AT = '2026-05-06T10:00:00.000Z';
 
 test.describe('Workflow launch entry', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('opens the launch center from the workbench and selects a launchable template', async ({
     page,
   }): Promise<void> => {

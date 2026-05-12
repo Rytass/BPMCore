@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -9,6 +10,10 @@ const INSTANCE_ID = 'w6-instance';
 const UPDATED_AT = '2026-05-06T09:00:00.000Z';
 
 test.describe('M2 W6 workflow visualization', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('shows conditional paths, parallel branch status, and cancelled alternatives', async ({
     page,
   }): Promise<void> => {

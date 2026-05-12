@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -10,6 +11,10 @@ const TASK_ID = 'w9-task';
 const CREATED_AT = '2026-05-09T08:00:00.000Z';
 
 test.describe('W9 notifications and SLA', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('shows in-app notifications and marks a notification as read', async ({
     page,
   }): Promise<void> => {
@@ -20,10 +25,47 @@ test.describe('W9 notifications and SLA', () => {
     await expect(page.getByText('目前有 1 則未讀通知。')).toBeVisible();
     await expect(page.getByText('新的待簽任務')).toBeVisible();
     await expect(page.getByText('SLA 即將到期')).toBeVisible();
+    await expect(page.getByRole('button', { name: '重新整理' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: '重設偏好' })).toHaveCount(0);
 
     await page.getByRole('button', { name: '標為已讀' }).click();
     await expect(page.getByText('目前有 0 則未讀通知。')).toBeVisible();
     await expect(page.getByRole('table').getByText('已讀')).toHaveCount(2);
+  });
+
+  test('marks an unread notification as read before opening its instance', async ({
+    page,
+  }): Promise<void> => {
+    await mockNotificationGraphQl(page);
+
+    await page.goto('/notifications');
+    await expect(page.getByText('目前有 1 則未讀通知。')).toBeVisible();
+
+    await page
+      .getByRole('row', { name: /新的待簽任務/ })
+      .getByRole('button', { name: '查看案件' })
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/instances/${INSTANCE_ID}$`));
+
+    await page.goto('/notifications');
+    await expect(page.getByText('目前有 0 則未讀通知。')).toBeVisible();
+    await expect(page.getByRole('table').getByText('已讀')).toHaveCount(2);
+  });
+
+  test('paginates notifications from the API result set', async ({
+    page,
+  }): Promise<void> => {
+    await mockPaginatedNotificationGraphQl(page);
+
+    await page.goto('/notifications');
+    await expect(page.getByText('顯示 1-10 筆，共 12 筆')).toBeVisible();
+    await expect(page.getByText('通知 1', { exact: true })).toBeVisible();
+    await expect(page.getByText('通知 11', { exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: '2' }).click();
+    await expect(page.getByText('顯示 11-12 筆，共 12 筆')).toBeVisible();
+    await expect(page.getByText('通知 11', { exact: true })).toBeVisible();
+    await expect(page.getByText('通知 1', { exact: true })).toHaveCount(0);
   });
 
   test('shows SLA countdown in inbox pending tasks', async ({
@@ -47,8 +89,16 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
     const query = payload.query;
 
     if (query.includes('query Notifications')) {
+      const pageNumber = readNumberVariable(payload.variables, 'page', 1);
+      const pageSize = readNumberVariable(payload.variables, 'pageSize', 10);
+      const notifications = readNotifications(read);
+
       await fulfillGraphQl(route, {
-        notifications: readNotifications(read),
+        notificationCount: notifications.length,
+        notifications: notifications.slice(
+          (pageNumber - 1) * pageSize,
+          pageNumber * pageSize,
+        ),
         unreadNotificationCount: read ? 0 : 1,
       });
       return;
@@ -72,6 +122,38 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
     if (query.includes('mutation UpdateNotificationPreference')) {
       await fulfillGraphQl(route, {
         updateNotificationPreference: readPreference(),
+      });
+      return;
+    }
+
+    await fulfillGraphQl(route, {});
+  });
+}
+
+async function mockPaginatedNotificationGraphQl(page: Page): Promise<void> {
+  await page.route('**/graphql', async (route: Route): Promise<void> => {
+    const payload = readGraphQlPayload(route);
+    const query = payload.query;
+
+    if (query.includes('query Notifications')) {
+      const pageNumber = readNumberVariable(payload.variables, 'page', 1);
+      const pageSize = readNumberVariable(payload.variables, 'pageSize', 10);
+      const notifications = readManyNotifications(12);
+
+      await fulfillGraphQl(route, {
+        notificationCount: notifications.length,
+        notifications: notifications.slice(
+          (pageNumber - 1) * pageSize,
+          pageNumber * pageSize,
+        ),
+        unreadNotificationCount: 12,
+      });
+      return;
+    }
+
+    if (query.includes('query NotificationPreference')) {
+      await fulfillGraphQl(route, {
+        notificationPreference: readPreference(),
       });
       return;
     }
@@ -110,6 +192,30 @@ async function mockInboxSlaGraphQl(page: Page): Promise<void> {
     }
 
     await fulfillGraphQl(route, {});
+  });
+}
+
+function readManyNotifications(
+  count: number,
+): readonly Readonly<Record<string, unknown>>[] {
+  return Array.from({ length: count }, (_, index) => {
+    const ordinal = index + 1;
+
+    return {
+      body: `第 ${ordinal} 筆通知內容`,
+      channel: 'IN_APP',
+      createdAt: CREATED_AT,
+      id: `notification-${ordinal}`,
+      instanceId: INSTANCE_ID,
+      payloadJson: '{}',
+      readAt: null,
+      recipientMemberId: 'member-001',
+      sentAt: CREATED_AT,
+      status: 'SENT',
+      taskId: TASK_ID,
+      title: `通知 ${ordinal}`,
+      type: 'TASK_ASSIGNED',
+    };
   });
 }
 
@@ -215,6 +321,16 @@ function readApprovalInstance(): Readonly<Record<string, unknown>> {
 
 function readGraphQlPayload(route: Route): GraphQlPayload {
   return JSON.parse(route.request().postData() ?? '{}') as GraphQlPayload;
+}
+
+function readNumberVariable(
+  variables: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+  fallback: number,
+): number {
+  const value = variables?.[key];
+
+  return typeof value === 'number' ? value : fallback;
 }
 
 async function fulfillGraphQl(

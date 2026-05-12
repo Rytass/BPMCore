@@ -1,4 +1,5 @@
-import { expect, Page, Route, test } from '@playwright/test';
+import { expect, Page, Request, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface FormDefinitionRecord {
   readonly currentVersionId: string | null;
@@ -18,6 +19,8 @@ interface FormDefinitionVersionRecord {
   readonly version: number;
 }
 
+type FormDefinitionListStatus = 'DRAFT' | 'PUBLISHED';
+
 interface UpdateDraftInput {
   readonly schemaJson: string;
   readonly uiSchemaJson: string;
@@ -34,6 +37,55 @@ const VERSION_ID = 'e2e-version';
 const UPDATED_AT = '2026-05-04T08:00:00.000Z';
 
 test.describe('M1 W2 form builder', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
+  test('loads form definitions with server-side pagination', async ({
+    page,
+  }): Promise<void> => {
+    await mockFormListGraphQl(page);
+
+    const firstPageRequest = page.waitForRequest((request): boolean =>
+      isFormDefinitionsPageRequest(request, 1, null),
+    );
+    await page.goto('/forms');
+    await firstPageRequest;
+
+    await expect(page.getByRole('button', { name: '全部' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '已發布' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '草稿' })).toBeVisible();
+    await expect(
+      page.getByRole('table').getByText('E2E 表單 1', { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('顯示 1-10 筆，共 12 筆')).toBeVisible();
+
+    const secondPageRequest = page.waitForRequest((request): boolean =>
+      isFormDefinitionsPageRequest(request, 2, null),
+    );
+    await page.getByRole('button', { name: 'Go to 2 page' }).click();
+    await secondPageRequest;
+
+    await expect(
+      page.getByRole('table').getByText('E2E 表單 11', { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('顯示 11-12 筆，共 12 筆')).toBeVisible();
+
+    const publishedRequest = page.waitForRequest((request): boolean =>
+      isFormDefinitionsPageRequest(request, 1, 'PUBLISHED'),
+    );
+    await page.getByRole('button', { name: '已發布' }).click();
+    await publishedRequest;
+
+    await expect(
+      page.getByRole('table').getByText('E2E 表單 1', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('table').getByText('E2E 表單 2', { exact: true }),
+    ).toBeHidden();
+    await expect(page.getByText('顯示 1-6 筆，共 6 筆')).toBeVisible();
+  });
+
   test('builds, previews, saves, and publishes a form version', async ({
     page,
   }): Promise<void> => {
@@ -58,7 +110,7 @@ test.describe('M1 W2 form builder', () => {
     await expect(page.getByText(/當前內容已發布/u)).toBeVisible();
 
     await page.getByRole('button', { exact: true, name: '版本' }).click();
-    await expect(page.getByText('PUBLISHED')).toBeVisible();
+    await expect(page.getByRole('table').getByText('已發布')).toBeVisible();
   });
 
   test('saves current edits before publishing a form version', async ({
@@ -77,6 +129,63 @@ test.describe('M1 W2 form builder', () => {
     await expect(page.getByText('文字 1')).toBeVisible();
   });
 });
+
+async function mockFormListGraphQl(page: Page): Promise<void> {
+  const forms = Array.from({ length: 12 }, (_, index) => ({
+    currentVersionId: index % 2 === 0 ? VERSION_ID : null,
+    description: null,
+    id: `e2e-form-${index + 1}`,
+    name: `E2E 表單 ${index + 1}`,
+    updatedAt: UPDATED_AT,
+  }));
+
+  await page.route('**/graphql', async (route: Route): Promise<void> => {
+    const payload = readGraphQlPayload(route);
+
+    if (payload.query.includes('query FormDefinitionsPage')) {
+      const pageNumber = readNumberVariable(payload.variables?.page, 1);
+      const pageSize = readNumberVariable(payload.variables?.pageSize, 10);
+      const status = readFormDefinitionListStatus(payload.variables?.status);
+      const filteredForms = forms.filter((form) => {
+        if (status === 'PUBLISHED') {
+          return Boolean(form.currentVersionId);
+        }
+
+        if (status === 'DRAFT') {
+          return !form.currentVersionId;
+        }
+
+        return true;
+      });
+      const offset = (pageNumber - 1) * pageSize;
+
+      await fulfillGraphQl(route, {
+        formDefinitionCount: filteredForms.length,
+        formDefinitions: filteredForms.slice(offset, offset + pageSize),
+      });
+      return;
+    }
+
+    await fulfillGraphQl(route, {});
+  });
+}
+
+function isFormDefinitionsPageRequest(
+  request: Request,
+  pageNumber: number,
+  status: FormDefinitionListStatus | null,
+): boolean {
+  const payload = request.postDataJSON() as unknown;
+
+  return (
+    isRecord(payload) &&
+    typeof payload.query === 'string' &&
+    payload.query.includes('query FormDefinitionsPage') &&
+    isRecord(payload.variables) &&
+    payload.variables.page === pageNumber &&
+    payload.variables.status === status
+  );
+}
 
 async function mockFormBuilderGraphQl(page: Page): Promise<void> {
   let currentVersionId: string | null = null;
@@ -185,6 +294,20 @@ function readGraphQlPayload(route: Route): GraphQlPayload {
     query: payload.query,
     variables: isRecord(payload.variables) ? payload.variables : undefined,
   };
+}
+
+function readNumberVariable(value: unknown, fallback: number): number {
+  return typeof value === 'number' ? value : fallback;
+}
+
+function readFormDefinitionListStatus(
+  value: unknown,
+): FormDefinitionListStatus | null {
+  if (value === 'DRAFT' || value === 'PUBLISHED') {
+    return value;
+  }
+
+  return null;
 }
 
 function readUpdateDraftInput(value: unknown): UpdateDraftInput {

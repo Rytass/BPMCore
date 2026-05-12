@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -10,6 +11,10 @@ interface UpdateTemplateDraftInput {
   readonly workflowDefinitionJson: string;
 }
 
+interface MockTemplateGraphQlOptions {
+  readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
+}
+
 const TEMPLATE_ID = 'e2e-template';
 const TEMPLATE_VERSION_ID = 'e2e-template-version';
 const FORM_ID = 'e2e-form';
@@ -17,6 +22,10 @@ const FORM_VERSION_ID = 'e2e-form-version';
 const UPDATED_AT = '2026-05-04T09:00:00.000Z';
 
 test.describe('M1 W3 template designer', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('creates, designs, publishes, and reviews a template version', async ({
     page,
   }): Promise<void> => {
@@ -42,7 +51,7 @@ test.describe('M1 W3 template designer', () => {
     await expect(
       page
         .locator('.react-flow__node')
-        .filter({ hasText: 'lin.ceo@example.internal' }),
+        .filter({ hasText: '林執行長 (lin.ceo@example.internal)' }),
     ).toBeVisible();
     await expect(page.locator('.react-flow__edge')).toHaveCount(2);
     await expect(page.getByText('重送策略')).toBeVisible();
@@ -110,9 +119,141 @@ test.describe('M1 W3 template designer', () => {
       page.getByText('進入條件：符合 · form.amount > 0'),
     ).toBeVisible();
   });
+
+  test('configures initiator manager fallback behavior on an approval node', async ({
+    page,
+  }): Promise<void> => {
+    let savedResolver: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      onDraftUpdate: (input): void => {
+        savedResolver = readFirstUserTaskResolver(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await page.getByRole('combobox', { name: '指定會員' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '發起人主管' })
+      .click();
+
+    await expect(page.getByText('無主管時')).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: '停止流程並提示' }),
+    ).toBeVisible();
+
+    await page.getByRole('combobox', { name: '停止流程並提示' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '固定改派' })
+      .click();
+    await expect(page.getByText('改派人員')).toBeVisible();
+    await expect(
+      page.locator('label[for="allowInitiatorSelfApproval"]'),
+    ).toBeVisible();
+
+    const fallbackMemberSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    await fallbackMemberSearch.fill('chen');
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' }),
+    ).toBeVisible();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedResolver !== null).toBe(true);
+
+    expect(savedResolver).toMatchObject({
+      fallback: {
+        allowInitiatorSelfApproval: true,
+        memberId: 'member-101',
+        type: 'DIRECT',
+      },
+      levelsUp: 1,
+      type: 'ORG_MANAGER',
+    });
+  });
+
+  test('configures organization and position approver resolvers on approval nodes', async ({
+    page,
+  }): Promise<void> => {
+    const savedResolvers: Readonly<Record<string, unknown>>[] = [];
+
+    await mockTemplateGraphQl(page, {
+      onDraftUpdate: (input): void => {
+        savedResolvers.push(
+          readFirstUserTaskResolver(input.workflowDefinitionJson),
+        );
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await page.getByRole('combobox', { name: '指定會員' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '指定組織主管' })
+      .click();
+    await page.getByRole('combobox', { name: '選擇組織' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '財務部 · FIN-TW' })
+      .click();
+    await expect(page.getByText('組織主管：財務部 · FIN-TW')).toBeVisible();
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect
+      .poll((): number => savedResolvers.length)
+      .toBeGreaterThanOrEqual(1);
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '組織主管：財務部 · FIN-TW' })
+      .click();
+
+    await page.getByRole('combobox', { name: '指定組織主管' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '指定職位' })
+      .click();
+    await page.getByRole('combobox', { name: '選擇職位' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '部門主管 · DEPARTMENT_HEAD' })
+      .click();
+    await expect(
+      page.getByText('職位：部門主管 · DEPARTMENT_HEAD'),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+
+    expect(savedResolvers[0]).toMatchObject({
+      orgUnitId: 'org-finance',
+      type: 'ORG_UNIT_MANAGER',
+    });
+    expect(savedResolvers[1]).toMatchObject({
+      positionId: 'position-department-head',
+      type: 'POSITION',
+    });
+  });
 });
 
-async function mockTemplateGraphQl(page: Page): Promise<void> {
+async function mockTemplateGraphQl(
+  page: Page,
+  options: MockTemplateGraphQlOptions = {},
+): Promise<void> {
   let templateCurrentVersionId: string | null = null;
   let templateStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
   let templatePublishedAt: string | null = null;
@@ -167,6 +308,11 @@ async function mockTemplateGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('query AdminOrganizationDashboard')) {
+      await fulfillGraphQl(route, readOrganizationDashboardData());
+      return;
+    }
+
     if (query.includes('query FormVersions')) {
       await fulfillGraphQl(route, {
         formDefinitionVersions: [
@@ -217,25 +363,23 @@ async function mockTemplateGraphQl(page: Page): Promise<void> {
     }
 
     if (query.includes('query MemberOptions')) {
+      const searchText = readOptionalString(payload.variables?.searchText);
       await fulfillGraphQl(route, {
         searchMembers: [
-          {
-            email: 'lin.ceo@example.internal',
-            memberId: 'member-001',
-            name: '林執行長',
-          },
           {
             email: 'chen.manager@example.internal',
             memberId: 'member-101',
             name: '陳財務主管',
           },
-        ],
+        ].filter((member) => memberMatchesSearchText(member, searchText)),
       });
       return;
     }
 
     if (query.includes('mutation UpdateApprovalTemplateDraft')) {
       const input = readUpdateTemplateDraftInput(payload.variables?.input);
+
+      options.onDraftUpdate?.(input);
       formDefinitionVersionId = input.formDefinitionVersionId;
       workflowDefinitionJson = input.workflowDefinitionJson;
 
@@ -364,6 +508,139 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
   };
 }
 
+function readOrganizationDashboardData(): Readonly<Record<string, unknown>> {
+  return {
+    managerResolutions: [],
+    memberships: [],
+    organizationSummary: {
+      managerResolutionCount: 0,
+      membershipCount: 0,
+      orgUnitCount: 3,
+      positionCount: 3,
+    },
+    orgUnits: [
+      readOrgUnit({
+        code: 'BPM-HQ',
+        id: 'org-hq',
+        name: 'Rytass 總管理處',
+        parentId: null,
+        path: 'org.hq',
+        type: 'COMPANY',
+      }),
+      readOrgUnit({
+        code: 'FIN-TW',
+        id: 'org-finance',
+        name: '財務部',
+        parentId: 'org-hq',
+        path: 'org.hq.finance',
+        type: 'DEPARTMENT',
+      }),
+      readOrgUnit({
+        code: 'FIN-AP',
+        id: 'org-finance-ap',
+        name: '應付帳款組',
+        parentId: 'org-finance',
+        path: 'org.hq.finance.ap',
+        type: 'TEAM',
+      }),
+    ],
+    positions: [
+      readPosition({
+        code: 'CEO',
+        id: 'position-ceo',
+        level: 100,
+        name: '執行長',
+      }),
+      readPosition({
+        code: 'DEPARTMENT_HEAD',
+        id: 'position-department-head',
+        level: 80,
+        name: '部門主管',
+      }),
+      readPosition({
+        code: 'AP_SPECIALIST',
+        id: 'position-ap-specialist',
+        level: 40,
+        name: '應付帳款專員',
+      }),
+    ],
+  };
+}
+
+function readOrgUnit({
+  code,
+  id,
+  name,
+  parentId,
+  path,
+  type,
+}: {
+  readonly code: string;
+  readonly id: string;
+  readonly name: string;
+  readonly parentId: string | null;
+  readonly path: string;
+  readonly type: string;
+}): Readonly<Record<string, unknown>> {
+  return {
+    code,
+    createdAt: UPDATED_AT,
+    deletedAt: null,
+    id,
+    name,
+    parentId,
+    path,
+    type,
+    updatedAt: UPDATED_AT,
+  };
+}
+
+function readPosition({
+  code,
+  id,
+  level,
+  name,
+}: {
+  readonly code: string;
+  readonly id: string;
+  readonly level: number;
+  readonly name: string;
+}): Readonly<Record<string, unknown>> {
+  return {
+    code,
+    createdAt: UPDATED_AT,
+    id,
+    level,
+    name,
+    updatedAt: UPDATED_AT,
+  };
+}
+
+function readFirstUserTaskResolver(
+  workflowDefinitionJson: string,
+): Readonly<Record<string, unknown>> {
+  const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
+
+  if (!isRecord(parsedValue) || !Array.isArray(parsedValue.nodes)) {
+    throw new Error('Workflow definition nodes are invalid');
+  }
+
+  const userTask = parsedValue.nodes.find(
+    (node): node is Readonly<Record<string, unknown>> =>
+      isRecord(node) && node.type === 'userTask',
+  );
+
+  if (!isRecord(userTask) || !isRecord(userTask.data)) {
+    throw new Error('Workflow definition must contain a user task');
+  }
+
+  if (!isRecord(userTask.data.approverResolver)) {
+    throw new Error('User task approver resolver is invalid');
+  }
+
+  return userTask.data.approverResolver;
+}
+
 function workflowDefinitionHasLinearTask(
   workflowDefinitionJson: string,
 ): boolean {
@@ -424,6 +701,23 @@ function readUpdateTemplateDraftInput(
     formDefinitionVersionId: value.formDefinitionVersionId,
     workflowDefinitionJson: value.workflowDefinitionJson,
   };
+}
+
+function readOptionalString(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function memberMatchesSearchText(
+  member: Readonly<{ email: string; memberId: string; name: string }>,
+  searchText: string,
+): boolean {
+  if (!searchText) {
+    return true;
+  }
+
+  return [member.email, member.memberId, member.name].some((value) =>
+    value.toLowerCase().includes(searchText),
+  );
 }
 
 async function fulfillGraphQl(

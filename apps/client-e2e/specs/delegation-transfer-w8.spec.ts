@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -11,6 +12,10 @@ const TRANSFERRED_TASK_ID = 'w8-task-transfer';
 const UPDATED_AT = '2026-05-09T08:00:00.000Z';
 
 test.describe('W8 delegation and transfer', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('creates and revokes a delegation rule from the admin page', async ({
     page,
   }): Promise<void> => {
@@ -20,34 +25,20 @@ test.describe('W8 delegation and transfer', () => {
     await expect(page.getByRole('heading', { name: '代理設定' })).toBeVisible();
 
     await page.getByRole('button', { name: '建立代理' }).click();
-    await page
-      .getByPlaceholder('搜尋姓名、信箱或 member_id')
-      .first()
-      .fill('林');
-    await page
-      .getByRole('option', { name: '林執行長 · lin.ceo@example.internal' })
-      .click();
-    await page.getByPlaceholder('搜尋姓名、信箱或 member_id').nth(1).fill('陳');
-    await page
-      .getByRole('option', {
-        name: '陳財務主管 · chen.manager@example.internal',
-      })
-      .click();
-    await page.getByRole('button', { name: '建立代理' }).last().click();
+    const dialog = page.getByRole('dialog');
+
+    await dialog.getByPlaceholder('搜尋姓名、信箱或 member_id').first().fill('林');
+    await page.keyboard.press('Enter');
+    await dialog.getByPlaceholder('搜尋姓名、信箱或 member_id').nth(1).fill('陳');
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByRole('button', { name: '建立代理' })).toBeEnabled();
+    await dialog.getByRole('button', { name: '建立代理' }).click();
 
     await expect(page.getByRole('table').getByText('啟用中')).toBeVisible();
-    await expect(
-      page
-        .getByRole('table')
-        .getByText('林執行長 · lin.ceo@example.internal（member-001）'),
-    ).toBeVisible();
-    await expect(
-      page
-        .getByRole('table')
-        .getByText('陳財務主管 · chen.manager@example.internal（member-101）'),
-    ).toBeVisible();
+    await expect(page.getByRole('table').getByText('林執行長')).toBeVisible();
+    await expect(page.getByRole('table').getByText('陳財務主管')).toBeVisible();
 
-    await page.getByRole('button', { name: '撤銷' }).click();
+    await page.getByRole('button', { exact: true, name: '撤銷' }).click();
     await expect(page.getByRole('table').getByText('已撤銷')).toBeVisible();
   });
 

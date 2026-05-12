@@ -1,4 +1,5 @@
 import { expect, Page, Route, test } from '@playwright/test';
+import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
   readonly query: string;
@@ -13,6 +14,10 @@ const TASK_ID = 'e2e-task';
 const UPDATED_AT = '2026-05-06T08:00:00.000Z';
 
 test.describe('M2 W5 linear workflow', () => {
+  test.beforeEach(async ({ page }): Promise<void> => {
+    await authenticateApiMember(page);
+  });
+
   test('submits, opens, approves, and completes a linear instance', async ({
     page,
   }): Promise<void> => {
@@ -40,24 +45,31 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(page.getByText('請假原因：家庭照顧請假')).toBeVisible();
     await Promise.all([
       page.waitForURL(`**/instances/${INSTANCE_ID}`, { timeout: 30_000 }),
-      page.getByRole('button', { name: '處理' }).click(),
+      page.getByRole('button', { exact: true, name: '處理' }).click(),
     ]);
 
     await page.getByRole('button', { name: '同意' }).click();
 
     await expect(page.getByText('已同意', { exact: true })).toBeVisible();
-    await expect(page.getByText('APPROVED')).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('APPROVED');
     await expect(page.getByRole('button', { name: '同意' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '拒絕' })).toHaveCount(0);
-    await page.getByText('林執行長').hover();
+    await expect(
+      page.getByText('簽章鏈已驗證，共 1 筆。', { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(/簽章：已驗證/)).toBeVisible();
+    await expect(page.getByText('此案件沒有附件。')).toBeVisible();
+    await page.getByText('林執行長', { exact: true }).first().hover();
     await expect(page.getByText('lin.ceo@example.internal')).toBeVisible();
 
     await page.goto('/inbox');
     await expect(page.getByText('task_manager')).not.toBeVisible();
-    await expect(page.getByText('待簽核', { exact: true })).toBeVisible();
-    await expect(page.getByText('歷史簽核記錄', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '待簽核' })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: '歷史簽核記錄' }),
+    ).toBeVisible();
 
-    await page.getByText('歷史簽核記錄', { exact: true }).click();
+    await page.getByRole('button', { name: '歷史簽核記錄' }).click();
     await expect(page.getByText('請假原因：家庭照顧請假')).toBeVisible();
     await expect(page.getByText('task_manager')).toBeVisible();
     await expect(page.getByRole('table').getByText('-', { exact: true })).toBeVisible();
@@ -96,7 +108,7 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(
       page.getByText('已拒絕 · 2026-05-06 16:00:00'),
     ).toBeVisible();
-    await expect(page.getByText('REJECTED')).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('REJECTED');
     await expect(page.getByText('已拒絕', { exact: true })).toBeVisible();
     await expect(page.getByText('簽核已決議')).not.toBeVisible();
     await expect(page.getByText('決議：拒絕')).toBeVisible();
@@ -276,6 +288,29 @@ async function mockWorkflowGraphQl(
       return;
     }
 
+    if (query.includes('query InstanceAttachments')) {
+      await fulfillGraphQl(route, {
+        attachments: [],
+      });
+      return;
+    }
+
+    if (query.includes('query InstanceSignatures')) {
+      await fulfillGraphQl(route, {
+        signatures:
+          taskStatus === 'COMPLETED'
+            ? [readSignature(instanceState)]
+            : [],
+        verifySignatureChain: {
+          checkedCount: taskStatus === 'COMPLETED' ? 1 : 0,
+          errors: [],
+          instanceId: INSTANCE_ID,
+          valid: true,
+        },
+      });
+      return;
+    }
+
     if (query.includes('mutation DecideTask')) {
       const decisionInput = payload.variables?.input;
       const action = readDecisionAction(decisionInput);
@@ -290,7 +325,10 @@ async function mockWorkflowGraphQl(
           decidedAt: UPDATED_AT,
           decidedByMemberId: 'member-001',
           id: 'decision-1',
+          returnToNodeId: null,
+          signatureId: 'signature-1',
           taskId: TASK_ID,
+          transferToMemberId: null,
         },
       });
       return;
@@ -474,7 +512,32 @@ function readTaskDecision(
     decidedAt: UPDATED_AT,
     decidedByMemberId: 'member-001',
     id: 'decision-1',
+    returnToNodeId: null,
+    signatureId: 'signature-1',
     taskId: TASK_ID,
+    transferToMemberId: null,
+  };
+}
+
+function readSignature(
+  state: 'APPROVED' | 'REJECTED' | 'RUNNING',
+): Readonly<Record<string, unknown>> {
+  return {
+    algorithm: 'HMAC-SHA256',
+    id: 'signature-1',
+    instanceId: INSTANCE_ID,
+    keyVersion: 1,
+    previousSignatureHash: null,
+    signature: 'signature',
+    signedAt: UPDATED_AT,
+    signedPayloadHash:
+      state === 'REJECTED'
+        ? 'rejected-signed-payload-hash'
+        : 'approved-signed-payload-hash',
+    signedPayloadJson: '{}',
+    signerMemberId: 'member-001',
+    taskId: TASK_ID,
+    timestampTokenBase64: 'dGltZXN0YW1w',
   };
 }
 
@@ -507,6 +570,7 @@ function readActivityLogs(
       payloadJson: JSON.stringify({
         action: state === 'REJECTED' ? 'REJECTED' : 'APPROVED',
         comment: null,
+        signatureId: state === 'RUNNING' ? null : 'signature-1',
       }),
       taskId: TASK_ID,
     },
