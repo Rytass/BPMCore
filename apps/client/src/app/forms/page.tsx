@@ -1,13 +1,17 @@
 'use client';
 
-import { ReactElement, useEffect, useMemo, useState } from 'react';
+import type { Key, ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  Badge,
   Button,
   Layout,
   PageHeader,
   Section,
   SectionGroup,
+  Tab,
+  TabItem,
   Table,
   Typography,
 } from '@mezzanine-ui/react';
@@ -18,18 +22,31 @@ import { formatDateTime } from '../_lib/date-time';
 import { renderAppNavigation } from '../app-navigation';
 import {
   createFormDefinition,
+  FormDefinitionListStatus,
   FormDefinitionRecord,
-  listFormDefinitions,
+  listFormDefinitionsPage,
 } from './_lib/form-api';
 import { FormNameModal } from './_components/form-name-modal';
+
+const FORM_PAGE_SIZE_OPTIONS = [10, 20, 50];
+const FORM_STATUS_TABS: readonly {
+  readonly key: FormStatusTabKey;
+  readonly label: string;
+}[] = [
+  { key: 'ALL', label: '全部' },
+  { key: 'PUBLISHED', label: '已發布' },
+  { key: 'DRAFT', label: '草稿' },
+];
 
 type FormDefinitionRow = Readonly<
   Record<string, unknown> &
     FormDefinitionRecord & {
       key: string;
-      status: string;
+      status: FormDefinitionListStatus;
     }
 >;
+
+type FormStatusTabKey = 'ALL' | FormDefinitionListStatus;
 
 export default function FormsPage(): ReactElement {
   const router = useRouter();
@@ -38,17 +55,41 @@ export default function FormsPage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [formPage, setFormPage] = useState(1);
+  const [formPageSize, setFormPageSize] = useState(10);
+  const [formStatus, setFormStatus] = useState<FormStatusTabKey>('ALL');
+  const [formTotalCount, setFormTotalCount] = useState(0);
+
+  const refreshForms = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await listFormDefinitionsPage({
+        page: formPage,
+        pageSize: formPageSize,
+        status: formStatus === 'ALL' ? null : formStatus,
+      });
+
+      setForms(result.forms);
+      setFormTotalCount(result.totalCount);
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }, [formPage, formPageSize, formStatus]);
 
   useEffect((): void => {
     void refreshForms();
-  }, []);
+  }, [refreshForms]);
 
   const rows = useMemo(
     (): FormDefinitionRow[] =>
       forms.map((form) => ({
         ...form,
         key: form.id,
-        status: form.currentVersionId ? '已發布' : '草稿',
+        status: form.currentVersionId ? 'PUBLISHED' : 'DRAFT',
         updatedAt: formatDateTime(form.updatedAt),
       })),
     [forms],
@@ -56,7 +97,14 @@ export default function FormsPage(): ReactElement {
   const columns = useMemo(
     (): TableColumn<FormDefinitionRow>[] => [
       { dataIndex: 'name', key: 'name', title: '表單名稱', width: 220 },
-      { dataIndex: 'status', key: 'status', title: '狀態', width: 120 },
+      {
+        key: 'status',
+        render: (record: FormDefinitionRow): ReactElement => (
+          <FormStatusBadge status={record.status} />
+        ),
+        title: '狀態',
+        width: 120,
+      },
       {
         key: 'currentVersionId',
         render: (record: FormDefinitionRow): ReactElement => (
@@ -91,19 +139,6 @@ export default function FormsPage(): ReactElement {
     }),
     [router],
   );
-
-  async function refreshForms(): Promise<void> {
-    setLoading(true);
-    setError(null);
-
-    try {
-      setForms(await listFormDefinitions());
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function handleCreateForm(name: string): Promise<void> {
     setCreating(true);
@@ -142,7 +177,21 @@ export default function FormsPage(): ReactElement {
           </PageHeader>
 
           <SectionGroup>
-            <Section>
+            <Section
+              tab={
+                <Tab
+                  activeKey={formStatus}
+                  onChange={(activeKey): void => {
+                    setFormStatus(readFormStatusTabKey(activeKey));
+                    setFormPage(1);
+                  }}
+                >
+                  {FORM_STATUS_TABS.map((statusTab) => (
+                    <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
+                  ))}
+                </Tab>
+              }
+            >
               {error ? (
                 <Typography color="text-error" variant="body">
                   {error}
@@ -154,6 +203,23 @@ export default function FormsPage(): ReactElement {
                 dataSource={rows}
                 fullWidth
                 loading={loading}
+                pagination={{
+                  current: formPage,
+                  onChange: (page): void => {
+                    setFormPage(page);
+                  },
+                  onChangePageSize: (pageSize): void => {
+                    setFormPage(1);
+                    setFormPageSize(pageSize);
+                  },
+                  pageSize: formPageSize,
+                  pageSizeLabel: '每頁筆數',
+                  pageSizeOptions: FORM_PAGE_SIZE_OPTIONS,
+                  renderResultSummary: (from, to, total): string =>
+                    `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+                  showPageSizeOptions: true,
+                  total: formTotalCount,
+                }}
               />
             </Section>
           </SectionGroup>
@@ -175,4 +241,24 @@ export default function FormsPage(): ReactElement {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '發生未知錯誤';
+}
+
+function FormStatusBadge({
+  status,
+}: {
+  readonly status: FormDefinitionListStatus;
+}): ReactElement {
+  if (status === 'PUBLISHED') {
+    return <Badge size="sub" text="已發布" variant="dot-success" />;
+  }
+
+  return <Badge size="sub" text="草稿" variant="dot-warning" />;
+}
+
+function readFormStatusTabKey(activeKey: Key): FormStatusTabKey {
+  if (activeKey === 'PUBLISHED' || activeKey === 'DRAFT') {
+    return activeKey;
+  }
+
+  return 'ALL';
 }

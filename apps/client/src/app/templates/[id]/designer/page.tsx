@@ -68,6 +68,8 @@ import {
   FormFieldOption,
 } from '@bpm/shared/form';
 import {
+  ApproverResolver,
+  ApproverResolverFallback,
   ServiceAction,
   WorkflowDefinition,
   WorkflowEdge,
@@ -77,6 +79,19 @@ import {
   WorkflowNodeTriggerMode,
   ReturnResubmitStrategy,
 } from '@bpm/shared/workflow';
+import {
+  OrgUnitOption,
+  OrgUnitPicker,
+  PositionOption,
+  PositionPicker,
+  readOrgUnitOption,
+  readPositionOption,
+} from '../../../admin/_components/admin-pickers';
+import {
+  OrgUnitRecord,
+  PositionRecord,
+  readOrganizationDashboard,
+} from '../../../admin/_lib/organization-api';
 import { renderAppNavigation } from '../../../app-navigation';
 import {
   ApprovalTemplateVersionRecord,
@@ -148,6 +163,24 @@ type InitiatorPolicyValueOption = Readonly<{
 }>;
 type ReturnResubmitStrategyOption = Readonly<{
   id: ReturnResubmitStrategy;
+  name: string;
+}>;
+type ApproverResolverMode = Extract<
+  ApproverResolver['type'],
+  'DIRECT' | 'ORG_MANAGER' | 'ORG_UNIT_MANAGER' | 'POSITION'
+>;
+type ApproverResolverModeOption = Readonly<{
+  id: ApproverResolverMode;
+  name: string;
+}>;
+type ManagerLevelOption = Readonly<{
+  id: string;
+  name: string;
+  value: number;
+}>;
+type ApproverFallbackMode = 'DIRECT' | 'NONE';
+type ApproverFallbackModeOption = Readonly<{
+  id: ApproverFallbackMode;
   name: string;
 }>;
 type WorkflowConnectionCandidate = Readonly<{
@@ -404,6 +437,21 @@ const RETURN_RESUBMIT_STRATEGY_OPTIONS: readonly ReturnResubmitStrategyOption[] 
     { id: 'RESTART', name: '重新送出後從開始重跑' },
     { id: 'FROM_RETURN_POINT', name: '重新送出後回到退回節點' },
   ];
+const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
+  { id: 'DIRECT', name: '指定會員' },
+  { id: 'ORG_MANAGER', name: '發起人主管' },
+  { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
+  { id: 'POSITION', name: '指定職位' },
+];
+const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
+  { id: '1', name: '直屬主管', value: 1 },
+  { id: '2', name: '第二層主管', value: 2 },
+  { id: '3', name: '第三層主管', value: 3 },
+];
+const APPROVER_FALLBACK_MODE_OPTIONS: readonly ApproverFallbackModeOption[] = [
+  { id: 'NONE', name: '停止流程並提示' },
+  { id: 'DIRECT', name: '固定改派' },
+];
 const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
   { id: 'EQUALS', name: '等於' },
   { id: 'NOT_EQUALS', name: '不等於' },
@@ -486,6 +534,8 @@ export default function TemplateDesignerPage(): ReactElement {
   const [memberOptions, setMemberOptions] = useState<
     readonly MemberSelectOption[]
   >([]);
+  const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
+  const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
   const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
@@ -611,6 +661,8 @@ export default function TemplateDesignerPage(): ReactElement {
         readFlowNode(
           node,
           memberOptions,
+          orgUnits,
+          positions,
           node.id === selectedNodeId,
           initiatorPolicyDraft,
         ),
@@ -618,6 +670,8 @@ export default function TemplateDesignerPage(): ReactElement {
     [
       initiatorPolicyDraft,
       memberOptions,
+      orgUnits,
+      positions,
       selectedNodeId,
       workflowDefinition.nodes,
     ],
@@ -666,7 +720,10 @@ export default function TemplateDesignerPage(): ReactElement {
     setError(null);
 
     try {
-      const nextRecord = await readTemplateDesigner(templateId);
+      const [nextRecord, organizationDashboard] = await Promise.all([
+        readTemplateDesigner(templateId),
+        readOrganizationDashboard(),
+      ]);
       const nextDraft =
         nextRecord.versions.find((version) => version.status === 'DRAFT') ??
         null;
@@ -674,6 +731,8 @@ export default function TemplateDesignerPage(): ReactElement {
 
       setRecord(nextRecord);
       setDraft(nextDraft);
+      setOrgUnits(organizationDashboard.orgUnits);
+      setPositions(organizationDashboard.positions);
       setFormVersionOptions(
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
@@ -957,7 +1016,7 @@ export default function TemplateDesignerPage(): ReactElement {
     updateNode(selectedNode.id, (node) => renameWorkflowNode(node, label));
   }
 
-  function updateUserTaskResolver(memberId: string | null): void {
+  function updateUserTaskResolver(approverResolver: ApproverResolver): void {
     if (!selectedNode || selectedNode.type !== 'userTask') {
       return;
     }
@@ -968,10 +1027,7 @@ export default function TemplateDesignerPage(): ReactElement {
             ...node,
             data: {
               ...node.data,
-              approverResolver: {
-                memberIds: memberId ? [memberId] : [],
-                type: 'DIRECT',
-              },
+              approverResolver,
               decisionPolicy: { type: 'SINGLE' },
             },
           }
@@ -1686,9 +1742,30 @@ export default function TemplateDesignerPage(): ReactElement {
     node: Extract<WorkflowNode, { type: 'userTask' }>,
   ): ReactElement {
     const resolver = node.data.approverResolver;
+    const resolverMode = readApproverResolverMode(resolver.type);
     const selectedMember =
       resolver.type === 'DIRECT'
         ? readPrimaryMemberOption(resolver.memberIds, memberOptions)
+        : null;
+    const selectedOrgUnit =
+      resolver.type === 'ORG_UNIT_MANAGER'
+        ? readSelectedOrgUnitOption(orgUnits, resolver.orgUnitId)
+        : null;
+    const selectedPosition =
+      resolver.type === 'POSITION'
+        ? readSelectedPositionOption(positions, resolver.positionId)
+        : null;
+    const selectedManagerLevel =
+      resolver.type === 'ORG_MANAGER'
+        ? readManagerLevelOption(resolver.levelsUp)
+        : MANAGER_LEVEL_OPTIONS[0];
+    const fallback =
+      resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER'
+        ? (resolver.fallback ?? { type: 'NONE' as const })
+        : { type: 'NONE' as const };
+    const fallbackMember =
+      fallback.type === 'DIRECT'
+        ? readMemberSelectOption(memberOptions, fallback.memberId)
         : null;
     const resubmitStrategy =
       node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
@@ -1698,39 +1775,243 @@ export default function TemplateDesignerPage(): ReactElement {
         <FormField
           density={FormFieldDensity.WIDE}
           fullWidth
-          label="簽核者"
+          label="簽核來源"
           layout={FormFieldLayout.STRETCH}
-          name="memberId"
+          name="approverResolverType"
           required
         >
-          <AutoComplete
-            asyncData
-            disabledOptionsFilter
-            emptyText="沒有符合的成員"
-            inputProps={{
-              autoCapitalize: 'none',
-              autoCorrect: 'off',
-              name: 'workflow-approver-search',
-              spellCheck: false,
-            }}
-            loading={memberLoading}
-            loadingText="搜尋成員中..."
-            mode="single"
+          <Select
+            clearable={false}
+            fullWidth
             onChange={(option): void =>
-              updateUserTaskResolver(option?.id ?? null)
+              updateUserTaskResolver(
+                readDefaultApproverResolver(option?.id ?? null),
+              )
             }
-            onSearch={handleSearchMembers}
-            onVisibilityChange={(open): void => {
-              if (open) {
-                void handleSearchMembers('');
-              }
-            }}
-            options={[...memberOptions]}
-            placeholder="搜尋姓名或信箱"
-            searchDebounceTime={300}
-            value={selectedMember}
+            options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
+            value={readSelectOption(
+              APPROVER_RESOLVER_MODE_OPTIONS,
+              resolverMode,
+            )}
           />
         </FormField>
+        {resolver.type === 'DIRECT' ? (
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            label="簽核者"
+            layout={FormFieldLayout.STRETCH}
+            name="memberId"
+            required
+          >
+            <AutoComplete
+              asyncData
+              disabledOptionsFilter
+              emptyText="沒有符合的成員"
+              inputProps={{
+                autoCapitalize: 'none',
+                autoCorrect: 'off',
+                name: 'workflow-approver-search',
+                spellCheck: false,
+              }}
+              loading={memberLoading}
+              loadingText="搜尋成員中..."
+              mode="single"
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  memberIds: option?.id ? [option.id] : [],
+                  type: 'DIRECT',
+                })
+              }
+              onSearch={handleSearchMembers}
+              onVisibilityChange={(open): void => {
+                if (open) {
+                  void handleSearchMembers('');
+                }
+              }}
+              options={[...memberOptions]}
+              placeholder="搜尋姓名或信箱"
+              searchDebounceTime={300}
+              value={selectedMember}
+            />
+          </FormField>
+        ) : null}
+        {resolver.type === 'ORG_MANAGER' ? (
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            hintText="依發起人的有效會員歸屬與主管解析規則決定簽核人。"
+            label="主管層級"
+            layout={FormFieldLayout.STRETCH}
+            name="managerLevelsUp"
+            required
+          >
+            <Select
+              clearable={false}
+              fullWidth
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  baseFromInitiator: true,
+                  levelsUp: readManagerLevelOptionById(option?.id ?? null)
+                    .value,
+                  type: 'ORG_MANAGER',
+                })
+              }
+              options={[...MANAGER_LEVEL_OPTIONS]}
+              value={selectedManagerLevel}
+            />
+          </FormField>
+        ) : null}
+        {resolver.type === 'ORG_UNIT_MANAGER' ? (
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            hintText="依指定組織或其上層的主管解析規則決定簽核人。"
+            label="組織"
+            layout={FormFieldLayout.STRETCH}
+            name="orgUnitId"
+            required
+          >
+            <OrgUnitPicker
+              name="orgUnitId"
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  orgUnitId: option?.id ?? '',
+                  type: 'ORG_UNIT_MANAGER',
+                })
+              }
+              orgUnits={orgUnits}
+              placeholder="選擇組織"
+              value={selectedOrgUnit}
+            />
+          </FormField>
+        ) : null}
+        {resolver.type === 'ORG_MANAGER' ||
+        resolver.type === 'ORG_UNIT_MANAGER' ? (
+          <>
+            <FormField
+              density={FormFieldDensity.WIDE}
+              fullWidth
+              hintText="預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。"
+              label="無主管時"
+              layout={FormFieldLayout.STRETCH}
+              name="approverFallbackMode"
+              required
+            >
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  updateUserTaskResolver(
+                    updateApproverResolverFallback(
+                      resolver,
+                      readApproverFallbackMode(option?.id ?? null) === 'DIRECT'
+                        ? { memberId: '', type: 'DIRECT' }
+                        : { type: 'NONE' },
+                    ),
+                  )
+                }
+                options={[...APPROVER_FALLBACK_MODE_OPTIONS]}
+                value={readSelectOption(
+                  APPROVER_FALLBACK_MODE_OPTIONS,
+                  fallback.type,
+                )}
+              />
+            </FormField>
+            {fallback.type === 'DIRECT' ? (
+              <>
+                <FormField
+                  density={FormFieldDensity.WIDE}
+                  fullWidth
+                  label="改派人員"
+                  layout={FormFieldLayout.STRETCH}
+                  name="approverFallbackMemberId"
+                  required
+                >
+                  <AutoComplete
+                    asyncData
+                    disabledOptionsFilter
+                    emptyText="沒有符合的成員"
+                    inputProps={{
+                      autoCapitalize: 'none',
+                      autoCorrect: 'off',
+                      name: 'workflow-approver-fallback-search',
+                      spellCheck: false,
+                    }}
+                    loading={memberLoading}
+                    loadingText="搜尋成員中..."
+                    mode="single"
+                    onChange={(option): void =>
+                      updateUserTaskResolver(
+                        updateApproverResolverFallback(resolver, {
+                          allowInitiatorSelfApproval:
+                            fallback.allowInitiatorSelfApproval,
+                          memberId: option?.id ?? '',
+                          type: 'DIRECT',
+                        }),
+                      )
+                    }
+                    onSearch={handleSearchMembers}
+                    onVisibilityChange={(open): void => {
+                      if (open) {
+                        void handleSearchMembers('');
+                      }
+                    }}
+                    options={[...memberOptions]}
+                    placeholder="搜尋姓名或信箱"
+                    searchDebounceTime={300}
+                    value={fallbackMember}
+                  />
+                </FormField>
+                <FormField
+                  density={FormFieldDensity.WIDE}
+                  fullWidth
+                  hintText="預設禁止申請人簽自己的案件；只有此流程允許自簽時才開啟。"
+                  label="允許自簽"
+                  layout={FormFieldLayout.STRETCH}
+                  name="allowInitiatorSelfApproval"
+                >
+                  <Toggle
+                    checked={Boolean(fallback.allowInitiatorSelfApproval)}
+                    onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                      updateUserTaskResolver(
+                        updateApproverResolverFallback(resolver, {
+                          allowInitiatorSelfApproval: event.target.checked,
+                          memberId: fallback.memberId,
+                          type: 'DIRECT',
+                        }),
+                      )
+                    }
+                  />
+                </FormField>
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {resolver.type === 'POSITION' ? (
+          <FormField
+            density={FormFieldDensity.WIDE}
+            fullWidth
+            hintText="指派給目前有效歸屬中擁有此職位的會員；主要歸屬優先。"
+            label="職位"
+            layout={FormFieldLayout.STRETCH}
+            name="positionId"
+            required
+          >
+            <PositionPicker
+              name="positionId"
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  positionId: option?.id ?? '',
+                  type: 'POSITION',
+                })
+              }
+              placeholder="選擇職位"
+              positions={positions}
+              value={selectedPosition}
+            />
+          </FormField>
+        ) : null}
         {node.data.returnBehavior.allowReturn ? (
           <FormField
             density={FormFieldDensity.WIDE}
@@ -2219,6 +2500,8 @@ function renderWorkflowNodeHandles(
 function readFlowNode(
   node: WorkflowNode,
   memberOptions: readonly MemberSelectOption[],
+  orgUnits: readonly OrgUnitRecord[],
+  positions: readonly PositionRecord[],
   selected: boolean,
   initiatorPolicyDraft: InitiatorPolicyDraft,
 ): FlowNode {
@@ -2227,7 +2510,12 @@ function readFlowNode(
   return {
     data: {
       approverLines: readNodeApproverLines(node, memberOptions),
-      approverSummary: readNodeApproverSummary(node, memberOptions),
+      approverSummary: readNodeApproverSummary(
+        node,
+        memberOptions,
+        orgUnits,
+        positions,
+      ),
       hasInput: isWorkflowNodeInputConnectable(node),
       hasOutput: isWorkflowNodeOutputConnectable(node),
       initiatorPolicySummary:
@@ -2855,6 +3143,65 @@ function readReturnResubmitStrategy(
   return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
 }
 
+function readApproverResolverMode(value: string): ApproverResolverMode {
+  return value === 'ORG_MANAGER' ||
+    value === 'ORG_UNIT_MANAGER' ||
+    value === 'POSITION'
+    ? value
+    : 'DIRECT';
+}
+
+function readDefaultApproverResolver(value: string | null): ApproverResolver {
+  const mode = readApproverResolverMode(value ?? 'DIRECT');
+
+  if (mode === 'ORG_MANAGER') {
+    return { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' };
+  }
+
+  if (mode === 'ORG_UNIT_MANAGER') {
+    return { orgUnitId: '', type: 'ORG_UNIT_MANAGER' };
+  }
+
+  if (mode === 'POSITION') {
+    return { positionId: '', type: 'POSITION' };
+  }
+
+  return { memberIds: [], type: 'DIRECT' };
+}
+
+function readApproverFallbackMode(value: string | null): ApproverFallbackMode {
+  return value === 'DIRECT' ? 'DIRECT' : 'NONE';
+}
+
+function updateApproverResolverFallback(
+  resolver: ApproverResolver,
+  fallback: ApproverResolverFallback,
+): ApproverResolver {
+  if (resolver.type === 'ORG_MANAGER') {
+    return { ...resolver, fallback };
+  }
+
+  if (resolver.type === 'ORG_UNIT_MANAGER') {
+    return { ...resolver, fallback };
+  }
+
+  return resolver;
+}
+
+function readManagerLevelOption(levelsUp: number): ManagerLevelOption {
+  return (
+    MANAGER_LEVEL_OPTIONS.find((option) => option.value === levelsUp) ??
+    MANAGER_LEVEL_OPTIONS[0]
+  );
+}
+
+function readManagerLevelOptionById(id: string | null): ManagerLevelOption {
+  return (
+    MANAGER_LEVEL_OPTIONS.find((option) => option.id === id) ??
+    MANAGER_LEVEL_OPTIONS[0]
+  );
+}
+
 function readInitiatorPolicyMode(
   value: string | null,
 ): Exclude<InitiatorPolicyMode, 'CUSTOM'> {
@@ -3196,7 +3543,7 @@ function readMemberSelectOptions(
     email: option.email,
     id: option.memberId,
     memberId: option.memberId,
-    name: option.email,
+    name: formatMemberDisplayName(option.name, option.email),
   }));
 }
 
@@ -3227,6 +3574,40 @@ function readPrimaryMemberOption(
   const memberId = memberIds[0];
 
   return memberId ? readMemberSelectOption(memberOptions, memberId) : null;
+}
+
+function readSelectedOrgUnitOption(
+  orgUnits: readonly OrgUnitRecord[],
+  orgUnitId: string,
+): OrgUnitOption | null {
+  const orgUnit = orgUnits.find((candidate) => candidate.id === orgUnitId);
+
+  return orgUnit ? readOrgUnitOption(orgUnit) : null;
+}
+
+function readSelectedPositionOption(
+  positions: readonly PositionRecord[],
+  positionId: string,
+): PositionOption | null {
+  const position = positions.find((candidate) => candidate.id === positionId);
+
+  return position ? readPositionOption(position) : null;
+}
+
+function readOrgUnitDisplayName(
+  orgUnits: readonly OrgUnitRecord[],
+  orgUnitId: string,
+): string {
+  return readSelectedOrgUnitOption(orgUnits, orgUnitId)?.name ?? '未指定組織';
+}
+
+function readPositionDisplayName(
+  positions: readonly PositionRecord[],
+  positionId: string,
+): string {
+  return (
+    readSelectedPositionOption(positions, positionId)?.name ?? '未指定職位'
+  );
 }
 
 function mergeMemberOptions(
@@ -3268,18 +3649,52 @@ function readWorkflowDirectMemberIds(
 function readNodeApproverSummary(
   node: WorkflowNode,
   memberOptions: readonly MemberSelectOption[],
+  orgUnits: readonly OrgUnitRecord[],
+  positions: readonly PositionRecord[],
 ): string | null {
   if (node.type === 'userTask') {
-    return node.data.approverResolver.type === 'DIRECT'
-      ? readMemberEmailSummary(
-          node.data.approverResolver.memberIds,
-          memberOptions,
-          '未指定簽核者',
-        )
-      : null;
+    return readApproverResolverSummary(
+      node.data.approverResolver,
+      memberOptions,
+      orgUnits,
+      positions,
+    );
   }
 
   return null;
+}
+
+function readApproverResolverSummary(
+  resolver: ApproverResolver,
+  memberOptions: readonly MemberSelectOption[],
+  orgUnits: readonly OrgUnitRecord[],
+  positions: readonly PositionRecord[],
+): string {
+  if (resolver.type === 'DIRECT') {
+    return readMemberEmailSummary(
+      resolver.memberIds,
+      memberOptions,
+      '未指定簽核者',
+    );
+  }
+
+  if (resolver.type === 'ORG_MANAGER') {
+    return readManagerLevelOption(resolver.levelsUp).name;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MANAGER') {
+    return `組織主管：${readOrgUnitDisplayName(orgUnits, resolver.orgUnitId)}`;
+  }
+
+  if (resolver.type === 'POSITION') {
+    return `職位：${readPositionDisplayName(positions, resolver.positionId)}`;
+  }
+
+  if (resolver.type === 'DYNAMIC_FORM') {
+    return `表單欄位：${resolver.formPath || '未設定'}`;
+  }
+
+  return '自訂表達式';
 }
 
 function readNodeApproverLines(
@@ -3295,7 +3710,7 @@ function readNodeApproverLines(
   return memberIds.length === 0
     ? ['未指定知會對象']
     : memberIds.map(
-        (memberId) => readMemberSelectOption(memberOptions, memberId).email,
+        (memberId) => readMemberSelectOption(memberOptions, memberId).name,
       );
 }
 
@@ -3305,7 +3720,7 @@ function readMemberEmailSummary(
   emptyLabel: string,
 ): string {
   const memberLabels = memberIds.map(
-    (memberId) => readMemberSelectOption(memberOptions, memberId).email,
+    (memberId) => readMemberSelectOption(memberOptions, memberId).name,
   );
 
   if (memberLabels.length === 0) {
@@ -3317,6 +3732,10 @@ function readMemberEmailSummary(
   }
 
   return `${memberLabels.slice(0, 2).join('、')} 等 ${memberLabels.length} 人`;
+}
+
+function formatMemberDisplayName(name: string, email: string): string {
+  return `${name} (${email})`;
 }
 
 function readWorkflowViewport(
@@ -3366,6 +3785,11 @@ function readWorkflowViewport(
 function readWorkflowDefinitionIssue(
   definition: WorkflowDefinition,
 ): string | null {
+  const incompleteUserTaskNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      Boolean(readApproverResolverIssue(node.data.approverResolver)),
+  );
   const incompleteNotifyNode = definition.nodes.find(
     (node) =>
       node.type === 'serviceTask' &&
@@ -3379,12 +3803,46 @@ function readWorkflowDefinitionIssue(
       !edge.data.condition,
   );
 
+  if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
+    return readApproverResolverIssue(
+      incompleteUserTaskNode.data.approverResolver,
+    );
+  }
+
   if (incompleteNotifyNode) {
     return '知會節點需要至少一位知會對象。';
   }
 
   if (incompleteConditionEdge) {
     return '條件分流的每條輸出連線都需要先設定條件。';
+  }
+
+  return null;
+}
+
+function readApproverResolverIssue(resolver: ApproverResolver): string | null {
+  if (resolver.type === 'DIRECT' && resolver.memberIds.length === 0) {
+    return '簽核節點需要指定簽核會員。';
+  }
+
+  if (resolver.type === 'ORG_MANAGER' && resolver.levelsUp < 1) {
+    return '簽核節點需要指定有效的主管層級。';
+  }
+
+  if (resolver.type === 'ORG_UNIT_MANAGER' && !resolver.orgUnitId.trim()) {
+    return '簽核節點需要指定組織。';
+  }
+
+  if (
+    (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') &&
+    resolver.fallback?.type === 'DIRECT' &&
+    !resolver.fallback.memberId.trim()
+  ) {
+    return '簽核節點需要指定改派固定人。';
+  }
+
+  if (resolver.type === 'POSITION' && !resolver.positionId.trim()) {
+    return '簽核節點需要指定職位。';
   }
 
   return null;

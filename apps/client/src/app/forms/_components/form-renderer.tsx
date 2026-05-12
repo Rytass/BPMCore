@@ -19,6 +19,7 @@ import {
   Typography,
   Upload,
 } from '@mezzanine-ui/react';
+import type { UploadFile } from '@mezzanine-ui/react/Upload';
 import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import {
   FormDefinitionSchema,
@@ -45,6 +46,10 @@ export interface FormRendererProps {
   readonly emptyText?: string;
   readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
+  readonly onUploadAttachment?: (
+    field: FormFieldDefinition,
+    file: File,
+  ) => Promise<{ readonly id: string }>;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
   readonly singleColumn?: boolean;
@@ -95,6 +100,7 @@ export function FormRenderer({
   emptyText = '尚未建立欄位。',
   maxWidth,
   onChange,
+  onUploadAttachment,
   readonly = false,
   schema,
   singleColumn = false,
@@ -164,6 +170,7 @@ export function FormRenderer({
           fields={schema.fields}
           key={field.fieldKey}
           onChange={updateValue}
+          onUploadAttachment={onUploadAttachment}
           readonly={readonly}
           style={{
             ...FORM_RENDERER_FIELD_STYLE,
@@ -183,6 +190,7 @@ function FormRendererField({
   field,
   fields,
   onChange,
+  onUploadAttachment,
   readonly,
   style,
   value,
@@ -194,6 +202,12 @@ function FormRendererField({
     fieldKey: string,
     value: FormFieldValue | undefined,
   ) => void;
+  readonly onUploadAttachment?:
+    | ((
+        field: FormFieldDefinition,
+        file: File,
+      ) => Promise<{ readonly id: string }>)
+    | undefined;
   readonly readonly: boolean;
   readonly style: CSSProperties;
   readonly value: FormFieldValue | undefined;
@@ -220,7 +234,13 @@ function FormRendererField({
         name={field.fieldKey}
         required={required}
       >
-        {renderControl(field, value, fieldReadonly, onChange)}
+        {renderControl(
+          field,
+          value,
+          fieldReadonly,
+          onChange,
+          onUploadAttachment,
+        )}
       </FormField>
     </div>
   );
@@ -231,6 +251,12 @@ function renderControl(
   value: FormFieldValue | undefined,
   readonly: boolean,
   onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
+  onUploadAttachment:
+    | ((
+        field: FormFieldDefinition,
+        file: File,
+      ) => Promise<{ readonly id: string }>)
+    | undefined,
 ): ReactElement {
   if (field.type === 'textarea') {
     return (
@@ -313,10 +339,21 @@ function renderControl(
             files.length ? files.map((file) => file.id) : undefined,
           )
         }
-        onUpload={(files): { readonly id: string }[] =>
-          files.map((file, index) => ({
-            id: `${file.name}-${file.lastModified}-${index}`,
-          }))
+        onUpload={async (files): Promise<UploadFile[]> =>
+          Promise.all(
+            files.map(async (file): Promise<UploadFile> => {
+              const uploadedFile = onUploadAttachment
+                ? await onUploadAttachment(field, file)
+                : { id: `${file.name}-${file.lastModified}` };
+
+              return {
+                file,
+                id: uploadedFile.id,
+                progress: 100,
+                status: 'done',
+              };
+            }),
+          )
         }
         size="sub"
       />

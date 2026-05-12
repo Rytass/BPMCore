@@ -46,24 +46,34 @@ import { stepClasses } from '@mezzanine-ui/core/stepper';
 import {
   CheckedIcon,
   DangerousOutlineIcon,
+  DownloadIcon,
+  FileSearchIcon,
   RefreshCcwIcon,
   ShareIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
-import type { TableColumn } from '@mezzanine-ui/core/table';
+import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { FormFieldDefinition } from '@bpm/shared/form';
 import { WorkflowDefinition, WorkflowNode } from '@bpm/shared/workflow';
 import { formatDateTime } from '../../_lib/date-time';
+import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import { FormRenderer } from '../../forms/_components/form-renderer';
 import {
   ActivityLogRecord,
+  AttachmentRecord,
   ApprovalInstanceRecord,
-  CURRENT_MEMBER_ID,
   MemberProfileRecord,
+  SignatureRecord,
+  SignatureVerificationRecord,
   cancelApprovalInstance,
   decideTask,
+  listAttachments,
   listTaskDecisions,
   readApprovalInstance,
+  readAttachmentDownloadUrl,
+  readAttachmentPreviewUrl,
+  readInstanceSignatures,
   resubmitApprovalInstance,
   resolveMemberProfiles,
   searchMembers,
@@ -71,6 +81,7 @@ import {
   TaskRecord,
   WorkflowFormData,
   WorkflowTokenRecord,
+  uploadAttachment,
 } from '../_lib/workflow-api';
 
 const SECTION_BODY_STYLE: CSSProperties = {
@@ -90,6 +101,13 @@ const FLOW_NODE_LAYOUT_HEIGHT = 96;
 const FLOW_MODAL_BODY_STYLE: CSSProperties = {
   display: 'grid',
   gap: 16,
+};
+
+const PREVIEW_FRAME_STYLE: CSSProperties = {
+  border: '1px solid #e2e8f0',
+  borderRadius: 8,
+  height: 'min(70vh, 720px)',
+  width: 'min(80vw, 960px)',
 };
 
 const REJECT_REASON_FORM_STYLE: CSSProperties = {
@@ -225,6 +243,29 @@ type TaskRow = Readonly<
     }
 >;
 
+type AttachmentRow = Readonly<
+  Record<string, unknown> & {
+    attachment: AttachmentRecord;
+    createdAt: string;
+    filename: string;
+    id: string;
+    key: string;
+    mimeType: string;
+    sizeLabel: string;
+  }
+>;
+
+type SignatureRow = Readonly<
+  Record<string, unknown> & {
+    algorithm: string;
+    hashLabel: string;
+    key: string;
+    keyVersion: number;
+    signedAtLabel: string;
+    signerMemberId: string;
+  }
+>;
+
 type MemberOption = Readonly<{
   email: string | null;
   id: string;
@@ -252,6 +293,8 @@ type ActivityStepDescriptionPart =
 export default function ApprovalInstancePage(): ReactElement {
   const params = useParams<{ id: string }>();
   const instanceId = params.id;
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const [activityLogs, setActivityLogs] = useState<
     readonly ActivityLogRecord[]
   >([]);
@@ -259,6 +302,12 @@ export default function ApprovalInstancePage(): ReactElement {
   const [taskDecisions, setTaskDecisions] = useState<
     readonly TaskDecisionRecord[]
   >([]);
+  const [attachments, setAttachments] = useState<readonly AttachmentRecord[]>(
+    [],
+  );
+  const [signatures, setSignatures] = useState<readonly SignatureRecord[]>([]);
+  const [signatureVerification, setSignatureVerification] =
+    useState<SignatureVerificationRecord | null>(null);
   const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
   const [workflowTokens, setWorkflowTokens] = useState<
     readonly WorkflowTokenRecord[]
@@ -292,13 +341,16 @@ export default function ApprovalInstancePage(): ReactElement {
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
+  const [previewAttachment, setPreviewAttachment] =
+    useState<AttachmentRecord | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const trimmedRejectReason = rejectReason.trim();
   const trimmedReturnComment = returnComment.trim();
   const trimmedTransferComment = transferComment.trim();
 
   useEffect((): void => {
     void refreshInstance();
-  }, [instanceId]);
+  }, [currentMemberId, instanceId]);
 
   useEffect((): void => {
     setResubmitFormData(instance?.formData ?? {});
@@ -308,10 +360,10 @@ export default function ApprovalInstancePage(): ReactElement {
     (): TaskRecord | null =>
       tasks.find(
         (task) =>
-          task.assigneeMemberId === CURRENT_MEMBER_ID &&
+          task.assigneeMemberId === currentMemberId &&
           (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
       ) ?? null,
-    [tasks],
+    [currentMemberId, tasks],
   );
   const currentTaskNode = useMemo(
     (): WorkflowNode | null =>
@@ -338,12 +390,12 @@ export default function ApprovalInstancePage(): ReactElement {
     null;
   const canCancelInstance = Boolean(
     instance &&
-    instance.initiatorMemberId === CURRENT_MEMBER_ID &&
+    instance.initiatorMemberId === currentMemberId &&
     (instance.state === 'RUNNING' || instance.state === 'RETURNED'),
   );
   const canResubmitInstance = Boolean(
     instance &&
-    instance.initiatorMemberId === CURRENT_MEMBER_ID &&
+    instance.initiatorMemberId === currentMemberId &&
     instance.state === 'RETURNED',
   );
   const taskRows = useMemo(
@@ -370,6 +422,11 @@ export default function ApprovalInstancePage(): ReactElement {
       readLatestTaskDecisionsByTaskId(taskDecisions),
     [taskDecisions],
   );
+  const signaturesById = useMemo(
+    (): ReadonlyMap<string, SignatureRecord> =>
+      new Map(signatures.map((signature) => [signature.id, signature])),
+    [signatures],
+  );
   const activitySteps = useMemo(
     (): ActivityStepRecord[] =>
       readActivityStepRecords(
@@ -380,11 +437,15 @@ export default function ApprovalInstancePage(): ReactElement {
         instance?.state ?? 'RUNNING',
         memberProfilesById,
         taskDecisionsByTaskId,
+        signaturesById,
+        signatureVerification,
       ),
     [
       activityLogs,
       instance,
       memberProfilesById,
+      signatureVerification,
+      signaturesById,
       taskDecisionsByTaskId,
       tasks,
       workflowTokens,
@@ -457,6 +518,108 @@ export default function ApprovalInstancePage(): ReactElement {
     ],
     [],
   );
+  const attachmentRows = useMemo(
+    (): AttachmentRow[] =>
+      attachments.map((attachment) => ({
+        attachment,
+        createdAt: attachment.createdAt,
+        filename: attachment.filename,
+        id: attachment.id,
+        key: attachment.id,
+        mimeType: attachment.mimeType,
+        sizeLabel: formatFileSize(Number(attachment.sizeBytes)),
+      })),
+    [attachments],
+  );
+  const attachmentColumns = useMemo(
+    (): TableColumn<AttachmentRow>[] => [
+      { dataIndex: 'filename', key: 'filename', title: '檔名', width: 260 },
+      { dataIndex: 'mimeType', key: 'mimeType', title: '類型', width: 180 },
+      { dataIndex: 'sizeLabel', key: 'sizeLabel', title: '大小', width: 120 },
+      {
+        key: 'createdAt',
+        render: (record: AttachmentRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {formatDateTime(record.createdAt)}
+          </Typography>
+        ),
+        title: '上傳時間',
+        width: 220,
+      },
+    ],
+    [],
+  );
+  const attachmentActions = useMemo(
+    (): TableActions<AttachmentRow> => ({
+      render: (record): ReturnType<TableActions<AttachmentRow>['render']> => [
+        ...(record.mimeType === 'application/pdf'
+          ? [
+              {
+                icon: FileSearchIcon,
+                iconType: 'leading' as const,
+                name: '預覽',
+                onClick: (): void => {
+                  void handlePreviewAttachment(record.attachment);
+                },
+              },
+            ]
+          : []),
+        {
+          icon: DownloadIcon,
+          iconType: 'leading',
+          name: '下載',
+          onClick: (): void => {
+            void handleDownloadAttachment(record.attachment);
+          },
+        },
+      ],
+      variant: 'base-secondary',
+      width: 160,
+    }),
+    [],
+  );
+  const signatureRows = useMemo(
+    (): SignatureRow[] =>
+      signatures.map((signature) => ({
+        algorithm: signature.algorithm,
+        hashLabel: readShortHash(signature.signedPayloadHash),
+        key: signature.id,
+        keyVersion: signature.keyVersion,
+        signedAtLabel: formatDateTime(signature.signedAt),
+        signerMemberId: signature.signerMemberId,
+      })),
+    [signatures],
+  );
+  const signatureColumns = useMemo(
+    (): TableColumn<SignatureRow>[] => [
+      {
+        dataIndex: 'signerMemberId',
+        key: 'signerMemberId',
+        title: '簽章者',
+        width: 160,
+      },
+      { dataIndex: 'algorithm', key: 'algorithm', title: '演算法', width: 150 },
+      {
+        dataIndex: 'keyVersion',
+        key: 'keyVersion',
+        title: 'Key 版本',
+        width: 100,
+      },
+      {
+        dataIndex: 'hashLabel',
+        key: 'hashLabel',
+        title: 'Payload Hash',
+        width: 180,
+      },
+      {
+        dataIndex: 'signedAtLabel',
+        key: 'signedAtLabel',
+        title: '簽章時間',
+        width: 220,
+      },
+    ],
+    [],
+  );
 
   async function refreshInstance(): Promise<void> {
     setLoading(true);
@@ -468,13 +631,75 @@ export default function ApprovalInstancePage(): ReactElement {
       setInstance(nextRecord.instance);
       setTasks(nextRecord.tasks);
       setWorkflowTokens(nextRecord.workflowTokens);
-      setTaskDecisions(await readTaskDecisionsForTasks(nextRecord.tasks));
-      setMemberProfiles(await readMemberProfilesForTimeline(nextRecord));
+      const [
+        nextTaskDecisions,
+        nextMemberProfiles,
+        nextAttachments,
+        nextSignatures,
+      ] = await Promise.all([
+        readTaskDecisionsForTasks(nextRecord.tasks),
+        readMemberProfilesForTimeline(nextRecord),
+        listAttachments(nextRecord.instance.id),
+        readInstanceSignatures(nextRecord.instance.id),
+      ]);
+      setTaskDecisions(nextTaskDecisions);
+      setMemberProfiles(nextMemberProfiles);
+      setAttachments(nextAttachments);
+      setSignatures(nextSignatures.signatures);
+      setSignatureVerification(nextSignatures.verification);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleUploadAttachment(
+    field: FormFieldDefinition,
+    file: File,
+  ): Promise<{ readonly id: string }> {
+    if (!currentMemberId) {
+      throw new Error('尚未登入，無法上傳附件');
+    }
+
+    const attachment = await uploadAttachment({
+      file,
+      formFieldPath: `form.${field.fieldKey}`,
+      uploaderMemberId: currentMemberId,
+    });
+
+    return { id: attachment.id };
+  }
+
+  async function handleDownloadAttachment(
+    attachment: AttachmentRecord,
+  ): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
+    const url = await readAttachmentDownloadUrl({
+      id: attachment.id,
+      requestedByMemberId: currentMemberId,
+    });
+
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function handlePreviewAttachment(
+    attachment: AttachmentRecord,
+  ): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
+    const url = await readAttachmentPreviewUrl({
+      id: attachment.id,
+      requestedByMemberId: currentMemberId,
+    });
+
+    setPreviewAttachment(attachment);
+    setPreviewUrl(url);
   }
 
   async function handleDecision({
@@ -488,7 +713,7 @@ export default function ApprovalInstancePage(): ReactElement {
     returnToNodeId?: string | null;
     transferToMemberId?: string | null;
   }>): Promise<void> {
-    if (!currentTask) {
+    if (!currentMemberId || !currentTask) {
       return;
     }
 
@@ -499,7 +724,7 @@ export default function ApprovalInstancePage(): ReactElement {
       await decideTask({
         action,
         comment,
-        decidedByMemberId: CURRENT_MEMBER_ID,
+        decidedByMemberId: currentMemberId,
         returnToNodeId,
         taskId: currentTask.id,
         transferToMemberId,
@@ -578,7 +803,7 @@ export default function ApprovalInstancePage(): ReactElement {
     try {
       setTransferMemberOptions(
         (await searchMembers(searchText))
-          .filter((member) => member.memberId !== CURRENT_MEMBER_ID)
+          .filter((member) => member.memberId !== currentMemberId)
           .map(readMemberOption),
       );
     } catch (requestError: unknown) {
@@ -622,7 +847,7 @@ export default function ApprovalInstancePage(): ReactElement {
   }
 
   async function handleCancelInstance(): Promise<void> {
-    if (!instance || !canCancelInstance) {
+    if (!currentMemberId || !instance || !canCancelInstance) {
       return;
     }
 
@@ -631,7 +856,7 @@ export default function ApprovalInstancePage(): ReactElement {
 
     try {
       await cancelApprovalInstance({
-        cancelledByMemberId: CURRENT_MEMBER_ID,
+        cancelledByMemberId: currentMemberId,
         comment: null,
         instanceId: instance.id,
       });
@@ -644,7 +869,7 @@ export default function ApprovalInstancePage(): ReactElement {
   }
 
   async function handleResubmitInstance(): Promise<void> {
-    if (!instance || !canResubmitInstance) {
+    if (!currentMemberId || !instance || !canResubmitInstance) {
       return;
     }
 
@@ -654,7 +879,7 @@ export default function ApprovalInstancePage(): ReactElement {
     try {
       await resubmitApprovalInstance({
         formData: resubmitFormData,
-        initiatorMemberId: CURRENT_MEMBER_ID,
+        initiatorMemberId: currentMemberId,
         instanceId: instance.id,
         title: instance.title,
       });
@@ -770,6 +995,9 @@ export default function ApprovalInstancePage(): ReactElement {
                 <>
                   <FormRenderer
                     onChange={setResubmitFormData}
+                    onUploadAttachment={
+                      canResubmitInstance ? handleUploadAttachment : undefined
+                    }
                     readonly={!canResubmitInstance}
                     schema={instance.formDefinitionSnapshot.schema}
                     uiSchema={instance.formDefinitionSnapshot.uiSchema}
@@ -800,10 +1028,57 @@ export default function ApprovalInstancePage(): ReactElement {
           </Section>
 
           <Section>
+            <div style={SECTION_BODY_STYLE}>
+              <Typography component="h2" variant="h3">
+                附件
+              </Typography>
+              {attachmentRows.length > 0 ? (
+                <Table
+                  actions={attachmentActions}
+                  columns={attachmentColumns}
+                  dataSource={attachmentRows}
+                  fullWidth
+                />
+              ) : (
+                <Typography color="text-neutral" variant="body">
+                  此案件沒有附件。
+                </Typography>
+              )}
+            </div>
+          </Section>
+
+          <Section>
             <Typography component="h2" variant="h3">
               任務
             </Typography>
             <Table columns={taskColumns} dataSource={taskRows} fullWidth />
+          </Section>
+
+          <Section>
+            <div style={SECTION_BODY_STYLE}>
+              <Typography component="h2" variant="h3">
+                簽章
+              </Typography>
+              <Typography
+                color={
+                  signatureVerification?.valid ? 'text-success' : 'text-error'
+                }
+                variant="body"
+              >
+                {signatureVerification
+                  ? signatureVerification.valid
+                    ? `簽章鏈已驗證，共 ${signatureVerification.checkedCount} 筆。`
+                    : `簽章鏈驗證失敗：${signatureVerification.errors.join('、')}`
+                  : '尚無簽章紀錄。'}
+              </Typography>
+              {signatureRows.length > 0 ? (
+                <Table
+                  columns={signatureColumns}
+                  dataSource={signatureRows}
+                  fullWidth
+                />
+              ) : null}
+            </div>
           </Section>
 
           <Section>
@@ -879,6 +1154,26 @@ export default function ApprovalInstancePage(): ReactElement {
             </div>
           </Modal>
         ) : null}
+        <Modal
+          modalType="standard"
+          onClose={(): void => {
+            setPreviewAttachment(null);
+            setPreviewUrl(null);
+          }}
+          open={Boolean(previewAttachment && previewUrl)}
+          showModalHeader
+          size="wide"
+          supportingText={previewAttachment?.filename ?? undefined}
+          title="PDF 預覽"
+        >
+          {previewUrl ? (
+            <iframe
+              src={previewUrl}
+              style={PREVIEW_FRAME_STYLE}
+              title={previewAttachment?.filename ?? 'PDF 預覽'}
+            />
+          ) : null}
+        </Modal>
         <Modal
           cancelText="取消"
           confirmButtonProps={{
@@ -1079,6 +1374,26 @@ function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '發生未知錯誤';
 }
 
+function formatFileSize(sizeBytes: number): string {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return '-';
+  }
+
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`;
+  }
+
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function readShortHash(hash: string): string {
+  return hash.length > 16 ? `${hash.slice(0, 12)}...` : hash;
+}
+
 function joinClassNames(
   ...classNames: readonly (string | null | undefined)[]
 ): string {
@@ -1268,6 +1583,8 @@ function readActivityStepRecords(
   instanceState: ApprovalInstanceRecord['state'],
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
   taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
+  signaturesById: ReadonlyMap<string, SignatureRecord>,
+  signatureVerification: SignatureVerificationRecord | null,
 ): ActivityStepRecord[] {
   const historySteps = activityLogs
     .filter(isUserMeaningfulActivity)
@@ -1292,6 +1609,8 @@ function readActivityStepRecords(
           payload,
           workflow,
           taskDecisionsByTaskId,
+          signaturesById,
+          signatureVerification,
         ),
       ].filter(isActivityDescriptionPart);
 
@@ -1797,6 +2116,8 @@ function readActivityDetailParts(
   payload: Readonly<Record<string, unknown>>,
   workflow: WorkflowDefinition | null,
   taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
+  signaturesById: ReadonlyMap<string, SignatureRecord>,
+  signatureVerification: SignatureVerificationRecord | null,
 ): readonly ActivityStepDescriptionPart[] {
   if (activityLog.eventType !== 'TASK_DECIDED') {
     return [
@@ -1817,6 +2138,11 @@ function readActivityDetailParts(
     readStringField(payload, 'transferToMemberId') ??
     taskDecision?.transferToMemberId ??
     null;
+  const signatureId =
+    readStringField(payload, 'signatureId') ??
+    taskDecision?.signatureId ??
+    null;
+  const signature = signatureId ? signaturesById.get(signatureId) : null;
   const decisionLabel = action
     ? `決議：${readTaskDecisionActionLabel(action)}`
     : null;
@@ -1834,6 +2160,13 @@ function readActivityDetailParts(
       : null,
     action === 'TRANSFERRED'
       ? readTextDescriptionPart(`轉派說明：${comment ?? '-'}`)
+      : null,
+    signature
+      ? readTextDescriptionPart(
+          signatureVerification?.valid
+            ? `簽章：已驗證（${readShortHash(signature.signedPayloadHash)}）`
+            : `簽章：待檢查（${readShortHash(signature.signedPayloadHash)}）`,
+        )
       : null,
   ].filter(isActivityDescriptionPart);
 }

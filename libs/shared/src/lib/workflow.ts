@@ -69,11 +69,25 @@ export type ApproverResolver =
   | { readonly positionId: string; readonly type: 'POSITION' }
   | {
       readonly baseFromInitiator: boolean;
+      readonly fallback?: ApproverResolverFallback;
       readonly levelsUp: number;
       readonly type: 'ORG_MANAGER';
     }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly orgUnitId: string;
+      readonly type: 'ORG_UNIT_MANAGER';
+    }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
   | { readonly expression: string; readonly type: 'EXPRESSION' };
+
+export type ApproverResolverFallback =
+  | { readonly type: 'NONE' }
+  | {
+      readonly allowInitiatorSelfApproval?: boolean;
+      readonly memberId: string;
+      readonly type: 'DIRECT';
+    };
 
 export type DecisionPolicy =
   | { readonly type: 'SINGLE' }

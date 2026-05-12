@@ -232,9 +232,7 @@ describe('FormRenderer', () => {
     const dateTimeInput = getByPlaceholderText('選擇日期 選擇時間');
 
     expect(dateInput.getAttribute('data-component')).toBe('DatePicker');
-    expect(dateTimeInput.getAttribute('data-component')).toBe(
-      'DateTimePicker',
-    );
+    expect(dateTimeInput.getAttribute('data-component')).toBe('DateTimePicker');
 
     fireEvent.change(dateInput, {
       target: { value: '2026-05-08' },
@@ -247,7 +245,9 @@ describe('FormRenderer', () => {
       expect.objectContaining({ startDate: '2026-05-08' }),
     );
     expect(handleChange).toHaveBeenCalledWith(
-      expect.objectContaining({ startAt: '2026-05-07T14:30' }),
+      expect.objectContaining({
+        startAt: new Date(2026, 4, 7, 14, 30).toISOString(),
+      }),
     );
   });
 });

@@ -122,7 +122,7 @@ type VersionRow = Readonly<
   Record<string, unknown> & {
     key: string;
     publishedAt: string;
-    status: string;
+    status: FormDefinitionVersionRecord['status'];
     updatedAt: string;
     version: string;
   }
@@ -568,7 +568,14 @@ export default function FormBuilderPage(): ReactElement {
   const versionColumns = useMemo(
     (): TableColumn<VersionRow>[] => [
       { dataIndex: 'version', key: 'version', title: '版本', width: 120 },
-      { dataIndex: 'status', key: 'status', title: '狀態', width: 140 },
+      {
+        key: 'status',
+        render: (record: VersionRow): ReactElement => (
+          <FormVersionStatusBadge status={record.status} />
+        ),
+        title: '狀態',
+        width: 140,
+      },
       {
         dataIndex: 'updatedAt',
         key: 'updatedAt',
@@ -2355,6 +2362,22 @@ function moveItemByIndex<TItem>(
     sourceItem,
     ...remainingItems.slice(destinationIndex),
   ];
+}
+
+function FormVersionStatusBadge({
+  status,
+}: {
+  readonly status: FormDefinitionVersionRecord['status'];
+}): ReactElement {
+  if (status === 'PUBLISHED') {
+    return <Badge size="sub" text="已發布" variant="dot-success" />;
+  }
+
+  if (status === 'ARCHIVED') {
+    return <Badge size="sub" text="已封存" variant="dot-inactive" />;
+  }
+
+  return <Badge size="sub" text="草稿" variant="dot-warning" />;
 }
 
 function readErrorMessage(error: unknown): string {

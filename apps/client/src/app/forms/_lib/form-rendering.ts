@@ -222,11 +222,7 @@ export function formatDateTimePickerValue(
 ): string | undefined {
   const date = value ? parseDatePickerValue(value) : null;
 
-  return date
-    ? `${formatDateParts(date)}T${padDatePart(date.getHours())}:${padDatePart(
-        date.getMinutes(),
-      )}`
-    : undefined;
+  return date ? date.toISOString() : undefined;
 }
 
 export function isNumberFieldDefinition(

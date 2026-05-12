@@ -1,8 +1,6 @@
 import { FormDefinitionSchema } from '@bpm/shared/form';
 import { WorkflowDefinition } from '@bpm/shared/workflow';
-
-const GRAPHQL_ENDPOINT =
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:17601/graphql';
+import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface ApprovalTemplateRecord {
   readonly category: string | null;
@@ -12,6 +10,8 @@ export interface ApprovalTemplateRecord {
   readonly name: string;
   readonly updatedAt: string;
 }
+
+export type ApprovalTemplateListStatus = 'DRAFT' | 'PUBLISHED';
 
 export interface ApprovalTemplateVersionRecord {
   readonly archivedAt: string | null;
@@ -89,17 +89,17 @@ export interface TemplateDesignerRecord {
   readonly versions: readonly ApprovalTemplateVersionRecord[];
 }
 
-interface GraphQlError {
-  readonly message: string;
-}
-
-interface GraphQlResponse<TData> {
-  readonly data?: TData;
-  readonly errors?: readonly GraphQlError[];
+export interface ApprovalTemplatesPage {
+  readonly templates: readonly ApprovalTemplateRecord[];
+  readonly totalCount: number;
 }
 
 interface ApprovalTemplatesQueryData {
   readonly approvalTemplates: readonly ApprovalTemplateRecord[];
+}
+
+interface ApprovalTemplatesPageQueryData extends ApprovalTemplatesQueryData {
+  readonly approvalTemplateCount: number;
 }
 
 interface CreateApprovalTemplateMutationData {
@@ -168,6 +168,48 @@ export async function listApprovalTemplates(): Promise<
   );
 
   return data.approvalTemplates;
+}
+
+export async function listApprovalTemplatesPage({
+  page,
+  pageSize,
+  searchText,
+  status,
+}: {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly searchText?: string;
+  readonly status?: ApprovalTemplateListStatus | null;
+}): Promise<ApprovalTemplatesPage> {
+  const data = await requestGraphQl<ApprovalTemplatesPageQueryData>(
+    `query ApprovalTemplatesPage(
+      $page: Int
+      $pageSize: Int
+      $searchText: String
+      $status: ApprovalTemplateListStatus
+    ) {
+      approvalTemplates(
+        page: $page
+        pageSize: $pageSize
+        searchText: $searchText
+        status: $status
+      ) {
+        category
+        currentVersionId
+        description
+        id
+        name
+        updatedAt
+      }
+      approvalTemplateCount(searchText: $searchText, status: $status)
+    }`,
+    { page, pageSize, searchText, status: status ?? null },
+  );
+
+  return {
+    templates: data.approvalTemplates,
+    totalCount: data.approvalTemplateCount,
+  };
 }
 
 export async function createApprovalTemplate(name: string): Promise<string> {
@@ -516,33 +558,6 @@ async function readFormDefinitionVersions(
     ...version,
     schema: parseFormDefinitionSchema(version.schemaJson),
   }));
-}
-
-async function requestGraphQl<TData>(
-  query: string,
-  variables?: Readonly<Record<string, unknown>>,
-): Promise<TData> {
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    body: JSON.stringify({ query, variables }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(`GraphQL request failed with HTTP ${response.status}`);
-  }
-
-  const payload = (await response.json()) as GraphQlResponse<TData>;
-
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join('; '));
-  }
-
-  if (!payload.data) {
-    throw new Error('GraphQL response did not include data');
-  }
-
-  return payload.data;
 }
 
 function parseVersionJson(

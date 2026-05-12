@@ -17,10 +17,10 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../_lib/date-time';
+import { useAuth } from '../auth-provider';
 import { renderAppNavigation } from '../app-navigation';
 import {
   ApprovalInstanceRecord,
-  CURRENT_MEMBER_ID,
   listApprovalHistoryTasks,
   listInboxTasks,
   listTaskDecisions,
@@ -30,7 +30,7 @@ import {
   TaskRecord,
 } from '../instances/_lib/workflow-api';
 
-type InboxTabKey = 'history' | 'pending';
+type InboxTabKey = 'history' | 'pending' | 'tracking';
 
 type InboxTaskRow = Readonly<
   Record<string, unknown> &
@@ -52,12 +52,16 @@ type ApprovalHistoryRow = Readonly<
       decisionCommentText: string;
       decisionLabel: string;
       decidedAt: string | null;
+      instanceState: ApprovalInstanceRecord['state'] | null;
+      instanceStateLabel: string;
       key: string;
     }
 >;
 
 export default function InboxPage(): ReactElement {
   const router = useRouter();
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const [activeTab, setActiveTab] = useState<InboxTabKey>('pending');
   const [error, setError] = useState<string | null>(null);
   const [historyRows, setHistoryRows] = useState<ApprovalHistoryRow[]>([]);
@@ -65,14 +69,23 @@ export default function InboxPage(): ReactElement {
   const [pendingRows, setPendingRows] = useState<InboxTaskRow[]>([]);
 
   useEffect((): void => {
+    if (!currentMemberId) {
+      return;
+    }
+
     void refreshTasks();
-  }, []);
+  }, [currentMemberId]);
 
   const pendingColumns = useMemo(
     (): TableColumn<InboxTaskRow>[] => [
       { dataIndex: 'caseTitle', key: 'caseTitle', title: '案件', width: 280 },
       { dataIndex: 'nodeId', key: 'nodeId', title: '節點', width: 180 },
-      { dataIndex: 'statusLabel', key: 'statusLabel', title: '狀態', width: 120 },
+      {
+        dataIndex: 'statusLabel',
+        key: 'statusLabel',
+        title: '狀態',
+        width: 120,
+      },
       {
         key: 'slaDueAt',
         render: (record: InboxTaskRow): ReactElement => (
@@ -142,6 +155,20 @@ export default function InboxPage(): ReactElement {
         width: 240,
       },
       {
+        key: 'instanceStateLabel',
+        render: (record: ApprovalHistoryRow): ReactElement => (
+          <Typography
+            color={readInstanceStateColor(record.instanceState)}
+            component="span"
+            variant="body"
+          >
+            {record.instanceStateLabel}
+          </Typography>
+        ),
+        title: '流程狀態',
+        width: 140,
+      },
+      {
         key: 'decidedAt',
         render: (record: ApprovalHistoryRow): ReactElement => (
           <Typography component="span" variant="body">
@@ -169,9 +196,23 @@ export default function InboxPage(): ReactElement {
     }),
     [router],
   );
+  const trackingRows = useMemo(
+    (): ApprovalHistoryRow[] =>
+      historyRows.filter((row) => row.instanceState === 'RUNNING'),
+    [historyRows],
+  );
 
   function handleTabChange(activeKey: Key): void {
-    setActiveTab(activeKey === 'history' ? 'history' : 'pending');
+    if (
+      activeKey === 'history' ||
+      activeKey === 'pending' ||
+      activeKey === 'tracking'
+    ) {
+      setActiveTab(activeKey);
+      return;
+    }
+
+    setActiveTab('pending');
   }
 
   async function refreshTasks(): Promise<void> {
@@ -179,9 +220,15 @@ export default function InboxPage(): ReactElement {
     setError(null);
 
     try {
+      if (!currentMemberId) {
+        setPendingRows([]);
+        setHistoryRows([]);
+        return;
+      }
+
       const [nextPendingTasks, nextHistoryTasks] = await Promise.all([
-        listInboxTasks(CURRENT_MEMBER_ID),
-        listApprovalHistoryTasks(CURRENT_MEMBER_ID),
+        listInboxTasks(currentMemberId),
+        listApprovalHistoryTasks(currentMemberId),
       ]);
       const [nextPendingRows, nextHistoryRows] = await Promise.all([
         readInboxTaskRows(nextPendingTasks),
@@ -204,7 +251,7 @@ export default function InboxPage(): ReactElement {
       <Layout.Main>
         <PageHeader>
           <ContentHeader
-            description={`目前以開發用會員 ${CURRENT_MEMBER_ID} 查詢待處理與歷史簽核任務。`}
+            description={`目前以 ${member?.name ?? currentMemberId ?? '目前登入會員'} 查詢待處理與歷史簽核任務。`}
             title="我的待簽"
           >
             <Button
@@ -226,7 +273,18 @@ export default function InboxPage(): ReactElement {
               </Typography>
             ) : null}
             <Tab activeKey={activeTab} onChange={handleTabChange} size="sub">
-              <TabItem key="pending">待簽核</TabItem>
+              <TabItem
+                badgeCount={loading ? undefined : pendingRows.length}
+                key="pending"
+              >
+                待簽核
+              </TabItem>
+              <TabItem
+                badgeCount={loading ? undefined : trackingRows.length}
+                key="tracking"
+              >
+                已處理未結束
+              </TabItem>
               <TabItem key="history">歷史簽核記錄</TabItem>
             </Tab>
 
@@ -235,6 +293,15 @@ export default function InboxPage(): ReactElement {
                 actions={pendingTableActions}
                 columns={pendingColumns}
                 dataSource={pendingRows}
+                fullWidth
+                loading={loading}
+              />
+            ) : null}
+            {activeTab === 'tracking' ? (
+              <Table
+                actions={historyTableActions}
+                columns={historyColumns}
+                dataSource={trackingRows}
                 fullWidth
                 loading={loading}
               />
@@ -260,14 +327,16 @@ async function readInboxTaskRows(
 ): Promise<InboxTaskRow[]> {
   const instances = await readTaskInstances(tasks);
 
-  return tasks.map((task, index): InboxTaskRow => ({
-    ...task,
-    caseTitle: readTaskCaseTitle(task, instances[index] ?? null),
-    key: task.id,
-    slaStatusColor: readSlaStatusColor(task.slaDueAt),
-    slaStatusText: readSlaStatusText(task.slaDueAt),
-    statusLabel: readTaskStatusLabel(task.status),
-  }));
+  return tasks.map(
+    (task, index): InboxTaskRow => ({
+      ...task,
+      caseTitle: readTaskCaseTitle(task, instances[index] ?? null),
+      key: task.id,
+      slaStatusColor: readSlaStatusColor(task.slaDueAt),
+      slaStatusText: readSlaStatusText(task.slaDueAt),
+      statusLabel: readTaskStatusLabel(task.status),
+    }),
+  );
 }
 
 async function readApprovalHistoryRows(
@@ -280,15 +349,18 @@ async function readApprovalHistoryRows(
 
   return tasks.map((task, index): ApprovalHistoryRow => {
     const decision = readLatestTaskDecision(decisionLists[index] ?? []);
+    const instance = instances[index] ?? null;
 
     return {
       ...task,
-      caseTitle: readTaskCaseTitle(task, instances[index] ?? null),
+      caseTitle: readTaskCaseTitle(task, instance),
       decisionAction: decision?.action ?? null,
       decisionComment: decision?.comment ?? null,
       decisionCommentText: readDecisionCommentText(decision?.comment ?? null),
       decisionLabel: readTaskDecisionLabel(decision?.action ?? null),
       decidedAt: decision?.decidedAt ?? task.completedAt,
+      instanceState: instance?.state ?? null,
+      instanceStateLabel: readInstanceStateLabel(instance?.state ?? null),
       key: task.id,
     };
   });
@@ -366,6 +438,54 @@ function readTaskDecisionColor(
   return 'text-neutral';
 }
 
+function readInstanceStateLabel(
+  state: ApprovalInstanceRecord['state'] | null,
+): string {
+  if (state === 'RUNNING') {
+    return '進行中';
+  }
+
+  if (state === 'APPROVED') {
+    return '已通過';
+  }
+
+  if (state === 'REJECTED') {
+    return '已拒絕';
+  }
+
+  if (state === 'RETURNED') {
+    return '已退回';
+  }
+
+  if (state === 'CANCELLED') {
+    return '已取消';
+  }
+
+  if (state === 'EXPIRED') {
+    return '已逾期';
+  }
+
+  if (state === 'DRAFT') {
+    return '草稿';
+  }
+
+  return '-';
+}
+
+function readInstanceStateColor(
+  state: ApprovalInstanceRecord['state'] | null,
+): 'text-error' | 'text-neutral' | 'text-success' {
+  if (state === 'APPROVED') {
+    return 'text-success';
+  }
+
+  if (state === 'REJECTED' || state === 'CANCELLED' || state === 'EXPIRED') {
+    return 'text-error';
+  }
+
+  return 'text-neutral';
+}
+
 function readDecisionCommentText(comment: string | null): string {
   const trimmedComment = comment?.trim() ?? '';
 
@@ -396,9 +516,7 @@ function readSlaStatusColor(
     return 'text-neutral';
   }
 
-  return new Date(value).getTime() < Date.now()
-    ? 'text-error'
-    : 'text-success';
+  return new Date(value).getTime() < Date.now() ? 'text-error' : 'text-success';
 }
 
 function formatDuration(value: number): string {

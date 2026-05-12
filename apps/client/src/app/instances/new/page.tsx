@@ -21,12 +21,13 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { CheckedIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { FormFieldDefinition } from '@bpm/shared/form';
 import { formatDateTime } from '../../_lib/date-time';
+import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import { FormRenderer } from '../../forms/_components/form-renderer';
 import { FormRendererValues } from '../../forms/_lib/form-rendering';
 import {
-  CURRENT_MEMBER_ID,
   LaunchContext,
   LaunchableTemplateRecord,
   listLaunchableTemplates,
@@ -34,6 +35,7 @@ import {
   readFormDataCaseTitle,
   readLaunchContext,
   submitApprovalInstance,
+  uploadAttachment,
 } from '../_lib/workflow-api';
 
 const FORM_SECTION_STYLE: CSSProperties = {
@@ -60,6 +62,8 @@ export default function NewApprovalInstancePage(): ReactElement {
 function NewApprovalInstanceContent(): ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const templateId = searchParams.get('templateId');
   const [context, setContext] = useState<LaunchContext | null>(null);
   const [formValues, setFormValues] = useState<FormRendererValues>({});
@@ -155,7 +159,7 @@ function NewApprovalInstanceContent(): ReactElement {
   }
 
   async function handleSubmit(): Promise<void> {
-    if (!context) {
+    if (!context || !currentMemberId) {
       return;
     }
 
@@ -165,7 +169,7 @@ function NewApprovalInstanceContent(): ReactElement {
     try {
       const instanceId = await submitApprovalInstance({
         formData: formValues,
-        initiatorMemberId: CURRENT_MEMBER_ID,
+        initiatorMemberId: currentMemberId,
         templateId: context.template.id,
         title: readFormDataCaseTitle({
           fallbackTitle: context.template.name,
@@ -182,6 +186,23 @@ function NewApprovalInstanceContent(): ReactElement {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleUploadAttachment(
+    field: FormFieldDefinition,
+    file: File,
+  ): Promise<{ readonly id: string }> {
+    if (!currentMemberId) {
+      throw new Error('尚未登入，無法上傳附件');
+    }
+
+    const attachment = await uploadAttachment({
+      file,
+      formFieldPath: `form.${field.fieldKey}`,
+      uploaderMemberId: currentMemberId,
+    });
+
+    return { id: attachment.id };
   }
 
   return (
@@ -231,6 +252,7 @@ function NewApprovalInstanceContent(): ReactElement {
                 <FormRenderer
                   maxWidth={480}
                   onChange={setFormValues}
+                  onUploadAttachment={handleUploadAttachment}
                   schema={context.formVersion.schema}
                   singleColumn
                   uiSchema={context.formVersion.uiSchema}

@@ -3,9 +3,7 @@ import {
   FormFieldDefinition,
   FormUiSchema,
 } from '@bpm/shared/form';
-
-const GRAPHQL_ENDPOINT =
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:17601/graphql';
+import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface FormDefinitionRecord {
   readonly currentVersionId: string | null;
@@ -14,6 +12,8 @@ export interface FormDefinitionRecord {
   readonly name: string;
   readonly updatedAt: string;
 }
+
+export type FormDefinitionListStatus = 'DRAFT' | 'PUBLISHED';
 
 export interface FormDefinitionVersionRecord {
   readonly id: string;
@@ -37,17 +37,12 @@ export interface FormSchemaLintResult {
   readonly valid: boolean;
 }
 
-interface GraphQlError {
-  readonly message: string;
-}
-
-interface GraphQlResponse<TData> {
-  readonly data?: TData;
-  readonly errors?: readonly GraphQlError[];
-}
-
 interface FormDefinitionsQueryData {
   readonly formDefinitions: readonly FormDefinitionRecord[];
+}
+
+interface FormDefinitionsPageQueryData extends FormDefinitionsQueryData {
+  readonly formDefinitionCount: number;
 }
 
 interface CreateFormDefinitionMutationData {
@@ -63,8 +58,10 @@ interface FormBuilderQueryData {
   readonly formDefinitionVersions: readonly VersionJsonRecord[];
 }
 
-interface VersionJsonRecord
-  extends Omit<FormDefinitionVersionRecord, 'schema' | 'uiSchema'> {
+interface VersionJsonRecord extends Omit<
+  FormDefinitionVersionRecord,
+  'schema' | 'uiSchema'
+> {
   readonly schemaJson: string;
   readonly uiSchemaJson: string;
 }
@@ -101,6 +98,42 @@ export async function listFormDefinitions(): Promise<
   );
 
   return data.formDefinitions;
+}
+
+export async function listFormDefinitionsPage({
+  page,
+  pageSize,
+  status,
+}: {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly status?: FormDefinitionListStatus | null;
+}): Promise<{
+  readonly forms: readonly FormDefinitionRecord[];
+  readonly totalCount: number;
+}> {
+  const data = await requestGraphQl<FormDefinitionsPageQueryData>(
+    `query FormDefinitionsPage(
+      $page: Int!
+      $pageSize: Int!
+      $status: FormDefinitionListStatus
+    ) {
+      formDefinitions(page: $page, pageSize: $pageSize, status: $status) {
+        currentVersionId
+        description
+        id
+        name
+        updatedAt
+      }
+      formDefinitionCount(status: $status)
+    }`,
+    { page, pageSize, status: status ?? null },
+  );
+
+  return {
+    forms: data.formDefinitions,
+    totalCount: data.formDefinitionCount,
+  };
 }
 
 export async function createFormDefinition(name: string): Promise<string> {
@@ -306,33 +339,6 @@ export function createFieldDefinition(
   }
 
   return base as FormFieldDefinition;
-}
-
-async function requestGraphQl<TData>(
-  query: string,
-  variables?: Readonly<Record<string, unknown>>,
-): Promise<TData> {
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    body: JSON.stringify({ query, variables }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    throw new Error(`GraphQL request failed with HTTP ${response.status}`);
-  }
-
-  const payload = (await response.json()) as GraphQlResponse<TData>;
-
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join('; '));
-  }
-
-  if (!payload.data) {
-    throw new Error('GraphQL response did not include data');
-  }
-
-  return payload.data;
 }
 
 function parseVersionJson(

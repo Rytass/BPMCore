@@ -11,6 +11,9 @@ import {
 import { useRouter } from 'next/navigation';
 import {
   Button,
+  Filter,
+  FilterArea,
+  FilterLine,
   FormField,
   Layout,
   PageHeader,
@@ -22,8 +25,8 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
-import { NotificationIcon } from '@mezzanine-ui/icons';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import { RefreshCwIcon } from '@mezzanine-ui/icons';
+import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../_lib/date-time';
 import { renderAppNavigation } from '../app-navigation';
@@ -37,6 +40,7 @@ import {
   readNotificationPreference,
   updateNotificationPreference,
 } from '../instances/_lib/workflow-api';
+import styles from './notifications.module.scss';
 
 type NotificationRow = Readonly<
   Record<string, unknown> &
@@ -66,6 +70,8 @@ const DEFAULT_PREFERENCE: NotificationPreferenceRecord = {
   quietHoursStart: null,
   updatedAt: '',
 };
+const DEFAULT_NOTIFICATION_PAGE_SIZE = 10;
+const NOTIFICATION_PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 export default function NotificationsPage(): ReactElement {
   const router = useRouter();
@@ -74,11 +80,16 @@ export default function NotificationsPage(): ReactElement {
   const [preference, setPreference] =
     useState<NotificationPreferenceRecord>(DEFAULT_PREFERENCE);
   const [rows, setRows] = useState<NotificationRow[]>([]);
+  const [notificationPage, setNotificationPage] = useState(1);
+  const [notificationPageSize, setNotificationPageSize] = useState(
+    DEFAULT_NOTIFICATION_PAGE_SIZE,
+  );
+  const [notificationTotalCount, setNotificationTotalCount] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect((): void => {
     void refreshNotifications();
-  }, []);
+  }, [notificationPage, notificationPageSize]);
 
   const columns = useMemo(
     (): TableColumn<NotificationRow>[] => [
@@ -134,7 +145,10 @@ export default function NotificationsPage(): ReactElement {
           ? [
               {
                 name: '查看案件',
-                onClick: (): void => router.push(`/instances/${record.instanceId}`),
+                onClick: (): void => {
+                  void handleOpenInstance(record);
+                },
+                variant: 'base-primary' as const,
               },
             ]
           : []),
@@ -145,6 +159,7 @@ export default function NotificationsPage(): ReactElement {
                 onClick: (): void => {
                   void handleMarkRead(record.id);
                 },
+                variant: 'base-secondary' as const,
               },
             ]
           : []),
@@ -170,12 +185,15 @@ export default function NotificationsPage(): ReactElement {
       const [notificationResult, nextPreference] = await Promise.all([
         listNotifications({
           includeRead: true,
+          page: notificationPage,
+          pageSize: notificationPageSize,
           recipientMemberId: CURRENT_MEMBER_ID,
         }),
         readNotificationPreference(CURRENT_MEMBER_ID),
       ]);
 
       setRows(notificationResult.notifications.map(readNotificationRow));
+      setNotificationTotalCount(notificationResult.totalCount);
       setUnreadCount(notificationResult.unreadCount);
       setPreference(nextPreference);
     } catch (requestError: unknown) {
@@ -191,6 +209,27 @@ export default function NotificationsPage(): ReactElement {
       readerMemberId: CURRENT_MEMBER_ID,
     });
     await refreshNotifications();
+  }
+
+  async function handleOpenInstance(record: NotificationRow): Promise<void> {
+    if (!record.instanceId) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      if (record.status !== 'READ') {
+        await markNotificationRead({
+          id: record.id,
+          readerMemberId: CURRENT_MEMBER_ID,
+        });
+      }
+
+      router.push(`/instances/${record.instanceId}`);
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    }
   }
 
   async function handlePreferenceChange(
@@ -220,7 +259,7 @@ export default function NotificationsPage(): ReactElement {
             title="通知中心"
           >
             <Button
-              icon={NotificationIcon}
+              icon={RefreshCwIcon}
               iconType="leading"
               onClick={(): void => {
                 void refreshNotifications();
@@ -233,7 +272,83 @@ export default function NotificationsPage(): ReactElement {
         </PageHeader>
 
         <SectionGroup>
-          <Section>
+          <Section
+            filterArea={
+              <FilterArea
+                className={styles.preferenceFilter}
+                isDirty={false}
+              >
+                <FilterLine>
+                  <Filter minWidth={160} span={1}>
+                    <FormField
+                      label="站內通知"
+                      layout={FormFieldLayout.VERTICAL}
+                      name="inAppEnabled"
+                      style={FILTER_FIELD_STYLE}
+                    >
+                      <Toggle
+                        checked={preference.inAppEnabled}
+                        label="啟用"
+                        onChange={(
+                          event: ChangeEvent<HTMLInputElement>,
+                        ): void => {
+                          void handlePreferenceChange({
+                            ...preference,
+                            inAppEnabled: event.target.checked,
+                          });
+                        }}
+                        style={NO_WRAP_STYLE}
+                      />
+                    </FormField>
+                  </Filter>
+                  <Filter minWidth={180} span={1}>
+                    <FormField
+                      label="Email 通知"
+                      layout={FormFieldLayout.VERTICAL}
+                      name="emailEnabled"
+                      style={FILTER_FIELD_STYLE}
+                    >
+                      <Toggle
+                        checked={preference.emailEnabled}
+                        label="啟用"
+                        onChange={(
+                          event: ChangeEvent<HTMLInputElement>,
+                        ): void => {
+                          void handlePreferenceChange({
+                            ...preference,
+                            emailEnabled: event.target.checked,
+                          });
+                        }}
+                        style={NO_WRAP_STYLE}
+                      />
+                    </FormField>
+                  </Filter>
+                  <Filter minWidth={280} span={2}>
+                    <FormField
+                      fullWidth
+                      label="Email 頻率"
+                      layout={FormFieldLayout.VERTICAL}
+                      name="emailDigestMode"
+                      style={FILTER_FIELD_STYLE}
+                    >
+                      <Select
+                        clearable={false}
+                        fullWidth
+                        onChange={(option): void => {
+                          void handlePreferenceChange({
+                            ...preference,
+                            emailDigestMode: readDigestMode(option?.id),
+                          });
+                        }}
+                        options={[...DIGEST_OPTIONS]}
+                        value={selectedDigestOption}
+                      />
+                    </FormField>
+                  </Filter>
+                </FilterLine>
+              </FilterArea>
+            }
+          >
             {error ? (
               <Typography color="text-error" variant="body">
                 {error}
@@ -245,55 +360,24 @@ export default function NotificationsPage(): ReactElement {
               dataSource={rows}
               fullWidth
               loading={loading}
+              pagination={{
+                current: notificationPage,
+                onChange: (page): void => {
+                  setNotificationPage(page);
+                },
+                onChangePageSize: (pageSize): void => {
+                  setNotificationPage(1);
+                  setNotificationPageSize(pageSize);
+                },
+                pageSize: notificationPageSize,
+                pageSizeLabel: '每頁筆數',
+                pageSizeOptions: NOTIFICATION_PAGE_SIZE_OPTIONS,
+                renderResultSummary: (from, to, total): string =>
+                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+                showPageSizeOptions: true,
+                total: notificationTotalCount,
+              }}
             />
-          </Section>
-
-          <Section>
-            <Typography component="h2" variant="h3">
-              通知偏好設定
-            </Typography>
-            <div style={PREFERENCE_GRID_STYLE}>
-              <Toggle
-                checked={preference.inAppEnabled}
-                label="站內通知"
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  void handlePreferenceChange({
-                    ...preference,
-                    inAppEnabled: event.target.checked,
-                  });
-                }}
-              />
-              <Toggle
-                checked={preference.emailEnabled}
-                label="Email 通知"
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  void handlePreferenceChange({
-                    ...preference,
-                    emailEnabled: event.target.checked,
-                  });
-                }}
-              />
-              <FormField
-                density={FormFieldDensity.WIDE}
-                fullWidth
-                label="Email 頻率"
-                layout={FormFieldLayout.STRETCH}
-                name="emailDigestMode"
-              >
-                <Select
-                  clearable={false}
-                  fullWidth
-                  onChange={(option): void => {
-                    void handlePreferenceChange({
-                      ...preference,
-                      emailDigestMode: readDigestMode(option?.id),
-                    });
-                  }}
-                  options={[...DIGEST_OPTIONS]}
-                  value={selectedDigestOption}
-                />
-              </FormField>
-            </div>
           </Section>
         </SectionGroup>
       </Layout.Main>
@@ -301,11 +385,13 @@ export default function NotificationsPage(): ReactElement {
   );
 }
 
-const PREFERENCE_GRID_STYLE = {
-  display: 'grid',
-  gap: 16,
-  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-  maxWidth: 720,
+const NO_WRAP_STYLE = {
+  whiteSpace: 'nowrap',
+} satisfies CSSProperties;
+
+const FILTER_FIELD_STYLE = {
+  minWidth: 0,
+  whiteSpace: 'nowrap',
 } satisfies CSSProperties;
 
 function readNotificationRow(
