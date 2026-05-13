@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConditionModule } from '../condition/condition.module';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
+import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import { TemplateMutations } from './template.mutations';
@@ -12,6 +13,7 @@ import { TemplateService } from './template.service';
   imports: [
     ConditionModule,
     TypeOrmModule.forFeature([
+      ApprovalTemplateCategoryEntity,
       ApprovalTemplateEntity,
       ApprovalTemplateVersionEntity,
       FormDefinitionVersionEntity,

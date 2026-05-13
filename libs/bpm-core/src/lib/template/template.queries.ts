@@ -1,7 +1,11 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
-import { ApprovalTemplateListStatusEnum } from './template.enums';
+import {
+  ApprovalTemplateCategoryStatusEnum,
+  ApprovalTemplateListStatusEnum,
+} from './template.enums';
 import { TemplateService } from './template.service';
 
 @Resolver()
@@ -16,6 +20,8 @@ export class TemplateQueries {
     pageSize?: number | null,
     @Args('searchText', { nullable: true, type: () => String })
     searchText?: string | null,
+    @Args('categoryId', { nullable: true, type: () => String })
+    categoryId?: string | null,
     @Args('status', {
       nullable: true,
       type: () => ApprovalTemplateListStatusEnum,
@@ -25,6 +31,7 @@ export class TemplateQueries {
     return this.templateService.listApprovalTemplates({
       page: page ?? undefined,
       pageSize: pageSize ?? undefined,
+      categoryId: categoryId ?? undefined,
       searchText: searchText ?? undefined,
       status: status ?? undefined,
     });
@@ -34,6 +41,8 @@ export class TemplateQueries {
   async approvalTemplateCount(
     @Args('searchText', { nullable: true, type: () => String })
     searchText?: string | null,
+    @Args('categoryId', { nullable: true, type: () => String })
+    categoryId?: string | null,
     @Args('status', {
       nullable: true,
       type: () => ApprovalTemplateListStatusEnum,
@@ -41,6 +50,45 @@ export class TemplateQueries {
     status?: ApprovalTemplateListStatusEnum | null,
   ): Promise<number> {
     return this.templateService.countApprovalTemplates({
+      categoryId: categoryId ?? undefined,
+      searchText: searchText ?? undefined,
+      status: status ?? undefined,
+    });
+  }
+
+  @Query(() => [ApprovalTemplateCategoryEntity])
+  async approvalTemplateCategories(
+    @Args('page', { nullable: true, type: () => Int })
+    page?: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize?: number | null,
+    @Args('searchText', { nullable: true, type: () => String })
+    searchText?: string | null,
+    @Args('status', {
+      nullable: true,
+      type: () => ApprovalTemplateCategoryStatusEnum,
+    })
+    status?: ApprovalTemplateCategoryStatusEnum | null,
+  ): Promise<readonly ApprovalTemplateCategoryEntity[]> {
+    return this.templateService.listApprovalTemplateCategories({
+      page: page ?? undefined,
+      pageSize: pageSize ?? undefined,
+      searchText: searchText ?? undefined,
+      status: status ?? undefined,
+    });
+  }
+
+  @Query(() => Int)
+  async approvalTemplateCategoryCount(
+    @Args('searchText', { nullable: true, type: () => String })
+    searchText?: string | null,
+    @Args('status', {
+      nullable: true,
+      type: () => ApprovalTemplateCategoryStatusEnum,
+    })
+    status?: ApprovalTemplateCategoryStatusEnum | null,
+  ): Promise<number> {
+    return this.templateService.countApprovalTemplateCategories({
       searchText: searchText ?? undefined,
       status: status ?? undefined,
     });

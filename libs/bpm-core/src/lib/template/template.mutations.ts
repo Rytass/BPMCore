@@ -1,8 +1,11 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import {
+  CreateApprovalTemplateCategoryInput,
   CreateApprovalTemplateInput,
+  UpdateApprovalTemplateCategoryInput,
   UpdateApprovalTemplateDraftInput,
   UpdateApprovalTemplateInput,
 } from './dto/approval-template.input';
@@ -24,6 +27,41 @@ export class TemplateMutations {
     @Args('input') input: UpdateApprovalTemplateInput,
   ): Promise<ApprovalTemplateEntity> {
     return this.templateService.updateApprovalTemplate(input);
+  }
+
+  @Mutation(() => ApprovalTemplateCategoryEntity)
+  async createApprovalTemplateCategory(
+    @Args('input') input: CreateApprovalTemplateCategoryInput,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateService.createApprovalTemplateCategory(input);
+  }
+
+  @Mutation(() => ApprovalTemplateCategoryEntity)
+  async updateApprovalTemplateCategory(
+    @Args('input') input: UpdateApprovalTemplateCategoryInput,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateService.updateApprovalTemplateCategory(input);
+  }
+
+  @Mutation(() => ApprovalTemplateCategoryEntity)
+  async activateApprovalTemplateCategory(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateService.activateApprovalTemplateCategory(id);
+  }
+
+  @Mutation(() => ApprovalTemplateCategoryEntity)
+  async deactivateApprovalTemplateCategory(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateService.deactivateApprovalTemplateCategory(id);
+  }
+
+  @Mutation(() => ApprovalTemplateCategoryEntity)
+  async deleteApprovalTemplateCategory(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateService.deleteApprovalTemplateCategory(id);
   }
 
   @Mutation(() => ApprovalTemplateVersionEntity)

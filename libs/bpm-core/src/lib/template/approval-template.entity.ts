@@ -4,9 +4,12 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 
 @Entity('approval_templates')
 @ObjectType('ApprovalTemplate')
@@ -26,6 +29,18 @@ export class ApprovalTemplateEntity {
   @Column('text', { nullable: true })
   @Field(() => String, { nullable: true })
   category!: string | null;
+
+  @Column('uuid', { name: 'category_id', nullable: true })
+  @Field(() => ID, { nullable: true })
+  categoryId?: string | null;
+
+  @ManyToOne(() => ApprovalTemplateCategoryEntity, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'category_id' })
+  @Field(() => ApprovalTemplateCategoryEntity, { nullable: true })
+  categoryDetail?: ApprovalTemplateCategoryEntity | null;
 
   @Column('uuid', { name: 'current_version_id', nullable: true })
   @Field(() => ID, { nullable: true })

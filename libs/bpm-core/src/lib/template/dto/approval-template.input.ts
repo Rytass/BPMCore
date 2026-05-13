@@ -1,5 +1,11 @@
-import { Field, ID, InputType } from '@nestjs/graphql';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { Field, ID, InputType, Int } from '@nestjs/graphql';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 
 @InputType()
 export class CreateApprovalTemplateInput {
@@ -16,6 +22,11 @@ export class CreateApprovalTemplateInput {
   @IsOptional()
   @IsString()
   category!: string | null;
+
+  @Field(() => ID, { nullable: true })
+  @IsOptional()
+  @IsUUID()
+  categoryId!: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -48,6 +59,60 @@ export class UpdateApprovalTemplateInput {
   @IsOptional()
   @IsString()
   category!: string | null;
+
+  @Field(() => ID, { nullable: true })
+  @IsOptional()
+  @IsUUID()
+  categoryId!: string | null;
+}
+
+@InputType()
+export class CreateApprovalTemplateCategoryInput {
+  @Field()
+  @IsString()
+  name!: string;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  description!: string | null;
+
+  @Field(() => Boolean, { nullable: true })
+  @IsBoolean()
+  @IsOptional()
+  isActive!: boolean | null;
+
+  @Field(() => Int, { nullable: true })
+  @IsInt()
+  @IsOptional()
+  sortOrder!: number | null;
+}
+
+@InputType()
+export class UpdateApprovalTemplateCategoryInput {
+  @Field(() => ID)
+  @IsUUID()
+  id!: string;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  name!: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  description!: string | null;
+
+  @Field(() => Boolean, { nullable: true })
+  @IsBoolean()
+  @IsOptional()
+  isActive!: boolean | null;
+
+  @Field(() => Int, { nullable: true })
+  @IsInt()
+  @IsOptional()
+  sortOrder!: number | null;
 }
 
 @InputType()

@@ -4,6 +4,8 @@ import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface ApprovalTemplateRecord {
   readonly category: string | null;
+  readonly categoryDetail: ApprovalTemplateCategoryRecord | null;
+  readonly categoryId: string | null;
   readonly currentVersionId: string | null;
   readonly description: string | null;
   readonly id: string;
@@ -12,6 +14,17 @@ export interface ApprovalTemplateRecord {
 }
 
 export type ApprovalTemplateListStatus = 'DRAFT' | 'PUBLISHED';
+export type ApprovalTemplateCategoryStatus = 'ACTIVE' | 'ALL' | 'INACTIVE';
+
+export interface ApprovalTemplateCategoryRecord {
+  readonly createdAt: string;
+  readonly description: string | null;
+  readonly id: string;
+  readonly isActive: boolean;
+  readonly name: string;
+  readonly sortOrder: number;
+  readonly updatedAt: string;
+}
 
 export interface ApprovalTemplateVersionRecord {
   readonly archivedAt: string | null;
@@ -94,6 +107,11 @@ export interface ApprovalTemplatesPage {
   readonly totalCount: number;
 }
 
+export interface ApprovalTemplateCategoriesPage {
+  readonly categories: readonly ApprovalTemplateCategoryRecord[];
+  readonly totalCount: number;
+}
+
 interface ApprovalTemplatesQueryData {
   readonly approvalTemplates: readonly ApprovalTemplateRecord[];
 }
@@ -102,8 +120,28 @@ interface ApprovalTemplatesPageQueryData extends ApprovalTemplatesQueryData {
   readonly approvalTemplateCount: number;
 }
 
+interface ApprovalTemplateCategoriesPageQueryData {
+  readonly approvalTemplateCategories: readonly ApprovalTemplateCategoryRecord[];
+  readonly approvalTemplateCategoryCount: number;
+}
+
 interface CreateApprovalTemplateMutationData {
   readonly createApprovalTemplate: Pick<ApprovalTemplateRecord, 'id'>;
+}
+
+interface CreateApprovalTemplateCategoryMutationData {
+  readonly createApprovalTemplateCategory: ApprovalTemplateCategoryRecord;
+}
+
+interface DeleteApprovalTemplateCategoryMutationData {
+  readonly deleteApprovalTemplateCategory: Pick<
+    ApprovalTemplateCategoryRecord,
+    'id'
+  >;
+}
+
+interface UpdateApprovalTemplateCategoryMutationData {
+  readonly updateApprovalTemplateCategory: ApprovalTemplateCategoryRecord;
 }
 
 interface TemplateDesignerQueryData {
@@ -158,6 +196,12 @@ export async function listApprovalTemplates(): Promise<
     `query ApprovalTemplates {
       approvalTemplates {
         category
+        categoryId
+        categoryDetail {
+          id
+          isActive
+          name
+        }
         currentVersionId
         description
         id
@@ -175,7 +219,9 @@ export async function listApprovalTemplatesPage({
   pageSize,
   searchText,
   status,
+  categoryId,
 }: {
+  readonly categoryId?: string | null;
   readonly page: number;
   readonly pageSize: number;
   readonly searchText?: string;
@@ -187,23 +233,41 @@ export async function listApprovalTemplatesPage({
       $pageSize: Int
       $searchText: String
       $status: ApprovalTemplateListStatus
+      $categoryId: String
     ) {
       approvalTemplates(
+        categoryId: $categoryId
         page: $page
         pageSize: $pageSize
         searchText: $searchText
         status: $status
       ) {
         category
+        categoryId
+        categoryDetail {
+          id
+          isActive
+          name
+        }
         currentVersionId
         description
         id
         name
         updatedAt
       }
-      approvalTemplateCount(searchText: $searchText, status: $status)
+      approvalTemplateCount(
+        categoryId: $categoryId
+        searchText: $searchText
+        status: $status
+      )
     }`,
-    { page, pageSize, searchText, status: status ?? null },
+    {
+      categoryId: categoryId ?? null,
+      page,
+      pageSize,
+      searchText,
+      status: status ?? null,
+    },
   );
 
   return {
@@ -212,7 +276,59 @@ export async function listApprovalTemplatesPage({
   };
 }
 
-export async function createApprovalTemplate(name: string): Promise<string> {
+export async function listApprovalTemplateCategoriesPage({
+  page,
+  pageSize,
+  searchText,
+  status,
+}: {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly searchText?: string;
+  readonly status?: ApprovalTemplateCategoryStatus | null;
+}): Promise<ApprovalTemplateCategoriesPage> {
+  const data = await requestGraphQl<ApprovalTemplateCategoriesPageQueryData>(
+    `query ApprovalTemplateCategoriesPage(
+      $page: Int
+      $pageSize: Int
+      $searchText: String
+      $status: ApprovalTemplateCategoryStatus
+    ) {
+      approvalTemplateCategories(
+        page: $page
+        pageSize: $pageSize
+        searchText: $searchText
+        status: $status
+      ) {
+        createdAt
+        description
+        id
+        isActive
+        name
+        sortOrder
+        updatedAt
+      }
+      approvalTemplateCategoryCount(
+        searchText: $searchText
+        status: $status
+      )
+    }`,
+    { page, pageSize, searchText, status: status ?? null },
+  );
+
+  return {
+    categories: data.approvalTemplateCategories,
+    totalCount: data.approvalTemplateCategoryCount,
+  };
+}
+
+export async function createApprovalTemplate({
+  categoryId,
+  name,
+}: {
+  readonly categoryId: string | null;
+  readonly name: string;
+}): Promise<string> {
   const data = await requestGraphQl<CreateApprovalTemplateMutationData>(
     `mutation CreateApprovalTemplate($input: CreateApprovalTemplateInput!) {
       createApprovalTemplate(input: $input) {
@@ -222,6 +338,7 @@ export async function createApprovalTemplate(name: string): Promise<string> {
     {
       input: {
         category: null,
+        categoryId,
         createdByMemberId: null,
         description: null,
         formDefinitionVersionId: null,
@@ -233,6 +350,79 @@ export async function createApprovalTemplate(name: string): Promise<string> {
   return data.createApprovalTemplate.id;
 }
 
+export async function createApprovalTemplateCategory({
+  description,
+  isActive,
+  name,
+  sortOrder,
+}: {
+  readonly description: string | null;
+  readonly isActive: boolean;
+  readonly name: string;
+  readonly sortOrder: number;
+}): Promise<ApprovalTemplateCategoryRecord> {
+  const data = await requestGraphQl<CreateApprovalTemplateCategoryMutationData>(
+    `mutation CreateApprovalTemplateCategory($input: CreateApprovalTemplateCategoryInput!) {
+      createApprovalTemplateCategory(input: $input) {
+        createdAt
+        description
+        id
+        isActive
+        name
+        sortOrder
+        updatedAt
+      }
+    }`,
+    { input: { description, isActive, name, sortOrder } },
+  );
+
+  return data.createApprovalTemplateCategory;
+}
+
+export async function updateApprovalTemplateCategory({
+  description,
+  id,
+  isActive,
+  name,
+  sortOrder,
+}: {
+  readonly description: string | null;
+  readonly id: string;
+  readonly isActive: boolean;
+  readonly name: string;
+  readonly sortOrder: number;
+}): Promise<ApprovalTemplateCategoryRecord> {
+  const data = await requestGraphQl<UpdateApprovalTemplateCategoryMutationData>(
+    `mutation UpdateApprovalTemplateCategory($input: UpdateApprovalTemplateCategoryInput!) {
+      updateApprovalTemplateCategory(input: $input) {
+        createdAt
+        description
+        id
+        isActive
+        name
+        sortOrder
+        updatedAt
+      }
+    }`,
+    { input: { description, id, isActive, name, sortOrder } },
+  );
+
+  return data.updateApprovalTemplateCategory;
+}
+
+export async function deleteApprovalTemplateCategory(
+  id: string,
+): Promise<void> {
+  await requestGraphQl<DeleteApprovalTemplateCategoryMutationData>(
+    `mutation DeleteApprovalTemplateCategory($id: String!) {
+      deleteApprovalTemplateCategory(id: $id) {
+        id
+      }
+    }`,
+    { id },
+  );
+}
+
 export async function readTemplateDesigner(
   templateId: string,
 ): Promise<TemplateDesignerRecord> {
@@ -240,6 +430,12 @@ export async function readTemplateDesigner(
     `query TemplateDesigner($id: String!) {
       approvalTemplate(id: $id) {
         category
+        categoryId
+        categoryDetail {
+          id
+          isActive
+          name
+        }
         currentVersionId
         description
         id

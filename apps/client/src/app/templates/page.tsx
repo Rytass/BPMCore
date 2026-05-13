@@ -4,6 +4,7 @@ import type { ChangeEvent, Key, ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  Badge,
   Button,
   Filter,
   FilterArea,
@@ -14,6 +15,7 @@ import {
   PageHeader,
   Section,
   SectionGroup,
+  Select,
   Tab,
   TabItem,
   Table,
@@ -26,11 +28,17 @@ import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './templates.module.scss';
 import { formatDateTime } from '../_lib/date-time';
 import { renderAppNavigation } from '../app-navigation';
-import { TemplateNameModal } from './_components/template-name-modal';
+import {
+  TemplateCategoryOption,
+  TemplateNameModal,
+  UNCATEGORIZED_TEMPLATE_CATEGORY_OPTION,
+} from './_components/template-name-modal';
 import {
   ApprovalTemplateListStatus,
   ApprovalTemplateRecord,
+  ApprovalTemplateCategoryRecord,
   createApprovalTemplate,
+  listApprovalTemplateCategoriesPage,
   listApprovalTemplatesPage,
 } from './_lib/template-api';
 import { listLaunchableTemplates } from '../instances/_lib/workflow-api';
@@ -45,13 +53,16 @@ const TEMPLATE_STATUS_TABS: readonly {
   { key: 'DRAFT', label: '草稿' },
 ];
 
+const TEMPLATE_CATEGORY_PAGE_SIZE = 100;
+
 type TemplateStatusTabKey = 'ALL' | ApprovalTemplateListStatus;
 
 type TemplateRow = Readonly<
   Record<string, unknown> &
     ApprovalTemplateRecord & {
+      categoryLabel: string;
       key: string;
-      status: string;
+      status: ApprovalTemplateListStatus;
     }
 >;
 
@@ -60,6 +71,12 @@ export default function TemplatesPage(): ReactElement {
   const [templates, setTemplates] = useState<readonly ApprovalTemplateRecord[]>(
     [],
   );
+  const [categoryFilter, setCategoryFilter] = useState<TemplateCategoryOption>(
+    UNCATEGORIZED_TEMPLATE_FILTER_OPTION,
+  );
+  const [categoryOptions, setCategoryOptions] = useState<
+    readonly TemplateCategoryOption[]
+  >([]);
   const [launchableTemplateIds, setLaunchableTemplateIds] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -79,16 +96,30 @@ export default function TemplatesPage(): ReactElement {
     setError(null);
 
     try {
-      const [templatePageResult, nextLaunchableTemplates] = await Promise.all([
+      const [
+        templatePageResult,
+        nextLaunchableTemplates,
+        activeCategoryPageResult,
+      ] = await Promise.all([
         listApprovalTemplatesPage({
+          categoryId: categoryFilter.categoryId,
           page: templatePage,
           pageSize: templatePageSize,
           searchText: templateSearchText,
           status: templateStatus === 'ALL' ? null : templateStatus,
         }),
         listLaunchableTemplates(),
+        listApprovalTemplateCategoriesPage({
+          page: 1,
+          pageSize: TEMPLATE_CATEGORY_PAGE_SIZE,
+          searchText: '',
+          status: 'ACTIVE',
+        }),
       ]);
 
+      setCategoryOptions([
+        ...activeCategoryPageResult.categories.map(readCategoryOption),
+      ]);
       setTemplates(templatePageResult.templates);
       setTemplateTotalCount(templatePageResult.totalCount);
       setLaunchableTemplateIds(
@@ -99,7 +130,13 @@ export default function TemplatesPage(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [templatePage, templatePageSize, templateSearchText, templateStatus]);
+  }, [
+    categoryFilter,
+    templatePage,
+    templatePageSize,
+    templateSearchText,
+    templateStatus,
+  ]);
 
   useEffect((): void => {
     void refreshTemplates();
@@ -109,8 +146,9 @@ export default function TemplatesPage(): ReactElement {
     (): TemplateRow[] =>
       templates.map((template) => ({
         ...template,
+        categoryLabel: readTemplateCategoryLabel(template),
         key: template.id,
-        status: template.currentVersionId ? '已發布' : '草稿',
+        status: template.currentVersionId ? 'PUBLISHED' : 'DRAFT',
         updatedAt: formatDateTime(template.updatedAt),
       })),
     [templates],
@@ -118,11 +156,18 @@ export default function TemplatesPage(): ReactElement {
   const columns = useMemo(
     (): TableColumn<TemplateRow>[] => [
       { dataIndex: 'name', key: 'name', title: '模板名稱', width: 220 },
-      { dataIndex: 'status', key: 'status', title: '狀態', width: 120 },
+      {
+        key: 'status',
+        render: (record: TemplateRow): ReactElement => (
+          <TemplateStatusBadge status={record.status} />
+        ),
+        title: '狀態',
+        width: 120,
+      },
       {
         key: 'category',
         render: (record: TemplateRow): ReactElement => (
-          <Typography variant="body">{record.category ?? '未分類'}</Typography>
+          <TemplateCategoryLabel record={record} />
         ),
         title: '分類',
         width: 160,
@@ -162,12 +207,18 @@ export default function TemplatesPage(): ReactElement {
     [launchableTemplateIds, router],
   );
 
-  async function handleCreateTemplate(name: string): Promise<void> {
+  async function handleCreateTemplate({
+    categoryId,
+    name,
+  }: {
+    readonly categoryId: string | null;
+    readonly name: string;
+  }): Promise<void> {
     setCreating(true);
     setError(null);
 
     try {
-      const templateId = await createApprovalTemplate(name);
+      const templateId = await createApprovalTemplate({ categoryId, name });
       setCreateModalOpen(false);
       router.push(`/templates/${templateId}/designer`);
     } finally {
@@ -225,6 +276,31 @@ export default function TemplatesPage(): ReactElement {
                         />
                       </FormField>
                     </Filter>
+                    <Filter span={2}>
+                      <FormField
+                        fullWidth
+                        label="分類"
+                        layout={FormFieldLayout.VERTICAL}
+                        name="templateCategoryFilter"
+                      >
+                        <Select
+                          clearable={false}
+                          fullWidth
+                          onChange={(option): void => {
+                            setCategoryFilter(
+                              readCategoryFilterOption(option, categoryOptions),
+                            );
+                            setTemplatePage(1);
+                          }}
+                          options={[
+                            UNCATEGORIZED_TEMPLATE_FILTER_OPTION,
+                            ...categoryOptions,
+                          ]}
+                          size="sub"
+                          value={categoryFilter}
+                        />
+                      </FormField>
+                    </Filter>
                   </FilterLine>
                 </FilterArea>
               }
@@ -277,6 +353,10 @@ export default function TemplatesPage(): ReactElement {
       </Layout>
 
       <TemplateNameModal
+        categoryOptions={[
+          UNCATEGORIZED_TEMPLATE_CATEGORY_OPTION,
+          ...categoryOptions,
+        ]}
         confirmText="建立"
         initialName=""
         loading={creating}
@@ -299,4 +379,82 @@ function readTemplateStatusTabKey(activeKey: Key): TemplateStatusTabKey {
   }
 
   return 'ALL';
+}
+
+function TemplateStatusBadge({
+  status,
+}: {
+  readonly status: ApprovalTemplateListStatus;
+}): ReactElement {
+  if (status === 'PUBLISHED') {
+    return <Badge size="sub" text="已發布" variant="dot-success" />;
+  }
+
+  return <Badge size="sub" text="草稿" variant="dot-inactive" />;
+}
+
+function TemplateCategoryLabel({
+  record,
+}: {
+  readonly record: TemplateRow;
+}): ReactElement {
+  if (record.categoryDetail?.isActive === false) {
+    return (
+      <Badge
+        size="sub"
+        text={`${record.categoryLabel}（停用）`}
+        variant="dot-inactive"
+      />
+    );
+  }
+
+  return (
+    <Typography component="span" variant="body">
+      {record.categoryLabel}
+    </Typography>
+  );
+}
+
+const UNCATEGORIZED_TEMPLATE_FILTER_OPTION: TemplateCategoryOption = {
+  categoryId: null,
+  id: 'ALL_CATEGORIES',
+  name: '全部分類',
+};
+
+function readCategoryOption(
+  category: ApprovalTemplateCategoryRecord,
+): TemplateCategoryOption {
+  return {
+    categoryId: category.id,
+    id: category.id,
+    name: category.name,
+  };
+}
+
+function readCategoryFilterOption(
+  value: unknown,
+  options: readonly TemplateCategoryOption[],
+): TemplateCategoryOption {
+  if (!isRecord(value)) {
+    return UNCATEGORIZED_TEMPLATE_FILTER_OPTION;
+  }
+
+  const id = typeof value.id === 'string' ? value.id : null;
+
+  if (id === UNCATEGORIZED_TEMPLATE_FILTER_OPTION.id) {
+    return UNCATEGORIZED_TEMPLATE_FILTER_OPTION;
+  }
+
+  return (
+    options.find((option) => option.id === id) ??
+    UNCATEGORIZED_TEMPLATE_FILTER_OPTION
+  );
+}
+
+function readTemplateCategoryLabel(template: ApprovalTemplateRecord): string {
+  return template.categoryDetail?.name ?? template.category ?? '未分類';
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
 }

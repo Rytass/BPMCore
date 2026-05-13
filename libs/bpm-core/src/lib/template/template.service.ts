@@ -10,14 +10,18 @@ import { FindOptionsWhere, ILike, IsNull, Not, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import {
+  CreateApprovalTemplateCategoryInput,
   CreateApprovalTemplateInput,
+  UpdateApprovalTemplateCategoryInput,
   UpdateApprovalTemplateDraftInput,
   UpdateApprovalTemplateInput,
 } from './dto/approval-template.input';
 import {
+  ApprovalTemplateCategoryStatusEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
@@ -34,8 +38,16 @@ interface MaxVersionRow {
 interface ListApprovalTemplatesOptions {
   readonly page?: number;
   readonly pageSize?: number;
+  readonly categoryId?: string;
   readonly searchText?: string;
   readonly status?: ApprovalTemplateListStatusEnum;
+}
+
+interface ListApprovalTemplateCategoriesOptions {
+  readonly page?: number;
+  readonly pageSize?: number;
+  readonly searchText?: string;
+  readonly status?: ApprovalTemplateCategoryStatusEnum;
 }
 
 @Injectable()
@@ -43,6 +55,8 @@ export class TemplateService {
   constructor(
     @InjectRepository(ApprovalTemplateEntity)
     private readonly templateRepository: Repository<ApprovalTemplateEntity>,
+    @InjectRepository(ApprovalTemplateCategoryEntity)
+    private readonly templateCategoryRepository: Repository<ApprovalTemplateCategoryEntity>,
     @InjectRepository(ApprovalTemplateVersionEntity)
     private readonly templateVersionRepository: Repository<ApprovalTemplateVersionEntity>,
     @InjectRepository(FormDefinitionVersionEntity)
@@ -56,6 +70,9 @@ export class TemplateService {
     await this.validateOptionalFormDefinitionVersion(
       input.formDefinitionVersionId,
     );
+    const category = await this.validateOptionalTemplateCategory(
+      input.categoryId,
+    );
 
     return this.templateRepository.manager.transaction(
       async (manager): Promise<ApprovalTemplateEntity> => {
@@ -67,7 +84,8 @@ export class TemplateService {
         );
         const template = await templateRepository.save(
           templateRepository.create({
-            category: input.category,
+            category: input.category ?? category?.name ?? null,
+            categoryId: category?.id ?? null,
             createdByMemberId: input.createdByMemberId,
             currentVersionId: null,
             description: input.description,
@@ -100,8 +118,21 @@ export class TemplateService {
     input: UpdateApprovalTemplateInput,
   ): Promise<ApprovalTemplateEntity> {
     const existing = await this.getTemplateOrThrow(input.id);
+    const category =
+      input.categoryId === undefined
+        ? undefined
+        : await this.validateOptionalTemplateCategory(input.categoryId);
     const next = this.templateRepository.merge(existing, {
-      category: input.category ?? existing.category,
+      category:
+        input.category !== undefined
+          ? input.category
+          : category !== undefined
+            ? (category?.name ?? null)
+            : existing.category,
+      categoryId:
+        input.categoryId === undefined
+          ? existing.categoryId
+          : (category?.id ?? null),
       description: input.description ?? existing.description,
       name: input.name ?? existing.name,
     });
@@ -120,6 +151,7 @@ export class TemplateService {
 
     return this.templateRepository.find({
       order: { updatedAt: 'DESC', createdAt: 'DESC' },
+      relations: { categoryDetail: true },
       ...(normalizedPageSize
         ? {
             skip: (normalizePage(options.page ?? 1) - 1) * normalizedPageSize,
@@ -127,6 +159,7 @@ export class TemplateService {
           }
         : {}),
       where: createApprovalTemplateWhere({
+        categoryId: options.categoryId,
         searchText: options.searchText,
         status: options.status,
       }),
@@ -134,19 +167,118 @@ export class TemplateService {
   }
 
   async countApprovalTemplates({
+    categoryId,
     searchText,
     status,
   }: {
+    readonly categoryId?: string;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   } = {}): Promise<number> {
     return this.templateRepository.count({
-      where: createApprovalTemplateWhere({ searchText, status }),
+      where: createApprovalTemplateWhere({ categoryId, searchText, status }),
     });
   }
 
   async getApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
     return this.getTemplateOrThrow(id);
+  }
+
+  async listApprovalTemplateCategories(
+    options: ListApprovalTemplateCategoriesOptions = {},
+  ): Promise<readonly ApprovalTemplateCategoryEntity[]> {
+    const isPaginated =
+      typeof options.page === 'number' || typeof options.pageSize === 'number';
+    const normalizedPageSize = isPaginated
+      ? normalizePageSize(options.pageSize ?? 10)
+      : undefined;
+
+    return this.templateCategoryRepository.find({
+      order: { sortOrder: 'ASC', name: 'ASC', createdAt: 'ASC' },
+      ...(normalizedPageSize
+        ? {
+            skip: (normalizePage(options.page ?? 1) - 1) * normalizedPageSize,
+            take: normalizedPageSize,
+          }
+        : {}),
+      where: createApprovalTemplateCategoryWhere({
+        searchText: options.searchText,
+        status: options.status,
+      }),
+    });
+  }
+
+  async countApprovalTemplateCategories({
+    searchText,
+    status,
+  }: {
+    readonly searchText?: string;
+    readonly status?: ApprovalTemplateCategoryStatusEnum;
+  } = {}): Promise<number> {
+    return this.templateCategoryRepository.count({
+      where: createApprovalTemplateCategoryWhere({ searchText, status }),
+    });
+  }
+
+  async createApprovalTemplateCategory(
+    input: CreateApprovalTemplateCategoryInput,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.templateCategoryRepository.save(
+      this.templateCategoryRepository.create({
+        description: input.description,
+        isActive: input.isActive ?? true,
+        name: input.name,
+        sortOrder: input.sortOrder ?? 0,
+      }),
+    );
+  }
+
+  async updateApprovalTemplateCategory(
+    input: UpdateApprovalTemplateCategoryInput,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    const existing = await this.getTemplateCategoryOrThrow(input.id);
+
+    return this.templateCategoryRepository.save(
+      this.templateCategoryRepository.merge(existing, {
+        description: input.description ?? existing.description,
+        isActive: input.isActive ?? existing.isActive,
+        name: input.name ?? existing.name,
+        sortOrder: input.sortOrder ?? existing.sortOrder,
+      }),
+    );
+  }
+
+  async activateApprovalTemplateCategory(
+    id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.setApprovalTemplateCategoryActive(id, true);
+  }
+
+  async deactivateApprovalTemplateCategory(
+    id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    return this.setApprovalTemplateCategoryActive(id, false);
+  }
+
+  async deleteApprovalTemplateCategory(
+    id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    const category = await this.getTemplateCategoryOrThrow(id);
+    const templateCount = await this.templateRepository.count({
+      where: { categoryId: id, deletedAt: IsNull() },
+    });
+
+    if (templateCount > 0) {
+      return this.templateCategoryRepository.save(
+        this.templateCategoryRepository.merge(category, {
+          isActive: false,
+        }),
+      );
+    }
+
+    await this.templateCategoryRepository.remove(category);
+
+    return category;
   }
 
   async listApprovalTemplateVersions(
@@ -409,10 +541,21 @@ export class TemplateService {
     }
   }
 
+  private async validateOptionalTemplateCategory(
+    categoryId: string | null | undefined,
+  ): Promise<ApprovalTemplateCategoryEntity | null> {
+    if (!categoryId) {
+      return null;
+    }
+
+    return this.getTemplateCategoryOrThrow(categoryId);
+  }
+
   private async getTemplateOrThrow(
     id: string,
   ): Promise<ApprovalTemplateEntity> {
     const entity = await this.templateRepository.findOne({
+      relations: { categoryDetail: true },
       where: { deletedAt: IsNull(), id },
     });
 
@@ -421,6 +564,35 @@ export class TemplateService {
     }
 
     return entity;
+  }
+
+  private async getTemplateCategoryOrThrow(
+    id: string,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    const entity = await this.templateCategoryRepository.findOne({
+      where: { id },
+    });
+
+    if (!entity) {
+      throw new NotFoundException(
+        `Approval template category ${id} was not found`,
+      );
+    }
+
+    return entity;
+  }
+
+  private async setApprovalTemplateCategoryActive(
+    id: string,
+    isActive: boolean,
+  ): Promise<ApprovalTemplateCategoryEntity> {
+    const category = await this.getTemplateCategoryOrThrow(id);
+
+    return this.templateCategoryRepository.save(
+      this.templateCategoryRepository.merge(category, {
+        isActive,
+      }),
+    );
   }
 
   private async getTemplateVersionOrThrow(
@@ -504,6 +676,7 @@ function normalizePageSize(pageSize: number): number {
 
 function createApprovalTemplateWhere(
   options: Readonly<{
+    readonly categoryId?: string;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   }>,
@@ -523,6 +696,7 @@ function createApprovalTemplateWhere(
       : {};
   const baseWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     ...activeTemplateWhere,
+    ...(options.categoryId ? { categoryId: options.categoryId } : {}),
     ...statusWhere,
     ...publicationWhere,
   };
@@ -539,6 +713,34 @@ function createApprovalTemplateWhere(
     { ...baseWhere, name: ILike(searchPattern) },
     { ...baseWhere, category: ILike(searchPattern) },
     { ...baseWhere, description: ILike(searchPattern) },
+  ];
+}
+
+function createApprovalTemplateCategoryWhere(
+  options: Readonly<{
+    readonly searchText?: string;
+    readonly status?: ApprovalTemplateCategoryStatusEnum;
+  }>,
+):
+  | FindOptionsWhere<ApprovalTemplateCategoryEntity>
+  | FindOptionsWhere<ApprovalTemplateCategoryEntity>[] {
+  const statusWhere: FindOptionsWhere<ApprovalTemplateCategoryEntity> =
+    options.status === ApprovalTemplateCategoryStatusEnum.ALL
+      ? {}
+      : options.status === ApprovalTemplateCategoryStatusEnum.INACTIVE
+        ? { isActive: false }
+        : { isActive: true };
+  const trimmedSearchText = options.searchText?.trim();
+
+  if (!trimmedSearchText) {
+    return statusWhere;
+  }
+
+  const searchPattern = `%${trimmedSearchText}%`;
+
+  return [
+    { ...statusWhere, name: ILike(searchPattern) },
+    { ...statusWhere, description: ILike(searchPattern) },
   ];
 }
 
