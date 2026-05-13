@@ -59,11 +59,11 @@ describe('ApiSessionService', () => {
     expect(context).toEqual({
       memberId: 'member-101',
       metadata: {
-        email: 'chen.manager@example.internal',
+        email: 'chen.cfo@example.internal',
         memberId: 'member-101',
-        name: '陳財務主管',
-        positionId: 'DEPARTMENT_HEAD',
-        primaryOrgUnitId: 'FIN-TW',
+        name: '陳財務長',
+        positionId: 'VP',
+        primaryOrgUnitId: 'FIN',
       },
       permissions: ['task.decide', 'task.transfer', 'instance.read'],
       roles: ['APPROVER'],

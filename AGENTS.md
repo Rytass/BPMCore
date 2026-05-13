@@ -74,6 +74,8 @@
 - 2026-05-11: `apps/api` is now the host shell for local/staging runtime. It provides demo member login, signed HTTP-only session cookie, `/api/auth/me`, logout, and GraphQL `BPMAuthContext` session mapping.
 - 2026-05-11: BPM backend domain modules, migrations, tests, and TypeORM helpers now live under `libs/bpm-core`; `pnpm api` serves the `api` project on port 17603.
 - 2026-05-11: M1 W1 organization/member interface is implemented with Organization GraphQL filters/summary, org path validation, admin org CRUD UI, member directory detail UI, shared Member/OrgUnit/Position pickers, and unit coverage.
+- 2026-05-13: `pnpm demo:reset` resets the Vault-backed develop DB and seeds a coherent demo company with org units, positions, demo members, memberships, manager rules, form definitions, approval templates, instances across states, tasks, notifications, attachments, signatures, and delegations.
+- 2026-05-13: Workflow task assignment now supports candidate groups through `task_candidates`, multi-member direct/position/org resolvers, task candidate GraphQL fields, candidate-aware inbox/detail UI, and full `pnpm e2e:client` coverage.
 
 ## Backlog Notes
 

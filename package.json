@@ -14,6 +14,7 @@
     "typeorm": "typeorm-ts-node-commonjs -d libs/bpm-core/src/lib/database/data-source.ts",
     "migration:run": "ts-node --compiler-options '{\"module\":\"commonjs\"}' libs/bpm-core/src/lib/database/migration-runner.ts run",
     "migration:revert": "ts-node --compiler-options '{\"module\":\"commonjs\"}' libs/bpm-core/src/lib/database/migration-runner.ts revert",
+    "demo:reset": "ts-node --compiler-options '{\"module\":\"commonjs\"}' tools/reset-demo-data.ts",
     "prepare": "husky"
   },
   "private": true,

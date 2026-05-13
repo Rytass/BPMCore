@@ -12,7 +12,7 @@ describe('ApiMemberResolver', () => {
   });
 
   it('searches demo members by email or member id', async (): Promise<void> => {
-    await expect(resolver.search('manager')).resolves.toEqual([
+    await expect(resolver.search('cfo')).resolves.toEqual([
       expect.objectContaining({ memberId: 'member-101' }),
     ]);
   });
