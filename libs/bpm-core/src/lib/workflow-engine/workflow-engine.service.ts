@@ -1,6 +1,7 @@
 import {
   WorkflowDefinition,
   WorkflowEdge,
+  DecisionPolicy,
   WorkflowNode,
   UserTaskNode,
   ServiceTaskNode,
@@ -44,10 +45,13 @@ import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.inpu
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
+import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceStateEnum,
+  TaskAssignmentTypeEnum,
+  TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
@@ -84,6 +88,18 @@ interface ReturnedInstanceContext {
   readonly returnToNodeId: string;
 }
 
+interface ResolvedApproverCandidate {
+  readonly memberId: string;
+  readonly sourceType: ApproverResolver['type'];
+}
+
+interface RuntimeTaskCandidate {
+  readonly delegationChain: readonly DelegationStep[];
+  readonly memberId: string;
+  readonly originalMemberId: string;
+  readonly sourceType: ApproverResolver['type'];
+}
+
 @Injectable()
 export class WorkflowEngineService {
   constructor(
@@ -93,6 +109,8 @@ export class WorkflowEngineService {
     private readonly workflowTokenRepository: Repository<WorkflowTokenEntity>,
     @InjectRepository(TaskEntity)
     private readonly taskRepository: Repository<TaskEntity>,
+    @InjectRepository(TaskCandidateEntity)
+    private readonly taskCandidateRepository: Repository<TaskCandidateEntity>,
     @InjectRepository(TaskDecisionEntity)
     private readonly taskDecisionRepository: Repository<TaskDecisionEntity>,
     @InjectRepository(ActivityLogEntity)
@@ -114,12 +132,6 @@ export class WorkflowEngineService {
     input: SubmitApprovalInstanceInput,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
-    const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
-      ? parseJsonObject(
-          input.initiatorMetadataSnapshotJson,
-          'initiatorMetadataSnapshotJson',
-        )
-      : readDefaultInitiatorMetadataSnapshot(input.initiatorMemberId);
     const template = await this.getTemplateOrThrow(input.templateId);
 
     if (!template.currentVersionId) {
@@ -134,6 +146,14 @@ export class WorkflowEngineService {
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
+    const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
+      ? parseJsonObject(
+          input.initiatorMetadataSnapshotJson,
+          'initiatorMetadataSnapshotJson',
+        )
+      : await this.readDefaultInitiatorMetadataSnapshot(
+          input.initiatorMemberId,
+        );
 
     if (
       !this.conditionService.evaluateBoolean(
@@ -274,6 +294,8 @@ export class WorkflowEngineService {
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<TaskDecisionEntity> => {
         const taskRepository = manager.getRepository(TaskEntity);
+        const taskCandidateRepository =
+          manager.getRepository(TaskCandidateEntity);
         const taskDecisionRepository =
           manager.getRepository(TaskDecisionEntity);
         const activityRepository = manager.getRepository(ActivityLogEntity);
@@ -300,9 +322,28 @@ export class WorkflowEngineService {
           throw new ConflictException(`Task ${task.id} is not pending`);
         }
 
-        if (task.assigneeMemberId !== input.decidedByMemberId) {
+        const taskCandidates = await taskCandidateRepository.find({
+          where: { taskId: task.id },
+        });
+        const actorCandidate = taskCandidates.find(
+          (candidate) => candidate.memberId === input.decidedByMemberId,
+        );
+        const isDirectAssignee =
+          task.assigneeMemberId === input.decidedByMemberId;
+
+        if (!isDirectAssignee && !actorCandidate) {
           throw new ConflictException(
             `Task ${task.id} is assigned to another member`,
+          );
+        }
+
+        if (
+          actorCandidate &&
+          actorCandidate.status !== TaskCandidateStatusEnum.PENDING &&
+          actorCandidate.status !== TaskCandidateStatusEnum.CLAIMED
+        ) {
+          throw new ConflictException(
+            `Task ${task.id} was already decided by this member`,
           );
         }
 
@@ -335,7 +376,7 @@ export class WorkflowEngineService {
 
         if (
           input.action === TaskDecisionActionEnum.TRANSFERRED &&
-          transferToMemberId === task.assigneeMemberId
+          transferToMemberId === input.decidedByMemberId
         ) {
           throw new ConflictException(
             'Transfer target must be a different member',
@@ -367,6 +408,23 @@ export class WorkflowEngineService {
               )
             : null;
         const decidedAt = new Date();
+        const claimedTask = await taskRepository.save({
+          ...task,
+          assigneeMemberId: task.assigneeMemberId ?? input.decidedByMemberId,
+          openedAt: task.openedAt ?? decidedAt,
+          originalAssigneeMemberId:
+            task.originalAssigneeMemberId ??
+            actorCandidate?.originalMemberId ??
+            input.decidedByMemberId,
+          status: TaskStatusEnum.IN_PROGRESS,
+        });
+        const claimedCandidate = actorCandidate
+          ? await taskCandidateRepository.save({
+              ...actorCandidate,
+              claimedAt: actorCandidate.claimedAt ?? decidedAt,
+              status: TaskCandidateStatusEnum.CLAIMED,
+            })
+          : null;
         const signature = await this.signatureService.signTaskDecision(
           manager,
           {
@@ -376,7 +434,7 @@ export class WorkflowEngineService {
             instance,
             returnToNodeId,
             signerMemberId: input.decidedByMemberId,
-            task,
+            task: claimedTask,
             transferToMemberId,
           },
         );
@@ -397,29 +455,48 @@ export class WorkflowEngineService {
           await this.transferTask(
             manager,
             instance,
-            task,
+            claimedTask,
             decision,
             signature,
             transferToMemberId,
             decisionComment,
             decidedAt,
+            claimedCandidate,
           );
 
           return decision;
         }
 
-        const completedTask = await taskRepository.save({
-          ...task,
-          completedAt: decidedAt,
-          status: TaskStatusEnum.COMPLETED,
+        const nextCandidateRows = await this.markTaskCandidateDecision({
+          action: input.action,
+          candidate: claimedCandidate,
+          candidates: taskCandidates,
+          decidedAt,
+          manager,
+          task: claimedTask,
         });
+        const shouldCompleteTask = shouldCompleteTaskAfterDecision({
+          action: input.action,
+          candidates: nextCandidateRows,
+          decisionPolicy: readDecisionPolicySnapshot(claimedTask),
+        });
+        const completedTask = shouldCompleteTask
+          ? await taskRepository.save({
+              ...claimedTask,
+              completedAt: decidedAt,
+              status: TaskStatusEnum.COMPLETED,
+            })
+          : await taskRepository.save({
+              ...claimedTask,
+              status: TaskStatusEnum.IN_PROGRESS,
+            });
 
         await activityRepository.save(
           activityRepository.create({
             actorMemberId: input.decidedByMemberId,
             eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
             instanceId: instance.id,
-            nodeId: task.nodeId,
+            nodeId: claimedTask.nodeId,
             payload: {
               action: input.action,
               comment: decisionComment,
@@ -431,14 +508,17 @@ export class WorkflowEngineService {
           }),
         );
 
-        if (input.action === TaskDecisionActionEnum.APPROVED) {
+        if (
+          input.action === TaskDecisionActionEnum.APPROVED &&
+          shouldCompleteTask
+        ) {
           const token = await tokenRepository.findOne({
-            where: { id: task.tokenId },
+            where: { id: claimedTask.tokenId },
           });
 
           if (!token) {
             throw new NotFoundException(
-              `Workflow token ${task.tokenId} was not found`,
+              `Workflow token ${claimedTask.tokenId} was not found`,
             );
           }
 
@@ -458,10 +538,14 @@ export class WorkflowEngineService {
             manager,
             instance,
             activeToken,
-            readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId),
+            readWorkflowNodeOrThrow(instance.workflowSnapshot, claimedTask.nodeId),
           );
           await this.processRunningInstance(manager, instance);
 
+          return decision;
+        }
+
+        if (input.action === TaskDecisionActionEnum.APPROVED) {
           return decision;
         }
 
@@ -469,7 +553,7 @@ export class WorkflowEngineService {
           await this.returnInstanceToNode(
             manager,
             instance,
-            task,
+            completedTask,
             returnToNodeId,
             decidedAt,
           );
@@ -477,7 +561,7 @@ export class WorkflowEngineService {
           return decision;
         }
 
-        await this.rejectInstance(manager, instance, task, decidedAt);
+        await this.rejectInstance(manager, instance, completedTask, decidedAt);
 
         return decision;
       },
@@ -895,6 +979,14 @@ export class WorkflowEngineService {
       return `position:${resolver.positionId}`;
     }
 
+    if (resolver.type === 'ORG_UNIT_MEMBER') {
+      return `orgUnitMember:${resolver.orgUnitId}`;
+    }
+
+    if (resolver.type === 'ORG_UNIT_POSITION') {
+      return `orgUnitPosition:${resolver.orgUnitId}:${resolver.positionId}`;
+    }
+
     if (resolver.type === 'ORG_UNIT_MANAGER') {
       return `orgUnitManager:${resolver.orgUnitId}`;
     }
@@ -940,34 +1032,76 @@ export class WorkflowEngineService {
   async listTasks(instanceId: string): Promise<readonly TaskEntity[]> {
     await this.getApprovalInstance(instanceId);
 
-    return this.taskRepository.find({
+    return this.attachTaskCandidateSummaries(
+      await this.taskRepository.find({
       order: { createdAt: 'ASC' },
       where: { instanceId },
-    });
+      }),
+    );
   }
 
   async listInboxTasks(
     assigneeMemberId: string,
   ): Promise<readonly TaskEntity[]> {
-    return this.taskRepository.find({
+    const directTasks = await this.taskRepository.find({
       order: { createdAt: 'DESC' },
+      where: [
+        {
+          assigneeMemberId,
+          status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+        },
+      ],
+    });
+    const candidateRows = await this.taskCandidateRepository.find({
       where: {
-        assigneeMemberId,
-        status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+        memberId: assigneeMemberId,
+        status: In([
+          TaskCandidateStatusEnum.PENDING,
+          TaskCandidateStatusEnum.CLAIMED,
+        ]),
       },
     });
+    const candidateTasks = candidateRows.length
+      ? await this.taskRepository.find({
+          order: { createdAt: 'DESC' },
+          where: {
+            id: In(candidateRows.map((candidate) => candidate.taskId)),
+            status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+          },
+        })
+      : [];
+
+    return this.attachTaskCandidateSummaries(
+      uniqueTasksById([...directTasks, ...candidateTasks]),
+    );
   }
 
   async listApprovalHistoryTasks(
     assigneeMemberId: string,
   ): Promise<readonly TaskEntity[]> {
-    return this.taskRepository.find({
+    const directTasks = await this.taskRepository.find({
       order: { completedAt: 'DESC', createdAt: 'DESC' },
+      where: { assigneeMemberId, status: TaskStatusEnum.COMPLETED },
+    });
+    const candidateRows = await this.taskCandidateRepository.find({
       where: {
-        assigneeMemberId,
-        status: TaskStatusEnum.COMPLETED,
+        memberId: assigneeMemberId,
+        status: TaskCandidateStatusEnum.COMPLETED,
       },
     });
+    const candidateTasks = candidateRows.length
+      ? await this.taskRepository.find({
+          order: { completedAt: 'DESC', createdAt: 'DESC' },
+          where: {
+            id: In(candidateRows.map((candidate) => candidate.taskId)),
+            status: TaskStatusEnum.COMPLETED,
+          },
+        })
+      : [];
+
+    return this.attachTaskCandidateSummaries(
+      uniqueTasksById([...directTasks, ...candidateTasks]),
+    );
   }
 
   async listTaskDecisions(
@@ -977,6 +1111,74 @@ export class WorkflowEngineService {
       order: { decidedAt: 'ASC' },
       where: { taskId },
     });
+  }
+
+  async listTaskCandidates(
+    taskId: string,
+  ): Promise<readonly TaskCandidateEntity[]> {
+    return this.taskCandidateRepository.find({
+      order: { createdAt: 'ASC', id: 'ASC' },
+      where: { taskId },
+    });
+  }
+
+  private async attachTaskCandidateSummaries(
+    tasks: readonly TaskEntity[],
+  ): Promise<readonly TaskEntity[]> {
+    if (!tasks.length) {
+      return tasks;
+    }
+
+    const candidates = await this.taskCandidateRepository.find({
+      order: { createdAt: 'ASC', id: 'ASC' },
+      where: { taskId: In(tasks.map((task) => task.id)) },
+    });
+    const candidatesByTaskId = candidates.reduce<
+      ReadonlyMap<string, readonly string[]>
+    >((currentMap, candidate) => {
+      const nextMap = new Map(currentMap);
+      const memberIds = nextMap.get(candidate.taskId) ?? [];
+
+      nextMap.set(candidate.taskId, [...memberIds, candidate.memberId]);
+
+      return nextMap;
+    }, new Map<string, readonly string[]>());
+
+    return tasks.map((task) =>
+      Object.assign(new TaskEntity(), task, {
+        candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
+      }),
+    );
+  }
+
+  private async readDefaultInitiatorMetadataSnapshot(
+    memberId: string,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const today = toDateOnlyString(new Date());
+    const memberships = (
+      await this.approvalInstanceRepository.manager
+        .getRepository(MembershipEntity)
+        .find({ where: { memberId } })
+    )
+      .filter((membership) => isDateRangeActive(membership, today))
+      .sort(compareMembership);
+    const primaryMembership = memberships[0] ?? null;
+    const positionIds = uniqueTexts(
+      memberships
+        .map((membership) => membership.positionId)
+        .filter((positionId): positionId is string => Boolean(positionId)),
+    );
+
+    return {
+      customFields: {},
+      memberId,
+      orgUnitIds: uniqueTexts(
+        memberships.map((membership) => membership.orgUnitId),
+      ),
+      positionId: primaryMembership?.positionId ?? null,
+      positionIds,
+      primaryOrgUnitId: primaryMembership?.orgUnitId ?? null,
+    };
   }
 
   async listActivityLogs(
@@ -1501,6 +1703,7 @@ export class WorkflowEngineService {
     node: UserTaskNode,
   ): Promise<void> {
     const taskRepository = manager.getRepository(TaskEntity);
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
     const tokenRepository = manager.getRepository(WorkflowTokenEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
     const existingTask = await taskRepository.findOne({
@@ -1519,41 +1722,56 @@ export class WorkflowEngineService {
       return;
     }
 
-    const assigneeMemberId = await this.resolveAssigneeMemberId(
+    const candidates = await this.resolveRuntimeTaskCandidates(
       manager,
       instance,
       node,
     );
-    const delegationResolution = await this.delegationService.resolveAssignee(
-      assigneeMemberId,
-      {
-        formData: instance.formData,
-        initiatorMemberId: instance.initiatorMemberId,
-        initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
-        instanceId: instance.id,
-        nodeId: node.id,
-        state: instance.state,
-        templateId: instance.templateId,
-        templateVersionId: instance.templateVersionId,
-        title: instance.title,
-      },
-    );
+    const primaryCandidate = candidates[0];
     const now = new Date();
     const task = await taskRepository.save(
       taskRepository.create({
-        assigneeMemberId: delegationResolution.finalAssigneeMemberId,
+        assigneeMemberId:
+          candidates.length === 1 ? primaryCandidate.memberId : null,
+        assignmentType:
+          candidates.length === 1
+            ? TaskAssignmentTypeEnum.DIRECT_MEMBER
+            : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        delegationChain: delegationResolution.delegationChain,
+        decisionPolicySnapshot: node.data.decisionPolicy,
+        delegationChain:
+          candidates.length === 1 ? primaryCandidate.delegationChain : [],
         instanceId: instance.id,
         nodeId: node.id,
         openedAt: null,
-        originalAssigneeMemberId: assigneeMemberId,
+        originalAssigneeMemberId:
+          candidates.length === 1 ? primaryCandidate.originalMemberId : null,
         slaDueAt: calculateTaskSlaDueAt({ node, now }),
         status: TaskStatusEnum.PENDING,
         tokenId: token.id,
       }),
     );
+    const savedCandidates = await taskCandidateRepository.save(
+      candidates.map((candidate) =>
+        taskCandidateRepository.create({
+          claimedAt: null,
+          createdAt: now,
+          decidedAt: null,
+          delegationChain: candidate.delegationChain,
+          memberId: candidate.memberId,
+          originalMemberId: candidate.originalMemberId,
+          sourceType: candidate.sourceType,
+          status: TaskCandidateStatusEnum.PENDING,
+          taskId: task.id,
+        }),
+      ),
+    );
+    task.candidateMemberIds = savedCandidates.map(
+      (candidate) => candidate.memberId,
+    );
+    const singleCandidate =
+      savedCandidates.length === 1 ? savedCandidates[0] : null;
 
     await tokenRepository.save({
       ...token,
@@ -1566,20 +1784,107 @@ export class WorkflowEngineService {
         instanceId: instance.id,
         nodeId: node.id,
         payload: {
-          assigneeMemberId: delegationResolution.finalAssigneeMemberId,
-          delegationChain: delegationResolution.delegationChain,
-          originalAssigneeMemberId: assigneeMemberId,
+          assignmentType: task.assignmentType,
+          assigneeMemberId: singleCandidate?.memberId ?? null,
+          candidateMemberIds: savedCandidates.map(
+            (candidate) => candidate.memberId,
+          ),
+          originalAssigneeMemberId: singleCandidate?.originalMemberId ?? null,
           tokenId: token.id,
         },
         taskId: task.id,
       }),
     );
-    await this.notificationService.createTaskAssignedNotification({
-      instance,
-      manager,
-      node,
-      task,
+    await savedCandidates.reduce<Promise<void>>(
+      async (previous, candidate): Promise<void> => {
+        await previous;
+        await this.notificationService.createTaskAssignedNotification({
+          instance,
+          manager,
+          node,
+          task: Object.assign(new TaskEntity(), task, {
+            assigneeMemberId: candidate.memberId,
+            delegationChain: candidate.delegationChain,
+            originalAssigneeMemberId: candidate.originalMemberId,
+          }),
+        });
+      },
+      Promise.resolve(),
+    );
+  }
+
+  private async markTaskCandidateDecision({
+    action,
+    candidate,
+    candidates,
+    decidedAt,
+    manager,
+    task,
+  }: {
+    readonly action: TaskDecisionActionEnum;
+    readonly candidate: TaskCandidateEntity | null;
+    readonly candidates: readonly TaskCandidateEntity[];
+    readonly decidedAt: Date;
+    readonly manager: EntityManager;
+    readonly task: TaskEntity;
+  }): Promise<readonly TaskCandidateEntity[]> {
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
+
+    if (!candidate && candidates.length === 0 && task.assigneeMemberId) {
+      const legacyCandidate = await taskCandidateRepository.save(
+        taskCandidateRepository.create({
+          claimedAt: task.openedAt ?? decidedAt,
+          createdAt: task.createdAt,
+          decidedAt,
+          delegationChain: task.delegationChain,
+          memberId: task.assigneeMemberId,
+          originalMemberId:
+            task.originalAssigneeMemberId ?? task.assigneeMemberId,
+          sourceType: 'DIRECT',
+          status: TaskCandidateStatusEnum.COMPLETED,
+          taskId: task.id,
+        }),
+      );
+
+      return [legacyCandidate];
+    }
+
+    const completedCandidate = candidate
+      ? Object.assign(new TaskCandidateEntity(), candidate, {
+          claimedAt: candidate.claimedAt ?? decidedAt,
+          decidedAt,
+          status: TaskCandidateStatusEnum.COMPLETED,
+        })
+      : null;
+    const decisionPolicy = readDecisionPolicySnapshot(task);
+    const shouldCancelOpenCandidates =
+      action !== TaskDecisionActionEnum.APPROVED ||
+      decisionPolicy.type === 'SINGLE' ||
+      decisionPolicy.type === 'PARALLEL_ANY';
+    const nextCandidates = candidates.map((currentCandidate) => {
+      if (currentCandidate.id === completedCandidate?.id) {
+        return completedCandidate;
+      }
+
+      if (
+        shouldCancelOpenCandidates &&
+        (currentCandidate.status === TaskCandidateStatusEnum.PENDING ||
+          currentCandidate.status === TaskCandidateStatusEnum.CLAIMED)
+      ) {
+        return Object.assign(new TaskCandidateEntity(), currentCandidate, {
+          decidedAt,
+          status: TaskCandidateStatusEnum.CANCELLED,
+        });
+      }
+
+      return currentCandidate;
     });
+
+    if (nextCandidates.length > 0) {
+      await taskCandidateRepository.save(nextCandidates);
+    }
+
+    return nextCandidates;
   }
 
   private async transferTask(
@@ -1591,17 +1896,25 @@ export class WorkflowEngineService {
     transferToMemberId: string | null,
     decisionComment: string | null,
     decidedAt: Date,
+    actorCandidate: TaskCandidateEntity | null,
   ): Promise<void> {
     if (!transferToMemberId) {
       throw new BadRequestException('Transfer target member is required');
     }
 
     const taskRepository = manager.getRepository(TaskEntity);
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
+    const transferringMemberId = task.assigneeMemberId;
+
+    if (!transferringMemberId) {
+      throw new ConflictException('Task must be claimed before transfer');
+    }
+
     const nextDelegationChain: readonly DelegationStep[] = [
       ...readDelegationSteps(task.delegationChain),
       {
-        from: task.assigneeMemberId,
+        from: transferringMemberId,
         reason: 'MANUAL_TRANSFER',
         ruleId: null,
         to: transferToMemberId,
@@ -1616,7 +1929,9 @@ export class WorkflowEngineService {
     const nextTask = await taskRepository.save(
       taskRepository.create({
         assigneeMemberId: transferToMemberId,
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
         completedAt: null,
+        decisionPolicySnapshot: { type: 'SINGLE' },
         delegationChain: nextDelegationChain,
         instanceId: task.instanceId,
         nodeId: task.nodeId,
@@ -1627,6 +1942,28 @@ export class WorkflowEngineService {
         tokenId: task.tokenId,
       }),
     );
+    await taskCandidateRepository.save([
+      ...(actorCandidate
+        ? [
+            taskCandidateRepository.create({
+              ...actorCandidate,
+              decidedAt,
+              status: TaskCandidateStatusEnum.TRANSFERRED,
+            }),
+          ]
+        : []),
+      taskCandidateRepository.create({
+        claimedAt: null,
+        createdAt: decidedAt,
+        decidedAt: null,
+        delegationChain: nextDelegationChain,
+        memberId: transferToMemberId,
+        originalMemberId: task.originalAssigneeMemberId ?? transferToMemberId,
+        sourceType: 'DIRECT',
+        status: TaskCandidateStatusEnum.PENDING,
+        taskId: nextTask.id,
+      }),
+    ]);
 
     await activityRepository.save([
       activityRepository.create({
@@ -1645,7 +1982,7 @@ export class WorkflowEngineService {
         taskId: transferredTask.id,
       }),
       activityRepository.create({
-        actorMemberId: task.assigneeMemberId,
+        actorMemberId: transferringMemberId,
         eventType: ActivityLogEventTypeEnum.TASK_CREATED,
         instanceId: instance.id,
         nodeId: task.nodeId,
@@ -1675,17 +2012,53 @@ export class WorkflowEngineService {
     }
   }
 
-  private async resolveAssigneeMemberId(
+  private async resolveRuntimeTaskCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<string> {
-    return this.resolveApproverResolver(
+  ): Promise<readonly RuntimeTaskCandidate[]> {
+    const resolvedCandidates = await this.resolveApproverResolver(
       manager,
       instance,
       node.data.approverResolver,
       `簽核節點「${node.data.label}」`,
     );
+    const context = {
+      formData: instance.formData,
+      initiatorMemberId: instance.initiatorMemberId,
+      initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
+      instanceId: instance.id,
+      nodeId: node.id,
+      state: instance.state,
+      templateId: instance.templateId,
+      templateVersionId: instance.templateVersionId,
+      title: instance.title,
+    };
+    const delegatedCandidates = await Promise.all(
+      resolvedCandidates.map(async (candidate): Promise<RuntimeTaskCandidate> => {
+        const delegationResolution =
+          await this.delegationService.resolveAssignee(
+            candidate.memberId,
+            context,
+          );
+
+        return {
+          delegationChain: delegationResolution.delegationChain,
+          memberId: delegationResolution.finalAssigneeMemberId,
+          originalMemberId: candidate.memberId,
+          sourceType: candidate.sourceType,
+        };
+      }),
+    );
+    const uniqueCandidates = uniqueRuntimeCandidates(delegatedCandidates);
+
+    if (uniqueCandidates.length === 0) {
+      throw new ConflictException(
+        `簽核節點「${node.data.label}」 did not resolve to any member id`,
+      );
+    }
+
+    return uniqueCandidates;
   }
 
   private async resolveApproverResolver(
@@ -1693,62 +2066,97 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     resolver: ApproverResolver,
     label: string,
-  ): Promise<string> {
+  ): Promise<readonly ResolvedApproverCandidate[]> {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdFromValue(resolver.memberIds, label);
-    }
-
-    if (resolver.type === 'DYNAMIC_FORM') {
-      return readMemberIdFromValue(
-        readValueAtPath(instance.formData, resolver.formPath),
-        `${label}.formPath`,
+      return readMemberIdsFromValue(resolver.memberIds, label).map(
+        (memberId) => ({ memberId, sourceType: resolver.type }),
       );
     }
 
+    if (resolver.type === 'DYNAMIC_FORM') {
+      return readMemberIdsFromValue(
+        readValueAtPath(instance.formData, resolver.formPath),
+        `${label}.formPath`,
+      ).map((memberId) => ({ memberId, sourceType: resolver.type }));
+    }
+
     if (resolver.type === 'EXPRESSION') {
-      return readMemberIdFromValue(
+      return readMemberIdsFromValue(
         this.conditionService.evaluateValue(
           resolver.expression,
           buildWorkflowExpressionContext(instance),
           `${label}.expression`,
         ),
         `${label}.expression`,
-      );
+      ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
     if (resolver.type === 'POSITION') {
-      return this.resolvePositionAssignee(manager, resolver.positionId, label);
+      return this.resolvePositionCandidates(
+        manager,
+        resolver.positionId,
+        label,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'ORG_UNIT_MEMBER') {
+      return this.resolveOrgUnitMemberCandidates(
+        manager,
+        resolver.orgUnitId,
+        Boolean(resolver.includeDescendants),
+        label,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'ORG_UNIT_POSITION') {
+      return this.resolveOrgUnitPositionCandidates(
+        manager,
+        resolver.orgUnitId,
+        resolver.positionId,
+        Boolean(resolver.includeDescendants),
+        label,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
     }
 
     if (resolver.type === 'ORG_UNIT_MANAGER') {
-      return this.resolveOrgUnitManagerAssignee(
+      return this.resolveOrgUnitManagerCandidates(
         manager,
         instance,
         resolver.orgUnitId,
         resolver.fallback,
         label,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
-    return this.resolveInitiatorManagerAssignee(
+    return this.resolveInitiatorManagerCandidates(
       manager,
       instance,
       resolver.levelsUp,
       resolver.fallback,
       label,
+    ).then((memberIds) =>
+      memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
     );
   }
 
-  private async resolvePositionAssignee(
+  private async resolvePositionCandidates(
     manager: EntityManager,
     positionId: string,
     label: string,
-  ): Promise<string> {
+  ): Promise<readonly string[]> {
     const today = toDateOnlyString(new Date());
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { positionId },
     });
-    const activeMembership = memberships
+    const activeMemberships = memberships
       .filter(
         (membership) =>
           membership.effectiveFrom <= today &&
@@ -1760,42 +2168,44 @@ export class WorkflowEngineService {
         }
 
         return second.effectiveFrom.localeCompare(first.effectiveFrom);
-      })[0];
+      });
 
-    if (!activeMembership) {
+    if (!activeMemberships.length) {
       throw new ConflictException(
         `${label} position ${positionId} has no active membership`,
       );
     }
 
-    return activeMembership.memberId;
+    return uniqueTexts(activeMemberships.map((membership) => membership.memberId));
   }
 
-  private async resolveInitiatorManagerAssignee(
+  private async resolveInitiatorManagerCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     levelsUp: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
-  ): Promise<string> {
+  ): Promise<readonly string[]> {
     const normalizedLevelsUp = Math.max(Math.trunc(levelsUp), 1);
-    const resolvedManagerMemberId =
-      await this.resolveManagerMemberIdFromOrganization(
+    const resolvedManagerMemberIds =
+      await this.resolveManagerMemberIdsFromOrganization(
         manager,
         instance.initiatorMemberId,
         normalizedLevelsUp,
       );
 
-    if (resolvedManagerMemberId) {
-      return resolvedManagerMemberId;
+    if (resolvedManagerMemberIds.length) {
+      return resolvedManagerMemberIds;
     }
 
-    return this.resolveFallbackAssignee(
+    return [
+      this.resolveFallbackAssignee(
       instance,
       fallback,
       label,
       `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
-    );
+      ),
+    ];
   }
 
   private resolveFallbackAssignee(
@@ -1828,12 +2238,12 @@ export class WorkflowEngineService {
     return fallback.memberId;
   }
 
-  private async resolveManagerMemberIdFromOrganization(
+  private async resolveManagerMemberIdsFromOrganization(
     manager: EntityManager,
     memberId: string,
     levelsUp: number,
-  ): Promise<string | null> {
-    return this.resolveManagerMemberIdAtLevel(
+  ): Promise<readonly string[]> {
+    return this.resolveManagerMemberIdsAtLevel(
       manager,
       memberId,
       toDateOnlyString(new Date()),
@@ -1841,35 +2251,41 @@ export class WorkflowEngineService {
     );
   }
 
-  private async resolveManagerMemberIdAtLevel(
+  private async resolveManagerMemberIdsAtLevel(
     manager: EntityManager,
     memberId: string,
     date: string,
     remainingLevels: number,
-  ): Promise<string | null> {
-    const directManagerMemberId = await this.resolveDirectManagerMemberId(
+  ): Promise<readonly string[]> {
+    const directManagerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       memberId,
       date,
     );
 
-    if (remainingLevels <= 1 || !directManagerMemberId) {
-      return directManagerMemberId;
+    if (remainingLevels <= 1 || directManagerMemberIds.length === 0) {
+      return directManagerMemberIds;
     }
 
-    return this.resolveManagerMemberIdAtLevel(
-      manager,
-      directManagerMemberId,
-      date,
-      remainingLevels - 1,
+    const nextLevelGroups = await Promise.all(
+      directManagerMemberIds.map((managerMemberId) =>
+        this.resolveManagerMemberIdsAtLevel(
+          manager,
+          managerMemberId,
+          date,
+          remainingLevels - 1,
+        ),
+      ),
     );
+
+    return uniqueTexts(nextLevelGroups.flat());
   }
 
-  private async resolveDirectManagerMemberId(
+  private async resolveDirectManagerMemberIds(
     manager: EntityManager,
     memberId: string,
     date: string,
-  ): Promise<string | null> {
+  ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
     });
@@ -1898,25 +2314,25 @@ export class WorkflowEngineService {
       })),
     ];
 
-    return this.resolveManagerResolutionCandidate(
+    return this.resolveManagerResolutionCandidates(
       manager,
       candidatePairs,
       date,
     );
   }
 
-  private async resolveOrgUnitManagerAssignee(
+  private async resolveOrgUnitManagerCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     orgUnitId: string,
     fallback: ApproverResolverFallback | undefined,
     label: string,
-  ): Promise<string> {
+  ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
     const orgUnitIds = await this.readOrgUnitAndAncestorIds(manager, [
       orgUnitId,
     ]);
-    const managerMemberId = await this.resolveManagerResolutionCandidate(
+    const managerMemberIds = await this.resolveManagerResolutionCandidates(
       manager,
       orgUnitIds.map((scopeId) => ({
         scopeId,
@@ -1925,16 +2341,18 @@ export class WorkflowEngineService {
       date,
     );
 
-    if (!managerMemberId) {
-      return this.resolveFallbackAssignee(
-        instance,
-        fallback,
-        label,
-        `找不到指定組織的主管規則`,
-      );
+    if (!managerMemberIds.length) {
+      return [
+        this.resolveFallbackAssignee(
+          instance,
+          fallback,
+          label,
+          `找不到指定組織的主管規則`,
+        ),
+      ];
     }
 
-    return managerMemberId;
+    return managerMemberIds;
   }
 
   private async readOrgUnitAndAncestorIds(
@@ -1967,18 +2385,18 @@ export class WorkflowEngineService {
     return [...byId.keys()];
   }
 
-  private async resolveManagerResolutionCandidate(
+  private async resolveManagerResolutionCandidates(
     manager: EntityManager,
     candidatePairs: readonly {
       readonly scopeId: string;
       readonly scopeType: ManagerResolutionScopeTypeEnum;
     }[],
     date: string,
-  ): Promise<string | null> {
+  ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
     if (!scopeIds.length) {
-      return null;
+      return [];
     }
 
     const resolutions = await manager
@@ -2004,7 +2422,91 @@ export class WorkflowEngineService {
       .filter((resolution) => isDateRangeActive(resolution, date))
       .sort(compareManagerResolution);
 
-    return active[0]?.managerMemberId ?? null;
+    return uniqueTexts(active.map((resolution) => resolution.managerMemberId));
+  }
+
+  private async resolveOrgUnitMemberCandidates(
+    manager: EntityManager,
+    orgUnitId: string,
+    includeDescendants: boolean,
+    label: string,
+  ): Promise<readonly string[]> {
+    const orgUnitIds = await this.readOrgUnitScopeIds(
+      manager,
+      orgUnitId,
+      includeDescendants,
+    );
+    const today = toDateOnlyString(new Date());
+    const memberships = await manager.getRepository(MembershipEntity).find({
+      where: { orgUnitId: In([...orgUnitIds]) },
+    });
+    const memberIds = memberships
+      .filter((membership) => isDateRangeActive(membership, today))
+      .sort(compareMembership)
+      .map((membership) => membership.memberId);
+
+    if (memberIds.length === 0) {
+      throw new ConflictException(`${label} orgUnit ${orgUnitId} has no active member`);
+    }
+
+    return uniqueTexts(memberIds);
+  }
+
+  private async resolveOrgUnitPositionCandidates(
+    manager: EntityManager,
+    orgUnitId: string,
+    positionId: string,
+    includeDescendants: boolean,
+    label: string,
+  ): Promise<readonly string[]> {
+    const orgUnitIds = await this.readOrgUnitScopeIds(
+      manager,
+      orgUnitId,
+      includeDescendants,
+    );
+    const today = toDateOnlyString(new Date());
+    const memberships = await manager.getRepository(MembershipEntity).find({
+      where: { orgUnitId: In([...orgUnitIds]), positionId },
+    });
+    const memberIds = memberships
+      .filter((membership) => isDateRangeActive(membership, today))
+      .sort(compareMembership)
+      .map((membership) => membership.memberId);
+
+    if (memberIds.length === 0) {
+      throw new ConflictException(
+        `${label} orgUnit ${orgUnitId} and position ${positionId} has no active membership`,
+      );
+    }
+
+    return uniqueTexts(memberIds);
+  }
+
+  private async readOrgUnitScopeIds(
+    manager: EntityManager,
+    orgUnitId: string,
+    includeDescendants: boolean,
+  ): Promise<readonly string[]> {
+    const orgUnitRepository = manager.getRepository(OrgUnitEntity);
+    const orgUnit = await orgUnitRepository.findOne({
+      where: { deletedAt: IsNull(), id: orgUnitId },
+    });
+
+    if (!orgUnit) {
+      throw new ConflictException(`Org unit ${orgUnitId} was not found`);
+    }
+
+    if (!includeDescendants) {
+      return [orgUnit.id];
+    }
+
+    const descendants = await orgUnitRepository
+      .createQueryBuilder('orgUnit')
+      .where('orgUnit.deleted_at IS NULL')
+      .andWhere('orgUnit.path <@ :path', { path: orgUnit.path })
+      .getMany();
+
+    return uniqueTexts([orgUnit.id, ...descendants.map((unit) => unit.id)]);
   }
 
   private async processExclusiveGateway(
@@ -2813,22 +3315,135 @@ function edgeHasCondition(edge: WorkflowEdge): boolean {
 }
 
 function readMemberIdFromValue(value: unknown, label: string): string {
+  return readMemberIdsFromValue(value, label)[0] ?? '';
+}
+
+function readMemberIdsFromValue(
+  value: unknown,
+  label: string,
+): readonly string[] {
   if (typeof value === 'string' && value.trim()) {
-    return value.trim();
+    return [value.trim()];
   }
 
   if (Array.isArray(value)) {
-    const memberId = value.find(
-      (candidate): candidate is string =>
+    const memberIds = value
+      .filter(
+        (candidate): candidate is string =>
         typeof candidate === 'string' && Boolean(candidate.trim()),
-    );
+      )
+      .map((candidate) => candidate.trim());
 
-    if (memberId) {
-      return memberId.trim();
+    if (memberIds.length > 0) {
+      return uniqueTexts(memberIds);
     }
   }
 
   throw new ConflictException(`${label} did not resolve to a member id`);
+}
+
+function uniqueTexts(values: readonly string[]): readonly string[] {
+  return [...new Set(values.filter((value) => value.trim()))];
+}
+
+function uniqueRuntimeCandidates(
+  candidates: readonly RuntimeTaskCandidate[],
+): readonly RuntimeTaskCandidate[] {
+  const seen = new Set<string>();
+
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.memberId)) {
+      return false;
+    }
+
+    seen.add(candidate.memberId);
+
+    return true;
+  });
+}
+
+function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {
+  const seen = new Set<string>();
+
+  return tasks.filter((task) => {
+    if (seen.has(task.id)) {
+      return false;
+    }
+
+    seen.add(task.id);
+
+    return true;
+  });
+}
+
+function readDecisionPolicySnapshot(task: TaskEntity): DecisionPolicy {
+  const value = task.decisionPolicySnapshot;
+
+  if (
+    isRecord(value) &&
+    typeof value.type === 'string' &&
+    (value.type === 'SINGLE' ||
+      value.type === 'SEQUENTIAL' ||
+      value.type === 'PARALLEL_ALL' ||
+      value.type === 'PARALLEL_ANY')
+  ) {
+    return { type: value.type };
+  }
+
+  if (
+    isRecord(value) &&
+    value.type === 'QUORUM' &&
+    typeof value.threshold === 'number' &&
+    (value.thresholdType === 'COUNT' || value.thresholdType === 'PERCENTAGE')
+  ) {
+    return {
+      threshold: value.threshold,
+      thresholdType: value.thresholdType,
+      type: 'QUORUM',
+    };
+  }
+
+  return { type: 'SINGLE' };
+}
+
+function shouldCompleteTaskAfterDecision({
+  action,
+  candidates,
+  decisionPolicy,
+}: {
+  readonly action: TaskDecisionActionEnum;
+  readonly candidates: readonly TaskCandidateEntity[];
+  readonly decisionPolicy: DecisionPolicy;
+}): boolean {
+  if (action !== TaskDecisionActionEnum.APPROVED) {
+    return true;
+  }
+
+  if (
+    decisionPolicy.type === 'SINGLE' ||
+    decisionPolicy.type === 'PARALLEL_ANY'
+  ) {
+    return true;
+  }
+
+  const completedCount = candidates.filter(
+    (candidate) => candidate.status === TaskCandidateStatusEnum.COMPLETED,
+  ).length;
+  const totalCount = Math.max(candidates.length, 1);
+
+  if (
+    decisionPolicy.type === 'PARALLEL_ALL' ||
+    decisionPolicy.type === 'SEQUENTIAL'
+  ) {
+    return completedCount >= totalCount;
+  }
+
+  const threshold =
+    decisionPolicy.thresholdType === 'PERCENTAGE'
+      ? Math.ceil((totalCount * decisionPolicy.threshold) / 100)
+      : decisionPolicy.threshold;
+
+  return completedCount >= Math.max(threshold, 1);
 }
 
 function readValueAtPath(
@@ -2912,6 +3527,17 @@ function readManagerResolutionScopeRank(
   };
 
   return ranks[scopeType];
+}
+
+function compareMembership(
+  left: MembershipEntity,
+  right: MembershipEntity,
+): number {
+  if (left.isPrimary !== right.isPrimary) {
+    return left.isPrimary ? -1 : 1;
+  }
+
+  return right.effectiveFrom.localeCompare(left.effectiveFrom);
 }
 
 function toDateOnlyString(value: Date): string {

@@ -36,7 +36,6 @@ import * as dagre from 'dagre';
 import {
   AutoComplete,
   Button,
-  FormField,
   Icon,
   Input,
   Layout,
@@ -50,7 +49,6 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import {
   CheckedIcon,
   DotGridIcon,
@@ -87,8 +85,10 @@ import {
   readOrgUnitOption,
   readPositionOption,
 } from '../../../admin/_components/admin-pickers';
+import { BPMFormField } from '../../../_components/bpm-form-field';
 import {
   OrgUnitRecord,
+  MembershipRecord,
   PositionRecord,
   readOrganizationDashboard,
 } from '../../../admin/_lib/organization-api';
@@ -148,17 +148,21 @@ type MemberSelectOption = Readonly<{
   memberId: string;
   name: string;
 }>;
-type InitiatorPolicyMode = 'ALL' | 'CUSTOM' | 'NONE' | 'ORG' | 'ROLE';
+type InitiatorPolicyMode =
+  | 'ALL'
+  | 'CUSTOM'
+  | 'NONE'
+  | 'ORG_UNIT'
+  | 'ORG_UNIT_POSITION';
 type InitiatorPolicyDraft = Readonly<{
+  includeDescendants?: boolean;
   mode: InitiatorPolicyMode;
+  orgUnitId?: string;
+  positionId?: string;
   value: string;
 }>;
 type InitiatorPolicyModeOption = Readonly<{
   id: InitiatorPolicyMode;
-  name: string;
-}>;
-type InitiatorPolicyValueOption = Readonly<{
-  id: string;
   name: string;
 }>;
 type ReturnResubmitStrategyOption = Readonly<{
@@ -167,7 +171,12 @@ type ReturnResubmitStrategyOption = Readonly<{
 }>;
 type ApproverResolverMode = Extract<
   ApproverResolver['type'],
-  'DIRECT' | 'ORG_MANAGER' | 'ORG_UNIT_MANAGER' | 'POSITION'
+  | 'DIRECT'
+  | 'ORG_MANAGER'
+  | 'ORG_UNIT_MANAGER'
+  | 'ORG_UNIT_MEMBER'
+  | 'ORG_UNIT_POSITION'
+  | 'POSITION'
 >;
 type ApproverResolverModeOption = Readonly<{
   id: ApproverResolverMode;
@@ -441,6 +450,8 @@ const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'DIRECT', name: '指定會員' },
   { id: 'ORG_MANAGER', name: '發起人主管' },
   { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
+  { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
+  { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
   { id: 'POSITION', name: '指定職位' },
 ];
 const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
@@ -474,23 +485,13 @@ const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperato
 const INITIATOR_POLICY_MODE_OPTIONS: readonly InitiatorPolicyModeOption[] = [
   { id: 'NONE', name: '未設定' },
   { id: 'ALL', name: '所有人' },
-  { id: 'ROLE', name: '指定角色' },
-  { id: 'ORG', name: '指定組織代碼' },
+  { id: 'ORG_UNIT', name: '指定組織' },
+  { id: 'ORG_UNIT_POSITION', name: '指定組織職位' },
 ];
 const INITIATOR_POLICY_CUSTOM_OPTION: InitiatorPolicyModeOption = {
   id: 'CUSTOM',
   name: '既有自訂規則',
 };
-const INITIATOR_ROLE_OPTIONS: readonly InitiatorPolicyValueOption[] = [
-  { id: 'manager', name: 'manager' },
-  { id: 'finance', name: 'finance' },
-  { id: 'IT', name: 'IT' },
-];
-const INITIATOR_ORG_OPTIONS: readonly InitiatorPolicyValueOption[] = [
-  { id: 'HQ', name: 'HQ' },
-  { id: 'BPM-HQ', name: 'BPM-HQ' },
-  { id: 'FIN-TW', name: 'FIN-TW' },
-];
 const DRY_RUN_MEMBER_ID = 'member-001';
 
 const nodeTypes: NodeTypes = {
@@ -520,6 +521,8 @@ export default function TemplateDesignerPage(): ReactElement {
   );
   const [initiatorPolicyModeDraft, setInitiatorPolicyModeDraft] =
     useState<Exclude<InitiatorPolicyMode, 'CUSTOM'> | null>(null);
+  const [initiatorPolicyDraftOverride, setInitiatorPolicyDraftOverride] =
+    useState<InitiatorPolicyDraft | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>('start');
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<readonly string[]>([]);
   const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
@@ -536,6 +539,9 @@ export default function TemplateDesignerPage(): ReactElement {
   >([]);
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
+  const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
+    [],
+  );
   const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
@@ -652,8 +658,13 @@ export default function TemplateDesignerPage(): ReactElement {
   );
   const initiatorPolicyDraft = useMemo(
     (): InitiatorPolicyDraft =>
+      initiatorPolicyDraftOverride ??
       readInitiatorPolicyUiDraft(initiatorPolicyCel, initiatorPolicyModeDraft),
-    [initiatorPolicyCel, initiatorPolicyModeDraft],
+    [
+      initiatorPolicyCel,
+      initiatorPolicyDraftOverride,
+      initiatorPolicyModeDraft,
+    ],
   );
   const flowNodes = useMemo(
     (): FlowNode[] =>
@@ -733,6 +744,7 @@ export default function TemplateDesignerPage(): ReactElement {
       setDraft(nextDraft);
       setOrgUnits(organizationDashboard.orgUnits);
       setPositions(organizationDashboard.positions);
+      setMemberships(organizationDashboard.memberships);
       setFormVersionOptions(
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
@@ -753,6 +765,7 @@ export default function TemplateDesignerPage(): ReactElement {
           ? 'NONE'
           : null,
       );
+      setInitiatorPolicyDraftOverride(null);
       setSelectedNodeId(
         sourceVersion?.workflowDefinition.nodes[0]?.id ?? 'start',
       );
@@ -909,13 +922,10 @@ export default function TemplateDesignerPage(): ReactElement {
       const result = await dryRunApprovalWorkflow({
         formData,
         initiatorMemberId: DRY_RUN_MEMBER_ID,
-        initiatorMetadataSnapshot: {
-          customFields: {},
-          managerMemberId: 'member-002',
-          memberId: DRY_RUN_MEMBER_ID,
-          orgCode: 'HQ',
-          roles: ['manager'],
-        },
+        initiatorMetadataSnapshot: readDryRunInitiatorMetadataSnapshot(
+          DRY_RUN_MEMBER_ID,
+          memberships,
+        ),
         workflowDefinition,
       });
 
@@ -1077,11 +1087,15 @@ export default function TemplateDesignerPage(): ReactElement {
   }
 
   function updateInitiatorPolicyDraft(
-    mode: Exclude<InitiatorPolicyMode, 'ALL' | 'CUSTOM'>,
-    value: string,
+    draft: InitiatorPolicyDraft,
   ): void {
-    setInitiatorPolicyModeDraft(mode);
-    setInitiatorPolicyCel(readInitiatorPolicyCel({ mode, value }));
+    setInitiatorPolicyDraftOverride(
+      draft.mode === 'ALL' || draft.mode === 'CUSTOM' ? null : draft,
+    );
+    setInitiatorPolicyModeDraft(
+      draft.mode === 'ALL' || draft.mode === 'CUSTOM' ? null : draft.mode,
+    );
+    setInitiatorPolicyCel(readInitiatorPolicyCel(draft, orgUnits));
   }
 
   function updateSelectedNodeTriggerMode(
@@ -1296,16 +1310,13 @@ export default function TemplateDesignerPage(): ReactElement {
                 </Typography>
               ) : null}
               <div style={FORM_STACK_STYLE}>
-                <FormField
-                  density={FormFieldDensity.WIDE}
-                  fullWidth
+                <BPMFormField
                   hintText={
                     formVersionBindingLocked
                       ? '已設定條件分流條件。請先移除所有條件，才能更換綁定表單版本。'
                       : undefined
                   }
                   label="綁定表單版本"
-                  layout={FormFieldLayout.STRETCH}
                   name="formDefinitionVersionId"
                   required
                 >
@@ -1342,7 +1353,7 @@ export default function TemplateDesignerPage(): ReactElement {
                     searchDebounceTime={300}
                     value={selectedFormVersionOption}
                   />
-                </FormField>
+                </BPMFormField>
               </div>
               <div style={TWO_COLUMN_STYLE}>
                 <div ref={flowCanvasRef} style={FLOW_CANVAS_STYLE}>
@@ -1475,11 +1486,8 @@ export default function TemplateDesignerPage(): ReactElement {
         title="試跑流程"
       >
         <div style={FORM_STACK_STYLE}>
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
+          <BPMFormField
             label="表單資料 JSON"
-            layout={FormFieldLayout.STRETCH}
             name="dryRunFormDataJson"
             required
           >
@@ -1491,7 +1499,7 @@ export default function TemplateDesignerPage(): ReactElement {
               rows={8}
               value={dryRunFormDataJson}
             />
-          </FormField>
+          </BPMFormField>
           {dryRunError ? (
             <Typography color="text-error" variant="body">
               {dryRunError}
@@ -1555,23 +1563,15 @@ export default function TemplateDesignerPage(): ReactElement {
         <Typography color="text-neutral" variant="body">
           {NODE_TYPE_LABELS[node.type]} · {node.id}
         </Typography>
-        <FormField
-          density={FormFieldDensity.WIDE}
-          fullWidth
-          label="顯示名稱"
-          layout={FormFieldLayout.STRETCH}
-          name="nodeLabel"
-          required
-        >
+        <BPMFormField label="顯示名稱" name="nodeLabel" required>
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedNodeLabel(event.target.value)
             }
             value={node.data.label}
             variant="base"
           />
-        </FormField>
+        </BPMFormField>
         {node.type === 'startEvent' ? renderStartEventPanel() : null}
         {node.type !== 'startEvent' ? renderNodeTriggerModePanel(node) : null}
         {node.type === 'userTask' ? renderUserTaskPanel(node) : null}
@@ -1585,40 +1585,63 @@ export default function TemplateDesignerPage(): ReactElement {
       initiatorPolicyDraft.mode === 'CUSTOM'
         ? [...INITIATOR_POLICY_MODE_OPTIONS, INITIATOR_POLICY_CUSTOM_OPTION]
         : [...INITIATOR_POLICY_MODE_OPTIONS];
-    // TODO: Replace these addable local options with server-controlled async role/org autocomplete when ABAC directory APIs are implemented.
-    const roleOptions = readInitiatorPolicyValueOptions(
-      INITIATOR_ROLE_OPTIONS,
-      initiatorPolicyDraft.mode === 'ROLE' ? initiatorPolicyDraft.value : '',
-    );
-    const orgOptions = readInitiatorPolicyValueOptions(
-      INITIATOR_ORG_OPTIONS,
-      initiatorPolicyDraft.mode === 'ORG' ? initiatorPolicyDraft.value : '',
-    );
+    const selectedInitiatorOrgUnit =
+      initiatorPolicyDraft.mode === 'ORG_UNIT' ||
+      initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
+        ? readSelectedOrgUnitOption(
+            orgUnits,
+            initiatorPolicyDraft.orgUnitId ?? '',
+          )
+        : null;
+    const selectedInitiatorPosition =
+      initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
+        ? readSelectedPositionOption(
+            positions,
+            initiatorPolicyDraft.positionId ?? '',
+          )
+        : null;
+    const initiatorScopedPositions =
+      initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
+        ? readOrgScopedPositions({
+            includeDescendants: Boolean(
+              initiatorPolicyDraft.includeDescendants,
+            ),
+            memberships,
+            orgUnitId: initiatorPolicyDraft.orgUnitId ?? '',
+            orgUnits,
+            positions,
+          })
+        : [];
 
     return (
       <>
-        <FormField
-          density={FormFieldDensity.WIDE}
-          fullWidth
+        <BPMFormField
           hintText={
             initiatorPolicyDraft.mode === 'CUSTOM'
               ? '這是舊版表達式規則；切換成標準選項後會改由 UI 管理。'
               : undefined
           }
           label="發起權限"
-          layout={FormFieldLayout.STRETCH}
           name="initiatorPolicyMode"
           required
         >
           <Select
             clearable={false}
-            fullWidth
             onChange={(option): void => {
+              if (option?.id === 'CUSTOM') {
+                setInitiatorPolicyModeDraft(null);
+                setInitiatorPolicyDraftOverride(null);
+
+                return;
+              }
+
               const mode = readInitiatorPolicyMode(option?.id ?? null);
+              const draft = readDefaultInitiatorPolicyDraft(mode);
 
               setInitiatorPolicyModeDraft(mode === 'ALL' ? null : mode);
+              setInitiatorPolicyDraftOverride(mode === 'ALL' ? null : draft);
               setInitiatorPolicyCel(
-                readInitiatorPolicyCel({ mode, value: '' }),
+                readInitiatorPolicyCel(draft, orgUnits),
               );
             }}
             options={policyModeOptions}
@@ -1628,66 +1651,63 @@ export default function TemplateDesignerPage(): ReactElement {
               initiatorPolicyDraft.mode,
             )}
           />
-        </FormField>
-        {initiatorPolicyDraft.mode === 'ROLE' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
-            label="角色代碼"
-            layout={FormFieldLayout.STRETCH}
-            name="initiatorRole"
-            required
-          >
-            <AutoComplete
-              addable
-              createActionTextTemplate='使用 "{text}"'
-              emptyText="沒有符合的角色"
-              inputProps={{
-                autoCapitalize: 'none',
-                autoCorrect: 'off',
-                name: 'workflow-initiator-role',
-                spellCheck: false,
-              }}
-              mode="single"
+        </BPMFormField>
+        {initiatorPolicyDraft.mode === 'ORG_UNIT' ||
+        initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="組織" name="initiatorOrgUnitId" required>
+            <OrgUnitPicker
+              name="initiatorOrgUnitId"
               onChange={(option): void =>
-                updateInitiatorPolicyDraft('ROLE', option?.id ?? '')
+                updateInitiatorPolicyDraft({
+                  ...initiatorPolicyDraft,
+                  orgUnitId: option?.id ?? '',
+                  positionId: '',
+                  value: option?.id ?? '',
+                })
               }
-              onInsert={insertFreeTextOption}
-              options={[...roleOptions]}
-              placeholder="例如：manager"
-              value={readSelectOption(roleOptions, initiatorPolicyDraft.value)}
+              orgUnits={orgUnits}
+              placeholder="選擇組織"
+              value={selectedInitiatorOrgUnit}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
-        {initiatorPolicyDraft.mode === 'ORG' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
-            label="組織代碼"
-            layout={FormFieldLayout.STRETCH}
-            name="initiatorOrgCode"
-            required
-          >
-            <AutoComplete
-              addable
-              createActionTextTemplate='使用 "{text}"'
-              emptyText="沒有符合的組織代碼"
-              inputProps={{
-                autoCapitalize: 'none',
-                autoCorrect: 'off',
-                name: 'workflow-initiator-org-code',
-                spellCheck: false,
-              }}
-              mode="single"
-              onChange={(option): void =>
-                updateInitiatorPolicyDraft('ORG', option?.id ?? '')
+        {initiatorPolicyDraft.mode === 'ORG_UNIT' ||
+        initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="包含下層" name="initiatorIncludeDescendants">
+            <Toggle
+              checked={Boolean(initiatorPolicyDraft.includeDescendants)}
+              onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                updateInitiatorPolicyDraft({
+                  ...initiatorPolicyDraft,
+                  includeDescendants: event.target.checked,
+                  ...(initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
+                    ? { positionId: '' }
+                    : {}),
+                })
               }
-              onInsert={insertFreeTextOption}
-              options={[...orgOptions]}
-              placeholder="例如：HQ"
-              value={readSelectOption(orgOptions, initiatorPolicyDraft.value)}
             />
-          </FormField>
+          </BPMFormField>
+        ) : null}
+        {initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="職位" name="initiatorPositionId" required>
+            <PositionPicker
+              disabled={!initiatorPolicyDraft.orgUnitId?.trim()}
+              name="initiatorPositionId"
+              onChange={(option): void =>
+                updateInitiatorPolicyDraft({
+                  ...initiatorPolicyDraft,
+                  positionId: option?.id ?? '',
+                })
+              }
+              placeholder={
+                initiatorPolicyDraft.orgUnitId?.trim()
+                  ? '選擇職位'
+                  : '請先選擇組織'
+              }
+              positions={initiatorScopedPositions}
+              value={selectedInitiatorPosition}
+            />
+          </BPMFormField>
         ) : null}
       </>
     );
@@ -1705,9 +1725,7 @@ export default function TemplateDesignerPage(): ReactElement {
       : (node.data.triggerMode ?? 'AND');
 
     return (
-      <FormField
-        density={FormFieldDensity.WIDE}
-        fullWidth
+      <BPMFormField
         hintText={
           triggerModeLocked
             ? '需要至少兩條前置連線，才可切換為任一前置完成。'
@@ -1716,13 +1734,11 @@ export default function TemplateDesignerPage(): ReactElement {
               : '只有一條前置連線時，兩種設定效果相同。'
         }
         label="前置條件"
-        layout={FormFieldLayout.STRETCH}
         name="triggerMode"
         required
       >
         <Select
           clearable={false}
-          fullWidth
           onChange={(option): void =>
             triggerModeLocked
               ? undefined
@@ -1734,7 +1750,7 @@ export default function TemplateDesignerPage(): ReactElement {
           readOnly={triggerModeLocked}
           value={readSelectOption(NODE_TRIGGER_MODE_OPTIONS, triggerMode)}
         />
-      </FormField>
+      </BPMFormField>
     );
   }
 
@@ -1748,13 +1764,25 @@ export default function TemplateDesignerPage(): ReactElement {
         ? readPrimaryMemberOption(resolver.memberIds, memberOptions)
         : null;
     const selectedOrgUnit =
-      resolver.type === 'ORG_UNIT_MANAGER'
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MEMBER' ||
+      resolver.type === 'ORG_UNIT_POSITION'
         ? readSelectedOrgUnitOption(orgUnits, resolver.orgUnitId)
         : null;
     const selectedPosition =
-      resolver.type === 'POSITION'
+      resolver.type === 'POSITION' || resolver.type === 'ORG_UNIT_POSITION'
         ? readSelectedPositionOption(positions, resolver.positionId)
         : null;
+    const orgScopedPositions =
+      resolver.type === 'ORG_UNIT_POSITION'
+        ? readOrgScopedPositions({
+            includeDescendants: Boolean(resolver.includeDescendants),
+            memberships,
+            orgUnitId: resolver.orgUnitId,
+            orgUnits,
+            positions,
+          })
+        : [];
     const selectedManagerLevel =
       resolver.type === 'ORG_MANAGER'
         ? readManagerLevelOption(resolver.levelsUp)
@@ -1772,17 +1800,9 @@ export default function TemplateDesignerPage(): ReactElement {
 
     return (
       <>
-        <FormField
-          density={FormFieldDensity.WIDE}
-          fullWidth
-          label="簽核來源"
-          layout={FormFieldLayout.STRETCH}
-          name="approverResolverType"
-          required
-        >
+        <BPMFormField label="簽核來源" name="approverResolverType" required>
           <Select
             clearable={false}
-            fullWidth
             onChange={(option): void =>
               updateUserTaskResolver(
                 readDefaultApproverResolver(option?.id ?? null),
@@ -1794,16 +1814,9 @@ export default function TemplateDesignerPage(): ReactElement {
               resolverMode,
             )}
           />
-        </FormField>
+        </BPMFormField>
         {resolver.type === 'DIRECT' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
-            label="簽核者"
-            layout={FormFieldLayout.STRETCH}
-            name="memberId"
-            required
-          >
+          <BPMFormField label="簽核者" name="memberId" required>
             <AutoComplete
               asyncData
               disabledOptionsFilter
@@ -1834,21 +1847,17 @@ export default function TemplateDesignerPage(): ReactElement {
               searchDebounceTime={300}
               value={selectedMember}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
         {resolver.type === 'ORG_MANAGER' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
+          <BPMFormField
             hintText="依發起人的有效會員歸屬與主管解析規則決定簽核人。"
             label="主管層級"
-            layout={FormFieldLayout.STRETCH}
             name="managerLevelsUp"
             required
           >
             <Select
               clearable={false}
-              fullWidth
               onChange={(option): void =>
                 updateUserTaskResolver({
                   baseFromInitiator: true,
@@ -1860,47 +1869,62 @@ export default function TemplateDesignerPage(): ReactElement {
               options={[...MANAGER_LEVEL_OPTIONS]}
               value={selectedManagerLevel}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
-        {resolver.type === 'ORG_UNIT_MANAGER' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
-            hintText="依指定組織或其上層的主管解析規則決定簽核人。"
+        {resolver.type === 'ORG_UNIT_MANAGER' ||
+        resolver.type === 'ORG_UNIT_MEMBER' ||
+        resolver.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField
+            hintText={
+              resolver.type === 'ORG_UNIT_MANAGER'
+                ? '依指定組織或其上層的主管解析規則決定簽核人。'
+                : '依指定組織目前有效會員歸屬建立候選簽核人。'
+            }
             label="組織"
-            layout={FormFieldLayout.STRETCH}
             name="orgUnitId"
             required
           >
             <OrgUnitPicker
               name="orgUnitId"
               onChange={(option): void =>
-                updateUserTaskResolver({
-                  orgUnitId: option?.id ?? '',
-                  type: 'ORG_UNIT_MANAGER',
-                })
+                updateUserTaskResolver(
+                  resolver.type === 'ORG_UNIT_MEMBER'
+                    ? {
+                        includeDescendants: resolver.includeDescendants,
+                        orgUnitId: option?.id ?? '',
+                        type: 'ORG_UNIT_MEMBER',
+                      }
+                    : resolver.type === 'ORG_UNIT_POSITION'
+                      ? {
+                          includeDescendants: resolver.includeDescendants,
+                          orgUnitId: option?.id ?? '',
+                          positionId: '',
+                          type: 'ORG_UNIT_POSITION',
+                        }
+                      : {
+                          fallback: resolver.fallback,
+                          orgUnitId: option?.id ?? '',
+                          type: 'ORG_UNIT_MANAGER',
+                        },
+                )
               }
               orgUnits={orgUnits}
               placeholder="選擇組織"
               value={selectedOrgUnit}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
         {resolver.type === 'ORG_MANAGER' ||
         resolver.type === 'ORG_UNIT_MANAGER' ? (
           <>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
+            <BPMFormField
               hintText="預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。"
               label="無主管時"
-              layout={FormFieldLayout.STRETCH}
               name="approverFallbackMode"
               required
             >
               <Select
                 clearable={false}
-                fullWidth
                 onChange={(option): void =>
                   updateUserTaskResolver(
                     updateApproverResolverFallback(
@@ -1917,14 +1941,11 @@ export default function TemplateDesignerPage(): ReactElement {
                   fallback.type,
                 )}
               />
-            </FormField>
+            </BPMFormField>
             {fallback.type === 'DIRECT' ? (
               <>
-                <FormField
-                  density={FormFieldDensity.WIDE}
-                  fullWidth
+                <BPMFormField
                   label="改派人員"
-                  layout={FormFieldLayout.STRETCH}
                   name="approverFallbackMemberId"
                   required
                 >
@@ -1962,13 +1983,10 @@ export default function TemplateDesignerPage(): ReactElement {
                     searchDebounceTime={300}
                     value={fallbackMember}
                   />
-                </FormField>
-                <FormField
-                  density={FormFieldDensity.WIDE}
-                  fullWidth
+                </BPMFormField>
+                <BPMFormField
                   hintText="預設禁止申請人簽自己的案件；只有此流程允許自簽時才開啟。"
                   label="允許自簽"
-                  layout={FormFieldLayout.STRETCH}
                   name="allowInitiatorSelfApproval"
                 >
                   <Toggle
@@ -1983,18 +2001,32 @@ export default function TemplateDesignerPage(): ReactElement {
                       )
                     }
                   />
-                </FormField>
+                </BPMFormField>
               </>
             ) : null}
           </>
         ) : null}
+        {resolver.type === 'ORG_UNIT_MEMBER' ||
+        resolver.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="包含下層" name="includeDescendants">
+            <Toggle
+              checked={Boolean(resolver.includeDescendants)}
+              onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                updateUserTaskResolver({
+                  ...resolver,
+                  includeDescendants: event.target.checked,
+                  ...(resolver.type === 'ORG_UNIT_POSITION'
+                    ? { positionId: '' }
+                    : {}),
+                })
+              }
+            />
+          </BPMFormField>
+        ) : null}
         {resolver.type === 'POSITION' ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
+          <BPMFormField
             hintText="指派給目前有效歸屬中擁有此職位的會員；主要歸屬優先。"
             label="職位"
-            layout={FormFieldLayout.STRETCH}
             name="positionId"
             required
           >
@@ -2010,21 +2042,43 @@ export default function TemplateDesignerPage(): ReactElement {
               positions={positions}
               value={selectedPosition}
             />
-          </FormField>
+          </BPMFormField>
+        ) : null}
+        {resolver.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField
+            hintText="只納入指定組織範圍內擁有此職位的有效會員。"
+            label="職位"
+            name="orgUnitPositionId"
+            required
+          >
+            <PositionPicker
+              disabled={!resolver.orgUnitId.trim()}
+              name="orgUnitPositionId"
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  includeDescendants: resolver.includeDescendants,
+                  orgUnitId: resolver.orgUnitId,
+                  positionId: option?.id ?? '',
+                  type: 'ORG_UNIT_POSITION',
+                })
+              }
+              placeholder={
+                resolver.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
+              }
+              positions={orgScopedPositions}
+              value={selectedPosition}
+            />
+          </BPMFormField>
         ) : null}
         {node.data.returnBehavior.allowReturn ? (
-          <FormField
-            density={FormFieldDensity.WIDE}
-            fullWidth
+          <BPMFormField
             hintText="退回發起人後，重新送出時要從流程開始重跑，或直接回到退回的簽核節點。"
             label="重送策略"
-            layout={FormFieldLayout.STRETCH}
             name="returnResubmitStrategy"
             required
           >
             <Select
               clearable={false}
-              fullWidth
               onChange={(option): void =>
                 updateUserTaskReturnResubmitStrategy(
                   readReturnResubmitStrategy(option?.id ?? null),
@@ -2036,7 +2090,7 @@ export default function TemplateDesignerPage(): ReactElement {
                 resubmitStrategy,
               )}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
       </>
     );
@@ -2050,14 +2104,7 @@ export default function TemplateDesignerPage(): ReactElement {
     );
 
     return (
-      <FormField
-        density={FormFieldDensity.WIDE}
-        fullWidth
-        label="知會對象"
-        layout={FormFieldLayout.STRETCH}
-        name="notifyMemberIds"
-        required
-      >
+      <BPMFormField label="知會對象" name="notifyMemberIds" required>
         <AutoComplete
           asyncData
           disabledOptionsFilter
@@ -2087,7 +2134,7 @@ export default function TemplateDesignerPage(): ReactElement {
           searchDebounceTime={300}
           value={[...selectedMembers]}
         />
-      </FormField>
+      </BPMFormField>
     );
   }
 
@@ -2227,17 +2274,9 @@ export default function TemplateDesignerPage(): ReactElement {
                 請先綁定表單版本，才能選擇條件欄位。
               </Typography>
             ) : null}
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="條件欄位"
-              layout={FormFieldLayout.HORIZONTAL}
-              name="edgeConditionField"
-              required
-            >
+            <BPMFormField label="條件欄位" name="edgeConditionField" required>
               <Select
                 clearable={false}
-                fullWidth
                 onChange={(option): void =>
                   updateSelectedEdgeConditionState({
                     edgeId: edge.id,
@@ -2253,18 +2292,14 @@ export default function TemplateDesignerPage(): ReactElement {
                   edge.data.conditionFieldKey ?? null,
                 )}
               />
-            </FormField>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
+            </BPMFormField>
+            <BPMFormField
               label="條件判斷"
-              layout={FormFieldLayout.HORIZONTAL}
               name="edgeConditionOperator"
               required
             >
               <Select
                 clearable={false}
-                fullWidth
                 onChange={(option): void =>
                   updateSelectedEdgeConditionState({
                     edgeId: edge.id,
@@ -2276,21 +2311,13 @@ export default function TemplateDesignerPage(): ReactElement {
                 placeholder="選擇判斷方式"
                 value={selectedConditionOperator}
               />
-            </FormField>
+            </BPMFormField>
             {selectedConditionOperator &&
             shouldConditionOperatorUseValue(selectedConditionOperator.id) ? (
-              <FormField
-                density={FormFieldDensity.WIDE}
-                fullWidth
-                label="條件值"
-                layout={FormFieldLayout.HORIZONTAL}
-                name="edgeConditionValue"
-                required
-              >
+              <BPMFormField label="條件值" name="edgeConditionValue" required>
                 {conditionValueOptions.length > 0 ? (
                   <Select
                     clearable={false}
-                    fullWidth
                     onChange={(option): void =>
                       updateSelectedEdgeConditionState({
                         edgeId: edge.id,
@@ -2306,7 +2333,6 @@ export default function TemplateDesignerPage(): ReactElement {
                   />
                 ) : (
                   <Input
-                    fullWidth
                     onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                       updateSelectedEdgeConditionState({
                         edgeId: edge.id,
@@ -2318,7 +2344,7 @@ export default function TemplateDesignerPage(): ReactElement {
                     variant="base"
                   />
                 )}
-              </FormField>
+              </BPMFormField>
             ) : null}
           </>
         )}
@@ -2520,7 +2546,11 @@ function readFlowNode(
       hasOutput: isWorkflowNodeOutputConnectable(node),
       initiatorPolicySummary:
         node.type === 'startEvent'
-          ? readInitiatorPolicySummary(initiatorPolicyDraft)
+          ? readInitiatorPolicySummary(
+              initiatorPolicyDraft,
+              orgUnits,
+              positions,
+            )
           : null,
       label: node.data.label,
       nodeKind: node.type,
@@ -3146,6 +3176,8 @@ function readReturnResubmitStrategy(
 function readApproverResolverMode(value: string): ApproverResolverMode {
   return value === 'ORG_MANAGER' ||
     value === 'ORG_UNIT_MANAGER' ||
+    value === 'ORG_UNIT_MEMBER' ||
+    value === 'ORG_UNIT_POSITION' ||
     value === 'POSITION'
     ? value
     : 'DIRECT';
@@ -3160,6 +3192,23 @@ function readDefaultApproverResolver(value: string | null): ApproverResolver {
 
   if (mode === 'ORG_UNIT_MANAGER') {
     return { orgUnitId: '', type: 'ORG_UNIT_MANAGER' };
+  }
+
+  if (mode === 'ORG_UNIT_MEMBER') {
+    return {
+      includeDescendants: false,
+      orgUnitId: '',
+      type: 'ORG_UNIT_MEMBER',
+    };
+  }
+
+  if (mode === 'ORG_UNIT_POSITION') {
+    return {
+      includeDescendants: false,
+      orgUnitId: '',
+      positionId: '',
+      type: 'ORG_UNIT_POSITION',
+    };
   }
 
   if (mode === 'POSITION') {
@@ -3205,37 +3254,15 @@ function readManagerLevelOptionById(id: string | null): ManagerLevelOption {
 function readInitiatorPolicyMode(
   value: string | null,
 ): Exclude<InitiatorPolicyMode, 'CUSTOM'> {
-  if (value === 'ROLE' || value === 'ORG' || value === 'NONE') {
+  if (
+    value === 'ORG_UNIT' ||
+    value === 'ORG_UNIT_POSITION' ||
+    value === 'NONE'
+  ) {
     return value;
   }
 
   return 'ALL';
-}
-
-function readInitiatorPolicyValueOptions(
-  options: readonly InitiatorPolicyValueOption[],
-  value: string,
-): readonly InitiatorPolicyValueOption[] {
-  const trimmedValue = value.trim();
-
-  return trimmedValue && !options.some((option) => option.id === trimmedValue)
-    ? [{ id: trimmedValue, name: trimmedValue }, ...options]
-    : options;
-}
-
-function insertFreeTextOption(
-  text: string,
-  currentOptions: InitiatorPolicyValueOption[],
-): InitiatorPolicyValueOption[] {
-  const trimmedText = text.trim();
-
-  if (!trimmedText) {
-    return currentOptions;
-  }
-
-  return currentOptions.some((option) => option.id === trimmedText)
-    ? currentOptions
-    : [{ id: trimmedText, name: trimmedText }, ...currentOptions];
 }
 
 function readInitiatorPolicyDraft(
@@ -3247,22 +3274,32 @@ function readInitiatorPolicyDraft(
     return { mode: 'ALL', value: '' };
   }
 
-  const roleValue = readCelStringOperand(
+  const orgUnitIds = readCelStringListOperands(
     expression,
-    /^(.+) in subject\.roles$/u,
+    /"([^"]+)" in subject\.orgUnitIds/gu,
+  );
+  const positionIds = readCelStringListOperands(
+    expression,
+    /"([^"]+)" in subject\.positionIds/gu,
   );
 
-  if (roleValue !== null) {
-    return { mode: 'ROLE', value: roleValue };
+  if (orgUnitIds.length > 0 && positionIds.length > 0) {
+    return {
+      includeDescendants: orgUnitIds.length > 1,
+      mode: 'ORG_UNIT_POSITION',
+      orgUnitId: orgUnitIds[0],
+      positionId: positionIds[0],
+      value: orgUnitIds[0] ?? '',
+    };
   }
 
-  const orgValue = readCelStringOperand(
-    expression,
-    /^subject\.org\.code == (.+)$/u,
-  );
-
-  if (orgValue !== null) {
-    return { mode: 'ORG', value: orgValue };
+  if (orgUnitIds.length > 0) {
+    return {
+      includeDescendants: orgUnitIds.length > 1,
+      mode: 'ORG_UNIT',
+      orgUnitId: orgUnitIds[0],
+      value: orgUnitIds[0] ?? '',
+    };
   }
 
   return { mode: 'CUSTOM', value: expression };
@@ -3282,7 +3319,7 @@ function readInitiatorPolicyUiDraft(
 
   return persistedDraft.mode === modeDraft
     ? persistedDraft
-    : { mode: modeDraft, value: '' };
+    : readDefaultInitiatorPolicyDraft(modeDraft);
 }
 
 function readInitiatorPolicyIssue(
@@ -3292,73 +3329,93 @@ function readInitiatorPolicyIssue(
     return '發起權限需要選擇誰可以發起。';
   }
 
-  if (policyDraft.mode === 'ROLE' && !policyDraft.value.trim()) {
-    return '指定角色發起時，需要填寫角色代碼。';
+  if (
+    (policyDraft.mode === 'ORG_UNIT' ||
+      policyDraft.mode === 'ORG_UNIT_POSITION') &&
+    !policyDraft.orgUnitId?.trim()
+  ) {
+    return '指定組織發起時，需要選擇組織。';
   }
 
-  if (policyDraft.mode === 'ORG' && !policyDraft.value.trim()) {
-    return '指定組織發起時，需要填寫組織代碼。';
+  if (
+    policyDraft.mode === 'ORG_UNIT_POSITION' &&
+    !policyDraft.positionId?.trim()
+  ) {
+    return '指定組織職位發起時，需要選擇職位。';
   }
 
   return null;
 }
 
-function readCelStringOperand(
+function readCelStringListOperands(
   expression: string,
   pattern: RegExp,
-): string | null {
-  const match = expression.match(pattern);
-  const literal = match?.[1]?.trim();
-
-  if (!literal) {
-    return null;
-  }
-
-  try {
-    const parsedValue = JSON.parse(literal) as unknown;
-
-    return typeof parsedValue === 'string' ? parsedValue : null;
-  } catch {
-    const singleQuotedValue = literal.match(/^'([^']*)'$/u)?.[1];
-
-    return singleQuotedValue ?? null;
-  }
+): readonly string[] {
+  return [...expression.matchAll(pattern)]
+    .map((match) => match[1])
+    .filter((value): value is string => Boolean(value));
 }
 
 function readInitiatorPolicyCel(
-  draft: Readonly<{
-    mode: Exclude<InitiatorPolicyMode, 'CUSTOM'>;
-    value: string;
-  }>,
+  draft: InitiatorPolicyDraft,
+  orgUnits: readonly OrgUnitRecord[],
 ): string | null {
-  const value = draft.value.trim();
-
   if (draft.mode === 'ALL' || draft.mode === 'NONE') {
     return null;
   }
 
-  if (!value) {
+  const orgUnitId = draft.orgUnitId?.trim() ?? '';
+
+  if (!orgUnitId) {
     return null;
   }
 
-  if (draft.mode === 'ROLE') {
-    return `${JSON.stringify(value)} in subject.roles`;
+  const orgUnitIds = readOrgUnitScopeIds(
+    orgUnits,
+    orgUnitId,
+    Boolean(draft.includeDescendants),
+  );
+  const orgUnitExpression = orgUnitIds
+    .map((id) => `${JSON.stringify(id)} in subject.orgUnitIds`)
+    .join(' || ');
+
+  if (draft.mode === 'ORG_UNIT') {
+    return orgUnitExpression ? `(${orgUnitExpression})` : null;
   }
 
-  return `subject.org.code == ${JSON.stringify(value)}`;
+  const positionId = draft.positionId?.trim() ?? '';
+
+  if (!positionId) {
+    return null;
+  }
+
+  return orgUnitExpression
+    ? `(${orgUnitExpression}) && ${JSON.stringify(positionId)} in subject.positionIds`
+    : null;
 }
 
-function readInitiatorPolicySummary(policyDraft: InitiatorPolicyDraft): string {
+function readInitiatorPolicySummary(
+  policyDraft: InitiatorPolicyDraft,
+  orgUnits: readonly OrgUnitRecord[],
+  positions: readonly PositionRecord[],
+): string {
   if (policyDraft.mode === 'NONE') {
     return '未設定';
   }
 
-  if (policyDraft.mode === 'ROLE') {
-    return policyDraft.value ? `角色：${policyDraft.value}` : '指定角色';
+  if (policyDraft.mode === 'ORG_UNIT') {
+    return policyDraft.orgUnitId
+      ? `組織：${readOrgUnitDisplayName(orgUnits, policyDraft.orgUnitId)}`
+      : '指定組織';
   }
 
-  if (policyDraft.mode === 'ORG') {
-    return policyDraft.value ? `組織：${policyDraft.value}` : '指定組織';
+  if (policyDraft.mode === 'ORG_UNIT_POSITION') {
+    return policyDraft.orgUnitId && policyDraft.positionId
+      ? `組織職位：${readOrgUnitDisplayName(
+          orgUnits,
+          policyDraft.orgUnitId,
+        )} / ${readPositionDisplayName(positions, policyDraft.positionId)}`
+      : '指定組織職位';
   }
 
   if (policyDraft.mode === 'CUSTOM') {
@@ -3366,6 +3423,18 @@ function readInitiatorPolicySummary(policyDraft: InitiatorPolicyDraft): string {
   }
 
   return '所有人';
+}
+
+function readDefaultInitiatorPolicyDraft(
+  mode: Exclude<InitiatorPolicyMode, 'CUSTOM'>,
+): InitiatorPolicyDraft {
+  return {
+    includeDescendants: true,
+    mode,
+    orgUnitId: '',
+    positionId: '',
+    value: '',
+  };
 }
 
 function isWorkflowConnectionValid(
@@ -3610,6 +3679,129 @@ function readPositionDisplayName(
   );
 }
 
+function readDryRunInitiatorMetadataSnapshot(
+  memberId: string,
+  memberships: readonly MembershipRecord[],
+): Readonly<Record<string, unknown>> {
+  const today = readTodayDateOnlyString();
+  const activeMemberships = memberships.filter(
+    (membership) =>
+      membership.memberId === memberId &&
+      isMembershipActiveOn(membership, today),
+  );
+  const primaryMembership = activeMemberships.reduce<MembershipRecord | null>(
+    (currentPrimary, membership) =>
+      currentPrimary &&
+      compareMembershipRecord(currentPrimary, membership) <= 0
+        ? currentPrimary
+        : membership,
+    null,
+  );
+
+  return {
+    customFields: {},
+    managerMemberId: 'member-002',
+    memberId,
+    orgCode: 'HQ',
+    orgUnitIds: readUniqueTexts(
+      activeMemberships.map((membership) => membership.orgUnitId),
+    ),
+    positionId: primaryMembership?.positionId ?? null,
+    positionIds: readUniqueTexts(
+      activeMemberships.map((membership) => membership.positionId),
+    ),
+    primaryOrgUnitId: primaryMembership?.orgUnitId ?? null,
+    roles: ['manager'],
+  };
+}
+
+function readTodayDateOnlyString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isMembershipActiveOn(
+  membership: MembershipRecord,
+  date: string,
+): boolean {
+  return (
+    membership.effectiveFrom <= date &&
+    (!membership.effectiveTo || membership.effectiveTo >= date)
+  );
+}
+
+function compareMembershipRecord(
+  left: MembershipRecord,
+  right: MembershipRecord,
+): number {
+  if (left.isPrimary !== right.isPrimary) {
+    return left.isPrimary ? -1 : 1;
+  }
+
+  return right.effectiveFrom.localeCompare(left.effectiveFrom);
+}
+
+function readUniqueTexts(
+  values: readonly (string | null | undefined)[],
+): readonly string[] {
+  return values.reduce<readonly string[]>(
+    (currentValues, value) =>
+      value && !currentValues.includes(value)
+        ? [...currentValues, value]
+        : currentValues,
+    [],
+  );
+}
+
+function readOrgScopedPositions({
+  includeDescendants,
+  memberships,
+  orgUnitId,
+  orgUnits,
+  positions,
+}: {
+  readonly includeDescendants: boolean;
+  readonly memberships: readonly MembershipRecord[];
+  readonly orgUnitId: string;
+  readonly orgUnits: readonly OrgUnitRecord[];
+  readonly positions: readonly PositionRecord[];
+}): readonly PositionRecord[] {
+  const orgUnitIds = new Set(
+    readOrgUnitScopeIds(orgUnits, orgUnitId, includeDescendants),
+  );
+  const positionIds = new Set(
+    memberships
+      .filter((membership) => orgUnitIds.has(membership.orgUnitId))
+      .map((membership) => membership.positionId)
+      .filter((positionId): positionId is string => Boolean(positionId)),
+  );
+
+  return positions.filter((position) => positionIds.has(position.id));
+}
+
+function readOrgUnitScopeIds(
+  orgUnits: readonly OrgUnitRecord[],
+  orgUnitId: string,
+  includeDescendants: boolean,
+): readonly string[] {
+  const orgUnit = orgUnits.find((candidate) => candidate.id === orgUnitId);
+
+  if (!orgUnit) {
+    return orgUnitId.trim() ? [orgUnitId] : [];
+  }
+
+  if (!includeDescendants) {
+    return [orgUnit.id];
+  }
+
+  return orgUnits
+    .filter(
+      (candidate) =>
+        candidate.id === orgUnit.id ||
+        candidate.path.startsWith(`${orgUnit.path}.`),
+    )
+    .map((candidate) => candidate.id);
+}
+
 function mergeMemberOptions(
   currentOptions: readonly MemberSelectOption[],
   nextOptions: readonly MemberSelectOption[],
@@ -3684,6 +3876,17 @@ function readApproverResolverSummary(
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
     return `組織主管：${readOrgUnitDisplayName(orgUnits, resolver.orgUnitId)}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MEMBER') {
+    return `組織任一人：${readOrgUnitDisplayName(orgUnits, resolver.orgUnitId)}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_POSITION') {
+    return `組織職位：${readOrgUnitDisplayName(
+      orgUnits,
+      resolver.orgUnitId,
+    )} / ${readPositionDisplayName(positions, resolver.positionId)}`;
   }
 
   if (resolver.type === 'POSITION') {
@@ -3831,6 +4034,17 @@ function readApproverResolverIssue(resolver: ApproverResolver): string | null {
 
   if (resolver.type === 'ORG_UNIT_MANAGER' && !resolver.orgUnitId.trim()) {
     return '簽核節點需要指定組織。';
+  }
+
+  if (resolver.type === 'ORG_UNIT_MEMBER' && !resolver.orgUnitId.trim()) {
+    return '簽核節點需要指定組織。';
+  }
+
+  if (
+    resolver.type === 'ORG_UNIT_POSITION' &&
+    (!resolver.orgUnitId.trim() || !resolver.positionId.trim())
+  ) {
+    return '簽核節點需要指定組織與職位。';
   }
 
   if (

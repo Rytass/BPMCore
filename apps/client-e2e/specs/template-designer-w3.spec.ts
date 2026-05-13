@@ -8,6 +8,7 @@ interface GraphQlPayload {
 
 interface UpdateTemplateDraftInput {
   readonly formDefinitionVersionId: string | null;
+  readonly initiatorPolicyCel: string | null;
   readonly workflowDefinitionJson: string;
 }
 
@@ -207,7 +208,9 @@ test.describe('M1 W3 template designer', () => {
       .locator('[role="option"]')
       .filter({ hasText: '指定組織主管' })
       .click();
-    await page.getByRole('combobox', { name: '選擇組織' }).click();
+    await page
+      .getByRole('combobox', { exact: true, name: '選擇組織' })
+      .click();
     await page
       .locator('[role="option"]')
       .filter({ hasText: '財務部 · FIN-TW' })
@@ -233,7 +236,7 @@ test.describe('M1 W3 template designer', () => {
     await page
       .locator('[role="option"]')
       .filter({ hasText: '部門主管 · DEPARTMENT_HEAD' })
-      .click();
+      .click({ force: true });
     await expect(
       page.getByText('職位：部門主管 · DEPARTMENT_HEAD'),
     ).toBeVisible();
@@ -247,6 +250,82 @@ test.describe('M1 W3 template designer', () => {
       positionId: 'position-department-head',
       type: 'POSITION',
     });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '職位：部門主管 · DEPARTMENT_HEAD' })
+      .click();
+
+    await page.getByRole('combobox', { name: '指定職位' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '組織特定職位' })
+      .click();
+    await page
+      .getByRole('combobox', { exact: true, name: '選擇組織' })
+      .click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '財務部 · FIN-TW' })
+      .click();
+    await page.getByRole('combobox', { name: '選擇職位' }).click();
+    await clickDropdownOption(page, '部門主管 · DEPARTMENT_HEAD');
+    await expect(
+      page.getByText('組織職位：財務部 · FIN-TW / 部門主管 · DEPARTMENT_HEAD'),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+
+    expect(savedResolvers[2]).toMatchObject({
+      orgUnitId: 'org-finance',
+      positionId: 'position-department-head',
+      type: 'ORG_UNIT_POSITION',
+    });
+  });
+
+  test('configures start initiator policy from organization and organization position', async ({
+    page,
+  }): Promise<void> => {
+    const savedInitiatorPolicies: (string | null)[] = [];
+
+    await mockTemplateGraphQl(page, {
+      onDraftUpdate: (input): void => {
+        savedInitiatorPolicies.push(input.initiatorPolicyCel);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '指定組織職位' })
+      .click();
+    await page
+      .getByRole('combobox', { exact: true, name: '選擇組織' })
+      .click();
+    await clickDropdownOption(page, '財務部 · FIN-TW');
+    await expect(
+      page.getByRole('combobox', { name: '財務部 · FIN-TW' }),
+    ).toBeVisible();
+    await page
+      .getByRole('combobox', { exact: true, name: '選擇職位' })
+      .click();
+    await clickDropdownOption(page, '部門主管 · DEPARTMENT_HEAD');
+    await expect(
+      page.getByText('組織職位：財務部 · FIN-TW / 部門主管 · DEPARTMENT_HEAD'),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect
+      .poll((): number => savedInitiatorPolicies.length)
+      .toBeGreaterThanOrEqual(1);
+
+    expect(savedInitiatorPolicies[0]).toContain(
+      '"org-finance" in subject.orgUnitIds',
+    );
+    expect(savedInitiatorPolicies[0]).toContain(
+      '"position-department-head" in subject.positionIds',
+    );
   });
 });
 
@@ -259,6 +338,7 @@ async function mockTemplateGraphQl(
   let templatePublishedAt: string | null = null;
   let workflowDefinitionJson = JSON.stringify(readEmptyWorkflowDefinition());
   let formDefinitionVersionId: string | null = null;
+  let templateInitiatorPolicyCel: string | null = null;
 
   await page.route('**/graphql', async (route: Route): Promise<void> => {
     const payload = readGraphQlPayload(route);
@@ -267,6 +347,15 @@ async function mockTemplateGraphQl(
     if (query.includes('query ApprovalTemplates')) {
       await fulfillGraphQl(route, {
         approvalTemplates: [],
+        approvalTemplateCount: 0,
+      });
+      return;
+    }
+
+    if (query.includes('query ApprovalTemplateCategoriesPage')) {
+      await fulfillGraphQl(route, {
+        approvalTemplateCategories: [],
+        approvalTemplateCategoryCount: 0,
       });
       return;
     }
@@ -291,6 +380,7 @@ async function mockTemplateGraphQl(
         approvalTemplateVersions: [
           readTemplateVersion({
             formDefinitionVersionId,
+            initiatorPolicyCel: templateInitiatorPolicyCel,
             publishedAt: templatePublishedAt,
             status: templateStatus,
             workflowDefinitionJson,
@@ -381,6 +471,7 @@ async function mockTemplateGraphQl(
 
       options.onDraftUpdate?.(input);
       formDefinitionVersionId = input.formDefinitionVersionId;
+      templateInitiatorPolicyCel = input.initiatorPolicyCel;
       workflowDefinitionJson = input.workflowDefinitionJson;
 
       if (!workflowDefinitionHasLinearTask(workflowDefinitionJson)) {
@@ -390,6 +481,7 @@ async function mockTemplateGraphQl(
       await fulfillGraphQl(route, {
         updateApprovalTemplateDraft: readTemplateVersion({
           formDefinitionVersionId,
+          initiatorPolicyCel: templateInitiatorPolicyCel,
           publishedAt: templatePublishedAt,
           status: templateStatus,
           workflowDefinitionJson,
@@ -405,6 +497,7 @@ async function mockTemplateGraphQl(
       await fulfillGraphQl(route, {
         publishApprovalTemplateVersion: readTemplateVersion({
           formDefinitionVersionId,
+          initiatorPolicyCel: templateInitiatorPolicyCel,
           publishedAt: templatePublishedAt,
           status: templateStatus,
           workflowDefinitionJson,
@@ -463,11 +556,13 @@ async function mockTemplateGraphQl(
 
 function readTemplateVersion({
   formDefinitionVersionId,
+  initiatorPolicyCel,
   publishedAt,
   status,
   workflowDefinitionJson,
 }: {
   readonly formDefinitionVersionId: string | null;
+  readonly initiatorPolicyCel?: string | null;
   readonly publishedAt: string | null;
   readonly status: 'DRAFT' | 'PUBLISHED';
   readonly workflowDefinitionJson: string;
@@ -476,7 +571,7 @@ function readTemplateVersion({
     archivedAt: null,
     formDefinitionVersionId,
     id: TEMPLATE_VERSION_ID,
-    initiatorPolicyCel: null,
+    initiatorPolicyCel: initiatorPolicyCel ?? null,
     notificationConfigJson: null,
     publishedAt,
     slaDefaultsJson: null,
@@ -511,7 +606,26 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
 function readOrganizationDashboardData(): Readonly<Record<string, unknown>> {
   return {
     managerResolutions: [],
-    memberships: [],
+    memberships: [
+      readMembership({
+        id: 'membership-ceo',
+        memberId: 'member-001',
+        orgUnitId: 'org-hq',
+        positionId: 'position-ceo',
+      }),
+      readMembership({
+        id: 'membership-finance-manager',
+        memberId: 'member-101',
+        orgUnitId: 'org-finance',
+        positionId: 'position-department-head',
+      }),
+      readMembership({
+        id: 'membership-ap-specialist',
+        memberId: 'member-102',
+        orgUnitId: 'org-finance-ap',
+        positionId: 'position-ap-specialist',
+      }),
+    ],
     organizationSummary: {
       managerResolutionCount: 0,
       membershipCount: 0,
@@ -564,6 +678,30 @@ function readOrganizationDashboardData(): Readonly<Record<string, unknown>> {
         name: '應付帳款專員',
       }),
     ],
+  };
+}
+
+function readMembership({
+  id,
+  memberId,
+  orgUnitId,
+  positionId,
+}: {
+  readonly id: string;
+  readonly memberId: string;
+  readonly orgUnitId: string;
+  readonly positionId: string;
+}): Readonly<Record<string, unknown>> {
+  return {
+    createdAt: UPDATED_AT,
+    effectiveFrom: '2026-01-01',
+    effectiveTo: null,
+    id,
+    isPrimary: true,
+    memberId,
+    orgUnitId,
+    positionId,
+    updatedAt: UPDATED_AT,
   };
 }
 
@@ -699,6 +837,10 @@ function readUpdateTemplateDraftInput(
 
   return {
     formDefinitionVersionId: value.formDefinitionVersionId,
+    initiatorPolicyCel:
+      typeof value.initiatorPolicyCel === 'string'
+        ? value.initiatorPolicyCel
+        : null,
     workflowDefinitionJson: value.workflowDefinitionJson,
   };
 }
@@ -728,6 +870,29 @@ async function fulfillGraphQl(
     contentType: 'application/json',
     json: { data },
     status: 200,
+  });
+}
+
+async function clickDropdownOption(page: Page, text: string): Promise<void> {
+  const option = page.locator('[role="option"]').filter({ hasText: text }).first();
+
+  await expect(option).toBeVisible();
+  await option.evaluate((element): void => {
+    const mouseEventOptions: MouseEventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+    };
+
+    element.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    element.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+    element.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+    element.dispatchEvent(new MouseEvent('click', mouseEventOptions));
   });
 }
 

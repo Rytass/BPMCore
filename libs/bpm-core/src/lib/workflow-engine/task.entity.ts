@@ -5,7 +5,10 @@ import {
   Entity,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { TaskStatusEnum } from './workflow-engine.enums';
+import {
+  TaskAssignmentTypeEnum,
+  TaskStatusEnum,
+} from './workflow-engine.enums';
 
 @Entity('tasks')
 @ObjectType('Task')
@@ -26,13 +29,23 @@ export class TaskEntity {
   @Field()
   nodeId!: string;
 
-  @Column('text', { name: 'original_assignee_member_id' })
-  @Field()
-  originalAssigneeMemberId!: string;
+  @Column('text', { name: 'original_assignee_member_id', nullable: true })
+  @Field(() => String, { nullable: true })
+  originalAssigneeMemberId!: string | null;
 
-  @Column('text', { name: 'assignee_member_id' })
-  @Field()
-  assigneeMemberId!: string;
+  @Column('text', { name: 'assignee_member_id', nullable: true })
+  @Field(() => String, { nullable: true })
+  assigneeMemberId!: string | null;
+
+  @Column('text', {
+    default: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+    name: 'assignment_type',
+  })
+  @Field(() => TaskAssignmentTypeEnum)
+  assignmentType!: TaskAssignmentTypeEnum;
+
+  @Column('jsonb', { default: { type: 'SINGLE' }, name: 'decision_policy_snapshot' })
+  decisionPolicySnapshot!: Readonly<Record<string, unknown>>;
 
   @Column('jsonb', { name: 'delegation_chain' })
   delegationChain!: readonly Readonly<Record<string, unknown>>[];
@@ -61,4 +74,12 @@ export class TaskEntity {
   get delegationChainJson(): string {
     return JSON.stringify(this.delegationChain);
   }
+
+  @Field(() => String)
+  get decisionPolicySnapshotJson(): string {
+    return JSON.stringify(this.decisionPolicySnapshot);
+  }
+
+  @Field(() => [String])
+  candidateMemberIds: readonly string[] = [];
 }

@@ -24,6 +24,19 @@ export enum TaskStatusEnum {
   TRANSFERRED = 'TRANSFERRED',
 }
 
+export enum TaskAssignmentTypeEnum {
+  CANDIDATE_GROUP = 'CANDIDATE_GROUP',
+  DIRECT_MEMBER = 'DIRECT_MEMBER',
+}
+
+export enum TaskCandidateStatusEnum {
+  CANCELLED = 'CANCELLED',
+  CLAIMED = 'CLAIMED',
+  COMPLETED = 'COMPLETED',
+  PENDING = 'PENDING',
+  TRANSFERRED = 'TRANSFERRED',
+}
+
 export enum TaskDecisionActionEnum {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
@@ -54,6 +67,14 @@ registerEnumType(WorkflowTokenStatusEnum, {
 
 registerEnumType(TaskStatusEnum, {
   name: 'TaskStatus',
+});
+
+registerEnumType(TaskAssignmentTypeEnum, {
+  name: 'TaskAssignmentType',
+});
+
+registerEnumType(TaskCandidateStatusEnum, {
+  name: 'TaskCandidateStatus',
 });
 
 registerEnumType(TaskDecisionActionEnum, {

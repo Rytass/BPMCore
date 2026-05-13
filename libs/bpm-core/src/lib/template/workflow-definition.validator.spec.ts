@@ -145,7 +145,7 @@ describe('workflow definition validator', () => {
     );
   });
 
-  it('rejects direct user tasks with multiple primary approvers', (): void => {
+  it('allows direct user tasks with multiple candidate approvers', (): void => {
     const workflow: WorkflowDefinition = {
       edges: [
         {
@@ -200,9 +200,7 @@ describe('workflow definition validator', () => {
       ],
     };
 
-    expect(lintWorkflowDefinition(workflow).errors).toContain(
-      'workflow.nodes.task_finance.approverResolver.memberIds must include exactly one primary approver',
-    );
+    expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
   });
 
   it('rejects notify service tasks without recipients', (): void => {

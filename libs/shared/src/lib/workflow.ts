@@ -68,6 +68,17 @@ export type ApproverResolver =
   | { readonly memberIds: readonly string[]; readonly type: 'DIRECT' }
   | { readonly positionId: string; readonly type: 'POSITION' }
   | {
+      readonly includeDescendants?: boolean;
+      readonly orgUnitId: string;
+      readonly type: 'ORG_UNIT_MEMBER';
+    }
+  | {
+      readonly includeDescendants?: boolean;
+      readonly orgUnitId: string;
+      readonly positionId: string;
+      readonly type: 'ORG_UNIT_POSITION';
+    }
+  | {
       readonly baseFromInitiator: boolean;
       readonly fallback?: ApproverResolverFallback;
       readonly levelsUp: number;

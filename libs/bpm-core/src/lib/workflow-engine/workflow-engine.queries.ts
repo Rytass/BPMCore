@@ -1,6 +1,7 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
 import { WorkflowEngineService } from './workflow-engine.service';
@@ -57,6 +58,13 @@ export class WorkflowEngineQueries {
     @Args('taskId', { type: () => String }) taskId: string,
   ): Promise<readonly TaskDecisionEntity[]> {
     return this.workflowEngineService.listTaskDecisions(taskId);
+  }
+
+  @Query(() => [TaskCandidateEntity])
+  async taskCandidates(
+    @Args('taskId', { type: () => String }) taskId: string,
+  ): Promise<readonly TaskCandidateEntity[]> {
+    return this.workflowEngineService.listTaskCandidates(taskId);
   }
 
   @Query(() => [ActivityLogEntity])

@@ -26,7 +26,6 @@ import * as dagre from 'dagre';
 import {
   AutoComplete,
   Button,
-  FormField,
   Layout,
   Modal,
   PageHeader,
@@ -41,7 +40,6 @@ import {
   type StepProps,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import { stepClasses } from '@mezzanine-ui/core/stepper';
 import {
   CheckedIcon,
@@ -55,6 +53,7 @@ import {
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { FormFieldDefinition } from '@bpm/shared/form';
 import { WorkflowDefinition, WorkflowNode } from '@bpm/shared/workflow';
+import { BPMFormField } from '../../_components/bpm-form-field';
 import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
@@ -286,6 +285,7 @@ type ActivityStepDescriptionPart =
   | Readonly<{
       email: string | null;
       label: string;
+      memberId: string | null;
       prefix: string;
       type: 'member';
     }>;
@@ -360,7 +360,7 @@ export default function ApprovalInstancePage(): ReactElement {
     (): TaskRecord | null =>
       tasks.find(
         (task) =>
-          task.assigneeMemberId === currentMemberId &&
+          canMemberActOnTask(task, currentMemberId) &&
           (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
       ) ?? null,
     [currentMemberId, tasks],
@@ -1195,14 +1195,7 @@ export default function ApprovalInstancePage(): ReactElement {
           title="拒絕原因"
         >
           <div style={REJECT_REASON_FORM_STYLE}>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="拒絕原因"
-              layout={FormFieldLayout.STRETCH}
-              name="rejectReason"
-              required
-            >
+            <BPMFormField label="拒絕原因" name="rejectReason" required>
               <Textarea
                 autoFocus
                 onChange={(event: ChangeEvent<HTMLTextAreaElement>): void => {
@@ -1217,7 +1210,7 @@ export default function ApprovalInstancePage(): ReactElement {
                 type={rejectReasonError ? 'error' : 'default'}
                 value={rejectReason}
               />
-            </FormField>
+            </BPMFormField>
             {rejectReasonError ? (
               <Typography color="text-error" variant="body">
                 {rejectReasonError}
@@ -1244,14 +1237,7 @@ export default function ApprovalInstancePage(): ReactElement {
           title="轉派簽核"
         >
           <div style={MODAL_FORM_STYLE}>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="轉派對象"
-              layout={FormFieldLayout.STRETCH}
-              name="transferToMemberId"
-              required
-            >
+            <BPMFormField label="轉派對象" name="transferToMemberId" required>
               <AutoComplete
                 asyncData
                 disabledOptionsFilter
@@ -1284,14 +1270,8 @@ export default function ApprovalInstancePage(): ReactElement {
                 searchDebounceTime={300}
                 value={transferMember}
               />
-            </FormField>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="轉派說明"
-              layout={FormFieldLayout.STRETCH}
-              name="transferComment"
-            >
+            </BPMFormField>
+            <BPMFormField label="轉派說明" name="transferComment">
               <Textarea
                 onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
                   setTransferComment(event.target.value)
@@ -1303,7 +1283,7 @@ export default function ApprovalInstancePage(): ReactElement {
                 style={REJECT_REASON_TEXTAREA_STYLE}
                 value={transferComment}
               />
-            </FormField>
+            </BPMFormField>
           </div>
         </Modal>
         <Modal
@@ -1325,14 +1305,7 @@ export default function ApprovalInstancePage(): ReactElement {
           title="退回簽核"
         >
           <div style={MODAL_FORM_STYLE}>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="退回節點"
-              layout={FormFieldLayout.STRETCH}
-              name="returnTargetNodeId"
-              required
-            >
+            <BPMFormField label="退回節點" name="returnTargetNodeId" required>
               <Select
                 clearable={false}
                 fullWidth
@@ -1343,14 +1316,8 @@ export default function ApprovalInstancePage(): ReactElement {
                 placeholder="選擇退回節點"
                 value={selectedReturnTargetOption}
               />
-            </FormField>
-            <FormField
-              density={FormFieldDensity.WIDE}
-              fullWidth
-              label="退回說明"
-              layout={FormFieldLayout.STRETCH}
-              name="returnComment"
-            >
+            </BPMFormField>
+            <BPMFormField label="退回說明" name="returnComment">
               <Textarea
                 onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
                   setReturnComment(event.target.value)
@@ -1362,7 +1329,7 @@ export default function ApprovalInstancePage(): ReactElement {
                 style={REJECT_REASON_TEXTAREA_STYLE}
                 value={returnComment}
               />
-            </FormField>
+            </BPMFormField>
           </div>
         </Modal>
       </Layout.Main>
@@ -1503,6 +1470,9 @@ function renderActivityDescriptionPart(
       <Tooltip title={part.email}>
         {({ onMouseEnter, onMouseLeave, ref }): ReactElement => (
           <span
+            data-testid={
+              part.memberId ? `member-tooltip-${part.memberId}` : undefined
+            }
             onMouseEnter={onMouseEnter}
             onMouseLeave={onMouseLeave}
             ref={ref as RefCallback<HTMLSpanElement>}
@@ -1529,6 +1499,7 @@ async function readMemberProfilesForTimeline({
         ...activityLogs.map((activityLog) => activityLog.actorMemberId),
         ...tasks.map((task) => task.assigneeMemberId),
         ...tasks.map((task) => task.originalAssigneeMemberId),
+        ...tasks.flatMap((task) => task.candidateMemberIds),
         ...tasks.flatMap((task) =>
           readDelegationChain(task.delegationChainJson).flatMap((step) => [
             step.from,
@@ -1698,6 +1669,7 @@ function readMemberDescriptionPart(
   return {
     email: profile?.email ?? null,
     label: profile?.name ?? memberId ?? fallbackLabel,
+    memberId,
     prefix,
     type: 'member',
   };
@@ -2051,7 +2023,14 @@ function readActivityDetail(
     );
 
     if (!assigneeMemberId) {
-      return null;
+      const candidateMemberIds = readStringArrayField(
+        payload,
+        'candidateMemberIds',
+      );
+
+      return candidateMemberIds.length
+        ? `候選簽核人：${candidateMemberIds.join('、')}`
+        : null;
     }
 
     return originalAssigneeMemberId &&
@@ -2271,6 +2250,12 @@ function readTaskStatusLabel(status: TaskRecord['status']): string {
 function readTaskAssigneeLabel(task: TaskRecord): string {
   const delegationChain = readDelegationChain(task.delegationChainJson);
 
+  if (!task.assigneeMemberId) {
+    return task.candidateMemberIds.length
+      ? `候選 ${task.candidateMemberIds.join('、')}`
+      : '未指定';
+  }
+
   if (
     delegationChain.length === 0 ||
     task.originalAssigneeMemberId === task.assigneeMemberId
@@ -2279,6 +2264,16 @@ function readTaskAssigneeLabel(task: TaskRecord): string {
   }
 
   return `${task.assigneeMemberId}（原：${task.originalAssigneeMemberId}）`;
+}
+
+function canMemberActOnTask(task: TaskRecord, memberId: string | null): boolean {
+  if (!memberId) {
+    return false;
+  }
+
+  return (
+    task.assigneeMemberId === memberId || task.candidateMemberIds.includes(memberId)
+  );
 }
 
 function readInstanceStateLabel(state: string): string {
@@ -2335,6 +2330,17 @@ function readStringField(
   const value = record[key];
 
   return typeof value === 'string' ? value : null;
+}
+
+function readStringArrayField(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): readonly string[] {
+  const value = record[key];
+
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 function readMemberOption(member: MemberProfileRecord): MemberOption {
@@ -2595,7 +2601,7 @@ function readNodeRuntimeState(
 
   if (pendingTask) {
     return {
-      secondaryLabel: `處理者 ${pendingTask.assigneeMemberId}`,
+      secondaryLabel: `處理者 ${readTaskAssigneeLabel(pendingTask)}`,
       statusLabel: '待處理',
       tone: 'current',
     };
@@ -2603,7 +2609,7 @@ function readNodeRuntimeState(
 
   if (cancelledTask) {
     return {
-      secondaryLabel: `已取消 ${cancelledTask.assigneeMemberId}`,
+      secondaryLabel: `已取消 ${readTaskAssigneeLabel(cancelledTask)}`,
       statusLabel: '已取消',
       tone: 'cancelled',
     };
@@ -2611,7 +2617,7 @@ function readNodeRuntimeState(
 
   if (completedTask) {
     return {
-      secondaryLabel: `已完成 ${completedTask.assigneeMemberId}`,
+      secondaryLabel: `已完成 ${readTaskAssigneeLabel(completedTask)}`,
       statusLabel: '已完成',
       tone: 'completed',
     };

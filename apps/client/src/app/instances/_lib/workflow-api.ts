@@ -26,6 +26,8 @@ export type TaskStatus =
   | 'PENDING'
   | 'TRANSFERRED';
 
+export type TaskAssignmentType = 'CANDIDATE_GROUP' | 'DIRECT_MEMBER';
+
 export type TaskDecisionAction =
   | 'APPROVED'
   | 'REJECTED'
@@ -61,18 +63,34 @@ export type WorkflowFormData = Readonly<
 >;
 
 export interface TaskRecord {
-  readonly assigneeMemberId: string;
+  readonly assigneeMemberId: string | null;
+  readonly assignmentType: TaskAssignmentType;
+  readonly candidateMemberIds: readonly string[];
   readonly completedAt: string | null;
   readonly createdAt: string;
+  readonly decisionPolicySnapshotJson: string;
   readonly delegationChainJson: string;
   readonly id: string;
   readonly instanceId: string;
   readonly nodeId: string;
   readonly openedAt: string | null;
-  readonly originalAssigneeMemberId: string;
+  readonly originalAssigneeMemberId: string | null;
   readonly slaDueAt: string | null;
   readonly status: TaskStatus;
   readonly tokenId: string;
+}
+
+export interface TaskCandidateRecord {
+  readonly claimedAt: string | null;
+  readonly createdAt: string;
+  readonly decidedAt: string | null;
+  readonly delegationChainJson: string;
+  readonly id: string;
+  readonly memberId: string;
+  readonly originalMemberId: string;
+  readonly sourceType: string;
+  readonly status: string;
+  readonly taskId: string;
 }
 
 export interface WorkflowTokenRecord {
@@ -565,8 +583,11 @@ export async function readApprovalInstance(instanceId: string): Promise<{
       }
       tasks(instanceId: $id) {
         assigneeMemberId
+        assignmentType
+        candidateMemberIds
         completedAt
         createdAt
+        decisionPolicySnapshotJson
         delegationChainJson
         id
         instanceId
@@ -602,7 +623,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
   return {
     activityLogs: data.activityLogs,
     instance: parseInstanceJson(data.approvalInstance),
-    tasks: data.tasks,
+    tasks: normalizeTaskRecords(data.tasks),
     workflowTokens: data.workflowTokens,
   };
 }
@@ -614,8 +635,11 @@ export async function listInboxTasks(
     `query InboxTasks($assigneeMemberId: String!) {
       inboxTasks(assigneeMemberId: $assigneeMemberId) {
         assigneeMemberId
+        assignmentType
+        candidateMemberIds
         completedAt
         createdAt
+        decisionPolicySnapshotJson
         delegationChainJson
         id
         instanceId
@@ -630,7 +654,7 @@ export async function listInboxTasks(
     { assigneeMemberId },
   );
 
-  return data.inboxTasks;
+  return normalizeTaskRecords(data.inboxTasks);
 }
 
 export async function listApprovalHistoryTasks(
@@ -640,8 +664,11 @@ export async function listApprovalHistoryTasks(
     `query ApprovalHistoryTasks($assigneeMemberId: String!) {
       approvalHistoryTasks(assigneeMemberId: $assigneeMemberId) {
         assigneeMemberId
+        assignmentType
+        candidateMemberIds
         completedAt
         createdAt
+        decisionPolicySnapshotJson
         delegationChainJson
         id
         instanceId
@@ -656,7 +683,19 @@ export async function listApprovalHistoryTasks(
     { assigneeMemberId },
   );
 
-  return data.approvalHistoryTasks;
+  return normalizeTaskRecords(data.approvalHistoryTasks);
+}
+
+function normalizeTaskRecords(
+  tasks: readonly TaskRecord[],
+): readonly TaskRecord[] {
+  return tasks.map((task) => ({
+    ...task,
+    assignmentType: task.assignmentType ?? 'DIRECT_MEMBER',
+    candidateMemberIds: task.candidateMemberIds ?? [],
+    decisionPolicySnapshotJson:
+      task.decisionPolicySnapshotJson ?? JSON.stringify({ type: 'SINGLE' }),
+  }));
 }
 
 export async function listTaskDecisions(

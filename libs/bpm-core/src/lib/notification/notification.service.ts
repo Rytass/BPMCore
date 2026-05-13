@@ -180,6 +180,10 @@ export class NotificationService {
     readonly task: TaskEntity;
     readonly transferred?: boolean;
   }): Promise<readonly NotificationEntity[]> {
+    if (!task.assigneeMemberId) {
+      return [];
+    }
+
     return this.createNotifications(
       {
         channels: readNodeNotificationChannels(node),
@@ -319,6 +323,10 @@ export class NotificationService {
     readonly task: TaskEntity;
     readonly type: NotificationTypeEnum.SLA_OVERDUE | NotificationTypeEnum.SLA_WARNING;
   }): Promise<boolean> {
+    if (!task.assigneeMemberId) {
+      return false;
+    }
+
     const existingNotification = await this.notificationRepository.findOne({
       where: {
         channel: NotificationChannelEnum.IN_APP,

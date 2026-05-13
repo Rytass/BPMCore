@@ -59,7 +59,7 @@ test.describe('M2 W5 linear workflow', () => {
     ).toBeVisible();
     await expect(page.getByText(/簽章：已驗證/)).toBeVisible();
     await expect(page.getByText('此案件沒有附件。')).toBeVisible();
-    await page.getByText('林執行長', { exact: true }).first().hover();
+    await page.getByTestId('member-tooltip-member-001').hover();
     await expect(page.getByText('lin.ceo@example.internal')).toBeVisible();
 
     await page.goto('/inbox');

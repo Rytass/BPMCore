@@ -14,6 +14,7 @@ import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
+import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
@@ -36,6 +37,7 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
       ManagerResolutionEntity,
       MembershipEntity,
       OrgUnitEntity,
+      TaskCandidateEntity,
       TaskDecisionEntity,
       TaskEntity,
       WorkflowTokenEntity,

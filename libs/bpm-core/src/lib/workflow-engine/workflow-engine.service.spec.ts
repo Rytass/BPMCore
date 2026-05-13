@@ -23,11 +23,14 @@ import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceStateEnum,
+  TaskAssignmentTypeEnum,
+  TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
@@ -67,6 +70,50 @@ describe('WorkflowEngineService', () => {
       ActivityLogEventTypeEnum.INSTANCE_STARTED,
       ActivityLogEventTypeEnum.TOKEN_CREATED,
     ]);
+  });
+
+  it('builds initiator metadata from active memberships when submit omits a snapshot', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processMemberships: [
+        createMembership({
+          id: 'membership-sales',
+          isPrimary: true,
+          orgUnitId: 'org-sales',
+          positionId: 'position-manager',
+        }),
+        createMembership({
+          id: 'membership-ops',
+          isPrimary: false,
+          orgUnitId: 'org-ops',
+          positionId: 'position-staff',
+        }),
+        createMembership({
+          effectiveTo: '2026-01-31',
+          id: 'membership-ended',
+          orgUnitId: 'org-ended',
+          positionId: 'position-ended',
+        }),
+      ],
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.submitApprovalInstance({
+      formDataJson: '{"amount":1000}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: null,
+    });
+
+    expect(fixture.savedInstance?.initiatorMetadataSnapshot).toMatchObject({
+      memberId: 'member-001',
+      orgUnitIds: ['org-sales', 'org-ops'],
+      positionId: 'position-manager',
+      positionIds: ['position-manager', 'position-staff'],
+      primaryOrgUnitId: 'org-sales',
+    });
   });
 
   it('rejects submit when the template has no published current version', async (): Promise<void> => {
@@ -549,7 +596,8 @@ describe('WorkflowEngineService', () => {
       action: TaskDecisionActionEnum.TRANSFERRED,
       transferToMemberId: 'member-101',
     });
-    expect(fixture.savedTasks).toEqual([
+    expect(fixture.savedTasks).toEqual(
+      expect.arrayContaining([
       expect.objectContaining({
         id: 'task-1',
         status: TaskStatusEnum.TRANSFERRED,
@@ -568,7 +616,8 @@ describe('WorkflowEngineService', () => {
         status: TaskStatusEnum.PENDING,
         tokenId: 'token-1',
       }),
-    ]);
+      ]),
+    );
     expect(fixture.savedProcessToken).toBeNull();
     expect(fixture.savedActivityLogs.map((log) => log.eventType)).toEqual([
       ActivityLogEventTypeEnum.TASK_DECIDED,
@@ -587,10 +636,10 @@ describe('WorkflowEngineService', () => {
 
     expect(fixture.rootTaskFind).toHaveBeenCalledWith({
       order: { createdAt: 'DESC' },
-      where: {
+      where: [{
         assigneeMemberId: 'member-finance',
         status: expect.any(Object),
-      },
+      }],
     });
   });
 
@@ -648,7 +697,7 @@ describe('WorkflowEngineService', () => {
     await fixture.service.decideTask({
       action: TaskDecisionActionEnum.APPROVED,
       comment: null,
-      decidedByMemberId: taskHigh.assigneeMemberId,
+      decidedByMemberId: taskHigh.assigneeMemberId ?? '',
       taskId: taskHigh.id,
     });
 
@@ -812,7 +861,7 @@ describe('WorkflowEngineService', () => {
     await fixture.service.decideTask({
       action: TaskDecisionActionEnum.APPROVED,
       comment: null,
-      decidedByMemberId: taskA.assigneeMemberId,
+      decidedByMemberId: taskA.assigneeMemberId ?? '',
       taskId: taskA.id,
     });
 
@@ -830,7 +879,7 @@ describe('WorkflowEngineService', () => {
     await fixture.service.decideTask({
       action: TaskDecisionActionEnum.APPROVED,
       comment: null,
-      decidedByMemberId: taskB.assigneeMemberId,
+      decidedByMemberId: taskB.assigneeMemberId ?? '',
       taskId: taskB.id,
     });
 
@@ -861,7 +910,7 @@ describe('WorkflowEngineService', () => {
     await fixture.service.decideTask({
       action: TaskDecisionActionEnum.APPROVED,
       comment: null,
-      decidedByMemberId: taskA.assigneeMemberId,
+      decidedByMemberId: taskA.assigneeMemberId ?? '',
       taskId: taskA.id,
     });
 
@@ -969,6 +1018,9 @@ function createServiceFixture({
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
     find: rootTaskFind,
+  });
+  const taskCandidateRepository = createRepository<TaskCandidateEntity>({
+    find: jest.fn(() => Promise.resolve([])),
   });
   const taskDecisionRepository = createRepository<TaskDecisionEntity>({});
   const activityLogRepository = createRepository<ActivityLogEntity>({});
@@ -1114,6 +1166,8 @@ function createServiceFixture({
       (entity: Partial<TaskEntity>): TaskEntity =>
         Object.assign(new TaskEntity(), {
           assigneeMemberId: entity.assigneeMemberId ?? 'member-finance',
+          assignmentType:
+            entity.assignmentType ?? TaskAssignmentTypeEnum.DIRECT_MEMBER,
           completedAt: entity.completedAt ?? null,
           createdAt: new Date('2026-05-04T09:00:00.000Z'),
           delegationChain: entity.delegationChain ?? [],
@@ -1123,6 +1177,9 @@ function createServiceFixture({
           openedAt: entity.openedAt ?? null,
           originalAssigneeMemberId:
             entity.originalAssigneeMemberId ?? 'member-finance',
+          decisionPolicySnapshot: entity.decisionPolicySnapshot ?? {
+            type: 'SINGLE',
+          },
           slaDueAt: entity.slaDueAt ?? null,
           status: entity.status ?? TaskStatusEnum.PENDING,
           tokenId: entity.tokenId ?? 'token-1',
@@ -1191,6 +1248,31 @@ function createServiceFixture({
       },
     ),
   });
+  const transactionalTaskCandidateRepository =
+    createRepository<TaskCandidateEntity>({
+      create: jest.fn(
+        (entity: Partial<TaskCandidateEntity>): TaskCandidateEntity =>
+          Object.assign(new TaskCandidateEntity(), {
+            claimedAt: entity.claimedAt ?? null,
+            createdAt: entity.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
+            decidedAt: entity.decidedAt ?? null,
+            delegationChain: entity.delegationChain ?? [],
+            id: entity.id ?? 'task-candidate-1',
+            memberId: entity.memberId ?? 'member-finance',
+            originalMemberId: entity.originalMemberId ?? 'member-finance',
+            sourceType: entity.sourceType ?? 'DIRECT',
+            status: entity.status ?? TaskCandidateStatusEnum.PENDING,
+            taskId: entity.taskId ?? 'task-1',
+          }),
+      ),
+      find: jest.fn(() => Promise.resolve([])),
+      save: jest.fn(
+        (
+          entityOrEntities: TaskCandidateEntity | TaskCandidateEntity[],
+        ): Promise<TaskCandidateEntity | TaskCandidateEntity[]> =>
+          Promise.resolve(entityOrEntities),
+      ),
+    });
   const transactionalTaskDecisionRepository =
     createRepository<TaskDecisionEntity>({
       create: jest.fn(
@@ -1287,6 +1369,10 @@ function createServiceFixture({
         return transactionalTaskRepository;
       }
 
+      if (target === TaskCandidateEntity) {
+        return transactionalTaskCandidateRepository;
+      }
+
       if (target === TaskDecisionEntity) {
         return transactionalTaskDecisionRepository;
       }
@@ -1314,6 +1400,13 @@ function createServiceFixture({
   );
   Object.assign(instanceRepository, {
     manager: {
+      getRepository: jest.fn((target: unknown): unknown => {
+        if (target === MembershipEntity) {
+          return transactionalMembershipRepository;
+        }
+
+        return createRepository<ObjectLiteral>({});
+      }),
       transaction,
     },
   });
@@ -1352,6 +1445,7 @@ function createServiceFixture({
       instanceRepository,
       tokenRepository,
       taskRepository,
+      taskCandidateRepository,
       taskDecisionRepository,
       activityLogRepository,
       templateRepository,

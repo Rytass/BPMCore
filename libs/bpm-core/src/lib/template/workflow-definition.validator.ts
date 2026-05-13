@@ -218,14 +218,21 @@ function lintApproverResolver(
     return [`workflow.nodes.${nodeId}.approverResolver.memberIds is required`];
   }
 
-  if (resolver.type === 'DIRECT' && resolver.memberIds.length > 1) {
-    return [
-      `workflow.nodes.${nodeId}.approverResolver.memberIds must include exactly one primary approver`,
-    ];
-  }
-
   if (resolver.type === 'POSITION' && !resolver.positionId.trim()) {
     return [`workflow.nodes.${nodeId}.approverResolver.positionId is required`];
+  }
+
+  if (resolver.type === 'ORG_UNIT_MEMBER' && !resolver.orgUnitId.trim()) {
+    return [`workflow.nodes.${nodeId}.approverResolver.orgUnitId is required`];
+  }
+
+  if (
+    resolver.type === 'ORG_UNIT_POSITION' &&
+    (!resolver.orgUnitId.trim() || !resolver.positionId.trim())
+  ) {
+    return [
+      `workflow.nodes.${nodeId}.approverResolver.orgUnitId and positionId are required`,
+    ];
   }
 
   if (resolver.type === 'ORG_UNIT_MANAGER' && !resolver.orgUnitId.trim()) {
@@ -303,6 +310,21 @@ function lintNotifyRecipients(
   if (recipients.type === 'POSITION' && !recipients.positionId.trim()) {
     return [
       `workflow.nodes.${nodeId}.action.recipients.positionId is required`,
+    ];
+  }
+
+  if (recipients.type === 'ORG_UNIT_MEMBER' && !recipients.orgUnitId.trim()) {
+    return [
+      `workflow.nodes.${nodeId}.action.recipients.orgUnitId is required`,
+    ];
+  }
+
+  if (
+    recipients.type === 'ORG_UNIT_POSITION' &&
+    (!recipients.orgUnitId.trim() || !recipients.positionId.trim())
+  ) {
+    return [
+      `workflow.nodes.${nodeId}.action.recipients.orgUnitId and positionId are required`,
     ];
   }
 
