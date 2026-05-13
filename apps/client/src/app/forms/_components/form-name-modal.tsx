@@ -1,8 +1,8 @@
 'use client';
 
 import { ChangeEvent, ReactElement, useEffect, useState } from 'react';
-import { FormField, Input, Modal, Typography } from '@mezzanine-ui/react';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import { Input, Modal, Typography } from '@mezzanine-ui/react';
+import { BPMFormField } from '../../_components/bpm-form-field';
 
 interface FormNameModalProps {
   readonly confirmText: string;
@@ -65,14 +65,7 @@ export function FormNameModal({
       size="narrow"
       title={title}
     >
-      <FormField
-        density={FormFieldDensity.WIDE}
-        fullWidth
-        label="表單名稱"
-        layout={FormFieldLayout.STRETCH}
-        name="formName"
-        required
-      >
+      <BPMFormField label="表單名稱" name="formName" required>
         <Input
           autoFocus
           fullWidth
@@ -84,7 +77,7 @@ export function FormNameModal({
           value={name}
           variant="base"
         />
-      </FormField>
+      </BPMFormField>
       {error ? (
         <Typography color="text-error" variant="body">
           {error}

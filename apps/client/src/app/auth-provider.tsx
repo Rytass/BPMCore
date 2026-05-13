@@ -11,8 +11,7 @@ import {
   useState,
 } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Button, Typography } from '@mezzanine-ui/react';
-import { LogoutIcon } from '@mezzanine-ui/icons';
+import { Typography } from '@mezzanine-ui/react';
 import {
   ApiMember,
   loginApi,
@@ -135,27 +134,6 @@ export function AuthProvider({ children }: AuthProviderProps): ReactElement {
   return (
     <AuthContext.Provider value={value}>
       {children}
-      {member && !isPublicPath(pathname) ? (
-        <div className={styles.accountBar}>
-          <div className={styles.accountMeta}>
-            <Typography color="text-neutral" variant="caption">
-              目前登入
-            </Typography>
-            <Typography variant="body">{member.name}</Typography>
-          </div>
-          <Button
-            icon={LogoutIcon}
-            iconType="leading"
-            onClick={(): void => {
-              void logout();
-            }}
-            size="sub"
-            variant="base-secondary"
-          >
-            登出
-          </Button>
-        </div>
-      ) : null}
     </AuthContext.Provider>
   );
 }

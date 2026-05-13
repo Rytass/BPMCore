@@ -132,7 +132,10 @@ test.describe('M1 W2 form builder', () => {
 
 async function mockFormListGraphQl(page: Page): Promise<void> {
   const forms = Array.from({ length: 12 }, (_, index) => ({
+    currentVersionCreatedAt: index % 2 === 0 ? UPDATED_AT : null,
     currentVersionId: index % 2 === 0 ? VERSION_ID : null,
+    currentVersionNumber: index % 2 === 0 ? 1 : null,
+    currentVersionPublishedAt: index % 2 === 0 ? UPDATED_AT : null,
     description: null,
     id: `e2e-form-${index + 1}`,
     name: `E2E 表單 ${index + 1}`,
@@ -255,7 +258,10 @@ async function mockFormBuilderGraphQl(page: Page): Promise<void> {
 
 function readDefinition(currentVersionId: string | null): FormDefinitionRecord {
   return {
+    currentVersionCreatedAt: currentVersionId ? UPDATED_AT : null,
     currentVersionId,
+    currentVersionNumber: currentVersionId ? 1 : null,
+    currentVersionPublishedAt: currentVersionId ? UPDATED_AT : null,
     description: null,
     id: FORM_ID,
     name: 'E2E 表單',

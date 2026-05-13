@@ -82,6 +82,48 @@ describe('FormService', () => {
       }),
     );
   });
+
+  it('hydrates current version summary when listing form definitions', async (): Promise<void> => {
+    const publishedForm = Object.assign(createFormDefinition('form-1'), {
+      currentVersionId: 'version-1',
+    });
+    const find = jest.fn(
+      (): Promise<readonly FormDefinitionEntity[]> =>
+        Promise.resolve([publishedForm]),
+    );
+    const versionCreatedAt = new Date('2026-05-10T01:00:00.000Z');
+    const versionPublishedAt = new Date('2026-05-10T02:00:00.000Z');
+    const findBy = jest.fn(
+      (): Promise<readonly FormDefinitionVersionEntity[]> =>
+        Promise.resolve([
+          Object.assign(new FormDefinitionVersionEntity(), {
+            createdAt: versionCreatedAt,
+            id: 'version-1',
+            publishedAt: versionPublishedAt,
+            version: 3,
+          }),
+        ]),
+    );
+    const service = new FormService(
+      {
+        find,
+      } as unknown as Repository<FormDefinitionEntity>,
+      {
+        findBy,
+      } as unknown as Repository<FormDefinitionVersionEntity>,
+    );
+
+    const definitions = await service.listFormDefinitions();
+
+    expect(definitions[0]).toMatchObject({
+      currentVersionCreatedAt: versionCreatedAt,
+      currentVersionNumber: 3,
+      currentVersionPublishedAt: versionPublishedAt,
+    });
+    expect(findBy).toHaveBeenCalledWith({
+      id: expect.any(Object),
+    });
+  });
 });
 
 function createFormDefinition(id: string): FormDefinitionEntity {

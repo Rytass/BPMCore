@@ -11,7 +11,6 @@ import {
 import {
   DatePicker,
   DateTimePicker,
-  FormField,
   Input,
   Select,
   Textarea,
@@ -20,7 +19,6 @@ import {
   Upload,
 } from '@mezzanine-ui/react';
 import type { UploadFile } from '@mezzanine-ui/react/Upload';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -41,6 +39,7 @@ import {
   readSelectOption,
   readVisibleFormRendererFields,
 } from '../_lib/form-rendering';
+import { BPMFormField } from '../../_components/bpm-form-field';
 
 export interface FormRendererProps {
   readonly emptyText?: string;
@@ -73,14 +72,6 @@ const FORM_RENDERER_FIELD_STYLE: CSSProperties = {
   display: 'grid',
   gap: 8,
   minWidth: 0,
-};
-
-const REQUIRED_ASTERISK_STYLE: CSSProperties = {
-  color: 'var(--mzn-color-text-error)',
-  fontSize: '0.72em',
-  lineHeight: 0,
-  marginLeft: 2,
-  verticalAlign: 'super',
 };
 
 const TEXTAREA_STYLE: CSSProperties = {
@@ -219,18 +210,8 @@ function FormRendererField({
 
   return (
     <div style={style}>
-      <Typography color="text-neutral" component="span" variant="label-primary">
-        {field.label}
-        {required ? (
-          <sup aria-label="必填" style={REQUIRED_ASTERISK_STYLE}>
-            *
-          </sup>
-        ) : null}
-      </Typography>
-      <FormField
-        density={FormFieldDensity.WIDE}
-        fullWidth
-        layout={FormFieldLayout.STRETCH}
+      <BPMFormField
+        label={field.label}
         name={field.fieldKey}
         required={required}
       >
@@ -241,7 +222,7 @@ function FormRendererField({
           onChange,
           onUploadAttachment,
         )}
-      </FormField>
+      </BPMFormField>
     </div>
   );
 }

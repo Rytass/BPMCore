@@ -108,17 +108,9 @@ export default function FormsPage(): ReactElement {
       {
         key: 'currentVersionId',
         render: (record: FormDefinitionRow): ReactElement => (
-          <Typography variant="body">
-            {record.currentVersionId ?? '尚未發布'}
-          </Typography>
+          <CurrentVersionLabel record={record} />
         ),
         title: '目前版本',
-        width: 260,
-      },
-      {
-        dataIndex: 'updatedAt',
-        key: 'updatedAt',
-        title: '更新時間',
         width: 220,
       },
     ],
@@ -261,4 +253,24 @@ function readFormStatusTabKey(activeKey: Key): FormStatusTabKey {
   }
 
   return 'ALL';
+}
+
+function CurrentVersionLabel({
+  record,
+}: {
+  readonly record: FormDefinitionRow;
+}): ReactElement {
+  if (!record.currentVersionId || !record.currentVersionNumber) {
+    return <Typography variant="body">尚未發布</Typography>;
+  }
+
+  const versionTime =
+    record.currentVersionPublishedAt ?? record.currentVersionCreatedAt;
+
+  return (
+    <Typography variant="body">
+      v{record.currentVersionNumber}
+      {versionTime ? ` · ${formatDateTime(versionTime)}` : ''}
+    </Typography>
+  );
 }

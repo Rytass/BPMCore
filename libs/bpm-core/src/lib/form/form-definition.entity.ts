@@ -1,4 +1,4 @@
-import { Field, ID, ObjectType } from '@nestjs/graphql';
+import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import {
   Column,
   CreateDateColumn,
@@ -26,6 +26,15 @@ export class FormDefinitionEntity {
   @Column('uuid', { name: 'current_version_id', nullable: true })
   @Field(() => ID, { nullable: true })
   currentVersionId!: string | null;
+
+  @Field(() => Int, { nullable: true })
+  currentVersionNumber?: number | null;
+
+  @Field(() => Date, { nullable: true })
+  currentVersionCreatedAt?: Date | null;
+
+  @Field(() => Date, { nullable: true })
+  currentVersionPublishedAt?: Date | null;
 
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz' })
   @Field(() => Date, { nullable: true })

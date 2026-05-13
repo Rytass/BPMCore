@@ -100,6 +100,14 @@ jest.mock('@mezzanine-ui/react', () => {
     return React.createElement('section', null, title, children);
   }
 
+  function NavigationFooter({
+    children,
+  }: {
+    readonly children?: React.ReactNode;
+  }): React.ReactElement {
+    return React.createElement('footer', null, children);
+  }
+
   function PageHeader({
     children,
   }: {
@@ -116,6 +124,22 @@ jest.mock('@mezzanine-ui/react', () => {
     readonly title?: string;
   }): React.ReactElement {
     return React.createElement('article', null, title, subtitle);
+  }
+
+  function NavigationIconButton({
+    title,
+  }: {
+    readonly title: string;
+  }): React.ReactElement {
+    return React.createElement('button', null, title);
+  }
+
+  function NavigationUserMenu({
+    children,
+  }: {
+    readonly children?: React.ReactNode;
+  }): React.ReactElement {
+    return React.createElement('div', null, children);
   }
 
   function Section({
@@ -155,9 +179,12 @@ jest.mock('@mezzanine-ui/react', () => {
     ContentHeader,
     Layout,
     Navigation,
+    NavigationFooter,
     NavigationHeader,
+    NavigationIconButton,
     NavigationOption,
     NavigationOptionCategory,
+    NavigationUserMenu,
     PageHeader,
     QuickActionCard,
     Section,
@@ -188,10 +215,25 @@ jest.mock('@mezzanine-ui/icons', () => ({
   FileIcon: { name: 'file' },
   FolderIcon: { name: 'folder' },
   HomeIcon: { name: 'home' },
+  ListIcon: { name: 'list' },
+  LogoutIcon: { name: 'logout' },
+  MailUnreadIcon: { name: 'mail-unread' },
+  NotificationUnreadIcon: { name: 'notification-unread' },
   PlusIcon: { name: 'plus' },
   SettingIcon: { name: 'setting' },
+  ShareIcon: { name: 'share' },
   SystemIcon: { name: 'system' },
   UserIcon: { name: 'user' },
+}));
+
+jest.mock('../src/app/auth-provider', () => ({
+  useAuth: (): Readonly<{ member: { readonly name: string } }> => ({
+    member: { name: '測試使用者' },
+  }),
+}));
+
+jest.mock('../src/app/_lib/api-auth-client', () => ({
+  logoutApi: jest.fn((): Promise<void> => Promise.resolve()),
 }));
 
 jest.mock('next/navigation', () => ({

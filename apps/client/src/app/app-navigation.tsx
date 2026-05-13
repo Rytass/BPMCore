@@ -4,14 +4,19 @@ import { ReactElement } from 'react';
 import Image from 'next/image';
 import {
   Navigation,
+  NavigationFooter,
   NavigationHeader,
+  NavigationIconButton,
   NavigationOption,
   NavigationOptionCategory,
+  NavigationUserMenu,
 } from '@mezzanine-ui/react';
 import {
   FileIcon,
   FolderIcon,
   HomeIcon,
+  ListIcon,
+  LogoutIcon,
   MailUnreadIcon,
   NotificationUnreadIcon,
   ShareIcon,
@@ -20,6 +25,8 @@ import {
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
 import styles from './app-navigation.module.scss';
+import { useAuth } from './auth-provider';
+import { logoutApi } from './_lib/api-auth-client';
 
 interface NavigationItem {
   readonly href: string;
@@ -32,6 +39,7 @@ const mainItems: readonly NavigationItem[] = [
   { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
   { href: '/notifications', icon: NotificationUnreadIcon, label: '通知中心' },
   { href: '/templates', icon: FolderIcon, label: '簽核模板' },
+  { href: '/templates/categories', icon: ListIcon, label: '模板分類' },
   { href: '/forms', icon: FileIcon, label: '表單設計' },
   { href: '/admin/orgs', icon: SystemIcon, label: '組織管理' },
   { href: '/admin/users', icon: UserIcon, label: '會員對照' },
@@ -62,6 +70,47 @@ export function renderAppNavigation(activeHref: string): ReactElement {
           />
         ))}
       </NavigationOptionCategory>
+      <NavigationFooter>
+        <NavigationUserMenu
+          options={[
+            {
+              id: 'logout',
+              name: '登出',
+            },
+          ]}
+          onSelect={(option): void => {
+            if (option.id === 'logout') {
+              void logoutAndRedirect();
+            }
+          }}
+        >
+          <NavigationMemberName />
+        </NavigationUserMenu>
+        <NavigationIconButton
+          aria-label="登出"
+          icon={LogoutIcon}
+          onClick={(): void => {
+            void logoutAndRedirect();
+          }}
+          title="登出"
+          type="button"
+        />
+      </NavigationFooter>
     </Navigation>
   );
+}
+
+function NavigationMemberName(): ReactElement | null {
+  const { member } = useAuth();
+
+  if (!member) {
+    return null;
+  }
+
+  return <>{member.name}</>;
+}
+
+async function logoutAndRedirect(): Promise<void> {
+  await logoutApi();
+  window.location.assign('/login');
 }

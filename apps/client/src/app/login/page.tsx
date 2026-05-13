@@ -4,14 +4,11 @@ import type { ChangeEvent, FormEvent, ReactElement } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { Button, FormField, Input, Typography } from '@mezzanine-ui/react';
-import { FormFieldLayout } from '@mezzanine-ui/core/form';
+import { Button, Input, Typography } from '@mezzanine-ui/react';
 import { LoginIcon } from '@mezzanine-ui/icons';
 import { useAuth } from '../auth-provider';
-import {
-  ApiPublicMember,
-  listApiDemoMembers,
-} from '../_lib/api-auth-client';
+import { BPMFormField } from '../_components/bpm-form-field';
+import { ApiPublicMember, listApiDemoMembers } from '../_lib/api-auth-client';
 import styles from './login.module.scss';
 
 const DEFAULT_IDENTIFIER = 'lin.ceo@example.internal';
@@ -20,9 +17,9 @@ const DEFAULT_PASSWORD = 'demo';
 export default function LoginPage(): ReactElement {
   const router = useRouter();
   const { loading, login, member } = useAuth();
-  const [demoMembers, setDemoMembers] = useState<
-    readonly ApiPublicMember[]
-  >([]);
+  const [demoMembers, setDemoMembers] = useState<readonly ApiPublicMember[]>(
+    [],
+  );
   const [error, setError] = useState<string | null>(null);
   const [identifier, setIdentifier] = useState(DEFAULT_IDENTIFIER);
   const [password, setPassword] = useState(DEFAULT_PASSWORD);
@@ -94,13 +91,7 @@ export default function LoginPage(): ReactElement {
         </div>
 
         <form className={styles.form} onSubmit={handleSubmit}>
-          <FormField
-            fullWidth
-            label="帳號"
-            layout={FormFieldLayout.VERTICAL}
-            name="identifier"
-            required
-          >
+          <BPMFormField label="帳號" name="identifier" required>
             <Input
               fullWidth
               name="identifier"
@@ -108,15 +99,9 @@ export default function LoginPage(): ReactElement {
               placeholder="member id 或 email"
               value={identifier}
             />
-          </FormField>
+          </BPMFormField>
 
-          <FormField
-            fullWidth
-            label="密碼"
-            layout={FormFieldLayout.VERTICAL}
-            name="password"
-            required
-          >
+          <BPMFormField label="密碼" name="password" required>
             <Input
               fullWidth
               inputType="password"
@@ -125,7 +110,7 @@ export default function LoginPage(): ReactElement {
               value={password}
               variant="password"
             />
-          </FormField>
+          </BPMFormField>
 
           {error ? (
             <Typography color="text-error" variant="body">

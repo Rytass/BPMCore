@@ -7,6 +7,9 @@ import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface FormDefinitionRecord {
   readonly currentVersionId: string | null;
+  readonly currentVersionCreatedAt: string | null;
+  readonly currentVersionNumber: number | null;
+  readonly currentVersionPublishedAt: string | null;
   readonly description: string | null;
   readonly id: string;
   readonly name: string;
@@ -88,7 +91,10 @@ export async function listFormDefinitions(): Promise<
   const data = await requestGraphQl<FormDefinitionsQueryData>(
     `query FormDefinitions {
       formDefinitions {
+        currentVersionCreatedAt
         currentVersionId
+        currentVersionNumber
+        currentVersionPublishedAt
         description
         id
         name
@@ -119,7 +125,10 @@ export async function listFormDefinitionsPage({
       $status: FormDefinitionListStatus
     ) {
       formDefinitions(page: $page, pageSize: $pageSize, status: $status) {
+        currentVersionCreatedAt
         currentVersionId
+        currentVersionNumber
+        currentVersionPublishedAt
         description
         id
         name
@@ -164,7 +173,10 @@ export async function updateFormDefinition(
   const data = await requestGraphQl<UpdateFormDefinitionMutationData>(
     `mutation UpdateFormDefinition($input: UpdateFormDefinitionInput!) {
       updateFormDefinition(input: $input) {
+        currentVersionCreatedAt
         currentVersionId
+        currentVersionNumber
+        currentVersionPublishedAt
         description
         id
         name
@@ -189,7 +201,10 @@ export async function readFormBuilder(
   const data = await requestGraphQl<FormBuilderQueryData>(
     `query FormBuilder($id: String!) {
       formDefinition(id: $id) {
+        currentVersionCreatedAt
         currentVersionId
+        currentVersionNumber
+        currentVersionPublishedAt
         description
         id
         name

@@ -7,12 +7,19 @@ jest.mock('@mezzanine-ui/react', () => {
 
   function FormField({
     children,
+    label,
     name,
   }: {
     readonly children?: React.ReactNode;
+    readonly label?: string;
     readonly name?: string;
   }): React.ReactElement {
-    return React.createElement('div', { 'data-field-name': name }, children);
+    return React.createElement(
+      'div',
+      { 'data-field-name': name },
+      label ? React.createElement('label', null, label) : null,
+      children,
+    );
   }
 
   function DatePicker({
@@ -126,8 +133,8 @@ jest.mock('@mezzanine-ui/react', () => {
 });
 
 jest.mock('@mezzanine-ui/core/form', () => ({
-  FormFieldDensity: { WIDE: 'wide' },
-  FormFieldLayout: { STRETCH: 'stretch' },
+  FormFieldDensity: { TIGHT: 'tight', WIDE: 'wide' },
+  FormFieldLayout: { HORIZONTAL: 'horizontal', STRETCH: 'stretch' },
 }));
 
 const schema: FormDefinitionSchema = {

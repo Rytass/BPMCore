@@ -35,7 +35,8 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import { FormFieldLayout } from '@mezzanine-ui/core/form';
+import { BPMFormField } from '../../_components/bpm-form-field';
 import styles from './delegations.module.scss';
 import { formatDateTime } from '../../_lib/date-time';
 import { renderAppNavigation } from '../../app-navigation';
@@ -90,7 +91,6 @@ type DelegationRuleRow = Readonly<
     }
 >;
 
-const DELEGATION_MODAL_FIELD_DENSITY = FormFieldDensity.WIDE;
 const DELEGATION_MODAL_FIELD_LAYOUT = FormFieldLayout.HORIZONTAL;
 const DELEGATION_PAGE_SIZE_OPTIONS = [10, 20, 50];
 const DELEGATION_STATUS_TABS: readonly {
@@ -580,14 +580,7 @@ export default function AdminDelegationsPage(): ReactElement {
               options={memberOptions}
               value={agentMember}
             />
-            <FormField
-              density={DELEGATION_MODAL_FIELD_DENSITY}
-              fullWidth
-              label="代理範圍"
-              layout={DELEGATION_MODAL_FIELD_LAYOUT}
-              name="scopeType"
-              required
-            >
+            <BPMFormField label="代理範圍" name="scopeType" required>
               <Select
                 clearable={false}
                 fullWidth
@@ -597,16 +590,9 @@ export default function AdminDelegationsPage(): ReactElement {
                 options={[...SCOPE_OPTIONS]}
                 value={selectedScopeType}
               />
-            </FormField>
+            </BPMFormField>
             {selectedScopeType.id === 'TEMPLATE_LIST' ? (
-              <FormField
-                density={DELEGATION_MODAL_FIELD_DENSITY}
-                fullWidth
-                label="簽核模板"
-                layout={DELEGATION_MODAL_FIELD_LAYOUT}
-                name="scopeTemplateIds"
-                required
-              >
+              <BPMFormField label="簽核模板" name="scopeTemplateIds" required>
                 <AutoComplete
                   asyncData
                   disabledOptionsFilter
@@ -641,15 +627,9 @@ export default function AdminDelegationsPage(): ReactElement {
                   searchDebounceTime={300}
                   value={[...scopeTemplates]}
                 />
-              </FormField>
+              </BPMFormField>
             ) : null}
-            <FormField
-              density={DELEGATION_MODAL_FIELD_DENSITY}
-              fullWidth
-              label="優先序"
-              layout={DELEGATION_MODAL_FIELD_LAYOUT}
-              name="priority"
-            >
+            <BPMFormField label="優先序" name="priority">
               <Input
                 fullWidth
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
@@ -658,14 +638,8 @@ export default function AdminDelegationsPage(): ReactElement {
                 value={priority}
                 variant="base"
               />
-            </FormField>
-            <FormField
-              density={DELEGATION_MODAL_FIELD_DENSITY}
-              fullWidth
-              label="起始時間"
-              layout={DELEGATION_MODAL_FIELD_LAYOUT}
-              name="startAt"
-            >
+            </BPMFormField>
+            <BPMFormField label="起始時間" name="startAt">
               <DateTimePicker
                 formatDate="YYYY-MM-DD"
                 formatTime="HH:mm"
@@ -678,14 +652,8 @@ export default function AdminDelegationsPage(): ReactElement {
                 placeholderRight="選擇時間"
                 value={readDelegationDateTimePickerValue(startAt)}
               />
-            </FormField>
-            <FormField
-              density={DELEGATION_MODAL_FIELD_DENSITY}
-              fullWidth
-              label="結束時間"
-              layout={DELEGATION_MODAL_FIELD_LAYOUT}
-              name="endAt"
-            >
+            </BPMFormField>
+            <BPMFormField label="結束時間" name="endAt">
               <DateTimePicker
                 formatDate="YYYY-MM-DD"
                 formatTime="HH:mm"
@@ -698,7 +666,7 @@ export default function AdminDelegationsPage(): ReactElement {
                 placeholderRight="選擇時間"
                 value={readDelegationDateTimePickerValue(endAt)}
               />
-            </FormField>
+            </BPMFormField>
           </div>
         </Modal>
       </Layout.Main>
@@ -730,14 +698,7 @@ function MemberAutoCompleteField({
   readonly value: MemberOption | null;
 }): ReactElement {
   return (
-    <FormField
-      density={DELEGATION_MODAL_FIELD_DENSITY}
-      fullWidth
-      label={label}
-      layout={layout}
-      name={name}
-      required={required}
-    >
+    <BPMFormField label={label} layout={layout} name={name} required={required}>
       <AutoComplete
         asyncData
         disabledOptionsFilter
@@ -767,7 +728,7 @@ function MemberAutoCompleteField({
         size={size}
         value={value}
       />
-    </FormField>
+    </BPMFormField>
   );
 }
 

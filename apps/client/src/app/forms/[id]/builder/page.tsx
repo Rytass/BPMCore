@@ -24,7 +24,6 @@ import {
   Button,
   DatePicker,
   DateTimePicker,
-  FormField,
   Icon,
   Input,
   Layout,
@@ -57,7 +56,6 @@ import {
   TrashIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   BooleanFieldDefinition,
@@ -105,6 +103,7 @@ import {
 } from '../../_lib/form-rendering';
 import { FormRenderer } from '../../_components/form-renderer';
 import { FormNameModal } from '../../_components/form-name-modal';
+import { BPMFormField } from '../../../_components/bpm-form-field';
 import { JsonCodeEditor } from './json-code-editor';
 
 type FieldType = FormFieldDefinition['type'];
@@ -339,20 +338,13 @@ const FIELD_SETTINGS_HINT_STYLE: CSSProperties = {
 
 const FIELD_SETTINGS_ROW_STYLE: CSSProperties = {
   alignItems: 'start',
-  display: 'grid',
-  gap: 10,
-  gridTemplateColumns: '64px minmax(0, 1fr)',
+  display: 'block',
   width: '100%',
 };
 
 const FIELD_SETTINGS_ROW_WIDE_STYLE: CSSProperties = {
   ...FIELD_SETTINGS_ROW_STYLE,
   gridColumn: '1 / -1',
-};
-
-const FIELD_SETTINGS_LABEL_STYLE: CSSProperties = {
-  minHeight: 32,
-  paddingTop: 6,
 };
 
 const FIELD_SETTINGS_VALUE_STYLE: CSSProperties = {
@@ -372,15 +364,8 @@ const ADVANCED_SCHEMA_FORM_STYLE: CSSProperties = {
 
 const ADVANCED_SCHEMA_ROW_STYLE: CSSProperties = {
   alignItems: 'start',
-  display: 'grid',
-  gap: 12,
-  gridTemplateColumns: '112px minmax(0, 1fr)',
+  display: 'block',
   width: '100%',
-};
-
-const ADVANCED_SCHEMA_LABEL_STYLE: CSSProperties = {
-  minHeight: 32,
-  paddingTop: 6,
 };
 
 const ADVANCED_SCHEMA_VALUE_STYLE: CSSProperties = {
@@ -1176,7 +1161,6 @@ export default function FormBuilderPage(): ReactElement {
           '標題',
           'fieldLabel',
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedField({ label: event.target.value })
             }
@@ -1190,7 +1174,6 @@ export default function FormBuilderPage(): ReactElement {
           '欄位 Key',
           'fieldKey',
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedField({ fieldKey: event.target.value })
             }
@@ -1204,7 +1187,6 @@ export default function FormBuilderPage(): ReactElement {
           '提示文字',
           'fieldPlaceholder',
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedField({
                 placeholder: event.target.value || undefined,
@@ -1295,7 +1277,6 @@ export default function FormBuilderPage(): ReactElement {
             })
           ) : (
             <Input
-              fullWidth
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                 updateSelectedTextField({
                   defaultValue: event.target.value || undefined,
@@ -1407,7 +1388,6 @@ export default function FormBuilderPage(): ReactElement {
           field.type === 'checkbox' ? (
             <Select
               clearable
-              fullWidth
               mode="multiple"
               onChange={(options): void =>
                 updateSelectedSelectField({
@@ -1423,7 +1403,6 @@ export default function FormBuilderPage(): ReactElement {
           ) : (
             <Select
               clearable
-              fullWidth
               onChange={(option): void =>
                 updateSelectedSelectField({
                   defaultValue: option?.id || undefined,
@@ -1467,7 +1446,6 @@ export default function FormBuilderPage(): ReactElement {
       'fieldDefaultValue',
       <Select
         clearable={false}
-        fullWidth
         onChange={(option): void =>
           updateSelectedBooleanField({
             defaultValue:
@@ -1610,7 +1588,6 @@ export default function FormBuilderPage(): ReactElement {
             <div style={CONDITION_RULE_GRID_STYLE}>
               <Select
                 clearable={false}
-                fullWidth
                 onChange={(option): void => {
                   const nextField =
                     conditionFieldOptions.find(
@@ -1636,7 +1613,6 @@ export default function FormBuilderPage(): ReactElement {
               />
               <Select
                 clearable={false}
-                fullWidth
                 onChange={(option): void =>
                   updateSelectedConditionRule(
                     config.target,
@@ -1693,7 +1669,6 @@ export default function FormBuilderPage(): ReactElement {
       return (
         <Select
           clearable={false}
-          fullWidth
           onChange={(option): void => onChange(option?.id ?? 'true')}
           options={[...BOOLEAN_CONDITION_VALUE_OPTIONS]}
           placeholder="比較值"
@@ -1711,7 +1686,6 @@ export default function FormBuilderPage(): ReactElement {
       return (
         <Select
           clearable={false}
-          fullWidth
           onChange={(option): void =>
             onChange(option?.id ?? options[0]?.id ?? '')
           }
@@ -1738,7 +1712,6 @@ export default function FormBuilderPage(): ReactElement {
 
     return (
       <Input
-        fullWidth
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
           onChange(event.target.value)
         }
@@ -1793,7 +1766,6 @@ export default function FormBuilderPage(): ReactElement {
   ): ReactElement {
     return (
       <Input
-        fullWidth
         max={options.max}
         min={options.min}
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
@@ -1823,7 +1795,6 @@ export default function FormBuilderPage(): ReactElement {
         <DateTimePicker
           formatDate="YYYY-MM-DD"
           formatTime="HH:mm"
-          fullWidth
           hideSecond
           onChange={(nextValue): void =>
             onChange(formatDateTimePickerValue(nextValue))
@@ -1838,7 +1809,6 @@ export default function FormBuilderPage(): ReactElement {
     return (
       <DatePicker
         format="YYYY-MM-DD"
-        fullWidth
         onChange={(nextValue): void =>
           onChange(formatDatePickerValue(nextValue))
         }
@@ -1860,7 +1830,6 @@ export default function FormBuilderPage(): ReactElement {
         key: 'label',
         render: (row): ReactElement => (
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedSelectField({
                 options: updateFieldOption(field.options, row.index, {
@@ -1880,7 +1849,6 @@ export default function FormBuilderPage(): ReactElement {
         key: 'value',
         render: (row): ReactElement => (
           <Input
-            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               updateSelectedSelectField({
                 options: updateFieldOption(field.options, row.index, {
@@ -1920,7 +1888,6 @@ export default function FormBuilderPage(): ReactElement {
           actions={optionActions}
           columns={optionColumns}
           dataSource={optionRows}
-          fullWidth
           showHeader
           size="sub"
         />
@@ -1980,24 +1947,10 @@ export default function FormBuilderPage(): ReactElement {
       <div
         style={wide ? FIELD_SETTINGS_ROW_WIDE_STYLE : FIELD_SETTINGS_ROW_STYLE}
       >
-        <Typography
-          color="text-neutral"
-          component="span"
-          style={FIELD_SETTINGS_LABEL_STYLE}
-          variant="label-primary"
-        >
-          {label}
-        </Typography>
         <div style={FIELD_SETTINGS_VALUE_STYLE}>
-          <FormField
-            density={FormFieldDensity.WIDE}
-            disabled={disabled}
-            fullWidth
-            layout={FormFieldLayout.STRETCH}
-            name={name}
-          >
+          <BPMFormField disabled={disabled} label={label} name={name}>
             {control}
-          </FormField>
+          </BPMFormField>
         </div>
       </div>
     );
@@ -2105,7 +2058,6 @@ export default function FormBuilderPage(): ReactElement {
         <Table
           columns={versionColumns}
           dataSource={versionRows}
-          fullWidth
           loading={loading}
         />
       </div>
@@ -2164,24 +2116,10 @@ export default function FormBuilderPage(): ReactElement {
   ): ReactElement {
     return (
       <div style={ADVANCED_SCHEMA_ROW_STYLE}>
-        <Typography
-          color="text-neutral"
-          component="span"
-          style={ADVANCED_SCHEMA_LABEL_STYLE}
-          variant="label-primary"
-        >
-          {label}
-        </Typography>
         <div style={ADVANCED_SCHEMA_VALUE_STYLE}>
-          <FormField
-            density={FormFieldDensity.WIDE}
-            disabled={saving}
-            fullWidth
-            layout={FormFieldLayout.STRETCH}
-            name={name}
-          >
+          <BPMFormField disabled={saving} label={label} name={name}>
             {control}
-          </FormField>
+          </BPMFormField>
         </div>
       </div>
     );

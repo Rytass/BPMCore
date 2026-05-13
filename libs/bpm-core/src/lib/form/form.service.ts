@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, IsNull, Not, Repository } from 'typeorm';
+import { FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
 import { FormDefinitionEntity } from './form-definition.entity';
 import { FormDefinitionVersionEntity } from './form-definition-version.entity';
 import {
@@ -108,7 +108,7 @@ export class FormService {
       ? normalizePageSize(options.pageSize ?? 10)
       : undefined;
 
-    return this.formDefinitionRepository.find({
+    const definitions = await this.formDefinitionRepository.find({
       order: { updatedAt: 'DESC', createdAt: 'DESC' },
       ...(normalizedPageSize
         ? {
@@ -118,6 +118,8 @@ export class FormService {
         : {}),
       where: createFormDefinitionWhere(options.status),
     });
+
+    return this.hydrateCurrentVersions(definitions);
   }
 
   async countFormDefinitions(
@@ -129,7 +131,9 @@ export class FormService {
   }
 
   async getFormDefinition(id: string): Promise<FormDefinitionEntity> {
-    return this.getFormDefinitionOrThrow(id);
+    const definition = await this.getFormDefinitionOrThrow(id);
+
+    return this.hydrateCurrentVersion(definition);
   }
 
   async listFormDefinitionVersions(
@@ -352,6 +356,48 @@ export class FormService {
     return entity;
   }
 
+  private async hydrateCurrentVersions(
+    definitions: readonly FormDefinitionEntity[],
+  ): Promise<readonly FormDefinitionEntity[]> {
+    const currentVersionIds = definitions.flatMap((definition) =>
+      definition.currentVersionId ? [definition.currentVersionId] : [],
+    );
+
+    if (currentVersionIds.length === 0) {
+      return definitions;
+    }
+
+    const versions = await this.formDefinitionVersionRepository.findBy({
+      id: In(currentVersionIds),
+    });
+    const versionById = new Map(
+      versions.map((version) => [version.id, version]),
+    );
+
+    return definitions.map((definition) =>
+      applyCurrentVersionSummary(
+        definition,
+        definition.currentVersionId
+          ? (versionById.get(definition.currentVersionId) ?? null)
+          : null,
+      ),
+    );
+  }
+
+  private async hydrateCurrentVersion(
+    definition: FormDefinitionEntity,
+  ): Promise<FormDefinitionEntity> {
+    if (!definition.currentVersionId) {
+      return definition;
+    }
+
+    const version = await this.formDefinitionVersionRepository.findOne({
+      where: { id: definition.currentVersionId },
+    });
+
+    return applyCurrentVersionSummary(definition, version);
+  }
+
   private async getFormDefinitionVersionOrThrow(
     id: string,
   ): Promise<FormDefinitionVersionEntity> {
@@ -430,4 +476,15 @@ function createFormDefinitionWhere(
   }
 
   return { deletedAt: IsNull() };
+}
+
+function applyCurrentVersionSummary(
+  definition: FormDefinitionEntity,
+  version: FormDefinitionVersionEntity | null,
+): FormDefinitionEntity {
+  return Object.assign(new FormDefinitionEntity(), definition, {
+    currentVersionCreatedAt: version?.createdAt ?? null,
+    currentVersionNumber: version?.version ?? null,
+    currentVersionPublishedAt: version?.publishedAt ?? null,
+  });
 }
