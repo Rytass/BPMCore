@@ -1,6 +1,14 @@
 import { requestGraphQl } from '../../_lib/graphql-client';
 
-export type OrgUnitType = 'company' | 'department' | 'division' | 'team';
+export type OrgUnitType =
+  | 'COMPANY'
+  | 'DEPARTMENT'
+  | 'DIVISION'
+  | 'TEAM'
+  | 'company'
+  | 'department'
+  | 'division'
+  | 'team';
 export type ManagerResolutionScopeType = 'MEMBER' | 'ORG_UNIT' | 'POSITION';
 
 export interface OrgUnitRecord {
@@ -60,10 +68,18 @@ export interface ResolvedManagerRecord {
 }
 
 interface OrganizationDashboardQueryData {
+  readonly filteredManagerResolutions: readonly ManagerResolutionRecord[];
+  readonly filteredMemberships: readonly MembershipRecord[];
+  readonly filteredOrgUnits: readonly OrgUnitRecord[];
+  readonly filteredPositions: readonly PositionRecord[];
+  readonly managerResolutionCount: number;
   readonly managerResolutions: readonly ManagerResolutionRecord[];
+  readonly membershipCount: number;
   readonly memberships: readonly MembershipRecord[];
   readonly organizationSummary: OrganizationSummaryRecord;
+  readonly orgUnitCount: number;
   readonly orgUnits: readonly OrgUnitRecord[];
+  readonly positionCount: number;
   readonly positions: readonly PositionRecord[];
 }
 
@@ -89,6 +105,12 @@ interface UpdateOrgUnitMutationData {
 
 interface DeleteOrgUnitMutationData {
   readonly deleteOrgUnit: boolean;
+}
+
+interface CommitOrgUnitTreeDraftMutationData {
+  readonly commitOrgUnitTreeDraft: {
+    readonly orgUnits: readonly OrgUnitRecord[];
+  };
 }
 
 interface CreatePositionMutationData {
@@ -123,15 +145,86 @@ interface DeleteManagerResolutionMutationData {
   readonly deleteManagerResolution: boolean;
 }
 
-export async function readOrganizationDashboard(): Promise<OrganizationDashboardQueryData> {
+export async function readOrganizationDashboard({
+  managerActiveOnly = false,
+  managerPage = 1,
+  managerPageSize = null,
+  managerScopeType = null,
+  membershipActiveOnly = false,
+  membershipOrgUnitId = null,
+  membershipPage = 1,
+  membershipPageSize = null,
+  membershipPositionId = null,
+  orgUnitPage = 1,
+  orgUnitPageSize = null,
+  orgUnitSearchText = null,
+  orgUnitType = null,
+  positionPage = 1,
+  positionPageSize = null,
+  positionSearchText = null,
+}: {
+  readonly managerActiveOnly?: boolean;
+  readonly managerPage?: number;
+  readonly managerPageSize?: number | null;
+  readonly managerScopeType?: ManagerResolutionScopeType | null;
+  readonly membershipActiveOnly?: boolean;
+  readonly membershipOrgUnitId?: string | null;
+  readonly membershipPage?: number;
+  readonly membershipPageSize?: number | null;
+  readonly membershipPositionId?: string | null;
+  readonly orgUnitPage?: number;
+  readonly orgUnitPageSize?: number | null;
+  readonly orgUnitSearchText?: string | null;
+  readonly orgUnitType?: OrgUnitType | null;
+  readonly positionPage?: number;
+  readonly positionPageSize?: number | null;
+  readonly positionSearchText?: string | null;
+} = {}): Promise<OrganizationDashboardQueryData> {
   return requestGraphQl<OrganizationDashboardQueryData>(
-    `query AdminOrganizationDashboard {
+    `query AdminOrganizationDashboard(
+      $managerActiveOnly: Boolean
+      $managerPage: Int
+      $managerPageSize: Int
+      $managerScopeType: ManagerResolutionScopeType
+      $membershipActiveOnly: Boolean
+      $membershipOrgUnitId: String
+      $membershipPage: Int
+      $membershipPageSize: Int
+      $membershipPositionId: String
+      $orgUnitPage: Int
+      $orgUnitPageSize: Int
+      $orgUnitSearchText: String
+      $orgUnitType: OrgUnitType
+      $positionPage: Int
+      $positionPageSize: Int
+      $positionSearchText: String
+    ) {
       organizationSummary {
         managerResolutionCount
         membershipCount
         orgUnitCount
         positionCount
       }
+      filteredOrgUnits: orgUnits(
+        page: $orgUnitPage
+        pageSize: $orgUnitPageSize
+        searchText: $orgUnitSearchText
+        type: $orgUnitType
+      ) {
+        code
+        createdAt
+        deletedAt
+        id
+        name
+        parentId
+        path
+        type
+        updatedAt
+      }
+      orgUnitCount(
+        searchText: $orgUnitSearchText
+        type: $orgUnitType
+      )
       orgUnits {
         code
         createdAt
@@ -143,6 +236,19 @@ export async function readOrganizationDashboard(): Promise<OrganizationDashboard
         type
         updatedAt
       }
+      filteredPositions: positions(
+        page: $positionPage
+        pageSize: $positionPageSize
+        searchText: $positionSearchText
+      ) {
+        code
+        createdAt
+        id
+        level
+        name
+        updatedAt
+      }
+      positionCount(searchText: $positionSearchText)
       positions {
         code
         createdAt
@@ -151,6 +257,28 @@ export async function readOrganizationDashboard(): Promise<OrganizationDashboard
         name
         updatedAt
       }
+      filteredMemberships: memberships(
+        activeOnly: $membershipActiveOnly
+        orgUnitId: $membershipOrgUnitId
+        page: $membershipPage
+        pageSize: $membershipPageSize
+        positionId: $membershipPositionId
+      ) {
+        createdAt
+        effectiveFrom
+        effectiveTo
+        id
+        isPrimary
+        memberId
+        orgUnitId
+        positionId
+        updatedAt
+      }
+      membershipCount(
+        activeOnly: $membershipActiveOnly
+        orgUnitId: $membershipOrgUnitId
+        positionId: $membershipPositionId
+      )
       memberships {
         createdAt
         effectiveFrom
@@ -162,6 +290,25 @@ export async function readOrganizationDashboard(): Promise<OrganizationDashboard
         positionId
         updatedAt
       }
+      filteredManagerResolutions: managerResolutions(
+        activeOnly: $managerActiveOnly
+        page: $managerPage
+        pageSize: $managerPageSize
+        scopeType: $managerScopeType
+      ) {
+        createdAt
+        effectiveFrom
+        effectiveTo
+        id
+        managerMemberId
+        priority
+        scopeId
+        scopeType
+      }
+      managerResolutionCount(
+        activeOnly: $managerActiveOnly
+        scopeType: $managerScopeType
+      )
       managerResolutions {
         createdAt
         effectiveFrom
@@ -173,6 +320,24 @@ export async function readOrganizationDashboard(): Promise<OrganizationDashboard
         scopeType
       }
     }`,
+    {
+      managerActiveOnly,
+      managerPage,
+      managerPageSize,
+      managerScopeType,
+      membershipActiveOnly,
+      membershipOrgUnitId,
+      membershipPage,
+      membershipPageSize,
+      membershipPositionId,
+      orgUnitPage,
+      orgUnitPageSize,
+      orgUnitSearchText,
+      orgUnitType,
+      positionPage,
+      positionPageSize,
+      positionSearchText,
+    },
   );
 }
 
@@ -329,6 +494,35 @@ export async function deleteOrgUnit(id: string): Promise<boolean> {
   );
 
   return data.deleteOrgUnit;
+}
+
+export async function commitOrgUnitTreeDraft(input: {
+  readonly moves: readonly {
+    readonly baseUpdatedAt: string;
+    readonly id: string;
+    readonly parentId: string | null;
+  }[];
+}): Promise<readonly OrgUnitRecord[]> {
+  const data = await requestGraphQl<CommitOrgUnitTreeDraftMutationData>(
+    `mutation AdminCommitOrgUnitTreeDraft($input: CommitOrgUnitTreeDraftInput!) {
+      commitOrgUnitTreeDraft(input: $input) {
+        orgUnits {
+          code
+          createdAt
+          deletedAt
+          id
+          name
+          parentId
+          path
+          type
+          updatedAt
+        }
+      }
+    }`,
+    { input },
+  );
+
+  return data.commitOrgUnitTreeDraft.orgUnits;
 }
 
 export async function createPosition(input: {

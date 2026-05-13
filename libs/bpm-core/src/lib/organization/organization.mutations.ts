@@ -12,7 +12,12 @@ import {
   CreateMembershipInput,
   UpdateMembershipInput,
 } from './dto/membership.input';
-import { CreateOrgUnitInput, UpdateOrgUnitInput } from './dto/org-unit.input';
+import {
+  CommitOrgUnitTreeDraftInput,
+  CreateOrgUnitInput,
+  UpdateOrgUnitInput,
+} from './dto/org-unit.input';
+import { OrgUnitTreeCommitResultObject } from './org-unit-tree-commit-result.object';
 import {
   CreatePositionInput,
   UpdatePositionInput,
@@ -34,6 +39,13 @@ export class OrganizationMutations {
     @Args('input') input: UpdateOrgUnitInput,
   ): Promise<OrgUnitEntity> {
     return this.organizationService.updateOrgUnit(input);
+  }
+
+  @Mutation(() => OrgUnitTreeCommitResultObject)
+  async commitOrgUnitTreeDraft(
+    @Args('input') input: CommitOrgUnitTreeDraftInput,
+  ): Promise<OrgUnitTreeCommitResultObject> {
+    return this.organizationService.commitOrgUnitTreeDraft(input);
   }
 
   @Mutation(() => Boolean)

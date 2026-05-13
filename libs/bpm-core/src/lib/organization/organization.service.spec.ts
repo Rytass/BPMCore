@@ -9,6 +9,8 @@ import {
 import { OrganizationService } from './organization.service';
 import { PositionEntity } from './position.entity';
 
+const baseUpdatedAt = new Date('2026-05-12T08:00:00.000Z');
+
 describe('OrganizationService', () => {
   it('resolves member-scoped manager by highest priority', async (): Promise<void> => {
     const managerResolutionRepository = {
@@ -96,6 +98,286 @@ describe('OrganizationService', () => {
 
     expect(orgUnit.path).toMatch(/^org\.n[0-9a-f_]+$/);
     expect(orgUnitRepository.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushes org unit filters into repository query', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    );
+    const orgUnitRepository = {
+      find,
+    } as unknown as Repository<OrgUnitEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await service.listOrgUnits({
+      page: 2,
+      pageSize: 5,
+      searchText: '財務',
+      type: OrgUnitTypeEnum.DEPARTMENT,
+    });
+
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order: { path: 'ASC' },
+        skip: 5,
+        take: 5,
+        where: expect.arrayContaining([
+          expect.objectContaining({
+            code: expect.any(Object),
+            deletedAt: expect.any(Object),
+            type: OrgUnitTypeEnum.DEPARTMENT,
+          }),
+          expect.objectContaining({
+            deletedAt: expect.any(Object),
+            name: expect.any(Object),
+            type: OrgUnitTypeEnum.DEPARTMENT,
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('pushes organization table filters into paginated repository queries', async (): Promise<void> => {
+    const positionFind = jest.fn(
+      (): Promise<readonly PositionEntity[]> => Promise.resolve([]),
+    );
+    const membershipFind = jest.fn(
+      (): Promise<readonly MembershipEntity[]> => Promise.resolve([]),
+    );
+    const managerResolutionCount = jest.fn((): Promise<number> =>
+      Promise.resolve(0),
+    );
+    const service = new OrganizationService(
+      {} as DataSource,
+      {} as Repository<OrgUnitEntity>,
+      { find: positionFind } as unknown as Repository<PositionEntity>,
+      { find: membershipFind } as unknown as Repository<MembershipEntity>,
+      {
+        count: managerResolutionCount,
+      } as unknown as Repository<ManagerResolutionEntity>,
+    );
+
+    await service.listPositions({
+      page: 3,
+      pageSize: 10,
+      searchText: '主管',
+    });
+    await service.listMemberships({
+      activeOnly: true,
+      orgUnitId: 'org-1',
+      page: 2,
+      pageSize: 20,
+      positionId: 'position-1',
+    });
+    await service.countManagerResolutions({
+      activeOnly: true,
+      scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+    });
+
+    expect(positionFind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order: { code: 'ASC', level: 'DESC' },
+        skip: 20,
+        take: 10,
+        where: expect.arrayContaining([
+          expect.objectContaining({ code: expect.any(Object) }),
+          expect.objectContaining({ name: expect.any(Object) }),
+        ]),
+      }),
+    );
+    expect(membershipFind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order: {
+          effectiveFrom: 'DESC',
+          isPrimary: 'DESC',
+          memberId: 'ASC',
+        },
+        skip: 20,
+        take: 20,
+        where: expect.arrayContaining([
+          expect.objectContaining({
+            effectiveFrom: expect.any(Object),
+            orgUnitId: 'org-1',
+            positionId: 'position-1',
+          }),
+        ]),
+      }),
+    );
+    expect(managerResolutionCount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.arrayContaining([
+          expect.objectContaining({
+            effectiveFrom: expect.any(Object),
+            scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('commits org unit tree draft moves and recalculates descendant paths in one transaction', async (): Promise<void> => {
+    const orgUnits = [
+      createOrgUnitFixture({
+        code: 'ROOT',
+        id: '00000000-0000-4000-8000-000000000001',
+        name: 'Root',
+        path: 'org.n00000000_0000_4000_8000_000000000001',
+      }),
+      createOrgUnitFixture({
+        code: 'A',
+        id: '00000000-0000-4000-8000-000000000002',
+        name: 'Department A',
+        parentId: '00000000-0000-4000-8000-000000000001',
+        path: 'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000002',
+      }),
+      createOrgUnitFixture({
+        code: 'A1',
+        id: '00000000-0000-4000-8000-000000000003',
+        name: 'Team A1',
+        parentId: '00000000-0000-4000-8000-000000000002',
+        path: 'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000002.n00000000_0000_4000_8000_000000000003',
+      }),
+      createOrgUnitFixture({
+        code: 'B',
+        id: '00000000-0000-4000-8000-000000000004',
+        name: 'Department B',
+        parentId: '00000000-0000-4000-8000-000000000001',
+        path: 'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000004',
+      }),
+    ];
+    const orgUnitRepository = createOrgUnitTreeDraftRepository(orgUnits);
+    const manager = {
+      getRepository: jest.fn(() => orgUnitRepository),
+    };
+    const transaction = jest.fn(
+      (
+        callback: (value: typeof manager) => Promise<unknown>,
+      ): Promise<unknown> => callback(manager),
+    );
+    const service = new OrganizationService(
+      { transaction } as unknown as DataSource,
+      {} as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    const result = await service.commitOrgUnitTreeDraft({
+      moves: [
+        {
+          baseUpdatedAt: baseUpdatedAt.toISOString(),
+          id: '00000000-0000-4000-8000-000000000002',
+          parentId: '00000000-0000-4000-8000-000000000004',
+        },
+      ],
+    });
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(orgUnitRepository.save).toHaveBeenCalledTimes(2);
+    expect(result.orgUnits.map((orgUnit) => orgUnit.id)).toEqual([
+      '00000000-0000-4000-8000-000000000002',
+      '00000000-0000-4000-8000-000000000003',
+    ]);
+    expect(orgUnits[1]?.parentId).toBe(
+      '00000000-0000-4000-8000-000000000004',
+    );
+    expect(orgUnits[1]?.path).toBe(
+      'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000004.n00000000_0000_4000_8000_000000000002',
+    );
+    expect(orgUnits[2]?.path).toBe(
+      'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000004.n00000000_0000_4000_8000_000000000002.n00000000_0000_4000_8000_000000000003',
+    );
+  });
+
+  it('rejects stale org unit tree draft moves', async (): Promise<void> => {
+    const orgUnits = [
+      createOrgUnitFixture({
+        id: '00000000-0000-4000-8000-000000000001',
+        updatedAt: new Date('2026-05-12T08:01:00.000Z'),
+      }),
+    ];
+    const orgUnitRepository = createOrgUnitTreeDraftRepository(orgUnits);
+    const manager = {
+      getRepository: jest.fn(() => orgUnitRepository),
+    };
+    const transaction = jest.fn(
+      (
+        callback: (value: typeof manager) => Promise<unknown>,
+      ): Promise<unknown> => callback(manager),
+    );
+    const service = new OrganizationService(
+      { transaction } as unknown as DataSource,
+      {} as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(
+      service.commitOrgUnitTreeDraft({
+        moves: [
+          {
+            baseUpdatedAt: baseUpdatedAt.toISOString(),
+            id: '00000000-0000-4000-8000-000000000001',
+            parentId: null,
+          },
+        ],
+      }),
+    ).rejects.toThrow('changed since this draft was based');
+    expect(orgUnitRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('rejects org unit tree draft cycles before saving', async (): Promise<void> => {
+    const orgUnits = [
+      createOrgUnitFixture({
+        id: '00000000-0000-4000-8000-000000000001',
+        path: 'org.n00000000_0000_4000_8000_000000000001',
+      }),
+      createOrgUnitFixture({
+        id: '00000000-0000-4000-8000-000000000002',
+        path: 'org.n00000000_0000_4000_8000_000000000002',
+      }),
+    ];
+    const orgUnitRepository = createOrgUnitTreeDraftRepository(orgUnits);
+    const manager = {
+      getRepository: jest.fn(() => orgUnitRepository),
+    };
+    const transaction = jest.fn(
+      (
+        callback: (value: typeof manager) => Promise<unknown>,
+      ): Promise<unknown> => callback(manager),
+    );
+    const service = new OrganizationService(
+      { transaction } as unknown as DataSource,
+      {} as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(
+      service.commitOrgUnitTreeDraft({
+        moves: [
+          {
+            baseUpdatedAt: baseUpdatedAt.toISOString(),
+            id: '00000000-0000-4000-8000-000000000001',
+            parentId: '00000000-0000-4000-8000-000000000002',
+          },
+          {
+            baseUpdatedAt: baseUpdatedAt.toISOString(),
+            id: '00000000-0000-4000-8000-000000000002',
+            parentId: '00000000-0000-4000-8000-000000000001',
+          },
+        ],
+      }),
+    ).rejects.toThrow('cycle');
+    expect(orgUnitRepository.save).not.toHaveBeenCalled();
   });
 
   it('clears previous primary membership when creating a new primary membership', async (): Promise<void> => {
@@ -257,3 +539,100 @@ describe('OrganizationService', () => {
     );
   });
 });
+
+function createOrgUnitFixture(
+  value: Partial<OrgUnitEntity>,
+): OrgUnitEntity {
+  return {
+    code: value.code ?? 'ORG',
+    createdAt: value.createdAt ?? baseUpdatedAt,
+    deletedAt: value.deletedAt ?? null,
+    id: value.id ?? '00000000-0000-4000-8000-000000000001',
+    metadata: value.metadata ?? {},
+    name: value.name ?? 'Organization',
+    parentId: value.parentId ?? null,
+    path: value.path ?? 'org.n00000000_0000_4000_8000_000000000001',
+    type: value.type ?? OrgUnitTypeEnum.DEPARTMENT,
+    updatedAt: value.updatedAt ?? baseUpdatedAt,
+  };
+}
+
+function createOrgUnitTreeDraftRepository(
+  orgUnits: OrgUnitEntity[],
+): Repository<OrgUnitEntity> {
+  type OrgUnitTreeDraftQueryBuilder = Readonly<{
+    andWhere: (
+      condition: string,
+      nextParameters?: {
+        readonly id?: string;
+        readonly previousPath?: string;
+      },
+    ) => OrgUnitTreeDraftQueryBuilder;
+    getMany: () => Promise<OrgUnitEntity[]>;
+    where: (condition: string) => OrgUnitTreeDraftQueryBuilder;
+  }>;
+
+  const find = jest.fn((): Promise<OrgUnitEntity[]> =>
+    Promise.resolve(orgUnits),
+  );
+  const save = jest.fn((entity: OrgUnitEntity): Promise<OrgUnitEntity> => {
+    const index = orgUnits.findIndex((orgUnit) => orgUnit.id === entity.id);
+
+    if (index >= 0) {
+      orgUnits[index] = entity;
+    }
+
+    return Promise.resolve(entity);
+  });
+  const merge = jest.fn(
+    (
+      entity: OrgUnitEntity,
+      patch: Partial<OrgUnitEntity>,
+    ): OrgUnitEntity => Object.assign(entity, patch),
+  );
+  const createQueryBuilder = jest.fn((): OrgUnitTreeDraftQueryBuilder => {
+    const parameters: { id?: string; previousPath?: string } = {};
+    const queryBuilder: OrgUnitTreeDraftQueryBuilder = {
+      andWhere: jest.fn(
+        (
+          _condition: string,
+          nextParameters?: {
+            readonly id?: string;
+            readonly previousPath?: string;
+          },
+        ): OrgUnitTreeDraftQueryBuilder => {
+          Object.assign(parameters, nextParameters);
+
+          return queryBuilder;
+        },
+      ),
+      getMany: jest.fn((): Promise<OrgUnitEntity[]> => {
+        const previousPath = parameters.previousPath ?? '';
+        const id = parameters.id ?? '';
+
+        return Promise.resolve(
+          orgUnits.filter(
+            (orgUnit) =>
+              orgUnit.id !== id &&
+              orgUnit.path !== previousPath &&
+              orgUnit.path.startsWith(`${previousPath}.`),
+          ),
+        );
+      }),
+      where: jest.fn((condition: string): OrgUnitTreeDraftQueryBuilder => {
+        void condition;
+
+        return queryBuilder;
+      }),
+    };
+
+    return queryBuilder;
+  });
+
+  return {
+    createQueryBuilder,
+    find,
+    merge,
+    save,
+  } as unknown as Repository<OrgUnitEntity>;
+}

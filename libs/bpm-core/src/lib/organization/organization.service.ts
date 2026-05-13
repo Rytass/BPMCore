@@ -1,15 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
+import {
+  DataSource,
+  FindOptionsWhere,
+  ILike,
+  In,
+  IsNull,
+  LessThanOrEqual,
+  MoreThanOrEqual,
+  Not,
+  Repository,
+} from 'typeorm';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
-import { ManagerResolutionScopeTypeEnum } from './organization.enums';
+import {
+  ManagerResolutionScopeTypeEnum,
+  OrgUnitTypeEnum,
+} from './organization.enums';
 import { PositionEntity } from './position.entity';
 import {
   CreateManagerResolutionInput,
@@ -19,7 +33,13 @@ import {
   CreateMembershipInput,
   UpdateMembershipInput,
 } from './dto/membership.input';
-import { CreateOrgUnitInput, UpdateOrgUnitInput } from './dto/org-unit.input';
+import {
+  CommitOrgUnitTreeDraftInput,
+  CommitOrgUnitTreeDraftMoveInput,
+  CreateOrgUnitInput,
+  UpdateOrgUnitInput,
+} from './dto/org-unit.input';
+import { OrgUnitTreeCommitResultObject } from './org-unit-tree-commit-result.object';
 import { CreatePositionInput, UpdatePositionInput } from './dto/position.input';
 import { parseMetadataJson } from './json-metadata';
 import { OrganizationSummaryObject } from './organization-summary.object';
@@ -134,6 +154,95 @@ export class OrganizationService {
     );
   }
 
+  async commitOrgUnitTreeDraft(
+    input: CommitOrgUnitTreeDraftInput,
+  ): Promise<OrgUnitTreeCommitResultObject> {
+    if (!input.moves.length) {
+      return { orgUnits: [] };
+    }
+
+    this.assertUniqueOrgUnitTreeMoves(input.moves);
+
+    return this.dataSource.transaction(
+      async (manager): Promise<OrgUnitTreeCommitResultObject> => {
+        const repository = manager.getRepository(OrgUnitEntity);
+        const orgUnitIds = collectOrgUnitTreeDraftIds(input.moves);
+        const orgUnits = await repository.find({
+          where: { deletedAt: IsNull(), id: In(orgUnitIds) },
+        });
+        const orgUnitById = new Map(
+          orgUnits.map((orgUnit): readonly [string, OrgUnitEntity] => [
+            orgUnit.id,
+            orgUnit,
+          ]),
+        );
+
+        this.assertOrgUnitTreeDraftReferences(input.moves, orgUnitById);
+        this.assertOrgUnitTreeDraftVersions(input.moves, orgUnitById);
+        this.assertOrgUnitTreeDraftHierarchy(input.moves, orgUnitById);
+
+        const affectedOrgUnits = new Map<string, OrgUnitEntity>();
+        const sortedMoves = sortOrgUnitTreeDraftMoves(input.moves);
+
+        for (const move of sortedMoves) {
+          const existing = orgUnitById.get(move.id);
+
+          if (!existing) {
+            throw new NotFoundException(`Org unit ${move.id} was not found`);
+          }
+
+          const parent = move.parentId
+            ? orgUnitById.get(move.parentId) ?? null
+            : null;
+          const previousPath = existing.path;
+          const nextPath = parent
+            ? `${parent.path}.${this.buildPathSegment(existing.id)}`
+            : `${ROOT_PATH_PREFIX}.${this.buildPathSegment(existing.id)}`;
+
+          if (
+            existing.parentId === move.parentId &&
+            existing.path === nextPath
+          ) {
+            affectedOrgUnits.set(existing.id, existing);
+            continue;
+          }
+
+          const saved = await repository.save(
+            repository.merge(existing, {
+              parentId: move.parentId,
+              path: nextPath,
+            }),
+          );
+
+          orgUnitById.set(saved.id, saved);
+          affectedOrgUnits.set(saved.id, saved);
+
+          const descendants = await repository
+            .createQueryBuilder('orgUnit')
+            .where('orgUnit.deleted_at IS NULL')
+            .andWhere('orgUnit.path <@ :previousPath', { previousPath })
+            .andWhere('orgUnit.id != :id', { id: saved.id })
+            .getMany();
+
+          for (const descendant of descendants) {
+            const updatedDescendant = await repository.save(
+              repository.merge(descendant, {
+                path: descendant.path.replace(previousPath, saved.path),
+              }),
+            );
+
+            orgUnitById.set(updatedDescendant.id, updatedDescendant);
+            affectedOrgUnits.set(updatedDescendant.id, updatedDescendant);
+          }
+        }
+
+        return {
+          orgUnits: [...affectedOrgUnits.values()].sort(compareOrgUnitPath),
+        };
+      },
+    );
+  }
+
   async deleteOrgUnit(id: string): Promise<boolean> {
     await this.getOrgUnitOrThrow(id);
     const childCount = await this.orgUnitRepository.count({
@@ -165,18 +274,37 @@ export class OrganizationService {
     return this.getOrgUnitOrThrow(id);
   }
 
-  async listOrgUnits(
-    parentId?: string | null,
-  ): Promise<readonly OrgUnitEntity[]> {
+  async listOrgUnits({
+    page,
+    pageSize,
+    parentId,
+    searchText,
+    type,
+  }: {
+    readonly page?: number | null;
+    readonly pageSize?: number | null;
+    readonly parentId?: string | null;
+    readonly searchText?: string | null;
+    readonly type?: OrgUnitTypeEnum | null;
+  } = {}): Promise<readonly OrgUnitEntity[]> {
     return this.orgUnitRepository.find({
+      ...createPaginationFindOptions({ page, pageSize }),
       order: { path: 'ASC' },
-      where:
-        parentId === undefined
-          ? { deletedAt: IsNull() }
-          : {
-              deletedAt: IsNull(),
-              parentId: parentId === null ? IsNull() : parentId,
-            },
+      where: createOrgUnitWhere({ parentId, searchText, type }),
+    });
+  }
+
+  async countOrgUnits({
+    parentId,
+    searchText,
+    type,
+  }: {
+    readonly parentId?: string | null;
+    readonly searchText?: string | null;
+    readonly type?: OrgUnitTypeEnum | null;
+  } = {}): Promise<number> {
+    return this.orgUnitRepository.count({
+      where: createOrgUnitWhere({ parentId, searchText, type }),
     });
   }
 
@@ -211,9 +339,29 @@ export class OrganizationService {
     return this.positionRepository.save(next);
   }
 
-  async listPositions(): Promise<readonly PositionEntity[]> {
+  async listPositions({
+    page,
+    pageSize,
+    searchText,
+  }: {
+    readonly page?: number | null;
+    readonly pageSize?: number | null;
+    readonly searchText?: string | null;
+  } = {}): Promise<readonly PositionEntity[]> {
     return this.positionRepository.find({
+      ...createPaginationFindOptions({ page, pageSize }),
       order: { level: 'DESC', code: 'ASC' },
+      where: createPositionWhere({ searchText }),
+    });
+  }
+
+  async countPositions({
+    searchText,
+  }: {
+    readonly searchText?: string | null;
+  } = {}): Promise<number> {
+    return this.positionRepository.count({
+      where: createPositionWhere({ searchText }),
     });
   }
 
@@ -283,28 +431,54 @@ export class OrganizationService {
     activeOnly = false,
     memberId,
     orgUnitId,
+    page,
+    pageSize,
+    positionId,
   }: {
     readonly activeOnly?: boolean;
     readonly memberId?: string | null;
     readonly orgUnitId?: string | null;
+    readonly page?: number | null;
+    readonly pageSize?: number | null;
+    readonly positionId?: string | null;
   } = {}): Promise<readonly MembershipEntity[]> {
-    const memberships = await this.membershipRepository.find({
-      order: { memberId: 'ASC', isPrimary: 'DESC', effectiveFrom: 'DESC' },
-      where: {
-        ...(memberId ? { memberId } : {}),
-        ...(orgUnitId ? { orgUnitId } : {}),
-      },
-    });
-
-    if (!activeOnly) {
-      return memberships;
-    }
-
     const date = this.toDateOnly(new Date());
 
-    return memberships.filter((membership) =>
-      this.isDateActive(membership, date),
-    );
+    return this.membershipRepository.find({
+      ...createPaginationFindOptions({ page, pageSize }),
+      order: { memberId: 'ASC', isPrimary: 'DESC', effectiveFrom: 'DESC' },
+      where: createMembershipWhere({
+        activeOnly,
+        date,
+        memberId,
+        orgUnitId,
+        positionId,
+      }),
+    });
+  }
+
+  async countMemberships({
+    activeOnly = false,
+    memberId,
+    orgUnitId,
+    positionId,
+  }: {
+    readonly activeOnly?: boolean;
+    readonly memberId?: string | null;
+    readonly orgUnitId?: string | null;
+    readonly positionId?: string | null;
+  } = {}): Promise<number> {
+    const date = this.toDateOnly(new Date());
+
+    return this.membershipRepository.count({
+      where: createMembershipWhere({
+        activeOnly,
+        date,
+        memberId,
+        orgUnitId,
+        positionId,
+      }),
+    });
   }
 
   async createManagerResolution(
@@ -363,30 +537,50 @@ export class OrganizationService {
 
   async listManagerResolutions({
     activeOnly = false,
+    page,
+    pageSize,
+    scopeId,
+    scopeType,
+  }: {
+    readonly activeOnly?: boolean;
+    readonly page?: number | null;
+    readonly pageSize?: number | null;
+    readonly scopeId?: string | null;
+    readonly scopeType?: ManagerResolutionScopeTypeEnum | null;
+  } = {}): Promise<readonly ManagerResolutionEntity[]> {
+    const date = this.toDateOnly(new Date());
+
+    return this.managerResolutionRepository.find({
+      ...createPaginationFindOptions({ page, pageSize }),
+      order: { priority: 'DESC', createdAt: 'DESC' },
+      where: createManagerResolutionWhere({
+        activeOnly,
+        date,
+        scopeId,
+        scopeType,
+      }),
+    });
+  }
+
+  async countManagerResolutions({
+    activeOnly = false,
     scopeId,
     scopeType,
   }: {
     readonly activeOnly?: boolean;
     readonly scopeId?: string | null;
     readonly scopeType?: ManagerResolutionScopeTypeEnum | null;
-  } = {}): Promise<readonly ManagerResolutionEntity[]> {
-    const resolutions = await this.managerResolutionRepository.find({
-      order: { priority: 'DESC', createdAt: 'DESC' },
-      where: {
-        ...(scopeId ? { scopeId } : {}),
-        ...(scopeType ? { scopeType } : {}),
-      },
-    });
-
-    if (!activeOnly) {
-      return resolutions;
-    }
-
+  } = {}): Promise<number> {
     const date = this.toDateOnly(new Date());
 
-    return resolutions.filter((resolution) =>
-      this.isDateActive(resolution, date),
-    );
+    return this.managerResolutionRepository.count({
+      where: createManagerResolutionWhere({
+        activeOnly,
+        date,
+        scopeId,
+        scopeType,
+      }),
+    });
   }
 
   async readOrganizationSummary(): Promise<OrganizationSummaryObject> {
@@ -457,6 +651,73 @@ export class OrganizationService {
       .sort((left, right) => this.compareManagerResolution(left, right));
 
     return active[0]?.managerMemberId ?? null;
+  }
+
+  private assertUniqueOrgUnitTreeMoves(
+    moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+  ): void {
+    const moveIds = moves.map((move) => move.id);
+    const uniqueMoveIds = new Set(moveIds);
+
+    if (uniqueMoveIds.size !== moveIds.length) {
+      throw new BadRequestException(
+        'Org unit tree draft includes duplicate moves',
+      );
+    }
+  }
+
+  private assertOrgUnitTreeDraftReferences(
+    moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+    orgUnitById: ReadonlyMap<string, OrgUnitEntity>,
+  ): void {
+    const missingId = collectOrgUnitTreeDraftIds(moves).find(
+      (id) => !orgUnitById.has(id),
+    );
+
+    if (missingId) {
+      throw new NotFoundException(`Org unit ${missingId} was not found`);
+    }
+  }
+
+  private assertOrgUnitTreeDraftVersions(
+    moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+    orgUnitById: ReadonlyMap<string, OrgUnitEntity>,
+  ): void {
+    const staleMove = moves.find((move) => {
+      const orgUnit = orgUnitById.get(move.id);
+
+      return orgUnit
+        ? orgUnit.updatedAt.getTime() !== parseBaseUpdatedAt(move).getTime()
+        : false;
+    });
+
+    if (staleMove) {
+      throw new ConflictException(
+        `Org unit ${staleMove.id} has changed since this draft was based`,
+      );
+    }
+  }
+
+  private assertOrgUnitTreeDraftHierarchy(
+    moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+    orgUnitById: ReadonlyMap<string, OrgUnitEntity>,
+  ): void {
+    for (const move of moves) {
+      if (move.id === move.parentId) {
+        throw new BadRequestException('Org unit cannot be its own parent');
+      }
+
+      const existing = orgUnitById.get(move.id);
+      const parent = move.parentId ? orgUnitById.get(move.parentId) : null;
+
+      if (existing && parent?.path.startsWith(`${existing.path}.`)) {
+        throw new BadRequestException(
+          'Org unit cannot be moved under its descendant',
+        );
+      }
+    }
+
+    assertOrgUnitTreeDraftHasNoCycles(moves);
   }
 
   private async getOrgUnitOrThrow(id: string): Promise<OrgUnitEntity> {
@@ -693,4 +954,257 @@ export class OrganizationService {
 
     return ranks[scopeType];
   }
+}
+
+function createOrgUnitWhere({
+  parentId,
+  searchText,
+  type,
+}: {
+  readonly parentId?: string | null;
+  readonly searchText?: string | null;
+  readonly type?: OrgUnitTypeEnum | null;
+}):
+  | FindOptionsWhere<OrgUnitEntity>
+  | FindOptionsWhere<OrgUnitEntity>[] {
+  const parentWhere: FindOptionsWhere<OrgUnitEntity> =
+    parentId === undefined
+      ? {}
+      : { parentId: parentId === null ? IsNull() : parentId };
+  const baseWhere: FindOptionsWhere<OrgUnitEntity> = {
+    deletedAt: IsNull(),
+    ...parentWhere,
+    ...(type ? { type } : {}),
+  };
+  const trimmedSearchText = searchText?.trim();
+
+  if (!trimmedSearchText) {
+    return baseWhere;
+  }
+
+  const searchPattern = `%${trimmedSearchText}%`;
+
+  return [
+    { ...baseWhere, code: ILike(searchPattern) },
+    { ...baseWhere, name: ILike(searchPattern) },
+  ];
+}
+
+function createPositionWhere({
+  searchText,
+}: {
+  readonly searchText?: string | null;
+}):
+  | FindOptionsWhere<PositionEntity>
+  | FindOptionsWhere<PositionEntity>[] {
+  const trimmedSearchText = searchText?.trim();
+
+  if (!trimmedSearchText) {
+    return {};
+  }
+
+  const searchPattern = `%${trimmedSearchText}%`;
+
+  return [{ code: ILike(searchPattern) }, { name: ILike(searchPattern) }];
+}
+
+function createMembershipWhere({
+  activeOnly,
+  date,
+  memberId,
+  orgUnitId,
+  positionId,
+}: {
+  readonly activeOnly: boolean;
+  readonly date: string;
+  readonly memberId?: string | null;
+  readonly orgUnitId?: string | null;
+  readonly positionId?: string | null;
+}):
+  | FindOptionsWhere<MembershipEntity>
+  | FindOptionsWhere<MembershipEntity>[] {
+  const baseWhere: FindOptionsWhere<MembershipEntity> = {
+    ...(memberId ? { memberId } : {}),
+    ...(orgUnitId ? { orgUnitId } : {}),
+    ...(positionId ? { positionId } : {}),
+  };
+
+  if (!activeOnly) {
+    return baseWhere;
+  }
+
+  return [
+    {
+      ...baseWhere,
+      effectiveFrom: LessThanOrEqual(date),
+      effectiveTo: IsNull(),
+    },
+    {
+      ...baseWhere,
+      effectiveFrom: LessThanOrEqual(date),
+      effectiveTo: MoreThanOrEqual(date),
+    },
+  ];
+}
+
+function createManagerResolutionWhere({
+  activeOnly,
+  date,
+  scopeId,
+  scopeType,
+}: {
+  readonly activeOnly: boolean;
+  readonly date: string;
+  readonly scopeId?: string | null;
+  readonly scopeType?: ManagerResolutionScopeTypeEnum | null;
+}):
+  | FindOptionsWhere<ManagerResolutionEntity>
+  | FindOptionsWhere<ManagerResolutionEntity>[] {
+  const baseWhere: FindOptionsWhere<ManagerResolutionEntity> = {
+    ...(scopeId ? { scopeId } : {}),
+    ...(scopeType ? { scopeType } : {}),
+  };
+
+  if (!activeOnly) {
+    return baseWhere;
+  }
+
+  return [
+    {
+      ...baseWhere,
+      effectiveFrom: LessThanOrEqual(date),
+      effectiveTo: IsNull(),
+    },
+    {
+      ...baseWhere,
+      effectiveFrom: LessThanOrEqual(date),
+      effectiveTo: MoreThanOrEqual(date),
+    },
+  ];
+}
+
+function createPaginationFindOptions({
+  page,
+  pageSize,
+}: {
+  readonly page?: number | null;
+  readonly pageSize?: number | null;
+}): { readonly skip?: number; readonly take?: number } {
+  const normalizedPageSize = normalizePageSize(pageSize);
+
+  if (!normalizedPageSize) {
+    return {};
+  }
+
+  return {
+    skip: (normalizePage(page) - 1) * normalizedPageSize,
+    take: normalizedPageSize,
+  };
+}
+
+function normalizePage(page?: number | null): number {
+  if (typeof page !== 'number' || !Number.isFinite(page)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.floor(page));
+}
+
+function normalizePageSize(pageSize?: number | null): number | null {
+  if (typeof pageSize !== 'number' || !Number.isFinite(pageSize)) {
+    return null;
+  }
+
+  return Math.min(100, Math.max(1, Math.floor(pageSize)));
+}
+
+function collectOrgUnitTreeDraftIds(
+  moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+): readonly string[] {
+  return [
+    ...new Set(
+      moves.flatMap((move) =>
+        move.parentId ? [move.id, move.parentId] : [move.id],
+      ),
+    ),
+  ];
+}
+
+function parseBaseUpdatedAt(move: CommitOrgUnitTreeDraftMoveInput): Date {
+  const baseUpdatedAt = new Date(move.baseUpdatedAt);
+
+  if (Number.isNaN(baseUpdatedAt.getTime())) {
+    throw new BadRequestException(
+      `Org unit ${move.id} baseUpdatedAt is invalid`,
+    );
+  }
+
+  return baseUpdatedAt;
+}
+
+function assertOrgUnitTreeDraftHasNoCycles(
+  moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+): void {
+  const parentById = new Map(
+    moves.map((move): readonly [string, string | null] => [
+      move.id,
+      move.parentId,
+    ]),
+  );
+
+  for (const move of moves) {
+    const visited = new Set<string>();
+    let parentId = move.parentId;
+
+    while (parentId && parentById.has(parentId)) {
+      if (parentId === move.id || visited.has(parentId)) {
+        throw new BadRequestException(
+          'Org unit tree draft cannot create a cycle',
+        );
+      }
+
+      visited.add(parentId);
+      parentId = parentById.get(parentId) ?? null;
+    }
+  }
+}
+
+function sortOrgUnitTreeDraftMoves(
+  moves: readonly CommitOrgUnitTreeDraftMoveInput[],
+): readonly CommitOrgUnitTreeDraftMoveInput[] {
+  const moveById = new Map(
+    moves.map((move): readonly [string, CommitOrgUnitTreeDraftMoveInput] => [
+      move.id,
+      move,
+    ]),
+  );
+
+  return [...moves].sort((left, right) => {
+    const leftDepth = calculateOrgUnitTreeDraftMoveDepth(left, moveById);
+    const rightDepth = calculateOrgUnitTreeDraftMoveDepth(right, moveById);
+
+    return leftDepth - rightDepth || left.id.localeCompare(right.id);
+  });
+}
+
+function calculateOrgUnitTreeDraftMoveDepth(
+  move: CommitOrgUnitTreeDraftMoveInput,
+  moveById: ReadonlyMap<string, CommitOrgUnitTreeDraftMoveInput>,
+): number {
+  let depth = 0;
+  let parentId = move.parentId;
+
+  while (parentId && moveById.has(parentId)) {
+    depth += 1;
+    parentId = moveById.get(parentId)?.parentId ?? null;
+  }
+
+  return depth;
+}
+
+function compareOrgUnitPath(
+  left: OrgUnitEntity,
+  right: OrgUnitEntity,
+): number {
+  return left.path.localeCompare(right.path);
 }

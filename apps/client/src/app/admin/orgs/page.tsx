@@ -6,12 +6,15 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
-  BaseCard,
   Button,
   DatePicker,
+  Filter,
+  FilterArea,
+  FilterLine,
   FormField,
   Input,
   Layout,
@@ -22,12 +25,20 @@ import {
   Tab,
   TabItem,
   Table,
-  Textarea,
   Typography,
 } from '@mezzanine-ui/react';
-import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
+import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { PlusIcon } from '@mezzanine-ui/icons';
+import {
+  CloseIcon,
+  DotGridIcon,
+  EditIcon,
+  ListIcon,
+  PlusIcon,
+  SaveIcon,
+} from '@mezzanine-ui/icons';
+import type { IconDefinition } from '@mezzanine-ui/icons';
+import { BPMFormField } from '../../_components/bpm-form-field';
 import {
   MemberOption,
   OrgUnitPicker,
@@ -40,6 +51,7 @@ import {
   readPositionOption,
 } from '../_components/admin-pickers';
 import {
+  commitOrgUnitTreeDraft,
   createManagerResolution,
   createMembership,
   createOrgUnit,
@@ -52,7 +64,6 @@ import {
   MembershipRecord,
   OrgUnitRecord,
   OrgUnitType,
-  OrganizationSummaryRecord,
   PositionRecord,
   readOrganizationDashboard,
   updateManagerResolution,
@@ -61,16 +72,29 @@ import {
   updatePosition,
 } from '../_lib/organization-api';
 import { MemberProfileRecord, resolveMembers } from '../_lib/member-api';
+import {
+  OrgUnitTreeDraftEditor,
+  OrgUnitTreeDraftEditorHandle,
+  OrgUnitTreeDraftEditorState,
+} from './_components/org-unit-tree-draft-editor';
+import type { OrgUnitHierarchyDraftChange } from './_lib/org-tree-draft';
 import styles from './orgs.module.scss';
 import { renderAppNavigation } from '../../app-navigation';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
+type OrgUnitViewMode = 'FLOW' | 'TABLE';
+
+const INITIAL_ORG_TREE_EDITOR_STATE: OrgUnitTreeDraftEditorState = {
+  hasDraftChanges: false,
+  isEditing: false,
+};
 
 type OrgUnitRow = Readonly<
   Record<string, unknown> &
     OrgUnitRecord & {
       key: string;
       parentName: string;
+      typeLabel: string;
     }
 >;
 
@@ -101,6 +125,7 @@ type ManagerResolutionRow = Readonly<
 >;
 
 type OrgModalState = Readonly<{
+  parentId?: string | null;
   record: OrgUnitRecord | null;
   type: 'CREATE' | 'EDIT';
 }>;
@@ -133,8 +158,24 @@ type OrgUnitTypeOption = Readonly<{
   name: string;
 }>;
 
+type OrgUnitTypeFilterOption = Readonly<{
+  id: 'ALL' | OrgUnitType;
+  name: string;
+}>;
+
 type ScopeTypeOption = Readonly<{
   id: ManagerResolutionScopeType;
+  name: string;
+}>;
+
+type ScopeTypeFilterOption = Readonly<{
+  id: 'ALL' | ManagerResolutionScopeType;
+  name: string;
+}>;
+
+type ActiveFilterOption = Readonly<{
+  activeOnly: boolean;
+  id: 'ACTIVE' | 'ALL';
   name: string;
 }>;
 
@@ -144,11 +185,27 @@ type PrimaryOption = Readonly<{
   value: boolean;
 }>;
 
+type TablePaginationState = Readonly<{
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+  page: number;
+  pageSize: number;
+  total: number;
+}>;
+
 const ORG_UNIT_TYPES: readonly OrgUnitTypeOption[] = [
-  { id: 'company', name: '公司' },
-  { id: 'division', name: '事業群' },
-  { id: 'department', name: '部門' },
-  { id: 'team', name: '小組' },
+  { id: 'COMPANY', name: '公司' },
+  { id: 'DIVISION', name: '事業群' },
+  { id: 'DEPARTMENT', name: '部門' },
+  { id: 'TEAM', name: '小組' },
+];
+const ALL_ORG_UNIT_TYPE_FILTER: OrgUnitTypeFilterOption = {
+  id: 'ALL',
+  name: '全部類型',
+};
+const ORG_UNIT_TYPE_FILTER_OPTIONS: readonly OrgUnitTypeFilterOption[] = [
+  ALL_ORG_UNIT_TYPE_FILTER,
+  ...ORG_UNIT_TYPES,
 ];
 
 const SCOPE_TYPES: readonly ScopeTypeOption[] = [
@@ -156,20 +213,33 @@ const SCOPE_TYPES: readonly ScopeTypeOption[] = [
   { id: 'ORG_UNIT', name: '指定組織' },
   { id: 'POSITION', name: '指定職位' },
 ];
+const ALL_SCOPE_TYPE_FILTER: ScopeTypeFilterOption = {
+  id: 'ALL',
+  name: '全部範圍',
+};
+const SCOPE_TYPE_FILTER_OPTIONS: readonly ScopeTypeFilterOption[] = [
+  ALL_SCOPE_TYPE_FILTER,
+  ...SCOPE_TYPES,
+];
+const ALL_ACTIVE_FILTER: ActiveFilterOption = {
+  activeOnly: false,
+  id: 'ALL',
+  name: '全部狀態',
+};
+const ACTIVE_FILTER_OPTIONS: readonly ActiveFilterOption[] = [
+  ALL_ACTIVE_FILTER,
+  { activeOnly: true, id: 'ACTIVE', name: '目前有效' },
+];
 
 const PRIMARY_OPTIONS: readonly PrimaryOption[] = [
   { id: 'true', name: '主要歸屬', value: true },
   { id: 'false', name: '一般歸屬', value: false },
 ];
-
-const EMPTY_SUMMARY: OrganizationSummaryRecord = {
-  managerResolutionCount: 0,
-  membershipCount: 0,
-  orgUnitCount: 0,
-  positionCount: 0,
-};
-const ORG_MODAL_FIELD_DENSITY = FormFieldDensity.WIDE;
-const ORG_MODAL_FIELD_LAYOUT = FormFieldLayout.HORIZONTAL;
+const ORGANIZATION_TABLE_PAGE_SIZE_OPTIONS = [10, 20, 50];
+const ORG_UNIT_TABLE_MIN_WIDTH = 1368;
+const POSITION_TABLE_MIN_WIDTH = 908;
+const MEMBERSHIP_TABLE_MIN_WIDTH = 1292;
+const MANAGER_TABLE_MIN_WIDTH = 1124;
 
 export default function AdminOrgsPage(): ReactElement {
   const [activeTab, setActiveTab] = useState<AdminOrgTab>('ORG_UNITS');
@@ -182,26 +252,58 @@ export default function AdminOrgsPage(): ReactElement {
   const [managerModal, setManagerModal] = useState<ManagerModalState | null>(
     null,
   );
-  const [managerResolutions, setManagerResolutions] = useState<
-    readonly ManagerResolutionRecord[]
-  >([]);
+  const [managerActiveFilter, setManagerActiveFilter] =
+    useState<ActiveFilterOption>(ALL_ACTIVE_FILTER);
+  const [managerPage, setManagerPage] = useState(1);
+  const [managerPageSize, setManagerPageSize] = useState(10);
+  const [managerScopeTypeFilter, setManagerScopeTypeFilter] =
+    useState<ScopeTypeFilterOption>(ALL_SCOPE_TYPE_FILTER);
+  const [managerTotalCount, setManagerTotalCount] = useState(0);
   const [memberProfiles, setMemberProfiles] = useState<
     readonly MemberProfileRecord[]
   >([]);
+  const [membershipActiveFilter, setMembershipActiveFilter] =
+    useState<ActiveFilterOption>(ALL_ACTIVE_FILTER);
   const [membershipModal, setMembershipModal] =
     useState<MembershipModalState | null>(null);
-  const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
-    [],
-  );
+  const [membershipOrgUnitFilter, setMembershipOrgUnitFilter] =
+    useState<OrgUnitOption | null>(null);
+  const [membershipPage, setMembershipPage] = useState(1);
+  const [membershipPageSize, setMembershipPageSize] = useState(10);
+  const [membershipPositionFilter, setMembershipPositionFilter] =
+    useState<PositionOption | null>(null);
+  const [membershipTotalCount, setMembershipTotalCount] = useState(0);
   const [orgModal, setOrgModal] = useState<OrgModalState | null>(null);
+  const [orgUnitPage, setOrgUnitPage] = useState(1);
+  const [orgUnitPageSize, setOrgUnitPageSize] = useState(10);
+  const [orgUnitSearchText, setOrgUnitSearchText] = useState('');
+  const [orgUnitTotalCount, setOrgUnitTotalCount] = useState(0);
+  const [orgUnitTypeFilter, setOrgUnitTypeFilter] =
+    useState<OrgUnitTypeFilterOption>(ALL_ORG_UNIT_TYPE_FILTER);
+  const [orgUnitViewMode, setOrgUnitViewMode] =
+    useState<OrgUnitViewMode>('TABLE');
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
+  const [visibleOrgUnits, setVisibleOrgUnits] = useState<
+    readonly OrgUnitRecord[]
+  >([]);
+  const [visiblePositions, setVisiblePositions] = useState<
+    readonly PositionRecord[]
+  >([]);
   const [positionModal, setPositionModal] = useState<PositionModalState | null>(
     null,
   );
+  const [positionPage, setPositionPage] = useState(1);
+  const [positionPageSize, setPositionPageSize] = useState(10);
+  const [positionSearchText, setPositionSearchText] = useState('');
+  const [positionTotalCount, setPositionTotalCount] = useState(0);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
+  const [visibleManagerResolutions, setVisibleManagerResolutions] = useState<
+    readonly ManagerResolutionRecord[]
+  >([]);
+  const [visibleMemberships, setVisibleMemberships] = useState<
+    readonly MembershipRecord[]
+  >([]);
   const [saving, setSaving] = useState(false);
-  const [summary, setSummary] =
-    useState<OrganizationSummaryRecord>(EMPTY_SUMMARY);
 
   useEffect((): void => {
     if (deleteConfirmation) {
@@ -217,25 +319,68 @@ export default function AdminOrgsPage(): ReactElement {
     setError(null);
 
     try {
-      const dashboard = await readOrganizationDashboard();
+      const dashboard = await readOrganizationDashboard({
+        managerActiveOnly: managerActiveFilter.activeOnly,
+        managerPage,
+        managerPageSize,
+        managerScopeType:
+          managerScopeTypeFilter.id === 'ALL'
+            ? null
+            : managerScopeTypeFilter.id,
+        membershipActiveOnly: membershipActiveFilter.activeOnly,
+        membershipOrgUnitId: membershipOrgUnitFilter?.id ?? null,
+        membershipPage,
+        membershipPageSize,
+        membershipPositionId: membershipPositionFilter?.id ?? null,
+        orgUnitPage,
+        orgUnitPageSize,
+        orgUnitSearchText,
+        orgUnitType:
+          orgUnitTypeFilter.id === 'ALL' ? null : orgUnitTypeFilter.id,
+        positionPage,
+        positionPageSize,
+        positionSearchText,
+      });
       const memberIds = readReferencedMemberIds(
         dashboard.memberships,
         dashboard.managerResolutions,
       );
       const profiles = await resolveMembers(memberIds);
 
-      setManagerResolutions(dashboard.managerResolutions);
-      setMemberships(dashboard.memberships);
       setMemberProfiles(profiles);
       setOrgUnits(dashboard.orgUnits);
+      setOrgUnitTotalCount(dashboard.orgUnitCount);
+      setVisibleOrgUnits(dashboard.filteredOrgUnits);
       setPositions(dashboard.positions);
-      setSummary(dashboard.organizationSummary);
+      setPositionTotalCount(dashboard.positionCount);
+      setVisiblePositions(dashboard.filteredPositions);
+      setMembershipTotalCount(dashboard.membershipCount);
+      setVisibleMemberships(dashboard.filteredMemberships);
+      setManagerTotalCount(dashboard.managerResolutionCount);
+      setVisibleManagerResolutions(dashboard.filteredManagerResolutions);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [
+    managerActiveFilter,
+    managerPage,
+    managerPageSize,
+    managerScopeTypeFilter,
+    membershipActiveFilter,
+    membershipOrgUnitFilter,
+    membershipPage,
+    membershipPageSize,
+    membershipPositionFilter,
+    orgUnitPage,
+    orgUnitPageSize,
+    orgUnitSearchText,
+    orgUnitTypeFilter,
+    positionPage,
+    positionPageSize,
+    positionSearchText,
+  ]);
 
   useEffect((): void => {
     void refreshOrganization();
@@ -259,26 +404,27 @@ export default function AdminOrgsPage(): ReactElement {
 
   const orgRows = useMemo(
     (): OrgUnitRow[] =>
-      orgUnits.map((orgUnit) => ({
+      visibleOrgUnits.map((orgUnit) => ({
         ...orgUnit,
         key: orgUnit.id,
         parentName: orgUnit.parentId
           ? readOrgUnitLabel(orgUnitsById.get(orgUnit.parentId))
           : '根節點',
+        typeLabel: readOrgUnitTypeLabel(orgUnit.type),
       })),
-    [orgUnits, orgUnitsById],
+    [visibleOrgUnits, orgUnitsById],
   );
   const positionRows = useMemo(
     (): PositionRow[] =>
-      positions.map((position) => ({
+      visiblePositions.map((position) => ({
         ...position,
         key: position.id,
       })),
-    [positions],
+    [visiblePositions],
   );
   const membershipRows = useMemo(
     (): MembershipRow[] =>
-      memberships.map((membership) => ({
+      visibleMemberships.map((membership) => ({
         ...membership,
         key: membership.id,
         memberName: readMemberLabel(membersById.get(membership.memberId)),
@@ -287,11 +433,11 @@ export default function AdminOrgsPage(): ReactElement {
           ? readPositionLabel(positionsById.get(membership.positionId))
           : '未指定',
       })),
-    [membersById, memberships, orgUnitsById, positionsById],
+    [membersById, visibleMemberships, orgUnitsById, positionsById],
   );
   const managerRows = useMemo(
     (): ManagerResolutionRow[] =>
-      managerResolutions.map((resolution) => ({
+      visibleManagerResolutions.map((resolution) => ({
         ...resolution,
         key: resolution.id,
         managerName: readMemberLabel(
@@ -303,7 +449,7 @@ export default function AdminOrgsPage(): ReactElement {
           positionsById,
         }),
       })),
-    [managerResolutions, membersById, orgUnitsById, positionsById],
+    [visibleManagerResolutions, membersById, orgUnitsById, positionsById],
   );
 
   const orgActions = useMemo(
@@ -397,6 +543,46 @@ export default function AdminOrgsPage(): ReactElement {
     [],
   );
 
+  function updateOrgUnitSearchText(value: string): void {
+    setOrgUnitPage(1);
+    setOrgUnitSearchText(value);
+  }
+
+  function updateOrgUnitTypeFilter(value: OrgUnitTypeFilterOption): void {
+    setOrgUnitPage(1);
+    setOrgUnitTypeFilter(value);
+  }
+
+  function updatePositionSearchText(value: string): void {
+    setPositionPage(1);
+    setPositionSearchText(value);
+  }
+
+  function updateMembershipActiveFilter(value: ActiveFilterOption): void {
+    setMembershipPage(1);
+    setMembershipActiveFilter(value);
+  }
+
+  function updateMembershipOrgUnitFilter(value: OrgUnitOption | null): void {
+    setMembershipPage(1);
+    setMembershipOrgUnitFilter(value);
+  }
+
+  function updateMembershipPositionFilter(value: PositionOption | null): void {
+    setMembershipPage(1);
+    setMembershipPositionFilter(value);
+  }
+
+  function updateManagerActiveFilter(value: ActiveFilterOption): void {
+    setManagerPage(1);
+    setManagerActiveFilter(value);
+  }
+
+  function updateManagerScopeTypeFilter(value: ScopeTypeFilterOption): void {
+    setManagerPage(1);
+    setManagerScopeTypeFilter(value);
+  }
+
   function closeDeleteConfirmation(): void {
     if (saving) {
       return;
@@ -427,6 +613,33 @@ export default function AdminOrgsPage(): ReactElement {
     });
   }
 
+  async function saveOrgUnitTreeDraft(
+    changes: readonly OrgUnitHierarchyDraftChange[],
+  ): Promise<void> {
+    setSaving(true);
+    setError(null);
+
+    try {
+      await commitOrgUnitTreeDraft({
+        moves: changes.map((change) => {
+          const orgUnit = orgUnitsById.get(change.orgUnitId);
+
+          return {
+            baseUpdatedAt: orgUnit?.updatedAt ?? '',
+            id: change.orgUnitId,
+            parentId: change.parentId,
+          };
+        }),
+      });
+      await refreshOrganization();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+      throw requestError;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function runMutation(mutation: () => Promise<void>): Promise<void> {
     setSaving(true);
     setError(null);
@@ -446,30 +659,7 @@ export default function AdminOrgsPage(): ReactElement {
       {renderAppNavigation('/admin/orgs')}
 
       <Layout.Main>
-        <div className={styles.header}>
-          <div className={styles.headerTitle}>
-            <Typography component="h1" variant="h2">
-              組織管理
-            </Typography>
-            <Typography color="text-neutral" variant="body">
-              維護 BPM 組織樹、職位、會員歸屬與簽核主管解析規則。
-            </Typography>
-          </div>
-        </div>
-
         <SectionGroup>
-          <Section>
-            <div className={styles.summaryGrid}>
-              <SummaryCard label="組織節點" value={summary.orgUnitCount} />
-              <SummaryCard label="職位" value={summary.positionCount} />
-              <SummaryCard label="會員歸屬" value={summary.membershipCount} />
-              <SummaryCard
-                label="主管規則"
-                value={summary.managerResolutionCount}
-              />
-            </div>
-          </Section>
-
           <Section
             tab={
               <Tab
@@ -493,9 +683,32 @@ export default function AdminOrgsPage(): ReactElement {
                 actions={orgActions}
                 loading={loading}
                 onCreate={(): void =>
-                  setOrgModal({ record: null, type: 'CREATE' })
+                  setOrgModal({ parentId: null, record: null, type: 'CREATE' })
                 }
+                onCreateChild={(parentId): void =>
+                  setOrgModal({ parentId, record: null, type: 'CREATE' })
+                }
+                onEditOrgUnit={(record): void =>
+                  setOrgModal({ record, type: 'EDIT' })
+                }
+                onPageChange={setOrgUnitPage}
+                onSaveDraft={saveOrgUnitTreeDraft}
+                onPageSizeChange={(pageSize): void => {
+                  setOrgUnitPage(1);
+                  setOrgUnitPageSize(pageSize);
+                }}
+                onSearchTextChange={updateOrgUnitSearchText}
+                onTypeFilterChange={updateOrgUnitTypeFilter}
+                orgUnits={orgUnits}
+                page={orgUnitPage}
+                pageSize={orgUnitPageSize}
                 rows={orgRows}
+                searchText={orgUnitSearchText}
+                saving={saving}
+                total={orgUnitTotalCount}
+                typeFilter={orgUnitTypeFilter}
+                viewMode={orgUnitViewMode}
+                onViewModeChange={setOrgUnitViewMode}
               />
             ) : null}
             {activeTab === 'POSITIONS' ? (
@@ -505,7 +718,17 @@ export default function AdminOrgsPage(): ReactElement {
                 onCreate={(): void =>
                   setPositionModal({ record: null, type: 'CREATE' })
                 }
+                onPageChange={setPositionPage}
+                onPageSizeChange={(pageSize): void => {
+                  setPositionPage(1);
+                  setPositionPageSize(pageSize);
+                }}
+                onSearchTextChange={updatePositionSearchText}
+                page={positionPage}
+                pageSize={positionPageSize}
                 rows={positionRows}
+                searchText={positionSearchText}
+                total={positionTotalCount}
               />
             ) : null}
             {activeTab === 'MEMBERSHIPS' ? (
@@ -515,7 +738,23 @@ export default function AdminOrgsPage(): ReactElement {
                 onCreate={(): void =>
                   setMembershipModal({ record: null, type: 'CREATE' })
                 }
+                onActiveFilterChange={updateMembershipActiveFilter}
+                onOrgUnitFilterChange={updateMembershipOrgUnitFilter}
+                onPageChange={setMembershipPage}
+                onPageSizeChange={(pageSize): void => {
+                  setMembershipPage(1);
+                  setMembershipPageSize(pageSize);
+                }}
+                onPositionFilterChange={updateMembershipPositionFilter}
+                orgUnitFilter={membershipOrgUnitFilter}
+                orgUnits={orgUnits}
+                page={membershipPage}
+                pageSize={membershipPageSize}
+                positionFilter={membershipPositionFilter}
+                positions={positions}
                 rows={membershipRows}
+                statusFilter={membershipActiveFilter}
+                total={membershipTotalCount}
               />
             ) : null}
             {activeTab === 'MANAGERS' ? (
@@ -525,7 +764,19 @@ export default function AdminOrgsPage(): ReactElement {
                 onCreate={(): void =>
                   setManagerModal({ record: null, type: 'CREATE' })
                 }
+                onActiveFilterChange={updateManagerActiveFilter}
+                onPageChange={setManagerPage}
+                onPageSizeChange={(pageSize): void => {
+                  setManagerPage(1);
+                  setManagerPageSize(pageSize);
+                }}
+                onScopeTypeFilterChange={updateManagerScopeTypeFilter}
+                page={managerPage}
+                pageSize={managerPageSize}
                 rows={managerRows}
+                scopeTypeFilter={managerScopeTypeFilter}
+                statusFilter={managerActiveFilter}
+                total={managerTotalCount}
               />
             ) : null}
           </Section>
@@ -537,14 +788,18 @@ export default function AdminOrgsPage(): ReactElement {
           onSubmit={(input): Promise<void> =>
             runMutation(async (): Promise<void> => {
               if (orgModal?.type === 'EDIT' && orgModal.record) {
-                await updateOrgUnit({ ...input, id: orgModal.record.id });
+                await updateOrgUnit({
+                  ...input,
+                  id: orgModal.record.id,
+                  metadataJson: null,
+                });
               } else {
                 await createOrgUnit({
                   code: input.code ?? '',
-                  metadataJson: input.metadataJson ?? '{}',
+                  metadataJson: '{}',
                   name: input.name ?? '',
                   parentId: input.parentId,
-                  type: input.type ?? 'department',
+                  type: input.type ?? 'DEPARTMENT',
                 });
               }
               setOrgModal(null);
@@ -559,12 +814,16 @@ export default function AdminOrgsPage(): ReactElement {
           onSubmit={(input): Promise<void> =>
             runMutation(async (): Promise<void> => {
               if (positionModal?.type === 'EDIT' && positionModal.record) {
-                await updatePosition({ ...input, id: positionModal.record.id });
+                await updatePosition({
+                  ...input,
+                  id: positionModal.record.id,
+                  metadataJson: null,
+                });
               } else {
                 await createPosition({
                   code: input.code ?? '',
                   level: input.level ?? 0,
-                  metadataJson: input.metadataJson ?? '{}',
+                  metadataJson: '{}',
                   name: input.name ?? '',
                 });
               }
@@ -655,64 +914,210 @@ export default function AdminOrgsPage(): ReactElement {
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: number;
-}): ReactElement {
-  return (
-    <BaseCard title={label}>
-      <div className={styles.summaryItem}>
-        <Typography variant="h3">{value.toLocaleString()}</Typography>
-        <Typography color="text-neutral" variant="caption">
-          目前有效資料
-        </Typography>
-      </div>
-    </BaseCard>
-  );
-}
-
 function OrgUnitPanel({
   actions,
   loading,
   onCreate,
+  onCreateChild,
+  onEditOrgUnit,
+  onPageChange,
+  onSaveDraft,
+  onPageSizeChange,
+  onSearchTextChange,
+  onTypeFilterChange,
+  onViewModeChange,
+  orgUnits,
+  page,
+  pageSize,
   rows,
+  searchText,
+  saving,
+  total,
+  typeFilter,
+  viewMode,
 }: {
   readonly actions: TableActions<OrgUnitRow>;
   readonly loading: boolean;
   readonly onCreate: () => void;
+  readonly onCreateChild: (parentId: string) => void;
+  readonly onEditOrgUnit: (record: OrgUnitRecord) => void;
+  readonly onPageChange: (page: number) => void;
+  readonly onSaveDraft: (
+    changes: readonly OrgUnitHierarchyDraftChange[],
+  ) => Promise<void>;
+  readonly onPageSizeChange: (pageSize: number) => void;
+  readonly onSearchTextChange: (value: string) => void;
+  readonly onTypeFilterChange: (value: OrgUnitTypeFilterOption) => void;
+  readonly onViewModeChange: (mode: OrgUnitViewMode) => void;
+  readonly orgUnits: readonly OrgUnitRecord[];
+  readonly page: number;
+  readonly pageSize: number;
   readonly rows: readonly OrgUnitRow[];
+  readonly searchText: string;
+  readonly saving: boolean;
+  readonly total: number;
+  readonly typeFilter: OrgUnitTypeFilterOption;
+  readonly viewMode: OrgUnitViewMode;
 }): ReactElement {
+  const treeEditorRef = useRef<OrgUnitTreeDraftEditorHandle | null>(null);
+  const [treeEditorState, setTreeEditorState] =
+    useState<OrgUnitTreeDraftEditorState>(INITIAL_ORG_TREE_EDITOR_STATE);
+  const nextViewMode: OrgUnitViewMode = viewMode === 'TABLE' ? 'FLOW' : 'TABLE';
+  const viewModeToggleLabel = viewMode === 'TABLE' ? '切換樹狀圖' : '切換表格';
+  const isTreeMode = viewMode === 'FLOW';
+  const primaryActionLabel = readOrgUnitPrimaryActionLabel({
+    isTreeMode,
+    isTreeEditing: treeEditorState.isEditing,
+  });
+  const primaryActionIcon = readOrgUnitPrimaryActionIcon({
+    isTreeMode,
+    isTreeEditing: treeEditorState.isEditing,
+  });
+  const primaryActionDisabled = readOrgUnitPrimaryActionDisabled({
+    hasDraftChanges: treeEditorState.hasDraftChanges,
+    isTreeEditing: treeEditorState.isEditing,
+    isTreeMode,
+    loading,
+    saving,
+  });
   const columns = useMemo(
     (): TableColumn<OrgUnitRow>[] => [
-      { dataIndex: 'code', key: 'code', title: '代碼', width: 160 },
-      { dataIndex: 'name', key: 'name', title: '名稱', width: 180 },
-      { dataIndex: 'type', key: 'type', title: '類型', width: 140 },
-      { dataIndex: 'parentName', key: 'parentName', title: '上層', width: 220 },
-      { dataIndex: 'path', key: 'path', title: 'Path', width: 260 },
+      { dataIndex: 'code', key: 'code', title: '代碼', width: 180 },
+      { dataIndex: 'name', key: 'name', title: '名稱', width: 240 },
+      { dataIndex: 'typeLabel', key: 'typeLabel', title: '類型', width: 120 },
+      { dataIndex: 'parentName', key: 'parentName', title: '上層', width: 280 },
+      { dataIndex: 'path', key: 'path', title: 'Path', width: 420 },
     ],
     [],
   );
 
+  useEffect((): void => {
+    if (viewMode === 'TABLE') {
+      setTreeEditorState(INITIAL_ORG_TREE_EDITOR_STATE);
+    }
+  }, [viewMode]);
+
   return (
     <>
       <PanelIntro
-        actionLabel="新增組織"
+        actionDisabled={primaryActionDisabled}
+        actionIcon={primaryActionIcon}
+        actionLabel={primaryActionLabel}
+        actions={
+          <>
+            <Button
+              aria-label={viewModeToggleLabel}
+              icon={viewMode === 'TABLE' ? DotGridIcon : ListIcon}
+              iconType="icon-only"
+              onClick={(): void => onViewModeChange(nextViewMode)}
+              title={viewModeToggleLabel}
+              variant="base-secondary"
+            >
+              {viewModeToggleLabel}
+            </Button>
+            {isTreeMode && treeEditorState.isEditing ? (
+              <Button
+                disabled={saving}
+                icon={CloseIcon}
+                iconType="leading"
+                onClick={(): void => treeEditorRef.current?.cancelEditing()}
+                variant="base-secondary"
+              >
+                取消
+              </Button>
+            ) : null}
+          </>
+        }
         description="組織節點使用 ltree path 維護階層，搬移節點會同步更新子節點 path。"
-        onCreate={onCreate}
+        onCreate={(): void => {
+          if (!isTreeMode) {
+            onCreate();
+            return;
+          }
+
+          if (treeEditorState.isEditing) {
+            void treeEditorRef.current?.saveDraft();
+            return;
+          }
+
+          treeEditorRef.current?.startEditing();
+        }}
         title="組織樹"
       />
-      <div className={styles.tableFrame}>
-        <Table
-          actions={actions}
-          columns={columns}
-          dataSource={[...rows]}
-          fullWidth
-          loading={loading}
+      {viewMode === 'TABLE' ? (
+        <>
+          <FilterArea className={styles.orgFilterArea} size="sub">
+            <FilterLine>
+              <Filter span={3}>
+                <FormField
+                  fullWidth
+                  label="關鍵字"
+                  layout={FormFieldLayout.VERTICAL}
+                  name="orgUnitSearchText"
+                >
+                  <Input
+                    fullWidth
+                    onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                      onSearchTextChange(event.target.value)
+                    }
+                    placeholder="搜尋組織名稱或代碼"
+                    size="sub"
+                    value={searchText}
+                    variant="base"
+                  />
+                </FormField>
+              </Filter>
+              <Filter span={2}>
+                <FormField
+                  fullWidth
+                  label="類型"
+                  layout={FormFieldLayout.VERTICAL}
+                  name="orgUnitTypeFilter"
+                >
+                  <Select
+                    clearable={false}
+                    fullWidth
+                    onChange={(option): void =>
+                      onTypeFilterChange(readOrgUnitTypeFilterOption(option))
+                    }
+                    options={[...ORG_UNIT_TYPE_FILTER_OPTIONS]}
+                    size="sub"
+                    value={typeFilter}
+                  />
+                </FormField>
+              </Filter>
+            </FilterLine>
+          </FilterArea>
+          <div className={styles.tableFrame}>
+            <Table
+              actions={actions}
+              columns={columns}
+              dataSource={[...rows]}
+              fullWidth
+              loading={loading}
+              pagination={createTablePagination({
+                onPageChange,
+                onPageSizeChange,
+                page,
+                pageSize,
+                total,
+              })}
+              style={{ minWidth: ORG_UNIT_TABLE_MIN_WIDTH }}
+            />
+          </div>
+        </>
+      ) : (
+        <OrgUnitTreeDraftEditor
+          ref={treeEditorRef}
+          onCreateChild={onCreateChild}
+          onCreateRoot={onCreate}
+          onEditOrgUnit={onEditOrgUnit}
+          onSaveDraft={onSaveDraft}
+          onStateChange={setTreeEditorState}
+          orgUnits={orgUnits}
+          saving={saving}
         />
-      </div>
+      )}
     </>
   );
 }
@@ -721,18 +1126,32 @@ function PositionPanel({
   actions,
   loading,
   onCreate,
+  onPageChange,
+  onPageSizeChange,
+  onSearchTextChange,
+  page,
+  pageSize,
   rows,
+  searchText,
+  total,
 }: {
   readonly actions: TableActions<PositionRow>;
   readonly loading: boolean;
   readonly onCreate: () => void;
+  readonly onPageChange: (page: number) => void;
+  readonly onPageSizeChange: (pageSize: number) => void;
+  readonly onSearchTextChange: (value: string) => void;
+  readonly page: number;
+  readonly pageSize: number;
   readonly rows: readonly PositionRow[];
+  readonly searchText: string;
+  readonly total: number;
 }): ReactElement {
   const columns = useMemo(
     (): TableColumn<PositionRow>[] => [
       { dataIndex: 'code', key: 'code', title: '代碼', width: 180 },
-      { dataIndex: 'name', key: 'name', title: '名稱', width: 220 },
-      { dataIndex: 'level', key: 'level', title: '職等', width: 120 },
+      { dataIndex: 'name', key: 'name', title: '名稱', width: 280 },
+      { dataIndex: 'level', key: 'level', title: '職等', width: 96 },
       {
         dataIndex: 'updatedAt',
         key: 'updatedAt',
@@ -751,6 +1170,29 @@ function PositionPanel({
         onCreate={onCreate}
         title="職位"
       />
+      <FilterArea className={styles.orgFilterArea} size="sub">
+        <FilterLine>
+          <Filter span={3}>
+            <FormField
+              fullWidth
+              label="關鍵字"
+              layout={FormFieldLayout.VERTICAL}
+              name="positionSearchText"
+            >
+              <Input
+                fullWidth
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  onSearchTextChange(event.target.value)
+                }
+                placeholder="搜尋職位名稱或代碼"
+                size="sub"
+                value={searchText}
+                variant="base"
+              />
+            </FormField>
+          </Filter>
+        </FilterLine>
+      </FilterArea>
       <div className={styles.tableFrame}>
         <Table
           actions={actions}
@@ -758,6 +1200,14 @@ function PositionPanel({
           dataSource={[...rows]}
           fullWidth
           loading={loading}
+          pagination={createTablePagination({
+            onPageChange,
+            onPageSizeChange,
+            page,
+            pageSize,
+            total,
+          })}
+          style={{ minWidth: POSITION_TABLE_MIN_WIDTH }}
         />
       </div>
     </>
@@ -768,34 +1218,60 @@ function MembershipPanel({
   actions,
   loading,
   onCreate,
+  onActiveFilterChange,
+  onOrgUnitFilterChange,
+  onPageChange,
+  onPageSizeChange,
+  onPositionFilterChange,
+  orgUnitFilter,
+  orgUnits,
+  page,
+  pageSize,
+  positionFilter,
+  positions,
   rows,
+  statusFilter,
+  total,
 }: {
   readonly actions: TableActions<MembershipRow>;
   readonly loading: boolean;
   readonly onCreate: () => void;
+  readonly onActiveFilterChange: (value: ActiveFilterOption) => void;
+  readonly onOrgUnitFilterChange: (value: OrgUnitOption | null) => void;
+  readonly onPageChange: (page: number) => void;
+  readonly onPageSizeChange: (pageSize: number) => void;
+  readonly onPositionFilterChange: (value: PositionOption | null) => void;
+  readonly orgUnitFilter: OrgUnitOption | null;
+  readonly orgUnits: readonly OrgUnitRecord[];
+  readonly page: number;
+  readonly pageSize: number;
+  readonly positionFilter: PositionOption | null;
+  readonly positions: readonly PositionRecord[];
   readonly rows: readonly MembershipRow[];
+  readonly statusFilter: ActiveFilterOption;
+  readonly total: number;
 }): ReactElement {
   const columns = useMemo(
     (): TableColumn<MembershipRow>[] => [
-      { dataIndex: 'memberName', key: 'memberName', title: '會員', width: 240 },
+      { dataIndex: 'memberName', key: 'memberName', title: '會員', width: 280 },
       {
         dataIndex: 'orgUnitName',
         key: 'orgUnitName',
         title: '組織',
-        width: 220,
+        width: 280,
       },
       {
         dataIndex: 'positionName',
         key: 'positionName',
         title: '職位',
-        width: 180,
+        width: 220,
       },
       {
         key: 'isPrimary',
         render: (record: MembershipRow): string =>
           record.isPrimary ? '主要' : '一般',
         title: '類型',
-        width: 100,
+        width: 104,
       },
       {
         dataIndex: 'effectiveFrom',
@@ -821,6 +1297,68 @@ function MembershipPanel({
         onCreate={onCreate}
         title="會員歸屬"
       />
+      <FilterArea
+        className={[styles.orgFilterArea, styles.membershipFilterArea].join(
+          ' ',
+        )}
+        size="sub"
+      >
+        <FilterLine>
+          <Filter span={4}>
+            <FormField
+              fullWidth
+              label="組織"
+              layout={FormFieldLayout.HORIZONTAL}
+              name="membershipOrgUnitFilter"
+            >
+              <OrgUnitPicker
+                name="membershipOrgUnitFilter"
+                onChange={onOrgUnitFilterChange}
+                orgUnits={orgUnits}
+                placeholder="全部組織"
+                size="sub"
+                value={orgUnitFilter}
+              />
+            </FormField>
+          </Filter>
+          <Filter span={4}>
+            <FormField
+              fullWidth
+              label="職位"
+              layout={FormFieldLayout.HORIZONTAL}
+              name="membershipPositionFilter"
+            >
+              <PositionPicker
+                name="membershipPositionFilter"
+                onChange={onPositionFilterChange}
+                placeholder="全部職位"
+                positions={positions}
+                size="sub"
+                value={positionFilter}
+              />
+            </FormField>
+          </Filter>
+          <Filter span={3}>
+            <FormField
+              fullWidth
+              label="狀態"
+              layout={FormFieldLayout.HORIZONTAL}
+              name="membershipStatusFilter"
+            >
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  onActiveFilterChange(readActiveFilterOption(option))
+                }
+                options={[...ACTIVE_FILTER_OPTIONS]}
+                size="sub"
+                value={statusFilter}
+              />
+            </FormField>
+          </Filter>
+        </FilterLine>
+      </FilterArea>
       <div className={styles.tableFrame}>
         <Table
           actions={actions}
@@ -828,6 +1366,14 @@ function MembershipPanel({
           dataSource={[...rows]}
           fullWidth
           loading={loading}
+          pagination={createTablePagination({
+            onPageChange,
+            onPageSizeChange,
+            page,
+            pageSize,
+            total,
+          })}
+          style={{ minWidth: MEMBERSHIP_TABLE_MIN_WIDTH }}
         />
       </div>
     </>
@@ -838,12 +1384,30 @@ function ManagerPanel({
   actions,
   loading,
   onCreate,
+  onActiveFilterChange,
+  onPageChange,
+  onPageSizeChange,
+  onScopeTypeFilterChange,
+  page,
+  pageSize,
   rows,
+  scopeTypeFilter,
+  statusFilter,
+  total,
 }: {
   readonly actions: TableActions<ManagerResolutionRow>;
   readonly loading: boolean;
   readonly onCreate: () => void;
+  readonly onActiveFilterChange: (value: ActiveFilterOption) => void;
+  readonly onPageChange: (page: number) => void;
+  readonly onPageSizeChange: (pageSize: number) => void;
+  readonly onScopeTypeFilterChange: (value: ScopeTypeFilterOption) => void;
+  readonly page: number;
+  readonly pageSize: number;
   readonly rows: readonly ManagerResolutionRow[];
+  readonly scopeTypeFilter: ScopeTypeFilterOption;
+  readonly statusFilter: ActiveFilterOption;
+  readonly total: number;
 }): ReactElement {
   const columns = useMemo(
     (): TableColumn<ManagerResolutionRow>[] => [
@@ -851,15 +1415,15 @@ function ManagerPanel({
         dataIndex: 'scopeLabel',
         key: 'scopeLabel',
         title: '套用範圍',
-        width: 260,
+        width: 320,
       },
       {
         dataIndex: 'managerName',
         key: 'managerName',
         title: '簽核主管',
-        width: 240,
+        width: 300,
       },
-      { dataIndex: 'priority', key: 'priority', title: '優先序', width: 120 },
+      { dataIndex: 'priority', key: 'priority', title: '優先序', width: 96 },
       {
         dataIndex: 'effectiveFrom',
         key: 'effectiveFrom',
@@ -884,6 +1448,48 @@ function ManagerPanel({
         onCreate={onCreate}
         title="簽核主管"
       />
+      <FilterArea className={styles.orgFilterArea} size="sub">
+        <FilterLine>
+          <Filter span={3}>
+            <FormField
+              fullWidth
+              label="套用範圍"
+              layout={FormFieldLayout.VERTICAL}
+              name="managerScopeTypeFilter"
+            >
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  onScopeTypeFilterChange(readScopeTypeFilterOption(option))
+                }
+                options={[...SCOPE_TYPE_FILTER_OPTIONS]}
+                size="sub"
+                value={scopeTypeFilter}
+              />
+            </FormField>
+          </Filter>
+          <Filter span={2}>
+            <FormField
+              fullWidth
+              label="狀態"
+              layout={FormFieldLayout.VERTICAL}
+              name="managerStatusFilter"
+            >
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  onActiveFilterChange(readActiveFilterOption(option))
+                }
+                options={[...ACTIVE_FILTER_OPTIONS]}
+                size="sub"
+                value={statusFilter}
+              />
+            </FormField>
+          </Filter>
+        </FilterLine>
+      </FilterArea>
       <div className={styles.tableFrame}>
         <Table
           actions={actions}
@@ -891,19 +1497,116 @@ function ManagerPanel({
           dataSource={[...rows]}
           fullWidth
           loading={loading}
+          pagination={createTablePagination({
+            onPageChange,
+            onPageSizeChange,
+            page,
+            pageSize,
+            total,
+          })}
+          style={{ minWidth: MANAGER_TABLE_MIN_WIDTH }}
         />
       </div>
     </>
   );
 }
 
+function createTablePagination({
+  onPageChange,
+  onPageSizeChange,
+  page,
+  pageSize,
+  total,
+}: TablePaginationState): {
+  current: number;
+  onChange: (page: number) => void;
+  onChangePageSize: (pageSize: number) => void;
+  pageSize: number;
+  pageSizeLabel: string;
+  pageSizeOptions: number[];
+  renderResultSummary: (from: number, to: number, total: number) => string;
+  showPageSizeOptions: true;
+  total: number;
+} {
+  return {
+    current: page,
+    onChange: onPageChange,
+    onChangePageSize: onPageSizeChange,
+    pageSize,
+    pageSizeLabel: '每頁筆數',
+    pageSizeOptions: [...ORGANIZATION_TABLE_PAGE_SIZE_OPTIONS],
+    renderResultSummary: (from, to, resultTotal): string =>
+      `顯示 ${from}-${to} 筆，共 ${resultTotal} 筆`,
+    showPageSizeOptions: true,
+    total,
+  };
+}
+
+function readOrgUnitPrimaryActionLabel({
+  isTreeEditing,
+  isTreeMode,
+}: {
+  readonly isTreeEditing: boolean;
+  readonly isTreeMode: boolean;
+}): string {
+  if (!isTreeMode) {
+    return '新增組織';
+  }
+
+  return isTreeEditing ? '儲存' : '開始編輯';
+}
+
+function readOrgUnitPrimaryActionIcon({
+  isTreeEditing,
+  isTreeMode,
+}: {
+  readonly isTreeEditing: boolean;
+  readonly isTreeMode: boolean;
+}): IconDefinition {
+  if (!isTreeMode) {
+    return PlusIcon;
+  }
+
+  return isTreeEditing ? SaveIcon : EditIcon;
+}
+
+function readOrgUnitPrimaryActionDisabled({
+  hasDraftChanges,
+  isTreeEditing,
+  isTreeMode,
+  loading,
+  saving,
+}: {
+  readonly hasDraftChanges: boolean;
+  readonly isTreeEditing: boolean;
+  readonly isTreeMode: boolean;
+  readonly loading: boolean;
+  readonly saving: boolean;
+}): boolean {
+  if (!isTreeMode) {
+    return false;
+  }
+
+  if (!isTreeEditing) {
+    return loading;
+  }
+
+  return !hasDraftChanges || saving;
+}
+
 function PanelIntro({
+  actionDisabled = false,
+  actionIcon = PlusIcon,
   actionLabel,
+  actions,
   description,
   onCreate,
   title,
 }: {
+  readonly actionDisabled?: boolean;
+  readonly actionIcon?: IconDefinition;
   readonly actionLabel: string;
+  readonly actions?: ReactElement;
   readonly description: string;
   readonly onCreate: () => void;
   readonly title: string;
@@ -918,9 +1621,17 @@ function PanelIntro({
           {description}
         </Typography>
       </div>
-      <Button icon={PlusIcon} iconType="leading" onClick={onCreate}>
-        {actionLabel}
-      </Button>
+      <div className={styles.tableIntroActions}>
+        {actions}
+        <Button
+          disabled={actionDisabled}
+          icon={actionIcon}
+          iconType="leading"
+          onClick={onCreate}
+        >
+          {actionLabel}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -936,7 +1647,6 @@ function OrgUnitModal({
   readonly onClose: () => void;
   readonly onSubmit: (input: {
     readonly code: string | null;
-    readonly metadataJson: string | null;
     readonly name: string | null;
     readonly parentId: string | null;
     readonly type: OrgUnitType | null;
@@ -945,7 +1655,6 @@ function OrgUnitModal({
   readonly saving: boolean;
 }): ReactElement {
   const [code, setCode] = useState('');
-  const [metadataJson, setMetadataJson] = useState('{}');
   const [name, setName] = useState('');
   const [parent, setParent] = useState<OrgUnitOption | null>(null);
   const [type, setType] = useState<OrgUnitTypeOption>(ORG_UNIT_TYPES[2]);
@@ -956,18 +1665,14 @@ function OrgUnitModal({
     }
 
     const record = modal.record;
+    const parentId = record?.parentId ?? modal.parentId ?? null;
+    const parentOrgUnit = parentId
+      ? (orgUnits.find((orgUnit) => orgUnit.id === parentId) ?? null)
+      : null;
 
     setCode(record?.code ?? '');
-    setMetadataJson('{}');
     setName(record?.name ?? '');
-    setParent(
-      record?.parentId
-        ? readOrgUnitOption(
-            orgUnits.find((orgUnit) => orgUnit.id === record.parentId) ??
-              record,
-          )
-        : null,
-    );
+    setParent(parentOrgUnit ? readOrgUnitOption(parentOrgUnit) : null);
     setType(
       ORG_UNIT_TYPES.find((option) => option.id === record?.type) ??
         ORG_UNIT_TYPES[2],
@@ -986,7 +1691,6 @@ function OrgUnitModal({
       onConfirm={(): void =>
         void onSubmit({
           code,
-          metadataJson,
           name,
           parentId: parent?.id ?? null,
           type: type.id,
@@ -999,27 +1703,21 @@ function OrgUnitModal({
       title={modal?.type === 'EDIT' ? '編輯組織' : '新增組織'}
     >
       <div className={styles.modalFields}>
-        <TextField
+        <OrgModalTextField
           label="代碼"
           name="orgCode"
           onChange={setCode}
           placeholder="例如 FIN-TW"
           value={code}
         />
-        <TextField
+        <OrgModalTextField
           label="名稱"
           name="orgName"
           onChange={setName}
           placeholder="例如 財務部"
           value={name}
         />
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="類型"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="orgType"
-        >
+        <BPMFormField label="類型" name="orgType">
           <Select
             clearable={false}
             fullWidth
@@ -1028,14 +1726,8 @@ function OrgUnitModal({
             placeholder="選擇組織類型"
             value={type}
           />
-        </FormField>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="上層組織"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="parentId"
-        >
+        </BPMFormField>
+        <BPMFormField label="上層組織" name="parentId">
           <OrgUnitPicker
             name="parentId"
             onChange={setParent}
@@ -1045,14 +1737,7 @@ function OrgUnitModal({
             placeholder="選擇上層組織"
             value={parent}
           />
-        </FormField>
-        <JsonField
-          label="Metadata JSON"
-          name="orgMetadataJson"
-          onChange={setMetadataJson}
-          placeholder='例如 {"costCenter":"FIN"}'
-          value={metadataJson}
-        />
+        </BPMFormField>
       </div>
     </Modal>
   );
@@ -1069,14 +1754,12 @@ function PositionModal({
   readonly onSubmit: (input: {
     readonly code: string | null;
     readonly level: number | null;
-    readonly metadataJson: string | null;
     readonly name: string | null;
   }) => Promise<void>;
   readonly saving: boolean;
 }): ReactElement {
   const [code, setCode] = useState('');
   const [level, setLevel] = useState('0');
-  const [metadataJson, setMetadataJson] = useState('{}');
   const [name, setName] = useState('');
 
   useEffect((): void => {
@@ -1086,7 +1769,6 @@ function PositionModal({
 
     setCode(modal.record?.code ?? '');
     setLevel(String(modal.record?.level ?? 0));
-    setMetadataJson('{}');
     setName(modal.record?.name ?? '');
   }, [modal]);
 
@@ -1103,7 +1785,6 @@ function PositionModal({
         void onSubmit({
           code,
           level: Number(level),
-          metadataJson,
           name,
         })
       }
@@ -1114,33 +1795,26 @@ function PositionModal({
       title={modal?.type === 'EDIT' ? '編輯職位' : '新增職位'}
     >
       <div className={styles.modalFields}>
-        <TextField
+        <OrgModalTextField
           label="代碼"
           name="positionCode"
           onChange={setCode}
           placeholder="例如 FIN-MGR"
           value={code}
         />
-        <TextField
+        <OrgModalTextField
           label="名稱"
           name="positionName"
           onChange={setName}
           placeholder="例如 財務主管"
           value={name}
         />
-        <TextField
+        <OrgModalTextField
           label="職等"
           name="positionLevel"
           onChange={setLevel}
           placeholder="例如 5"
           value={level}
-        />
-        <JsonField
-          label="Metadata JSON"
-          name="positionMetadataJson"
-          onChange={setMetadataJson}
-          placeholder='例如 {"grade":"M1"}'
-          value={metadataJson}
         />
       </div>
     </Modal>
@@ -1233,27 +1907,15 @@ function MembershipModal({
       title={modal?.type === 'EDIT' ? '編輯會員歸屬' : '新增會員歸屬'}
     >
       <div className={styles.modalFields}>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="會員"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="memberId"
-        >
+        <BPMFormField label="會員" name="memberId">
           <MemberPicker
             name="memberId"
             onChange={setMember}
             placeholder="搜尋會員姓名或信箱"
             value={member}
           />
-        </FormField>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="組織"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="orgUnitId"
-        >
+        </BPMFormField>
+        <BPMFormField label="組織" name="orgUnitId">
           <OrgUnitPicker
             name="orgUnitId"
             onChange={setOrgUnit}
@@ -1261,14 +1923,8 @@ function MembershipModal({
             placeholder="選擇歸屬組織"
             value={orgUnit}
           />
-        </FormField>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="職位"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="positionId"
-        >
+        </BPMFormField>
+        <BPMFormField label="職位" name="positionId">
           <PositionPicker
             name="positionId"
             onChange={setPosition}
@@ -1276,14 +1932,8 @@ function MembershipModal({
             positions={positions}
             value={position}
           />
-        </FormField>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="歸屬類型"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="isPrimary"
-        >
+        </BPMFormField>
+        <BPMFormField label="歸屬類型" name="isPrimary">
           <Select
             clearable={false}
             fullWidth
@@ -1292,7 +1942,7 @@ function MembershipModal({
             placeholder="選擇歸屬類型"
             value={isPrimary}
           />
-        </FormField>
+        </BPMFormField>
         <DateField
           label="生效日"
           name="membershipEffectiveFrom"
@@ -1434,13 +2084,7 @@ function ManagerResolutionModal({
       title={modal?.type === 'EDIT' ? '編輯主管規則' : '新增主管規則'}
     >
       <div className={styles.modalFields}>
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="套用範圍"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="scopeType"
-        >
+        <BPMFormField label="套用範圍" name="scopeType">
           <Select
             clearable={false}
             fullWidth
@@ -1451,31 +2095,19 @@ function ManagerResolutionModal({
             placeholder="選擇套用範圍"
             value={scopeType}
           />
-        </FormField>
+        </BPMFormField>
         {scopeType.id === 'MEMBER' ? (
-          <FormField
-            density={ORG_MODAL_FIELD_DENSITY}
-            fullWidth
-            label="會員"
-            layout={ORG_MODAL_FIELD_LAYOUT}
-            name="scopeMemberId"
-          >
+          <BPMFormField label="會員" name="scopeMemberId">
             <MemberPicker
               name="scopeMemberId"
               onChange={setScopeMember}
               placeholder="搜尋套用會員"
               value={scopeMember}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
         {scopeType.id === 'ORG_UNIT' ? (
-          <FormField
-            density={ORG_MODAL_FIELD_DENSITY}
-            fullWidth
-            label="組織"
-            layout={ORG_MODAL_FIELD_LAYOUT}
-            name="scopeOrgUnitId"
-          >
+          <BPMFormField label="組織" name="scopeOrgUnitId">
             <OrgUnitPicker
               name="scopeOrgUnitId"
               onChange={setScopeOrgUnit}
@@ -1483,16 +2115,10 @@ function ManagerResolutionModal({
               placeholder="選擇套用組織"
               value={scopeOrgUnit}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
         {scopeType.id === 'POSITION' ? (
-          <FormField
-            density={ORG_MODAL_FIELD_DENSITY}
-            fullWidth
-            label="職位"
-            layout={ORG_MODAL_FIELD_LAYOUT}
-            name="scopePositionId"
-          >
+          <BPMFormField label="職位" name="scopePositionId">
             <PositionPicker
               name="scopePositionId"
               onChange={setScopePosition}
@@ -1500,28 +2126,22 @@ function ManagerResolutionModal({
               positions={positions}
               value={scopePosition}
             />
-          </FormField>
+          </BPMFormField>
         ) : null}
-        <FormField
-          density={ORG_MODAL_FIELD_DENSITY}
-          fullWidth
-          label="簽核主管"
-          layout={ORG_MODAL_FIELD_LAYOUT}
-          name="managerMemberId"
-        >
+        <BPMFormField label="簽核主管" name="managerMemberId">
           <MemberPicker
             name="managerMemberId"
             onChange={setManager}
             placeholder="搜尋簽核主管"
             value={manager}
           />
-        </FormField>
+        </BPMFormField>
         {isSelfManagerResolution ? (
           <Typography color="text-error" variant="caption">
             簽核主管不可設定為套用會員本人。
           </Typography>
         ) : null}
-        <TextField
+        <OrgModalTextField
           label="優先序"
           name="managerPriority"
           onChange={setPriority}
@@ -1547,7 +2167,7 @@ function ManagerResolutionModal({
   );
 }
 
-function TextField({
+function OrgModalTextField({
   label,
   name,
   onChange,
@@ -1561,13 +2181,7 @@ function TextField({
   readonly value: string;
 }): ReactElement {
   return (
-    <FormField
-      density={ORG_MODAL_FIELD_DENSITY}
-      fullWidth
-      label={label}
-      layout={ORG_MODAL_FIELD_LAYOUT}
-      name={name}
-    >
+    <BPMFormField label={label} name={name}>
       <Input
         fullWidth
         name={name}
@@ -1577,7 +2191,7 @@ function TextField({
         placeholder={placeholder}
         value={value}
       />
-    </FormField>
+    </BPMFormField>
   );
 }
 
@@ -1595,13 +2209,7 @@ function DateField({
   readonly value: string;
 }): ReactElement {
   return (
-    <FormField
-      density={ORG_MODAL_FIELD_DENSITY}
-      fullWidth
-      label={label}
-      layout={ORG_MODAL_FIELD_LAYOUT}
-      name={name}
-    >
+    <BPMFormField label={label} name={name}>
       <DatePicker
         format="YYYY-MM-DD"
         fullWidth
@@ -1610,41 +2218,7 @@ function DateField({
         placeholder={placeholder}
         value={value.trim() ? value : undefined}
       />
-    </FormField>
-  );
-}
-
-function JsonField({
-  label,
-  name,
-  onChange,
-  placeholder,
-  value,
-}: {
-  readonly label: string;
-  readonly name: string;
-  readonly onChange: (value: string) => void;
-  readonly placeholder: string;
-  readonly value: string;
-}): ReactElement {
-  return (
-    <FormField
-      density={ORG_MODAL_FIELD_DENSITY}
-      fullWidth
-      label={label}
-      layout={ORG_MODAL_FIELD_LAYOUT}
-      name={name}
-    >
-      <Textarea
-        name={name}
-        onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
-          onChange(event.target.value)
-        }
-        placeholder={placeholder}
-        rows={3}
-        value={value}
-      />
-    </FormField>
+    </BPMFormField>
   );
 }
 
@@ -1690,6 +2264,14 @@ function readOrgUnitLabel(orgUnit: OrgUnitRecord | undefined): string {
   return orgUnit ? `${orgUnit.name} · ${orgUnit.code}` : '未知組織';
 }
 
+function readOrgUnitTypeLabel(type: OrgUnitType): string {
+  return (
+    ORG_UNIT_TYPES.find(
+      (option) => option.id.toLowerCase() === type.toLowerCase(),
+    )?.name ?? '未知類型'
+  );
+}
+
 function readPositionLabel(position: PositionRecord | undefined): string {
   return position ? `${position.name} · ${position.code}` : '未指定';
 }
@@ -1703,11 +2285,47 @@ function readAdminOrgTab(value: unknown): AdminOrgTab {
 }
 
 function readOrgUnitTypeOption(value: unknown): OrgUnitTypeOption {
-  return readOption(value, ORG_UNIT_TYPES, ORG_UNIT_TYPES[2]);
+  const record = isRecord(value) ? value : null;
+
+  if (typeof record?.id === 'string') {
+    const id = record.id;
+
+    return (
+      ORG_UNIT_TYPES.find(
+        (option) => option.id.toLowerCase() === id.toLowerCase(),
+      ) ?? ORG_UNIT_TYPES[2]
+    );
+  }
+
+  return ORG_UNIT_TYPES[2];
+}
+
+function readOrgUnitTypeFilterOption(value: unknown): OrgUnitTypeFilterOption {
+  const record = isRecord(value) ? value : null;
+
+  if (typeof record?.id === 'string') {
+    const id = record.id;
+
+    return (
+      ORG_UNIT_TYPE_FILTER_OPTIONS.find(
+        (option) => option.id.toLowerCase() === id.toLowerCase(),
+      ) ?? ALL_ORG_UNIT_TYPE_FILTER
+    );
+  }
+
+  return ALL_ORG_UNIT_TYPE_FILTER;
 }
 
 function readScopeTypeOption(value: unknown): ScopeTypeOption {
   return readOption(value, SCOPE_TYPES, SCOPE_TYPES[0]);
+}
+
+function readScopeTypeFilterOption(value: unknown): ScopeTypeFilterOption {
+  return readOption(value, SCOPE_TYPE_FILTER_OPTIONS, ALL_SCOPE_TYPE_FILTER);
+}
+
+function readActiveFilterOption(value: unknown): ActiveFilterOption {
+  return readOption(value, ACTIVE_FILTER_OPTIONS, ALL_ACTIVE_FILTER);
 }
 
 function readPrimaryOption(value: unknown): PrimaryOption {
@@ -1719,9 +2337,14 @@ function readOption<TOption extends { readonly id: string }>(
   options: readonly TOption[],
   fallback: TOption,
 ): TOption {
-  const id = isRecord(value) && typeof value.id === 'string' ? value.id : null;
+  const record = isRecord(value) ? value : null;
+  const id = typeof record?.id === 'string' ? record.id : null;
 
   return options.find((option) => option.id === id) ?? fallback;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function readNullableOption<TValue, TOption>(
@@ -1753,8 +2376,4 @@ function padDatePart(value: number): string {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '讀取組織資料失敗。';
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null;
 }
