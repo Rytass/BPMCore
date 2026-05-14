@@ -76,6 +76,7 @@
 - 2026-05-11: M1 W1 organization/member interface is implemented with Organization GraphQL filters/summary, org path validation, admin org CRUD UI, member directory detail UI, shared Member/OrgUnit/Position pickers, and unit coverage.
 - 2026-05-13: `pnpm demo:reset` resets the Vault-backed develop DB and seeds a coherent demo company with org units, positions, demo members, memberships, manager rules, form definitions, approval templates, instances across states, tasks, notifications, attachments, signatures, and delegations.
 - 2026-05-13: Workflow task assignment now supports candidate groups through `task_candidates`, multi-member direct/position/org resolvers, task candidate GraphQL fields, candidate-aware inbox/detail UI, and full `pnpm e2e:client` coverage.
+- 2026-05-14: W6 Edge Condition CEL expression runtime is verified for both actual workflow execution and dry run; `edge.data.condition` now represents the executable CEL condition, with structured field/operator data kept only as designer/fallback compatibility.
 
 ## Backlog Notes
 

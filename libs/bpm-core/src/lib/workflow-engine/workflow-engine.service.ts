@@ -1018,6 +1018,54 @@ export class WorkflowEngineService {
     });
   }
 
+  async listLaunchableApprovalTemplates(
+    memberId: string,
+  ): Promise<readonly ApprovalTemplateEntity[]> {
+    const templates = await this.approvalTemplateRepository.find({
+      order: { updatedAt: 'DESC' },
+    });
+    const currentVersionIds = templates
+      .map((template) => template.currentVersionId)
+      .filter((versionId): versionId is string => Boolean(versionId));
+
+    if (!currentVersionIds.length) {
+      return [];
+    }
+
+    const versions = await this.approvalTemplateVersionRepository.find({
+      where: {
+        id: In(currentVersionIds),
+        status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      },
+    });
+    const versionById = new Map(
+      versions.map(
+        (version): readonly [string, ApprovalTemplateVersionEntity] => [
+          version.id,
+          version,
+        ],
+      ),
+    );
+    const initiatorMetadataSnapshot =
+      await this.readDefaultInitiatorMetadataSnapshot(memberId);
+
+    return templates.filter((template) => {
+      const currentVersion = template.currentVersionId
+        ? (versionById.get(template.currentVersionId) ?? null)
+        : null;
+
+      if (!currentVersion?.formDefinitionVersionId) {
+        return false;
+      }
+
+      return this.conditionService.evaluateBoolean(
+        currentVersion.initiatorPolicyCel,
+        buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+        'initiatorPolicyCel',
+      );
+    });
+  }
+
   async listWorkflowTokens(
     instanceId: string,
   ): Promise<readonly WorkflowTokenEntity[]> {

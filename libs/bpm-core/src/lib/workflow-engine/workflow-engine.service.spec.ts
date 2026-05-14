@@ -734,6 +734,29 @@ describe('WorkflowEngineService', () => {
     ]);
   });
 
+  it('routes an exclusive gateway with a pure CEL edge expression', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1500 },
+      processWorkflowSnapshot: createExclusiveGatewayWorkflow({
+        highCondition: 'form.amount > 1000 && initiator.memberId == "member-001"',
+        includeStructuredCondition: false,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks).toEqual([
+      expect.objectContaining({
+        assigneeMemberId: 'member-high',
+        nodeId: 'task_high',
+        status: TaskStatusEnum.PENDING,
+      }),
+    ]);
+  });
+
   it('reports dry run edge labels, default routing, and entry condition results', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -757,6 +780,42 @@ describe('WorkflowEngineService', () => {
           edgeMatched: true,
           edgeReason: '其他條件不符合時採用預設路徑。',
           nodeId: 'task_default',
+          status: 'WAITING',
+        }),
+      ]),
+    );
+  });
+
+  it('reports dry run matches for pure CEL edge expressions', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{"amount":1500}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      workflowDefinitionJson: JSON.stringify(
+        createExclusiveGatewayWorkflow({
+          highCondition:
+            'form.amount > 1000 && initiator.memberId == "member-001"',
+          includeStructuredCondition: false,
+        }),
+      ),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          edgeDefault: false,
+          edgeLabel: '金額大於 1000',
+          edgeMatched: true,
+          edgeReason:
+            '條件成立：form.amount > 1000 && initiator.memberId == "member-001"',
+          nodeId: 'task_high',
           status: 'WAITING',
         }),
       ]),
@@ -1763,7 +1822,13 @@ function createLinearUserTaskWorkflow({
   };
 }
 
-function createExclusiveGatewayWorkflow(): WorkflowDefinition {
+function createExclusiveGatewayWorkflow({
+  highCondition = 'form.amount > 1000',
+  includeStructuredCondition = true,
+}: {
+  readonly highCondition?: string;
+  readonly includeStructuredCondition?: boolean;
+} = {}): WorkflowDefinition {
   return {
     edges: [
       {
@@ -1775,10 +1840,14 @@ function createExclusiveGatewayWorkflow(): WorkflowDefinition {
       },
       {
         data: {
-          condition: 'form.amount > 1000',
-          conditionFieldKey: 'amount',
-          conditionOperator: 'GREATER_THAN',
-          conditionValue: '1000',
+          condition: highCondition,
+          ...(includeStructuredCondition
+            ? {
+                conditionFieldKey: 'amount',
+                conditionOperator: 'GREATER_THAN' as const,
+                conditionValue: '1000',
+              }
+            : {}),
           label: '金額大於 1000',
         },
         id: 'edge_gateway_high',

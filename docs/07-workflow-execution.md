@@ -156,14 +156,15 @@ async function processInstance(instanceId: string): Promise<void> {
 
 ### 3.1 Exclusive Gateway (XOR) Split
 
-目前 W6 runtime 已支援設計器產出的結構化條件欄位：
+W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，並保留設計器產出的結構化條件欄位作為相容 fallback：
 
+- `edge.data.condition`
 - `edge.data.conditionFieldKey`
 - `edge.data.conditionOperator`
 - `edge.data.conditionValue`
 - `edge.data.isDefault`
 
-引擎會用 instance 的 `formData` 判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。`edge.data.condition` 目前保留作為畫布顯示與相容欄位，尚未作為完整 CEL runtime parser 執行。
+引擎會用 instance 的 `formData`、initiator snapshot、instance metadata 與上一個節點的 latest decision 組成 CEL context，判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。
 
 ```typescript
 function handleExclusiveGateway(node, token) {
