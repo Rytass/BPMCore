@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import {
@@ -12,6 +13,11 @@ import {
 } from './notification.enums';
 
 @Entity('notifications')
+@Index('IDX_notifications_pending_delivery', [
+  'status',
+  'nextRetryAt',
+  'createdAt',
+])
 @ObjectType('Notification')
 export class NotificationEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -60,6 +66,30 @@ export class NotificationEntity {
   @Column('timestamptz', { name: 'read_at', nullable: true })
   @Field(() => Date, { nullable: true })
   readAt!: Date | null;
+
+  @Column('integer', { name: 'attempt_count', default: 0 })
+  @Field(() => Number)
+  attemptCount!: number;
+
+  @Column('timestamptz', { name: 'last_attempt_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  lastAttemptAt!: Date | null;
+
+  @Column('timestamptz', { name: 'next_retry_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  nextRetryAt!: Date | null;
+
+  @Column('text', { name: 'delivery_error', nullable: true })
+  @Field(() => String, { nullable: true })
+  deliveryError!: string | null;
+
+  @Column('timestamptz', { name: 'delivered_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  deliveredAt!: Date | null;
+
+  @Column('text', { name: 'delivery_target', nullable: true })
+  @Field(() => String, { nullable: true })
+  deliveryTarget!: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   @Field()

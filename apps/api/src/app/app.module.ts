@@ -30,9 +30,7 @@ import { ApiSessionService } from './api-session.service';
       driver: ApolloDriver,
       imports: [ApiAuthModule],
       inject: [ApiSessionService],
-      useFactory: (
-        sessionService: ApiSessionService,
-      ): ApolloDriverConfig => ({
+      useFactory: (sessionService: ApiSessionService): ApolloDriverConfig => ({
         autoSchemaFile: true,
         context: ({ req }: { readonly req?: Request }) => ({
           bpmAuthContext: sessionService.readBPMAuthContextFromRequest(req),
@@ -46,9 +44,7 @@ import { ApiSessionService } from './api-session.service';
       }),
     }),
     BPMRootModule.forRoot({
-      auth: {
-        contextFactory: buildApiBPMAuthContextFromExecutionContext,
-      },
+      authContextFactory: buildApiBPMAuthContextFromExecutionContext,
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
         useClass: ApiMemberResolver,

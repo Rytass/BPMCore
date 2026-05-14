@@ -1,5 +1,12 @@
 import { UserTaskNode } from '@bpm/shared/workflow';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   EntityManager,
@@ -11,11 +18,19 @@ import {
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { OrganizationService } from '../organization/organization.service';
+import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import {
+  BPM_WORKFLOW_ENGINE_SERVICE,
+  BPMWorkflowEngineService,
+} from '../workflow-engine/workflow-engine.tokens';
+import {
   ActivityLogEventTypeEnum,
+  TaskDecisionActionEnum,
   TaskStatusEnum,
 } from '../workflow-engine/workflow-engine.enums';
+import { NotificationDeliveryService } from './notification-delivery.service';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
@@ -24,6 +39,11 @@ import {
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
+import {
+  BPM_NOTIFICATION_OPTIONS,
+  BPMResolvedNotificationOptions,
+  DEFAULT_BPM_NOTIFICATION_OPTIONS,
+} from './notification-options';
 import { renderNotificationTemplate } from './notification-template';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 
@@ -38,6 +58,7 @@ interface CreateNotificationInput {
   readonly recipientMemberId: string;
   readonly taskId: string | null;
   readonly type: NotificationTypeEnum;
+  readonly customTemplate?: string | null;
 }
 
 interface SlaScanResult {
@@ -47,6 +68,8 @@ interface SlaScanResult {
 
 @Injectable()
 export class NotificationService {
+  private readonly logger = new Logger(NotificationService.name);
+
   constructor(
     @InjectRepository(NotificationEntity)
     private readonly notificationRepository: Repository<NotificationEntity>,
@@ -54,10 +77,17 @@ export class NotificationService {
     private readonly notificationPreferenceRepository: Repository<NotificationPreferenceEntity>,
     @InjectRepository(TaskEntity)
     private readonly taskRepository: Repository<TaskEntity>,
+    @InjectRepository(TaskCandidateEntity)
+    private readonly taskCandidateRepository: Repository<TaskCandidateEntity>,
     @InjectRepository(ApprovalInstanceEntity)
     private readonly approvalInstanceRepository: Repository<ApprovalInstanceEntity>,
     @InjectRepository(ActivityLogEntity)
     private readonly activityLogRepository: Repository<ActivityLogEntity>,
+    private readonly deliveryService: NotificationDeliveryService,
+    private readonly moduleRef: ModuleRef,
+    @Optional()
+    @Inject(BPM_NOTIFICATION_OPTIONS)
+    private readonly notificationOptions: BPMResolvedNotificationOptions = DEFAULT_BPM_NOTIFICATION_OPTIONS,
   ) {}
 
   async listNotifications({
@@ -187,6 +217,7 @@ export class NotificationService {
     return this.createNotifications(
       {
         channels: readNodeNotificationChannels(node),
+        customTemplate: node.data.notification?.customTemplate ?? null,
         instanceId: instance.id,
         payload: {
           assigneeMemberId: task.assigneeMemberId,
@@ -262,7 +293,7 @@ export class NotificationService {
               task,
               trigger: 'OVERDUE',
             });
-            this.runSlaTimeoutHook({ instance, node, task });
+            await this.runSlaTimeoutHook({ instance, node, task });
           }
 
           return {
@@ -321,7 +352,9 @@ export class NotificationService {
     readonly instance: ApprovalInstanceEntity;
     readonly node: UserTaskNode;
     readonly task: TaskEntity;
-    readonly type: NotificationTypeEnum.SLA_OVERDUE | NotificationTypeEnum.SLA_WARNING;
+    readonly type:
+      | NotificationTypeEnum.SLA_OVERDUE
+      | NotificationTypeEnum.SLA_WARNING;
   }): Promise<boolean> {
     if (!task.assigneeMemberId) {
       return false;
@@ -341,6 +374,7 @@ export class NotificationService {
 
     await this.createNotifications({
       channels: [NotificationChannelEnum.IN_APP],
+      customTemplate: node.data.notification?.customTemplate ?? null,
       instanceId: instance.id,
       payload: {
         assigneeMemberId: task.assigneeMemberId,
@@ -369,11 +403,12 @@ export class NotificationService {
       ? manager.getRepository(NotificationEntity)
       : this.notificationRepository;
     const notifications = input.channels.flatMap((channel) =>
-      isChannelEnabled(channel, preference)
+      isChannelEnabled(channel, preference, this.notificationOptions)
         ? [
             createNotificationEntity({
               channel,
               input,
+              options: this.notificationOptions,
               repository,
             }),
           ]
@@ -388,8 +423,18 @@ export class NotificationService {
 
     await Promise.all(
       savedNotifications
-        .filter((notification) => notification.channel !== NotificationChannelEnum.IN_APP)
-        .map((notification) => this.dispatchExternalNotification(notification)),
+        .filter(
+          (notification) =>
+            notification.channel !== NotificationChannelEnum.IN_APP,
+        )
+        .map((notification) =>
+          manager
+            ? Promise.resolve(false)
+            : this.deliveryService.deliverNotification(
+                notification,
+                this.notificationOptions,
+              ),
+        ),
     );
 
     return savedNotifications;
@@ -424,19 +469,7 @@ export class NotificationService {
     );
   }
 
-  private async dispatchExternalNotification(
-    notification: NotificationEntity,
-  ): Promise<void> {
-    console.log('[NotificationHook]', {
-      channel: notification.channel,
-      notificationId: notification.id,
-      recipientMemberId: notification.recipientMemberId,
-      title: notification.title,
-      type: notification.type,
-    });
-  }
-
-  private runSlaTimeoutHook({
+  private async runSlaTimeoutHook({
     instance,
     node,
     task,
@@ -444,13 +477,125 @@ export class NotificationService {
     readonly instance: ApprovalInstanceEntity;
     readonly node: UserTaskNode;
     readonly task: TaskEntity;
-  }): void {
-    console.log('[SlaTimeoutHook]', {
-      instanceId: instance.id,
-      nodeId: node.id,
-      onTimeout: node.data.sla?.onTimeout ?? 'REMIND',
-      taskId: task.id,
+  }): Promise<void> {
+    const timeoutAction = node.data.sla?.onTimeout ?? 'REMIND';
+
+    if (!isSlaTimeoutActionEnabled(timeoutAction, this.notificationOptions)) {
+      return;
+    }
+
+    await this.executeSlaTimeoutAction({
+      instance,
+      node,
+      task,
+      timeoutAction,
     });
+  }
+
+  private async executeSlaTimeoutAction({
+    instance,
+    node,
+    task,
+    timeoutAction,
+  }: {
+    readonly instance: ApprovalInstanceEntity;
+    readonly node: UserTaskNode;
+    readonly task: TaskEntity;
+    readonly timeoutAction: NonNullable<
+      UserTaskNode['data']['sla']
+    >['onTimeout'];
+  }): Promise<void> {
+    if (timeoutAction === 'REMIND') {
+      this.logger.log(`SLA reminder processed for task ${task.id}`);
+
+      return;
+    }
+
+    const workflowEngine = this.moduleRef.get<BPMWorkflowEngineService>(
+      BPM_WORKFLOW_ENGINE_SERVICE,
+      { strict: false },
+    );
+
+    if (timeoutAction === 'AUTO_APPROVE') {
+      const actorMemberId = await this.resolveTaskActorMemberId(task);
+
+      await workflowEngine.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: 'SLA timeout auto-approved this task.',
+        decidedByMemberId: actorMemberId,
+        taskId: task.id,
+      });
+
+      return;
+    }
+
+    if (timeoutAction === 'ESCALATE') {
+      const actorMemberId = await this.resolveTaskActorMemberId(task);
+      const targetMemberId = await this.resolveEscalationTargetMemberId({
+        actorMemberId,
+        node,
+      });
+
+      if (!targetMemberId || targetMemberId === actorMemberId) {
+        this.logger.warn(`SLA escalation skipped for task ${task.id}`);
+
+        return;
+      }
+
+      await workflowEngine.decideTask({
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        comment: 'SLA timeout escalated this task.',
+        decidedByMemberId: actorMemberId,
+        taskId: task.id,
+        transferToMemberId: targetMemberId,
+      });
+
+      return;
+    }
+
+    await workflowEngine.cancelApprovalInstance({
+      cancelledByMemberId: instance.initiatorMemberId,
+      comment: 'SLA timeout terminated this instance.',
+      instanceId: instance.id,
+    });
+  }
+
+  private async resolveTaskActorMemberId(task: TaskEntity): Promise<string> {
+    if (task.assigneeMemberId) {
+      return task.assigneeMemberId;
+    }
+
+    const candidate = await this.taskCandidateRepository.findOne({
+      order: { createdAt: 'ASC' },
+      where: { taskId: task.id },
+    });
+
+    if (!candidate) {
+      throw new NotFoundException(`Task ${task.id} has no actor candidate`);
+    }
+
+    return candidate.memberId;
+  }
+
+  private async resolveEscalationTargetMemberId({
+    actorMemberId,
+    node,
+  }: {
+    readonly actorMemberId: string;
+    readonly node: UserTaskNode;
+  }): Promise<string | null> {
+    const organizationService = this.moduleRef.get(OrganizationService, {
+      strict: false,
+    });
+    const levelsUp = Math.max(node.data.sla?.escalateLevelsUp ?? 1, 1);
+    let currentMemberId: string | null = actorMemberId;
+
+    for (let level = 0; level < levelsUp && currentMemberId; level += 1) {
+      currentMemberId =
+        await organizationService.resolveManagerMemberId(currentMemberId);
+    }
+
+    return currentMemberId;
   }
 }
 
@@ -506,9 +651,7 @@ function readNodeNotificationChannels(
             ? NotificationChannelEnum.IN_APP
             : null,
     )
-    .filter(
-      (channel): channel is NotificationChannelEnum => Boolean(channel),
-    );
+    .filter((channel): channel is NotificationChannelEnum => Boolean(channel));
 
   return channels.length ? channels : DEFAULT_TASK_CHANNELS;
 }
@@ -516,41 +659,74 @@ function readNodeNotificationChannels(
 function isChannelEnabled(
   channel: NotificationChannelEnum,
   preference: NotificationPreferenceEntity,
+  options: BPMResolvedNotificationOptions,
 ): boolean {
   if (channel === NotificationChannelEnum.IN_APP) {
-    return preference.inAppEnabled;
+    return options.inAppEnabled && preference.inAppEnabled;
   }
 
   if (channel === NotificationChannelEnum.EMAIL) {
-    return preference.emailEnabled;
+    return options.emailEnabled && preference.emailEnabled;
   }
 
-  return true;
+  return options.webhookEnabled;
+}
+
+function isSlaTimeoutActionEnabled(
+  action: NonNullable<UserTaskNode['data']['sla']>['onTimeout'],
+  options: BPMResolvedNotificationOptions,
+): boolean {
+  if (action === 'AUTO_APPROVE') {
+    return options.slaTimeoutAutoApproveEnabled;
+  }
+
+  if (action === 'ESCALATE') {
+    return options.slaTimeoutEscalateEnabled;
+  }
+
+  if (action === 'TERMINATE_INSTANCE') {
+    return options.slaTimeoutTerminateInstanceEnabled;
+  }
+
+  return options.slaTimeoutRemindEnabled;
 }
 
 function createNotificationEntity({
   channel,
   input,
+  options,
   repository,
 }: {
   readonly channel: NotificationChannelEnum;
   readonly input: CreateNotificationInput;
+  readonly options: BPMResolvedNotificationOptions;
   readonly repository: Repository<NotificationEntity>;
 }): NotificationEntity {
   const renderedTemplate = renderNotificationTemplate({
+    customTemplate: input.customTemplate,
+    engine: options.templateEngine,
     payload: input.payload,
     type: input.type,
   });
+  const isInApp = channel === NotificationChannelEnum.IN_APP;
 
   return repository.create({
+    attemptCount: 0,
     body: renderedTemplate.body,
     channel,
+    deliveredAt: isInApp ? new Date() : null,
+    deliveryError: null,
+    deliveryTarget: null,
     instanceId: input.instanceId,
+    lastAttemptAt: null,
+    nextRetryAt: null,
     payload: input.payload,
     readAt: null,
     recipientMemberId: input.recipientMemberId,
-    sentAt: new Date(),
-    status: NotificationStatusEnum.SENT,
+    sentAt: isInApp ? new Date() : null,
+    status: isInApp
+      ? NotificationStatusEnum.SENT
+      : NotificationStatusEnum.PENDING,
     taskId: input.taskId,
     title: renderedTemplate.title,
     type: input.type,

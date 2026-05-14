@@ -1,4 +1,6 @@
+import * as Handlebars from 'handlebars';
 import { NotificationTypeEnum } from './notification.enums';
+import { NotificationTemplateEngine } from './notification-options';
 
 interface NotificationTemplate {
   readonly body: string;
@@ -30,24 +32,37 @@ const TEMPLATES: Readonly<Record<NotificationTypeEnum, NotificationTemplate>> =
   };
 
 export function renderNotificationTemplate({
+  customTemplate,
+  engine = 'simple',
   payload,
   type,
 }: {
+  readonly customTemplate?: string | null;
+  readonly engine?: NotificationTemplateEngine;
   readonly payload: Readonly<Record<string, unknown>>;
   readonly type: NotificationTypeEnum;
 }): NotificationTemplate {
   const template = TEMPLATES[type];
+  const bodyTemplate = customTemplate?.trim() || template.body;
 
   return {
-    body: renderTemplate(template.body, payload),
-    title: renderTemplate(template.title, payload),
+    body: renderTemplate(bodyTemplate, payload, engine),
+    title: renderTemplate(template.title, payload, engine),
   };
 }
 
 function renderTemplate(
   template: string,
   payload: Readonly<Record<string, unknown>>,
+  engine: NotificationTemplateEngine,
 ): string {
+  if (engine === 'handlebars') {
+    return Handlebars.compile(template, {
+      noEscape: true,
+      strict: false,
+    })(payload);
+  }
+
   return template.replace(
     /\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/gu,
     (_match, key: string): string => readPayloadValue(payload, key),

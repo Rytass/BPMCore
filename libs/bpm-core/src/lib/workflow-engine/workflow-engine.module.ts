@@ -19,6 +19,7 @@ import { TaskEntity } from './task.entity';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
 import { WorkflowEngineService } from './workflow-engine.service';
+import { BPM_WORKFLOW_ENGINE_SERVICE } from './workflow-engine.tokens';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
 @Module({
@@ -47,7 +48,11 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
     WorkflowEngineMutations,
     WorkflowEngineQueries,
     WorkflowEngineService,
+    {
+      provide: BPM_WORKFLOW_ENGINE_SERVICE,
+      useExisting: WorkflowEngineService,
+    },
   ],
-  exports: [WorkflowEngineService],
+  exports: [BPM_WORKFLOW_ENGINE_SERVICE, WorkflowEngineService],
 })
 export class WorkflowEngineModule {}

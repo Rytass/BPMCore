@@ -6,22 +6,24 @@ import {
   OnApplicationShutdown,
   Optional,
 } from '@nestjs/common';
+import { NotificationDeliveryService } from './notification-delivery.service';
 import {
   BPM_NOTIFICATION_OPTIONS,
   BPMResolvedNotificationOptions,
   DEFAULT_BPM_NOTIFICATION_OPTIONS,
 } from './notification-options';
-import { NotificationService } from './notification.service';
 
 @Injectable()
-export class NotificationSlaSchedulerService
+export class NotificationDeliverySchedulerService
   implements OnApplicationBootstrap, OnApplicationShutdown
 {
-  private readonly logger = new Logger(NotificationSlaSchedulerService.name);
+  private readonly logger = new Logger(
+    NotificationDeliverySchedulerService.name,
+  );
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
-    private readonly notificationService: NotificationService,
+    private readonly deliveryService: NotificationDeliveryService,
     @Optional()
     @Inject(BPM_NOTIFICATION_OPTIONS)
     private readonly notificationOptions: BPMResolvedNotificationOptions = DEFAULT_BPM_NOTIFICATION_OPTIONS,
@@ -30,14 +32,14 @@ export class NotificationSlaSchedulerService
   onApplicationBootstrap(): void {
     if (
       process.env.NODE_ENV === 'test' ||
-      !this.notificationOptions.slaSchedulerEnabled
+      !this.notificationOptions.deliverySchedulerEnabled
     ) {
       return;
     }
 
     this.timer = setInterval((): void => {
-      void this.scanSla();
-    }, this.notificationOptions.slaScanIntervalMs);
+      void this.scanPendingDeliveries();
+    }, this.notificationOptions.deliveryScanIntervalMs);
     this.timer.unref();
   }
 
@@ -48,18 +50,19 @@ export class NotificationSlaSchedulerService
     }
   }
 
-  private async scanSla(): Promise<void> {
+  private async scanPendingDeliveries(): Promise<void> {
     try {
-      const result = await this.notificationService.runSlaScan();
+      const deliveredCount =
+        await this.deliveryService.deliverPendingNotifications({
+          options: this.notificationOptions,
+        });
 
-      if (result.overdueCount || result.warningCount) {
-        this.logger.log(
-          `SLA scan created ${result.warningCount} warning and ${result.overdueCount} overdue notifications`,
-        );
+      if (deliveredCount) {
+        this.logger.log(`Delivered ${deliveredCount} pending notifications`);
       }
     } catch (error: unknown) {
       this.logger.error(
-        error instanceof Error ? error.message : 'SLA scan failed',
+        error instanceof Error ? error.message : 'Delivery scan failed',
       );
     }
   }

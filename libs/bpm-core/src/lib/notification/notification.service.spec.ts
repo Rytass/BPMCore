@@ -1,7 +1,9 @@
 import { validateSync } from 'class-validator';
+import { ModuleRef } from '@nestjs/core';
 import { ObjectLiteral, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
@@ -12,6 +14,7 @@ import {
   NotificationTypeEnum,
 } from './notification.enums';
 import { NotificationService } from './notification.service';
+import { NotificationDeliveryService } from './notification-delivery.service';
 
 describe('NotificationService', () => {
   it('validates quiet hours as time-only values', (): void => {
@@ -60,8 +63,11 @@ describe('NotificationService', () => {
       } as unknown as Repository<NotificationEntity>,
       createRepository<NotificationPreferenceEntity>(),
       createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
       createRepository<ApprovalInstanceEntity>(),
       createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
     );
 
     const pageTwo = await service.listNotifications({
@@ -96,8 +102,11 @@ describe('NotificationService', () => {
       notificationRepository,
       createRepository<NotificationPreferenceEntity>(),
       createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
       createRepository<ApprovalInstanceEntity>(),
       createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
     );
 
     const readNotification = await service.markNotificationRead({
@@ -116,8 +125,14 @@ function createNotification(id: string): NotificationEntity {
     body: '待簽通知',
     channel: NotificationChannelEnum.IN_APP,
     createdAt: new Date('2026-05-10T00:00:00.000Z'),
+    attemptCount: 0,
+    deliveredAt: new Date('2026-05-10T00:00:00.000Z'),
+    deliveryError: null,
+    deliveryTarget: null,
     id,
     instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+    lastAttemptAt: null,
+    nextRetryAt: null,
     payload: {},
     readAt: null,
     recipientMemberId: 'member-001',
@@ -127,6 +142,20 @@ function createNotification(id: string): NotificationEntity {
     title: '新的待簽任務',
     type: NotificationTypeEnum.TASK_ASSIGNED,
   });
+}
+
+function createDeliveryService(): NotificationDeliveryService {
+  return {
+    deliverNotification: (): Promise<boolean> => Promise.resolve(true),
+  } as unknown as NotificationDeliveryService;
+}
+
+function createModuleRef(): ModuleRef {
+  return {
+    get: (): never => {
+      throw new Error('Unexpected ModuleRef lookup');
+    },
+  } as unknown as ModuleRef;
 }
 
 function createNotificationRepository(
