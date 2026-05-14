@@ -152,11 +152,17 @@ export type NotificationType =
   | 'TASK_TRANSFERRED';
 
 export interface NotificationRecord {
+  readonly attemptCount: number;
   readonly body: string;
   readonly channel: NotificationChannel;
   readonly createdAt: string;
+  readonly deliveredAt: string | null;
+  readonly deliveryError: string | null;
+  readonly deliveryTarget: string | null;
   readonly id: string;
   readonly instanceId: string | null;
+  readonly lastAttemptAt: string | null;
+  readonly nextRetryAt: string | null;
   readonly payloadJson: string;
   readonly readAt: string | null;
   readonly recipientMemberId: string;
@@ -1172,11 +1178,17 @@ export async function listNotifications({
         pageSize: $pageSize
         recipientMemberId: $recipientMemberId
       ) {
+        attemptCount
         body
         channel
         createdAt
+        deliveredAt
+        deliveryError
+        deliveryTarget
         id
         instanceId
+        lastAttemptAt
+        nextRetryAt
         payloadJson
         readAt
         recipientMemberId
@@ -1200,6 +1212,21 @@ export async function listNotifications({
     totalCount: data.notificationCount,
     unreadCount: data.unreadNotificationCount,
   };
+}
+
+export async function readUnreadNotificationCount(
+  recipientMemberId: string,
+): Promise<number> {
+  const data = await requestGraphQl<{
+    readonly unreadNotificationCount: number;
+  }>(
+    `query UnreadNotificationCount($recipientMemberId: String!) {
+      unreadNotificationCount(recipientMemberId: $recipientMemberId)
+    }`,
+    { recipientMemberId },
+  );
+
+  return data.unreadNotificationCount;
 }
 
 export async function markNotificationRead({

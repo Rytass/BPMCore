@@ -22,6 +22,9 @@ test.describe('W9 notifications and SLA', () => {
 
     await page.goto('/notifications');
     await expect(page.getByRole('heading', { name: '通知中心' })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: '通知中心，1 則未讀' }),
+    ).toBeVisible();
     await expect(page.getByText('目前有 1 則未讀通知。')).toBeVisible();
     await expect(page.getByText('新的待簽任務')).toBeVisible();
     await expect(page.getByText('SLA 即將到期')).toBeVisible();
@@ -62,7 +65,7 @@ test.describe('W9 notifications and SLA', () => {
     await expect(page.getByText('通知 1', { exact: true })).toBeVisible();
     await expect(page.getByText('通知 11', { exact: true })).toHaveCount(0);
 
-    await page.getByRole('button', { name: '2' }).click();
+    await page.getByRole('button', { name: 'Go to 2 page' }).click();
     await expect(page.getByText('顯示 11-12 筆，共 12 筆')).toBeVisible();
     await expect(page.getByText('通知 11', { exact: true })).toBeVisible();
     await expect(page.getByText('通知 1', { exact: true })).toHaveCount(0);
@@ -99,6 +102,13 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
           (pageNumber - 1) * pageSize,
           pageNumber * pageSize,
         ),
+        unreadNotificationCount: read ? 0 : 1,
+      });
+      return;
+    }
+
+    if (query.includes('query UnreadNotificationCount')) {
+      await fulfillGraphQl(route, {
         unreadNotificationCount: read ? 0 : 1,
       });
       return;
@@ -151,6 +161,13 @@ async function mockPaginatedNotificationGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('query UnreadNotificationCount')) {
+      await fulfillGraphQl(route, {
+        unreadNotificationCount: 12,
+      });
+      return;
+    }
+
     if (query.includes('query NotificationPreference')) {
       await fulfillGraphQl(route, {
         notificationPreference: readPreference(),
@@ -170,6 +187,13 @@ async function mockInboxSlaGraphQl(page: Page): Promise<void> {
     if (query.includes('query InboxTasks')) {
       await fulfillGraphQl(route, {
         inboxTasks: [readInboxTask()],
+      });
+      return;
+    }
+
+    if (query.includes('query UnreadNotificationCount')) {
+      await fulfillGraphQl(route, {
+        unreadNotificationCount: 0,
       });
       return;
     }

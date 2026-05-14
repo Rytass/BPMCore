@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactElement } from 'react';
+import { ReactElement, useEffect, useState } from 'react';
 import Image from 'next/image';
 import {
   Navigation,
@@ -28,6 +28,7 @@ import type { IconDefinition } from '@mezzanine-ui/icons';
 import styles from './app-navigation.module.scss';
 import { useAuth } from './auth-provider';
 import { logoutApi } from './_lib/api-auth-client';
+import { readUnreadNotificationCount } from './instances/_lib/workflow-api';
 
 interface NavigationItem {
   readonly href: string;
@@ -88,6 +89,7 @@ export function renderAppNavigation(activeHref: string): ReactElement {
         >
           <NavigationMemberName />
         </NavigationUserMenu>
+        <NotificationBell />
         <NavigationIconButton
           aria-label="登出"
           icon={LogoutIcon}
@@ -99,6 +101,58 @@ export function renderAppNavigation(activeHref: string): ReactElement {
         />
       </NavigationFooter>
     </Navigation>
+  );
+}
+
+function NotificationBell(): ReactElement {
+  const { member } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
+  const currentMemberId = member?.memberId ?? null;
+
+  useEffect(() => {
+    if (!currentMemberId) {
+      setUnreadCount(0);
+      return;
+    }
+
+    let active = true;
+
+    void readUnreadNotificationCount(currentMemberId)
+      .then((count) => {
+        if (active) {
+          setUnreadCount(count);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setUnreadCount(0);
+        }
+      });
+
+    return (): void => {
+      active = false;
+    };
+  }, [currentMemberId]);
+
+  return (
+    <span className={styles.notificationBell}>
+      <NavigationIconButton
+        aria-label={
+          unreadCount > 0 ? `通知中心，${unreadCount} 則未讀` : '通知中心'
+        }
+        icon={NotificationUnreadIcon}
+        onClick={(): void => {
+          window.location.assign('/notifications');
+        }}
+        title="通知中心"
+        type="button"
+      />
+      {unreadCount > 0 ? (
+        <span className={styles.notificationBadge}>
+          {unreadCount > 99 ? '99+' : unreadCount}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
