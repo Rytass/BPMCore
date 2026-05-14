@@ -181,6 +181,27 @@ jest.mock('@mezzanine-ui/react', () => {
   };
 });
 
+jest.mock('@mezzanine-ui/react/ContentHeader', () => {
+  const React = require('react') as typeof import('react');
+
+  function ContentHeader({
+    children,
+    description,
+    title,
+  }: {
+    readonly children?: React.ReactNode;
+    readonly description?: string;
+    readonly title?: string;
+  }): React.ReactElement {
+    return React.createElement('header', null, title, description, children);
+  }
+
+  return {
+    __esModule: true,
+    default: ContentHeader,
+  };
+});
+
 jest.mock('@mezzanine-ui/icons', () => ({
   CalendarTimeIcon: { name: 'calendar-time' },
   ChevronLeftIcon: { name: 'chevron-left' },
@@ -195,6 +216,7 @@ jest.mock('@mezzanine-ui/icons', () => ({
   SettingIcon: { name: 'setting' },
   ShareIcon: { name: 'share' },
   SystemIcon: { name: 'system' },
+  SwitchHorizontalIcon: { name: 'switch-horizontal' },
   UserIcon: { name: 'user' },
 }));
 
