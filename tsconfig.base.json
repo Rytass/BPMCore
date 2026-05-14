@@ -15,6 +15,25 @@
     "skipDefaultLibCheck": true,
     "paths": {
       "@bpm/core": ["./libs/bpm-core/src/index.ts"],
+      "@rytass/bpm-core-nestjs-module": ["./libs/bpm-core/src/index.ts"],
+      "@rytass/bpm-core-nestjs-module/attachment": [
+        "./libs/bpm-core/src/lib/attachment/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/bpm-auth": [
+        "./libs/bpm-core/src/lib/bpm-auth/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/database": [
+        "./libs/bpm-core/src/lib/database/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/identity": [
+        "./libs/bpm-core/src/lib/identity/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/notification": [
+        "./libs/bpm-core/src/lib/notification/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/organization": [
+        "./libs/bpm-core/src/lib/organization/index.ts"
+      ],
       "@bpm/core/organization": [
         "./libs/bpm-core/src/lib/organization/index.ts"
       ],
@@ -22,7 +41,16 @@
       "@bpm/shared/condition": ["./libs/shared/src/lib/condition.ts"],
       "@bpm/shared/form": ["./libs/shared/src/lib/form.ts"],
       "@bpm/shared/status": ["./libs/shared/src/lib/status.ts"],
-      "@bpm/shared/workflow": ["./libs/shared/src/lib/workflow.ts"]
+      "@bpm/shared/workflow": ["./libs/shared/src/lib/workflow.ts"],
+      "@rytass/bpm-core-shared": ["./libs/shared/src/index.ts"],
+      "@rytass/bpm-core-shared/condition": [
+        "./libs/shared/src/lib/condition.ts"
+      ],
+      "@rytass/bpm-core-shared/form": ["./libs/shared/src/lib/form.ts"],
+      "@rytass/bpm-core-shared/status": ["./libs/shared/src/lib/status.ts"],
+      "@rytass/bpm-core-shared/workflow": [
+        "./libs/shared/src/lib/workflow.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"]

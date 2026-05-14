@@ -2,7 +2,7 @@ import {
   EMPTY_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
 } from './workflow-definition.validator';
-import { WorkflowDefinition } from '@bpm/shared/workflow';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 
 describe('workflow definition validator', () => {
   it('accepts a linear start user task end workflow', (): void => {

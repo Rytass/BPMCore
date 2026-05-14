@@ -1,4 +1,4 @@
-import type { MemberMetadata } from '@bpm/shared';
+import type { MemberMetadata } from '@rytass/bpm-core-shared';
 
 export interface ApiMemberProfile {
   readonly member: MemberMetadata;

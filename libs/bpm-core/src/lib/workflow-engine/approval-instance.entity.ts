@@ -1,4 +1,4 @@
-import { WorkflowDefinition } from '@bpm/shared/workflow';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { Field, ID, ObjectType } from '@nestjs/graphql';
 import {
   Column,

@@ -3,7 +3,7 @@ import {
   FormFieldDefinition,
   FormLayoutItem,
   FormUiSchema,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'boolean',

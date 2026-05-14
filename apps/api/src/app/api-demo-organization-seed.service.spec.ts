@@ -2,7 +2,7 @@ import {
   ManagerResolutionScopeTypeEnum,
   OrganizationService,
   OrgUnitTypeEnum,
-} from '@bpm/core/organization';
+} from '@rytass/bpm-core-nestjs-module/organization';
 import { ApiDemoOrganizationSeedService } from './api-demo-organization-seed.service';
 
 describe('ApiDemoOrganizationSeedService', () => {

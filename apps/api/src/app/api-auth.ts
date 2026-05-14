@@ -1,6 +1,6 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { GqlExecutionContext } from '@nestjs/graphql';
-import type { BPMAuthContext } from '@bpm/core';
+import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
 import type { Request } from 'express';
 
 interface ApiGraphQLContext {

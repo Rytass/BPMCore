@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { WorkflowDefinition } from '@bpm/shared/workflow';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { FindOptionsWhere, ILike, IsNull, Not, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';

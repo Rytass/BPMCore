@@ -3,7 +3,7 @@ import {
   ManagerResolutionScopeTypeEnum,
   OrganizationService,
   OrgUnitTypeEnum,
-} from '@bpm/core/organization';
+} from '@rytass/bpm-core-nestjs-module/organization';
 
 type DemoOrgUnitCode =
   | 'BPM-HQ'

@@ -8,7 +8,7 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   ReturnResubmitStrategy,
-} from '@bpm/shared/workflow';
+} from '@rytass/bpm-core-shared/workflow';
 import {
   BadRequestException,
   ConflictException,

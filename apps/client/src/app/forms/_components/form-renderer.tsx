@@ -24,7 +24,7 @@ import {
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 import {
   buildFormRendererValues,
   clampOptionalNumber,

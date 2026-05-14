@@ -1,6 +1,6 @@
 import { Field, ID, ObjectType } from '@nestjs/graphql';
 import { Column, Entity, PrimaryGeneratedColumn, Unique } from 'typeorm';
-import { MemberMetadata } from '@bpm/shared';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 
 @Entity('member_metadata_cache')
 @Unique(['memberId'])

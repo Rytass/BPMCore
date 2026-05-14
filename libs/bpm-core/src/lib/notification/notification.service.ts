@@ -1,4 +1,4 @@
-import { UserTaskNode } from '@bpm/shared/workflow';
+import { UserTaskNode } from '@rytass/bpm-core-shared/workflow';
 import {
   Inject,
   Injectable,

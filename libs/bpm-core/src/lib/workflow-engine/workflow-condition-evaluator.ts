@@ -1,7 +1,7 @@
 import {
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
-} from '@bpm/shared/workflow';
+} from '@rytass/bpm-core-shared/workflow';
 
 export type WorkflowConditionContext = Readonly<{
   formData: Readonly<Record<string, unknown>>;

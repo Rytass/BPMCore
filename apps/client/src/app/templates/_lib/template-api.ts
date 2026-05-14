@@ -1,5 +1,5 @@
-import { FormDefinitionSchema } from '@bpm/shared/form';
-import { WorkflowDefinition } from '@bpm/shared/workflow';
+import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface ApprovalTemplateRecord {

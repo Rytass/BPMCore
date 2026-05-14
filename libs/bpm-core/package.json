@@ -1,7 +1,7 @@
 {
-  "name": "@bpm/core",
+  "name": "@rytass/bpm-core-nestjs-module",
   "version": "0.0.1",
-  "private": true,
+  "private": false,
   "type": "commonjs",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
@@ -9,10 +9,34 @@
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
+    },
+    "./attachment": {
+      "types": "./src/lib/attachment/index.d.ts",
+      "default": "./src/lib/attachment/index.js"
+    },
+    "./bpm-auth": {
+      "types": "./src/lib/bpm-auth/index.d.ts",
+      "default": "./src/lib/bpm-auth/index.js"
+    },
+    "./database": {
+      "types": "./src/lib/database/index.d.ts",
+      "default": "./src/lib/database/index.js"
+    },
+    "./identity": {
+      "types": "./src/lib/identity/index.d.ts",
+      "default": "./src/lib/identity/index.js"
+    },
+    "./notification": {
+      "types": "./src/lib/notification/index.d.ts",
+      "default": "./src/lib/notification/index.js"
+    },
+    "./organization": {
+      "types": "./src/lib/organization/index.d.ts",
+      "default": "./src/lib/organization/index.js"
     }
   },
   "dependencies": {
-    "@bpm/shared": "workspace:*",
+    "@rytass/bpm-core-shared": "0.0.1",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/graphql": "^13.4.0",

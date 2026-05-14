@@ -7,7 +7,7 @@ import {
   FormUiSchema,
   NumberFieldDefinition,
   SelectFieldDefinition,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 
 export type ConditionOperator =
   | 'equals'

@@ -1,4 +1,4 @@
-import { FormDefinitionSchema, FormUiSchema } from '@bpm/shared/form';
+import { FormDefinitionSchema, FormUiSchema } from '@rytass/bpm-core-shared/form';
 import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import {
   Column,

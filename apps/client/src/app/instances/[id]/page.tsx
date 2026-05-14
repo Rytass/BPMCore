@@ -51,8 +51,8 @@ import {
   UserIcon,
 } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { FormFieldDefinition } from '@bpm/shared/form';
-import { WorkflowDefinition, WorkflowNode } from '@bpm/shared/workflow';
+import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
+import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
 import { BPMFormField } from '../../_components/bpm-form-field';
 import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';

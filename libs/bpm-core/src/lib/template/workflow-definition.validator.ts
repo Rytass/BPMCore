@@ -4,7 +4,7 @@ import {
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
-} from '@bpm/shared/workflow';
+} from '@rytass/bpm-core-shared/workflow';
 
 export interface WorkflowDefinitionLintResult {
   readonly errors: readonly string[];

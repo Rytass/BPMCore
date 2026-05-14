@@ -1,4 +1,4 @@
-import { ApproverResolver, WorkflowDefinition } from '@bpm/shared/workflow';
+import { ApproverResolver, WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { ObjectLiteral } from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
 import { ConditionService } from '../condition/condition.service';

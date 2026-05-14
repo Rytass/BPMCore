@@ -2,7 +2,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormUiSchema,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 import { requestGraphQl } from '../../_lib/graphql-client';
 
 export interface FormDefinitionRecord {

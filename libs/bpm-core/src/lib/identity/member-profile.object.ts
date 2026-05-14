@@ -1,5 +1,5 @@
 import { Field, ID, ObjectType } from '@nestjs/graphql';
-import { MemberMetadata } from '@bpm/shared';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 
 @ObjectType('MemberProfile')
 export class MemberProfileObject {

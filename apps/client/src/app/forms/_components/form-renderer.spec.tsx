@@ -1,5 +1,5 @@
 import { fireEvent, render } from '@testing-library/react';
-import { FormDefinitionSchema, FormUiSchema } from '@bpm/shared/form';
+import { FormDefinitionSchema, FormUiSchema } from '@rytass/bpm-core-shared/form';
 import { FormRenderer } from './form-renderer';
 
 jest.mock('@mezzanine-ui/react', () => {

@@ -64,7 +64,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
   ApproverResolverFallback,
@@ -76,7 +76,7 @@ import {
   WorkflowNode,
   WorkflowNodeTriggerMode,
   ReturnResubmitStrategy,
-} from '@bpm/shared/workflow';
+} from '@rytass/bpm-core-shared/workflow';
 import {
   OrgUnitOption,
   OrgUnitPicker,

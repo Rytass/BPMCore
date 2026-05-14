@@ -21,7 +21,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { CheckedIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { FormFieldDefinition } from '@bpm/shared/form';
+import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';

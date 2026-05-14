@@ -1,6 +1,6 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { AllExceptionsFilter } from '@bpm/core';
+import { AllExceptionsFilter } from '@rytass/bpm-core-nestjs-module';
 import { AppModule } from './app/app.module';
 
 const DEFAULT_API_PORT = 17603;

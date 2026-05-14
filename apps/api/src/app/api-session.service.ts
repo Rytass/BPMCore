@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import type { BPMAuthContext } from '@bpm/core';
+import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 import {

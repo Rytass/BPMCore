@@ -68,7 +68,7 @@ import {
   NumberFieldDefinition,
   SelectFieldDefinition,
   TextFieldDefinition,
-} from '@bpm/shared/form';
+} from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../../_lib/date-time';
 import { renderAppNavigation } from '../../../app-navigation';
 import {

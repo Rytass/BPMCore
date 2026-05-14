@@ -1,4 +1,4 @@
-import { MemberMetadata } from '@bpm/shared';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 
 export const BPM_MEMBER_RESOLVER = Symbol('BPM_MEMBER_RESOLVER');
 

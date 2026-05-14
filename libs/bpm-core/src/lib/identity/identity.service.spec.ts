@@ -1,5 +1,5 @@
 import { Repository } from 'typeorm';
-import { MemberMetadata } from '@bpm/shared';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { IdentityService } from './identity.service';
 import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
 import { MemberResolver } from './member-resolver.interface';

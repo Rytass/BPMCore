@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MemberMetadata } from '@bpm/shared';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
 import { MEMBER_RESOLVER, MemberResolver } from './member-resolver.interface';
 

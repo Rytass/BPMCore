@@ -4,8 +4,8 @@ import {
   FormFieldValue,
   FormUiSchema,
   SelectFieldDefinition,
-} from '@bpm/shared/form';
-import { WorkflowDefinition } from '@bpm/shared/workflow';
+} from '@rytass/bpm-core-shared/form';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../../_lib/graphql-client';
 
 export type ApprovalInstanceState =

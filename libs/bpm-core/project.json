@@ -12,6 +12,7 @@
         "outputPath": "dist/libs/bpm-core",
         "main": "libs/bpm-core/src/index.ts",
         "tsConfig": "libs/bpm-core/tsconfig.lib.json",
+        "generatePackageJson": true,
         "assets": ["libs/bpm-core/*.md"]
       }
     },

@@ -1,1 +1,4 @@
 autoInstallPeers: true
+linkWorkspacePackages: true
+packages:
+  - libs/*
