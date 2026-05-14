@@ -1,6 +1,6 @@
 # 09 — 開發路線圖
 
-> 盤點更新：2026-05-11。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
+> 盤點更新：2026-05-14。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
 
 ## 里程碑總覽
 
@@ -161,7 +161,7 @@
 - [x] 多分支 outgoing edge 處理
 - [x] 節點前置條件 `AND` / `OR` 處理（全部前置完成 / 任一前置完成）
 - [x] CEL 在 Entry Condition / Approver Resolver / initiator policy 整合
-- [ ] Edge Condition 完整 CEL expression runtime（目前執行 structured field/operator condition）
+- [x] Edge Condition 完整 CEL expression runtime（支援 `edge.data.condition` CEL，並保留 structured field/operator 相容）
 
 **Frontend**
 
@@ -169,7 +169,7 @@
 - [x] 條件線 / default flow label 顯示
 - [x] pending / completed / cancelled / waiting 節點狀態顯示
 
-> W6 runtime 目前執行設計器產出的 structured edge condition 欄位，不直接執行完整 CEL parser。`edge.data.condition` 保留作為畫布顯示與相容欄位；完整 CEL runtime 整合延後到 Dry Run / expression runtime 階段一併收斂。
+> W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，context 含 `form` / `formData` / `initiator` / `instance`，正式 runtime 另提供 `lastDecision`。舊的 structured edge condition 欄位仍保留作為設計器輸入與相容 fallback。
 
 **驗收**：能跑通含 XOR + 多前置節點 AND/OR 的流程；條件分歧基於表單內容正確路由。
 
@@ -205,7 +205,7 @@
 **Frontend**
 
 - [x] `/admin/delegations` 代理規則維護
-- [ ] 個人代理設定頁（自助）
+- [x] 個人代理設定頁（自助）
 - [x] Task 轉派 UI
 
 **驗收**：A 設定代理給 B → 派給 A 的 task 自動派給 B；代理鏈正確紀錄。

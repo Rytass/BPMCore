@@ -21,6 +21,7 @@ import {
   NotificationUnreadIcon,
   ShareIcon,
   SystemIcon,
+  SwitchHorizontalIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
@@ -37,6 +38,7 @@ interface NavigationItem {
 const mainItems: readonly NavigationItem[] = [
   { href: '/', icon: HomeIcon, label: '工作台' },
   { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
+  { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
   { href: '/notifications', icon: NotificationUnreadIcon, label: '通知中心' },
   { href: '/templates', icon: FolderIcon, label: '簽核模板' },
   { href: '/templates/categories', icon: ListIcon, label: '模板分類' },
