@@ -1,6 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { BPMMemberResolver } from '@bpm/core';
-import type { MemberMetadata } from '@bpm/shared';
+import {
+  BPMMemberBaseResolverAdapter,
+  type BPMMemberBaseDirectory,
+  type BPMMemberResolver,
+} from '@rytass/bpm-core-nestjs-module/identity';
+import type { MemberMetadata } from '@rytass/bpm-core-shared';
 import { API_DEMO_MEMBER_PROFILES } from './api-demo-members';
 
 const API_DEMO_MEMBERS = API_DEMO_MEMBER_PROFILES.map(
@@ -8,45 +12,55 @@ const API_DEMO_MEMBERS = API_DEMO_MEMBER_PROFILES.map(
 );
 
 @Injectable()
-export class ApiMemberResolver implements BPMMemberResolver {
-  async resolve(memberId: string): Promise<MemberMetadata> {
-    const member = API_DEMO_MEMBERS.find(
-      (candidate) => candidate.memberId === memberId,
-    );
-
-    if (!member) {
-      throw new NotFoundException(`API demo member ${memberId} was not found`);
-    }
-
-    return member;
+export class ApiMemberResolver
+  extends BPMMemberBaseResolverAdapter<MemberMetadata>
+  implements BPMMemberResolver
+{
+  constructor() {
+    super(createApiDemoMemberDirectory());
   }
 
-  async resolveMany(
-    memberIds: readonly string[],
-  ): Promise<ReadonlyMap<string, MemberMetadata>> {
-    const resolvedMembers = await Promise.all(
-      memberIds.map((memberId) => this.resolve(memberId)),
-    );
+  override async resolve(memberId: string): Promise<MemberMetadata> {
+    try {
+      return await super.resolve(memberId);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        throw new NotFoundException(
+          `API demo member ${memberId} was not found`,
+        );
+      }
 
-    return new Map(
-      resolvedMembers.map((member): readonly [string, MemberMetadata] => [
-        member.memberId,
-        member,
-      ]),
-    );
-  }
-
-  async search(searchText: string): Promise<readonly MemberMetadata[]> {
-    const normalizedSearchText = searchText.trim().toLocaleLowerCase();
-
-    if (!normalizedSearchText) {
-      return API_DEMO_MEMBERS;
+      throw error;
     }
+  }
+}
 
-    return API_DEMO_MEMBERS.filter((member) =>
-      [member.email, member.memberId, member.name].some((value) =>
-        value.toLocaleLowerCase().includes(normalizedSearchText),
+function createApiDemoMemberDirectory(): BPMMemberBaseDirectory<MemberMetadata> {
+  return {
+    resolveMember: (memberId): Promise<MemberMetadata | null> =>
+      Promise.resolve(
+        API_DEMO_MEMBERS.find((member) => member.memberId === memberId) ?? null,
       ),
-    );
-  }
+    resolveMembers: (memberIds): Promise<readonly MemberMetadata[]> =>
+      Promise.resolve(
+        API_DEMO_MEMBERS.filter((member) =>
+          memberIds.includes(member.memberId),
+        ),
+      ),
+    searchMembers: (searchText): Promise<readonly MemberMetadata[]> => {
+      const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+
+      if (!normalizedSearchText) {
+        return Promise.resolve(API_DEMO_MEMBERS);
+      }
+
+      return Promise.resolve(
+        API_DEMO_MEMBERS.filter((member) =>
+          [member.email, member.memberId, member.name].some((value) =>
+            value.toLocaleLowerCase().includes(normalizedSearchText),
+          ),
+        ),
+      );
+    },
+  };
 }
