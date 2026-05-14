@@ -58,6 +58,7 @@ import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import { FormRenderer } from '../../forms/_components/form-renderer';
+import { PDFPreview } from '../_components/pdf-preview';
 import {
   ActivityLogRecord,
   AttachmentRecord,
@@ -100,13 +101,6 @@ const FLOW_NODE_LAYOUT_HEIGHT = 96;
 const FLOW_MODAL_BODY_STYLE: CSSProperties = {
   display: 'grid',
   gap: 16,
-};
-
-const PREVIEW_FRAME_STYLE: CSSProperties = {
-  border: '1px solid #e2e8f0',
-  borderRadius: 8,
-  height: 'min(70vh, 720px)',
-  width: 'min(80vw, 960px)',
 };
 
 const REJECT_REASON_FORM_STYLE: CSSProperties = {
@@ -1167,10 +1161,14 @@ export default function ApprovalInstancePage(): ReactElement {
           title="PDF 預覽"
         >
           {previewUrl ? (
-            <iframe
-              src={previewUrl}
-              style={PREVIEW_FRAME_STYLE}
-              title={previewAttachment?.filename ?? 'PDF 預覽'}
+            <PDFPreview
+              filename={previewAttachment?.filename ?? 'PDF 預覽'}
+              fileUrl={previewUrl}
+              onDownload={
+                previewAttachment
+                  ? (): void => void handleDownloadAttachment(previewAttachment)
+                  : undefined
+              }
             />
           ) : null}
         </Modal>
@@ -2266,13 +2264,17 @@ function readTaskAssigneeLabel(task: TaskRecord): string {
   return `${task.assigneeMemberId}（原：${task.originalAssigneeMemberId}）`;
 }
 
-function canMemberActOnTask(task: TaskRecord, memberId: string | null): boolean {
+function canMemberActOnTask(
+  task: TaskRecord,
+  memberId: string | null,
+): boolean {
   if (!memberId) {
     return false;
   }
 
   return (
-    task.assigneeMemberId === memberId || task.candidateMemberIds.includes(memberId)
+    task.assigneeMemberId === memberId ||
+    task.candidateMemberIds.includes(memberId)
   );
 }
 

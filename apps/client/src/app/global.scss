@@ -2,6 +2,8 @@
 @use '@mezzanine-ui/core' as mzn-core;
 
 @import '@xyflow/react/dist/style.css';
+@import 'react-pdf/dist/Page/AnnotationLayer.css';
+@import 'react-pdf/dist/Page/TextLayer.css';
 
 :root {
   @include mzn-system.common-variables('default');

@@ -34,12 +34,10 @@ test.describe('M2 W5 linear workflow', () => {
 
     await expect(page.getByText('進行中')).toBeVisible();
     await expect(page.getByText('RUNNING')).toHaveCount(0);
-    await expect(
-      page.getByText('進行中 · 2026-05-06 16:00:00'),
-    ).toBeVisible();
-    await expect(
-      page.getByRole('textbox', { name: '請輸入文字' }),
-    ).toHaveValue('家庭照顧請假');
+    await expect(page.getByText('進行中 · 2026-05-06 16:00:00')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '請輸入文字' })).toHaveValue(
+      '家庭照顧請假',
+    );
 
     await page.goto('/inbox');
     await expect(page.getByText('請假原因：家庭照顧請假')).toBeVisible();
@@ -72,7 +70,9 @@ test.describe('M2 W5 linear workflow', () => {
     await page.getByRole('button', { name: '歷史簽核記錄' }).click();
     await expect(page.getByText('請假原因：家庭照顧請假')).toBeVisible();
     await expect(page.getByText('task_manager')).toBeVisible();
-    await expect(page.getByRole('table').getByText('-', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('table').getByText('-', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText('2026-05-06 16:00:00')).toBeVisible();
     const approvedDecision = page
       .getByRole('table')
@@ -105,9 +105,7 @@ test.describe('M2 W5 linear workflow', () => {
     await page.getByPlaceholder('請說明拒絕原因').fill('資料不足，請補件');
     await page.getByRole('button', { name: '送出拒絕' }).click();
 
-    await expect(
-      page.getByText('已拒絕 · 2026-05-06 16:00:00'),
-    ).toBeVisible();
+    await expect(page.getByText('已拒絕 · 2026-05-06 16:00:00')).toBeVisible();
     await expect(page.locator('body')).not.toContainText('REJECTED');
     await expect(page.getByText('已拒絕', { exact: true })).toBeVisible();
     await expect(page.getByText('簽核已決議')).not.toBeVisible();
@@ -169,10 +167,42 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(page.getByRole('button', { name: '同意' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '拒絕' })).toHaveCount(0);
   });
+
+  test('previews PDF attachments with page and zoom controls', async ({
+    page,
+  }): Promise<void> => {
+    await mockWorkflowGraphQl(page, { withPdfAttachment: true });
+
+    await page.goto(`/instances/new?templateId=${TEMPLATE_ID}`);
+
+    await page.getByPlaceholder('請輸入文字').fill('家庭照顧請假');
+    await Promise.all([
+      page.waitForURL(`**/instances/${INSTANCE_ID}`, { timeout: 30_000 }),
+      page.getByRole('button', { name: '送出' }).click(),
+    ]);
+
+    await expect(page.getByText('請假附件.pdf')).toBeVisible();
+    await page.getByRole('button', { name: '預覽' }).click();
+
+    await expect(page.getByRole('heading', { name: 'PDF 預覽' })).toBeVisible();
+    await expect(page.getByLabel('請假附件.pdf PDF 預覽')).toBeVisible();
+    await expect(page.getByText('第 1 / 1 頁')).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText('100%')).toBeVisible();
+
+    await page.getByRole('button', { name: '放大' }).click();
+    await expect(page.getByText('125%')).toBeVisible();
+
+    await page.getByRole('button', { name: '縮小' }).click();
+    await expect(page.getByText('100%')).toBeVisible();
+    await expect(page.getByRole('button', { name: '下一頁' })).toBeDisabled();
+  });
 });
 
 interface MockWorkflowGraphQlOptions {
   readonly taskAssigneeMemberId?: string;
+  readonly withPdfAttachment?: boolean;
 }
 
 async function mockWorkflowGraphQl(
@@ -185,6 +215,17 @@ async function mockWorkflowGraphQl(
   let formDataJson = '{}';
   let rejectionComment: string | null = null;
   const taskAssigneeMemberId = options.taskAssigneeMemberId ?? 'member-001';
+
+  await page.route(
+    '**/api/attachments/attachment-pdf/download**',
+    async (route: Route): Promise<void> => {
+      await route.fulfill({
+        body: createPreviewPdfBuffer('BPM PDF Preview'),
+        contentType: 'application/pdf',
+        status: 200,
+      });
+    },
+  );
 
   await page.route('**/graphql', async (route: Route): Promise<void> => {
     const payload = readGraphQlPayload(route);
@@ -290,7 +331,23 @@ async function mockWorkflowGraphQl(
 
     if (query.includes('query InstanceAttachments')) {
       await fulfillGraphQl(route, {
-        attachments: [],
+        attachments: options.withPdfAttachment ? [readPdfAttachment()] : [],
+      });
+      return;
+    }
+
+    if (query.includes('query AttachmentPreviewUrl')) {
+      await fulfillGraphQl(route, {
+        attachmentPreviewUrl:
+          '/api/attachments/attachment-pdf/download?token=e2e-preview-token',
+      });
+      return;
+    }
+
+    if (query.includes('query AttachmentDownloadUrl')) {
+      await fulfillGraphQl(route, {
+        attachmentDownloadUrl:
+          '/api/attachments/attachment-pdf/download?token=e2e-download-token',
       });
       return;
     }
@@ -298,9 +355,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query InstanceSignatures')) {
       await fulfillGraphQl(route, {
         signatures:
-          taskStatus === 'COMPLETED'
-            ? [readSignature(instanceState)]
-            : [],
+          taskStatus === 'COMPLETED' ? [readSignature(instanceState)] : [],
         verifySignatureChain: {
           checkedCount: taskStatus === 'COMPLETED' ? 1 : 0,
           errors: [],
@@ -541,6 +596,23 @@ function readSignature(
   };
 }
 
+function readPdfAttachment(): Readonly<Record<string, unknown>> {
+  return {
+    checksumSha256: 'pdf-checksum',
+    createdAt: UPDATED_AT,
+    filename: '請假附件.pdf',
+    formFieldPath: 'form.attachment',
+    id: 'attachment-pdf',
+    instanceId: INSTANCE_ID,
+    mimeType: 'application/pdf',
+    sizeBytes: '512',
+    storageKey: 'attachment-pdf/leave.pdf',
+    storageProvider: 'local',
+    taskId: null,
+    uploaderMemberId: 'member-001',
+  };
+}
+
 function readWorkflowTokens(
   status: 'COMPLETED' | 'PENDING',
 ): readonly Readonly<Record<string, unknown>>[] {
@@ -659,4 +731,56 @@ async function fulfillGraphQl(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null;
+}
+
+function createPreviewPdfBuffer(text: string): Buffer {
+  const stream = `BT /F1 24 Tf 72 720 Td (${escapePdfText(text)}) Tj ET`;
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    [
+      '3 0 obj\n',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ',
+      '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\n',
+      'endobj\n',
+    ].join(''),
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+    [
+      '5 0 obj\n',
+      `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\n`,
+      'stream\n',
+      stream,
+      '\nendstream\n',
+      'endobj\n',
+    ].join(''),
+  ];
+  const header = '%PDF-1.4\n';
+  const offsetState = objects.reduce(
+    (
+      state: { readonly cursor: number; readonly offsets: readonly number[] },
+      object,
+    ): { readonly cursor: number; readonly offsets: readonly number[] } => ({
+      cursor: state.cursor + Buffer.byteLength(object, 'latin1'),
+      offsets: [...state.offsets, state.cursor],
+    }),
+    { cursor: Buffer.byteLength(header, 'latin1'), offsets: [] },
+  );
+  const xref = [
+    `xref\n0 ${objects.length + 1}\n`,
+    '0000000000 65535 f \n',
+    offsetState.offsets
+      .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
+      .join(''),
+    `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\n`,
+    `startxref\n${offsetState.cursor}\n%%EOF\n`,
+  ].join('');
+
+  return Buffer.from(`${header}${objects.join('')}${xref}`, 'latin1');
+}
+
+function escapePdfText(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('(', '\\(')
+    .replaceAll(')', '\\)');
 }
