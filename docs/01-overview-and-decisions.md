@@ -74,7 +74,7 @@ template/         ApprovalTemplate + 版本 + 發布/回退
 workflow-engine/  Instance / Task / 狀態機 / Token 管理 / Scheduler
 condition/        CEL Evaluator + Context Schema
 signature/        L1 HMAC + RFC 3161
-attachment/       附件儲存（local adapter）
+attachment/       附件儲存（預設 local，可替換 storage adapter）
 notification/     通知（in-app + email + webhook）
 audit/            ActivityLog (append-only)
 reporting/        Inbox / Sent / Search / Dashboard

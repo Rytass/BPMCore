@@ -49,10 +49,10 @@
 - Frontend: Next.js App Router + React Flow + Mezzanine UI
 - Client runtime app: `apps/client`
 - Shared types live in `libs/shared` and expose workflow, form, condition, and status contracts.
-- BPM core backend modules live in `libs/bpm-core` and are exposed through `@bpm/core`.
+- BPM core backend modules live in `libs/bpm-core` and are exposed through `@rytass/bpm-core-nestjs-module`; `@bpm/core` remains an internal TypeScript path alias only.
 - `apps/api` is only the host shell. It wires Vault, TypeORM, GraphQL, auth/session endpoints, CORS, validation, exception filters, and `BPMRootModule`.
 - Do not put reusable BPM domain behavior in `apps/api`; add it to `libs/bpm-core`.
-- Future external NestJS systems should import the npm-published equivalent of `@bpm/core` and provide their own auth context factory plus `BPM_MEMBER_RESOLVER`.
+- Future external NestJS systems should import `@rytass/bpm-core-nestjs-module` and provide their own auth context factory plus `BPM_MEMBER_RESOLVER`.
 - M0 is local-only. Do not create cloud DB, Vault, GKE, GitHub repo, DNS, commits, or pushes without explicit instruction.
 - Infrastructure target: Vault paths `bpm_core/develop` and `bpm_core/staging`, Cloud SQL database `bpm_core`, schemas/users `bpm_core_develop` and `bpm_core_staging`, staging DNS `bpm-core-staging.rytass.info`; develop is DB/Vault only, staging is deployable.
 - Local development uses Vault-backed develop secrets. `docker compose` is not required for the normal dev or verification flow.
@@ -70,7 +70,7 @@
 - 2026-05-09: W8 delegation and transfer is implemented with delegation rule CRUD, automatic task assignee resolution, manual task transfer, admin UI, task detail transfer UI, API unit coverage, and Playwright browser coverage.
 - 2026-05-09: W7 completed with configurable return resubmit strategy (`RESTART` / `FROM_RETURN_POINT`), richer workflow dry run routing diagnostics, designer UI controls, API regression coverage, and full lint/typecheck/test/build/e2e verification.
 - 2026-05-10: W10 signature and attachment foundation is implemented with HMAC signature chains, mock timestamp tokens, decision signature integration, local storage via `@rytass/storages-adapter-local`, signed download/preview URLs, FormRenderer upload integration, detail page attachment/signature UI, React-PDF preview, API unit coverage, and Playwright e2e coverage; S3/MinIO and encryption-at-rest are intentionally removed from the planned W10 scope.
-- 2026-05-11: BPM embeddable module boundary is introduced with `BPMRootModule`, `BPMAuthModule`, injectable `BPMMemberResolver`, and `@bpm/core`.
+- 2026-05-11: BPM embeddable module boundary is introduced with `BPMRootModule`, `BPMAuthModule`, injectable `BPMMemberResolver`, and `@rytass/bpm-core-nestjs-module`.
 - 2026-05-11: `apps/api` is now the host shell for local/staging runtime. It provides demo member login, signed HTTP-only session cookie, `/api/auth/me`, logout, and GraphQL `BPMAuthContext` session mapping.
 - 2026-05-11: BPM backend domain modules, migrations, tests, and TypeORM helpers now live under `libs/bpm-core`; `pnpm api` serves the `api` project on port 17603.
 - 2026-05-11: M1 W1 organization/member interface is implemented with Organization GraphQL filters/summary, org path validation, admin org CRUD UI, member directory detail UI, shared Member/OrgUnit/Position pickers, and unit coverage.
@@ -81,4 +81,4 @@
 
 ## Backlog Notes
 
-- Replace `apps/api` demo auth fixtures with a real `@rytass/member-base-nestjs-module` adapter and staging test-account seed before treating staging login accounts as production-like.
+- Replace `apps/api` demo auth fixtures with a real `@rytass/member-base-nestjs-module` host module and staging test-account seed before treating staging login accounts as production-like; BPM core already exposes member-base adapter helpers.

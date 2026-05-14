@@ -30,7 +30,7 @@
 - [x] ESLint / Prettier / commitlint / Husky
 - [x] Docker compose（PG + minio + adminer）
 - [x] CI: GitHub Actions（PR / `main` / `staging` 會跑 typecheck + lint + test + build；2026-05-11 已在 GitHub Actions 驗證通過）
-- [x] 共用型別 lib（`@bpm/shared`：Workflow JSON Schema、Form Schema、CEL Context Types）
+- [x] 共用型別 lib（`@rytass/bpm-core-shared`：Workflow JSON Schema、Form Schema、CEL Context Types）
 
 ### 驗收
 
@@ -245,6 +245,7 @@
 - [x] `attachments` 表
 - [x] `AttachmentModule`：上傳 / 下載 / 預覽 signed URL
 - [x] 整合 `@rytass/storages-adapter-local`
+- [x] `BPMRootModule` 支援以 `attachmentStorageProvider` 替換任意 `@rytass/storages` adapter
 
 **Frontend**
 
@@ -292,8 +293,9 @@
 
 ## M5 — 內部試運行（2 週）
 
-- [ ] 整合外部真實 SSO Resolver（取代 mock）
-- [ ] 整合真實 Email 服務
+- [x] 提供外部 member-base / SSO adapter helper（`BPMMemberBaseResolverAdapter`）
+- [x] 整合真實 Email 服務（SMTP delivery）
+- [ ] 將 `apps/api` demo auth fixtures 換成真實 host member-base module 與 staging 測試帳號 seed
 - [ ] 性能測試：模擬 100 個並發 instance
 - [ ] 安全檢查：CEL sandbox、檔案上傳、SQL injection、XSS
 - [ ] 試運行 2–3 個真實流程（請假、採購、合約）

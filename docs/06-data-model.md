@@ -322,8 +322,8 @@ uploader_member_id          text
 filename                    text              -- 原檔名
 mime_type                   text
 size_bytes                  bigint
-storage_provider            text              -- 'local'
-storage_key                 text              -- 本機儲存 adapter key
+storage_provider            text              -- adapter 標識，目前預設 'local'
+storage_key                 text              -- storage adapter key
 checksum_sha256             text
 created_at                  timestamptz
 

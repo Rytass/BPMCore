@@ -161,12 +161,13 @@ interface MemberMetadata {
 | 實體                  | 職責                                    |
 | --------------------- | --------------------------------------- |
 | **Attachment**        | 附件 metadata + 儲存路徑                |
-| **AttachmentStorage** | Local storage adapter                   |
+| **AttachmentStorage** | 可替換的 `@rytass/storages` adapter     |
 | **PdfPreviewService** | 提供 signed URL 給前端 `react-pdf` 渲染 |
 
 **儲存**：
 
-- 使用 `@rytass/storages-adapter-local`
+- 預設使用 `@rytass/storages-adapter-local`
+- 宿主可透過 `BPMRootModule.attachmentStorageProvider` 替換成 MinIO / S3 / GCS 等 adapter
 - 不直接落地原檔名（避免敏感資訊洩漏）
 - 下載走後端代理 + 短期 signed URL
 
