@@ -49,10 +49,6 @@ export class AttachmentEntity {
   @Field()
   storageKey!: string;
 
-  @Column('text', { name: 'encryption_key_id', nullable: true })
-  @Field(() => String, { nullable: true })
-  encryptionKeyId!: string | null;
-
   @Column('text', { name: 'checksum_sha256' })
   @Field()
   checksumSha256!: string;

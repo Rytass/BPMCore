@@ -205,7 +205,6 @@ export interface DelegationRuleRecord {
 export interface AttachmentRecord {
   readonly checksumSha256: string;
   readonly createdAt: string;
-  readonly encryptionKeyId: string | null;
   readonly filename: string;
   readonly formFieldPath: string | null;
   readonly id: string;
@@ -753,7 +752,6 @@ export async function listAttachments(
       attachments(instanceId: $instanceId) {
         checksumSha256
         createdAt
-        encryptionKeyId
         filename
         formFieldPath
         id
@@ -788,7 +786,6 @@ export async function uploadAttachment({
       uploadAttachment(input: $input) {
         checksumSha256
         createdAt
-        encryptionKeyId
         filename
         formFieldPath
         id

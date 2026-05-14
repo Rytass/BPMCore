@@ -68,7 +68,6 @@ export class AttachmentService {
     return this.attachmentRepository.save(
       this.attachmentRepository.create({
         checksumSha256,
-        encryptionKeyId: null,
         filename: input.filename,
         formFieldPath: normalizeOptionalText(input.formFieldPath),
         id,
