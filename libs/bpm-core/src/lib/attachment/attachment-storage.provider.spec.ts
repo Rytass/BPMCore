@@ -1,7 +1,12 @@
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { AttachmentModule } from './attachment.module';
 import { createLocalAttachmentStorage } from './attachment-storage.provider';
+import {
+  ATTACHMENT_STORAGE,
+  AttachmentStorage,
+} from './attachment-storage.token';
 
 jest.mock('@rytass/storages-adapter-local', () => {
   const fs = jest.requireActual<typeof import('fs/promises')>('fs/promises');
@@ -46,5 +51,29 @@ describe('createLocalAttachmentStorage', () => {
     } finally {
       await rm(directory, { force: true, recursive: true });
     }
+  });
+
+  it('allows host applications to replace the attachment storage provider', (): void => {
+    const customStorage: AttachmentStorage = {
+      batchWrite: jest.fn(),
+      converterManager: {} as AttachmentStorage['converterManager'],
+      getBufferFilename: jest.fn(),
+      getExtension: jest.fn(),
+      getStreamFilename: jest.fn(),
+      hashAlgorithm: 'sha256',
+      isExists: jest.fn(),
+      read: jest.fn(),
+      remove: jest.fn(),
+      write: jest.fn(),
+    };
+    const customStorageProvider = {
+      provide: ATTACHMENT_STORAGE,
+      useValue: customStorage,
+    };
+    const module = AttachmentModule.forRoot({
+      storageProvider: customStorageProvider,
+    });
+
+    expect(module.providers).toContain(customStorageProvider);
   });
 });

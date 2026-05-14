@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConditionModule } from '../condition/condition.module';
 import { DelegationModule } from '../delegation/delegation.module';
-import { AttachmentModule } from '../attachment/attachment.module';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { NotificationModule } from '../notification/notification.module';
@@ -25,7 +24,6 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
 @Module({
   imports: [
     ConditionModule,
-    AttachmentModule,
     DelegationModule,
     NotificationModule,
     SignatureModule,

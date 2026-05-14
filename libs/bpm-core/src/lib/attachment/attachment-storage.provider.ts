@@ -1,11 +1,21 @@
 import { Provider } from '@nestjs/common';
-import { LocalStorage } from '@rytass/storages-adapter-local';
 import { mkdir } from 'fs/promises';
 import { dirname, resolve } from 'path';
 import {
   ATTACHMENT_STORAGE,
   AttachmentStorage,
 } from './attachment-storage.token';
+
+interface LocalStorageConstructor {
+  new (options: {
+    readonly autoMkdir: boolean;
+    readonly directory: string;
+  }): AttachmentStorage;
+}
+
+interface LocalStorageModule {
+  readonly LocalStorage: LocalStorageConstructor;
+}
 
 export const attachmentStorageProvider: Provider<AttachmentStorage> = {
   provide: ATTACHMENT_STORAGE,
@@ -19,6 +29,7 @@ export function createLocalAttachmentStorage(
   directory: string,
 ): AttachmentStorage {
   const storageDirectory = resolve(directory);
+  const LocalStorage = readLocalStorageConstructor();
   const localStorage = new LocalStorage({
     autoMkdir: true,
     directory: storageDirectory,
@@ -40,4 +51,10 @@ export function createLocalAttachmentStorage(
     get: (target, property, receiver): unknown =>
       property === 'write' ? write : Reflect.get(target, property, receiver),
   }) as AttachmentStorage;
+}
+
+function readLocalStorageConstructor(): LocalStorageConstructor {
+  const adapter = require('@rytass/storages-adapter-local') as LocalStorageModule;
+
+  return adapter.LocalStorage;
 }

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { AttachmentModule } from '../attachment/attachment.module';
+import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModule } from '../bpm-auth/bpm-auth.module';
 import {
   BPMAuthModuleAsyncOptions,
@@ -28,6 +29,16 @@ type BPMModuleImport = DynamicModule | Type<unknown>;
 
 export interface BPMRootModuleOptions extends BPMRootNotificationOptions {
   /**
+   * Host-provided storage adapter for BPM attachments.
+   *
+   * When omitted, BPM stores attachments through the local
+   * `@rytass/storages-adapter-local` adapter under `.storage/attachments`.
+   * Hosts can replace this provider with any `@rytass/storages` compatible
+   * adapter such as MinIO, S3, or GCS.
+   */
+  readonly attachmentStorageProvider?: Provider<AttachmentStorage>;
+
+  /**
    * Factory that resolves the current BPM auth context from NestJS execution
    * context.
    *
@@ -41,8 +52,8 @@ export interface BPMRootModuleOptions extends BPMRootNotificationOptions {
    * Host-provided member resolver provider.
    *
    * BPM uses this provider to resolve member metadata, organization identity,
-   * display names, and approver candidates without coupling `@bpm/core` to a
-   * specific external identity system.
+   * display names, and approver candidates without coupling
+   * `@rytass/bpm-core-nestjs-module` to a specific external identity system.
    */
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
 }
@@ -64,6 +75,14 @@ export interface BPMRootModuleAsyncOptions extends Pick<
   'imports'
 > {
   /**
+   * Host-provided storage adapter for BPM attachments.
+   *
+   * This provider is static at module wiring time. If secrets are required,
+   * use a Nest provider with `useFactory` / `inject` here.
+   */
+  readonly attachmentStorageProvider?: Provider<AttachmentStorage>;
+
+  /**
    * Providers injected into `useFactory`.
    *
    * This is typically used to read Vault-backed SMTP, webhook, and auth
@@ -75,8 +94,8 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    * Host-provided member resolver provider.
    *
    * BPM uses this provider to resolve member metadata, organization identity,
-   * display names, and approver candidates without coupling `@bpm/core` to a
-   * specific external identity system.
+   * display names, and approver candidates without coupling
+   * `@rytass/bpm-core-nestjs-module` to a specific external identity system.
    */
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
 
@@ -142,7 +161,9 @@ export class BPMRootModule {
           memberResolverProvider: options.memberResolverProvider,
         }),
         OrganizationModule,
-        AttachmentModule,
+        AttachmentModule.forRoot({
+          storageProvider: options.attachmentStorageProvider,
+        }),
         FormModule,
         TemplateModule,
         DelegationModule,
@@ -165,7 +186,9 @@ function createBPMFeatureModules(
       memberResolverProvider: options.memberResolverProvider,
     }),
     OrganizationModule,
-    AttachmentModule,
+    AttachmentModule.forRoot({
+      storageProvider: options.attachmentStorageProvider,
+    }),
     FormModule,
     TemplateModule,
     DelegationModule,
