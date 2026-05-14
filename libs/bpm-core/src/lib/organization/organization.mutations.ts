@@ -1,4 +1,5 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated } from '../bpm-auth';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
@@ -24,6 +25,7 @@ import {
 } from './dto/position.input';
 
 @Resolver()
+@BPMAuthenticated()
 export class OrganizationMutations {
   constructor(private readonly organizationService: OrganizationService) {}
 

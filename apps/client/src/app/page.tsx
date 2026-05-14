@@ -15,9 +15,9 @@ import {
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
+import { useAuth } from './auth-provider';
 import { renderAppNavigation } from './app-navigation';
 import {
-  CURRENT_MEMBER_ID,
   listApprovalInstances,
   listInboxTasks,
   listNotifications,
@@ -47,6 +47,8 @@ const EMPTY_DASHBOARD_SUMMARY: DashboardSummary = {
 
 export default function Page(): ReactElement {
   const router = useRouter();
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<DashboardSummary>(
@@ -54,24 +56,28 @@ export default function Page(): ReactElement {
   );
 
   const refreshSummary = useCallback(async (): Promise<void> => {
+    if (!currentMemberId) {
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
       const [pendingTasks, notificationResult, instances] = await Promise.all([
-        listInboxTasks(CURRENT_MEMBER_ID),
+        listInboxTasks(currentMemberId),
         listNotifications({
           includeRead: true,
           page: 1,
           pageSize: 1,
-          recipientMemberId: CURRENT_MEMBER_ID,
+          recipientMemberId: currentMemberId,
         }),
         listApprovalInstances(),
       ]);
 
       const runningInitiatedInstances = instances.filter(
         (instance) =>
-          instance.initiatorMemberId === CURRENT_MEMBER_ID &&
+          instance.initiatorMemberId === currentMemberId &&
           instance.state === 'RUNNING',
       );
 
@@ -86,7 +92,7 @@ export default function Page(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentMemberId]);
 
   useEffect((): void => {
     void refreshSummary();

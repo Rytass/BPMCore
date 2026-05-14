@@ -17,11 +17,10 @@ import {
   FormField,
   Layout,
   PageHeader,
+  RadioGroup,
   Section,
   SectionGroup,
-  Select,
   Table,
-  Toggle,
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
@@ -29,9 +28,9 @@ import { RefreshCwIcon } from '@mezzanine-ui/icons';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../_lib/date-time';
+import { useAuth } from '../auth-provider';
 import { renderAppNavigation } from '../app-navigation';
 import {
-  CURRENT_MEMBER_ID,
   listNotifications,
   markNotificationRead,
   NotificationDigestMode,
@@ -56,16 +55,28 @@ interface DigestOption {
   readonly name: string;
 }
 
+type EnabledSegmentValue = 'ON' | 'OFF';
+
+interface EnabledSegmentOption {
+  readonly id: EnabledSegmentValue;
+  readonly name: string;
+}
+
 const DIGEST_OPTIONS: readonly DigestOption[] = [
   { id: 'INSTANT', name: '即時通知' },
   { id: 'DAILY', name: '每日摘要' },
+];
+
+const ENABLED_SEGMENT_OPTIONS: readonly EnabledSegmentOption[] = [
+  { id: 'ON', name: '開' },
+  { id: 'OFF', name: '關' },
 ];
 
 const DEFAULT_PREFERENCE: NotificationPreferenceRecord = {
   emailDigestMode: 'INSTANT',
   emailEnabled: true,
   inAppEnabled: true,
-  memberId: CURRENT_MEMBER_ID,
+  memberId: '',
   quietHoursEnd: null,
   quietHoursStart: null,
   updatedAt: '',
@@ -75,6 +86,8 @@ const NOTIFICATION_PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 export default function NotificationsPage(): ReactElement {
   const router = useRouter();
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [preference, setPreference] =
@@ -88,8 +101,12 @@ export default function NotificationsPage(): ReactElement {
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect((): void => {
+    if (!currentMemberId) {
+      return;
+    }
+
     void refreshNotifications();
-  }, [notificationPage, notificationPageSize]);
+  }, [currentMemberId, notificationPage, notificationPageSize]);
 
   const columns = useMemo(
     (): TableColumn<NotificationRow>[] => [
@@ -169,15 +186,11 @@ export default function NotificationsPage(): ReactElement {
     }),
     [router],
   );
-  const selectedDigestOption = useMemo(
-    (): DigestOption =>
-      DIGEST_OPTIONS.find(
-        (option) => option.id === preference.emailDigestMode,
-      ) ?? DIGEST_OPTIONS[0],
-    [preference.emailDigestMode],
-  );
-
   async function refreshNotifications(): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -187,9 +200,9 @@ export default function NotificationsPage(): ReactElement {
           includeRead: true,
           page: notificationPage,
           pageSize: notificationPageSize,
-          recipientMemberId: CURRENT_MEMBER_ID,
+          recipientMemberId: currentMemberId,
         }),
-        readNotificationPreference(CURRENT_MEMBER_ID),
+        readNotificationPreference(currentMemberId),
       ]);
 
       setRows(notificationResult.notifications.map(readNotificationRow));
@@ -204,9 +217,13 @@ export default function NotificationsPage(): ReactElement {
   }
 
   async function handleMarkRead(id: string): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
     await markNotificationRead({
       id,
-      readerMemberId: CURRENT_MEMBER_ID,
+      readerMemberId: currentMemberId,
     });
     await refreshNotifications();
   }
@@ -220,9 +237,13 @@ export default function NotificationsPage(): ReactElement {
 
     try {
       if (record.status !== 'READ') {
+        if (!currentMemberId) {
+          return;
+        }
+
         await markNotificationRead({
           id: record.id,
-          readerMemberId: CURRENT_MEMBER_ID,
+          readerMemberId: currentMemberId,
         });
       }
 
@@ -235,13 +256,17 @@ export default function NotificationsPage(): ReactElement {
   async function handlePreferenceChange(
     nextPreference: NotificationPreferenceRecord,
   ): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
     setPreference(nextPreference);
     setPreference(
       await updateNotificationPreference({
         emailDigestMode: nextPreference.emailDigestMode,
         emailEnabled: nextPreference.emailEnabled,
         inAppEnabled: nextPreference.inAppEnabled,
-        memberId: nextPreference.memberId,
+        memberId: currentMemberId ?? nextPreference.memberId,
         quietHoursEnd: nextPreference.quietHoursEnd,
         quietHoursStart: nextPreference.quietHoursStart,
       }),
@@ -281,68 +306,97 @@ export default function NotificationsPage(): ReactElement {
                 <FilterLine>
                   <Filter minWidth={160} span={1}>
                     <FormField
-                      label="站內通知"
                       layout={FormFieldLayout.VERTICAL}
                       name="inAppEnabled"
                       style={FILTER_FIELD_STYLE}
                     >
-                      <Toggle
-                        checked={preference.inAppEnabled}
-                        label="啟用"
-                        onChange={(
-                          event: ChangeEvent<HTMLInputElement>,
-                        ): void => {
-                          void handlePreferenceChange({
-                            ...preference,
-                            inAppEnabled: event.target.checked,
-                          });
-                        }}
-                        style={NO_WRAP_STYLE}
-                      />
+                      <div className={styles.segmentFilterControl}>
+                        <span className={styles.segmentFilterLabel}>
+                          站內通知
+                        </span>
+                        <RadioGroup
+                          name="inAppEnabled"
+                          onChange={(
+                            event: ChangeEvent<HTMLInputElement>,
+                          ): void => {
+                            void handlePreferenceChange({
+                              ...preference,
+                              inAppEnabled: readEnabledSegmentValue(
+                                event.target.value,
+                              ),
+                            });
+                          }}
+                          options={[...ENABLED_SEGMENT_OPTIONS]}
+                          size="sub"
+                          type="segment"
+                          value={readEnabledSegmentValueId(
+                            preference.inAppEnabled,
+                          )}
+                        />
+                      </div>
                     </FormField>
                   </Filter>
                   <Filter minWidth={180} span={1}>
                     <FormField
-                      label="Email 通知"
                       layout={FormFieldLayout.VERTICAL}
                       name="emailEnabled"
                       style={FILTER_FIELD_STYLE}
                     >
-                      <Toggle
-                        checked={preference.emailEnabled}
-                        label="啟用"
-                        onChange={(
-                          event: ChangeEvent<HTMLInputElement>,
-                        ): void => {
-                          void handlePreferenceChange({
-                            ...preference,
-                            emailEnabled: event.target.checked,
-                          });
-                        }}
-                        style={NO_WRAP_STYLE}
-                      />
+                      <div className={styles.segmentFilterControl}>
+                        <span className={styles.segmentFilterLabel}>
+                          Email 通知
+                        </span>
+                        <RadioGroup
+                          name="emailEnabled"
+                          onChange={(
+                            event: ChangeEvent<HTMLInputElement>,
+                          ): void => {
+                            void handlePreferenceChange({
+                              ...preference,
+                              emailEnabled: readEnabledSegmentValue(
+                                event.target.value,
+                              ),
+                            });
+                          }}
+                          options={[...ENABLED_SEGMENT_OPTIONS]}
+                          size="sub"
+                          type="segment"
+                          value={readEnabledSegmentValueId(
+                            preference.emailEnabled,
+                          )}
+                        />
+                      </div>
                     </FormField>
                   </Filter>
                   <Filter minWidth={280} span={2}>
                     <FormField
                       fullWidth
-                      label="Email 頻率"
                       layout={FormFieldLayout.VERTICAL}
                       name="emailDigestMode"
                       style={FILTER_FIELD_STYLE}
                     >
-                      <Select
-                        clearable={false}
-                        fullWidth
-                        onChange={(option): void => {
-                          void handlePreferenceChange({
-                            ...preference,
-                            emailDigestMode: readDigestMode(option?.id),
-                          });
-                        }}
-                        options={[...DIGEST_OPTIONS]}
-                        value={selectedDigestOption}
-                      />
+                      <div className={styles.segmentFilterControl}>
+                        <span className={styles.segmentFilterLabel}>
+                          Email 頻率
+                        </span>
+                        <RadioGroup
+                          name="emailDigestMode"
+                          onChange={(
+                            event: ChangeEvent<HTMLInputElement>,
+                          ): void => {
+                            void handlePreferenceChange({
+                              ...preference,
+                              emailDigestMode: readDigestMode(
+                                event.target.value,
+                              ),
+                            });
+                          }}
+                          options={[...DIGEST_OPTIONS]}
+                          size="sub"
+                          type="segment"
+                          value={preference.emailDigestMode}
+                        />
+                      </div>
                     </FormField>
                   </Filter>
                 </FilterLine>
@@ -384,10 +438,6 @@ export default function NotificationsPage(): ReactElement {
     </Layout>
   );
 }
-
-const NO_WRAP_STYLE = {
-  whiteSpace: 'nowrap',
-} satisfies CSSProperties;
 
 const FILTER_FIELD_STYLE = {
   minWidth: 0,
@@ -445,6 +495,14 @@ function readNotificationTypeLabel(type: NotificationRecord['type']): string {
 
 function readDigestMode(value: unknown): NotificationDigestMode {
   return value === 'DAILY' ? 'DAILY' : 'INSTANT';
+}
+
+function readEnabledSegmentValue(value: unknown): boolean {
+  return value !== 'OFF';
+}
+
+function readEnabledSegmentValueId(enabled: boolean): EnabledSegmentValue {
+  return enabled ? 'ON' : 'OFF';
 }
 
 function readErrorMessage(error: unknown): string {

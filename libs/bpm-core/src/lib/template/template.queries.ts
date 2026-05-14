@@ -1,4 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated } from '../bpm-auth';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
@@ -9,6 +10,7 @@ import {
 import { TemplateService } from './template.service';
 
 @Resolver()
+@BPMAuthenticated()
 export class TemplateQueries {
   constructor(private readonly templateService: TemplateService) {}
 

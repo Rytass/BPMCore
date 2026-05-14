@@ -1,9 +1,11 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import { NotificationService } from './notification.service';
 
 @Resolver()
+@BPMAuthenticated()
 export class NotificationQueries {
   constructor(private readonly notificationService: NotificationService) {}
 
@@ -17,12 +19,13 @@ export class NotificationQueries {
     page?: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize?: number | null,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<readonly NotificationEntity[]> {
     return this.notificationService.listNotifications({
       includeRead: includeRead ?? false,
       page: page ?? 1,
       pageSize: pageSize ?? 10,
-      recipientMemberId,
+      recipientMemberId: currentMemberId ?? recipientMemberId,
     });
   }
 
@@ -32,10 +35,11 @@ export class NotificationQueries {
     recipientMemberId: string,
     @Args('includeRead', { nullable: true, type: () => Boolean })
     includeRead?: boolean | null,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<number> {
     return this.notificationService.countNotifications({
       includeRead: includeRead ?? false,
-      recipientMemberId,
+      recipientMemberId: currentMemberId ?? recipientMemberId,
     });
   }
 
@@ -43,16 +47,18 @@ export class NotificationQueries {
   async unreadNotificationCount(
     @Args('recipientMemberId', { type: () => String })
     recipientMemberId: string,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<number> {
     return this.notificationService.countUnreadNotifications(
-      recipientMemberId,
+      currentMemberId ?? recipientMemberId,
     );
   }
 
   @Query(() => NotificationPreferenceEntity)
   async notificationPreference(
     @Args('memberId', { type: () => String }) memberId: string,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<NotificationPreferenceEntity> {
-    return this.notificationService.getPreference(memberId);
+    return this.notificationService.getPreference(currentMemberId ?? memberId);
   }
 }

@@ -1,4 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated } from '../bpm-auth';
 import { FormDefinitionEntity } from './form-definition.entity';
 import { FormDefinitionVersionEntity } from './form-definition-version.entity';
 import { FormService } from './form.service';
@@ -7,6 +8,7 @@ import { FormDefinitionListStatusEnum } from './form.enums';
 import { FormSchemaLintResultObject } from './form-schema-lint.object';
 
 @Resolver()
+@BPMAuthenticated()
 export class FormQueries {
   constructor(private readonly formService: FormService) {}
 

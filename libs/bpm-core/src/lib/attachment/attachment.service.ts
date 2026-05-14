@@ -86,13 +86,15 @@ export class AttachmentService {
   async listAttachments({
     formFieldPath = null,
     instanceId,
+    requestedByMemberId = null,
     taskId = null,
   }: {
     readonly formFieldPath?: string | null;
     readonly instanceId: string;
+    readonly requestedByMemberId?: string | null;
     readonly taskId?: string | null;
   }): Promise<readonly AttachmentEntity[]> {
-    return this.attachmentRepository.find({
+    const attachments = await this.attachmentRepository.find({
       order: { createdAt: 'ASC' },
       where: {
         instanceId,
@@ -100,6 +102,29 @@ export class AttachmentService {
         ...(taskId ? { taskId } : {}),
       },
     });
+
+    if (!requestedByMemberId) {
+      return attachments;
+    }
+
+    const readableAttachments = await Promise.all(
+      attachments.map(async (attachment): Promise<AttachmentEntity | null> => {
+        try {
+          await this.assertAttachmentReadableByMember(
+            attachment,
+            requestedByMemberId,
+          );
+
+          return attachment;
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return readableAttachments.filter(
+      (attachment): attachment is AttachmentEntity => attachment !== null,
+    );
   }
 
   async bindFormDataAttachmentsToInstance(

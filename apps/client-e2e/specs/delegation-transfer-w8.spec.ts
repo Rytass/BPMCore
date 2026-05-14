@@ -27,9 +27,9 @@ test.describe('W8 delegation and transfer', () => {
     await page.getByRole('button', { name: '建立代理' }).click();
     const dialog = page.getByRole('dialog');
 
-    await dialog.getByPlaceholder('搜尋姓名、信箱或 member_id').first().fill('林');
+    await dialog.getByPlaceholder('搜尋姓名或信箱').first().fill('林');
     await page.keyboard.press('Enter');
-    await dialog.getByPlaceholder('搜尋姓名、信箱或 member_id').nth(1).fill('陳');
+    await dialog.getByPlaceholder('搜尋姓名或信箱').nth(1).fill('陳');
     await page.keyboard.press('Enter');
     await expect(dialog.getByRole('button', { name: '建立代理' })).toBeEnabled();
     await dialog.getByRole('button', { name: '建立代理' }).click();
@@ -50,7 +50,7 @@ test.describe('W8 delegation and transfer', () => {
     await page.goto(`/instances/${INSTANCE_ID}`);
     await expect(page.getByRole('button', { name: '轉派' })).toBeVisible();
     await page.getByRole('button', { name: '轉派' }).click();
-    await page.getByPlaceholder('搜尋姓名、信箱或 member_id').fill('陳');
+    await page.getByPlaceholder('搜尋姓名或信箱').fill('陳');
     await page
       .getByRole('option', {
         name: '陳財務主管 · chen.manager@example.internal',
@@ -86,6 +86,14 @@ async function mockDelegationAdminGraphQl(page: Page): Promise<void> {
     if (query.includes('query DelegationRules')) {
       await fulfillGraphQl(route, {
         delegationRules: ruleStatus ? [readDelegationRule(ruleStatus)] : [],
+        delegationRuleCount: ruleStatus ? 1 : 0,
+      });
+      return;
+    }
+
+    if (query.includes('query ApprovalTemplates')) {
+      await fulfillGraphQl(route, {
+        approvalTemplates: [],
       });
       return;
     }

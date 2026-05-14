@@ -1,4 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated } from '../bpm-auth';
 import { IdentityService } from './identity.service';
 import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
 import {
@@ -7,6 +8,7 @@ import {
 } from './member-profile.object';
 
 @Resolver()
+@BPMAuthenticated()
 export class IdentityQueries {
   constructor(private readonly identityService: IdentityService) {}
 

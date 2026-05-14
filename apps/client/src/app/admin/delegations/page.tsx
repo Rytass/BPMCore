@@ -39,9 +39,9 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { BPMFormField } from '../../_components/bpm-form-field';
 import styles from './delegations.module.scss';
 import { formatDateTime } from '../../_lib/date-time';
+import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import {
-  CURRENT_MEMBER_ID,
   DelegationRuleRecord,
   DelegationRuleStatus,
   DelegationScopeType,
@@ -117,6 +117,8 @@ const SCOPE_FILTER_OPTIONS: readonly ScopeFilterOption[] = [
 ];
 
 export default function AdminDelegationsPage(): ReactElement {
+  const { member } = useAuth();
+  const currentMemberId = member?.memberId ?? null;
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
   const [endAt, setEndAt] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -276,19 +278,23 @@ export default function AdminDelegationsPage(): ReactElement {
   );
   const handleRevoke = useCallback(
     async (id: string): Promise<void> => {
+      if (!currentMemberId) {
+        return;
+      }
+
       setError(null);
 
       try {
         await revokeDelegationRule({
           id,
-          revokedByMemberId: CURRENT_MEMBER_ID,
+          revokedByMemberId: currentMemberId,
         });
         await refreshRules();
       } catch (requestError: unknown) {
         setError(readErrorMessage(requestError));
       }
     },
-    [refreshRules],
+    [currentMemberId, refreshRules],
   );
   const tableActions = useMemo(
     (): TableActions<DelegationRuleRow> => ({
@@ -367,6 +373,10 @@ export default function AdminDelegationsPage(): ReactElement {
   }
 
   async function handleCreate(): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
     if (!principalMember || !agentMember) {
       setError('請選擇原簽核人與代理人');
       return;
@@ -388,7 +398,7 @@ export default function AdminDelegationsPage(): ReactElement {
     try {
       await createDelegationRule({
         agentMemberId: agentMember.id,
-        createdByMemberId: CURRENT_MEMBER_ID,
+        createdByMemberId: currentMemberId,
         endAt: endAt || null,
         principalMemberId: principalMember.id,
         priority: Number(priority) || 100,
@@ -442,6 +452,7 @@ export default function AdminDelegationsPage(): ReactElement {
                 <FilterLine>
                   <Filter span={2}>
                     <MemberAutoCompleteField
+                      hideLabel
                       label="原簽核人"
                       loading={memberLoading}
                       name="principalFilterMemberId"
@@ -459,6 +470,7 @@ export default function AdminDelegationsPage(): ReactElement {
                   </Filter>
                   <Filter span={2}>
                     <MemberAutoCompleteField
+                      hideLabel
                       label="代理人"
                       loading={memberLoading}
                       name="agentFilterMemberId"
@@ -477,7 +489,6 @@ export default function AdminDelegationsPage(): ReactElement {
                   <Filter span={2}>
                     <FormField
                       fullWidth
-                      label="代理範圍"
                       layout={FormFieldLayout.VERTICAL}
                       name="scopeFilterType"
                     >
@@ -489,6 +500,7 @@ export default function AdminDelegationsPage(): ReactElement {
                           setRulePage(1);
                         }}
                         options={[...SCOPE_FILTER_OPTIONS]}
+                        placeholder="代理範圍"
                         size="sub"
                         value={scopeFilterType}
                       />
@@ -675,6 +687,7 @@ export default function AdminDelegationsPage(): ReactElement {
 }
 
 function MemberAutoCompleteField({
+  hideLabel = false,
   label,
   layout = DELEGATION_MODAL_FIELD_LAYOUT,
   loading,
@@ -686,6 +699,7 @@ function MemberAutoCompleteField({
   size,
   value,
 }: {
+  readonly hideLabel?: boolean;
   readonly label: string;
   readonly layout?: FormFieldLayout;
   readonly loading: boolean;
@@ -697,37 +711,49 @@ function MemberAutoCompleteField({
   readonly size?: 'main' | 'sub';
   readonly value: MemberOption | null;
 }): ReactElement {
+  const autoComplete = (
+    <AutoComplete
+      asyncData
+      disabledOptionsFilter
+      emptyText="沒有符合的成員"
+      inputProps={{
+        autoCapitalize: 'none',
+        autoCorrect: 'off',
+        name,
+        spellCheck: false,
+      }}
+      loading={loading}
+      loadingText="搜尋成員中..."
+      mode="single"
+      onChange={(option): void => onChange(readMemberOptionFromValue(option))}
+      onSearch={onSearch}
+      onSearchTextChange={(searchText): void =>
+        onChange(readUniqueMemberOption(searchText, options))
+      }
+      onVisibilityChange={(open): void => {
+        if (open) {
+          void onSearch('');
+        }
+      }}
+      options={[...options]}
+      placeholder={hideLabel ? label : '搜尋姓名或信箱'}
+      searchDebounceTime={300}
+      size={size}
+      value={value}
+    />
+  );
+
+  if (hideLabel) {
+    return (
+      <FormField fullWidth layout={layout} name={name}>
+        {autoComplete}
+      </FormField>
+    );
+  }
+
   return (
     <BPMFormField label={label} layout={layout} name={name} required={required}>
-      <AutoComplete
-        asyncData
-        disabledOptionsFilter
-        emptyText="沒有符合的成員"
-        inputProps={{
-          autoCapitalize: 'none',
-          autoCorrect: 'off',
-          name,
-          spellCheck: false,
-        }}
-        loading={loading}
-        loadingText="搜尋成員中..."
-        mode="single"
-        onChange={(option): void => onChange(readMemberOptionFromValue(option))}
-        onSearch={onSearch}
-        onSearchTextChange={(searchText): void =>
-          onChange(readUniqueMemberOption(searchText, options))
-        }
-        onVisibilityChange={(open): void => {
-          if (open) {
-            void onSearch('');
-          }
-        }}
-        options={[...options]}
-        placeholder="搜尋姓名、信箱或 member_id"
-        searchDebounceTime={300}
-        size={size}
-        value={value}
-      />
+      {autoComplete}
     </BPMFormField>
   );
 }

@@ -1,4 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated } from '../bpm-auth';
 import { DelegationRuleEntity } from './delegation-rule.entity';
 import {
   DelegationRuleStatusEnum,
@@ -7,6 +8,7 @@ import {
 import { DelegationService } from './delegation.service';
 
 @Resolver(() => DelegationRuleEntity)
+@BPMAuthenticated()
 export class DelegationQueries {
   constructor(private readonly delegationService: DelegationService) {}
 

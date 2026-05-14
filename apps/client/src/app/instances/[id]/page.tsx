@@ -1266,7 +1266,7 @@ export default function ApprovalInstancePage(): ReactElement {
                   }
                 }}
                 options={[...transferMemberOptions]}
-                placeholder="搜尋姓名、信箱或 member_id"
+                placeholder="搜尋姓名或信箱"
                 searchDebounceTime={300}
                 value={transferMember}
               />
@@ -1668,7 +1668,7 @@ function readMemberDescriptionPart(
 
   return {
     email: profile?.email ?? null,
-    label: profile?.name ?? memberId ?? fallbackLabel,
+    label: profile?.name ?? fallbackLabel,
     memberId,
     prefix,
     type: 'member',

@@ -8,8 +8,6 @@ import {
 import { WorkflowDefinition } from '@bpm/shared/workflow';
 import { requestGraphQl } from '../../_lib/graphql-client';
 
-export const CURRENT_MEMBER_ID = 'member-001';
-
 export type ApprovalInstanceState =
   | 'APPROVED'
   | 'CANCELLED'
@@ -131,13 +129,8 @@ export interface MemberProfileRecord {
   readonly name: string;
 }
 
-export interface MemberDirectoryRecord extends MemberProfileRecord {
-  readonly positionId: string | null;
-  readonly primaryOrgUnitId: string | null;
-}
-
 export interface MemberDirectoryPage {
-  readonly members: readonly MemberDirectoryRecord[];
+  readonly members: readonly MemberProfileRecord[];
   readonly totalCount: number;
 }
 
@@ -329,7 +322,7 @@ interface SearchMembersQueryData {
 
 interface MemberDirectoryPageQueryData {
   readonly memberCount: number;
-  readonly searchMembers: readonly MemberDirectoryRecord[];
+  readonly searchMembers: readonly MemberProfileRecord[];
 }
 
 interface DelegationRulesQueryData {
@@ -397,10 +390,16 @@ interface LaunchTemplateQueryData {
     readonly updatedAt: string;
   };
   readonly approvalTemplateVersions: readonly ApprovalTemplateVersionRecord[];
+  readonly launchableApprovalTemplates?: readonly (ApprovalTemplateRecord & {
+    readonly updatedAt: string;
+  })[];
 }
 
 interface LaunchTemplatesQueryData {
-  readonly approvalTemplates: readonly (ApprovalTemplateRecord & {
+  readonly approvalTemplates?: readonly (ApprovalTemplateRecord & {
+    readonly updatedAt: string;
+  })[];
+  readonly launchableApprovalTemplates?: readonly (ApprovalTemplateRecord & {
     readonly updatedAt: string;
   })[];
 }
@@ -467,6 +466,12 @@ export async function readLaunchContext(
         status
         version
       }
+      launchableApprovalTemplates {
+        currentVersionId
+        id
+        name
+        updatedAt
+      }
     }`,
     { id: templateId },
   );
@@ -480,6 +485,15 @@ export async function readLaunchContext(
 
   if (!templateVersion.formDefinitionVersionId) {
     throw new Error('模板尚未綁定表單版本，無法發起簽核。');
+  }
+
+  const launchableApprovalTemplates =
+    templateData.launchableApprovalTemplates ?? [templateData.approvalTemplate];
+
+  if (
+    !launchableApprovalTemplates.some((template) => template.id === templateId)
+  ) {
+    throw new Error('目前登入者沒有此模板的發起權限。');
   }
 
   const formData = await requestGraphQl<LaunchFormVersionQueryData>(
@@ -515,7 +529,7 @@ export async function listLaunchableTemplates(): Promise<
 > {
   const templateData = await requestGraphQl<LaunchTemplatesQueryData>(
     `query ApprovalTemplates {
-      approvalTemplates {
+      launchableApprovalTemplates {
         currentVersionId
         id
         name
@@ -523,8 +537,12 @@ export async function listLaunchableTemplates(): Promise<
       }
     }`,
   );
+  const launchableApprovalTemplates =
+    templateData.launchableApprovalTemplates ??
+    templateData.approvalTemplates ??
+    [];
   const versionLists = await Promise.all(
-    templateData.approvalTemplates.map((template) =>
+    launchableApprovalTemplates.map((template) =>
       requestGraphQl<LaunchTemplateVersionsQueryData>(
         `query LaunchTemplateVersions($templateId: String!) {
           approvalTemplateVersions(templateId: $templateId) {
@@ -539,7 +557,7 @@ export async function listLaunchableTemplates(): Promise<
     ),
   );
 
-  return templateData.approvalTemplates.flatMap((template, index) => {
+  return launchableApprovalTemplates.flatMap((template, index) => {
     const currentVersion = versionLists[index]?.approvalTemplateVersions.find(
       (version) => version.id === template.currentVersionId,
     );
@@ -923,8 +941,6 @@ export async function listMemberDirectoryPage({
         email
         memberId
         name
-        positionId
-        primaryOrgUnitId
       }
       memberCount(searchText: $searchText)
     }`,

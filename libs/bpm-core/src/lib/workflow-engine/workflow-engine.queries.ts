@@ -1,6 +1,8 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
@@ -8,6 +10,7 @@ import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
 @Resolver()
+@BPMAuthenticated()
 export class WorkflowEngineQueries {
   constructor(private readonly workflowEngineService: WorkflowEngineService) {}
 
@@ -40,16 +43,27 @@ export class WorkflowEngineQueries {
   @Query(() => [TaskEntity])
   async inboxTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
+    @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listInboxTasks(assigneeMemberId);
+    return this.workflowEngineService.listInboxTasks(currentMemberId);
   }
 
   @Query(() => [TaskEntity])
   async approvalHistoryTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
+    @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<readonly TaskEntity[]> {
     return this.workflowEngineService.listApprovalHistoryTasks(
-      assigneeMemberId,
+      currentMemberId,
+    );
+  }
+
+  @Query(() => [ApprovalTemplateEntity])
+  async launchableApprovalTemplates(
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<readonly ApprovalTemplateEntity[]> {
+    return this.workflowEngineService.listLaunchableApprovalTemplates(
+      currentMemberId,
     );
   }
 

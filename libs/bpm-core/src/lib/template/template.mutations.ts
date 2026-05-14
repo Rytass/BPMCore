@@ -1,4 +1,5 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
@@ -12,14 +13,19 @@ import {
 import { TemplateService } from './template.service';
 
 @Resolver()
+@BPMAuthenticated()
 export class TemplateMutations {
   constructor(private readonly templateService: TemplateService) {}
 
   @Mutation(() => ApprovalTemplateEntity)
   async createApprovalTemplate(
     @Args('input') input: CreateApprovalTemplateInput,
+    @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<ApprovalTemplateEntity> {
-    return this.templateService.createApprovalTemplate(input);
+    return this.templateService.createApprovalTemplate({
+      ...input,
+      createdByMemberId: currentMemberId,
+    });
   }
 
   @Mutation(() => ApprovalTemplateEntity)
@@ -83,10 +89,11 @@ export class TemplateMutations {
     @Args('versionId', { type: () => String }) versionId: string,
     @Args('publishedByMemberId', { nullable: true, type: () => String })
     publishedByMemberId?: string,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<ApprovalTemplateVersionEntity> {
     return this.templateService.publishApprovalTemplateVersion(
       versionId,
-      publishedByMemberId,
+      currentMemberId ?? publishedByMemberId,
     );
   }
 
