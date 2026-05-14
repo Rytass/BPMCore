@@ -278,7 +278,6 @@ export default function TemplateCategoriesPage(): ReactElement {
                     <Filter span={3}>
                       <FormField
                         fullWidth
-                        label="關鍵字"
                         layout={FormFieldLayout.VERTICAL}
                         name="categorySearchText"
                       >
@@ -290,7 +289,7 @@ export default function TemplateCategoriesPage(): ReactElement {
                             setSearchText(event.target.value);
                             setCategoryPage(1);
                           }}
-                          placeholder="搜尋分類名稱或說明"
+                          placeholder="關鍵字：搜尋分類名稱或說明"
                           size="sub"
                           value={searchText}
                           variant="base"

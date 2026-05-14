@@ -257,7 +257,6 @@ export default function TemplatesPage(): ReactElement {
                     <Filter span={3}>
                       <FormField
                         fullWidth
-                        label="關鍵字"
                         layout={FormFieldLayout.VERTICAL}
                         name="templateSearchText"
                       >
@@ -269,7 +268,7 @@ export default function TemplatesPage(): ReactElement {
                             setTemplateSearchText(event.target.value);
                             setTemplatePage(1);
                           }}
-                          placeholder="搜尋模板名稱、分類或描述"
+                          placeholder="關鍵字：搜尋模板名稱、分類或描述"
                           size="sub"
                           value={templateSearchText}
                           variant="base"
@@ -279,7 +278,6 @@ export default function TemplatesPage(): ReactElement {
                     <Filter span={2}>
                       <FormField
                         fullWidth
-                        label="分類"
                         layout={FormFieldLayout.VERTICAL}
                         name="templateCategoryFilter"
                       >
@@ -296,6 +294,10 @@ export default function TemplatesPage(): ReactElement {
                             UNCATEGORIZED_TEMPLATE_FILTER_OPTION,
                             ...categoryOptions,
                           ]}
+                          placeholder="分類"
+                          renderValue={(value): string =>
+                            `分類：${readTemplateCategoryFilterLabel(value)}`
+                          }
                           size="sub"
                           value={categoryFilter}
                         />
@@ -449,6 +451,20 @@ function readCategoryFilterOption(
     options.find((option) => option.id === id) ??
     UNCATEGORIZED_TEMPLATE_FILTER_OPTION
   );
+}
+
+function readTemplateCategoryFilterLabel(value: unknown): string {
+  if (Array.isArray(value)) {
+    return UNCATEGORIZED_TEMPLATE_FILTER_OPTION.name;
+  }
+
+  if (!isRecord(value)) {
+    return UNCATEGORIZED_TEMPLATE_FILTER_OPTION.name;
+  }
+
+  return typeof value.name === 'string'
+    ? value.name
+    : UNCATEGORIZED_TEMPLATE_FILTER_OPTION.name;
 }
 
 function readTemplateCategoryLabel(template: ApprovalTemplateRecord): string {

@@ -3,8 +3,8 @@
     display: none;
   }
 
-  :global(.mzn-form-field__label) {
-    white-space: nowrap;
+  :global(.mzn-form-field__label-area) {
+    display: none;
   }
 
   :global(.mzn-form-field__control-field-slot--main) {

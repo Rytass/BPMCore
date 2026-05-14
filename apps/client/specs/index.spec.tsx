@@ -36,18 +36,6 @@ jest.mock('@mezzanine-ui/react', () => {
     return React.createElement('section', null, children);
   }
 
-  function ContentHeader({
-    children,
-    description,
-    title,
-  }: {
-    readonly children?: React.ReactNode;
-    readonly description?: string;
-    readonly title: string;
-  }): React.ReactElement {
-    return React.createElement('header', null, title, description, children);
-  }
-
   function Layout({
     children,
   }: {
@@ -176,7 +164,6 @@ jest.mock('@mezzanine-ui/react', () => {
     BaseCard,
     Button,
     CardGroup,
-    ContentHeader,
     Layout,
     Navigation,
     NavigationFooter,
@@ -194,24 +181,9 @@ jest.mock('@mezzanine-ui/react', () => {
   };
 });
 
-jest.mock('@mezzanine-ui/react/ContentHeader', () => {
-  const React = require('react') as typeof import('react');
-
-  return function ContentHeader({
-    children,
-    description,
-    title,
-  }: {
-    readonly children?: React.ReactNode;
-    readonly description?: string;
-    readonly title: string;
-  }): React.ReactElement {
-    return React.createElement('header', null, title, description, children);
-  };
-});
-
 jest.mock('@mezzanine-ui/icons', () => ({
   CalendarTimeIcon: { name: 'calendar-time' },
+  ChevronLeftIcon: { name: 'chevron-left' },
   FileIcon: { name: 'file' },
   FolderIcon: { name: 'folder' },
   HomeIcon: { name: 'home' },

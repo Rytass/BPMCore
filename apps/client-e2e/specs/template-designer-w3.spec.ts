@@ -228,10 +228,12 @@ test.describe('M1 W3 template designer', () => {
       .click();
 
     await page.getByRole('combobox', { name: '指定組織主管' }).click();
-    await page
+    const positionResolverOption = page
       .locator('[role="option"]')
-      .filter({ hasText: '指定職位' })
-      .click();
+      .filter({ hasText: '指定職位' });
+    await positionResolverOption.evaluate((element: HTMLElement): void => {
+      element.click();
+    });
     await page.getByRole('combobox', { name: '選擇職位' }).click();
     await page
       .locator('[role="option"]')

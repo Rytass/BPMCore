@@ -3618,11 +3618,11 @@ function readMemberSelectOptions(
 
 function readFallbackMemberSelectOption(memberId: string): MemberSelectOption {
   return {
-    displayName: memberId,
-    email: memberId,
+    displayName: '未知會員',
+    email: '',
     id: memberId,
     memberId,
-    name: memberId,
+    name: '未知會員',
   };
 }
 

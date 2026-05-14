@@ -5,11 +5,13 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   Button,
   Layout,
+  PageHeader,
   Section,
   SectionGroup,
   Table,
   Typography,
 } from '@mezzanine-ui/react';
+import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { renderAppNavigation } from '../../../app-navigation';
 import {
@@ -132,28 +134,23 @@ export default function TemplateVersionsPage(): ReactElement {
       {renderAppNavigation('/templates')}
 
       <Layout.Main>
-        <SectionGroup>
-          <Section>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <div>
-                <Typography component="h1" variant="h2">
-                  {record?.template.name ?? '模板版本'}
-                </Typography>
-                <Typography color="text-neutral" variant="body">
-                  查看發布、歸檔與 rollback 狀態。
-                </Typography>
-              </div>
-              <Button
-                onClick={(): void =>
-                  router.push(`/templates/${templateId}/designer`)
-                }
-                variant="base-secondary"
-              >
-                回設計器
-              </Button>
-            </div>
-          </Section>
+        <PageHeader>
+          <ContentHeader
+            description="查看發布、歸檔與 rollback 狀態。"
+            title={record?.template.name ?? '模板版本'}
+          >
+            <Button
+              onClick={(): void =>
+                router.push(`/templates/${templateId}/designer`)
+              }
+              variant="base-secondary"
+            >
+              回設計器
+            </Button>
+          </ContentHeader>
+        </PageHeader>
 
+        <SectionGroup>
           <Section>
             {error ? (
               <Typography color="text-error" variant="body">

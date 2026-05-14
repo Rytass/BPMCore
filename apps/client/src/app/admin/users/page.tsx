@@ -17,11 +17,13 @@ import {
   Input,
   Layout,
   Modal,
+  PageHeader,
   Section,
   SectionGroup,
   Table,
   Typography,
 } from '@mezzanine-ui/react';
+import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './users.module.scss';
@@ -29,6 +31,7 @@ import { renderAppNavigation } from '../../app-navigation';
 import {
   listMemberDirectoryPage,
   MemberProfileRecord,
+  resolveMembers,
 } from '../_lib/member-api';
 import {
   listMemberships,
@@ -44,8 +47,6 @@ type MemberRow = Readonly<
   Record<string, unknown> &
     MemberProfileRecord & {
       key: string;
-      orgUnit: string;
-      position: string;
     }
 >;
 
@@ -58,6 +59,8 @@ export default function AdminUsersPage(): ReactElement {
   const [detailMemberships, setDetailMemberships] = useState<
     readonly MembershipRecord[]
   >([]);
+  const [detailManagerProfile, setDetailManagerProfile] =
+    useState<MemberProfileRecord | null>(null);
   const [detailResolvedManager, setDetailResolvedManager] =
     useState<ResolvedManagerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,19 +118,14 @@ export default function AdminUsersPage(): ReactElement {
       members.map((member) => ({
         ...member,
         key: member.memberId,
-        orgUnit: member.primaryOrgUnitId
-          ? readOrgUnitLabel(orgUnitsById.get(member.primaryOrgUnitId))
-          : '未綁定',
-        position: member.positionId
-          ? readPositionLabel(positionsById.get(member.positionId))
-          : '未綁定',
       })),
-    [members, orgUnitsById, positionsById],
+    [members],
   );
 
   const openDetail = useCallback(
     async (member: MemberProfileRecord): Promise<void> => {
       setDetailMember(member);
+      setDetailManagerProfile(null);
       setError(null);
 
       try {
@@ -138,6 +136,15 @@ export default function AdminUsersPage(): ReactElement {
 
         setDetailMemberships(memberships);
         setDetailResolvedManager(resolvedManager);
+        setDetailManagerProfile(
+          (
+            await resolveMembers(
+              resolvedManager.managerMemberId
+                ? [resolvedManager.managerMemberId]
+                : [],
+            )
+          )[0] ?? null,
+        );
       } catch (requestError: unknown) {
         setError(readErrorMessage(requestError));
       }
@@ -147,11 +154,8 @@ export default function AdminUsersPage(): ReactElement {
 
   const columns = useMemo(
     (): TableColumn<MemberRow>[] => [
-      { dataIndex: 'memberId', key: 'memberId', title: 'Member ID', width: 180 },
       { dataIndex: 'name', key: 'name', title: '姓名', width: 160 },
-      { dataIndex: 'email', key: 'email', title: 'Email', width: 260 },
-      { dataIndex: 'orgUnit', key: 'orgUnit', title: '主要組織', width: 200 },
-      { dataIndex: 'position', key: 'position', title: '職位', width: 180 },
+      { dataIndex: 'email', key: 'email', title: '信箱', width: 260 },
     ],
     [],
   );
@@ -173,6 +177,7 @@ export default function AdminUsersPage(): ReactElement {
 
   function closeDetail(): void {
     setDetailMember(null);
+    setDetailManagerProfile(null);
     setDetailMemberships([]);
     setDetailResolvedManager(null);
   }
@@ -182,14 +187,12 @@ export default function AdminUsersPage(): ReactElement {
       {renderAppNavigation('/admin/users')}
 
       <Layout.Main>
-        <div className={styles.header}>
-          <Typography component="h1" variant="h2">
-            會員對照
-          </Typography>
-          <Typography color="text-neutral" variant="body">
-            會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。
-          </Typography>
-        </div>
+        <PageHeader>
+          <ContentHeader
+            description="會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。"
+            title="會員對照"
+          />
+        </PageHeader>
 
         <SectionGroup>
           <Section
@@ -199,7 +202,6 @@ export default function AdminUsersPage(): ReactElement {
                   <Filter span={3}>
                     <FormField
                       fullWidth
-                      label="關鍵字"
                       layout={FormFieldLayout.VERTICAL}
                       name="memberSearchText"
                     >
@@ -211,7 +213,7 @@ export default function AdminUsersPage(): ReactElement {
                           setSearchText(event.target.value);
                           setMemberPage(1);
                         }}
-                        placeholder="搜尋姓名、Email 或 member_id"
+                        placeholder="搜尋姓名或信箱"
                         size="sub"
                         value={searchText}
                         variant="base"
@@ -222,9 +224,6 @@ export default function AdminUsersPage(): ReactElement {
               </FilterArea>
             }
           >
-            <Typography component="h2" variant="h3">
-              會員列表
-            </Typography>
             {error ? (
               <Typography color="text-error" variant="body">
                 {error}
@@ -258,6 +257,7 @@ export default function AdminUsersPage(): ReactElement {
         </SectionGroup>
 
         <MemberDetailModal
+          managerProfile={detailManagerProfile}
           member={detailMember}
           memberships={detailMemberships}
           onClose={closeDetail}
@@ -271,6 +271,7 @@ export default function AdminUsersPage(): ReactElement {
 }
 
 function MemberDetailModal({
+  managerProfile,
   member,
   memberships,
   onClose,
@@ -278,6 +279,7 @@ function MemberDetailModal({
   positionsById,
   resolvedManager,
 }: {
+  readonly managerProfile: MemberProfileRecord | null;
   readonly member: MemberProfileRecord | null;
   readonly memberships: readonly MembershipRecord[];
   readonly onClose: () => void;
@@ -303,14 +305,7 @@ function MemberDetailModal({
         <div className={styles.detailFields}>
           <BaseCard title="基本資料">
             <div className={styles.detailSection}>
-              <Typography variant="body">Member ID：{member.memberId}</Typography>
-              <Typography variant="body">Email：{member.email}</Typography>
-              <Typography variant="body">
-                外部主要組織：{member.primaryOrgUnitId ?? '未提供'}
-              </Typography>
-              <Typography variant="body">
-                外部職位：{member.positionId ?? '未提供'}
-              </Typography>
+              <Typography variant="body">信箱：{member.email}</Typography>
             </div>
           </BaseCard>
           <BaseCard title="BPM 組織歸屬">
@@ -338,7 +333,9 @@ function MemberDetailModal({
           </BaseCard>
           <BaseCard title="主管解析">
             <Typography variant="body">
-              {resolvedManager?.managerMemberId ?? '尚未解析到主管'}
+              {resolvedManager?.managerMemberId
+                ? readMemberLabel(managerProfile)
+                : '尚未解析到主管'}
             </Typography>
           </BaseCard>
         </div>
@@ -353,6 +350,10 @@ function readOrgUnitLabel(orgUnit: OrgUnitRecord | undefined): string {
 
 function readPositionLabel(position: PositionRecord | undefined): string {
   return position ? `${position.name} · ${position.code}` : '未知職位';
+}
+
+function readMemberLabel(member: MemberProfileRecord | null): string {
+  return member ? `${member.name} · ${member.email}` : '主管資料尚未載入';
 }
 
 function readErrorMessage(error: unknown): string {

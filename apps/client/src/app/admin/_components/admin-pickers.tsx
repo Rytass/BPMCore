@@ -58,7 +58,7 @@ export function MemberPicker({
   disabled = false,
   name,
   onChange,
-  placeholder = '搜尋姓名、信箱或 member_id',
+  placeholder = '搜尋姓名或信箱',
   size,
   value,
 }: MemberPickerProps): ReactElement {

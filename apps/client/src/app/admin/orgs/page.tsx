@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import {
+  AutoComplete,
   Button,
   DatePicker,
   Filter,
@@ -19,6 +20,7 @@ import {
   Input,
   Layout,
   Modal,
+  PageHeader,
   Section,
   SectionGroup,
   Select,
@@ -27,13 +29,12 @@ import {
   Table,
   Typography,
 } from '@mezzanine-ui/react';
+import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   CloseIcon,
-  DotGridIcon,
   EditIcon,
-  ListIcon,
   PlusIcon,
   SaveIcon,
 } from '@mezzanine-ui/icons';
@@ -263,7 +264,7 @@ export default function AdminOrgsPage(): ReactElement {
     readonly MemberProfileRecord[]
   >([]);
   const [membershipActiveFilter, setMembershipActiveFilter] =
-    useState<ActiveFilterOption>(ALL_ACTIVE_FILTER);
+    useState<ActiveFilterOption | null>(null);
   const [membershipModal, setMembershipModal] =
     useState<MembershipModalState | null>(null);
   const [membershipOrgUnitFilter, setMembershipOrgUnitFilter] =
@@ -327,7 +328,7 @@ export default function AdminOrgsPage(): ReactElement {
           managerScopeTypeFilter.id === 'ALL'
             ? null
             : managerScopeTypeFilter.id,
-        membershipActiveOnly: membershipActiveFilter.activeOnly,
+        membershipActiveOnly: membershipActiveFilter?.activeOnly ?? false,
         membershipOrgUnitId: membershipOrgUnitFilter?.id ?? null,
         membershipPage,
         membershipPageSize,
@@ -558,7 +559,7 @@ export default function AdminOrgsPage(): ReactElement {
     setPositionSearchText(value);
   }
 
-  function updateMembershipActiveFilter(value: ActiveFilterOption): void {
+  function updateMembershipActiveFilter(value: ActiveFilterOption | null): void {
     setMembershipPage(1);
     setMembershipActiveFilter(value);
   }
@@ -659,6 +660,13 @@ export default function AdminOrgsPage(): ReactElement {
       {renderAppNavigation('/admin/orgs')}
 
       <Layout.Main>
+        <PageHeader>
+          <ContentHeader
+            description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"
+            title="組織管理"
+          />
+        </PageHeader>
+
         <SectionGroup>
           <Section
             tab={
@@ -1006,11 +1014,7 @@ function OrgUnitPanel({
         actions={
           <>
             <Button
-              aria-label={viewModeToggleLabel}
-              icon={viewMode === 'TABLE' ? DotGridIcon : ListIcon}
-              iconType="icon-only"
               onClick={(): void => onViewModeChange(nextViewMode)}
-              title={viewModeToggleLabel}
               variant="base-secondary"
             >
               {viewModeToggleLabel}
@@ -1051,7 +1055,6 @@ function OrgUnitPanel({
               <Filter span={3}>
                 <FormField
                   fullWidth
-                  label="關鍵字"
                   layout={FormFieldLayout.VERTICAL}
                   name="orgUnitSearchText"
                 >
@@ -1070,7 +1073,6 @@ function OrgUnitPanel({
               <Filter span={2}>
                 <FormField
                   fullWidth
-                  label="類型"
                   layout={FormFieldLayout.VERTICAL}
                   name="orgUnitTypeFilter"
                 >
@@ -1081,6 +1083,7 @@ function OrgUnitPanel({
                       onTypeFilterChange(readOrgUnitTypeFilterOption(option))
                     }
                     options={[...ORG_UNIT_TYPE_FILTER_OPTIONS]}
+                    placeholder="類型"
                     size="sub"
                     value={typeFilter}
                   />
@@ -1175,7 +1178,6 @@ function PositionPanel({
           <Filter span={3}>
             <FormField
               fullWidth
-              label="關鍵字"
               layout={FormFieldLayout.VERTICAL}
               name="positionSearchText"
             >
@@ -1236,7 +1238,7 @@ function MembershipPanel({
   readonly actions: TableActions<MembershipRow>;
   readonly loading: boolean;
   readonly onCreate: () => void;
-  readonly onActiveFilterChange: (value: ActiveFilterOption) => void;
+  readonly onActiveFilterChange: (value: ActiveFilterOption | null) => void;
   readonly onOrgUnitFilterChange: (value: OrgUnitOption | null) => void;
   readonly onPageChange: (page: number) => void;
   readonly onPageSizeChange: (pageSize: number) => void;
@@ -1248,7 +1250,7 @@ function MembershipPanel({
   readonly positionFilter: PositionOption | null;
   readonly positions: readonly PositionRecord[];
   readonly rows: readonly MembershipRow[];
-  readonly statusFilter: ActiveFilterOption;
+  readonly statusFilter: ActiveFilterOption | null;
   readonly total: number;
 }): ReactElement {
   const columns = useMemo(
@@ -1288,6 +1290,14 @@ function MembershipPanel({
     ],
     [],
   );
+  const orgUnitOptions = useMemo(
+    (): readonly OrgUnitOption[] => orgUnits.map(readOrgUnitOption),
+    [orgUnits],
+  );
+  const positionOptions = useMemo(
+    (): readonly PositionOption[] => positions.map(readPositionOption),
+    [positions],
+  );
 
   return (
     <>
@@ -1304,54 +1314,82 @@ function MembershipPanel({
         size="sub"
       >
         <FilterLine>
-          <Filter span={4}>
+          <Filter span={2}>
             <FormField
               fullWidth
-              label="組織"
-              layout={FormFieldLayout.HORIZONTAL}
+              layout={FormFieldLayout.VERTICAL}
               name="membershipOrgUnitFilter"
             >
-              <OrgUnitPicker
+              <AutoComplete
+                disabledOptionsFilter
+                emptyText="沒有符合的組織"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'membershipOrgUnitFilter',
+                  spellCheck: false,
+                }}
+                mode="single"
                 name="membershipOrgUnitFilter"
-                onChange={onOrgUnitFilterChange}
-                orgUnits={orgUnits}
+                onChange={(option): void =>
+                  onOrgUnitFilterChange(readOrgUnitOptionFromValue(option))
+                }
+                options={[...orgUnitOptions]}
                 placeholder="全部組織"
                 size="sub"
                 value={orgUnitFilter}
               />
             </FormField>
           </Filter>
-          <Filter span={4}>
+          <Filter span={2}>
             <FormField
               fullWidth
-              label="職位"
-              layout={FormFieldLayout.HORIZONTAL}
+              layout={FormFieldLayout.VERTICAL}
               name="membershipPositionFilter"
             >
-              <PositionPicker
+              <AutoComplete
+                disabledOptionsFilter
+                emptyText="沒有符合的職位"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'membershipPositionFilter',
+                  spellCheck: false,
+                }}
+                mode="single"
                 name="membershipPositionFilter"
-                onChange={onPositionFilterChange}
+                onChange={(option): void =>
+                  onPositionFilterChange(readPositionOptionFromValue(option))
+                }
+                options={[...positionOptions]}
                 placeholder="全部職位"
-                positions={positions}
                 size="sub"
                 value={positionFilter}
               />
             </FormField>
           </Filter>
-          <Filter span={3}>
+          <Filter span={2}>
             <FormField
               fullWidth
-              label="狀態"
-              layout={FormFieldLayout.HORIZONTAL}
+              layout={FormFieldLayout.VERTICAL}
               name="membershipStatusFilter"
             >
-              <Select
-                clearable={false}
-                fullWidth
+              <AutoComplete
+                disabledOptionsFilter
+                emptyText="沒有符合的狀態"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'membershipStatusFilter',
+                  spellCheck: false,
+                }}
+                mode="single"
+                name="membershipStatusFilter"
                 onChange={(option): void =>
-                  onActiveFilterChange(readActiveFilterOption(option))
+                  onActiveFilterChange(readNullableActiveFilterOption(option))
                 }
                 options={[...ACTIVE_FILTER_OPTIONS]}
+                placeholder="全部狀態"
                 size="sub"
                 value={statusFilter}
               />
@@ -1453,7 +1491,6 @@ function ManagerPanel({
           <Filter span={3}>
             <FormField
               fullWidth
-              label="套用範圍"
               layout={FormFieldLayout.VERTICAL}
               name="managerScopeTypeFilter"
             >
@@ -1464,6 +1501,7 @@ function ManagerPanel({
                   onScopeTypeFilterChange(readScopeTypeFilterOption(option))
                 }
                 options={[...SCOPE_TYPE_FILTER_OPTIONS]}
+                placeholder="套用範圍"
                 size="sub"
                 value={scopeTypeFilter}
               />
@@ -1472,7 +1510,6 @@ function ManagerPanel({
           <Filter span={2}>
             <FormField
               fullWidth
-              label="狀態"
               layout={FormFieldLayout.VERTICAL}
               name="managerStatusFilter"
             >
@@ -1483,6 +1520,7 @@ function ManagerPanel({
                   onActiveFilterChange(readActiveFilterOption(option))
                 }
                 options={[...ACTIVE_FILTER_OPTIONS]}
+                placeholder="狀態"
                 size="sub"
                 value={statusFilter}
               />
@@ -2326,6 +2364,31 @@ function readScopeTypeFilterOption(value: unknown): ScopeTypeFilterOption {
 
 function readActiveFilterOption(value: unknown): ActiveFilterOption {
   return readOption(value, ACTIVE_FILTER_OPTIONS, ALL_ACTIVE_FILTER);
+}
+
+function readNullableActiveFilterOption(
+  value: unknown,
+): ActiveFilterOption | null {
+  const record = isRecord(value) ? value : null;
+  const id = typeof record?.id === 'string' ? record.id : null;
+
+  return ACTIVE_FILTER_OPTIONS.find((option) => option.id === id) ?? null;
+}
+
+function readOrgUnitOptionFromValue(value: unknown): OrgUnitOption | null {
+  const record = isRecord(value) ? value : null;
+  const id = typeof record?.id === 'string' ? record.id : null;
+  const name = typeof record?.name === 'string' ? record.name : null;
+
+  return id && name ? { id, name } : null;
+}
+
+function readPositionOptionFromValue(value: unknown): PositionOption | null {
+  const record = isRecord(value) ? value : null;
+  const id = typeof record?.id === 'string' ? record.id : null;
+  const name = typeof record?.name === 'string' ? record.name : null;
+
+  return id && name ? { id, name } : null;
 }
 
 function readPrimaryOption(value: unknown): PrimaryOption {
