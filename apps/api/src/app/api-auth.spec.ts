@@ -1,35 +1,83 @@
 import { Request } from 'express';
-import { buildApiBPMAuthContextFromRequest } from './api-auth';
+import { buildApiBPMAuthContextFromExecutionContext } from './api-auth';
 
-describe('buildApiBPMAuthContextFromRequest', () => {
-  it('returns null when the host request has no authenticated member', (): void => {
-    expect(buildApiBPMAuthContextFromRequest(readRequest({}))).toBeNull();
+describe('buildApiBPMAuthContextFromExecutionContext', () => {
+  it('returns null when the host request only has BPM impersonation headers', (): void => {
+    expect(
+      buildApiBPMAuthContextFromExecutionContext(
+        readExecutionContext(
+          readRequest({
+            'x-bpm-member-email': 'demo@example.internal',
+            'x-bpm-member-id': 'member-demo',
+            'x-bpm-member-name': 'Demo User',
+            'x-bpm-permissions': 'template.publish,task.decide',
+            'x-bpm-roles': 'BPM_ADMIN,APPROVER',
+          }),
+        ),
+      ),
+    ).toBeNull();
   });
 
-  it('builds BPM auth context from host headers', (): void => {
-    expect(
-      buildApiBPMAuthContextFromRequest(
-        readRequest({
-          'x-bpm-member-email': 'demo@example.internal',
-          'x-bpm-member-id': 'member-demo',
-          'x-bpm-member-name': 'Demo User',
-          'x-bpm-permissions': 'template.publish,task.decide',
-          'x-bpm-roles': 'BPM_ADMIN,APPROVER',
-        }),
-      ),
-    ).toEqual({
-      memberId: 'member-demo',
+  it('returns the BPM auth context created by the GraphQL session context', (): void => {
+    const bpmAuthContext = {
+      memberId: 'member-session',
       metadata: {
-        email: 'demo@example.internal',
-        memberId: 'member-demo',
-        name: 'Demo User',
+        email: 'session@example.internal',
       },
-      permissions: ['template.publish', 'task.decide'],
-      roles: ['BPM_ADMIN', 'APPROVER'],
-    });
+      permissions: ['task.decide'],
+      roles: ['APPROVER'],
+    };
+
+    expect(
+      buildApiBPMAuthContextFromExecutionContext(
+        readExecutionContext(readRequest({}), bpmAuthContext),
+      ),
+    ).toBe(bpmAuthContext);
   });
 });
 
 function readRequest(headers: Readonly<Record<string, string>>): Request {
   return { headers } as unknown as Request;
+}
+
+function readExecutionContext(
+  request: Request,
+  bpmAuthContext: unknown = null,
+): Parameters<typeof buildApiBPMAuthContextFromExecutionContext>[0] {
+  return {
+    getArgByIndex: (index: number): unknown =>
+      index === 2
+        ? {
+            bpmAuthContext,
+            req: request,
+          }
+        : undefined,
+    getArgs: (): readonly unknown[] => [
+      undefined,
+      undefined,
+      {
+        bpmAuthContext,
+        req: request,
+      },
+      undefined,
+    ],
+    getClass: (): typeof TestResolver => TestResolver,
+    getHandler: (): typeof testHandler => testHandler,
+    getType: (): string => 'graphql',
+    switchToHttp: (): never => {
+      throw new Error('not implemented');
+    },
+    switchToRpc: (): never => {
+      throw new Error('not implemented');
+    },
+    switchToWs: (): never => {
+      throw new Error('not implemented');
+    },
+  } as Parameters<typeof buildApiBPMAuthContextFromExecutionContext>[0];
+}
+
+class TestResolver {}
+
+function testHandler(): string {
+  return 'test-handler';
 }

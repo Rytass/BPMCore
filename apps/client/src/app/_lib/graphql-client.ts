@@ -47,40 +47,9 @@ export function readGraphQlEndpoint(): string {
 function buildGraphQlHeaders(): Readonly<Record<string, string>> {
   return {
     'Content-Type': 'application/json',
-    ...buildExplicitBPMAuthHeaders(),
   };
-}
-
-function buildExplicitBPMAuthHeaders(): Readonly<Record<string, string>> {
-  const memberId = readOptionalPublicEnvValue(
-    process.env.NEXT_PUBLIC_BPM_MEMBER_ID,
-  );
-
-  if (!memberId) {
-    return {};
-  }
-
-  return removeEmptyHeaders({
-    'x-bpm-member-email': process.env.NEXT_PUBLIC_BPM_MEMBER_EMAIL,
-    'x-bpm-member-id': memberId,
-    'x-bpm-member-name': process.env.NEXT_PUBLIC_BPM_MEMBER_NAME,
-    'x-bpm-permissions': process.env.NEXT_PUBLIC_BPM_MEMBER_PERMISSIONS,
-    'x-bpm-roles': process.env.NEXT_PUBLIC_BPM_MEMBER_ROLES,
-  });
 }
 
 function readOptionalPublicEnvValue(value: string | undefined): string | null {
   return value?.trim() || null;
-}
-
-function removeEmptyHeaders(
-  headers: Readonly<Record<string, string | undefined | null>>,
-): Readonly<Record<string, string>> {
-  return Object.entries(headers).reduce<Readonly<Record<string, string>>>(
-    (accumulator, [key, value]) => ({
-      ...accumulator,
-      ...(value?.trim() ? { [key]: value.trim() } : {}),
-    }),
-    {},
-  );
 }

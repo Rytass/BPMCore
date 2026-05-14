@@ -9,10 +9,7 @@ import { BPM_MEMBER_RESOLVER } from '@bpm/core';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import {
-  buildApiBPMAuthContextFromExecutionContext,
-  buildApiBPMAuthContextFromRequest,
-} from './api-auth';
+import { buildApiBPMAuthContextFromExecutionContext } from './api-auth';
 import { ApiAuthModule } from './api-auth.module';
 import { ApiDemoOrganizationSeedService } from './api-demo-organization-seed.service';
 import { ApiMemberResolver } from './api-member.resolver';
@@ -38,9 +35,7 @@ import { ApiSessionService } from './api-session.service';
       ): ApolloDriverConfig => ({
         autoSchemaFile: true,
         context: ({ req }: { readonly req?: Request }) => ({
-          bpmAuthContext:
-            sessionService.readBPMAuthContextFromRequest(req) ??
-            buildApiBPMAuthContextFromRequest(req),
+          bpmAuthContext: sessionService.readBPMAuthContextFromRequest(req),
           req,
         }),
         driver: ApolloDriver,

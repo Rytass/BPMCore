@@ -2,8 +2,6 @@ export interface MemberMetadata {
   readonly memberId: string;
   readonly name: string;
   readonly email: string;
-  readonly primaryOrgUnitId: string | null;
-  readonly positionId: string | null;
   readonly customFields: Readonly<Record<string, unknown>>;
 }
 

@@ -5,8 +5,6 @@ export interface MemberProfileRecord {
   readonly email: string;
   readonly memberId: string;
   readonly name: string;
-  readonly positionId: string | null;
-  readonly primaryOrgUnitId: string | null;
 }
 
 export interface MemberDirectoryPage {
@@ -40,8 +38,6 @@ export async function resolveMembers(
         email
         memberId
         name
-        positionId
-        primaryOrgUnitId
       }
     }`,
     { memberIds },
@@ -60,8 +56,6 @@ export async function searchMembers(
         email
         memberId
         name
-        positionId
-        primaryOrgUnitId
       }
     }`,
     { searchText },
@@ -90,8 +84,6 @@ export async function listMemberDirectoryPage({
         email
         memberId
         name
-        positionId
-        primaryOrgUnitId
       }
       memberCount(searchText: $searchText)
     }`,

@@ -100,8 +100,6 @@ export class ApiSessionService {
         email: profile.member.email,
         memberId: profile.member.memberId,
         name: profile.member.name,
-        positionId: profile.member.positionId,
-        primaryOrgUnitId: profile.member.primaryOrgUnitId,
       },
       permissions: profile.permissions,
       roles: profile.roles,

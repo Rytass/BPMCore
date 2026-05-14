@@ -62,8 +62,6 @@ describe('ApiSessionService', () => {
         email: 'chen.cfo@example.internal',
         memberId: 'member-101',
         name: '陳財務長',
-        positionId: 'VP',
-        primaryOrgUnitId: 'FIN',
       },
       permissions: ['task.decide', 'task.transfer', 'instance.read'],
       roles: ['APPROVER'],

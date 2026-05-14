@@ -12,12 +12,6 @@ export class MemberProfileObject {
   @Field()
   email!: string;
 
-  @Field(() => String, { nullable: true })
-  primaryOrgUnitId!: string | null;
-
-  @Field(() => String, { nullable: true })
-  positionId!: string | null;
-
   @Field()
   customFieldsJson!: string;
 }
@@ -30,7 +24,5 @@ export function toMemberProfileObject(
     email: metadata.email,
     memberId: metadata.memberId,
     name: metadata.name,
-    positionId: metadata.positionId,
-    primaryOrgUnitId: metadata.primaryOrgUnitId,
   };
 }

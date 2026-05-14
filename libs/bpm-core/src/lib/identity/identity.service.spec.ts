@@ -11,8 +11,6 @@ describe('IdentityService', () => {
       email: 'cached@example.internal',
       memberId: 'member-1',
       name: 'Cached Member',
-      positionId: null,
-      primaryOrgUnitId: null,
     };
     const cacheRepository = {
       findOne: jest.fn<Promise<MemberMetadataCacheEntity | null>, []>(() =>
@@ -71,7 +69,5 @@ function readMemberMetadata(memberId: string): MemberMetadata {
     email: `${memberId}@example.internal`,
     memberId,
     name: memberId,
-    positionId: null,
-    primaryOrgUnitId: null,
   };
 }

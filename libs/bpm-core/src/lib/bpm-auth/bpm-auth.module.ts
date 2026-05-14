@@ -15,6 +15,7 @@ export class BPMAuthModule {
   static forRoot(options: BPMAuthModuleOptions = {}): DynamicModule {
     return {
       exports: [BPM_AUTH_CONTEXT_ACCESSOR, BPMAuthenticatedGuard],
+      global: true,
       module: BPMAuthModule,
       providers: [
         {
@@ -33,6 +34,7 @@ export class BPMAuthModule {
   static forRootAsync(options: BPMAuthModuleAsyncOptions): DynamicModule {
     return {
       exports: [BPM_AUTH_CONTEXT_ACCESSOR, BPMAuthenticatedGuard],
+      global: true,
       imports: options.imports,
       module: BPMAuthModule,
       providers: [
