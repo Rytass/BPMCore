@@ -442,6 +442,128 @@ describe('OrganizationService', () => {
     );
   });
 
+  it('clears membership effectiveTo when update input explicitly passes null', async (): Promise<void> => {
+    const existingMembership = {
+      createdAt: new Date(),
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      id: 'membership-1',
+      isPrimary: false,
+      memberId: 'member-1',
+      orgUnitId: 'org-1',
+      positionId: null,
+      updatedAt: new Date(),
+    };
+    const orgUnitRepository = {
+      findOne: jest.fn<Promise<OrgUnitEntity | null>, []>(() =>
+        Promise.resolve({
+          code: 'FIN',
+          createdAt: new Date(),
+          deletedAt: null,
+          id: 'org-1',
+          metadata: {},
+          name: 'Finance',
+          parentId: null,
+          path: 'org.n_fin',
+          type: OrgUnitTypeEnum.DEPARTMENT,
+          updatedAt: new Date(),
+        }),
+      ),
+    } as unknown as Repository<OrgUnitEntity>;
+    const membershipRepository = {
+      findOne: jest.fn<Promise<MembershipEntity | null>, []>(() =>
+        Promise.resolve(existingMembership),
+      ),
+      merge: jest.fn(
+        (
+          entity: MembershipEntity,
+          update: Partial<MembershipEntity>,
+        ): MembershipEntity => ({
+          ...entity,
+          ...update,
+        }),
+      ),
+      save: jest.fn((entity: MembershipEntity): Promise<MembershipEntity> => {
+        return Promise.resolve(entity);
+      }),
+    } as unknown as Repository<MembershipEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      membershipRepository,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    const membership = await service.updateMembership({
+      effectiveFrom: null,
+      effectiveTo: null,
+      id: 'membership-1',
+      isPrimary: null,
+      orgUnitId: null,
+      positionId: null,
+    });
+
+    expect(membership.effectiveTo).toBeNull();
+    expect(membershipRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ effectiveTo: null }),
+    );
+  });
+
+  it('clears manager resolution effectiveTo when update input explicitly passes null', async (): Promise<void> => {
+    const existingResolution = {
+      createdAt: new Date(),
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-12-31',
+      id: 'resolution-1',
+      managerMemberId: 'manager-1',
+      priority: 10,
+      scopeId: 'member-1',
+      scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+    };
+    const managerResolutionRepository = {
+      findOne: jest.fn<Promise<ManagerResolutionEntity | null>, []>(() =>
+        Promise.resolve(existingResolution),
+      ),
+      merge: jest.fn(
+        (
+          entity: ManagerResolutionEntity,
+          update: Partial<ManagerResolutionEntity>,
+        ): ManagerResolutionEntity => ({
+          ...entity,
+          ...update,
+        }),
+      ),
+      save: jest.fn(
+        (entity: ManagerResolutionEntity): Promise<ManagerResolutionEntity> => {
+          return Promise.resolve(entity);
+        },
+      ),
+    } as unknown as Repository<ManagerResolutionEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      {} as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      managerResolutionRepository,
+    );
+
+    const resolution = await service.updateManagerResolution({
+      effectiveFrom: null,
+      effectiveTo: null,
+      id: 'resolution-1',
+      managerMemberId: null,
+      priority: null,
+      scopeId: null,
+      scopeType: null,
+    });
+
+    expect(resolution.effectiveTo).toBeNull();
+    expect(managerResolutionRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ effectiveTo: null }),
+    );
+  });
+
   it('rejects a member-scoped manager resolution that points to the same member', async (): Promise<void> => {
     const service = new OrganizationService(
       {} as DataSource,

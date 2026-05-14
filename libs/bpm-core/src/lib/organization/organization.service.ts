@@ -392,7 +392,10 @@ export class OrganizationService {
     const nextPositionId =
       input.positionId === undefined ? existing.positionId : input.positionId;
     const nextEffectiveFrom = input.effectiveFrom ?? existing.effectiveFrom;
-    const nextEffectiveTo = input.effectiveTo ?? existing.effectiveTo;
+    const nextEffectiveTo =
+      input.effectiveTo === undefined
+        ? existing.effectiveTo
+        : input.effectiveTo;
     const nextIsPrimary = input.isPrimary ?? existing.isPrimary;
 
     await this.assertMembershipReferences({
@@ -504,7 +507,10 @@ export class OrganizationService {
     const nextManagerMemberId =
       input.managerMemberId ?? existing.managerMemberId;
     const nextEffectiveFrom = input.effectiveFrom ?? existing.effectiveFrom;
-    const nextEffectiveTo = input.effectiveTo ?? existing.effectiveTo;
+    const nextEffectiveTo =
+      input.effectiveTo === undefined
+        ? existing.effectiveTo
+        : input.effectiveTo;
 
     await this.assertManagerResolutionReferences({
       effectiveFrom: nextEffectiveFrom,
