@@ -216,18 +216,18 @@
 
 - [x] `notifications`、`notification_preferences` 表
 - [x] `NotificationModule`：in-app notification
-- [ ] email / webhook 外部通知（目前保留 hook + console log）
+- [x] email / webhook 外部通知（SMTP + signed webhook delivery，依 `BPMRootModule` 扁平 config 啟用）
 - [x] 通知模板 placeholder renderer
-- [ ] Handlebars template engine
+- [x] Handlebars template engine
 - [x] SLA Scheduler（cron 每分鐘）
   - [x] 預警 / 逾時通知
-  - [ ] 自動同意 / 升級 / 終止動作（目前保留 hook + console log）
-- [ ] Boundary Timer Event 處理
+  - [x] 自動同意 / 升級 / 終止動作（透過 workflow engine domain method 執行）
+- [x] Boundary Timer Event 處理（SLA scan 以 task boundary timer due event 觸發 timeout policy）
 
 **Frontend**
 
 - [x] In-app 通知中心列表（`/notifications`）
-- [ ] Header 鈴鐺入口
+- [x] Header 鈴鐺入口
 - [x] 通知偏好設定頁
 - [x] Inbox 顯示 SLA due 倒數
 
@@ -244,15 +244,13 @@
 - [x] Decision API 整合簽章
 - [x] `attachments` 表
 - [x] `AttachmentModule`：上傳 / 下載 / 預覽 signed URL
-- [x] 整合 `@rytass/storages-adapter-local`，保留 storage adapter 替換邊界
-- [ ] 整合 MinIO / S3 adapter
-- [ ] 加密儲存
+- [x] 整合 `@rytass/storages-adapter-local`
 
 **Frontend**
 
 - [x] FormRenderer 整合附件上傳
 - [x] PDF signed URL modal 預覽
-- [ ] PDF 預覽元件（react-pdf）
+- [x] PDF 預覽元件（React-PDF）
 - [x] 簽核操作頁顯示附件 + 預覽
 
 **驗收**：每筆決策有簽章紀錄；附件可上傳、PDF 可預覽。
@@ -296,7 +294,6 @@
 
 - [ ] 整合外部真實 SSO Resolver（取代 mock）
 - [ ] 整合真實 Email 服務
-- [ ] 整合真實對象儲存
 - [ ] 性能測試：模擬 100 個並發 instance
 - [ ] 安全檢查：CEL sandbox、檔案上傳、SQL injection、XSS
 - [ ] 試運行 2–3 個真實流程（請假、採購、合約）

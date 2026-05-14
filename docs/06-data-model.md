@@ -6,18 +6,18 @@
 
 ## 表清單
 
-| 領域 | 表 |
-|---|---|
-| Identity | `member_metadata_cache` |
-| Organization | `org_units`, `positions`, `memberships`, `manager_resolutions` |
-| Delegation | `delegation_rules` |
-| Form | `form_definitions`, `form_definition_versions` |
-| Template | `approval_templates`, `approval_template_versions` |
+| 領域            | 表                                                                 |
+| --------------- | ------------------------------------------------------------------ |
+| Identity        | `member_metadata_cache`                                            |
+| Organization    | `org_units`, `positions`, `memberships`, `manager_resolutions`     |
+| Delegation      | `delegation_rules`                                                 |
+| Form            | `form_definitions`, `form_definition_versions`                     |
+| Template        | `approval_templates`, `approval_template_versions`                 |
 | Workflow Engine | `approval_instances`, `workflow_tokens`, `tasks`, `task_decisions` |
-| Audit | `activity_logs` |
-| Attachment | `attachments` |
-| Signature | `signatures` |
-| Notification | `notifications`, `notification_preferences` |
+| Audit           | `activity_logs`                                                    |
+| Attachment      | `attachments`                                                      |
+| Signature       | `signatures`                                                       |
+| Notification    | `notifications`, `notification_preferences`                        |
 
 ---
 
@@ -322,9 +322,8 @@ uploader_member_id          text
 filename                    text              -- 原檔名
 mime_type                   text
 size_bytes                  bigint
-storage_provider            text              -- 's3' / 'minio' / 'local'
-storage_key                 text              -- 物件儲存的 key
-encryption_key_id           text (nullable)   -- KMS key id
+storage_provider            text              -- 'local'
+storage_key                 text              -- 本機儲存 adapter key
 checksum_sha256             text
 created_at                  timestamptz
 
@@ -440,6 +439,7 @@ updated_at                  timestamptz
 ## 12. 重要索引與查詢
 
 ### 個人 Inbox 查詢
+
 ```sql
 SELECT t.*, i.title FROM tasks t
 JOIN approval_instances i ON i.id = t.instance_id
@@ -447,18 +447,22 @@ WHERE t.assignee_member_id = $1
   AND t.status IN ('PENDING', 'IN_PROGRESS')
 ORDER BY t.sla_due_at NULLS LAST, t.created_at;
 ```
+
 索引：`tasks (assignee_member_id, status)`
 
 ### SLA 掃描（cron 每分鐘）
+
 ```sql
 SELECT id FROM tasks
 WHERE status IN ('PENDING', 'IN_PROGRESS')
   AND sla_due_at < now()
 LIMIT 100;
 ```
+
 索引：`tasks (sla_due_at) WHERE status IN ('PENDING','IN_PROGRESS')`
 
 ### 主管展開查詢
+
 查詢「我下面所有的 instance」用 `org_units.path` ltree 操作（`@>` 包含關係）。
 
 ---

@@ -73,13 +73,25 @@ member-base adapter。
     TypeOrmModule.forRootAsync(...),
     GraphQLModule.forRoot(...),
     BPMRootModule.forRoot({
-      auth: {
-        contextFactory: (context) => readBPMAuthContextFromHost(context),
-      },
+      authContextFactory: (context) => readBPMAuthContextFromHost(context),
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
         useExisting: HostMemberResolverAdapter,
       },
+      notificationEmailEnabled: 'auto',
+      notificationEmailSmtpHost: 'smtp.example.com',
+      notificationEmailSmtpPort: 587,
+      notificationEmailSmtpSecure: false,
+      notificationEmailSmtpUsername: 'bpm@example.com',
+      notificationEmailSmtpPassword: smtpPassword,
+      notificationEmailFrom: 'BPM <bpm@example.com>',
+      notificationWebhookEnabled: 'auto',
+      notificationWebhookEndpointUrl: 'https://example.com/bpm/webhook',
+      notificationWebhookSigningSecret: webhookSigningSecret,
+      notificationSlaTimeoutRemindEnabled: true,
+      notificationSlaTimeoutAutoApproveEnabled: false,
+      notificationSlaTimeoutEscalateEnabled: true,
+      notificationSlaTimeoutTerminateInstanceEnabled: false,
     }),
   ],
 })
