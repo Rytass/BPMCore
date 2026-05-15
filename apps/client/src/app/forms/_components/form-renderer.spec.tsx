@@ -200,6 +200,57 @@ describe('FormRenderer', () => {
     );
   });
 
+  it('keeps rapid controlled field changes in the next form values', (): void => {
+    const handleChange = jest.fn<void, [Readonly<Record<string, unknown>>]>();
+    const rapidSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'amount',
+          label: '申請金額',
+          required: true,
+          type: 'number',
+        },
+        {
+          fieldKey: 'reason',
+          label: '申請原因',
+          placeholder: '請輸入原因',
+          required: false,
+          type: 'textarea',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const rapidUiSchema: FormUiSchema = {
+      layout: [
+        { fieldKey: 'amount', width: 'HALF' },
+        { fieldKey: 'reason', width: 'FULL' },
+      ],
+      schemaVersion: 1,
+    };
+    const { getByPlaceholderText } = render(
+      <FormRenderer
+        onChange={handleChange}
+        schema={rapidSchema}
+        uiSchema={rapidUiSchema}
+        value={{}}
+      />,
+    );
+
+    fireEvent.change(getByPlaceholderText('請輸入數字'), {
+      target: { value: '240' },
+    });
+    fireEvent.change(getByPlaceholderText('請輸入原因'), {
+      target: { value: '加急採購' },
+    });
+
+    expect(handleChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        amount: 240,
+        reason: '加急採購',
+      }),
+    );
+  });
+
   it('uses Mezzanine pickers for date and datetime fields', (): void => {
     const handleChange = jest.fn<void, [Readonly<Record<string, unknown>>]>();
     const dateSchema: FormDefinitionSchema = {

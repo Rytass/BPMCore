@@ -6,6 +6,7 @@ import {
   ReactElement,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -106,11 +107,16 @@ export function FormRenderer({
       buildFormRendererValues(schema.fields, value ?? internalValues),
     [internalValues, schema.fields, value],
   );
+  const valuesRef = useRef<FormRendererValues>(values);
   const visibleFields = useMemo(
     (): readonly FormFieldDefinition[] =>
       readVisibleFormRendererFields(schema, uiSchema, values),
     [schema, uiSchema, values],
   );
+
+  useEffect((): void => {
+    valuesRef.current = values;
+  }, [values]);
 
   useEffect((): void => {
     setInternalValues((currentValues) =>
@@ -123,9 +129,10 @@ export function FormRenderer({
     nextValue: FormFieldValue | undefined,
   ): void {
     const nextValues = {
-      ...values,
+      ...valuesRef.current,
       [fieldKey]: nextValue,
     };
+    valuesRef.current = nextValues;
 
     if (!value) {
       setInternalValues(nextValues);
