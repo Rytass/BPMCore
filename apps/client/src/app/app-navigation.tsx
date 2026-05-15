@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactElement, useEffect, useState } from 'react';
+import { ReactElement } from 'react';
 import Image from 'next/image';
 import {
   Navigation,
@@ -28,12 +28,13 @@ import type { IconDefinition } from '@mezzanine-ui/icons';
 import styles from './app-navigation.module.scss';
 import { useAuth } from './auth-provider';
 import { logoutApi } from './_lib/api-auth-client';
-import { readUnreadNotificationCount } from './instances/_lib/workflow-api';
+import { useNotificationUnread } from './notification-unread-provider';
 
 interface NavigationItem {
   readonly href: string;
   readonly icon: IconDefinition;
   readonly label: string;
+  readonly requiresAdmin?: boolean;
 }
 
 const mainItems: readonly NavigationItem[] = [
@@ -41,15 +42,31 @@ const mainItems: readonly NavigationItem[] = [
   { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
   { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
   { href: '/notifications', icon: NotificationUnreadIcon, label: '通知中心' },
-  { href: '/templates', icon: FolderIcon, label: '簽核模板' },
-  { href: '/templates/categories', icon: ListIcon, label: '模板分類' },
-  { href: '/forms', icon: FileIcon, label: '表單設計' },
-  { href: '/admin/orgs', icon: SystemIcon, label: '組織管理' },
-  { href: '/admin/users', icon: UserIcon, label: '會員對照' },
-  { href: '/admin/delegations', icon: ShareIcon, label: '代理設定' },
+  { href: '/templates', icon: FolderIcon, label: '簽核模板', requiresAdmin: true },
+  {
+    href: '/templates/categories',
+    icon: ListIcon,
+    label: '模板分類',
+    requiresAdmin: true,
+  },
+  { href: '/forms', icon: FileIcon, label: '表單設計', requiresAdmin: true },
+  { href: '/admin/orgs', icon: SystemIcon, label: '組織管理', requiresAdmin: true },
+  { href: '/admin/users', icon: UserIcon, label: '會員對照', requiresAdmin: true },
+  {
+    href: '/admin/delegations',
+    icon: ShareIcon,
+    label: '代理設定',
+    requiresAdmin: true,
+  },
 ];
 
 export function renderAppNavigation(activeHref: string): ReactElement {
+  const { member } = useAuth();
+  const { unreadCount } = useNotificationUnread();
+  const visibleItems = mainItems.filter(
+    (item) => !item.requiresAdmin || isAdminMember(member),
+  );
+
   return (
     <Navigation exactActivatedMatch>
       <NavigationHeader title="BPM Admin">
@@ -63,7 +80,7 @@ export function renderAppNavigation(activeHref: string): ReactElement {
         />
       </NavigationHeader>
       <NavigationOptionCategory title="Approval Engine">
-        {mainItems.map((item) => (
+        {visibleItems.map((item) => (
           <NavigationOption
             active={item.href === activeHref}
             href={item.href}
@@ -89,7 +106,7 @@ export function renderAppNavigation(activeHref: string): ReactElement {
         >
           <NavigationMemberName />
         </NavigationUserMenu>
-        <NotificationBell />
+        <NotificationBell unreadCount={unreadCount} />
         <NavigationIconButton
           aria-label="登出"
           icon={LogoutIcon}
@@ -104,36 +121,26 @@ export function renderAppNavigation(activeHref: string): ReactElement {
   );
 }
 
-function NotificationBell(): ReactElement {
-  const { member } = useAuth();
-  const [unreadCount, setUnreadCount] = useState(0);
-  const currentMemberId = member?.memberId ?? null;
+function isAdminMember(
+  member: ReturnType<typeof useAuth>['member'],
+): boolean {
+  if (!member) {
+    return false;
+  }
 
-  useEffect(() => {
-    if (!currentMemberId) {
-      setUnreadCount(0);
-      return;
-    }
+  return (
+    (member.roles ?? []).includes('BPM_ADMIN') ||
+    (member.permissions ?? []).some((permission) =>
+      ['bpm:*', 'bpm:admin', 'bpm.admin', 'bpm:admin:*'].includes(permission),
+    )
+  );
+}
 
-    let active = true;
-
-    void readUnreadNotificationCount(currentMemberId)
-      .then((count) => {
-        if (active) {
-          setUnreadCount(count);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setUnreadCount(0);
-        }
-      });
-
-    return (): void => {
-      active = false;
-    };
-  }, [currentMemberId]);
-
+function NotificationBell({
+  unreadCount,
+}: {
+  readonly unreadCount: number;
+}): ReactElement {
   return (
     <span className={styles.notificationBell}>
       <NavigationIconButton

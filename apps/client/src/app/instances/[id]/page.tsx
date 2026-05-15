@@ -659,7 +659,6 @@ export default function ApprovalInstancePage(): ReactElement {
     const attachment = await uploadAttachment({
       file,
       formFieldPath: `form.${field.fieldKey}`,
-      uploaderMemberId: currentMemberId,
     });
 
     return { id: attachment.id };
@@ -674,7 +673,6 @@ export default function ApprovalInstancePage(): ReactElement {
 
     const url = await readAttachmentDownloadUrl({
       id: attachment.id,
-      requestedByMemberId: currentMemberId,
     });
 
     window.open(url, '_blank', 'noopener,noreferrer');
@@ -689,7 +687,6 @@ export default function ApprovalInstancePage(): ReactElement {
 
     const url = await readAttachmentPreviewUrl({
       id: attachment.id,
-      requestedByMemberId: currentMemberId,
     });
 
     setPreviewAttachment(attachment);

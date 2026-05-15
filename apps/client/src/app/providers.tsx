@@ -6,6 +6,7 @@ import {
   CalendarLocale,
 } from '@mezzanine-ui/react/moment';
 import { AuthProvider } from './auth-provider';
+import { NotificationUnreadProvider } from './notification-unread-provider';
 
 interface ProvidersProps {
   readonly children: ReactNode;
@@ -14,7 +15,9 @@ interface ProvidersProps {
 export function Providers({ children }: ProvidersProps): React.ReactElement {
   return (
     <CalendarConfigProviderMoment locale={CalendarLocale.ZH_TW}>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        <NotificationUnreadProvider>{children}</NotificationUnreadProvider>
+      </AuthProvider>
     </CalendarConfigProviderMoment>
   );
 }

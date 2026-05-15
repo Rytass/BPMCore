@@ -29,6 +29,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../_lib/date-time';
 import { useAuth } from '../auth-provider';
+import { useNotificationUnread } from '../notification-unread-provider';
 import { renderAppNavigation } from '../app-navigation';
 import {
   listNotifications,
@@ -87,6 +88,7 @@ const NOTIFICATION_PAGE_SIZE_OPTIONS = [10, 20, 50];
 export default function NotificationsPage(): ReactElement {
   const router = useRouter();
   const { member } = useAuth();
+  const { refreshUnreadCount } = useNotificationUnread();
   const currentMemberId = member?.memberId ?? null;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -209,6 +211,7 @@ export default function NotificationsPage(): ReactElement {
       setNotificationTotalCount(notificationResult.totalCount);
       setUnreadCount(notificationResult.unreadCount);
       setPreference(nextPreference);
+      await refreshUnreadCount();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -226,6 +229,7 @@ export default function NotificationsPage(): ReactElement {
       readerMemberId: currentMemberId,
     });
     await refreshNotifications();
+    await refreshUnreadCount();
   }
 
   async function handleOpenInstance(record: NotificationRow): Promise<void> {
@@ -245,6 +249,7 @@ export default function NotificationsPage(): ReactElement {
           id: record.id,
           readerMemberId: currentMemberId,
         });
+        await refreshUnreadCount();
       }
 
       router.push(`/instances/${record.instanceId}`);

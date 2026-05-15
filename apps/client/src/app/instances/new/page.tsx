@@ -199,7 +199,6 @@ function NewApprovalInstanceContent(): ReactElement {
     const attachment = await uploadAttachment({
       file,
       formFieldPath: `form.${field.fieldKey}`,
-      uploaderMemberId: currentMemberId,
     });
 
     return { id: attachment.id };

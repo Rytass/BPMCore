@@ -773,11 +773,9 @@ export async function listAttachments(
 export async function uploadAttachment({
   file,
   formFieldPath,
-  uploaderMemberId,
 }: {
   readonly file: File;
   readonly formFieldPath: string;
-  readonly uploaderMemberId: string;
 }): Promise<AttachmentRecord> {
   const contentBase64 = await readFileBase64(file);
   const checksumSha256 = await hashFileSha256(file);
@@ -808,7 +806,6 @@ export async function uploadAttachment({
         mimeType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
         taskId: null,
-        uploaderMemberId,
       },
     },
   );
@@ -818,16 +815,14 @@ export async function uploadAttachment({
 
 export async function readAttachmentDownloadUrl({
   id,
-  requestedByMemberId,
 }: {
   readonly id: string;
-  readonly requestedByMemberId: string;
 }): Promise<string> {
   const data = await requestGraphQl<AttachmentDownloadUrlQueryData>(
-    `query AttachmentDownloadUrl($id: String!, $requestedByMemberId: String!) {
-      attachmentDownloadUrl(id: $id, requestedByMemberId: $requestedByMemberId)
+    `query AttachmentDownloadUrl($id: String!) {
+      attachmentDownloadUrl(id: $id)
     }`,
-    { id, requestedByMemberId },
+    { id },
   );
 
   return data.attachmentDownloadUrl;
@@ -835,16 +830,14 @@ export async function readAttachmentDownloadUrl({
 
 export async function readAttachmentPreviewUrl({
   id,
-  requestedByMemberId,
 }: {
   readonly id: string;
-  readonly requestedByMemberId: string;
 }): Promise<string> {
   const data = await requestGraphQl<AttachmentPreviewUrlQueryData>(
-    `query AttachmentPreviewUrl($id: String!, $requestedByMemberId: String!) {
-      attachmentPreviewUrl(id: $id, requestedByMemberId: $requestedByMemberId)
+    `query AttachmentPreviewUrl($id: String!) {
+      attachmentPreviewUrl(id: $id)
     }`,
-    { id, requestedByMemberId },
+    { id },
   );
 
   return data.attachmentPreviewUrl;
