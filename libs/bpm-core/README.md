@@ -341,10 +341,15 @@ For this repository:
 pnpm migration:run
 ```
 
-For an external host, wire TypeORM to include the package migrations from the
-installed package path. The exported helper uses the repository source path for
-this workspace; production hosts may need their own TypeORM migration path when
-running from compiled `node_modules`.
+For an external host, import the class list instead of relying on a repository
+source glob:
+
+```ts
+import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
+```
+
+`buildDataSourceOptionsFromVaultEnv()` and `buildTypeOrmModuleOptions()` already
+use this exported migration list.
 
 Do not enable `synchronize` in production.
 

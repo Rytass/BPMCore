@@ -168,7 +168,8 @@ interface MemberMetadata {
 
 - 預設使用 `@rytass/storages-adapter-local`
 - 宿主可透過 `BPMRootModule.attachmentStorageProvider` 替換成 MinIO / S3 / GCS 等 adapter
-- 不直接落地原檔名（避免敏感資訊洩漏）
+- `attachments.filename` 保留原檔名供 UI 顯示；實際儲存路徑使用 attachment id
+  作為目錄並清理檔名字元，例如 `${id}/${sanitizeFilename(filename)}`
 - 下載走後端代理 + 短期 signed URL
 
 ---

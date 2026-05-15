@@ -49,9 +49,15 @@ GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部
 - `@rytass/bpm-core-nestjs-module/attachment`
 - `@rytass/bpm-core-nestjs-module/bpm-auth`
 - `@rytass/bpm-core-nestjs-module/database`
+- `@rytass/bpm-core-nestjs-module/delegation`
+- `@rytass/bpm-core-nestjs-module/form`
 - `@rytass/bpm-core-nestjs-module/identity`
+- `@rytass/bpm-core-nestjs-module/migrations`
 - `@rytass/bpm-core-nestjs-module/notification`
 - `@rytass/bpm-core-nestjs-module/organization`
+- `@rytass/bpm-core-nestjs-module/signature`
+- `@rytass/bpm-core-nestjs-module/template`
+- `@rytass/bpm-core-nestjs-module/workflow-engine`
 
 ## Auth Contract
 
@@ -149,7 +155,9 @@ Authentication 只回答「誰登入」。BPM domain authorization 仍要在 BPM
 - task assignee 才能 approve / reject / transfer。
 - instance initiator 才能 cancel / resubmit。
 - template designer 才能 publish template。
-- attachment preview/download 要檢查 uploader、initiator、assignee 或 admin。
+- attachment preview/download 會檢查 uploader、initiator、直接/原始 assignee、
+  candidate/original candidate，以及已決策者；目前 signed URL query 以
+  authenticated `BPMAuthContext.memberId` 為準，不接受前端指定 reader。
 - delegation admin 可管理所有代理；一般使用者只能管理自己的個人代理。
 
 ## Attachment Storage Contract

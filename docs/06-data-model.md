@@ -6,18 +6,18 @@
 
 ## 表清單
 
-| 領域            | 表                                                                 |
-| --------------- | ------------------------------------------------------------------ |
-| Identity        | `member_metadata_cache`                                            |
-| Organization    | `org_units`, `positions`, `memberships`, `manager_resolutions`     |
-| Delegation      | `delegation_rules`                                                 |
-| Form            | `form_definitions`, `form_definition_versions`                     |
-| Template        | `approval_templates`, `approval_template_versions`                 |
-| Workflow Engine | `approval_instances`, `workflow_tokens`, `tasks`, `task_decisions` |
-| Audit           | `activity_logs`                                                    |
-| Attachment      | `attachments`                                                      |
-| Signature       | `signatures`                                                       |
-| Notification    | `notifications`, `notification_preferences`                        |
+| 領域            | 表                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------- |
+| Identity        | `member_metadata_cache`                                                             |
+| Organization    | `org_units`, `positions`, `memberships`, `manager_resolutions`                      |
+| Delegation      | `delegation_rules`                                                                  |
+| Form            | `form_definitions`, `form_definition_versions`                                      |
+| Template        | `approval_templates`, `approval_template_versions`, `approval_template_categories`   |
+| Workflow Engine | `approval_instances`, `workflow_tokens`, `tasks`, `task_candidates`, `task_decisions` |
+| Audit           | `activity_logs`                                                                     |
+| Attachment      | `attachments`                                                                       |
+| Signature       | `signatures`                                                                        |
+| Notification    | `notifications`, `notification_preferences`                                         |
 
 ---
 
@@ -372,10 +372,17 @@ payload                     jsonb         -- 渲染用資料
 status                      text          -- 'PENDING' | 'SENT' | 'FAILED' | 'READ'
 sent_at                     timestamptz (nullable)
 read_at                     timestamptz (nullable)
+attempt_count               int DEFAULT 0
+last_attempt_at             timestamptz (nullable)
+next_retry_at               timestamptz (nullable)
+delivery_error              text (nullable)
+delivered_at                timestamptz (nullable)
+delivery_target             text (nullable)
 created_at                  timestamptz
 
 INDEX (recipient_member_id, status, created_at)
 INDEX (status) WHERE status = 'PENDING'
+INDEX (status, next_retry_at, created_at)
 ```
 
 ### `notification_preferences`

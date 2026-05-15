@@ -7,11 +7,11 @@ Internal BPM approval engine workspace.
 This repository is an Nx integrated monorepo. The important boundary is:
 
 - `apps/api` is the NestJS host application. It owns runtime wiring: Vault, TypeORM, GraphQL, HTTP auth/session endpoints, CORS, validation pipe, exception filter, and health checks.
-- `libs/bpm-core` is the embeddable BPM package boundary exposed as `@bpm/core`. It owns BPM domain modules, GraphQL resolvers/mutations, entities, migrations, TypeORM helpers, auth contracts, and `BPMRootModule`.
+- `libs/bpm-core` is the embeddable BPM package boundary exposed as `@rytass/bpm-core-nestjs-module`. It owns BPM domain modules, GraphQL resolvers/mutations, entities, migrations, TypeORM helpers, auth contracts, and `BPMRootModule`.
 - `apps/client` is the Next.js backoffice UI. It talks to `apps/api` through GraphQL and `/api/auth/*`.
 - `libs/shared` owns frontend/backend shared BPM contracts such as workflow, form, condition, and status types.
 
-Do not put BPM domain behavior back into `apps/api`. Future reusable backend work belongs in `libs/bpm-core`; `apps/api` should stay a thin host shell that imports `BPMRootModule` from `@bpm/core`.
+Do not put BPM domain behavior back into `apps/api`. Future reusable backend work belongs in `libs/bpm-core`; `apps/api` should stay a thin host shell that imports `BPMRootModule` from `@rytass/bpm-core-nestjs-module`.
 
 ## Runtime Relationship
 
@@ -24,7 +24,7 @@ The API uses Vault-backed configuration by default. Local development should use
 
 ## Backend Embedding Contract
 
-External NestJS systems should eventually consume the package equivalent of `@bpm/core` and import `BPMRootModule` in their root module. The host system is responsible for:
+External NestJS systems should consume `@rytass/bpm-core-nestjs-module` and import `BPMRootModule` in their root module. The host system is responsible for:
 
 - GraphQL module setup
 - TypeORM connection setup
@@ -33,7 +33,7 @@ External NestJS systems should eventually consume the package equivalent of `@bp
 - `BPMAuthContext` creation
 - `BPM_MEMBER_RESOLVER` provider implementation
 
-`@bpm/core` does not own a user table and does not provide mock auth fallback. It stores member ids and resolves member profiles through the host-provided resolver.
+`@rytass/bpm-core-nestjs-module` does not own a user table and does not provide mock auth fallback. It stores member ids and resolves member profiles through the host-provided resolver.
 
 ## Local Commands
 

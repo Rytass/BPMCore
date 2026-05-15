@@ -28,7 +28,7 @@
 - Backoffice UI is based on `@mezzanine-ui/react`.
 - Prefer existing Mezzanine components over custom implementations.
 - Only build custom components when the behavior cannot be represented by Mezzanine primitives, such as React Flow node and edge renderers.
-- Do not use removed Mezzanine APIs such as `ContentHeader`, `Scrollbar`, or `Switch`.
+- Do not use removed Mezzanine APIs such as `Scrollbar` or `Switch`.
 
 ## TypeScript / Coding Rules (程式設計規範)
 
@@ -81,4 +81,5 @@
 
 ## Backlog Notes
 
+- 2026-05-15: System audit remediation work is tracked in `tasks.md`; each completed fix must include targeted unit/integration coverage plus `pnpm e2e:client` verification.
 - Replace `apps/api` demo auth fixtures with a real `@rytass/member-base-nestjs-module` host module and staging test-account seed before treating staging login accounts as production-like; BPM core already exposes member-base adapter helpers.
