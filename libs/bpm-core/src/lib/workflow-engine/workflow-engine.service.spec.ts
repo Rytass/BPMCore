@@ -1,5 +1,7 @@
+import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { ApproverResolver, WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { ObjectLiteral } from 'typeorm';
+import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
 import { ConditionService } from '../condition/condition.service';
 import {
@@ -134,6 +136,74 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Approval template does not have a published version');
   });
 
+  it('rejects submit when required form fields are missing', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createRequiredReasonFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Form data is missing required fields: 事由');
+  });
+
+  it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createConditionalAttachmentFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"needsAttachment":false}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"needsAttachment":true}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Form data is missing required fields: 附件');
+  });
+
+  it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
+    const formSchema = createRequiredReasonFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Form data is missing required fields: 事由');
+  });
+
   it('uses an advisory lock when processing an instance', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -207,6 +277,34 @@ describe('WorkflowEngineService', () => {
     await fixture.service.processInstance('instance-1');
 
     expect(fixture.savedTasks[0]?.slaDueAt).toBeInstanceOf(Date);
+  });
+
+  it('creates notifications from notify service task recipients', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createNotifyServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.notificationService.createServiceTaskNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instance: expect.objectContaining({ id: 'instance-1' }),
+        node: expect.objectContaining({ id: 'notify_finance' }),
+        recipientMemberIds: ['member-finance', 'member-admin'],
+      }),
+    );
+    expect(fixture.savedSingleActivityLogs.at(-1)).toMatchObject({
+      eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+      payload: expect.objectContaining({
+        action: 'NOTIFY',
+        recipientMemberIds: ['member-finance', 'member-admin'],
+      }),
+    });
   });
 
   it('resolves a user task assignee from a selected position', async (): Promise<void> => {
@@ -654,6 +752,7 @@ describe('WorkflowEngineService', () => {
 
     expect(fixture.rootTaskFind).toHaveBeenCalledWith({
       order: { completedAt: 'DESC', createdAt: 'DESC' },
+      take: 50,
       where: {
         assigneeMemberId: 'member-finance',
         status: TaskStatusEnum.COMPLETED,
@@ -988,6 +1087,55 @@ describe('WorkflowEngineService', () => {
       ]),
     );
   });
+
+  it('allows an instance initiator to read the approval instance', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.getApprovalInstance(
+        'instance-1',
+        createAuthContext('member-001'),
+      ),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
+  it('allows a related task assignee to read the approval instance', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootTaskFind.mockResolvedValueOnce([
+      createTask({ assigneeMemberId: 'member-202' }),
+    ]);
+
+    await expect(
+      fixture.service.getApprovalInstance(
+        'instance-1',
+        createAuthContext('member-202'),
+      ),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
+  it('hides an approval instance from unrelated members', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.getApprovalInstance(
+        'instance-1',
+        createAuthContext('member-unrelated'),
+      ),
+    ).rejects.toThrow('Approval instance instance-1 was not found');
+  });
 });
 
 interface ServiceFixture {
@@ -997,7 +1145,7 @@ interface ServiceFixture {
   >;
   readonly notificationService: Pick<
     NotificationService,
-    'createTaskAssignedNotification'
+    'createServiceTaskNotifications' | 'createTaskAssignedNotification'
   >;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
@@ -1020,10 +1168,12 @@ function createServiceFixture({
   delegationResolution,
   decisionTask,
   decisionToken,
+  formSchema,
   formVersionStatus,
   instanceState,
   latestReturnActivity,
   processFormData,
+  processFormDefinitionSnapshot,
   processManagerResolutions = [],
   processMemberships = [],
   processOrgUnits = [],
@@ -1034,10 +1184,12 @@ function createServiceFixture({
   readonly delegationResolution?: DelegationResolution;
   readonly decisionTask?: TaskEntity;
   readonly decisionToken?: WorkflowTokenEntity;
+  readonly formSchema?: FormDefinitionSchema;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processFormData?: Readonly<Record<string, unknown>>;
+  readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processOrgUnits?: readonly OrgUnitEntity[];
@@ -1066,12 +1218,13 @@ function createServiceFixture({
   let savedTasks: readonly TaskEntity[] = [];
   const template = createTemplate(currentVersionId);
   const templateVersion = createTemplateVersion(templateVersionStatus);
-  const formVersion = createFormVersion(formVersionStatus);
+  const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootTaskFind = jest.fn<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
+    find: jest.fn(() => Promise.resolve([createApprovalInstance()])),
     findOne: jest.fn(() => Promise.resolve(createApprovalInstance())),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
@@ -1081,7 +1234,9 @@ function createServiceFixture({
   const taskCandidateRepository = createRepository<TaskCandidateEntity>({
     find: jest.fn(() => Promise.resolve([])),
   });
-  const taskDecisionRepository = createRepository<TaskDecisionEntity>({});
+  const taskDecisionRepository = createRepository<TaskDecisionEntity>({
+    find: jest.fn(() => Promise.resolve([])),
+  });
   const activityLogRepository = createRepository<ActivityLogEntity>({});
   const delegationService = {
     resolveAssignee: jest.fn(
@@ -1095,6 +1250,7 @@ function createServiceFixture({
     ),
   };
   const notificationService = {
+    createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
   };
   const attachmentService = {
@@ -1130,6 +1286,7 @@ function createServiceFixture({
         Promise.resolve(
           createApprovalInstance({
             formData: processFormData,
+            formDefinitionSnapshot: processFormDefinitionSnapshot,
             state: instanceState,
             workflowSnapshot: processWorkflowSnapshot,
           }),
@@ -1597,6 +1754,7 @@ function createTemplateVersion(
 
 function createFormVersion(
   status: FormDefinitionVersionStatusEnum,
+  schema: FormDefinitionSchema = { fields: [], schemaVersion: 1 },
 ): FormDefinitionVersionEntity {
   return {
     archivedAt: null,
@@ -1605,10 +1763,7 @@ function createFormVersion(
     id: 'form-version-1',
     publishedAt: new Date('2026-05-04T09:00:00.000Z'),
     publishedByMemberId: null,
-    schema: {
-      fields: [],
-      schemaVersion: 1,
-    },
+    schema,
     schemaJson: '',
     status,
     uiSchema: {
@@ -1621,11 +1776,48 @@ function createFormVersion(
   };
 }
 
+function createRequiredReasonFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'reason',
+        label: '事由',
+        required: true,
+        type: 'text',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function createConditionalAttachmentFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'needsAttachment',
+        label: '需要附件',
+        required: false,
+        type: 'boolean',
+      },
+      {
+        fieldKey: 'attachments',
+        label: '附件',
+        required: false,
+        requiredWhen: 'form.needsAttachment == true',
+        type: 'file_upload',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
 function createApprovalInstance({
+  formDefinitionSnapshot,
   formData,
   state,
   workflowSnapshot,
 }: {
+  readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly formData?: Readonly<Record<string, unknown>>;
   readonly state?: ApprovalInstanceStateEnum;
   readonly workflowSnapshot?: WorkflowDefinition;
@@ -1634,7 +1826,12 @@ function createApprovalInstance({
     completedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formData: formData ?? {},
-    formDefinitionSnapshot: {},
+    formDefinitionSnapshot: formDefinitionSnapshot ?? {
+      schema: {
+        fields: [],
+        schemaVersion: 1,
+      },
+    },
     id: 'instance-1',
     initiatorMemberId: 'member-001',
     initiatorMetadataSnapshot: {},
@@ -1705,6 +1902,15 @@ function createTask(value: Partial<TaskEntity>): TaskEntity {
     status: value.status ?? TaskStatusEnum.PENDING,
     tokenId: value.tokenId ?? 'token-1',
   });
+}
+
+function createAuthContext(memberId: string): BPMAuthContext {
+  return {
+    memberId,
+    metadata: {},
+    permissions: ['instance.read'],
+    roles: ['REQUESTER'],
+  };
 }
 
 function createMembership(value: Partial<MembershipEntity>): MembershipEntity {
@@ -1817,6 +2023,46 @@ function createLinearUserTaskWorkflow({
         id: 'end',
         position: { x: 520, y: 160 },
         type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function createNotifyServiceTaskWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_notify',
+        source: 'start',
+        target: 'notify_finance',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: {
+              memberIds: ['member-finance', 'member-admin'],
+              type: 'DIRECT',
+            },
+            template: '請留意案件 {{instanceTitle}}。',
+            type: 'NOTIFY',
+          },
+          label: '財務知會',
+        },
+        id: 'notify_finance',
+        position: { x: 300, y: 160 },
+        type: 'serviceTask',
       },
     ],
   };

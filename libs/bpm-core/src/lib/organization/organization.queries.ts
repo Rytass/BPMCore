@@ -1,5 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated } from '../bpm-auth';
+import { BPMAdminOnly } from '../bpm-auth';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
@@ -13,7 +13,7 @@ import { PositionEntity } from './position.entity';
 import { ResolvedManagerObject } from './resolved-manager.object';
 
 @Resolver()
-@BPMAuthenticated()
+@BPMAdminOnly()
 export class OrganizationQueries {
   constructor(private readonly organizationService: OrganizationService) {}
 

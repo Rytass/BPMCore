@@ -8,6 +8,8 @@ import {
 import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
+import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import { AttachmentController } from './attachment.controller';
 import { AttachmentEntity } from './attachment.entity';
@@ -41,6 +43,8 @@ const ATTACHMENT_MODULE_IMPORTS = [
   TypeOrmModule.forFeature([
     ApprovalInstanceEntity,
     AttachmentEntity,
+    TaskCandidateEntity,
+    TaskDecisionEntity,
     TaskEntity,
   ]),
 ];

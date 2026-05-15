@@ -3,11 +3,42 @@ import { GqlExecutionContext } from '@nestjs/graphql';
 import { BPMAuthContext } from './bpm-auth-context';
 
 interface BPMContextCarrier {
-  readonly bpmAuthContext?: unknown;
+  bpmAuthContext?: unknown;
 }
 
 interface BPMRequestCarrier extends BPMContextCarrier {
   readonly req?: BPMContextCarrier;
+}
+
+export function attachBPMAuthContext(
+  context: ExecutionContext | undefined,
+  authContext: BPMAuthContext,
+): void {
+  if (!context) {
+    return;
+  }
+
+  const graphqlContext = GqlExecutionContext.create(context).getContext<
+    BPMRequestCarrier | undefined
+  >();
+
+  if (graphqlContext) {
+    graphqlContext.bpmAuthContext = authContext;
+
+    if (graphqlContext.req) {
+      graphqlContext.req.bpmAuthContext = authContext;
+    }
+
+    return;
+  }
+
+  const httpRequest = context
+    .switchToHttp()
+    .getRequest<BPMContextCarrier | undefined>();
+
+  if (httpRequest) {
+    httpRequest.bpmAuthContext = authContext;
+  }
 }
 
 export function extractBPMAuthContext(

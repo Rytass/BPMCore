@@ -26,9 +26,14 @@ export class UploadAttachmentInput {
   @IsString()
   formFieldPath?: string | null;
 
-  @Field()
+  @Field(() => String, {
+    deprecationReason:
+      'Ignored. The current authenticated BPM member is always used.',
+    nullable: true,
+  })
+  @IsOptional()
   @IsString()
-  uploaderMemberId!: string;
+  uploaderMemberId?: string | null;
 
   @Field()
   @IsString()

@@ -24,6 +24,7 @@ export enum NotificationTypeEnum {
   SLA_WARNING = 'SLA_WARNING',
   TASK_ASSIGNED = 'TASK_ASSIGNED',
   TASK_TRANSFERRED = 'TASK_TRANSFERRED',
+  WORKFLOW_NOTIFICATION = 'WORKFLOW_NOTIFICATION',
 }
 
 registerEnumType(NotificationChannelEnum, {

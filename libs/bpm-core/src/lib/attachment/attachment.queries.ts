@@ -28,8 +28,13 @@ export class AttachmentQueries {
   @Query(() => String)
   async attachmentDownloadUrl(
     @Args('id', { type: () => String }) id: string,
-    @Args('requestedByMemberId', { type: () => String })
-    requestedByMemberId: string,
+    @Args('requestedByMemberId', {
+      deprecationReason:
+        'Ignored. The current authenticated BPM member is always used.',
+      nullable: true,
+      type: () => String,
+    })
+    _requestedByMemberId: string | null,
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<string> {
     return this.attachmentService.createSignedUrl({
@@ -42,8 +47,13 @@ export class AttachmentQueries {
   @Query(() => String)
   async attachmentPreviewUrl(
     @Args('id', { type: () => String }) id: string,
-    @Args('requestedByMemberId', { type: () => String })
-    requestedByMemberId: string,
+    @Args('requestedByMemberId', {
+      deprecationReason:
+        'Ignored. The current authenticated BPM member is always used.',
+      nullable: true,
+      type: () => String,
+    })
+    _requestedByMemberId: string | null,
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<string> {
     return this.attachmentService.createSignedUrl({

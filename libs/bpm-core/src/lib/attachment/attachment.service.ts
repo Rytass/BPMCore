@@ -9,6 +9,8 @@ import {
 import { EntityManager, In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
+import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import {
   ATTACHMENT_STORAGE,
@@ -43,6 +45,10 @@ export class AttachmentService {
     private readonly approvalInstanceRepository: Repository<ApprovalInstanceEntity>,
     @InjectRepository(TaskEntity)
     private readonly taskRepository: Repository<TaskEntity>,
+    @InjectRepository(TaskCandidateEntity)
+    private readonly taskCandidateRepository: Repository<TaskCandidateEntity>,
+    @InjectRepository(TaskDecisionEntity)
+    private readonly taskDecisionRepository: Repository<TaskDecisionEntity>,
     @Inject(ATTACHMENT_STORAGE)
     private readonly storage: AttachmentStorage,
     @Optional()
@@ -54,6 +60,11 @@ export class AttachmentService {
     input: UploadAttachmentInput,
   ): Promise<AttachmentEntity> {
     const fileBuffer = Buffer.from(input.contentBase64, 'base64');
+    const uploaderMemberId = input.uploaderMemberId?.trim();
+
+    if (!uploaderMemberId) {
+      throw new BadRequestException('Attachment uploader member id is required');
+    }
 
     if (fileBuffer.length !== input.sizeBytes) {
       throw new BadRequestException('Attachment size does not match payload');
@@ -84,7 +95,7 @@ export class AttachmentService {
         storageKey: storedFile.key,
         storageProvider: STORAGE_PROVIDER,
         taskId: input.taskId ?? null,
-        uploaderMemberId: input.uploaderMemberId.trim(),
+        uploaderMemberId,
       }),
     );
   }
@@ -276,12 +287,90 @@ export class AttachmentService {
       ? await this.taskRepository.findOne({ where: { id: attachment.taskId } })
       : null;
 
-    if (task?.assigneeMemberId === requestedByMemberId) {
+    if (task && isTaskDirectlyReadableByMember(task, requestedByMemberId)) {
+      return;
+    }
+
+    const relatedTaskIds = attachment.taskId
+      ? [attachment.taskId]
+      : attachment.instanceId
+        ? (
+            await this.taskRepository.find({
+              where: { instanceId: attachment.instanceId },
+            })
+          ).map((candidateTask) => candidateTask.id)
+        : [];
+
+    if (
+      relatedTaskIds.length > 0 &&
+      (await this.isMemberRelatedToTaskCandidates(
+        relatedTaskIds,
+        requestedByMemberId,
+      ))
+    ) {
+      return;
+    }
+
+    if (
+      relatedTaskIds.length > 0 &&
+      (await this.isMemberRelatedToTaskDecisions(
+        relatedTaskIds,
+        requestedByMemberId,
+      ))
+    ) {
+      return;
+    }
+
+    if (
+      relatedTaskIds.length > 0 &&
+      (
+        await this.taskRepository.find({
+          where: { id: In(relatedTaskIds) },
+        })
+      ).some((candidateTask) =>
+        isTaskDirectlyReadableByMember(candidateTask, requestedByMemberId),
+      )
+    ) {
       return;
     }
 
     throw new NotFoundException(`Attachment ${attachment.id} was not found`);
   }
+
+  private async isMemberRelatedToTaskCandidates(
+    taskIds: readonly string[],
+    memberId: string,
+  ): Promise<boolean> {
+    const candidates = await this.taskCandidateRepository.find({
+      where: { taskId: In([...taskIds]) },
+    });
+
+    return candidates.some(
+      (candidate) =>
+        candidate.memberId === memberId || candidate.originalMemberId === memberId,
+    );
+  }
+
+  private async isMemberRelatedToTaskDecisions(
+    taskIds: readonly string[],
+    memberId: string,
+  ): Promise<boolean> {
+    const decisions = await this.taskDecisionRepository.find({
+      where: { taskId: In([...taskIds]) },
+    });
+
+    return decisions.some((decision) => decision.decidedByMemberId === memberId);
+  }
+}
+
+function isTaskDirectlyReadableByMember(
+  task: TaskEntity,
+  memberId: string,
+): boolean {
+  return (
+    task.assigneeMemberId === memberId ||
+    task.originalAssigneeMemberId === memberId
+  );
 }
 
 function hashBuffer(buffer: Buffer): string {

@@ -1,4 +1,9 @@
 import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+  NumberFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
+import {
   WorkflowDefinition,
   WorkflowEdge,
   DecisionPolicy,
@@ -30,6 +35,7 @@ import {
 } from '../notification/notification.service';
 import { SignatureService } from '../signature/signature.service';
 import { ConditionService } from '../condition/condition.service';
+import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
@@ -64,6 +70,7 @@ import {
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
 const MAX_PROCESSING_STEPS = 500;
+const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
 
 interface DryRunSimulationInput {
@@ -99,6 +106,22 @@ interface RuntimeTaskCandidate {
   readonly originalMemberId: string;
   readonly sourceType: ApproverResolver['type'];
 }
+
+type WorkflowReadScope = BPMAuthContext;
+type FormConditionOperator =
+  | 'equals'
+  | 'greaterThan'
+  | 'greaterThanOrEqual'
+  | 'lessThan'
+  | 'lessThanOrEqual'
+  | 'notEquals';
+
+const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
+  'bpm:*',
+  'bpm.workflow.read_all',
+  'bpm:workflow:read_all',
+  'workflow.read_all',
+]);
 
 @Injectable()
 export class WorkflowEngineService {
@@ -146,6 +169,7 @@ export class WorkflowEngineService {
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
+    validateSubmittedFormData(formDefinitionVersion.schema, formData);
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
@@ -672,6 +696,11 @@ export class WorkflowEngineService {
           );
         }
 
+        validateSubmittedFormData(
+          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+          formData,
+        );
+
         const resubmittedInstance = await instanceRepository.save({
           ...instance,
           completedAt: null,
@@ -1000,7 +1029,10 @@ export class WorkflowEngineService {
     );
   }
 
-  async getApprovalInstance(id: string): Promise<ApprovalInstanceEntity> {
+  async getApprovalInstance(
+    id: string,
+    scope?: WorkflowReadScope,
+  ): Promise<ApprovalInstanceEntity> {
     const instance = await this.approvalInstanceRepository.findOne({
       where: { id },
     });
@@ -1009,12 +1041,37 @@ export class WorkflowEngineService {
       throw new NotFoundException(`Approval instance ${id} was not found`);
     }
 
+    if (
+      scope &&
+      !canReadAllWorkflows(scope) &&
+      !(await this.isApprovalInstanceReadableByMember(instance, scope.memberId))
+    ) {
+      throw new NotFoundException(`Approval instance ${id} was not found`);
+    }
+
     return instance;
   }
 
-  async listApprovalInstances(): Promise<readonly ApprovalInstanceEntity[]> {
+  async listApprovalInstances(
+    scope?: WorkflowReadScope,
+  ): Promise<readonly ApprovalInstanceEntity[]> {
+    if (!scope || canReadAllWorkflows(scope)) {
+      return this.approvalInstanceRepository.find({
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    const readableInstanceIds = await this.listReadableApprovalInstanceIds(
+      scope.memberId,
+    );
+
+    if (!readableInstanceIds.length) {
+      return [];
+    }
+
     return this.approvalInstanceRepository.find({
       order: { createdAt: 'DESC' },
+      where: { id: In(readableInstanceIds) },
     });
   }
 
@@ -1068,8 +1125,9 @@ export class WorkflowEngineService {
 
   async listWorkflowTokens(
     instanceId: string,
+    scope?: WorkflowReadScope,
   ): Promise<readonly WorkflowTokenEntity[]> {
-    await this.getApprovalInstance(instanceId);
+    await this.getApprovalInstance(instanceId, scope);
 
     return this.workflowTokenRepository.find({
       order: { createdAt: 'ASC' },
@@ -1077,8 +1135,11 @@ export class WorkflowEngineService {
     });
   }
 
-  async listTasks(instanceId: string): Promise<readonly TaskEntity[]> {
-    await this.getApprovalInstance(instanceId);
+  async listTasks(
+    instanceId: string,
+    scope?: WorkflowReadScope,
+  ): Promise<readonly TaskEntity[]> {
+    await this.getApprovalInstance(instanceId, scope);
 
     return this.attachTaskCandidateSummaries(
       await this.taskRepository.find({
@@ -1129,6 +1190,7 @@ export class WorkflowEngineService {
   ): Promise<readonly TaskEntity[]> {
     const directTasks = await this.taskRepository.find({
       order: { completedAt: 'DESC', createdAt: 'DESC' },
+      take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
       where: { assigneeMemberId, status: TaskStatusEnum.COMPLETED },
     });
     const candidateRows = await this.taskCandidateRepository.find({
@@ -1140,6 +1202,7 @@ export class WorkflowEngineService {
     const candidateTasks = candidateRows.length
       ? await this.taskRepository.find({
           order: { completedAt: 'DESC', createdAt: 'DESC' },
+          take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
           where: {
             id: In(candidateRows.map((candidate) => candidate.taskId)),
             status: TaskStatusEnum.COMPLETED,
@@ -1154,7 +1217,10 @@ export class WorkflowEngineService {
 
   async listTaskDecisions(
     taskId: string,
+    scope?: WorkflowReadScope,
   ): Promise<readonly TaskDecisionEntity[]> {
+    await this.assertTaskReadable(taskId, scope);
+
     return this.taskDecisionRepository.find({
       order: { decidedAt: 'ASC' },
       where: { taskId },
@@ -1163,7 +1229,10 @@ export class WorkflowEngineService {
 
   async listTaskCandidates(
     taskId: string,
+    scope?: WorkflowReadScope,
   ): Promise<readonly TaskCandidateEntity[]> {
+    await this.assertTaskReadable(taskId, scope);
+
     return this.taskCandidateRepository.find({
       order: { createdAt: 'ASC', id: 'ASC' },
       where: { taskId },
@@ -1231,13 +1300,110 @@ export class WorkflowEngineService {
 
   async listActivityLogs(
     instanceId: string,
+    scope?: WorkflowReadScope,
   ): Promise<readonly ActivityLogEntity[]> {
-    await this.getApprovalInstance(instanceId);
+    await this.getApprovalInstance(instanceId, scope);
 
     return this.activityLogRepository.find({
       order: { createdAt: 'ASC' },
       where: { instanceId },
     });
+  }
+
+  private async assertTaskReadable(
+    taskId: string,
+    scope?: WorkflowReadScope,
+  ): Promise<TaskEntity> {
+    const task = await this.taskRepository.findOne({ where: { id: taskId } });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} was not found`);
+    }
+
+    await this.getApprovalInstance(task.instanceId, scope);
+
+    return task;
+  }
+
+  private async isApprovalInstanceReadableByMember(
+    instance: ApprovalInstanceEntity,
+    memberId: string,
+  ): Promise<boolean> {
+    if (instance.initiatorMemberId === memberId) {
+      return true;
+    }
+
+    const tasks = await this.taskRepository.find({
+      where: { instanceId: instance.id },
+    });
+
+    if (tasks.some((task) => isTaskRelatedToMember(task, memberId))) {
+      return true;
+    }
+
+    const taskIds = tasks.map((task) => task.id);
+
+    if (!taskIds.length) {
+      return false;
+    }
+
+    const candidates = await this.taskCandidateRepository.find({
+      where: { taskId: In(taskIds) },
+    });
+
+    if (
+      candidates.some(
+        (candidate) =>
+          candidate.memberId === memberId || candidate.originalMemberId === memberId,
+      )
+    ) {
+      return true;
+    }
+
+    const decisions = await this.taskDecisionRepository.find({
+      where: { taskId: In(taskIds) },
+    });
+
+    return decisions.some((decision) => decision.decidedByMemberId === memberId);
+  }
+
+  private async listReadableApprovalInstanceIds(
+    memberId: string,
+  ): Promise<readonly string[]> {
+    const initiatedInstances = await this.approvalInstanceRepository.find({
+      where: { initiatorMemberId: memberId },
+    });
+    const relatedTasks = await this.taskRepository.find({
+      where: [
+        { assigneeMemberId: memberId },
+        { originalAssigneeMemberId: memberId },
+      ],
+    });
+    const candidateRows = await this.taskCandidateRepository.find({
+      where: [{ memberId }, { originalMemberId: memberId }],
+    });
+    const candidateTaskIds = uniqueTexts(
+      candidateRows.map((candidate) => candidate.taskId),
+    );
+    const candidateTasks = candidateTaskIds.length
+      ? await this.taskRepository.find({ where: { id: In(candidateTaskIds) } })
+      : [];
+    const decisions = await this.taskDecisionRepository.find({
+      where: { decidedByMemberId: memberId },
+    });
+    const decisionTaskIds = uniqueTexts(
+      decisions.map((decision) => decision.taskId),
+    );
+    const decisionTasks = decisionTaskIds.length
+      ? await this.taskRepository.find({ where: { id: In(decisionTaskIds) } })
+      : [];
+
+    return uniqueTexts([
+      ...initiatedInstances.map((instance) => instance.id),
+      ...relatedTasks.map((task) => task.instanceId),
+      ...candidateTasks.map((task) => task.instanceId),
+      ...decisionTasks.map((task) => task.instanceId),
+    ]);
   }
 
   private async processActiveToken(
@@ -2590,7 +2756,22 @@ export class WorkflowEngineService {
 
     const tokenRepository = manager.getRepository(WorkflowTokenEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
+    const recipients = await this.resolveApproverResolver(
+      manager,
+      instance,
+      node.data.action.recipients,
+      `知會節點「${node.data.label}」`,
+    );
+    const recipientMemberIds = uniqueTexts(
+      recipients.map((recipient) => recipient.memberId),
+    );
 
+    await this.notificationService.createServiceTaskNotifications({
+      instance,
+      manager,
+      node,
+      recipientMemberIds,
+    });
     await tokenRepository.save({
       ...token,
       consumedAt: new Date(),
@@ -2604,6 +2785,7 @@ export class WorkflowEngineService {
         nodeId: node.id,
         payload: {
           action: 'NOTIFY',
+          recipientMemberIds,
           tokenId: token.id,
         },
         taskId: null,
@@ -3590,6 +3772,289 @@ function compareMembership(
 
 function toDateOnlyString(value: Date): string {
   return value.toISOString().slice(0, 10);
+}
+
+function canReadAllWorkflows(scope: WorkflowReadScope): boolean {
+  return (
+    scope.roles.includes('BPM_ADMIN') ||
+    scope.permissions.some((permission) =>
+      WORKFLOW_READ_ALL_PERMISSIONS.has(permission),
+    )
+  );
+}
+
+function isTaskRelatedToMember(task: TaskEntity, memberId: string): boolean {
+  return (
+    task.assigneeMemberId === memberId ||
+    task.originalAssigneeMemberId === memberId
+  );
+}
+
+function validateSubmittedFormData(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+): void {
+  const missingFields = schema.fields.filter((field) => {
+    const fieldValue = formData[field.fieldKey];
+
+    return (
+      isSubmittedFormFieldVisible(field, schema.fields, formData) &&
+      isSubmittedFormFieldRequired(field, schema.fields, formData) &&
+      !isSubmittedFieldValuePresent(fieldValue)
+    );
+  });
+
+  if (missingFields.length > 0) {
+    throw new BadRequestException(
+      `Form data is missing required fields: ${missingFields
+        .map((field) => field.label || field.fieldKey)
+        .join(', ')}`,
+    );
+  }
+}
+
+function readFormDefinitionSnapshotSchema(
+  snapshot: Readonly<Record<string, unknown>>,
+): FormDefinitionSchema {
+  const schema = snapshot.schema;
+
+  if (isFormDefinitionSchema(schema)) {
+    return schema;
+  }
+
+  throw new BadRequestException('Approval instance form schema is invalid');
+}
+
+function isFormDefinitionSchema(value: unknown): value is FormDefinitionSchema {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === 1 &&
+    Array.isArray(value.fields)
+  );
+}
+
+function isSubmittedFormFieldVisible(
+  field: FormFieldDefinition,
+  fields: readonly FormFieldDefinition[],
+  values: Readonly<Record<string, unknown>>,
+): boolean {
+  return field.visibleWhen
+    ? evaluateFormConditionExpression(field.visibleWhen, fields, values, true)
+    : true;
+}
+
+function isSubmittedFormFieldRequired(
+  field: FormFieldDefinition,
+  fields: readonly FormFieldDefinition[],
+  values: Readonly<Record<string, unknown>>,
+): boolean {
+  return (
+    field.required ||
+    Boolean(
+      field.requiredWhen
+        ? evaluateFormConditionExpression(field.requiredWhen, fields, values, false)
+        : false,
+    )
+  );
+}
+
+function evaluateFormConditionExpression(
+  expression: string,
+  fields: readonly FormFieldDefinition[],
+  values: Readonly<Record<string, unknown>>,
+  fallback: boolean,
+): boolean {
+  const rule = parseFormConditionRule(expression);
+
+  if (!rule) {
+    return fallback;
+  }
+
+  const field = fields.find(
+    (candidate) => candidate.fieldKey === rule.fieldKey,
+  );
+
+  if (!field) {
+    return fallback;
+  }
+
+  return evaluateFormConditionRule(rule, field, values[field.fieldKey]);
+}
+
+function parseFormConditionRule(
+  expression: string,
+): {
+  readonly fieldKey: string;
+  readonly operator: FormConditionOperator;
+  readonly value: string;
+} | null {
+  const match = expression
+    .trim()
+    .match(/^form\.([A-Za-z][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(.+)$/u);
+
+  if (!match) {
+    return null;
+  }
+
+  const operator = readFormConditionOperatorFromSymbol(match[2]);
+
+  if (!operator) {
+    return null;
+  }
+
+  return {
+    fieldKey: match[1],
+    operator,
+    value: parseFormConditionLiteral(match[3]),
+  };
+}
+
+function evaluateFormConditionRule(
+  rule: {
+    readonly operator: FormConditionOperator;
+    readonly value: string;
+  },
+  field: FormFieldDefinition,
+  value: unknown,
+): boolean {
+  if (Array.isArray(value)) {
+    return evaluateArrayFormCondition(value, rule);
+  }
+
+  if (field.type === 'boolean') {
+    return compareFormConditionValues(
+      value === true ? 'true' : 'false',
+      rule.value,
+      rule.operator,
+    );
+  }
+
+  if (isNumberFormField(field)) {
+    return compareNumericFormCondition(value, rule);
+  }
+
+  return compareFormConditionValues(
+    typeof value === 'undefined' || value === null ? '' : String(value),
+    rule.value,
+    rule.operator,
+  );
+}
+
+function evaluateArrayFormCondition(
+  value: readonly unknown[],
+  rule: {
+    readonly operator: FormConditionOperator;
+    readonly value: string;
+  },
+): boolean {
+  const stringValues = value.filter(
+    (entry): entry is string => typeof entry === 'string',
+  );
+
+  if (rule.operator === 'equals') {
+    return stringValues.includes(rule.value);
+  }
+
+  if (rule.operator === 'notEquals') {
+    return !stringValues.includes(rule.value);
+  }
+
+  return false;
+}
+
+function compareNumericFormCondition(
+  value: unknown,
+  rule: {
+    readonly operator: FormConditionOperator;
+    readonly value: string;
+  },
+): boolean {
+  const actualValue = typeof value === 'number' ? value : Number(value);
+  const expectedValue = Number(rule.value);
+
+  if (!Number.isFinite(actualValue) || !Number.isFinite(expectedValue)) {
+    return false;
+  }
+
+  return compareFormConditionValues(actualValue, expectedValue, rule.operator);
+}
+
+function compareFormConditionValues(
+  actualValue: number | string,
+  expectedValue: number | string,
+  operator: FormConditionOperator,
+): boolean {
+  if (operator === 'equals') {
+    return actualValue === expectedValue;
+  }
+
+  if (operator === 'notEquals') {
+    return actualValue !== expectedValue;
+  }
+
+  if (operator === 'greaterThan') {
+    return actualValue > expectedValue;
+  }
+
+  if (operator === 'greaterThanOrEqual') {
+    return actualValue >= expectedValue;
+  }
+
+  if (operator === 'lessThan') {
+    return actualValue < expectedValue;
+  }
+
+  return actualValue <= expectedValue;
+}
+
+function readFormConditionOperatorFromSymbol(
+  symbol: string | undefined,
+): FormConditionOperator | null {
+  const operators: Readonly<Record<string, FormConditionOperator>> = {
+    '!=': 'notEquals',
+    '<': 'lessThan',
+    '<=': 'lessThanOrEqual',
+    '==': 'equals',
+    '>': 'greaterThan',
+    '>=': 'greaterThanOrEqual',
+  };
+
+  return symbol ? (operators[symbol] ?? null) : null;
+}
+
+function parseFormConditionLiteral(value: string): string {
+  const trimmedValue = value.trim();
+
+  if (
+    (trimmedValue.startsWith('"') && trimmedValue.endsWith('"')) ||
+    (trimmedValue.startsWith("'") && trimmedValue.endsWith("'"))
+  ) {
+    return trimmedValue.slice(1, -1);
+  }
+
+  return trimmedValue;
+}
+
+function isSubmittedFieldValuePresent(value: unknown): boolean {
+  if (typeof value === 'undefined' || value === null) {
+    return false;
+  }
+
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+
+  return true;
+}
+
+function isNumberFormField(
+  field: FormFieldDefinition,
+): field is NumberFieldDefinition {
+  return field.type === 'number' || field.type === 'money';
 }
 
 function createDryRunStep(input: {

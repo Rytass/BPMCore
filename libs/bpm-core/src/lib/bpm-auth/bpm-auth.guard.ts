@@ -9,6 +9,7 @@ import {
   BPMAuthContextAccessor,
   readAuthenticatedBPMContext,
 } from './bpm-auth-context';
+import { attachBPMAuthContext } from './bpm-auth-context.extractor';
 
 @Injectable()
 export class BPMAuthenticatedGuard implements CanActivate {
@@ -18,7 +19,12 @@ export class BPMAuthenticatedGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    await readAuthenticatedBPMContext(this.authContextAccessor, context);
+    const authContext = await readAuthenticatedBPMContext(
+      this.authContextAccessor,
+      context,
+    );
+
+    attachBPMAuthContext(context, authContext);
 
     return true;
   }

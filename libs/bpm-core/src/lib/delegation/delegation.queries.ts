@@ -1,5 +1,11 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated } from '../bpm-auth';
+import {
+  BPMAuthenticated,
+  BPMAuthContext,
+  BPMCurrentAuthContext,
+  isBPMAdmin,
+} from '../bpm-auth';
 import { DelegationRuleEntity } from './delegation-rule.entity';
 import {
   DelegationRuleStatusEnum,
@@ -28,7 +34,14 @@ export class DelegationQueries {
     status?: DelegationRuleStatusEnum | null,
     @Args('scopeType', { nullable: true, type: () => DelegationScopeTypeEnum })
     scopeType?: DelegationScopeTypeEnum | null,
+    @BPMCurrentAuthContext() authContext?: BPMAuthContext | null,
   ): Promise<readonly DelegationRuleEntity[]> {
+    assertDelegationRuleQueryAllowed({
+      agentMemberId,
+      authContext,
+      principalMemberId,
+    });
+
     return this.delegationService.listDelegationRules({
       agentMemberId,
       includeInactive: includeInactive ?? false,
@@ -52,7 +65,14 @@ export class DelegationQueries {
     status?: DelegationRuleStatusEnum | null,
     @Args('scopeType', { nullable: true, type: () => DelegationScopeTypeEnum })
     scopeType?: DelegationScopeTypeEnum | null,
+    @BPMCurrentAuthContext() authContext?: BPMAuthContext | null,
   ): Promise<number> {
+    assertDelegationRuleQueryAllowed({
+      agentMemberId,
+      authContext,
+      principalMemberId,
+    });
+
     return this.delegationService.countDelegationRules({
       agentMemberId,
       includeInactive: includeInactive ?? false,
@@ -61,4 +81,31 @@ export class DelegationQueries {
       status: status ?? undefined,
     });
   }
+}
+
+function assertDelegationRuleQueryAllowed({
+  agentMemberId,
+  authContext,
+  principalMemberId,
+}: {
+  readonly agentMemberId?: string | null;
+  readonly authContext?: BPMAuthContext | null;
+  readonly principalMemberId?: string | null;
+}): void {
+  if (!authContext) {
+    throw new ForbiddenException('BPM member context is required');
+  }
+
+  if (isBPMAdmin(authContext)) {
+    return;
+  }
+
+  if (
+    principalMemberId === authContext.memberId ||
+    agentMemberId === authContext.memberId
+  ) {
+    return;
+  }
+
+  throw new ForbiddenException('BPM admin permission is required');
 }

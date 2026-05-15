@@ -1,10 +1,15 @@
 import { validateSync } from 'class-validator';
+import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { ModuleRef } from '@nestjs/core';
 import { ObjectLiteral, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
+import {
+  TaskCandidateStatusEnum,
+  TaskStatusEnum,
+} from '../workflow-engine/workflow-engine.enums';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
@@ -149,6 +154,90 @@ describe('NotificationService', () => {
       memberId: 'member-001',
     });
   });
+
+  it('creates SLA notifications for candidate group task members', async (): Promise<void> => {
+    const savedNotifications: NotificationEntity[] = [];
+    const notificationRepository = {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      findOne: (): Promise<NotificationEntity | null> =>
+        Promise.resolve(null),
+      save: (
+        entityOrEntities: NotificationEntity | NotificationEntity[],
+      ): Promise<NotificationEntity | NotificationEntity[]> => {
+        const entities = Array.isArray(entityOrEntities)
+          ? entityOrEntities
+          : [entityOrEntities];
+
+        savedNotifications.push(...entities);
+
+        return Promise.resolve(entityOrEntities);
+      },
+    } as unknown as Repository<NotificationEntity>;
+    const task = Object.assign(new TaskEntity(), {
+      assigneeMemberId: null,
+      createdAt: new Date('2026-05-10T08:00:00.000Z'),
+      id: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+      instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+      nodeId: 'task_review',
+      slaDueAt: new Date('2026-05-10T09:00:00.000Z'),
+      status: TaskStatusEnum.PENDING,
+    });
+    const service = new NotificationService(
+      notificationRepository,
+      {
+        findOne: (): Promise<NotificationPreferenceEntity | null> =>
+          Promise.resolve(null),
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      {
+        find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+      } as unknown as Repository<TaskEntity>,
+      {
+        find: (): Promise<readonly TaskCandidateEntity[]> =>
+          Promise.resolve([
+            createTaskCandidate('candidate-1', 'member-a'),
+            createTaskCandidate('candidate-2', 'member-b'),
+            createTaskCandidate(
+              'candidate-3',
+              'member-cancelled',
+              TaskCandidateStatusEnum.CANCELLED,
+            ),
+          ]),
+      } as unknown as Repository<TaskCandidateEntity>,
+      {
+        findOne: (): Promise<ApprovalInstanceEntity> =>
+          Promise.resolve(createApprovalInstance()),
+      } as unknown as Repository<ApprovalInstanceEntity>,
+      {
+        create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
+          Object.assign(new ActivityLogEntity(), entity),
+        save: (entity: ActivityLogEntity): Promise<ActivityLogEntity> =>
+          Promise.resolve(entity),
+      } as unknown as Repository<ActivityLogEntity>,
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.runSlaScan(new Date('2026-05-10T09:01:00.000Z')),
+    ).resolves.toEqual({ overdueCount: 1, warningCount: 0 });
+    expect(savedNotifications.map((notification) => notification.recipientMemberId)).toEqual([
+      'member-a',
+      'member-b',
+    ]);
+    expect(savedNotifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          payload: expect.objectContaining({ recipientMemberId: 'member-a' }),
+          type: NotificationTypeEnum.SLA_OVERDUE,
+        }),
+        expect.objectContaining({
+          payload: expect.objectContaining({ recipientMemberId: 'member-b' }),
+          type: NotificationTypeEnum.SLA_OVERDUE,
+        }),
+      ]),
+    );
+  });
 });
 
 function createNotification(id: string): NotificationEntity {
@@ -173,6 +262,62 @@ function createNotification(id: string): NotificationEntity {
     title: '新的待簽任務',
     type: NotificationTypeEnum.TASK_ASSIGNED,
   });
+}
+
+function createTaskCandidate(
+  id: string,
+  memberId: string,
+  status: TaskCandidateStatusEnum = TaskCandidateStatusEnum.PENDING,
+): TaskCandidateEntity {
+  return Object.assign(new TaskCandidateEntity(), {
+    createdAt: new Date('2026-05-10T08:00:00.000Z'),
+    id,
+    memberId,
+    status,
+    taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+  });
+}
+
+function createApprovalInstance(): ApprovalInstanceEntity {
+  return Object.assign(new ApprovalInstanceEntity(), {
+    id: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+    title: '採購申請',
+    workflowSnapshot: createSlaWorkflow(),
+  });
+}
+
+function createSlaWorkflow(): WorkflowDefinition {
+  return {
+    edges: [],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: false,
+          approverResolver: {
+            memberIds: ['member-a', 'member-b'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '候選簽核',
+          returnBehavior: {
+            allowReturn: false,
+            allowedTargets: 'PREVIOUS',
+          },
+          sla: {
+            duration: 'PT1H',
+            onTimeout: 'REMIND',
+            warningAt: 0.5,
+          },
+        },
+        id: 'task_review',
+        position: { x: 100, y: 100 },
+        type: 'userTask',
+      },
+    ],
+  };
 }
 
 function createDeliveryService(): NotificationDeliveryService {

@@ -1,5 +1,5 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
+import { BPMAdminOnly, BPMCurrentMemberId } from '../bpm-auth';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
@@ -13,7 +13,7 @@ import {
 import { TemplateService } from './template.service';
 
 @Resolver()
-@BPMAuthenticated()
+@BPMAdminOnly()
 export class TemplateMutations {
   constructor(private readonly templateService: TemplateService) {}
 

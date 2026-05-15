@@ -140,6 +140,10 @@ export class DelegationService {
     });
   }
 
+  async getDelegationRule(id: string): Promise<DelegationRuleEntity> {
+    return this.readRuleOrThrow(id);
+  }
+
   async revokeDelegationRule({
     id,
     revokedByMemberId,

@@ -1,5 +1,10 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
+import {
+  BPMAuthenticated,
+  BPMCurrentAuthContext,
+  BPMCurrentMemberId,
+  BPMAuthContext,
+} from '../bpm-auth';
 import { ActivityLogEntity } from './activity-log.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
@@ -15,29 +20,40 @@ export class WorkflowEngineQueries {
   constructor(private readonly workflowEngineService: WorkflowEngineService) {}
 
   @Query(() => [ApprovalInstanceEntity])
-  async approvalInstances(): Promise<readonly ApprovalInstanceEntity[]> {
-    return this.workflowEngineService.listApprovalInstances();
+  async approvalInstances(
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
+  ): Promise<readonly ApprovalInstanceEntity[]> {
+    return this.workflowEngineService.listApprovalInstances(currentAuthContext);
   }
 
   @Query(() => ApprovalInstanceEntity)
   async approvalInstance(
     @Args('id', { type: () => String }) id: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
-    return this.workflowEngineService.getApprovalInstance(id);
+    return this.workflowEngineService.getApprovalInstance(
+      id,
+      currentAuthContext,
+    );
   }
 
   @Query(() => [WorkflowTokenEntity])
   async workflowTokens(
     @Args('instanceId', { type: () => String }) instanceId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly WorkflowTokenEntity[]> {
-    return this.workflowEngineService.listWorkflowTokens(instanceId);
+    return this.workflowEngineService.listWorkflowTokens(
+      instanceId,
+      currentAuthContext,
+    );
   }
 
   @Query(() => [TaskEntity])
   async tasks(
     @Args('instanceId', { type: () => String }) instanceId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listTasks(instanceId);
+    return this.workflowEngineService.listTasks(instanceId, currentAuthContext);
   }
 
   @Query(() => [TaskEntity])
@@ -70,21 +86,33 @@ export class WorkflowEngineQueries {
   @Query(() => [TaskDecisionEntity])
   async taskDecisions(
     @Args('taskId', { type: () => String }) taskId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly TaskDecisionEntity[]> {
-    return this.workflowEngineService.listTaskDecisions(taskId);
+    return this.workflowEngineService.listTaskDecisions(
+      taskId,
+      currentAuthContext,
+    );
   }
 
   @Query(() => [TaskCandidateEntity])
   async taskCandidates(
     @Args('taskId', { type: () => String }) taskId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly TaskCandidateEntity[]> {
-    return this.workflowEngineService.listTaskCandidates(taskId);
+    return this.workflowEngineService.listTaskCandidates(
+      taskId,
+      currentAuthContext,
+    );
   }
 
   @Query(() => [ActivityLogEntity])
   async activityLogs(
     @Args('instanceId', { type: () => String }) instanceId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly ActivityLogEntity[]> {
-    return this.workflowEngineService.listActivityLogs(instanceId);
+    return this.workflowEngineService.listActivityLogs(
+      instanceId,
+      currentAuthContext,
+    );
   }
 }

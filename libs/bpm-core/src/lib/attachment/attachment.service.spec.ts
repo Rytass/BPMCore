@@ -1,5 +1,7 @@
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
+import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import { AttachmentStorage } from './attachment-storage.token';
 import { AttachmentEntity } from './attachment.entity';
@@ -18,6 +20,8 @@ describe('AttachmentService', () => {
       repository,
       createRepository<ApprovalInstanceEntity>({}),
       createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
       storage,
     );
 
@@ -61,6 +65,8 @@ describe('AttachmentService', () => {
       repository,
       createRepository<ApprovalInstanceEntity>({}),
       createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
       storage,
       {
         publicBaseUrl: 'https://bpm.example.com',
@@ -98,6 +104,76 @@ describe('AttachmentService', () => {
     expect(url.origin).toBe('https://bpm.example.com');
     expect(url.pathname).toBe(`/api/attachments/${attachment.id}/download`);
     expect(url.searchParams.get('disposition')).toBe('inline');
+  });
+
+  it('allows workflow-related members to read instance attachments', async (): Promise<void> => {
+    const attachment = createAttachment({
+      instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+      uploaderMemberId: 'member-uploader',
+    });
+    const service = new AttachmentService(
+      createAttachmentRepository([attachment]),
+      createRepository<ApprovalInstanceEntity>({
+        findOne: (): Promise<ApprovalInstanceEntity> =>
+          Promise.resolve(
+            Object.assign(new ApprovalInstanceEntity(), {
+              id: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+              initiatorMemberId: 'member-initiator',
+            }),
+          ),
+      }),
+      createRepository<TaskEntity>({
+        find: (): Promise<readonly TaskEntity[]> =>
+          Promise.resolve([
+            Object.assign(new TaskEntity(), {
+              assigneeMemberId: 'member-assignee',
+              id: 'task-1',
+              instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+              originalAssigneeMemberId: 'member-original-assignee',
+            }),
+          ]),
+      }),
+      createRepository<TaskCandidateEntity>({
+        find: (): Promise<readonly TaskCandidateEntity[]> =>
+          Promise.resolve([
+            Object.assign(new TaskCandidateEntity(), {
+              memberId: 'member-candidate',
+              originalMemberId: 'member-original-candidate',
+              taskId: 'task-1',
+            }),
+          ]),
+      }),
+      createRepository<TaskDecisionEntity>({
+        find: (): Promise<readonly TaskDecisionEntity[]> =>
+          Promise.resolve([
+            Object.assign(new TaskDecisionEntity(), {
+              decidedByMemberId: 'member-decision-actor',
+              taskId: 'task-1',
+            }),
+          ]),
+      }),
+      createStorage(),
+    );
+
+    await expect(
+      service.listAttachments({
+        instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+        requestedByMemberId: 'member-original-candidate',
+      }),
+    ).resolves.toEqual([attachment]);
+    await expect(
+      service.createSignedUrl({
+        disposition: 'attachment',
+        id: attachment.id,
+        requestedByMemberId: 'member-decision-actor',
+      }),
+    ).resolves.toContain(`/api/attachments/${attachment.id}/download`);
+    await expect(
+      service.listAttachments({
+        instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+        requestedByMemberId: 'member-unrelated',
+      }),
+    ).resolves.toEqual([]);
   });
 });
 
@@ -160,6 +236,27 @@ function createAttachmentRepository(
   };
 
   return repository as unknown as Repository<AttachmentEntity>;
+}
+
+function createAttachment(
+  value: Partial<AttachmentEntity>,
+): AttachmentEntity {
+  return Object.assign(new AttachmentEntity(), {
+    checksumSha256:
+      '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+    createdAt: new Date('2026-05-15T10:00:00.000Z'),
+    filename: 'hello.pdf',
+    formFieldPath: 'form.file',
+    id: '9dd3f2e8-6d7e-4f28-8801-f6859b25669e',
+    instanceId: null,
+    mimeType: 'application/pdf',
+    sizeBytes: '5',
+    storageKey: 'hello.pdf',
+    storageProvider: 'local',
+    taskId: null,
+    uploaderMemberId: 'member-001',
+    ...value,
+  });
 }
 
 function createRepository<TEntity extends ObjectLiteral>(

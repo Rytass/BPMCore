@@ -1,4 +1,7 @@
-import { UserTaskNode } from '@rytass/bpm-core-shared/workflow';
+import {
+  ServiceTaskNode,
+  UserTaskNode,
+} from '@rytass/bpm-core-shared/workflow';
 import {
   Inject,
   Injectable,
@@ -28,6 +31,7 @@ import {
 import {
   ActivityLogEventTypeEnum,
   TaskDecisionActionEnum,
+  TaskCandidateStatusEnum,
   TaskStatusEnum,
 } from '../workflow-engine/workflow-engine.enums';
 import { NotificationDeliveryService } from './notification-delivery.service';
@@ -237,6 +241,57 @@ export class NotificationService {
     );
   }
 
+  async createServiceTaskNotifications({
+    instance,
+    manager,
+    node,
+    recipientMemberIds,
+  }: {
+    readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
+    readonly node: ServiceTaskNode;
+    readonly recipientMemberIds: readonly string[];
+  }): Promise<readonly NotificationEntity[]> {
+    if (node.data.action.type !== 'NOTIFY') {
+      return [];
+    }
+
+    const action = node.data.action;
+    const channels = normalizeNotificationChannels(action.channels);
+    const uniqueRecipientMemberIds = uniqueStrings(recipientMemberIds);
+
+    return uniqueRecipientMemberIds.reduce<
+      Promise<readonly NotificationEntity[]>
+    >(async (previousPromise, recipientMemberId): Promise<
+      readonly NotificationEntity[]
+    > => {
+      const previous = await previousPromise;
+      const created = await this.createNotifications(
+        {
+          channels,
+          customTemplate: action.template ?? null,
+          instanceId: instance.id,
+          payload: {
+            instanceId: instance.id,
+            instanceTitle: instance.title,
+            message:
+              action.template ??
+              `案件 ${instance.title} 的 ${node.data.label} 已送出通知。`,
+            nodeId: node.id,
+            nodeLabel: node.data.label,
+            recipientMemberId,
+          },
+          recipientMemberId,
+          taskId: null,
+          type: NotificationTypeEnum.WORKFLOW_NOTIFICATION,
+        },
+        manager,
+      );
+
+      return [...previous, ...created];
+    }, Promise.resolve([]));
+  }
+
   async runSlaScan(now: Date = new Date()): Promise<SlaScanResult> {
     const candidateTasks = await this.taskRepository.find({
       order: { slaDueAt: 'ASC' },
@@ -354,42 +409,53 @@ export class NotificationService {
       | NotificationTypeEnum.SLA_OVERDUE
       | NotificationTypeEnum.SLA_WARNING;
   }): Promise<boolean> {
-    if (!task.assigneeMemberId) {
+    const recipientMemberIds = await this.resolveTaskRecipientMemberIds(task);
+
+    if (recipientMemberIds.length === 0) {
       return false;
     }
 
-    const existingNotification = await this.notificationRepository.findOne({
-      where: {
-        channel: NotificationChannelEnum.IN_APP,
+    const createdNotifications = await recipientMemberIds.reduce<
+      Promise<number>
+    >(async (countPromise, recipientMemberId): Promise<number> => {
+      const count = await countPromise;
+      const existingNotification = await this.notificationRepository.findOne({
+        where: {
+          channel: NotificationChannelEnum.IN_APP,
+          recipientMemberId,
+          taskId: task.id,
+          type,
+        },
+      });
+
+      if (existingNotification) {
+        return count;
+      }
+
+      await this.createNotifications({
+        channels: [NotificationChannelEnum.IN_APP],
+        customTemplate: node.data.notification?.customTemplate ?? null,
+        instanceId: instance.id,
+        payload: {
+          assigneeMemberId: task.assigneeMemberId,
+          instanceId: instance.id,
+          instanceTitle: instance.title,
+          nodeId: node.id,
+          nodeLabel: node.data.label,
+          onTimeout: node.data.sla?.onTimeout ?? 'REMIND',
+          recipientMemberId,
+          slaDueAt: task.slaDueAt?.toISOString() ?? null,
+          taskId: task.id,
+        },
+        recipientMemberId,
         taskId: task.id,
         type,
-      },
-    });
+      });
 
-    if (existingNotification) {
-      return false;
-    }
+      return count + 1;
+    }, Promise.resolve(0));
 
-    await this.createNotifications({
-      channels: [NotificationChannelEnum.IN_APP],
-      customTemplate: node.data.notification?.customTemplate ?? null,
-      instanceId: instance.id,
-      payload: {
-        assigneeMemberId: task.assigneeMemberId,
-        instanceId: instance.id,
-        instanceTitle: instance.title,
-        nodeId: node.id,
-        nodeLabel: node.data.label,
-        onTimeout: node.data.sla?.onTimeout ?? 'REMIND',
-        slaDueAt: task.slaDueAt?.toISOString() ?? null,
-        taskId: task.id,
-      },
-      recipientMemberId: task.assigneeMemberId,
-      taskId: task.id,
-      type,
-    });
-
-    return true;
+    return createdNotifications > 0;
   }
 
   private async createNotifications(
@@ -575,6 +641,29 @@ export class NotificationService {
     return candidate.memberId;
   }
 
+  private async resolveTaskRecipientMemberIds(
+    task: TaskEntity,
+  ): Promise<readonly string[]> {
+    if (task.assigneeMemberId) {
+      return [task.assigneeMemberId];
+    }
+
+    const candidates = await this.taskCandidateRepository.find({
+      order: { createdAt: 'ASC' },
+      where: { taskId: task.id },
+    });
+
+    return uniqueStrings(
+      candidates
+        .filter(
+          (candidate) =>
+            candidate.status === TaskCandidateStatusEnum.PENDING ||
+            candidate.status === TaskCandidateStatusEnum.CLAIMED,
+        )
+        .map((candidate) => candidate.memberId),
+    );
+  }
+
   private async resolveEscalationTargetMemberId({
     actorMemberId,
     node,
@@ -654,6 +743,28 @@ function readNodeNotificationChannels(
     .filter((channel): channel is NotificationChannelEnum => Boolean(channel));
 
   return channels.length ? channels : options.defaultChannels;
+}
+
+function normalizeNotificationChannels(
+  channels: readonly string[],
+): readonly NotificationChannelEnum[] {
+  const normalizedChannels = channels
+    .map((channel): NotificationChannelEnum | null =>
+      channel === NotificationChannelEnum.EMAIL
+        ? NotificationChannelEnum.EMAIL
+        : channel === NotificationChannelEnum.IN_APP
+          ? NotificationChannelEnum.IN_APP
+          : null,
+    )
+    .filter((channel): channel is NotificationChannelEnum => Boolean(channel));
+
+  return normalizedChannels.length
+    ? normalizedChannels
+    : [NotificationChannelEnum.IN_APP];
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return Array.from(new Set(values));
 }
 
 function isChannelEnabled(

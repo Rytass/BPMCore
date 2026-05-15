@@ -8,13 +8,18 @@ import {
   BPMAuthModuleOptions,
 } from './bpm-auth.options';
 import { BPMAuthenticatedGuard } from './bpm-auth.guard';
+import { BPMAdminGuard } from './bpm-auth.authorization';
 import { ConfigurableBPMAuthContextAccessor } from './configurable-bpm-auth-context.accessor';
 
 @Module({})
 export class BPMAuthModule {
   static forRoot(options: BPMAuthModuleOptions = {}): DynamicModule {
     return {
-      exports: [BPM_AUTH_CONTEXT_ACCESSOR, BPMAuthenticatedGuard],
+      exports: [
+        BPM_AUTH_CONTEXT_ACCESSOR,
+        BPMAdminGuard,
+        BPMAuthenticatedGuard,
+      ],
       global: true,
       module: BPMAuthModule,
       providers: [
@@ -26,6 +31,7 @@ export class BPMAuthModule {
           provide: BPM_AUTH_CONTEXT_ACCESSOR,
           useClass: ConfigurableBPMAuthContextAccessor,
         },
+        BPMAdminGuard,
         BPMAuthenticatedGuard,
       ],
     };
@@ -33,7 +39,11 @@ export class BPMAuthModule {
 
   static forRootAsync(options: BPMAuthModuleAsyncOptions): DynamicModule {
     return {
-      exports: [BPM_AUTH_CONTEXT_ACCESSOR, BPMAuthenticatedGuard],
+      exports: [
+        BPM_AUTH_CONTEXT_ACCESSOR,
+        BPMAdminGuard,
+        BPMAuthenticatedGuard,
+      ],
       global: true,
       imports: options.imports,
       module: BPMAuthModule,
@@ -47,6 +57,7 @@ export class BPMAuthModule {
           provide: BPM_AUTH_CONTEXT_ACCESSOR,
           useClass: ConfigurableBPMAuthContextAccessor,
         },
+        BPMAdminGuard,
         BPMAuthenticatedGuard,
       ],
     };

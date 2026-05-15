@@ -29,6 +29,10 @@ const TEMPLATES: Readonly<Record<NotificationTypeEnum, NotificationTemplate>> =
       body: '案件 {{instanceTitle}} 的 {{nodeLabel}} 已轉派給你。',
       title: '新的轉派任務',
     },
+    [NotificationTypeEnum.WORKFLOW_NOTIFICATION]: {
+      body: '{{message}}',
+      title: '{{nodeLabel}}',
+    },
   };
 
 export function renderNotificationTemplate({
