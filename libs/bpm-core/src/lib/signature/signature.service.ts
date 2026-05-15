@@ -1,17 +1,18 @@
 import { createHash, createHmac } from 'crypto';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { EntityManager, Repository } from 'typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskDecisionActionEnum } from '../workflow-engine/workflow-engine.enums';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import { SignatureEntity } from './signature.entity';
+import {
+  BPMResolvedSignatureOptions,
+  BPM_SIGNATURE_OPTIONS,
+  DEFAULT_BPM_SIGNATURE_OPTIONS,
+} from './signature-options';
 import { SignatureVerificationObject } from './signature-verification.object';
 
 const SIGNATURE_ALGORITHM = 'HMAC-SHA256';
-const DEFAULT_KEY_VERSION = 1;
-const SIGNATURE_KEYS: Readonly<Record<number, string>> = {
-  [DEFAULT_KEY_VERSION]: 'bpm-core-local-signature-key-v1',
-};
 
 export interface SignTaskDecisionInput {
   readonly action: TaskDecisionActionEnum;
@@ -26,6 +27,12 @@ export interface SignTaskDecisionInput {
 
 @Injectable()
 export class SignatureService {
+  constructor(
+    @Optional()
+    @Inject(BPM_SIGNATURE_OPTIONS)
+    private readonly signatureOptions: BPMResolvedSignatureOptions = DEFAULT_BPM_SIGNATURE_OPTIONS,
+  ) {}
+
   async signTaskDecision(
     manager: EntityManager,
     input: SignTaskDecisionInput,
@@ -37,8 +44,12 @@ export class SignatureService {
     );
     const payload = buildTaskDecisionSignedPayload(input);
     const signedPayloadHash = hashStableJson(payload);
-    const keyVersion = DEFAULT_KEY_VERSION;
-    const signature = signHash(signedPayloadHash, keyVersion);
+    const keyVersion = this.signatureOptions.currentKeyVersion;
+    const signature = await signHash(
+      signedPayloadHash,
+      keyVersion,
+      this.signatureOptions,
+    );
 
     return signatureRepository.save(
       signatureRepository.create({
@@ -52,10 +63,11 @@ export class SignatureService {
         signature,
         signerMemberId: input.signerMemberId,
         taskId: input.task.id,
-        timestampToken: buildMockTimestampToken({
-          signedAt: input.decidedAt,
-          signedPayloadHash,
-        }),
+        timestampToken:
+          await this.signatureOptions.timestampProvider.createTimestampToken({
+            signedAt: input.decidedAt,
+            signedPayloadHash,
+          }),
       }),
     );
   }
@@ -78,9 +90,17 @@ export class SignatureService {
       signatureRepository,
       instanceId,
     );
-    const errors = signatures.flatMap((signature, index) =>
-      verifySignatureAt(signature, signatures[index - 1] ?? null),
-    );
+    const errors = (
+      await Promise.all(
+        signatures.map((signature, index) =>
+          verifySignatureAt(
+            signature,
+            signatures[index - 1] ?? null,
+            this.signatureOptions,
+          ),
+        ),
+      )
+    ).flatMap((signatureErrors) => signatureErrors);
 
     return Object.assign(new SignatureVerificationObject(), {
       checkedCount: signatures.length,
@@ -118,12 +138,17 @@ function buildTaskDecisionSignedPayload(
   };
 }
 
-function verifySignatureAt(
+async function verifySignatureAt(
   signature: SignatureEntity,
   previousSignature: SignatureEntity | null,
-): readonly string[] {
+  options: BPMResolvedSignatureOptions,
+): Promise<readonly string[]> {
   const payloadHash = hashStableJson(signature.signedPayload);
-  const expectedSignature = signHash(payloadHash, signature.keyVersion);
+  const expectedSignature = await signHash(
+    payloadHash,
+    signature.keyVersion,
+    options,
+  );
   const expectedPreviousHash = previousSignature?.signedPayloadHash ?? null;
 
   return [
@@ -139,8 +164,12 @@ function verifySignatureAt(
   ].filter(isPresentText);
 }
 
-function signHash(signedPayloadHash: string, keyVersion: number): string {
-  const key = SIGNATURE_KEYS[keyVersion];
+async function signHash(
+  signedPayloadHash: string,
+  keyVersion: number,
+  options: BPMResolvedSignatureOptions,
+): Promise<string> {
+  const key = await options.keyProvider.readKey(keyVersion);
 
   if (!key) {
     throw new Error(`Unsupported signature key version: ${keyVersion}`);
@@ -169,23 +198,6 @@ function stableStringify(value: unknown): string {
         `${JSON.stringify(key)}:${stableStringify(entryValue)}`,
     )
     .join(',')}}`;
-}
-
-function buildMockTimestampToken({
-  signedAt,
-  signedPayloadHash,
-}: {
-  readonly signedAt: Date;
-  readonly signedPayloadHash: string;
-}): Buffer {
-  return Buffer.from(
-    JSON.stringify({
-      provider: 'mock-rfc3161',
-      signedAt: signedAt.toISOString(),
-      signedPayloadHash,
-    }),
-    'utf8',
-  );
 }
 
 function isPresentText(value: string | null): value is string {

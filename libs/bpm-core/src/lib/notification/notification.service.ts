@@ -35,7 +35,6 @@ import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
-  NotificationDigestModeEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
@@ -46,10 +45,6 @@ import {
 } from './notification-options';
 import { renderNotificationTemplate } from './notification-template';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
-
-const DEFAULT_TASK_CHANNELS: readonly NotificationChannelEnum[] = [
-  NotificationChannelEnum.IN_APP,
-];
 
 interface CreateNotificationInput {
   readonly channels: readonly NotificationChannelEnum[];
@@ -178,7 +173,10 @@ export class NotificationService {
         where: { memberId },
       });
 
-    return existingPreference ?? createDefaultPreference(memberId);
+    return (
+      existingPreference ??
+      createDefaultPreference(memberId, this.notificationOptions)
+    );
   }
 
   async updatePreference(
@@ -216,7 +214,7 @@ export class NotificationService {
 
     return this.createNotifications(
       {
-        channels: readNodeNotificationChannels(node),
+        channels: readNodeNotificationChannels(node, this.notificationOptions),
         customTemplate: node.data.notification?.customTemplate ?? null,
         instanceId: instance.id,
         payload: {
@@ -619,11 +617,12 @@ export function calculateTaskSlaDueAt({
 
 function createDefaultPreference(
   memberId: string,
+  options: BPMResolvedNotificationOptions,
 ): NotificationPreferenceEntity {
   return Object.assign(new NotificationPreferenceEntity(), {
-    emailDigestMode: NotificationDigestModeEnum.INSTANT,
-    emailEnabled: true,
-    inAppEnabled: true,
+    emailDigestMode: options.defaultEmailDigestMode,
+    emailEnabled: options.defaultEmailPreferenceEnabled,
+    inAppEnabled: options.defaultInAppPreferenceEnabled,
     memberId,
     quietHoursEnd: null,
     quietHoursStart: null,
@@ -639,6 +638,7 @@ function normalizeTimeInput(value: string | null): string | null {
 
 function readNodeNotificationChannels(
   node: UserTaskNode,
+  options: BPMResolvedNotificationOptions,
 ): readonly NotificationChannelEnum[] {
   const configuredChannels = node.data.notification?.channels ?? [];
   const channels = configuredChannels
@@ -653,7 +653,7 @@ function readNodeNotificationChannels(
     )
     .filter((channel): channel is NotificationChannelEnum => Boolean(channel));
 
-  return channels.length ? channels : DEFAULT_TASK_CHANNELS;
+  return channels.length ? channels : options.defaultChannels;
 }
 
 function isChannelEnabled(

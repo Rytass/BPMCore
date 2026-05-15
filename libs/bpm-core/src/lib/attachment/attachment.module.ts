@@ -1,4 +1,11 @@
-import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
+import {
+  DynamicModule,
+  Global,
+  InjectionToken,
+  Module,
+  Provider,
+} from '@nestjs/common';
+import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
@@ -9,9 +16,25 @@ import { AttachmentQueries } from './attachment.queries';
 import { attachmentStorageProvider } from './attachment-storage.provider';
 import { AttachmentStorage } from './attachment-storage.token';
 import { AttachmentService } from './attachment.service';
+import {
+  BPM_ATTACHMENT_OPTIONS,
+  BPMRootAttachmentOptions,
+  resolveBPMAttachmentOptions,
+} from './attachment-options';
 
-export interface AttachmentModuleOptions {
+export interface AttachmentModuleOptions extends BPMRootAttachmentOptions {
   readonly storageProvider?: Provider<AttachmentStorage>;
+}
+
+export interface AttachmentModuleAsyncOptions extends Pick<
+  ModuleMetadata,
+  'imports'
+> {
+  readonly inject?: readonly InjectionToken[];
+  readonly storageProvider?: Provider<AttachmentStorage>;
+  readonly useFactory: (
+    ...args: readonly unknown[]
+  ) => BPMRootAttachmentOptions | Promise<BPMRootAttachmentOptions>;
 }
 
 const ATTACHMENT_MODULE_IMPORTS = [
@@ -34,7 +57,11 @@ const ATTACHMENT_MODULE_EXPORTS = [AttachmentService];
 @Module({
   imports: ATTACHMENT_MODULE_IMPORTS,
   controllers: ATTACHMENT_MODULE_CONTROLLERS,
-  providers: [...ATTACHMENT_MODULE_PROVIDERS, attachmentStorageProvider],
+  providers: [
+    ...ATTACHMENT_MODULE_PROVIDERS,
+    attachmentStorageProvider,
+    createAttachmentOptionsProvider(),
+  ],
   exports: ATTACHMENT_MODULE_EXPORTS,
 })
 export class AttachmentModule {
@@ -47,7 +74,38 @@ export class AttachmentModule {
       providers: [
         ...ATTACHMENT_MODULE_PROVIDERS,
         options.storageProvider ?? attachmentStorageProvider,
+        createAttachmentOptionsProvider(options),
       ],
     };
   }
+
+  static forRootAsync(options: AttachmentModuleAsyncOptions): DynamicModule {
+    return {
+      controllers: ATTACHMENT_MODULE_CONTROLLERS,
+      exports: ATTACHMENT_MODULE_EXPORTS,
+      imports: [...(options.imports ?? []), ...ATTACHMENT_MODULE_IMPORTS],
+      module: AttachmentModule,
+      providers: [
+        ...ATTACHMENT_MODULE_PROVIDERS,
+        options.storageProvider ?? attachmentStorageProvider,
+        {
+          inject: [...(options.inject ?? [])],
+          provide: BPM_ATTACHMENT_OPTIONS,
+          useFactory: async (
+            ...args: readonly unknown[]
+          ): Promise<ReturnType<typeof resolveBPMAttachmentOptions>> =>
+            resolveBPMAttachmentOptions(await options.useFactory(...args)),
+        },
+      ],
+    };
+  }
+}
+
+function createAttachmentOptionsProvider(
+  options: BPMRootAttachmentOptions = {},
+): Provider {
+  return {
+    provide: BPM_ATTACHMENT_OPTIONS,
+    useValue: resolveBPMAttachmentOptions(options),
+  };
 }

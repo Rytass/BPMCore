@@ -6,6 +6,10 @@ import { AttachmentEntity } from './attachment.entity';
 import { AttachmentService } from './attachment.service';
 
 describe('AttachmentService', () => {
+  afterEach((): void => {
+    jest.restoreAllMocks();
+  });
+
   it('stores uploads through the configured storage adapter and binds form attachment ids to an instance', async (): Promise<void> => {
     const attachments: AttachmentEntity[] = [];
     const storage = createStorage();
@@ -45,6 +49,56 @@ describe('AttachmentService', () => {
       instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
     });
   });
+
+  it('builds signed URLs with configured public URL, TTL, and signing secret', async (): Promise<void> => {
+    jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-05-15T10:00:00.000Z').getTime());
+    const attachments: AttachmentEntity[] = [];
+    const storage = createStorage();
+    const repository = createAttachmentRepository(attachments);
+    const service = new AttachmentService(
+      repository,
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      storage,
+      {
+        publicBaseUrl: 'https://bpm.example.com',
+        signedUrlSecret: 'attachment-secret',
+        signedUrlTtlSeconds: 60,
+      },
+    );
+
+    const attachment = await service.uploadAttachment({
+      checksumSha256:
+        '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+      contentBase64: Buffer.from('hello').toString('base64'),
+      filename: 'hello.pdf',
+      formFieldPath: 'form.file',
+      instanceId: null,
+      mimeType: 'application/pdf',
+      sizeBytes: 5,
+      taskId: null,
+      uploaderMemberId: 'member-001',
+    });
+    const signedUrl = await service.createSignedUrl({
+      disposition: 'inline',
+      id: attachment.id,
+      requestedByMemberId: 'member-001',
+    });
+    const url = new URL(signedUrl);
+
+    await expect(
+      service.readSignedAttachment({
+        disposition: 'inline',
+        id: attachment.id,
+        token: url.searchParams.get('token') ?? '',
+      }),
+    ).resolves.toMatchObject({ attachment });
+    expect(url.origin).toBe('https://bpm.example.com');
+    expect(url.pathname).toBe(`/api/attachments/${attachment.id}/download`);
+    expect(url.searchParams.get('disposition')).toBe('inline');
+  });
 });
 
 function createStorage(): AttachmentStorage & {
@@ -74,6 +128,14 @@ function createAttachmentRepository(
       Object.assign(new AttachmentEntity(), entity),
     find: (): Promise<readonly AttachmentEntity[]> =>
       Promise.resolve(attachments),
+    findOne: ({
+      where,
+    }: {
+      readonly where: { readonly id: string };
+    }): Promise<AttachmentEntity | null> =>
+      Promise.resolve(
+        attachments.find((attachment) => attachment.id === where.id) ?? null,
+      ),
     save: (
       entityOrEntities: AttachmentEntity | readonly AttachmentEntity[],
     ): Promise<AttachmentEntity | readonly AttachmentEntity[]> => {

@@ -6,3 +6,4 @@ export * from './lib/database';
 export * from './lib/identity';
 export * from './lib/notification';
 export * from './lib/organization';
+export * from './lib/signature';

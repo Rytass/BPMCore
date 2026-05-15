@@ -12,9 +12,6 @@ import {
 } from './notification.enums';
 import { BPMResolvedNotificationOptions } from './notification-options';
 
-const MAX_DELIVERY_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 60_000;
-
 @Injectable()
 export class NotificationDeliveryService {
   private readonly logger = new Logger(NotificationDeliveryService.name);
@@ -26,7 +23,7 @@ export class NotificationDeliveryService {
   ) {}
 
   async deliverPendingNotifications({
-    limit = 25,
+    limit,
     now = new Date(),
     options,
   }: {
@@ -34,9 +31,13 @@ export class NotificationDeliveryService {
     readonly now?: Date;
     readonly options: BPMResolvedNotificationOptions;
   }): Promise<number> {
+    const deliveryLimit = normalizePositiveInteger(
+      limit,
+      options.deliveryBatchSize,
+    );
     const pendingNotifications = await this.notificationRepository.find({
       order: { createdAt: 'ASC' },
-      take: Math.max(Math.trunc(limit), 1),
+      take: deliveryLimit,
       where: [
         {
           nextRetryAt: LessThanOrEqual(now),
@@ -85,7 +86,11 @@ export class NotificationDeliveryService {
 
       return true;
     } catch (error: unknown) {
-      await this.recordDeliveryFailure(notification, readErrorMessage(error));
+      await this.recordDeliveryFailure(
+        notification,
+        readErrorMessage(error),
+        options,
+      );
 
       return false;
     }
@@ -193,9 +198,10 @@ export class NotificationDeliveryService {
   private async recordDeliveryFailure(
     notification: NotificationEntity,
     errorMessage: string,
+    options: BPMResolvedNotificationOptions,
   ): Promise<void> {
     const attemptCount = notification.attemptCount + 1;
-    const failedPermanently = attemptCount >= MAX_DELIVERY_ATTEMPTS;
+    const failedPermanently = attemptCount >= options.deliveryMaxAttempts;
     const now = new Date();
 
     await this.notificationRepository.save({
@@ -205,7 +211,9 @@ export class NotificationDeliveryService {
       lastAttemptAt: now,
       nextRetryAt: failedPermanently
         ? null
-        : new Date(now.getTime() + RETRY_DELAY_MS * attemptCount),
+        : new Date(
+            now.getTime() + options.deliveryRetryBaseDelayMs * attemptCount,
+          ),
       status: failedPermanently
         ? NotificationStatusEnum.FAILED
         : NotificationStatusEnum.PENDING,
@@ -218,4 +226,15 @@ export class NotificationDeliveryService {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown delivery error';
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
 }

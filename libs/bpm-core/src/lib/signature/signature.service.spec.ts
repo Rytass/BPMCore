@@ -3,6 +3,7 @@ import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.ent
 import { TaskEntity } from '../workflow-engine/task.entity';
 import { TaskDecisionActionEnum } from '../workflow-engine/workflow-engine.enums';
 import { SignatureEntity } from './signature.entity';
+import { resolveBPMSignatureOptions } from './signature-options';
 import { SignatureService } from './signature.service';
 
 describe('SignatureService', () => {
@@ -52,6 +53,49 @@ describe('SignatureService', () => {
       errors: [],
       valid: true,
     });
+  });
+
+  it('uses configured signature key version, key provider, and timestamp provider', async (): Promise<void> => {
+    const signatures: SignatureEntity[] = [];
+    const repository = createSignatureRepository(signatures);
+    const manager = createManager(repository);
+    const service = new SignatureService(
+      resolveBPMSignatureOptions({
+        signatureCurrentKeyVersion: 7,
+        signatureKeyProvider: {
+          readKey: (keyVersion: number): string | null =>
+            keyVersion === 7 ? 'custom-signature-key' : null,
+        },
+        signatureTimestampProvider: {
+          createTimestampToken: (): Buffer => Buffer.from('timestamp-token'),
+        },
+      }),
+    );
+    const instance = Object.assign(new ApprovalInstanceEntity(), {
+      formData: { amount: 1200 },
+      id: 'instance-1',
+    });
+    const task = Object.assign(new TaskEntity(), {
+      id: 'task-1',
+      nodeId: 'approval',
+    });
+
+    const signature = await service.signTaskDecision(manager, {
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedAt: new Date('2026-05-10T10:00:00.000Z'),
+      instance,
+      returnToNodeId: null,
+      signerMemberId: 'member-001',
+      task,
+      transferToMemberId: null,
+    });
+
+    expect(signature.keyVersion).toBe(7);
+    expect(signature.timestampToken?.toString('utf8')).toBe('timestamp-token');
+    await expect(
+      service.verifyInstanceSignatureChain(repository, instance.id),
+    ).resolves.toMatchObject({ errors: [], valid: true });
   });
 });
 

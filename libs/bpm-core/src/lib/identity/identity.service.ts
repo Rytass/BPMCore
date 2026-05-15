@@ -1,11 +1,15 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
+import {
+  BPM_IDENTITY_OPTIONS,
+  BPMResolvedIdentityOptions,
+  DEFAULT_BPM_IDENTITY_OPTIONS,
+} from './identity-options';
 import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
 import { MEMBER_RESOLVER, MemberResolver } from './member-resolver.interface';
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MEMBER_PAGE = 1;
 const DEFAULT_MEMBER_PAGE_SIZE = 10;
 const MAX_MEMBER_PAGE_SIZE = 100;
@@ -46,6 +50,9 @@ export class IdentityService {
     private readonly cacheRepository: Repository<MemberMetadataCacheEntity>,
     @Inject(MEMBER_RESOLVER)
     private readonly memberResolver: MemberResolver,
+    @Optional()
+    @Inject(BPM_IDENTITY_OPTIONS)
+    private readonly identityOptions: BPMResolvedIdentityOptions = DEFAULT_BPM_IDENTITY_OPTIONS,
   ) {}
 
   async resolveMember(memberId: string): Promise<MemberMetadata> {
@@ -58,7 +65,9 @@ export class IdentityService {
 
     const metadata = await this.memberResolver.resolve(memberId);
     const fetchedAt = now;
-    const expiresAt = new Date(now.getTime() + CACHE_TTL_MS);
+    const expiresAt = new Date(
+      now.getTime() + this.identityOptions.memberMetadataCacheTtlMs,
+    );
 
     const cacheEntity = cached ?? new MemberMetadataCacheEntity();
     cacheEntity.fetchedAt = fetchedAt;

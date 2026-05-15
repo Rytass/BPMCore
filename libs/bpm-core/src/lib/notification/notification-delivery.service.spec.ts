@@ -124,6 +124,55 @@ describe('NotificationDeliveryService', () => {
       }),
     );
   });
+
+  it('uses configured retry policy and marks notifications failed after max attempts', async (): Promise<void> => {
+    const notification = Object.assign(
+      createNotification(NotificationChannelEnum.EMAIL),
+      { attemptCount: 1 },
+    );
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createModuleRef(),
+    );
+
+    await expect(
+      service.deliverNotification(notification, {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        deliveryMaxAttempts: 2,
+        deliveryRetryBaseDelayMs: 5_000,
+        emailEnabled: false,
+      }),
+    ).resolves.toBe(false);
+
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptCount: 2,
+        nextRetryAt: null,
+        status: NotificationStatusEnum.FAILED,
+      }),
+    );
+  });
+
+  it('uses configured batch size when scanning pending notifications', async (): Promise<void> => {
+    const notification = createNotification(NotificationChannelEnum.IN_APP);
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createModuleRef(),
+    );
+
+    await service.deliverPendingNotifications({
+      options: {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        deliveryBatchSize: 7,
+      },
+    });
+
+    expect(repository.find).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 7 }),
+    );
+  });
 });
 
 function createNotification(
@@ -155,11 +204,14 @@ function createNotification(
 function createNotificationRepository(
   notification: NotificationEntity,
 ): Repository<NotificationEntity> & {
+  readonly find: jest.Mock;
   readonly save: jest.Mock;
 } {
   const repository = {
-    find: (): Promise<readonly NotificationEntity[]> =>
-      Promise.resolve([notification]),
+    find: jest.fn(
+      (): Promise<readonly NotificationEntity[]> =>
+        Promise.resolve([notification]),
+    ),
     save: jest.fn(
       (entity: NotificationEntity): Promise<NotificationEntity> =>
         Promise.resolve(entity),
@@ -167,6 +219,7 @@ function createNotificationRepository(
   };
 
   return repository as unknown as Repository<NotificationEntity> & {
+    readonly find: jest.Mock;
     readonly save: jest.Mock;
   };
 }

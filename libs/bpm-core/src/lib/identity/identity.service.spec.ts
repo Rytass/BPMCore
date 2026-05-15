@@ -61,6 +61,38 @@ describe('IdentityService', () => {
     ).resolves.toEqual([members[2]]);
     await expect(service.countMembers('')).resolves.toBe(3);
   });
+
+  it('uses configured member metadata cache TTL for refreshed members', async (): Promise<void> => {
+    const cacheRepository = {
+      findOne: jest.fn<Promise<MemberMetadataCacheEntity | null>, []>(() =>
+        Promise.resolve(null),
+      ),
+      save: jest.fn(
+        (
+          entity: MemberMetadataCacheEntity,
+        ): Promise<MemberMetadataCacheEntity> => Promise.resolve(entity),
+      ),
+    } as unknown as Repository<MemberMetadataCacheEntity> & {
+      readonly save: jest.Mock;
+    };
+    const resolver: MemberResolver = {
+      resolve: jest.fn<Promise<MemberMetadata>, [string]>((memberId) =>
+        Promise.resolve(readMemberMetadata(memberId)),
+      ),
+      resolveMany: jest.fn(),
+    };
+    const service = new IdentityService(cacheRepository, resolver, {
+      memberMetadataCacheTtlMs: 1_000,
+    });
+
+    await service.resolveMember('member-1');
+
+    const savedEntity = cacheRepository.save.mock
+      .calls[0]?.[0] as MemberMetadataCacheEntity;
+    expect(
+      savedEntity.expiresAt.getTime() - savedEntity.fetchedAt.getTime(),
+    ).toBe(1_000);
+  });
 });
 
 function readMemberMetadata(memberId: string): MemberMetadata {

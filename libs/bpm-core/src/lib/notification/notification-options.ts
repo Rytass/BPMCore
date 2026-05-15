@@ -1,4 +1,8 @@
 import { InjectionToken } from '@nestjs/common';
+import {
+  NotificationChannelEnum,
+  NotificationDigestModeEnum,
+} from './notification.enums';
 
 export type NotificationFeatureToggle = boolean | 'auto';
 
@@ -114,6 +118,23 @@ export interface BPMRootNotificationOptions {
   readonly notificationDeliveryScanIntervalMs?: number;
 
   /**
+   * Maximum pending notifications processed by each delivery scan.
+   */
+  readonly notificationDeliveryBatchSize?: number;
+
+  /**
+   * Maximum delivery attempts before a pending email/webhook notification is
+   * marked failed.
+   */
+  readonly notificationDeliveryMaxAttempts?: number;
+
+  /**
+   * Base retry delay in milliseconds. Retry scheduling multiplies this value
+   * by the current attempt count.
+   */
+  readonly notificationDeliveryRetryBaseDelayMs?: number;
+
+  /**
    * Enables the background SLA scheduler that scans pending tasks.
    *
    * Defaults to `true`. Set to `false` when the host application wants to run
@@ -169,6 +190,28 @@ export interface BPMRootNotificationOptions {
    * template implementation is wired. Defaults to `simple`.
    */
   readonly notificationTemplateEngine?: NotificationTemplateEngine;
+
+  /**
+   * Channels used when a workflow node does not specify notification channels.
+   */
+  readonly notificationDefaultChannels?: readonly NotificationChannelEnum[];
+
+  /**
+   * Default email digest mode for members without a stored preference.
+   */
+  readonly notificationDefaultEmailDigestMode?: NotificationDigestModeEnum;
+
+  /**
+   * Default in-app notification preference for members without a stored
+   * preference.
+   */
+  readonly notificationDefaultInAppPreferenceEnabled?: boolean;
+
+  /**
+   * Default email notification preference for members without a stored
+   * preference.
+   */
+  readonly notificationDefaultEmailPreferenceEnabled?: boolean;
 }
 
 export interface BPMResolvedNotificationOptions {
@@ -180,6 +223,13 @@ export interface BPMResolvedNotificationOptions {
   readonly emailSmtpSecure: boolean;
   readonly emailSmtpUsername: string | null;
   readonly inAppEnabled: boolean;
+  readonly defaultChannels: readonly NotificationChannelEnum[];
+  readonly defaultEmailDigestMode: NotificationDigestModeEnum;
+  readonly defaultEmailPreferenceEnabled: boolean;
+  readonly defaultInAppPreferenceEnabled: boolean;
+  readonly deliveryBatchSize: number;
+  readonly deliveryMaxAttempts: number;
+  readonly deliveryRetryBaseDelayMs: number;
   readonly deliveryScanIntervalMs: number;
   readonly deliverySchedulerEnabled: boolean;
   readonly slaScanIntervalMs: number;
@@ -207,6 +257,13 @@ export const DEFAULT_BPM_NOTIFICATION_OPTIONS: BPMResolvedNotificationOptions =
     emailSmtpSecure: false,
     emailSmtpUsername: null,
     inAppEnabled: true,
+    defaultChannels: [NotificationChannelEnum.IN_APP],
+    defaultEmailDigestMode: NotificationDigestModeEnum.INSTANT,
+    defaultEmailPreferenceEnabled: true,
+    defaultInAppPreferenceEnabled: true,
+    deliveryBatchSize: 25,
+    deliveryMaxAttempts: 3,
+    deliveryRetryBaseDelayMs: 60_000,
     deliveryScanIntervalMs: 30_000,
     deliverySchedulerEnabled: true,
     slaScanIntervalMs: 60_000,
@@ -245,6 +302,18 @@ export function resolveBPMNotificationOptions(
       options.notificationDeliveryScanIntervalMs,
       DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryScanIntervalMs,
     ),
+    deliveryBatchSize: normalizePositiveInteger(
+      options.notificationDeliveryBatchSize,
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryBatchSize,
+    ),
+    deliveryMaxAttempts: normalizePositiveInteger(
+      options.notificationDeliveryMaxAttempts,
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryMaxAttempts,
+    ),
+    deliveryRetryBaseDelayMs: normalizeInterval(
+      options.notificationDeliveryRetryBaseDelayMs,
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryRetryBaseDelayMs,
+    ),
     deliverySchedulerEnabled:
       options.notificationDeliverySchedulerEnabled ??
       DEFAULT_BPM_NOTIFICATION_OPTIONS.deliverySchedulerEnabled,
@@ -267,6 +336,18 @@ export function resolveBPMNotificationOptions(
     inAppEnabled:
       options.notificationInAppEnabled ??
       DEFAULT_BPM_NOTIFICATION_OPTIONS.inAppEnabled,
+    defaultChannels: normalizeChannels(options.notificationDefaultChannels),
+    defaultEmailDigestMode: isNotificationDigestMode(
+      options.notificationDefaultEmailDigestMode,
+    )
+      ? options.notificationDefaultEmailDigestMode
+      : DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultEmailDigestMode,
+    defaultEmailPreferenceEnabled:
+      options.notificationDefaultEmailPreferenceEnabled ??
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultEmailPreferenceEnabled,
+    defaultInAppPreferenceEnabled:
+      options.notificationDefaultInAppPreferenceEnabled ??
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultInAppPreferenceEnabled,
     slaScanIntervalMs: normalizeInterval(
       options.notificationSlaScanIntervalMs,
       DEFAULT_BPM_NOTIFICATION_OPTIONS.slaScanIntervalMs,
@@ -326,4 +407,46 @@ function normalizeInterval(
   }
 
   return Math.max(value, 1000);
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function normalizeChannels(
+  channels: readonly NotificationChannelEnum[] | undefined,
+): readonly NotificationChannelEnum[] {
+  const normalizedChannels =
+    channels
+      ?.filter(isNotificationChannel)
+      .filter(
+        (channel, index, allChannels) => allChannels.indexOf(channel) === index,
+      ) ?? [];
+
+  return normalizedChannels.length
+    ? normalizedChannels
+    : DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultChannels;
+}
+
+function isNotificationChannel(
+  value: unknown,
+): value is NotificationChannelEnum {
+  return Object.values(NotificationChannelEnum).includes(
+    value as NotificationChannelEnum,
+  );
+}
+
+function isNotificationDigestMode(
+  value: unknown,
+): value is NotificationDigestModeEnum {
+  return Object.values(NotificationDigestModeEnum).includes(
+    value as NotificationDigestModeEnum,
+  );
 }

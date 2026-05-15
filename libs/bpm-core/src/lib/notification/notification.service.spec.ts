@@ -10,11 +10,13 @@ import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
+  NotificationDigestModeEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
 import { NotificationService } from './notification.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
+import { DEFAULT_BPM_NOTIFICATION_OPTIONS } from './notification-options';
 
 describe('NotificationService', () => {
   it('validates quiet hours as time-only values', (): void => {
@@ -117,6 +119,35 @@ describe('NotificationService', () => {
     expect(readNotification).toBeInstanceOf(NotificationEntity);
     expect(readNotification.payloadJson).toBe('{}');
     expect(readNotification.status).toBe(NotificationStatusEnum.READ);
+  });
+
+  it('uses configured defaults for missing notification preferences', async (): Promise<void> => {
+    const service = new NotificationService(
+      createRepository<NotificationEntity>(),
+      {
+        findOne: (): Promise<NotificationPreferenceEntity | null> =>
+          Promise.resolve(null),
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+      {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        defaultEmailDigestMode: NotificationDigestModeEnum.DAILY,
+        defaultEmailPreferenceEnabled: false,
+        defaultInAppPreferenceEnabled: false,
+      },
+    );
+
+    await expect(service.getPreference('member-001')).resolves.toMatchObject({
+      emailDigestMode: NotificationDigestModeEnum.DAILY,
+      emailEnabled: false,
+      inAppEnabled: false,
+      memberId: 'member-001',
+    });
   });
 });
 

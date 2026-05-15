@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { EntityManager, In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -13,12 +14,15 @@ import {
   ATTACHMENT_STORAGE,
   AttachmentStorage,
 } from './attachment-storage.token';
+import {
+  BPM_ATTACHMENT_OPTIONS,
+  BPMResolvedAttachmentOptions,
+  DEFAULT_BPM_ATTACHMENT_OPTIONS,
+} from './attachment-options';
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
 
 const STORAGE_PROVIDER = 'local';
-const SIGNED_URL_TTL_SECONDS = 300;
-const SIGNED_URL_KEY = 'bpm-core-local-attachment-url-key-v1';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -41,6 +45,9 @@ export class AttachmentService {
     private readonly taskRepository: Repository<TaskEntity>,
     @Inject(ATTACHMENT_STORAGE)
     private readonly storage: AttachmentStorage,
+    @Optional()
+    @Inject(BPM_ATTACHMENT_OPTIONS)
+    private readonly attachmentOptions: BPMResolvedAttachmentOptions = DEFAULT_BPM_ATTACHMENT_OPTIONS,
   ) {}
 
   async uploadAttachment(
@@ -186,13 +193,18 @@ export class AttachmentService {
       throw new BadRequestException('Only PDF attachments can be previewed');
     }
 
-    const token = signAttachmentToken({
-      disposition,
-      expiresAt: Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS,
-      id,
-    });
+    const token = signAttachmentToken(
+      {
+        disposition,
+        expiresAt:
+          Math.floor(Date.now() / 1000) +
+          this.attachmentOptions.signedUrlTtlSeconds,
+        id,
+      },
+      this.attachmentOptions.signedUrlSecret,
+    );
 
-    return `${readApiPublicUrl()}/api/attachments/${id}/download?token=${encodeURIComponent(
+    return `${this.attachmentOptions.publicBaseUrl}/api/attachments/${id}/download?token=${encodeURIComponent(
       token,
     )}&disposition=${disposition}`;
   }
@@ -209,7 +221,10 @@ export class AttachmentService {
     readonly attachment: AttachmentEntity;
     readonly buffer: Buffer;
   }> {
-    const payload = verifyAttachmentToken(token);
+    const payload = verifyAttachmentToken(
+      token,
+      this.attachmentOptions.signedUrlSecret,
+    );
 
     if (
       payload.id !== id ||
@@ -320,20 +335,26 @@ function readAttachmentRefsFromValue(
   return [];
 }
 
-function signAttachmentToken(payload: AttachmentTokenPayload): string {
+function signAttachmentToken(
+  payload: AttachmentTokenPayload,
+  signedUrlSecret: string,
+): string {
   const body = Buffer.from(JSON.stringify(payload), 'utf8').toString(
     'base64url',
   );
-  const signature = createHmac('sha256', SIGNED_URL_KEY)
+  const signature = createHmac('sha256', signedUrlSecret)
     .update(body)
     .digest('base64url');
 
   return `${body}.${signature}`;
 }
 
-function verifyAttachmentToken(token: string): AttachmentTokenPayload {
+function verifyAttachmentToken(
+  token: string,
+  signedUrlSecret: string,
+): AttachmentTokenPayload {
   const [body, signature] = token.split('.');
-  const expectedSignature = createHmac('sha256', SIGNED_URL_KEY)
+  const expectedSignature = createHmac('sha256', signedUrlSecret)
     .update(body ?? '')
     .digest('base64url');
 
@@ -360,13 +381,6 @@ function isAttachmentTokenPayload(
     typeof value.id === 'string' &&
     typeof value.expiresAt === 'number' &&
     (value.disposition === 'attachment' || value.disposition === 'inline')
-  );
-}
-
-function readApiPublicUrl(): string {
-  return (process.env.BPM_API_PUBLIC_URL ?? 'http://localhost:17603').replace(
-    /\/+$/,
-    '',
   );
 }
 

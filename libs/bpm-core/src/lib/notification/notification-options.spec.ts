@@ -1,4 +1,8 @@
 import { resolveBPMNotificationOptions } from './notification-options';
+import {
+  NotificationChannelEnum,
+  NotificationDigestModeEnum,
+} from './notification.enums';
 
 describe('resolveBPMNotificationOptions', () => {
   it('enables email automatically only when all SMTP fields are present', (): void => {
@@ -56,5 +60,34 @@ describe('resolveBPMNotificationOptions', () => {
     expect(options.webhookEnabled).toBe(true);
     expect(options.webhookEndpointUrl).toBe('https://example.com/bpm-webhook');
     expect(options.webhookSigningSecret).toBe('webhook-secret');
+  });
+
+  it('normalizes delivery policy and default notification preferences', (): void => {
+    const options = resolveBPMNotificationOptions({
+      notificationDefaultChannels: [
+        NotificationChannelEnum.EMAIL,
+        NotificationChannelEnum.EMAIL,
+        NotificationChannelEnum.WEBHOOK,
+      ],
+      notificationDefaultEmailDigestMode: NotificationDigestModeEnum.DAILY,
+      notificationDefaultEmailPreferenceEnabled: false,
+      notificationDefaultInAppPreferenceEnabled: false,
+      notificationDeliveryBatchSize: 5,
+      notificationDeliveryMaxAttempts: 4,
+      notificationDeliveryRetryBaseDelayMs: 10,
+    });
+
+    expect(options.defaultChannels).toEqual([
+      NotificationChannelEnum.EMAIL,
+      NotificationChannelEnum.WEBHOOK,
+    ]);
+    expect(options.defaultEmailDigestMode).toBe(
+      NotificationDigestModeEnum.DAILY,
+    );
+    expect(options.defaultEmailPreferenceEnabled).toBe(false);
+    expect(options.defaultInAppPreferenceEnabled).toBe(false);
+    expect(options.deliveryBatchSize).toBe(5);
+    expect(options.deliveryMaxAttempts).toBe(4);
+    expect(options.deliveryRetryBaseDelayMs).toBe(1000);
   });
 });

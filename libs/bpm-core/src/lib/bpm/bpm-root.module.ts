@@ -6,6 +6,7 @@ import {
   Type,
 } from '@nestjs/common';
 import { ModuleMetadata } from '@nestjs/common/interfaces';
+import { BPMRootAttachmentOptions } from '../attachment/attachment-options';
 import { AttachmentModule } from '../attachment/attachment.module';
 import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModule } from '../bpm-auth/bpm-auth.module';
@@ -15,19 +16,26 @@ import {
 } from '../bpm-auth/bpm-auth.options';
 import { DelegationModule } from '../delegation/delegation.module';
 import { FormModule } from '../form/form.module';
+import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { IdentityModule } from '../identity/identity.module';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { NotificationModule } from '../notification/notification.module';
 import { NotificationOptionsModule } from '../notification/notification-options.module';
 import { BPMRootNotificationOptions } from '../notification/notification-options';
 import { OrganizationModule } from '../organization/organization.module';
+import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
 
 type BPMModuleImport = DynamicModule | Type<unknown>;
 
-export interface BPMRootModuleOptions extends BPMRootNotificationOptions {
+export interface BPMRootModuleOptions
+  extends
+    BPMRootAttachmentOptions,
+    BPMRootIdentityOptions,
+    BPMRootNotificationOptions,
+    BPMRootSignatureOptions {
   /**
    * Host-provided storage adapter for BPM attachments.
    *
@@ -58,7 +66,12 @@ export interface BPMRootModuleOptions extends BPMRootNotificationOptions {
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
 }
 
-export interface BPMRootModuleAsyncFactoryOptions extends BPMRootNotificationOptions {
+export interface BPMRootModuleAsyncFactoryOptions
+  extends
+    BPMRootAttachmentOptions,
+    BPMRootIdentityOptions,
+    BPMRootNotificationOptions,
+    BPMRootSignatureOptions {
   /**
    * Factory that resolves the current BPM auth context from NestJS execution
    * context.
@@ -157,18 +170,28 @@ export class BPMRootModule {
           useFactory: options.useFactory,
         }),
         BPMAuthModule.forRootAsync(authOptions),
-        IdentityModule.forRoot({
+        IdentityModule.forRootAsync({
+          imports: options.imports,
+          inject: options.inject,
           memberResolverProvider: options.memberResolverProvider,
+          useFactory: options.useFactory,
         }),
         OrganizationModule,
-        AttachmentModule.forRoot({
+        AttachmentModule.forRootAsync({
+          imports: options.imports,
+          inject: options.inject,
           storageProvider: options.attachmentStorageProvider,
+          useFactory: options.useFactory,
         }),
         FormModule,
         TemplateModule,
         DelegationModule,
         NotificationModule,
-        SignatureModule,
+        SignatureModule.forRootAsync({
+          imports: options.imports,
+          inject: options.inject,
+          useFactory: options.useFactory,
+        }),
         WorkflowEngineModule,
       ],
       module: BPMRootModule,
@@ -183,17 +206,19 @@ function createBPMFeatureModules(
     NotificationOptionsModule.forRoot(options),
     BPMAuthModule.forRoot(createBPMAuthModuleOptions(options)),
     IdentityModule.forRoot({
+      ...options,
       memberResolverProvider: options.memberResolverProvider,
     }),
     OrganizationModule,
     AttachmentModule.forRoot({
+      ...options,
       storageProvider: options.attachmentStorageProvider,
     }),
     FormModule,
     TemplateModule,
     DelegationModule,
     NotificationModule,
-    SignatureModule,
+    SignatureModule.forRoot(options),
     WorkflowEngineModule,
   ];
 }
