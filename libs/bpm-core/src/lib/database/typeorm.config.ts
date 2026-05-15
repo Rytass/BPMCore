@@ -1,6 +1,7 @@
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { DataSourceOptions } from 'typeorm';
+import { BPM_CORE_MIGRATIONS } from '../migrations';
 
 const DEFAULT_PORT = 5432;
 const DEFAULT_VAULT_PATH = 'bpm_core/develop';
@@ -42,7 +43,7 @@ function buildDataSourceOptions(secrets: DatabaseSecrets): DataSourceOptions {
     database: secrets.database,
     entities: [],
     host: secrets.host,
-    migrations: ['libs/bpm-core/src/lib/migrations/*.ts'],
+    migrations: [...BPM_CORE_MIGRATIONS],
     migrationsRun: false,
     password: secrets.password,
     port: secrets.port,

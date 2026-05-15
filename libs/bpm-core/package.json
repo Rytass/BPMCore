@@ -22,9 +22,25 @@
       "types": "./src/lib/database/index.d.ts",
       "default": "./src/lib/database/index.js"
     },
+    "./condition": {
+      "types": "./src/lib/condition/index.d.ts",
+      "default": "./src/lib/condition/index.js"
+    },
+    "./delegation": {
+      "types": "./src/lib/delegation/index.d.ts",
+      "default": "./src/lib/delegation/index.js"
+    },
+    "./form": {
+      "types": "./src/lib/form/index.d.ts",
+      "default": "./src/lib/form/index.js"
+    },
     "./identity": {
       "types": "./src/lib/identity/index.d.ts",
       "default": "./src/lib/identity/index.js"
+    },
+    "./migrations": {
+      "types": "./src/lib/migrations/index.d.ts",
+      "default": "./src/lib/migrations/index.js"
     },
     "./notification": {
       "types": "./src/lib/notification/index.d.ts",
@@ -33,6 +49,18 @@
     "./organization": {
       "types": "./src/lib/organization/index.d.ts",
       "default": "./src/lib/organization/index.js"
+    },
+    "./signature": {
+      "types": "./src/lib/signature/index.d.ts",
+      "default": "./src/lib/signature/index.js"
+    },
+    "./template": {
+      "types": "./src/lib/template/index.d.ts",
+      "default": "./src/lib/template/index.js"
+    },
+    "./workflow-engine": {
+      "types": "./src/lib/workflow-engine/index.d.ts",
+      "default": "./src/lib/workflow-engine/index.js"
     }
   },
   "dependencies": {
