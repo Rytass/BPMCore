@@ -94,6 +94,7 @@ export default function NotificationsPage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [preference, setPreference] =
     useState<NotificationPreferenceRecord>(DEFAULT_PREFERENCE);
+  const [preferenceSaving, setPreferenceSaving] = useState(false);
   const [rows, setRows] = useState<NotificationRow[]>([]);
   const [notificationPage, setNotificationPage] = useState(1);
   const [notificationPageSize, setNotificationPageSize] = useState(
@@ -265,18 +266,34 @@ export default function NotificationsPage(): ReactElement {
       return;
     }
 
+    if (preferenceSaving) {
+      return;
+    }
+
+    const previousPreference = preference;
     setPreference(nextPreference);
-    setPreference(
-      await updateNotificationPreference({
-        emailDigestMode: nextPreference.emailDigestMode,
-        emailEnabled: nextPreference.emailEnabled,
-        inAppEnabled: nextPreference.inAppEnabled,
-        memberId: currentMemberId ?? nextPreference.memberId,
-        quietHoursEnd: nextPreference.quietHoursEnd,
-        quietHoursStart: nextPreference.quietHoursStart,
-      }),
-    );
+    setPreferenceSaving(true);
+
+    try {
+      setPreference(
+        await updateNotificationPreference({
+          emailDigestMode: nextPreference.emailDigestMode,
+          emailEnabled: nextPreference.emailEnabled,
+          inAppEnabled: nextPreference.inAppEnabled,
+          memberId: currentMemberId ?? nextPreference.memberId,
+          quietHoursEnd: nextPreference.quietHoursEnd,
+          quietHoursStart: nextPreference.quietHoursStart,
+        }),
+      );
+    } catch (requestError: unknown) {
+      setPreference(previousPreference);
+      setError(readErrorMessage(requestError));
+    } finally {
+      setPreferenceSaving(false);
+    }
   }
+
+  const preferenceControlsDisabled = loading || preferenceSaving;
 
   return (
     <Layout>
@@ -320,6 +337,7 @@ export default function NotificationsPage(): ReactElement {
                           站內通知
                         </span>
                         <RadioGroup
+                          disabled={preferenceControlsDisabled}
                           name="inAppEnabled"
                           onChange={(
                             event: ChangeEvent<HTMLInputElement>,
@@ -352,6 +370,7 @@ export default function NotificationsPage(): ReactElement {
                           Email 通知
                         </span>
                         <RadioGroup
+                          disabled={preferenceControlsDisabled}
                           name="emailEnabled"
                           onChange={(
                             event: ChangeEvent<HTMLInputElement>,
@@ -385,6 +404,7 @@ export default function NotificationsPage(): ReactElement {
                           Email 頻率
                         </span>
                         <RadioGroup
+                          disabled={preferenceControlsDisabled}
                           name="emailDigestMode"
                           onChange={(
                             event: ChangeEvent<HTMLInputElement>,

@@ -27,6 +27,12 @@ export type FormRendererValues = Readonly<
   Record<string, FormFieldValue | undefined>
 >;
 
+export interface FormRendererValidationResult {
+  readonly errors: Readonly<Record<string, string>>;
+  readonly firstInvalidFieldKey: string | null;
+  readonly valid: boolean;
+}
+
 export function buildFormRendererValues(
   fields: readonly FormFieldDefinition[],
   currentValues: FormRendererValues,
@@ -64,6 +70,50 @@ export function readVisibleFormRendererFields(
   return orderedFields.filter((field) =>
     isFormRendererFieldVisible(field, schema.fields, values),
   );
+}
+
+export function validateFormRendererValues({
+  schema,
+  uiSchema,
+  values,
+}: {
+  readonly schema: FormDefinitionSchema;
+  readonly uiSchema: FormUiSchema;
+  readonly values: FormRendererValues;
+}): FormRendererValidationResult {
+  const visibleFields = readVisibleFormRendererFields(schema, uiSchema, values);
+  const errors = visibleFields.reduce<Readonly<Record<string, string>>>(
+    (currentErrors, field) =>
+      isFormRendererFieldRequired(field, schema.fields, values) &&
+      !isFormRendererFieldValuePresent(values[field.fieldKey])
+        ? {
+            ...currentErrors,
+            [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。`,
+          }
+        : currentErrors,
+    {},
+  );
+  const firstInvalidFieldKey = visibleFields.find(
+    (field) => errors[field.fieldKey],
+  )?.fieldKey;
+
+  return {
+    errors,
+    firstInvalidFieldKey: firstInvalidFieldKey ?? null,
+    valid: Object.keys(errors).length === 0,
+  };
+}
+
+export function focusFormRendererField(fieldKey: string): void {
+  const fieldElement = document.querySelector<HTMLElement>(
+    `[data-form-field-key="${CSS.escape(fieldKey)}"]`,
+  );
+  const focusableElement = fieldElement?.querySelector<HTMLElement>(
+    'input, textarea, button, [tabindex]:not([tabindex="-1"])',
+  );
+
+  focusableElement?.focus();
+  fieldElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 export function isFormRendererFieldVisible(
@@ -326,6 +376,24 @@ function readInitialFormRendererValue(
   }
 
   return undefined;
+}
+
+function isFormRendererFieldValuePresent(
+  value: FormFieldValue | undefined,
+): boolean {
+  if (typeof value === 'undefined' || value === null) {
+    return false;
+  }
+
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+
+  return true;
 }
 
 function evaluateConditionRule(

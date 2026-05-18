@@ -58,7 +58,9 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(page.getByText(/簽章：已驗證/)).toBeVisible();
     await expect(page.getByText('此案件沒有附件。')).toBeVisible();
     await page.getByTestId('member-tooltip-member-001').hover();
-    await expect(page.getByText('lin.ceo@example.internal')).toBeVisible();
+    await expect(
+      page.locator('.mzn-tooltip').getByText('lin.ceo@example.internal'),
+    ).toBeVisible();
 
     await page.goto('/inbox');
     await expect(page.getByText('task_manager')).not.toBeVisible();
@@ -162,7 +164,11 @@ test.describe('M2 W5 linear workflow', () => {
 
     await expect(page.getByText('進行中')).toBeVisible();
     await expect(
-      page.getByRole('table').getByText('member-002', { exact: true }),
+      page
+        .getByRole('table')
+        .getByText('member-002（member-002@example.internal）', {
+          exact: true,
+        }),
     ).toBeVisible();
     await expect(page.getByRole('button', { name: '同意' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '拒絕' })).toHaveCount(0);
@@ -657,7 +663,7 @@ function readMemberProfiles(
       return {
         email: 'lin.ceo@example.internal',
         memberId,
-        name: '林執行長',
+        name: '林總經理',
       };
     }
 

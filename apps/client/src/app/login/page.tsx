@@ -8,7 +8,8 @@ import { Button, Input, Typography } from '@mezzanine-ui/react';
 import { LoginIcon } from '@mezzanine-ui/icons';
 import { useAuth } from '../auth-provider';
 import { BPMFormField } from '../_components/bpm-form-field';
-import { ApiPublicMember, listApiDemoMembers } from '../_lib/api-auth-client';
+import { ApiPublicMember, listApiTestMembers } from '../_lib/api-auth-client';
+import { sanitizeLoginNextPath } from './login-routing';
 import styles from './login.module.scss';
 
 const DEFAULT_IDENTIFIER = 'lin.ceo@example.internal';
@@ -17,7 +18,7 @@ const DEFAULT_PASSWORD = 'demo';
 export default function LoginPage(): ReactElement {
   const router = useRouter();
   const { loading, login, member } = useAuth();
-  const [demoMembers, setDemoMembers] = useState<readonly ApiPublicMember[]>(
+  const [testMembers, setTestMembers] = useState<readonly ApiPublicMember[]>(
     [],
   );
   const [error, setError] = useState<string | null>(null);
@@ -34,15 +35,15 @@ export default function LoginPage(): ReactElement {
   }, [loading, member, router]);
 
   useEffect((): void => {
-    async function loadDemoMembers(): Promise<void> {
+    async function loadTestMembers(): Promise<void> {
       try {
-        setDemoMembers(await listApiDemoMembers());
+        setTestMembers(await listApiTestMembers());
       } catch {
-        setDemoMembers([]);
+        setTestMembers([]);
       }
     }
 
-    void loadDemoMembers();
+    void loadTestMembers();
   }, []);
 
   const handleSubmit = useCallback(
@@ -129,21 +130,21 @@ export default function LoginPage(): ReactElement {
           </Button>
         </form>
 
-        {demoMembers.length ? (
+        {testMembers.length ? (
           <div className={styles.demoUsers}>
             <Typography color="text-neutral" variant="caption">
-              Demo 帳號
+              測試帳號
             </Typography>
             <div className={styles.demoUserList}>
-              {demoMembers.map((demoMember) => (
+              {testMembers.map((testMember) => (
                 <button
                   className={styles.demoUserButton}
-                  key={demoMember.memberId}
-                  onClick={(): void => setIdentifier(demoMember.email)}
+                  key={testMember.memberId}
+                  onClick={(): void => setIdentifier(testMember.email)}
                   type="button"
                 >
-                  <span>{demoMember.name}</span>
-                  <span>{demoMember.email}</span>
+                  <span>{testMember.name}</span>
+                  <span>{testMember.email}</span>
                 </button>
               ))}
             </div>
@@ -161,7 +162,7 @@ function readNextPath(): string {
 
   const next = new URLSearchParams(window.location.search).get('next');
 
-  return next?.startsWith('/') ? next : '/';
+  return sanitizeLoginNextPath(next);
 }
 
 function readErrorMessage(error: unknown): string {

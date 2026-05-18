@@ -371,10 +371,6 @@ interface SubmitApprovalInstanceMutationData {
   readonly submitApprovalInstance: Pick<ApprovalInstanceRecord, 'id'>;
 }
 
-interface ProcessApprovalInstanceMutationData {
-  readonly processApprovalInstance: boolean;
-}
-
 interface DecideTaskMutationData {
   readonly decideTask: TaskDecisionRecord;
 }
@@ -1316,19 +1312,6 @@ export async function submitApprovalInstance({
   );
 
   return data.submitApprovalInstance.id;
-}
-
-export async function processApprovalInstance(
-  instanceId: string,
-): Promise<boolean> {
-  const data = await requestGraphQl<ProcessApprovalInstanceMutationData>(
-    `mutation ProcessApprovalInstance($instanceId: String!) {
-      processApprovalInstance(instanceId: $instanceId)
-    }`,
-    { instanceId },
-  );
-
-  return data.processApprovalInstance;
 }
 
 export async function decideTask({

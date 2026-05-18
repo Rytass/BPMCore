@@ -26,12 +26,15 @@ import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import { FormRenderer } from '../../forms/_components/form-renderer';
-import { FormRendererValues } from '../../forms/_lib/form-rendering';
+import {
+  focusFormRendererField,
+  FormRendererValues,
+  validateFormRendererValues,
+} from '../../forms/_lib/form-rendering';
 import {
   LaunchContext,
   LaunchableTemplateRecord,
   listLaunchableTemplates,
-  processApprovalInstance,
   readFormDataCaseTitle,
   readLaunchContext,
   submitApprovalInstance,
@@ -71,6 +74,9 @@ function NewApprovalInstanceContent(): ReactElement {
     readonly LaunchableTemplateRecord[]
   >([]);
   const [error, setError] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<
+    Readonly<Record<string, string>>
+  >({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -165,6 +171,26 @@ function NewApprovalInstanceContent(): ReactElement {
 
     setSubmitting(true);
     setError(null);
+    setFormErrors({});
+
+    const validation = validateFormRendererValues({
+      schema: context.formVersion.schema,
+      uiSchema: context.formVersion.uiSchema,
+      values: formValues,
+    });
+
+    if (!validation.valid) {
+      setFormErrors(validation.errors);
+      setError('請先補齊必填欄位。');
+
+      if (validation.firstInvalidFieldKey) {
+        focusFormRendererField(validation.firstInvalidFieldKey);
+      }
+
+      setSubmitting(false);
+
+      return;
+    }
 
     try {
       const instanceId = await submitApprovalInstance({
@@ -179,7 +205,6 @@ function NewApprovalInstanceContent(): ReactElement {
         }),
       });
 
-      await processApprovalInstance(instanceId);
       router.push(`/instances/${instanceId}`);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -249,8 +274,12 @@ function NewApprovalInstanceContent(): ReactElement {
 
               {context ? (
                 <FormRenderer
+                  errors={formErrors}
                   maxWidth={480}
-                  onChange={setFormValues}
+                  onChange={(values): void => {
+                    setFormValues(values);
+                    setFormErrors({});
+                  }}
                   onUploadAttachment={handleUploadAttachment}
                   schema={context.formVersion.schema}
                   singleColumn

@@ -31,11 +31,13 @@ test.describe('W8 delegation and transfer', () => {
     await page.keyboard.press('Enter');
     await dialog.getByPlaceholder('搜尋姓名或信箱').nth(1).fill('陳');
     await page.keyboard.press('Enter');
-    await expect(dialog.getByRole('button', { name: '建立代理' })).toBeEnabled();
+    await expect(
+      dialog.getByRole('button', { name: '建立代理' }),
+    ).toBeEnabled();
     await dialog.getByRole('button', { name: '建立代理' }).click();
 
     await expect(page.getByRole('table').getByText('啟用中')).toBeVisible();
-    await expect(page.getByRole('table').getByText('林執行長')).toBeVisible();
+    await expect(page.getByRole('table').getByText('林總經理')).toBeVisible();
     await expect(page.getByRole('table').getByText('陳財務主管')).toBeVisible();
 
     await page.getByRole('button', { exact: true, name: '撤銷' }).click();
@@ -61,10 +63,16 @@ test.describe('W8 delegation and transfer', () => {
 
     await expect(page.getByRole('table').getByText('已轉派')).toBeVisible();
     await expect(
-      page.getByRole('table').getByText('member-101（原：member-001）'),
+      page
+        .getByRole('table')
+        .getByText(
+          '陳財務主管（chen.manager@example.internal）（原：林總經理（lin.ceo@example.internal））',
+        ),
     ).toBeVisible();
     await expect(page.getByText('決議：轉派')).toBeVisible();
-    await expect(page.getByText('轉派給：member-101')).toBeVisible();
+    await expect(
+      page.getByText('轉派給：陳財務主管（chen.manager@example.internal）'),
+    ).toBeVisible();
     await expect(page.getByText('轉派說明：請財務主管協助')).toBeVisible();
   });
 });
@@ -399,7 +407,7 @@ function readMemberProfiles(
       return {
         email: 'lin.ceo@example.internal',
         memberId,
-        name: '林執行長',
+        name: '林總經理',
       };
     }
 

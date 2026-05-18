@@ -583,6 +583,34 @@ export default function FormBuilderPage(): ReactElement {
   const hasUnsavedChanges =
     currentSnapshot.schemaJson !== loadedSnapshot.schemaJson ||
     currentSnapshot.uiSchemaJson !== loadedSnapshot.uiSchemaJson;
+
+  useEffect((): (() => void) => {
+    function handleBeforeUnload(event: BeforeUnloadEvent): void {
+      if (!hasUnsavedChanges) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return (): void => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [hasUnsavedChanges]);
+
+  function handleBackToForms(): void {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm('目前有尚未儲存的表單草稿，確定要離開嗎？')
+    ) {
+      return;
+    }
+
+    router.push('/forms');
+  }
   const latestPublishedVersion = useMemo(
     (): FormDefinitionVersionRecord | null =>
       readPublishedVersion(
@@ -954,7 +982,7 @@ export default function FormBuilderPage(): ReactElement {
           <PageHeader>
             <ContentHeader
               description={headerDescription}
-              onBackClick={(): void => router.push('/forms')}
+              onBackClick={handleBackToForms}
               title={record?.definition.name ?? '表單設計器'}
             >
               <Button

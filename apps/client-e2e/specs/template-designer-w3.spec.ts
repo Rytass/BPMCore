@@ -52,7 +52,7 @@ test.describe('M1 W3 template designer', () => {
     await expect(
       page
         .locator('.react-flow__node')
-        .filter({ hasText: '林執行長 (lin.ceo@example.internal)' }),
+        .filter({ hasText: '林總經理 (lin.ceo@example.internal)' }),
     ).toBeVisible();
     await expect(page.locator('.react-flow__edge')).toHaveCount(2);
     await expect(page.getByText('重送策略')).toBeVisible();
@@ -208,9 +208,7 @@ test.describe('M1 W3 template designer', () => {
       .locator('[role="option"]')
       .filter({ hasText: '指定組織主管' })
       .click();
-    await page
-      .getByRole('combobox', { exact: true, name: '選擇組織' })
-      .click();
+    await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
     await page
       .locator('[role="option"]')
       .filter({ hasText: '財務部 · FIN-TW' })
@@ -264,9 +262,7 @@ test.describe('M1 W3 template designer', () => {
       .locator('[role="option"]')
       .filter({ hasText: '組織特定職位' })
       .click();
-    await page
-      .getByRole('combobox', { exact: true, name: '選擇組織' })
-      .click();
+    await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
     await page
       .locator('[role="option"]')
       .filter({ hasText: '財務部 · FIN-TW' })
@@ -302,16 +298,12 @@ test.describe('M1 W3 template designer', () => {
       .locator('[role="option"]')
       .filter({ hasText: '指定組織職位' })
       .click();
-    await page
-      .getByRole('combobox', { exact: true, name: '選擇組織' })
-      .click();
+    await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
     await clickDropdownOption(page, '財務部 · FIN-TW');
     await expect(
       page.getByRole('combobox', { name: '財務部 · FIN-TW' }),
     ).toBeVisible();
-    await page
-      .getByRole('combobox', { exact: true, name: '選擇職位' })
-      .click();
+    await page.getByRole('combobox', { exact: true, name: '選擇職位' }).click();
     await clickDropdownOption(page, '部門主管 · DEPARTMENT_HEAD');
     await expect(
       page.getByText('組織職位：財務部 · FIN-TW / 部門主管 · DEPARTMENT_HEAD'),
@@ -447,7 +439,7 @@ async function mockTemplateGraphQl(
           {
             email: 'lin.ceo@example.internal',
             memberId: 'member-001',
-            name: '林執行長',
+            name: '林總經理',
           },
         ],
       });
@@ -876,7 +868,10 @@ async function fulfillGraphQl(
 }
 
 async function clickDropdownOption(page: Page, text: string): Promise<void> {
-  const option = page.locator('[role="option"]').filter({ hasText: text }).first();
+  const option = page
+    .locator('[role="option"]')
+    .filter({ hasText: text })
+    .first();
 
   await expect(option).toBeVisible();
   await option.evaluate((element): void => {

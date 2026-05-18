@@ -58,6 +58,10 @@ import { formatDateTime } from '../../_lib/date-time';
 import { useAuth } from '../../auth-provider';
 import { renderAppNavigation } from '../../app-navigation';
 import { FormRenderer } from '../../forms/_components/form-renderer';
+import {
+  focusFormRendererField,
+  validateFormRendererValues,
+} from '../../forms/_lib/form-rendering';
 import { PDFPreview } from '../_components/pdf-preview';
 import {
   ActivityLogRecord,
@@ -313,6 +317,8 @@ export default function ApprovalInstancePage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [deciding, setDeciding] = useState(false);
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
+  const [cancelComment, setCancelComment] = useState('');
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectReasonError, setRejectReasonError] = useState<string | null>(
     null,
@@ -332,6 +338,9 @@ export default function ApprovalInstancePage(): ReactElement {
     readonly MemberOption[]
   >([]);
   const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [resubmitFormErrors, setResubmitFormErrors] = useState<
+    Readonly<Record<string, string>>
+  >({});
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
@@ -339,6 +348,7 @@ export default function ApprovalInstancePage(): ReactElement {
     useState<AttachmentRecord | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const trimmedRejectReason = rejectReason.trim();
+  const trimmedCancelComment = cancelComment.trim();
   const trimmedReturnComment = returnComment.trim();
   const trimmedTransferComment = transferComment.trim();
 
@@ -392,11 +402,16 @@ export default function ApprovalInstancePage(): ReactElement {
     instance.initiatorMemberId === currentMemberId &&
     instance.state === 'RETURNED',
   );
+  const memberProfilesById = useMemo(
+    (): ReadonlyMap<string, MemberProfileRecord> =>
+      new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
+    [memberProfiles],
+  );
   const taskRows = useMemo(
     (): TaskRow[] =>
       tasks.map((task) => ({
         ...task,
-        assigneeLabel: readTaskAssigneeLabel(task),
+        assigneeLabel: readTaskAssigneeLabel(task, memberProfilesById),
         key: task.id,
         nodeLabel: readNodeDisplayLabel(
           task.nodeId,
@@ -404,12 +419,7 @@ export default function ApprovalInstancePage(): ReactElement {
         ),
         statusLabel: readTaskStatusLabel(task.status),
       })),
-    [instance, tasks],
-  );
-  const memberProfilesById = useMemo(
-    (): ReadonlyMap<string, MemberProfileRecord> =>
-      new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
-    [memberProfiles],
+    [instance, memberProfilesById, tasks],
   );
   const taskDecisionsByTaskId = useMemo(
     (): ReadonlyMap<string, TaskDecisionRecord> =>
@@ -844,13 +854,40 @@ export default function ApprovalInstancePage(): ReactElement {
 
     setDeciding(true);
     setError(null);
+    setResubmitFormErrors({});
+
+    if (
+      instance.formDefinitionSnapshot.schema &&
+      instance.formDefinitionSnapshot.uiSchema
+    ) {
+      const validation = validateFormRendererValues({
+        schema: instance.formDefinitionSnapshot.schema,
+        uiSchema: instance.formDefinitionSnapshot.uiSchema,
+        values: resubmitFormData,
+      });
+
+      if (!validation.valid) {
+        setResubmitFormErrors(validation.errors);
+        setError('請先補齊必填欄位。');
+
+        if (validation.firstInvalidFieldKey) {
+          focusFormRendererField(validation.firstInvalidFieldKey);
+        }
+
+        setDeciding(false);
+
+        return;
+      }
+    }
 
     try {
       await cancelApprovalInstance({
         cancelledByMemberId: currentMemberId,
-        comment: null,
+        comment: trimmedCancelComment || null,
         instanceId: instance.id,
       });
+      setCancelComment('');
+      setCancelModalOpen(false);
       await refreshInstance();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -915,7 +952,7 @@ export default function ApprovalInstancePage(): ReactElement {
                 disabled={deciding}
                 icon={DangerousOutlineIcon}
                 iconType="leading"
-                onClick={(): void => void handleCancelInstance()}
+                onClick={(): void => setCancelModalOpen(true)}
                 variant="destructive-secondary"
               >
                 取消案件
@@ -985,7 +1022,11 @@ export default function ApprovalInstancePage(): ReactElement {
               instance.formDefinitionSnapshot.uiSchema ? (
                 <>
                   <FormRenderer
-                    onChange={setResubmitFormData}
+                    errors={resubmitFormErrors}
+                    onChange={(values): void => {
+                      setResubmitFormData(values);
+                      setResubmitFormErrors({});
+                    }}
                     onUploadAttachment={
                       canResubmitInstance ? handleUploadAttachment : undefined
                     }
@@ -1168,6 +1209,39 @@ export default function ApprovalInstancePage(): ReactElement {
               }
             />
           ) : null}
+        </Modal>
+        <Modal
+          cancelText="保留案件"
+          confirmButtonProps={{ variant: 'destructive-primary' }}
+          confirmText="確認取消"
+          loading={deciding}
+          modalStatusType="error"
+          modalType="standard"
+          onCancel={(): void => setCancelModalOpen(false)}
+          onClose={(): void => setCancelModalOpen(false)}
+          onConfirm={(): void => void handleCancelInstance()}
+          open={cancelModalOpen}
+          showModalFooter
+          showModalHeader
+          supportingText="取消後會關閉目前待簽任務與候選簽核人。"
+          title="取消案件"
+        >
+          <div style={SECTION_BODY_STYLE}>
+            <Typography variant="body">
+              確定要取消「{instance?.title ?? ''}」嗎？
+            </Typography>
+            <BPMFormField label="取消原因" name="cancelComment">
+              <Textarea
+                onChange={(event): void =>
+                  setCancelComment(event.target.value)
+                }
+                placeholder="可填寫取消原因"
+                resize="vertical"
+                rows={3}
+                value={cancelComment}
+              />
+            </BPMFormField>
+          </div>
         </Modal>
         <Modal
           cancelText="取消"
@@ -1577,6 +1651,7 @@ function readActivityStepRecords(
           taskDecisionsByTaskId,
           signaturesById,
           signatureVerification,
+          memberProfilesById,
         ),
       ].filter(isActivityDescriptionPart);
 
@@ -1668,6 +1743,19 @@ function readMemberDescriptionPart(
     prefix,
     type: 'member',
   };
+}
+
+function readMemberDisplayText(
+  memberId: string | null,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): string {
+  if (!memberId) {
+    return '-';
+  }
+
+  const profile = memberProfilesById.get(memberId);
+
+  return profile ? `${profile.name}（${profile.email}）` : memberId;
 }
 
 function isActivityDescriptionPart(
@@ -2009,6 +2097,7 @@ function readActivityDetail(
   activityLog: ActivityLogRecord,
   payload: Readonly<Record<string, unknown>>,
   workflow: WorkflowDefinition | null,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): string | null {
   if (activityLog.eventType === 'TASK_CREATED') {
     const assigneeMemberId = readStringField(payload, 'assigneeMemberId');
@@ -2024,14 +2113,27 @@ function readActivityDetail(
       );
 
       return candidateMemberIds.length
-        ? `候選簽核人：${candidateMemberIds.join('、')}`
+        ? `候選簽核人：${candidateMemberIds
+            .map((memberId) =>
+              readMemberDisplayText(memberId, memberProfilesById),
+            )
+            .join('、')}`
         : null;
     }
 
+    const assigneeLabel = readMemberDisplayText(
+      assigneeMemberId,
+      memberProfilesById,
+    );
+    const originalAssigneeLabel = readMemberDisplayText(
+      originalAssigneeMemberId,
+      memberProfilesById,
+    );
+
     return originalAssigneeMemberId &&
       originalAssigneeMemberId !== assigneeMemberId
-      ? `待簽人：${assigneeMemberId}（原簽核人：${originalAssigneeMemberId}）`
-      : `待簽人：${assigneeMemberId}`;
+      ? `待簽人：${assigneeLabel}（原簽核人：${originalAssigneeLabel}）`
+      : `待簽人：${assigneeLabel}`;
   }
 
   if (activityLog.eventType === 'TASK_DECIDED') {
@@ -2048,7 +2150,13 @@ function readActivityDetail(
           .filter(isPresentText)
           .join(' · ')
       : action === 'TRANSFERRED'
-        ? [decisionLabel, `轉派給：${transferToMemberId ?? '-'}`]
+        ? [
+            decisionLabel,
+            `轉派給：${readMemberDisplayText(
+              transferToMemberId,
+              memberProfilesById,
+            )}`,
+          ]
             .filter(isPresentText)
             .join(' · ')
         : decisionLabel;
@@ -2092,11 +2200,17 @@ function readActivityDetailParts(
   taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
   signaturesById: ReadonlyMap<string, SignatureRecord>,
   signatureVerification: SignatureVerificationRecord | null,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): readonly ActivityStepDescriptionPart[] {
   if (activityLog.eventType !== 'TASK_DECIDED') {
     return [
       readTextDescriptionPart(
-        readActivityDetail(activityLog, payload, workflow),
+        readActivityDetail(
+          activityLog,
+          payload,
+          workflow,
+          memberProfilesById,
+        ),
       ),
     ].filter(isActivityDescriptionPart);
   }
@@ -2130,7 +2244,12 @@ function readActivityDetailParts(
       ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
       : null,
     action === 'TRANSFERRED'
-      ? readTextDescriptionPart(`轉派給：${transferToMemberId ?? '-'}`)
+      ? readTextDescriptionPart(
+          `轉派給：${readMemberDisplayText(
+            transferToMemberId,
+            memberProfilesById,
+          )}`,
+        )
       : null,
     action === 'TRANSFERRED'
       ? readTextDescriptionPart(`轉派說明：${comment ?? '-'}`)
@@ -2242,23 +2361,37 @@ function readTaskStatusLabel(status: TaskRecord['status']): string {
   return status;
 }
 
-function readTaskAssigneeLabel(task: TaskRecord): string {
+function readTaskAssigneeLabel(
+  task: TaskRecord,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord> = new Map(),
+): string {
   const delegationChain = readDelegationChain(task.delegationChainJson);
 
   if (!task.assigneeMemberId) {
     return task.candidateMemberIds.length
-      ? `候選 ${task.candidateMemberIds.join('、')}`
+      ? `候選 ${task.candidateMemberIds
+          .map((memberId) => readMemberDisplayText(memberId, memberProfilesById))
+          .join('、')}`
       : '未指定';
   }
+
+  const assigneeLabel = readMemberDisplayText(
+    task.assigneeMemberId,
+    memberProfilesById,
+  );
+  const originalAssigneeLabel = readMemberDisplayText(
+    task.originalAssigneeMemberId,
+    memberProfilesById,
+  );
 
   if (
     delegationChain.length === 0 ||
     task.originalAssigneeMemberId === task.assigneeMemberId
   ) {
-    return task.assigneeMemberId;
+    return assigneeLabel;
   }
 
-  return `${task.assigneeMemberId}（原：${task.originalAssigneeMemberId}）`;
+  return `${assigneeLabel}（原：${originalAssigneeLabel}）`;
 }
 
 function canMemberActOnTask(

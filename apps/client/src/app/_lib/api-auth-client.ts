@@ -16,10 +16,10 @@ export interface ApiPublicMember {
   readonly roles: readonly string[];
 }
 
-export async function listApiDemoMembers(): Promise<
+export async function listApiTestMembers(): Promise<
   readonly ApiPublicMember[]
 > {
-  return requestApi<readonly ApiPublicMember[]>('/auth/demo-members');
+  return requestApi<readonly ApiPublicMember[]>('/auth/test-members');
 }
 
 export async function loginApi(input: {

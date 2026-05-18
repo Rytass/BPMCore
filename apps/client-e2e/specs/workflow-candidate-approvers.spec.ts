@@ -22,7 +22,11 @@ test.describe('candidate approver tasks', () => {
 
     await page.goto(`/instances/${INSTANCE_ID}`);
 
-    await expect(page.getByText('候選 member-001、member-002')).toBeVisible();
+    await expect(
+      page.getByText(
+        '候選 member-001（member-001@example.internal）、member-002（member-002@example.internal）',
+      ),
+    ).toBeVisible();
     await expect(page.getByRole('button', { name: '同意' })).toBeVisible();
 
     await page.getByRole('button', { name: '同意' }).click();

@@ -44,6 +44,7 @@ import { BPMFormField } from '../../_components/bpm-form-field';
 
 export interface FormRendererProps {
   readonly emptyText?: string;
+  readonly errors?: Readonly<Record<string, string>>;
   readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
   readonly onUploadAttachment?: (
@@ -90,6 +91,7 @@ function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
 
 export function FormRenderer({
   emptyText = '尚未建立欄位。',
+  errors = {},
   maxWidth,
   onChange,
   onUploadAttachment,
@@ -165,6 +167,7 @@ export function FormRenderer({
       {visibleFields.map((field) => (
         <FormRendererField
           field={field}
+          error={errors[field.fieldKey] ?? null}
           fields={schema.fields}
           key={field.fieldKey}
           onChange={updateValue}
@@ -185,6 +188,7 @@ export function FormRenderer({
 }
 
 function FormRendererField({
+  error,
   field,
   fields,
   onChange,
@@ -194,6 +198,7 @@ function FormRendererField({
   value,
   values,
 }: {
+  readonly error: string | null;
   readonly field: FormFieldDefinition;
   readonly fields: readonly FormFieldDefinition[];
   readonly onChange: (
@@ -216,7 +221,7 @@ function FormRendererField({
     readonly || isFormRendererFieldReadonly(field, fields, values);
 
   return (
-    <div style={style}>
+    <div data-form-field-key={field.fieldKey} style={style}>
       <BPMFormField
         label={field.label}
         name={field.fieldKey}
@@ -230,6 +235,11 @@ function FormRendererField({
           onUploadAttachment,
         )}
       </BPMFormField>
+      {error ? (
+        <Typography color="text-error" variant="caption">
+          {error}
+        </Typography>
+      ) : null}
     </div>
   );
 }

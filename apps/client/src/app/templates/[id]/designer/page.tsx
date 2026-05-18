@@ -513,6 +513,7 @@ export default function TemplateDesignerPage(): ReactElement {
   );
   const [workflowDefinition, setWorkflowDefinition] =
     useState<WorkflowDefinition>(readFallbackWorkflowDefinition());
+  const [loadedDesignerSnapshot, setLoadedDesignerSnapshot] = useState('');
   const [formDefinitionVersionId, setFormDefinitionVersionId] = useState<
     string | null
   >(null);
@@ -533,6 +534,18 @@ export default function TemplateDesignerPage(): ReactElement {
   const [formVersionOptions, setFormVersionOptions] = useState<
     readonly FormVersionSelectOption[]
   >([]);
+  const currentDesignerSnapshot = useMemo(
+    (): string =>
+      JSON.stringify({
+        formDefinitionVersionId,
+        initiatorPolicyCel,
+        workflowDefinition,
+      }),
+    [formDefinitionVersionId, initiatorPolicyCel, workflowDefinition],
+  );
+  const hasUnsavedChanges =
+    Boolean(loadedDesignerSnapshot) &&
+    currentDesignerSnapshot !== loadedDesignerSnapshot;
   const [memberLoading, setMemberLoading] = useState(false);
   const [memberOptions, setMemberOptions] = useState<
     readonly MemberSelectOption[]
@@ -557,6 +570,23 @@ export default function TemplateDesignerPage(): ReactElement {
     void refreshDesigner();
   }, [templateId]);
 
+  useEffect((): (() => void) => {
+    function handleBeforeUnload(event: BeforeUnloadEvent): void {
+      if (!hasUnsavedChanges) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return (): void => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [hasUnsavedChanges]);
+
   useEffect((): void => {
     void resolveWorkflowMemberOptions(workflowDefinition);
   }, [workflowDefinition, memberOptions]);
@@ -566,6 +596,17 @@ export default function TemplateDesignerPage(): ReactElement {
       normalizeDesignerWorkflowDefinition(currentDefinition),
     );
   }, [workflowDefinition.edges, workflowDefinition.nodes]);
+
+  function handleBackToTemplates(): void {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm('目前有尚未儲存的流程草稿，確定要離開嗎？')
+    ) {
+      return;
+    }
+
+    router.push('/templates');
+  }
 
   const selectedNode = useMemo(
     (): WorkflowNode | null =>
@@ -748,15 +789,24 @@ export default function TemplateDesignerPage(): ReactElement {
       setFormVersionOptions(
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
-      setWorkflowDefinition(
-        sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition(),
-      );
-      setFormDefinitionVersionId(
+      const nextWorkflowDefinition =
+        sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition();
+      const nextFormDefinitionVersionId =
         sourceVersion?.formDefinitionVersionId ??
-          nextRecord.formVersions[0]?.id ??
-          null,
+        nextRecord.formVersions[0]?.id ??
+        null;
+      const nextInitiatorPolicyCel = sourceVersion?.initiatorPolicyCel ?? null;
+
+      setWorkflowDefinition(nextWorkflowDefinition);
+      setFormDefinitionVersionId(nextFormDefinitionVersionId);
+      setInitiatorPolicyCel(nextInitiatorPolicyCel);
+      setLoadedDesignerSnapshot(
+        JSON.stringify({
+          formDefinitionVersionId: nextFormDefinitionVersionId,
+          initiatorPolicyCel: nextInitiatorPolicyCel,
+          workflowDefinition: nextWorkflowDefinition,
+        }),
       );
-      setInitiatorPolicyCel(sourceVersion?.initiatorPolicyCel ?? null);
       setInitiatorPolicyModeDraft(
         sourceVersion &&
           !nextRecord.template.currentVersionId &&
@@ -1244,7 +1294,7 @@ export default function TemplateDesignerPage(): ReactElement {
             description={`${draft ? `草稿 v${draft.version}` : '尚未建立草稿'} ·${
               record?.template.currentVersionId ? ' 已發布版本' : ' 尚未發布'
             }`}
-            onBackClick={(): void => router.push('/templates')}
+            onBackClick={handleBackToTemplates}
             title={record?.template.name ?? '流程設計器'}
           >
             <Button

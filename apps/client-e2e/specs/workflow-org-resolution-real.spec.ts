@@ -221,18 +221,18 @@ function readExecutionScenarios(
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-101',
-      approverName: '陳財務長',
+      approverName: '陳財務經理',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       resolver: directResolver('member-101'),
       title: '直接指定會員',
     }),
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-101',
-      approverName: '陳財務長',
+      approverName: '陳財務經理',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       resolver: {
         baseFromInitiator: true,
         levelsUp: 1,
@@ -243,9 +243,9 @@ function readExecutionScenarios(
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-001',
-      approverName: '林執行長',
+      approverName: '林總經理',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       resolver: {
         baseFromInitiator: true,
         levelsUp: 2,
@@ -256,9 +256,9 @@ function readExecutionScenarios(
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-101',
-      approverName: '陳財務長',
+      approverName: '陳財務經理',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       resolver: {
         baseFromInitiator: true,
         fallback: {
@@ -273,9 +273,9 @@ function readExecutionScenarios(
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-101',
-      approverName: '陳財務長',
+      approverName: '陳財務經理',
       initiatorMemberId: 'member-103',
-      initiatorName: '李財務分析師',
+      initiatorName: '李成本會計',
       resolver: {
         orgUnitId: fixture.apOrgUnitId,
         type: 'ORG_UNIT_MANAGER',
@@ -287,7 +287,7 @@ function readExecutionScenarios(
       approverMemberId: 'member-201',
       approverName: '黃人資主管',
       initiatorMemberId: 'member-103',
-      initiatorName: '李財務分析師',
+      initiatorName: '李成本會計',
       resolver: {
         fallback: {
           memberId: 'member-201',
@@ -301,9 +301,9 @@ function readExecutionScenarios(
     createSingleApprovalScenario({
       amount: 100,
       approverMemberId: 'member-102',
-      approverName: '吳應付帳款專員',
+      approverName: '吳採購專員',
       initiatorMemberId: 'member-101',
-      initiatorName: '陳財務長',
+      initiatorName: '陳財務經理',
       resolver: {
         positionId: fixture.apSpecialistPositionId,
         type: 'POSITION',
@@ -315,9 +315,9 @@ function readExecutionScenarios(
       expectedNodeId: 'task_high',
       expectedSkippedNodeId: 'task_default',
       expectedApproverMemberId: 'member-101',
-      expectedApproverName: '陳財務長',
+      expectedApproverName: '陳財務經理',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       title: '條件分流高額路徑',
     }),
     createBranchScenario({
@@ -327,7 +327,7 @@ function readExecutionScenarios(
       expectedApproverMemberId: 'member-201',
       expectedApproverName: '黃人資主管',
       initiatorMemberId: 'member-102',
-      initiatorName: '吳應付帳款專員',
+      initiatorName: '吳採購專員',
       title: '條件分流預設路徑',
     }),
     createSequentialApprovalScenario(),
@@ -491,11 +491,19 @@ async function completeStep(
   ).toBeVisible();
 
   if (step.action === 'REJECTED') {
+    const rejectComment = step.comment ?? 'E2E 拒絕原因';
+    const rejectReasonInput = approverPage.getByPlaceholder('請說明拒絕原因');
+    const rejectConfirmButton = approverPage.getByRole('button', {
+      name: '送出拒絕',
+    });
+
     await approverPage.getByRole('button', { name: '拒絕' }).click();
-    await approverPage
-      .getByPlaceholder('請說明拒絕原因')
-      .fill(step.comment ?? 'E2E 拒絕原因');
-    await approverPage.getByRole('button', { name: '送出拒絕' }).click();
+    await rejectReasonInput.click();
+    await rejectReasonInput.fill('');
+    await rejectReasonInput.pressSequentially(rejectComment);
+    await expect(rejectReasonInput).toHaveValue(rejectComment);
+    await expect(rejectConfirmButton).toBeEnabled();
+    await rejectConfirmButton.click();
   } else if (step.action === 'RETURNED') {
     await approverPage.getByRole('button', { name: '退回' }).click();
     await approverPage
@@ -1104,12 +1112,12 @@ function createSequentialApprovalScenario(): WorkflowExecutionScenario {
       ],
     },
     initiatorMemberId: 'member-102',
-    initiatorName: '吳應付帳款專員',
+    initiatorName: '吳採購專員',
     steps: [
       {
         action: 'APPROVED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         expectation: {
           state: 'RUNNING',
           tasks: [
@@ -1163,12 +1171,12 @@ function createRejectScenario(): WorkflowExecutionScenario {
       ],
     },
     initiatorMemberId: 'member-102',
-    initiatorName: '吳應付帳款專員',
+    initiatorName: '吳採購專員',
     steps: [
       {
         action: 'REJECTED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         comment: 'E2E 驗證拒絕原因',
         expectation: {
           state: 'REJECTED',
@@ -1205,12 +1213,12 @@ function createReturnToPreviousScenario(): WorkflowExecutionScenario {
       ],
     },
     initiatorMemberId: 'member-102',
-    initiatorName: '吳應付帳款專員',
+    initiatorName: '吳採購專員',
     steps: [
       {
         action: 'APPROVED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         expectation: {
           state: 'RUNNING',
           tasks: [
@@ -1253,7 +1261,7 @@ function createReturnToPreviousScenario(): WorkflowExecutionScenario {
       {
         action: 'APPROVED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         expectation: {
           state: 'RUNNING',
           tasks: [
@@ -1304,12 +1312,12 @@ function createParallelAndScenario(): WorkflowExecutionScenario {
       ],
     },
     initiatorMemberId: 'member-102',
-    initiatorName: '吳應付帳款專員',
+    initiatorName: '吳採購專員',
     steps: [
       {
         action: 'APPROVED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         expectation: {
           absentNodeIds: ['task_final'],
           state: 'RUNNING',
@@ -1352,7 +1360,7 @@ function createParallelAndScenario(): WorkflowExecutionScenario {
       {
         action: 'APPROVED',
         approverMemberId: 'member-001',
-        approverName: '林執行長',
+        approverName: '林總經理',
         expectation: {
           state: 'APPROVED',
           tasks: [
@@ -1382,12 +1390,12 @@ function createParallelOrScenario(): WorkflowExecutionScenario {
       ],
     },
     initiatorMemberId: 'member-102',
-    initiatorName: '吳應付帳款專員',
+    initiatorName: '吳採購專員',
     steps: [
       {
         action: 'APPROVED',
         approverMemberId: 'member-101',
-        approverName: '陳財務長',
+        approverName: '陳財務經理',
         expectation: {
           state: 'RUNNING',
           tasks: [
@@ -1413,7 +1421,7 @@ function createParallelOrScenario(): WorkflowExecutionScenario {
       {
         action: 'APPROVED',
         approverMemberId: 'member-001',
-        approverName: '林執行長',
+        approverName: '林總經理',
         expectation: {
           state: 'APPROVED',
           tasks: [
