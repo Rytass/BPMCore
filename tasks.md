@@ -19,7 +19,21 @@ corrected in `AGENTS.md` and ContentHeader remains valid for this project.
 - Keep fixes scoped. Do not combine package-boundary changes with workflow
   runtime changes unless one directly blocks the other.
 
-## Batch 1 - Embedding Auth And Host Provider Contract
+## Completion Status
+
+All remediation batches below were implemented on 2026-05-16. Verification
+evidence:
+
+- `pnpm typecheck`
+- `pnpm lint`
+- `pnpm nx test bpm-core --runInBand`
+- `pnpm nx test client --runInBand`
+- `pnpm nx build bpm-core --skip-nx-cache`
+- `pnpm playwright test -c apps/client-e2e/playwright.config.ts apps/client-e2e/specs/workflow-linear-w5.spec.ts`
+- `pnpm playwright test -c apps/client-e2e/playwright.config.ts apps/client-e2e/specs/workflow-org-resolution-real.spec.ts`
+- `pnpm e2e:client`
+
+## Batch 1 - Embedding Auth And Host Provider Contract (Completed)
 
 Goal: make `BPMRootModule` reliable for real external NestJS hosts.
 
@@ -43,7 +57,7 @@ Validation:
 - `pnpm typecheck`
 - `pnpm e2e:client`
 
-## Batch 2 - Package Surface, Dependencies, And Migration Contract
+## Batch 2 - Package Surface, Dependencies, And Migration Contract (Completed)
 
 Goal: make the npm package practical for external NestJS applications.
 
@@ -72,7 +86,7 @@ Validation:
 - `pnpm typecheck`
 - `pnpm e2e:client`
 
-## Batch 3 - Scheduler, Delivery, And Worker Safety
+## Batch 3 - Scheduler, Delivery, And Worker Safety (Completed)
 
 Goal: prevent duplicate background work in real multi-replica deployments.
 
@@ -96,7 +110,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 4 - Workflow Read And Process Authorization
+## Batch 4 - Workflow Read And Process Authorization (Completed)
 
 Goal: stop exposing workflow runtime data and system operations to every logged
 in member.
@@ -124,7 +138,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 5 - Form And Admin Authorization
+## Batch 5 - Form And Admin Authorization (Completed)
 
 Goal: make design/admin APIs match the role and permission model.
 
@@ -149,7 +163,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 6 - Form Submission Validation And Requester Flow
+## Batch 6 - Form Submission Validation And Requester Flow (Completed)
 
 Goal: prevent invalid approval instances and make submit errors actionable.
 
@@ -173,7 +187,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 7 - Workflow Runtime Correctness
+## Batch 7 - Workflow Runtime Correctness (Completed)
 
 Goal: keep legal templates from producing stuck or inconsistent instances.
 
@@ -208,7 +222,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 8 - Attachment Access And Host Routing
+## Batch 8 - Attachment Access And Host Routing (Completed)
 
 Goal: make attachments usable for real approvers and external host routes.
 
@@ -235,7 +249,7 @@ Validation:
 - `pnpm nx test bpm-core --runInBand`
 - `pnpm e2e:client`
 
-## Batch 9 - Frontend Safety And UX Flow
+## Batch 9 - Frontend Safety And UX Flow (Completed)
 
 Goal: make high-cost and destructive journeys harder to break by accident.
 
@@ -264,7 +278,7 @@ Validation:
 - `pnpm typecheck`
 - `pnpm e2e:client`
 
-## Batch 10 - Real Golden Path E2E
+## Batch 10 - Real Golden Path E2E (Completed)
 
 Goal: prove the complete user journey against the real API and DB, not only
 GraphQL route mocks.
@@ -277,16 +291,17 @@ Fixes:
   launch instance, approve or return, transfer or delegate where applicable,
   receive notification, upload/preview attachment, and verify signature/activity
   records through GraphQL.
-- Document which test data can be dirty and which must be reset by
-  `pnpm demo:reset`.
+- Document which test data can be dirty and which must be reset by the
+  wrapper-app commands `pnpm demo:reset` or `pnpm staging:reset`.
 
 Validation:
 
 - `pnpm demo:reset`
+- `pnpm staging:reset`
 - New real-flow Playwright spec
 - `pnpm e2e:client`
 
-## Batch 11 - Documentation Reconciliation
+## Batch 11 - Documentation Reconciliation (Completed)
 
 Goal: make docs match the corrected runtime and package behavior.
 

@@ -1,11 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
-import {
-  findApiMemberProfile,
-  findApiMemberProfileById,
-} from './api-demo-members';
+import { Repository } from 'typeorm';
+import { ApiTestMemberEntity } from './api-test-member.entity';
 
 export const API_SESSION_COOKIE_NAME = 'bpm_api_session';
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
@@ -28,7 +27,12 @@ export interface ApiAuthenticatedMember {
 
 @Injectable()
 export class ApiSessionService {
-  login({
+  constructor(
+    @InjectRepository(ApiTestMemberEntity)
+    private readonly testMemberRepository: Repository<ApiTestMemberEntity>,
+  ) {}
+
+  async login({
     identifier,
     password,
     response,
@@ -36,10 +40,13 @@ export class ApiSessionService {
     readonly identifier: string;
     readonly password: string;
     readonly response: Response;
-  }): ApiAuthenticatedMember {
-    const profile = findApiMemberProfile(identifier);
+  }): Promise<ApiAuthenticatedMember> {
+    const member = await this.findMemberByIdentifier(identifier);
 
-    if (!profile || profile.password !== password) {
+    if (
+      !member ||
+      !verifyApiTestMemberPassword(password, member.passwordHash)
+    ) {
       throw new UnauthorizedException('Invalid BPM API credentials');
     }
 
@@ -47,7 +54,7 @@ export class ApiSessionService {
     const payload: ApiSessionPayload = {
       expiresAt: now + DEFAULT_SESSION_TTL_MS,
       issuedAt: now,
-      memberId: profile.member.memberId,
+      memberId: member.memberId,
     };
 
     response.cookie(API_SESSION_COOKIE_NAME, this.signPayload(payload), {
@@ -58,7 +65,7 @@ export class ApiSessionService {
       secure: process.env.NODE_ENV === 'production',
     });
 
-    return this.buildAuthenticatedMember(payload);
+    return this.buildAuthenticatedMember(payload, member);
   }
 
   logout(response: Response): { readonly ok: true } {
@@ -71,39 +78,64 @@ export class ApiSessionService {
     return { ok: true };
   }
 
-  readAuthenticatedMemberFromRequest(
+  async readAuthenticatedMemberFromRequest(
     request: Request | undefined,
-  ): ApiAuthenticatedMember | null {
-    const payload = this.readSessionPayloadFromRequest(request);
-
-    return payload ? this.buildAuthenticatedMember(payload) : null;
-  }
-
-  readBPMAuthContextFromRequest(
-    request: Request | undefined,
-  ): BPMAuthContext | null {
+  ): Promise<ApiAuthenticatedMember | null> {
     const payload = this.readSessionPayloadFromRequest(request);
 
     if (!payload) {
       return null;
     }
 
-    const profile = findApiMemberProfileById(payload.memberId);
+    const member = await this.findMemberById(payload.memberId);
 
-    if (!profile) {
+    return member ? this.buildAuthenticatedMember(payload, member) : null;
+  }
+
+  async readBPMAuthContextFromRequest(
+    request: Request | undefined,
+  ): Promise<BPMAuthContext | null> {
+    const payload = this.readSessionPayloadFromRequest(request);
+
+    if (!payload) {
+      return null;
+    }
+
+    const member = await this.findMemberById(payload.memberId);
+
+    if (!member) {
       return null;
     }
 
     return {
-      memberId: profile.member.memberId,
+      memberId: member.memberId,
       metadata: {
-        email: profile.member.email,
-        memberId: profile.member.memberId,
-        name: profile.member.name,
+        customFields: member.customFields,
+        email: member.email,
+        memberId: member.memberId,
+        name: member.name,
       },
-      permissions: profile.permissions,
-      roles: profile.roles,
+      permissions: member.permissions,
+      roles: member.roles,
     };
+  }
+
+  async listPublicMembers(): Promise<
+    readonly Pick<
+      ApiAuthenticatedMember,
+      'email' | 'memberId' | 'name' | 'roles'
+    >[]
+  > {
+    const members = await this.testMemberRepository.find({
+      order: { memberId: 'ASC' },
+    });
+
+    return members.map((member) => ({
+      email: member.email,
+      memberId: member.memberId,
+      name: member.name,
+      roles: member.roles,
+    }));
   }
 
   private readSessionPayloadFromRequest(
@@ -126,21 +158,42 @@ export class ApiSessionService {
 
   private buildAuthenticatedMember(
     payload: ApiSessionPayload,
+    member: ApiTestMemberEntity,
   ): ApiAuthenticatedMember {
-    const profile = findApiMemberProfileById(payload.memberId);
+    return {
+      email: member.email,
+      expiresAt: new Date(payload.expiresAt).toISOString(),
+      memberId: member.memberId,
+      name: member.name,
+      permissions: member.permissions,
+      roles: member.roles,
+    };
+  }
 
-    if (!profile) {
-      throw new UnauthorizedException('BPM API session member was not found');
+  private async findMemberByIdentifier(
+    identifier: string,
+  ): Promise<ApiTestMemberEntity | null> {
+    const normalizedIdentifier = identifier.trim().toLocaleLowerCase();
+
+    if (!normalizedIdentifier) {
+      return null;
     }
 
-    return {
-      email: profile.member.email,
-      expiresAt: new Date(payload.expiresAt).toISOString(),
-      memberId: profile.member.memberId,
-      name: profile.member.name,
-      permissions: profile.permissions,
-      roles: profile.roles,
-    };
+    return this.testMemberRepository
+      .createQueryBuilder('member')
+      .where('lower(member.member_id) = :identifier', {
+        identifier: normalizedIdentifier,
+      })
+      .orWhere('lower(member.email) = :identifier', {
+        identifier: normalizedIdentifier,
+      })
+      .getOne();
+  }
+
+  private async findMemberById(
+    memberId: string,
+  ): Promise<ApiTestMemberEntity | null> {
+    return this.testMemberRepository.findOne({ where: { memberId } });
   }
 
   private signPayload(payload: ApiSessionPayload): string {
@@ -206,9 +259,7 @@ function readCookieValue(
   );
 }
 
-function parseSessionPayload(
-  encodedPayload: string,
-): ApiSessionPayload | null {
+function parseSessionPayload(encodedPayload: string): ApiSessionPayload | null {
   try {
     const decodedPayload = JSON.parse(
       Buffer.from(encodedPayload, 'base64url').toString('utf8'),
@@ -240,4 +291,19 @@ function safeCompare(left: string, right: string): boolean {
     leftBuffer.length === rightBuffer.length &&
     timingSafeEqual(leftBuffer, rightBuffer)
   );
+}
+
+function verifyApiTestMemberPassword(
+  password: string,
+  passwordHash: string,
+): boolean {
+  if (!passwordHash.startsWith('sha256$')) {
+    return false;
+  }
+
+  const expected = `sha256$${createHash('sha256')
+    .update(password)
+    .digest('hex')}`;
+
+  return safeCompare(passwordHash, expected);
 }

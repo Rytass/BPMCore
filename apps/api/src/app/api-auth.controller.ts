@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { IsString, MinLength } from 'class-validator';
 import type { Request, Response } from 'express';
-import { API_DEMO_MEMBER_PROFILES } from './api-demo-members';
 import {
   ApiAuthenticatedMember,
   ApiSessionService,
@@ -36,20 +35,17 @@ interface ApiPublicMember {
 export class ApiAuthController {
   constructor(private readonly sessionService: ApiSessionService) {}
 
-  @Get('demo-members')
-  listDemoMembers(): readonly ApiPublicMember[] {
-    return API_DEMO_MEMBER_PROFILES.map((profile) => ({
-      email: profile.member.email,
-      memberId: profile.member.memberId,
-      name: profile.member.name,
-      roles: profile.roles,
-    }));
+  @Get('test-members')
+  listTestMembers(): Promise<readonly ApiPublicMember[]> {
+    return this.sessionService.listPublicMembers();
   }
 
   @Get('me')
-  readCurrentMember(@Req() request: Request): ApiAuthenticatedMember {
+  async readCurrentMember(
+    @Req() request: Request,
+  ): Promise<ApiAuthenticatedMember> {
     const member =
-      this.sessionService.readAuthenticatedMemberFromRequest(request);
+      await this.sessionService.readAuthenticatedMemberFromRequest(request);
 
     if (!member) {
       throw new UnauthorizedException('BPM API session is required');
@@ -63,7 +59,7 @@ export class ApiAuthController {
   login(
     @Body() input: ApiLoginInput,
     @Res({ passthrough: true }) response: Response,
-  ): ApiAuthenticatedMember {
+  ): Promise<ApiAuthenticatedMember> {
     return this.sessionService.login({
       identifier: input.identifier,
       password: input.password,

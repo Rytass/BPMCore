@@ -1,6 +1,14 @@
 import 'reflect-metadata';
 import { DataSource, DataSourceOptions, QueryRunner } from 'typeorm';
-import { buildDataSourceOptionsFromVaultEnv } from '../libs/bpm-core/src/lib/database/typeorm.config';
+import {
+  API_SIMULATION_MEMBER_SEEDS,
+  createApiTestMemberPasswordHash,
+} from '../src/app/api-simulation-members';
+import { ensureApiTestMemberTable } from '../src/app/api-test-member-schema';
+// Wrapper-app reset script intentionally loads BPM source helpers directly
+// because it runs through ts-node before the package is built.
+// eslint-disable-next-line @nx/enforce-module-boundaries
+import { buildDataSourceOptionsFromVaultEnv } from '../../../libs/bpm-core/src/lib/database/typeorm.config';
 
 type SqlScalar = string | number | boolean | null | readonly string[];
 
@@ -10,14 +18,6 @@ type SqlCell = Readonly<{
 }>;
 
 type SeedRow = Readonly<Record<string, SqlCell>>;
-
-type MemberSeed = Readonly<{
-  email: string;
-  memberId: string;
-  name: string;
-  orgUnitCode: string;
-  positionCode: string;
-}>;
 
 const NOW = '2026-05-13T09:00:00.000Z';
 const CACHE_EXPIRES_AT = '2026-12-31T23:59:59.000Z';
@@ -124,99 +124,7 @@ const TASK_IDS = {
   PURCHASE_RUNNING_CEO: '62000000-0000-4000-8000-000000000008',
 } as const;
 
-const MEMBERS: readonly MemberSeed[] = [
-  {
-    email: 'lin.ceo@example.internal',
-    memberId: 'member-001',
-    name: '林執行長',
-    orgUnitCode: 'CEO-OFFICE',
-    positionCode: 'CEO',
-  },
-  {
-    email: 'chen.cfo@example.internal',
-    memberId: 'member-101',
-    name: '陳財務長',
-    orgUnitCode: 'FIN',
-    positionCode: 'VP',
-  },
-  {
-    email: 'wu.ap@example.internal',
-    memberId: 'member-102',
-    name: '吳應付帳款專員',
-    orgUnitCode: 'FIN-AP',
-    positionCode: 'FINANCE_SPECIALIST',
-  },
-  {
-    email: 'li.fpna@example.internal',
-    memberId: 'member-103',
-    name: '李財務分析師',
-    orgUnitCode: 'FIN-FPNA',
-    positionCode: 'SENIOR_SPECIALIST',
-  },
-  {
-    email: 'huang.hr@example.internal',
-    memberId: 'member-201',
-    name: '黃人資主管',
-    orgUnitCode: 'HR',
-    positionCode: 'DEPARTMENT_HEAD',
-  },
-  {
-    email: 'tsai.hr@example.internal',
-    memberId: 'member-202',
-    name: '蔡人資專員',
-    orgUnitCode: 'HR',
-    positionCode: 'HR_SPECIALIST',
-  },
-  {
-    email: 'chang.sales@example.internal',
-    memberId: 'member-301',
-    name: '張業務主管',
-    orgUnitCode: 'SALES',
-    positionCode: 'DEPARTMENT_HEAD',
-  },
-  {
-    email: 'wang.ae@example.internal',
-    memberId: 'member-302',
-    name: '王客戶經理',
-    orgUnitCode: 'SALES',
-    positionCode: 'ACCOUNT_EXECUTIVE',
-  },
-  {
-    email: 'lu.cs@example.internal',
-    memberId: 'member-303',
-    name: '盧客戶成功顧問',
-    orgUnitCode: 'CUSTOMER-SUCCESS',
-    positionCode: 'SENIOR_SPECIALIST',
-  },
-  {
-    email: 'hsu.it@example.internal',
-    memberId: 'member-401',
-    name: '許資訊主管',
-    orgUnitCode: 'IT',
-    positionCode: 'DEPARTMENT_HEAD',
-  },
-  {
-    email: 'ko.it@example.internal',
-    memberId: 'member-402',
-    name: '柯系統工程師',
-    orgUnitCode: 'IT',
-    positionCode: 'IT_ENGINEER',
-  },
-  {
-    email: 'sun.product@example.internal',
-    memberId: 'member-501',
-    name: '孫產品主管',
-    orgUnitCode: 'PRODUCT',
-    positionCode: 'DEPARTMENT_HEAD',
-  },
-  {
-    email: 'yang.pm@example.internal',
-    memberId: 'member-502',
-    name: '楊產品經理',
-    orgUnitCode: 'PRODUCT',
-    positionCode: 'PRODUCT_MANAGER',
-  },
-];
+const MEMBERS = API_SIMULATION_MEMBER_SEEDS;
 
 const ORG_UNIT_CODE_TO_ID: Readonly<Record<string, string>> = {
   'CEO-OFFICE': ORG_UNIT_IDS.CEO_OFFICE,
@@ -247,7 +155,7 @@ const EXPENSE_FORM_SCHEMA = {
     {
       fieldKey: 'vendorName',
       label: '供應商名稱',
-      placeholder: '例如 Cloud CRM Taiwan',
+      placeholder: '例如 台中精密刀具股份有限公司',
       required: true,
       type: 'text',
     },
@@ -268,9 +176,10 @@ const EXPENSE_FORM_SCHEMA = {
       fieldKey: 'paymentType',
       label: '付款類型',
       options: [
-        { label: '軟體訂閱', value: 'software' },
+        { label: '原物料採購', value: 'material' },
+        { label: '模治具加工', value: 'tooling' },
+        { label: '維修保養', value: 'maintenance' },
         { label: '差旅費用', value: 'travel' },
-        { label: '供應商請款', value: 'vendor' },
       ],
       required: true,
       type: 'select',
@@ -324,9 +233,10 @@ const ACCESS_FORM_SCHEMA = {
       fieldKey: 'systemName',
       label: '系統名稱',
       options: [
-        { label: 'CRM', value: 'crm' },
-        { label: '資料倉儲', value: 'warehouse' },
-        { label: '雲端主控台', value: 'cloud-console' },
+        { label: 'ERP', value: 'erp' },
+        { label: 'MES 製造執行系統', value: 'mes' },
+        { label: 'WMS 倉儲系統', value: 'wms' },
+        { label: 'QMS 品質系統', value: 'qms' },
       ],
       required: true,
       type: 'select',
@@ -356,20 +266,20 @@ const DISCOUNT_FORM_SCHEMA = {
   fields: [
     {
       fieldKey: 'customerName',
-      label: '客戶名稱',
+      label: '客戶 / 專案名稱',
       required: true,
       type: 'text',
     },
     {
       fieldKey: 'contractAmount',
-      label: '合約金額',
+      label: '報價金額',
       minimum: 1,
       required: true,
       type: 'money',
     },
     {
       fieldKey: 'discountRate',
-      label: '折扣比例',
+      label: '折讓比例',
       maximum: 50,
       minimum: 0,
       required: true,
@@ -377,7 +287,7 @@ const DISCOUNT_FORM_SCHEMA = {
     },
     {
       fieldKey: 'reason',
-      label: '商務理由',
+      label: '折讓原因',
       required: true,
       type: 'textarea',
     },
@@ -387,17 +297,22 @@ const DISCOUNT_FORM_SCHEMA = {
 
 const PURCHASE_FORM_SCHEMA = {
   fields: [
-    { fieldKey: 'itemName', label: '採購項目', required: true, type: 'text' },
-    { fieldKey: 'amount', label: '採購金額', required: true, type: 'money' },
+    {
+      fieldKey: 'itemName',
+      label: '請購品項',
+      required: true,
+      type: 'text',
+    },
+    { fieldKey: 'amount', label: '請購金額', required: true, type: 'money' },
     {
       fieldKey: 'needBy',
-      label: '需求日期',
+      label: '需求交期',
       required: true,
       type: 'date',
     },
     {
       fieldKey: 'reason',
-      label: '採購原因',
+      label: '請購原因',
       required: true,
       type: 'textarea',
     },
@@ -472,7 +387,7 @@ const EXPENSE_WORKFLOW = createWorkflowDefinition({
     },
     {
       id: 'finance_review',
-      label: '財務覆核',
+      label: '財務付款覆核',
       resolver: {
         fallback: { memberId: 'member-101', type: 'DIRECT' },
         orgUnitId: ORG_UNIT_IDS.FINANCE,
@@ -524,7 +439,7 @@ const ACCESS_WORKFLOW = createWorkflowDefinition({
     },
     {
       id: 'it_security_review',
-      label: '資訊安全覆核',
+      label: '資訊 / MES 權限覆核',
       resolver: { memberIds: ['member-401'], type: 'DIRECT' },
       x: 460,
       y: 0,
@@ -536,7 +451,7 @@ const DISCOUNT_WORKFLOW = createWorkflowDefinition({
   approvalNodes: [
     {
       id: 'sales_manager_review',
-      label: '業務主管簽核',
+      label: '業務經理簽核',
       resolver: {
         baseFromInitiator: true,
         fallback: { memberId: 'member-301', type: 'DIRECT' },
@@ -548,7 +463,7 @@ const DISCOUNT_WORKFLOW = createWorkflowDefinition({
     },
     {
       id: 'ceo_review',
-      label: '執行長核准',
+      label: '總經理核准',
       resolver: { memberIds: ['member-001'], type: 'DIRECT' },
       x: 460,
       y: 0,
@@ -560,7 +475,7 @@ const PURCHASE_WORKFLOW = createWorkflowDefinition({
   approvalNodes: [
     {
       id: 'manager_review',
-      label: '部門主管簽核',
+      label: '單位主管簽核',
       resolver: {
         baseFromInitiator: true,
         fallback: { memberId: 'member-001', type: 'DIRECT' },
@@ -572,7 +487,7 @@ const PURCHASE_WORKFLOW = createWorkflowDefinition({
     },
     {
       id: 'ceo_review',
-      label: '預算核准',
+      label: '總經理核准',
       resolver: { memberIds: ['member-001'], type: 'DIRECT' },
       x: 460,
       y: 0,
@@ -607,7 +522,9 @@ async function resetAndSeed(
     await queryRunner.query(
       `SET search_path TO ${quoteIdentifier(schema)}, public`,
     );
+    await ensureApiTestMemberTable(queryRunner);
     await truncateDemoTables(queryRunner);
+    await seedApiTestMembers(queryRunner);
     await seedOrganization(queryRunner);
     await seedForms(queryRunner);
     await seedTemplates(queryRunner);
@@ -643,9 +560,41 @@ async function truncateDemoTables(queryRunner: QueryRunner): Promise<void> {
       memberships,
       positions,
       org_units,
-      member_metadata_cache
+      member_metadata_cache,
+      api_test_members
     RESTART IDENTITY CASCADE
   `);
+}
+
+async function seedApiTestMembers(queryRunner: QueryRunner): Promise<void> {
+  await insertRows(
+    queryRunner,
+    'api_test_members',
+    [
+      'member_id',
+      'email',
+      'name',
+      'password_hash',
+      'roles',
+      'permissions',
+      'custom_fields',
+      'created_at',
+      'updated_at',
+    ],
+    MEMBERS.map(
+      (member): SeedRow => ({
+        created_at: text(NOW),
+        custom_fields: jsonb(member.customFields),
+        email: text(member.email),
+        member_id: text(member.memberId),
+        name: text(member.name),
+        password_hash: text(createApiTestMemberPasswordHash(member.password)),
+        permissions: jsonb(member.permissions),
+        roles: jsonb(member.roles),
+        updated_at: text(NOW),
+      }),
+    ),
+  );
 }
 
 async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
@@ -668,8 +617,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('COMPANY'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.ROOT),
-        metadata: jsonb({ costCenter: 'ROOT', location: '台北總部' }),
-        name: text('星曜科技股份有限公司'),
+        metadata: jsonb({ costCenter: 'ROOT', location: '台中總廠' }),
+        name: text('瑞和精密工業股份有限公司'),
         parent_id: text(null),
         path: ltree('company'),
         type: text('company'),
@@ -679,7 +628,7 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('CEO-OFFICE'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.CEO_OFFICE),
-        metadata: jsonb({ costCenter: 'CEO-000', location: '台北總部' }),
+        metadata: jsonb({ costCenter: 'GM-000', location: '台中總廠' }),
         name: text('總經理室'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.ceo_office'),
@@ -690,8 +639,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('FIN'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.FINANCE),
-        metadata: jsonb({ costCenter: 'FIN-100', location: '台北總部' }),
-        name: text('財務處'),
+        metadata: jsonb({ costCenter: 'FIN-100', location: '台中總廠' }),
+        name: text('財務管理部'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.finance'),
         type: text('division'),
@@ -701,8 +650,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('FIN-AP'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.ACCOUNTING),
-        metadata: jsonb({ costCenter: 'FIN-110', location: '台北總部' }),
-        name: text('會計與應付帳款組'),
+        metadata: jsonb({ costCenter: 'PUR-210', location: '台中總廠' }),
+        name: text('採購與應付帳款課'),
         parent_id: text(ORG_UNIT_IDS.FINANCE),
         path: ltree('company.finance.accounting'),
         type: text('team'),
@@ -712,8 +661,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('FIN-FPNA'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.FINANCIAL_PLANNING),
-        metadata: jsonb({ costCenter: 'FIN-120', location: '台北總部' }),
-        name: text('財務規劃分析組'),
+        metadata: jsonb({ costCenter: 'COST-120', location: '台中總廠' }),
+        name: text('成本會計課'),
         parent_id: text(ORG_UNIT_IDS.FINANCE),
         path: ltree('company.finance.fpna'),
         type: text('team'),
@@ -723,8 +672,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('HR'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.HR),
-        metadata: jsonb({ costCenter: 'HR-200', location: '台北總部' }),
-        name: text('人資行政處'),
+        metadata: jsonb({ costCenter: 'HR-200', location: '台中總廠' }),
+        name: text('人資行政部'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.hr'),
         type: text('division'),
@@ -734,8 +683,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('SALES'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.SALES),
-        metadata: jsonb({ costCenter: 'SAL-300', location: '台北總部' }),
-        name: text('業務處'),
+        metadata: jsonb({ costCenter: 'SAL-300', location: '台北辦公室' }),
+        name: text('業務管理部'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.sales'),
         type: text('division'),
@@ -745,10 +694,10 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('CUSTOMER-SUCCESS'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.CUSTOMER_SUCCESS),
-        metadata: jsonb({ costCenter: 'CS-310', location: '台北總部' }),
-        name: text('客戶成功部'),
-        parent_id: text(ORG_UNIT_IDS.SALES),
-        path: ltree('company.sales.customer_success'),
+        metadata: jsonb({ costCenter: 'QA-510', location: '台中總廠' }),
+        name: text('品質保證部'),
+        parent_id: text(ORG_UNIT_IDS.ROOT),
+        path: ltree('company.quality_assurance'),
         type: text('department'),
         updated_at: text(NOW),
       },
@@ -756,8 +705,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('IT'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.IT),
-        metadata: jsonb({ costCenter: 'IT-400', location: '台北總部' }),
-        name: text('資訊平台處'),
+        metadata: jsonb({ costCenter: 'IT-400', location: '台中總廠' }),
+        name: text('資訊與製造系統部'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.it'),
         type: text('division'),
@@ -767,8 +716,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         code: text('PRODUCT'),
         created_at: text(NOW),
         id: text(ORG_UNIT_IDS.PRODUCT),
-        metadata: jsonb({ costCenter: 'PD-500', location: '台北總部' }),
-        name: text('產品研發處'),
+        metadata: jsonb({ costCenter: 'MFG-500', location: '台中總廠' }),
+        name: text('製造生產部'),
         parent_id: text(ORG_UNIT_IDS.ROOT),
         path: ltree('company.product'),
         type: text('division'),
@@ -782,8 +731,8 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
     'positions',
     ['id', 'code', 'name', 'level', 'metadata', 'created_at', 'updated_at'],
     [
-      positionRow(POSITION_IDS.CEO, 'CEO', '執行長', 100, 'unlimited'),
-      positionRow(POSITION_IDS.VP, 'VP', '副總經理 / 處長', 90, 1000000),
+      positionRow(POSITION_IDS.CEO, 'CEO', '總經理', 100, 'unlimited'),
+      positionRow(POSITION_IDS.VP, 'VP', '協理 / 廠務長', 90, 1000000),
       positionRow(
         POSITION_IDS.DEPARTMENT_HEAD,
         'DEPARTMENT_HEAD',
@@ -802,7 +751,7 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
       positionRow(
         POSITION_IDS.FINANCE_SPECIALIST,
         'FINANCE_SPECIALIST',
-        '財務專員',
+        '採購專員',
         45,
         50000,
       ),
@@ -816,21 +765,21 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
       positionRow(
         POSITION_IDS.ACCOUNT_EXECUTIVE,
         'ACCOUNT_EXECUTIVE',
-        '客戶經理',
+        '業務專員',
         45,
         100000,
       ),
       positionRow(
         POSITION_IDS.IT_ENGINEER,
         'IT_ENGINEER',
-        '系統工程師',
+        'MES 系統工程師',
         45,
         60000,
       ),
       positionRow(
         POSITION_IDS.PRODUCT_MANAGER,
         'PRODUCT_MANAGER',
-        '產品經理',
+        '生管專員',
         55,
         120000,
       ),
@@ -847,10 +796,7 @@ async function seedOrganization(queryRunner: QueryRunner): Promise<void> {
         fetched_at: text(NOW),
         member_id: text(member.memberId),
         metadata: jsonb({
-          customFields: {
-            employeeNo: member.memberId.replace('member-', 'EMP-'),
-            site: '台北總部',
-          },
+          customFields: member.customFields,
           email: member.email,
           memberId: member.memberId,
           name: member.name,
@@ -954,8 +900,8 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     [
       formDefinitionRow(
         FORM_IDS.EXPENSE,
-        '費用請款單',
-        '日常費用、供應商請款與軟體訂閱付款。',
+        '供應商請款單',
+        '原物料、模治具、委外加工與維修保養請款。',
         'member-101',
       ),
       formDefinitionRow(
@@ -967,19 +913,19 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
       formDefinitionRow(
         FORM_IDS.ACCESS,
         '系統權限申請單',
-        'CRM、資料倉儲與雲端主控台權限申請。',
+        'ERP、MES、WMS、QMS 與內部系統權限申請。',
         'member-401',
       ),
       formDefinitionRow(
         FORM_IDS.DISCOUNT,
-        '客戶折扣申請單',
-        '業務客戶折扣、合約例外條件申請。',
+        '客戶報價折讓申請單',
+        '客戶專案報價、量產折讓與例外條件申請。',
         'member-301',
       ),
       formDefinitionRow(
         FORM_IDS.PURCHASE,
-        '採購申請單',
-        '設備、軟體與專案採購申請草稿。',
+        '請購申請單',
+        '設備、備品、耗材與委外加工請購申請草稿。',
         'member-101',
       ),
     ],
@@ -1130,8 +1076,8 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     [
       categoryRow(
         CATEGORY_IDS.FINANCE,
-        '財務請款',
-        '費用、採購與預算相關流程。',
+        '採購請款',
+        '供應商請款、請購與預算相關流程。',
         10,
       ),
       categoryRow(
@@ -1148,14 +1094,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
       ),
       categoryRow(
         CATEGORY_IDS.SALES,
-        '業務合約',
-        '客戶折扣與合約例外審核。',
+        '業務報價',
+        '客戶報價折讓與量產價格例外審核。',
         40,
       ),
       categoryRow(
         CATEGORY_IDS.PROCUREMENT,
-        '採購管理',
-        '採購與供應商管理流程草稿。',
+        '資材採購',
+        '備品耗材、委外加工與供應商管理流程草稿。',
         50,
       ),
     ],
@@ -1178,9 +1124,9 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     [
       templateRow(
         TEMPLATE_IDS.EXPENSE,
-        '費用請款簽核',
-        '主管先核准，再由財務覆核與付款。',
-        '財務請款',
+        '供應商請款簽核',
+        '單位主管先確認收料或驗收，再由財務付款覆核。',
+        '採購請款',
         CATEGORY_IDS.FINANCE,
         'member-101',
       ),
@@ -1194,25 +1140,25 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
       ),
       templateRow(
         TEMPLATE_IDS.ACCESS,
-        '系統權限申請',
-        '部門主管確認需求後，由資訊安全覆核。',
+        'ERP / MES 權限申請',
+        '單位主管確認需求後，由資訊與製造系統覆核。',
         '資訊權限',
         CATEGORY_IDS.IT,
         'member-401',
       ),
       templateRow(
         TEMPLATE_IDS.DISCOUNT,
-        '客戶折扣審核',
-        '業務主管與執行長核准大型折扣。',
-        '業務合約',
+        '客戶報價折讓審核',
+        '業務經理與總經理核准量產報價折讓。',
+        '業務報價',
         CATEGORY_IDS.SALES,
         'member-301',
       ),
       templateRow(
         TEMPLATE_IDS.PURCHASE,
-        '採購申請草稿',
-        '預留採購流程，尚未發佈。',
-        '採購管理',
+        '請購申請草稿',
+        '預留備品耗材與委外加工請購流程，尚未發佈。',
+        '資材採購',
         CATEGORY_IDS.PROCUREMENT,
         'member-101',
       ),
@@ -1384,12 +1330,12 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         {
           amount: 126800,
           invoiceDate: '2026-05-08',
-          paymentType: 'software',
-          reason: 'CRM 年度授權續約，合約已由業務與法務確認。',
-          vendorName: 'Cloud CRM Taiwan',
+          paymentType: 'tooling',
+          reason: 'CNC 產線急單治具加工，品保已完成首件確認。',
+          vendorName: '台中精密刀具股份有限公司',
         },
         'RUNNING',
-        '費用請款：Cloud CRM 年費',
+        '供應商請款：CNC 治具加工費',
         '2026-05-10T01:10:00.000Z',
         null,
       ),
@@ -1404,12 +1350,12 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         {
           amount: 382000,
           invoiceDate: '2026-05-09',
-          paymentType: 'vendor',
-          reason: '產品研究訪談與原型測試專案費用。',
-          vendorName: 'Insight Research Lab',
+          paymentType: 'material',
+          reason: '六月量產備料需先行採購鋁合金胚料。',
+          vendorName: '彰化鋁材工業股份有限公司',
         },
         'RUNNING',
-        '費用請款：產品研究專案',
+        '供應商請款：鋁合金胚料採購',
         '2026-05-09T02:30:00.000Z',
         null,
       ),
@@ -1425,11 +1371,11 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
           amount: 48500,
           invoiceDate: '2026-05-03',
           paymentType: 'travel',
-          reason: '客戶導入工作坊交通與住宿費。',
+          reason: '新竹客戶 PPAP 審查與產線稽核差旅費。',
           vendorName: '高鐵與商務旅館',
         },
         'APPROVED',
-        '費用請款：客戶導入差旅',
+        '供應商請款：客戶稽核差旅',
         '2026-05-03T02:00:00.000Z',
         '2026-05-05T07:20:00.000Z',
       ),
@@ -1443,12 +1389,12 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         DISCOUNT_FORM_UI_SCHEMA,
         {
           contractAmount: 1800000,
-          customerName: '北城零售股份有限公司',
+          customerName: '華新車電股份有限公司',
           discountRate: 28,
-          reason: '競品壓價，希望以年度合約折扣換取提前續約。',
+          reason: '客戶要求量產導入前折讓，需評估毛利與模具攤提。',
         },
         'REJECTED',
-        '客戶折扣：北城零售 28%',
+        '報價折讓：華新車電 28%',
         '2026-05-06T03:40:00.000Z',
         '2026-05-06T09:15:00.000Z',
       ),
@@ -1461,12 +1407,12 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         ACCESS_FORM_SCHEMA,
         ACCESS_FORM_UI_SCHEMA,
         {
-          businessReason: '需要讀取客戶健康分數資料以完成續約風險盤點。',
+          businessReason: '需要查詢製令進度與工單派工資料，以追蹤異常批次。',
           permissionLevel: 'write',
-          systemName: 'warehouse',
+          systemName: 'mes',
         },
         'RETURNED',
-        '系統權限：資料倉儲編輯權限',
+        '系統權限：MES 工單編輯權限',
         '2026-05-07T04:00:00.000Z',
         null,
       ),
@@ -1480,7 +1426,7 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         LEAVE_FORM_UI_SCHEMA,
         {
           endDate: '2026-05-17',
-          handoverNote: '新人到職文件由黃主管代為確認。',
+          handoverNote: '移工宿舍點交與新人報到文件由黃主管代為確認。',
           leaveType: 'annual',
           startDate: '2026-05-16',
         },
@@ -1500,12 +1446,12 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         {
           amount: 92000,
           invoiceDate: '2026-05-02',
-          paymentType: 'vendor',
-          reason: '測試環境監控服務，後續改由既有供應商支援。',
-          vendorName: 'Observability Pro',
+          paymentType: 'maintenance',
+          reason: '空壓機預防保養原安排外包，後續改由原廠保固處理。',
+          vendorName: '中部空壓設備有限公司',
         },
         'CANCELLED',
-        '費用請款：監控服務 POC',
+        '供應商請款：空壓機保養',
         '2026-05-02T02:45:00.000Z',
         '2026-05-02T04:10:00.000Z',
       ),
@@ -1816,7 +1762,7 @@ async function seedTaskDecisions(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.EXPENSE_RUNNING_MANAGER,
         'member-101',
         'APPROVED',
-        '金額與供應商資訊確認無誤，交由財務覆核。',
+        '治具驗收與請款金額確認無誤，交由財務覆核。',
         null,
         null,
         null,
@@ -1827,7 +1773,7 @@ async function seedTaskDecisions(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.EXPENSE_APPROVED_MANAGER,
         'member-101',
         'APPROVED',
-        '差旅與客戶導入行程相符。',
+        '客戶稽核行程與交通住宿憑證相符。',
         null,
         null,
         '64000000-0000-4000-8000-000000000001',
@@ -1849,7 +1795,7 @@ async function seedTaskDecisions(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.DISCOUNT_REJECTED_MANAGER,
         'member-301',
         'REJECTED',
-        '折扣幅度過高，缺少競品報價與毛利分析。',
+        '折讓幅度過高，缺少毛利試算與模具攤提說明。',
         null,
         null,
         '64000000-0000-4000-8000-000000000003',
@@ -1860,7 +1806,7 @@ async function seedTaskDecisions(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.ACCESS_RETURNED_IT,
         'member-401',
         'RETURNED',
-        '請改申請唯讀權限，並補上資料使用期限。',
+        '請改申請唯讀權限，並補上工單資料使用期限。',
         'manager_review',
         null,
         '64000000-0000-4000-8000-000000000004',
@@ -1901,7 +1847,7 @@ async function seedActivityLogs(queryRunner: QueryRunner): Promise<void> {
         'member-102',
         'start',
         null,
-        { title: '費用請款：Cloud CRM 年費' },
+        { title: '供應商請款：CNC 治具加工費' },
         '2026-05-10T01:10:00.000Z',
       ),
       activityRow(
@@ -1921,7 +1867,7 @@ async function seedActivityLogs(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.EXPENSE_RUNNING_MANAGER,
         {
           action: 'APPROVED',
-          comment: '金額與供應商資訊確認無誤，交由財務覆核。',
+          comment: '治具驗收與請款金額確認無誤，交由財務覆核。',
         },
         '2026-05-10T02:15:00.000Z',
       ),
@@ -1951,7 +1897,7 @@ async function seedActivityLogs(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.DISCOUNT_REJECTED_MANAGER,
         {
           action: 'REJECTED',
-          comment: '折扣幅度過高，缺少競品報價與毛利分析。',
+          comment: '折讓幅度過高，缺少毛利試算與模具攤提說明。',
         },
         '2026-05-06T09:15:00.000Z',
       ),
@@ -1979,7 +1925,7 @@ async function seedActivityLogs(queryRunner: QueryRunner): Promise<void> {
         'member-402',
         'manager_review',
         TASK_IDS.PURCHASE_CANCELLED_MANAGER,
-        { reason: '供應商整併，取消 POC 費用。' },
+        { reason: '設備仍在保固期內，取消外包保養請款。' },
         '2026-05-02T04:10:00.000Z',
       ),
     ],
@@ -2001,7 +1947,6 @@ async function seedAttachments(queryRunner: QueryRunner): Promise<void> {
       'size_bytes',
       'storage_provider',
       'storage_key',
-      'encryption_key_id',
       'checksum_sha256',
       'created_at',
     ],
@@ -2012,7 +1957,7 @@ async function seedAttachments(queryRunner: QueryRunner): Promise<void> {
         null,
         'receipt',
         'member-102',
-        'cloud-crm-invoice.pdf',
+        'cnc-jig-processing-invoice.pdf',
         184920,
         '2026-05-10T01:09:00.000Z',
       ),
@@ -2022,7 +1967,7 @@ async function seedAttachments(queryRunner: QueryRunner): Promise<void> {
         null,
         'receipt',
         'member-103',
-        'travel-receipts.zip',
+        'customer-audit-travel-receipts.zip',
         392012,
         '2026-05-03T01:58:00.000Z',
       ),
@@ -2082,8 +2027,8 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
         'TASK_ASSIGNED',
         INSTANCE_IDS.EXPENSE_RUNNING,
         TASK_IDS.EXPENSE_RUNNING_FINANCE,
-        '待簽核：費用請款',
-        'Cloud CRM 年費已通過主管簽核，等待財務覆核。',
+        '待簽核：供應商請款',
+        'CNC 治具加工費已通過主管簽核，等待財務覆核。',
         'SENT',
         '2026-05-10T02:15:20.000Z',
         null,
@@ -2094,8 +2039,8 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
         'SLA_OVERDUE',
         INSTANCE_IDS.PURCHASE_RUNNING,
         TASK_IDS.PURCHASE_RUNNING_CEO,
-        'SLA 已逾期：產品研究專案',
-        '此請款已超過預算核准 SLA，請優先處理。',
+        'SLA 已逾期：鋁合金胚料採購',
+        '此請款已超過採購預算核准 SLA，請優先處理。',
         'SENT',
         '2026-05-11T09:05:00.000Z',
         null,
@@ -2107,7 +2052,7 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
         INSTANCE_IDS.EXPENSE_APPROVED,
         TASK_IDS.EXPENSE_APPROVED_FINANCE,
         '案件已核准',
-        '客戶導入差旅費用已完成簽核。',
+        '客戶稽核差旅費用已完成簽核。',
         'READ',
         '2026-05-05T07:20:30.000Z',
         '2026-05-05T08:10:00.000Z',
@@ -2118,8 +2063,8 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
         'INSTANCE_COMPLETED',
         INSTANCE_IDS.DISCOUNT_REJECTED,
         TASK_IDS.DISCOUNT_REJECTED_MANAGER,
-        '折扣申請已拒絕',
-        '北城零售 28% 折扣申請已被退件。',
+        '報價折讓已拒絕',
+        '華新車電 28% 報價折讓申請已被退件。',
         'READ',
         '2026-05-06T09:15:30.000Z',
         '2026-05-06T09:20:00.000Z',
@@ -2131,7 +2076,7 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
         INSTANCE_IDS.ACCESS_RETURNED,
         TASK_IDS.ACCESS_RETURNED_IT,
         '權限申請已退回',
-        '請調整權限等級並補上資料使用期限。',
+        '請調整權限等級並補上工單資料使用期限。',
         'SENT',
         '2026-05-07T07:05:30.000Z',
         null,
@@ -2290,7 +2235,7 @@ function createWorkflowDefinition({
 
   return {
     edges,
-    meta: { diagramVersion: 'demo-seed-2026-05-13', schemaVersion: 1 },
+    meta: { diagramVersion: 'manufacturing-seed-2026-05-18', schemaVersion: 1 },
     nodes,
   };
 }
@@ -2556,7 +2501,6 @@ function attachmentRow(
   return {
     checksum_sha256: text(`${id.replace(/-/g, '')}checksum`),
     created_at: text(createdAt),
-    encryption_key_id: text(null),
     filename: text(filename),
     form_field_path: text(formFieldPath),
     id: text(id),
@@ -2792,7 +2736,7 @@ function readRequiredValue(
   const value = values[key];
 
   if (!value) {
-    throw new Error(`Missing demo seed value for ${key}`);
+    throw new Error(`Missing wrapper app seed value for ${key}`);
   }
 
   return value;
@@ -2836,7 +2780,9 @@ function uuidArray(value: readonly string[]): SqlCell {
 
 void main()
   .then((): void => {
-    console.log('Demo develop database was reset and seeded.');
+    console.log(
+      'Wrapper app database was reset with Taiwan manufacturing seed data.',
+    );
   })
   .catch((error: unknown): void => {
     console.error(error);

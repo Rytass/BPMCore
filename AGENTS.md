@@ -74,7 +74,7 @@
 - 2026-05-11: `apps/api` is now the host shell for local/staging runtime. It provides demo member login, signed HTTP-only session cookie, `/api/auth/me`, logout, and GraphQL `BPMAuthContext` session mapping.
 - 2026-05-11: BPM backend domain modules, migrations, tests, and TypeORM helpers now live under `libs/bpm-core`; `pnpm api` serves the `api` project on port 17603.
 - 2026-05-11: M1 W1 organization/member interface is implemented with Organization GraphQL filters/summary, org path validation, admin org CRUD UI, member directory detail UI, shared Member/OrgUnit/Position pickers, and unit coverage.
-- 2026-05-13: `pnpm demo:reset` resets the Vault-backed develop DB and seeds a coherent demo company with org units, positions, demo members, memberships, manager rules, form definitions, approval templates, instances across states, tasks, notifications, attachments, signatures, and delegations.
+- 2026-05-18: `pnpm demo:reset` / `pnpm staging:reset` are wrapper-app seed commands owned by `apps/api/tools/reset-demo-data.ts`; they reset the target Vault-backed DB schema and seed a Taiwan manufacturing scenario with org units, positions, DB-backed test members, memberships, manager rules, form definitions, approval templates, instances across states, tasks, notifications, attachments, signatures, and delegations.
 - 2026-05-13: Workflow task assignment now supports candidate groups through `task_candidates`, multi-member direct/position/org resolvers, task candidate GraphQL fields, candidate-aware inbox/detail UI, and full `pnpm e2e:client` coverage.
 - 2026-05-14: W6 Edge Condition CEL expression runtime is verified for both actual workflow execution and dry run; `edge.data.condition` now represents the executable CEL condition, with structured field/operator data kept only as designer/fallback compatibility.
 - 2026-05-15: W9 notification/SLA is completed with flattened `BPMRootModule` notification config, pending delivery state, SMTP email delivery, signed webhook delivery, Handlebars templates, SLA timeout actions (`REMIND` / `AUTO_APPROVE` / `ESCALATE` / `TERMINATE_INSTANCE`), and header unread notification entry; full verification includes unit tests and `pnpm e2e:client`.
@@ -82,4 +82,4 @@
 ## Backlog Notes
 
 - 2026-05-15: System audit remediation work is tracked in `tasks.md`; each completed fix must include targeted unit/integration coverage plus `pnpm e2e:client` verification.
-- Replace `apps/api` demo auth fixtures with a real `@rytass/member-base-nestjs-module` host module and staging test-account seed before treating staging login accounts as production-like; BPM core already exposes member-base adapter helpers.
+- Replace `apps/api` DB-backed simulation accounts with a real `@rytass/member-base-nestjs-module` host module before treating staging login accounts as production-like; BPM core already exposes member-base adapter helpers and does not own seed data.

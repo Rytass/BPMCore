@@ -46,7 +46,7 @@
 **Backend**
 
 - [x] `member_metadata_cache` 表 + migration
-- [x] `BPMMemberResolver` interface + host provider 注入（`apps/api` 提供 local demo member resolver）
+- [x] `BPMMemberResolver` interface + host provider 注入（`apps/api` 提供 DB-backed test member resolver）
 - [x] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
 - [x] `org_units`、`positions`、`memberships`、`manager_resolutions` 表 + migration
 - [x] `OrganizationModule`：CRUD + 樹狀查詢（path-based hierarchy）
@@ -295,7 +295,7 @@
 
 - [x] 提供外部 member-base / SSO adapter helper（`BPMMemberBaseResolverAdapter`）
 - [x] 整合真實 Email 服務（SMTP delivery）
-- [ ] 將 `apps/api` demo auth fixtures 換成真實 host member-base module 與 staging 測試帳號 seed
+- [x] 將 `apps/api` 舊 auth fixtures 換成 DB-backed 測試帳號 seed；正式 host 仍可接 `@rytass/member-base-nestjs-module`
 - [ ] 性能測試：模擬 100 個並發 instance
 - [ ] 安全檢查：CEL sandbox、檔案上傳、SQL injection、XSS
 - [ ] 試運行 2–3 個真實流程（請假、採購、合約）

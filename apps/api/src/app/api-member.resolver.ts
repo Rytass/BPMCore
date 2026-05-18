@@ -1,23 +1,27 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import {
   BPMMemberBaseResolverAdapter,
   type BPMMemberBaseDirectory,
   type BPMMemberResolver,
 } from '@rytass/bpm-core-nestjs-module/identity';
 import type { MemberMetadata } from '@rytass/bpm-core-shared';
-import { API_DEMO_MEMBER_PROFILES } from './api-demo-members';
-
-const API_DEMO_MEMBERS = API_DEMO_MEMBER_PROFILES.map(
-  (profile) => profile.member,
-);
+import { Repository } from 'typeorm';
+import {
+  ApiTestMemberEntity,
+  mapApiTestMemberToMetadata,
+} from './api-test-member.entity';
 
 @Injectable()
 export class ApiMemberResolver
   extends BPMMemberBaseResolverAdapter<MemberMetadata>
   implements BPMMemberResolver
 {
-  constructor() {
-    super(createApiDemoMemberDirectory());
+  constructor(
+    @InjectRepository(ApiTestMemberEntity)
+    testMemberRepository: Repository<ApiTestMemberEntity>,
+  ) {
+    super(createApiTestMemberDirectory(testMemberRepository));
   }
 
   override async resolve(memberId: string): Promise<MemberMetadata> {
@@ -26,7 +30,7 @@ export class ApiMemberResolver
     } catch (error: unknown) {
       if (error instanceof Error) {
         throw new NotFoundException(
-          `API demo member ${memberId} was not found`,
+          `API test member ${memberId} was not found`,
         );
       }
 
@@ -35,32 +39,53 @@ export class ApiMemberResolver
   }
 }
 
-function createApiDemoMemberDirectory(): BPMMemberBaseDirectory<MemberMetadata> {
+function createApiTestMemberDirectory(
+  testMemberRepository: Repository<ApiTestMemberEntity>,
+): BPMMemberBaseDirectory<MemberMetadata> {
   return {
-    resolveMember: (memberId): Promise<MemberMetadata | null> =>
-      Promise.resolve(
-        API_DEMO_MEMBERS.find((member) => member.memberId === memberId) ?? null,
-      ),
-    resolveMembers: (memberIds): Promise<readonly MemberMetadata[]> =>
-      Promise.resolve(
-        API_DEMO_MEMBERS.filter((member) =>
-          memberIds.includes(member.memberId),
-        ),
-      ),
-    searchMembers: (searchText): Promise<readonly MemberMetadata[]> => {
-      const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+    resolveMember: async (memberId): Promise<MemberMetadata | null> => {
+      const member = await testMemberRepository.findOne({
+        where: { memberId },
+      });
 
-      if (!normalizedSearchText) {
-        return Promise.resolve(API_DEMO_MEMBERS);
+      return member ? mapApiTestMemberToMetadata(member) : null;
+    },
+    resolveMembers: async (memberIds): Promise<readonly MemberMetadata[]> => {
+      if (!memberIds.length) {
+        return [];
       }
 
-      return Promise.resolve(
-        API_DEMO_MEMBERS.filter((member) =>
-          [member.email, member.memberId, member.name].some((value) =>
-            value.toLocaleLowerCase().includes(normalizedSearchText),
-          ),
-        ),
-      );
+      const members = await testMemberRepository
+        .createQueryBuilder('member')
+        .where('member.member_id IN (:...memberIds)', { memberIds })
+        .orderBy('member.member_id', 'ASC')
+        .getMany();
+
+      return members.map(mapApiTestMemberToMetadata);
+    },
+    searchMembers: async (searchText): Promise<readonly MemberMetadata[]> => {
+      const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+      const query = testMemberRepository
+        .createQueryBuilder('member')
+        .orderBy('member.member_id', 'ASC');
+
+      if (!normalizedSearchText) {
+        return (await query.getMany()).map(mapApiTestMemberToMetadata);
+      }
+
+      return (
+        await query
+          .where('lower(member.member_id) LIKE :searchText', {
+            searchText: `%${normalizedSearchText}%`,
+          })
+          .orWhere('lower(member.email) LIKE :searchText', {
+            searchText: `%${normalizedSearchText}%`,
+          })
+          .orWhere('lower(member.name) LIKE :searchText', {
+            searchText: `%${normalizedSearchText}%`,
+          })
+          .getMany()
+      ).map(mapApiTestMemberToMetadata);
     },
   };
 }

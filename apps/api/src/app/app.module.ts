@@ -11,7 +11,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { buildApiBPMAuthContextFromExecutionContext } from './api-auth';
 import { ApiAuthModule } from './api-auth.module';
-import { ApiDemoOrganizationSeedService } from './api-demo-organization-seed.service';
+import { ApiSimulationSeedService } from './api-simulation-seed.service';
 import { ApiMemberResolver } from './api-member.resolver';
 import { ApiSessionService } from './api-session.service';
 
@@ -32,8 +32,9 @@ import { ApiSessionService } from './api-session.service';
       inject: [ApiSessionService],
       useFactory: (sessionService: ApiSessionService): ApolloDriverConfig => ({
         autoSchemaFile: true,
-        context: ({ req }: { readonly req?: Request }) => ({
-          bpmAuthContext: sessionService.readBPMAuthContextFromRequest(req),
+        context: async ({ req }: { readonly req?: Request }) => ({
+          bpmAuthContext:
+            await sessionService.readBPMAuthContextFromRequest(req),
           req,
         }),
         driver: ApolloDriver,
@@ -44,14 +45,15 @@ import { ApiSessionService } from './api-session.service';
       }),
     }),
     BPMRootModule.forRoot({
+      imports: [ApiAuthModule],
       authContextFactory: buildApiBPMAuthContextFromExecutionContext,
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
-        useClass: ApiMemberResolver,
+        useExisting: ApiMemberResolver,
       },
     }),
   ],
   controllers: [AppController],
-  providers: [AppService, ApiDemoOrganizationSeedService],
+  providers: [AppService, ApiSimulationSeedService],
 })
 export class AppModule {}

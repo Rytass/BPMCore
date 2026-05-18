@@ -80,11 +80,7 @@ BPMCore 已提供 structural adapter helper，不直接硬依賴
 `@rytass/member-base-nestjs-module` 的內部型別：
 
 ```ts
-import {
-  createBPMAuthContextFromMemberBaseMember,
-  createBPMMemberBaseResolverProvider,
-  BPM_MEMBER_RESOLVER,
-} from '@rytass/bpm-core-nestjs-module';
+import { createBPMAuthContextFromMemberBaseMember, createBPMMemberBaseResolverProvider, BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
 
 const bpmAuthContext = createBPMAuthContextFromMemberBaseMember(memberBaseUser, {
   readCustomFields: (member) => ({ tenantId: member.tenantId }),
@@ -106,8 +102,10 @@ export interface BPMMemberResolver {
 ```
 
 宿主系統必須提供 `BPM_MEMBER_RESOLVER` provider。BPMCore 不再提供 mock fallback；
-本 repo 的 demo member 資料只存在於 `apps/api`，用來模擬外部系統的
-member-base adapter。
+本 repo 的測試帳號資料由 wrapper app `apps/api` 建立於資料庫
+`api_test_members`，用來模擬外部系統的 member-base adapter。完整 staging/demo
+情境 seed 也屬於 `apps/api/tools/reset-demo-data.ts`，不屬於
+`@rytass/bpm-core-nestjs-module` 的模組責任。
 
 ## 宿主整合範例
 
@@ -137,6 +135,8 @@ member-base adapter。
       notificationWebhookEnabled: 'auto',
       notificationWebhookEndpointUrl: 'https://example.com/bpm/webhook',
       notificationWebhookSigningSecret: webhookSigningSecret,
+      notificationDeliverySchedulerEnabled: false,
+      notificationSlaSchedulerEnabled: false,
       notificationSlaTimeoutRemindEnabled: true,
       notificationSlaTimeoutAutoApproveEnabled: false,
       notificationSlaTimeoutEscalateEnabled: true,
@@ -159,6 +159,8 @@ Authentication 只回答「誰登入」。BPM domain authorization 仍要在 BPM
   candidate/original candidate，以及已決策者；目前 signed URL query 以
   authenticated `BPMAuthContext.memberId` 為準，不接受前端指定 reader。
 - delegation admin 可管理所有代理；一般使用者只能管理自己的個人代理。
+- `processApprovalInstance` 是 system/admin 操作；一般送出與簽核決策會在 service
+  內部推進流程，不需要 client 額外呼叫。
 
 ## Attachment Storage Contract
 
@@ -169,10 +171,7 @@ Authentication 只回答「誰登入」。BPM domain authorization 仍要在 BPM
 `.storage/attachments`。宿主系統可以在 `BPMRootModule` 直接替換：
 
 ```ts
-import {
-  ATTACHMENT_STORAGE,
-  BPMRootModule,
-} from '@rytass/bpm-core-nestjs-module';
+import { ATTACHMENT_STORAGE, BPMRootModule } from '@rytass/bpm-core-nestjs-module';
 
 BPMRootModule.forRoot({
   attachmentStorageProvider: {
@@ -186,6 +185,51 @@ BPMRootModule.forRoot({
 
 如果 storage adapter 需要 secret，可讓 `attachmentStorageProvider` 自己使用
 `useFactory` / `inject`。BPMCore 只依賴 storage contract，不依賴特定雲端儲存。
+
+Signed attachment URL 的 host 路徑可由 `attachmentRoutePrefix` 設定，預設為
+`/api/attachments`。若宿主換成 S3、MinIO 或 GCS 等 adapter，應同步設定
+`attachmentStorageProviderId`，讓 `attachments.storage_provider` 記錄真實 adapter
+標識，而不是預設的 `local`。
+
+## Notification / Worker Contract
+
+BPM 會建立 in-app notification records；email/webhook delivery 與 SLA scan 則應
+由宿主明確決定在哪個 process 執行。`notificationDeliverySchedulerEnabled` 與
+`notificationSlaSchedulerEnabled` 預設都是 `false`，避免多個 API replica 嵌入
+`BPMRootModule` 後重複掃描。
+
+若宿主要用既有寄信服務、queue、tenant router 或 event bus，應在
+`BPMRootModule.forRoot({ imports: [...] })` 的 host import 裡提供
+`BPM_NOTIFICATION_DISPATCHER`：
+
+```ts
+import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
+
+@Injectable()
+export class HostNotificationDispatcher {
+  async dispatch(notification: NotificationEntity): Promise<string> {
+    return queueNotification(notification);
+  }
+}
+```
+
+沒有提供 dispatcher 時，BPM 才會使用內建 SMTP 與 signed webhook delivery。
+pending delivery 會用 DB claim 避免多 worker 重複處理；SLA 通知另有
+idempotency index，但 production 仍建議使用單一 dedicated worker。
+
+## Migration Contract
+
+宿主應從 package 讀取 migration list，不要依賴 source glob：
+
+```ts
+import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
+```
+
+`buildBPMDataSourceOptions()`、`buildDataSourceOptionsFromVaultEnv()` 與
+`buildTypeOrmModuleOptions()` 都使用同一份 list，並保持 `migrationsRun: false`。
+部署時應明確執行 migration。第一個 migration 會嘗試建立 `uuid-ossp` 與
+`ltree`；若資料庫使用者不能 `CREATE EXTENSION`，DBA 必須先在目標 DB 建好 extension。
+多 schema 宿主應以各自的 TypeORM `schema` 跑同一份 migration list。
 
 ## API Host App
 
@@ -201,15 +245,15 @@ BPMRootModule.forRoot({
 
 - 自己設定 GraphQL / TypeORM / Vault。
 - 提供 `ApiMemberResolver`。
-- 提供 local demo login/session API，並以 HTTP-only cookie 模擬 host session。
+- 提供 DB-backed test login/session API，並以 HTTP-only cookie 模擬 host session。
 - 從 host session 建立 `BPMAuthContext`；目前不再保留 header impersonation fallback。
 - 透過 `@rytass/bpm-core-nestjs-module` 引入 `BPMRootModule` 與 host-facing contracts。
 
 API auth endpoints：
 
-- `GET /api/auth/demo-members`：列出可登入的 local demo members。
+- `GET /api/auth/test-members`：列出可登入的 DB-backed 測試帳號。
 - `POST /api/auth/login`：以 `{ identifier, password }` 登入；`identifier` 可用 member id 或 email，
-  demo password 固定為 `demo`。
+  seeded test password 固定為 `demo`。
 - `GET /api/auth/me`：讀取目前 session member。
 - `POST /api/auth/logout`：清除 API session cookie。
 
@@ -222,10 +266,10 @@ helper 為主。
 後續 `apps/api` 應補：
 
 - 用 e2e spec 驗證「未登入拒絕、登入可查 inbox、非 assignee 不可簽核」。
-- 將 `apps/api` 的 local demo auth fixtures 換成真實
-  `@rytass/member-base-nestjs-module` host module，並為 staging 建立真實測試帳號
-  seed；BPM core 已提供 adapter helper，仍只吃 host 提供的 authenticated member 與
-  `BPMMemberResolver`。
+- production-like host 若需要完整帳密、RBAC、SSO lifecycle，可把 `apps/api`
+  的 DB-backed 測試帳號 seed 換成真實 `@rytass/member-base-nestjs-module`
+  host module；BPM core 已提供 adapter helper，仍只吃 host 提供的
+  authenticated member 與 `BPMMemberResolver`。
 
 這個 app 可以留在 repo 作為 embedding contract 的活文件，也能成為之後釋出
 BPMCore package 前的防回歸測試。

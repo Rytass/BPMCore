@@ -7,9 +7,9 @@ describe('buildApiBPMAuthContextFromExecutionContext', () => {
       buildApiBPMAuthContextFromExecutionContext(
         readExecutionContext(
           readRequest({
-            'x-bpm-member-email': 'demo@example.internal',
-            'x-bpm-member-id': 'member-demo',
-            'x-bpm-member-name': 'Demo User',
+            'x-bpm-member-email': 'test@example.internal',
+            'x-bpm-member-id': 'member-test',
+            'x-bpm-member-name': 'Test User',
             'x-bpm-permissions': 'template.publish,task.decide',
             'x-bpm-roles': 'BPM_ADMIN,APPROVER',
           }),

@@ -3,9 +3,10 @@ import {
   OrganizationService,
   OrgUnitTypeEnum,
 } from '@rytass/bpm-core-nestjs-module/organization';
-import { ApiDemoOrganizationSeedService } from './api-demo-organization-seed.service';
+import type { DataSource, QueryRunner } from 'typeorm';
+import { ApiSimulationSeedService } from './api-simulation-seed.service';
 
-describe('ApiDemoOrganizationSeedService', () => {
+describe('ApiSimulationSeedService', () => {
   it('does not seed when organization data already exists', async (): Promise<void> => {
     const readOrganizationSummary = jest.fn(async () => ({
       managerResolutionCount: 0,
@@ -14,7 +15,9 @@ describe('ApiDemoOrganizationSeedService', () => {
       positionCount: 0,
     }));
     const createOrgUnit = jest.fn();
-    const service = new ApiDemoOrganizationSeedService(
+    const queryRunner = createQueryRunner();
+    const service = new ApiSimulationSeedService(
+      createDataSource(queryRunner),
       {
         createOrgUnit,
         readOrganizationSummary,
@@ -23,10 +26,13 @@ describe('ApiDemoOrganizationSeedService', () => {
 
     await service.onApplicationBootstrap();
 
+    expect(queryRunner.query).toHaveBeenCalledWith(
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS api_test_members'),
+    );
     expect(createOrgUnit).not.toHaveBeenCalled();
   });
 
-  it('seeds demo org units, positions, memberships, and manager rules', async (): Promise<void> => {
+  it('seeds simulation org units, positions, memberships, and manager rules', async (): Promise<void> => {
     const readOrganizationSummary = jest.fn(async () => ({
       managerResolutionCount: 0,
       membershipCount: 0,
@@ -43,10 +49,7 @@ describe('ApiDemoOrganizationSeedService', () => {
       }),
     );
     const createPosition = jest.fn(
-      async (input: {
-        readonly code: string;
-        readonly level: number;
-      }) => ({
+      async (input: { readonly code: string; readonly level: number }) => ({
         id: `position-${input.code}`,
       }),
     );
@@ -54,7 +57,8 @@ describe('ApiDemoOrganizationSeedService', () => {
     const createManagerResolution = jest.fn(async () => ({
       id: 'manager-resolution-id',
     }));
-    const service = new ApiDemoOrganizationSeedService(
+    const service = new ApiSimulationSeedService(
+      createDataSource(createQueryRunner()),
       {
         createManagerResolution,
         createMembership,
@@ -94,3 +98,17 @@ describe('ApiDemoOrganizationSeedService', () => {
     );
   });
 });
+
+function createDataSource(queryRunner: QueryRunner): DataSource {
+  return {
+    createQueryRunner: jest.fn(() => queryRunner),
+  } as unknown as DataSource;
+}
+
+function createQueryRunner(): QueryRunner {
+  return {
+    connect: jest.fn(async () => undefined),
+    query: jest.fn(async () => undefined),
+    release: jest.fn(async () => undefined),
+  } as unknown as QueryRunner;
+}
