@@ -104,8 +104,8 @@ export interface BPMRootNotificationOptions {
    * Enables the background delivery scheduler for pending email and webhook
    * notifications.
    *
-   * Defaults to `true`. Set to `false` when the host application wants to run
-   * notification delivery from an external worker.
+   * Defaults to `false`. Set to `true` only in a dedicated worker process or
+   * single-replica host that should run notification delivery itself.
    */
   readonly notificationDeliverySchedulerEnabled?: boolean;
 
@@ -137,8 +137,8 @@ export interface BPMRootNotificationOptions {
   /**
    * Enables the background SLA scheduler that scans pending tasks.
    *
-   * Defaults to `true`. Set to `false` when the host application wants to run
-   * SLA scans from an external scheduler or worker.
+   * Defaults to `false`. Set to `true` only in a dedicated worker process or
+   * single-replica host that should run SLA scans itself.
    */
   readonly notificationSlaSchedulerEnabled?: boolean;
 
@@ -265,9 +265,9 @@ export const DEFAULT_BPM_NOTIFICATION_OPTIONS: BPMResolvedNotificationOptions =
     deliveryMaxAttempts: 3,
     deliveryRetryBaseDelayMs: 60_000,
     deliveryScanIntervalMs: 30_000,
-    deliverySchedulerEnabled: true,
+    deliverySchedulerEnabled: false,
     slaScanIntervalMs: 60_000,
-    slaSchedulerEnabled: true,
+    slaSchedulerEnabled: false,
     slaTimeoutAutoApproveEnabled: false,
     slaTimeoutEscalateEnabled: false,
     slaTimeoutRemindEnabled: true,

@@ -13,6 +13,7 @@
 | **Member**                 | 僅儲存 member_id（外部來源），與系統內各表的 FK                        |
 | **MemberMetadataSnapshot** | Instance 發起時記錄 initiator metadata（防止外部資料變動影響歷史紀錄） |
 | **MemberResolver**         | Adapter interface，呼叫外部系統取得即時 metadata                       |
+| **MemberMetadataCache**    | PostgreSQL-backed resolver 快取，避免每次列表或簽核都打外部系統        |
 
 ```typescript
 interface MemberResolver {
@@ -30,7 +31,9 @@ interface MemberMetadata {
 }
 ```
 
-**快取策略**：使用 in-memory + TTL（例：5 分鐘），避免每個簽核操作都打外部。
+**快取策略**：目前使用 `member_metadata_cache` PostgreSQL 表 + TTL（預設 5 分鐘）。
+這讓列表、歷程、候選人顯示名稱與 email 可重用 resolver 結果，同時仍由宿主
+`BPM_MEMBER_RESOLVER` 決定外部 member 的真實來源。
 
 ---
 
@@ -168,6 +171,8 @@ interface MemberMetadata {
 
 - 預設使用 `@rytass/storages-adapter-local`
 - 宿主可透過 `BPMRootModule.attachmentStorageProvider` 替換成 MinIO / S3 / GCS 等 adapter
+- signed URL 的 public base URL、route prefix、TTL 與 storage provider metadata
+  都可由 `BPMRootModule` root options 設定
 - `attachments.filename` 保留原檔名供 UI 顯示；實際儲存路徑使用 attachment id
   作為目錄並清理檔名字元，例如 `${id}/${sanitizeFilename(filename)}`
 - 下載走後端代理 + 短期 signed URL

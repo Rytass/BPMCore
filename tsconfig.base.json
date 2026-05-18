@@ -25,14 +25,35 @@
       "@rytass/bpm-core-nestjs-module/database": [
         "./libs/bpm-core/src/lib/database/index.ts"
       ],
+      "@rytass/bpm-core-nestjs-module/condition": [
+        "./libs/bpm-core/src/lib/condition/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/delegation": [
+        "./libs/bpm-core/src/lib/delegation/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/form": [
+        "./libs/bpm-core/src/lib/form/index.ts"
+      ],
       "@rytass/bpm-core-nestjs-module/identity": [
         "./libs/bpm-core/src/lib/identity/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/migrations": [
+        "./libs/bpm-core/src/lib/migrations/index.ts"
       ],
       "@rytass/bpm-core-nestjs-module/notification": [
         "./libs/bpm-core/src/lib/notification/index.ts"
       ],
       "@rytass/bpm-core-nestjs-module/organization": [
         "./libs/bpm-core/src/lib/organization/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/signature": [
+        "./libs/bpm-core/src/lib/signature/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/template": [
+        "./libs/bpm-core/src/lib/template/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/workflow-engine": [
+        "./libs/bpm-core/src/lib/workflow-engine/index.ts"
       ],
       "@bpm/core/organization": [
         "./libs/bpm-core/src/lib/organization/index.ts"

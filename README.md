@@ -32,8 +32,10 @@ External NestJS systems should consume `@rytass/bpm-core-nestjs-module` and impo
 - login/session/JWT handling
 - `BPMAuthContext` creation
 - `BPM_MEMBER_RESOLVER` provider implementation
+- attachment storage, public signed URL prefix, and signing secrets
+- notification delivery worker or `BPM_NOTIFICATION_DISPATCHER` integration
 
-`@rytass/bpm-core-nestjs-module` does not own a user table and does not provide mock auth fallback. It stores member ids and resolves member profiles through the host-provided resolver.
+`@rytass/bpm-core-nestjs-module` does not own a user table and does not provide mock auth fallback. It stores member ids and resolves member profiles through the host-provided resolver. In-process delivery and SLA schedulers are off by default so API replicas can embed the module without accidentally running duplicate worker loops.
 
 ## Local Commands
 

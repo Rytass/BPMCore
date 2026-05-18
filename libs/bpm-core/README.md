@@ -23,7 +23,7 @@ Next.js backoffice UI and does not provide a production auth system by itself.
 
 ```bash
 pnpm add @rytass/bpm-core-nestjs-module @rytass/bpm-core-shared
-pnpm add @nestjs/common @nestjs/core @nestjs/graphql @nestjs/typeorm typeorm reflect-metadata
+pnpm add @nestjs/common @nestjs/core @nestjs/graphql @nestjs/typeorm graphql typeorm reflect-metadata
 pnpm add pg
 ```
 
@@ -52,6 +52,8 @@ Your host application must provide:
 - A `BPMAuthContext` bridge from the request execution context.
 - A `BPM_MEMBER_RESOLVER` provider for member metadata lookup.
 - Attachment storage configuration when local storage is not acceptable.
+- A dedicated worker or host dispatcher when email/webhook/SLA work should not
+  run inside API replicas.
 - Production secrets for attachment URL signing, signatures, SMTP, webhook, and Vault.
 
 The package intentionally stores member IDs instead of owning user accounts.
@@ -247,6 +249,8 @@ BPMRootModule.forRootAsync({
 | `authContextFactory`                             | `undefined`                    | Reads `BPMAuthContext` from NestJS `ExecutionContext`.       |
 | `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                          |
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                    |
+| `attachmentRoutePrefix`                          | `/api/attachments`             | Prefix used when BPM signs attachment download/preview URLs. |
+| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.   |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                  |
 | `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.   |
 | `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                   |
@@ -262,12 +266,12 @@ BPMRootModule.forRootAsync({
 | `notificationWebhookEnabled`                     | `auto`                         | Enables webhook when URL and signing secret are complete.    |
 | `notificationWebhookEndpointUrl`                 | `null`                         | Default webhook endpoint URL.                                |
 | `notificationWebhookSigningSecret`               | `null`                         | HMAC secret for webhook payload signatures.                  |
-| `notificationDeliverySchedulerEnabled`           | `true`                         | Runs pending email/webhook delivery loop in the API process. |
+| `notificationDeliverySchedulerEnabled`           | `false`                        | Runs pending email/webhook delivery loop in this process.    |
 | `notificationDeliveryScanIntervalMs`             | `30000`                        | Delivery scheduler interval.                                 |
 | `notificationDeliveryBatchSize`                  | `25`                           | Maximum pending notifications per delivery scan.             |
 | `notificationDeliveryMaxAttempts`                | `3`                            | Attempts before a notification is marked failed.             |
 | `notificationDeliveryRetryBaseDelayMs`           | `60000`                        | Base retry delay multiplied by attempt count.                |
-| `notificationSlaSchedulerEnabled`                | `true`                         | Runs automatic SLA scan loop in the API process.             |
+| `notificationSlaSchedulerEnabled`                | `false`                        | Runs automatic SLA scan loop in this process.                |
 | `notificationSlaScanIntervalMs`                  | `60000`                        | SLA scheduler interval.                                      |
 | `notificationSlaTimeoutRemindEnabled`            | `true`                         | Enables SLA timeout `REMIND`.                                |
 | `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                          |
@@ -311,6 +315,22 @@ Expected Vault keys:
 | `DB_PASS`   | PostgreSQL password.       |
 | `DB_SCHEMA` | PostgreSQL schema.         |
 
+Use `buildBPMDataSourceOptions()` when your host already has database secrets
+and does not want the Vault adapter:
+
+```ts
+import { buildBPMDataSourceOptions } from '@rytass/bpm-core-nestjs-module';
+
+const dataSourceOptions = buildBPMDataSourceOptions({
+  database: 'bpm_core',
+  host: '127.0.0.1',
+  password: 'secret',
+  port: 5432,
+  schema: 'bpm_core_staging',
+  username: 'bpm_core_staging',
+});
+```
+
 The local migration CLI helper can also read Vault directly from environment
 variables:
 
@@ -348,8 +368,17 @@ source glob:
 import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 ```
 
-`buildDataSourceOptionsFromVaultEnv()` and `buildTypeOrmModuleOptions()` already
-use this exported migration list.
+`buildBPMDataSourceOptions()`, `buildDataSourceOptionsFromVaultEnv()`, and
+`buildTypeOrmModuleOptions()` use this exported migration list. Runtime
+`TypeOrmModule` setup still keeps `migrationsRun: false`; run migrations
+explicitly during deploy.
+
+The first migration attempts to create required PostgreSQL extensions
+(`uuid-ossp`, `ltree`) if they do not exist. Hosts that cannot grant
+`CREATE EXTENSION` should pre-provision those extensions in the target database
+before running BPM migrations. Schema selection comes from the TypeORM `schema`
+option, so multi-schema hosts should run the same migration list once per BPM
+schema/user pair.
 
 Do not enable `synchronize` in production.
 
@@ -373,27 +402,53 @@ BPMRootModule.forRoot({
 ```
 
 Signed attachment URLs are served by BPM's attachment controller. Configure
-`attachmentPublicBaseUrl`, `attachmentSignedUrlSecret`, and
-`attachmentSignedUrlTtlSeconds` for production.
+`attachmentPublicBaseUrl`, `attachmentRoutePrefix`,
+`attachmentSignedUrlSecret`, and `attachmentSignedUrlTtlSeconds` for production.
+Set `attachmentStorageProviderId` when replacing local storage so attachment
+metadata does not incorrectly say `local`.
 
 ## Notifications and SLA
 
 BPM creates in-app notifications by default. Email and webhook delivery are
 disabled unless enough configuration is present or explicitly enabled.
 
-Delivery and SLA schedulers run inside the API process by default. Disable them
-when you run delivery or SLA scans from an external worker:
+Delivery and SLA schedulers are disabled by default. Enable them only in a
+dedicated worker process or in a single-replica host that intentionally owns
+background work:
 
 ```ts
 BPMRootModule.forRoot({
-  notificationDeliverySchedulerEnabled: false,
-  notificationSlaSchedulerEnabled: false,
+  notificationDeliverySchedulerEnabled: true,
+  notificationSlaSchedulerEnabled: true,
   authContextFactory: buildBPMAuthContextFromExecutionContext,
   memberResolverProvider: {
     provide: BPM_MEMBER_RESOLVER,
     useClass: HostBPMMemberResolver,
   },
 });
+```
+
+BPM claims pending delivery rows with `FOR UPDATE SKIP LOCKED` and records
+SLA notifications with an idempotency index, but a dedicated worker is still
+the recommended production topology.
+
+Hosts can replace built-in SMTP and signed webhook dispatch by providing
+`BPM_NOTIFICATION_DISPATCHER` from an imported host module. The dispatcher can
+publish to an existing mail service, queue, tenant router, or event bus:
+
+```ts
+import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
+
+@Module({
+  providers: [
+    {
+      provide: BPM_NOTIFICATION_DISPATCHER,
+      useClass: HostNotificationDispatcher,
+    },
+  ],
+  exports: [BPM_NOTIFICATION_DISPATCHER],
+})
+export class HostNotificationModule {}
 ```
 
 SLA timeout actions that change workflow state are disabled by default:
@@ -461,10 +516,10 @@ import type { FormSchema } from '@rytass/bpm-core-shared/form';
 
 Use shared contracts when building UI clients or host-side integration tests.
 
-## Import Path
+## Import Paths
 
-All public APIs are exported from the package root. Use the root package import
-instead of deep imports or feature subpath imports.
+The root package exports the common host-facing APIs. Stable feature subpaths
+are also published for applications that want narrower imports.
 
 ```ts
 import {
@@ -475,7 +530,13 @@ import {
   SignatureService,
   buildTypeOrmModuleOptions,
 } from '@rytass/bpm-core-nestjs-module';
+
+import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
+import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
 ```
+
+Do not import from internal compiled paths such as
+`@rytass/bpm-core-nestjs-module/src/lib/...`.
 
 ## Local Development
 
@@ -536,7 +597,8 @@ npm publish --access public
 - Replace all local fallback secrets before production.
 - Use a production storage adapter instead of local filesystem storage.
 - Keep old signature keys available for verification after key rotation.
-- Disable in-process schedulers when using separate worker processes.
+- Keep in-process schedulers disabled in API replicas unless a dedicated worker
+  is not available.
 - Do not enable TypeORM `synchronize` in production.
 - Ensure GraphQL auth context is available for protected operations.
 - Run migrations before serving traffic with a new package version.

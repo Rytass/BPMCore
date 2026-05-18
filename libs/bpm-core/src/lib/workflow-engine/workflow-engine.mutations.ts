@@ -1,5 +1,9 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
+import {
+  BPMAdminOnly,
+  BPMAuthenticated,
+  BPMCurrentMemberId,
+} from '../bpm-auth';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
@@ -28,6 +32,7 @@ export class WorkflowEngineMutations {
   }
 
   @Mutation(() => Boolean)
+  @BPMAdminOnly()
   async processApprovalInstance(
     @Args('instanceId', { type: () => String }) instanceId: string,
   ): Promise<boolean> {

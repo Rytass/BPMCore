@@ -12,6 +12,7 @@ export enum NotificationDigestModeEnum {
 }
 
 export enum NotificationStatusEnum {
+  DELIVERY_IN_PROGRESS = 'DELIVERY_IN_PROGRESS',
   FAILED = 'FAILED',
   PENDING = 'PENDING',
   READ = 'READ',

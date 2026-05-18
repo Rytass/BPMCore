@@ -182,6 +182,20 @@ created_at                  timestamptz
 created_by_member_id        text
 ```
 
+### `approval_template_categories`
+
+```
+id                          uuid PK
+name                        text
+description                 text (nullable)
+display_order               int
+created_at                  timestamptz
+updated_at                  timestamptz
+
+UNIQUE (name)
+INDEX (display_order)
+```
+
 ### `approval_template_versions`
 
 ```
@@ -254,6 +268,7 @@ token_id                    uuid FK → workflow_tokens.id
 node_id                     text                  -- 對應的 user task 節點 id
 original_assignee_member_id text                  -- resolver 解出的原始 assignee
 assignee_member_id          text                  -- 套用 delegation 後的實際 assignee
+assignment_type             text                  -- 'DIRECT' | 'CANDIDATE_GROUP'
 delegation_chain            jsonb                 -- 代理鏈紀錄 [{from, to, ruleId}]
 status                      text                  -- 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'TRANSFERRED' | 'CANCELLED'
 sla_due_at                  timestamptz (nullable)
@@ -264,6 +279,26 @@ completed_at                timestamptz (nullable)
 INDEX (assignee_member_id, status)
 INDEX (instance_id, node_id)
 INDEX (sla_due_at) WHERE sla_due_at IS NOT NULL AND status IN ('PENDING','IN_PROGRESS')
+```
+
+### `task_candidates`
+
+> Candidate-group task 的候選簽核人。單一 member 決策後，其餘候選會關閉。
+
+```
+id                          uuid PK
+task_id                     uuid FK → tasks.id ON DELETE CASCADE
+member_id                   text
+original_member_id          text
+source_type                 text                  -- DIRECT / ORG_UNIT / POSITION / MANAGER
+delegation_chain            jsonb
+status                      text                  -- PENDING / CLAIMED / COMPLETED / CANCELLED / TRANSFERRED / SUPERSEDED
+claimed_at                  timestamptz (nullable)
+created_at                  timestamptz
+
+INDEX (member_id, status)
+INDEX (task_id, status)
+UNIQUE (task_id, member_id)
 ```
 
 ### `task_decisions`
@@ -368,8 +403,10 @@ channel                     text          -- 'IN_APP' | 'EMAIL' | 'WEBHOOK'
 type                        text          -- 'TASK_ASSIGNED' | 'SLA_WARNING' | 'INSTANCE_COMPLETED' | ...
 instance_id                 uuid (nullable)
 task_id                     uuid (nullable)
+title                       text          -- 已渲染標題，供 in-app/email/webhook 共用
+body                        text          -- 已渲染內文，供 in-app/email/webhook 共用
 payload                     jsonb         -- 渲染用資料
-status                      text          -- 'PENDING' | 'SENT' | 'FAILED' | 'READ'
+status                      text          -- 'PENDING' | 'DELIVERY_IN_PROGRESS' | 'SENT' | 'FAILED' | 'READ'
 sent_at                     timestamptz (nullable)
 read_at                     timestamptz (nullable)
 attempt_count               int DEFAULT 0
@@ -383,6 +420,7 @@ created_at                  timestamptz
 INDEX (recipient_member_id, status, created_at)
 INDEX (status) WHERE status = 'PENDING'
 INDEX (status, next_retry_at, created_at)
+UNIQUE (task_id, recipient_member_id, type, channel) WHERE type IN ('SLA_WARNING', 'SLA_OVERDUE')
 ```
 
 ### `notification_preferences`
@@ -482,8 +520,11 @@ LIMIT 100;
 4. delegation: `delegation_rules`
 5. form: `form_definitions`, `form_definition_versions`
 6. template: `approval_templates`, `approval_template_versions`
-7. workflow: `approval_instances`, `workflow_tokens`, `tasks`, `task_decisions`
+7. workflow: `approval_instances`, `workflow_tokens`, `tasks`, `task_candidates`, `task_decisions`
 8. signature: `signatures`
 9. attachment: `attachments`
 10. audit: `activity_logs`
-11. notification: `notifications`, `notification_preferences`
+11. notification: `notifications`, `notification_preferences`, SLA idempotency index
+
+實際順序以 package 匯出的 `BPM_CORE_MIGRATIONS` 為準。外部宿主應從
+`@rytass/bpm-core-nestjs-module/migrations` 匯入 class list，而不是使用 source glob。

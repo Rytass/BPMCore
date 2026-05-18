@@ -25,6 +25,7 @@ import {
 } from './attachment-options';
 
 export interface AttachmentModuleOptions extends BPMRootAttachmentOptions {
+  readonly imports?: ModuleMetadata['imports'];
   readonly storageProvider?: Provider<AttachmentStorage>;
 }
 
@@ -73,7 +74,7 @@ export class AttachmentModule {
     return {
       controllers: ATTACHMENT_MODULE_CONTROLLERS,
       exports: ATTACHMENT_MODULE_EXPORTS,
-      imports: ATTACHMENT_MODULE_IMPORTS,
+      imports: [...(options.imports ?? []), ...ATTACHMENT_MODULE_IMPORTS],
       module: AttachmentModule,
       providers: [
         ...ATTACHMENT_MODULE_PROVIDERS,

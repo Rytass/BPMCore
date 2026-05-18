@@ -24,7 +24,6 @@ import {
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
 
-const STORAGE_PROVIDER = 'local';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -93,7 +92,7 @@ export class AttachmentService {
         mimeType: input.mimeType,
         sizeBytes: String(input.sizeBytes),
         storageKey: storedFile.key,
-        storageProvider: STORAGE_PROVIDER,
+        storageProvider: this.attachmentOptions.storageProviderId,
         taskId: input.taskId ?? null,
         uploaderMemberId,
       }),
@@ -215,7 +214,7 @@ export class AttachmentService {
       this.attachmentOptions.signedUrlSecret,
     );
 
-    return `${this.attachmentOptions.publicBaseUrl}/api/attachments/${id}/download?token=${encodeURIComponent(
+    return `${this.attachmentOptions.publicBaseUrl}${this.attachmentOptions.routePrefix}/${id}/download?token=${encodeURIComponent(
       token,
     )}&disposition=${disposition}`;
   }

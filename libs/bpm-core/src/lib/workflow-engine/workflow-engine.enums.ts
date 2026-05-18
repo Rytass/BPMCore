@@ -34,6 +34,7 @@ export enum TaskCandidateStatusEnum {
   CLAIMED = 'CLAIMED',
   COMPLETED = 'COMPLETED',
   PENDING = 'PENDING',
+  SUPERSEDED = 'SUPERSEDED',
   TRANSFERRED = 'TRANSFERRED',
 }
 

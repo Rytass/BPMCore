@@ -6,7 +6,7 @@ import { BPM_CORE_MIGRATIONS } from '../migrations';
 const DEFAULT_PORT = 5432;
 const DEFAULT_VAULT_PATH = 'bpm_core/develop';
 
-interface DatabaseSecrets {
+export interface BPMDatabaseConnectionOptions {
   readonly host: string;
   readonly port: number;
   readonly username: string;
@@ -26,19 +26,20 @@ export async function buildTypeOrmModuleOptions(
   const secrets = await readDatabaseSecretsFromVaultService(vault);
 
   return {
-    ...buildDataSourceOptions(secrets),
+    ...buildBPMDataSourceOptions(secrets),
     autoLoadEntities: true,
-    migrations: [],
   };
 }
 
 export async function buildDataSourceOptionsFromVaultEnv(
   env: NodeJS.ProcessEnv,
 ): Promise<DataSourceOptions> {
-  return buildDataSourceOptions(await readDatabaseSecretsFromVaultEnv(env));
+  return buildBPMDataSourceOptions(await readDatabaseSecretsFromVaultEnv(env));
 }
 
-function buildDataSourceOptions(secrets: DatabaseSecrets): DataSourceOptions {
+export function buildBPMDataSourceOptions(
+  secrets: BPMDatabaseConnectionOptions,
+): DataSourceOptions {
   return {
     database: secrets.database,
     entities: [],
@@ -56,7 +57,7 @@ function buildDataSourceOptions(secrets: DatabaseSecrets): DataSourceOptions {
 
 async function readDatabaseSecretsFromVaultService(
   vault: VaultService,
-): Promise<DatabaseSecrets> {
+): Promise<BPMDatabaseConnectionOptions> {
   const port = await vault.get<string>('DB_PORT');
 
   return {
@@ -84,7 +85,7 @@ async function readRequiredVaultValue(
 
 async function readDatabaseSecretsFromVaultEnv(
   env: NodeJS.ProcessEnv,
-): Promise<DatabaseSecrets> {
+): Promise<BPMDatabaseConnectionOptions> {
   const vaultHost = readRequiredEnv(env, 'VAULT_HOST');
   const vaultAccount = readRequiredEnv(env, 'VAULT_ACCOUNT');
   const vaultPassword = readRequiredEnv(env, 'VAULT_PASSWORD');

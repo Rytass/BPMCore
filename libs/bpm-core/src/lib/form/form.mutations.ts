@@ -1,5 +1,5 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
-import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
+import { BPMCurrentMemberId, BPMDesignerOnly } from '../bpm-auth';
 import { FormDefinitionEntity } from './form-definition.entity';
 import { FormDefinitionVersionEntity } from './form-definition-version.entity';
 import { FormService } from './form.service';
@@ -10,7 +10,7 @@ import {
 } from './dto/form-definition.input';
 
 @Resolver()
-@BPMAuthenticated()
+@BPMDesignerOnly()
 export class FormMutations {
   constructor(private readonly formService: FormService) {}
 
@@ -50,12 +50,12 @@ export class FormMutations {
   async publishFormDefinitionVersion(
     @Args('versionId', { type: () => String }) versionId: string,
     @Args('publishedByMemberId', { nullable: true, type: () => String })
-    publishedByMemberId?: string,
-    @BPMCurrentMemberId() currentMemberId?: string,
+    _publishedByMemberId: string | null | undefined,
+    @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<FormDefinitionVersionEntity> {
     return this.formService.publishFormDefinitionVersion(
       versionId,
-      currentMemberId ?? publishedByMemberId,
+      currentMemberId,
     );
   }
 

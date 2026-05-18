@@ -11,6 +11,7 @@ import { ApprovalTemplateCategories2026051208000 } from './0000000008000-approva
 import { TaskCandidates2026051309000 } from './0000000009000-task-candidates';
 import { NotificationDeliveryState0000000010000 } from './0000000010000-notification-delivery-state';
 import { RemoveAttachmentEncryptionKey0000000011000 } from './0000000011000-remove-attachment-encryption-key';
+import { NotificationSlaIdempotency0000000012000 } from './0000000012000-notification-sla-idempotency';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions2026043000000,
@@ -25,6 +26,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   TaskCandidates2026051309000,
   NotificationDeliveryState0000000010000,
   RemoveAttachmentEncryptionKey0000000011000,
+  NotificationSlaIdempotency0000000012000,
 ];
 
 export * from './0000000000000-enable-postgres-extensions';
@@ -39,3 +41,4 @@ export * from './0000000008000-approval-template-categories';
 export * from './0000000009000-task-candidates';
 export * from './0000000010000-notification-delivery-state';
 export * from './0000000011000-remove-attachment-encryption-key';
+export * from './0000000012000-notification-sla-idempotency';

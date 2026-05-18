@@ -3,8 +3,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as nodemailer from 'nodemailer';
-import { IsNull, LessThanOrEqual, Repository } from 'typeorm';
+import { In, IsNull, LessThanOrEqual, Repository } from 'typeorm';
 import { IdentityService } from '../identity/identity.service';
+import {
+  BPM_NOTIFICATION_DISPATCHER,
+  BPMNotificationDispatcher,
+} from './notification-dispatcher.token';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
@@ -35,19 +39,12 @@ export class NotificationDeliveryService {
       limit,
       options.deliveryBatchSize,
     );
-    const pendingNotifications = await this.notificationRepository.find({
-      order: { createdAt: 'ASC' },
-      take: deliveryLimit,
-      where: [
-        {
-          nextRetryAt: LessThanOrEqual(now),
-          status: NotificationStatusEnum.PENDING,
-        },
-        {
-          nextRetryAt: IsNull(),
-          status: NotificationStatusEnum.PENDING,
-        },
-      ],
+    const pendingNotifications = await this.claimPendingNotifications({
+      claimStaleBefore: new Date(
+        now.getTime() - options.deliveryRetryBaseDelayMs,
+      ),
+      limit: deliveryLimit,
+      now,
     });
     const results = await Promise.all(
       pendingNotifications.map((notification) =>
@@ -66,7 +63,10 @@ export class NotificationDeliveryService {
       return false;
     }
 
-    if (notification.status !== NotificationStatusEnum.PENDING) {
+    if (
+      notification.status !== NotificationStatusEnum.PENDING &&
+      notification.status !== NotificationStatusEnum.DELIVERY_IN_PROGRESS
+    ) {
       return false;
     }
 
@@ -96,7 +96,96 @@ export class NotificationDeliveryService {
     }
   }
 
+  private async claimPendingNotifications({
+    claimStaleBefore,
+    limit,
+    now,
+  }: {
+    readonly claimStaleBefore: Date;
+    readonly limit: number;
+    readonly now: Date;
+  }): Promise<readonly NotificationEntity[]> {
+    if (!this.notificationRepository.manager?.transaction) {
+      return this.notificationRepository.find({
+        order: { createdAt: 'ASC' },
+        take: limit,
+        where: [
+          {
+            nextRetryAt: LessThanOrEqual(now),
+            status: NotificationStatusEnum.PENDING,
+          },
+          {
+            nextRetryAt: IsNull(),
+            status: NotificationStatusEnum.PENDING,
+          },
+          {
+            lastAttemptAt: LessThanOrEqual(claimStaleBefore),
+            status: NotificationStatusEnum.DELIVERY_IN_PROGRESS,
+          },
+        ],
+      });
+    }
+
+    return this.notificationRepository.manager.transaction(
+      async (manager): Promise<readonly NotificationEntity[]> => {
+        const claimedRows = (await manager.query(
+          `
+            UPDATE notifications
+               SET status = $1,
+                   last_attempt_at = $2
+             WHERE id IN (
+               SELECT id
+                 FROM notifications
+                WHERE (
+                    (
+                      status = $3
+                      AND (next_retry_at IS NULL OR next_retry_at <= $2)
+                    )
+                    OR (
+                      status = $5
+                      AND last_attempt_at <= $6
+                    )
+                  )
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT $4
+             )
+             RETURNING id
+          `,
+          [
+            NotificationStatusEnum.DELIVERY_IN_PROGRESS,
+            now,
+            NotificationStatusEnum.PENDING,
+            limit,
+            NotificationStatusEnum.DELIVERY_IN_PROGRESS,
+            claimStaleBefore,
+          ],
+        )) as readonly { readonly id: string }[];
+        const claimedIds = claimedRows.map((row) => row.id);
+
+        return claimedIds.length
+          ? manager
+              .getRepository(NotificationEntity)
+              .find({ where: { id: In(claimedIds) } })
+          : [];
+      },
+    );
+  }
+
   private async dispatch(
+    notification: NotificationEntity,
+    options: BPMResolvedNotificationOptions,
+  ): Promise<string> {
+    const hostDispatcher = this.readHostDispatcher();
+
+    if (hostDispatcher) {
+      return hostDispatcher.dispatch(notification, options);
+    }
+
+    return this.dispatchBuiltIn(notification, options);
+  }
+
+  private async dispatchBuiltIn(
     notification: NotificationEntity,
     options: BPMResolvedNotificationOptions,
   ): Promise<string> {
@@ -109,6 +198,16 @@ export class NotificationDeliveryService {
     }
 
     throw new Error(`Unsupported notification channel ${notification.channel}`);
+  }
+
+  private readHostDispatcher(): BPMNotificationDispatcher | null {
+    try {
+      return this.moduleRef.get(BPM_NOTIFICATION_DISPATCHER, {
+        strict: false,
+      });
+    } catch {
+      return null;
+    }
   }
 
   private async dispatchEmail(

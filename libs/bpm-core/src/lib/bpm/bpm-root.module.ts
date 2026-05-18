@@ -32,6 +32,7 @@ type BPMModuleImport = DynamicModule | Type<unknown>;
 
 export interface BPMRootModuleOptions
   extends
+    Pick<ModuleMetadata, 'imports'>,
     BPMRootAttachmentOptions,
     BPMRootIdentityOptions,
     BPMRootNotificationOptions,
@@ -129,9 +130,11 @@ export interface BPMRootModuleAsyncOptions extends Pick<
 @Module({})
 export class BPMRootModule {
   static forRoot(options: BPMRootModuleOptions): DynamicModule {
+    const featureModules = createBPMFeatureModules(options);
+
     return {
-      exports: [...createBPMFeatureModules(options)],
-      imports: createBPMFeatureModules(options),
+      exports: [...featureModules],
+      imports: [...(options.imports ?? []), ...featureModules],
       module: BPMRootModule,
     };
   }
@@ -207,11 +210,13 @@ function createBPMFeatureModules(
     BPMAuthModule.forRoot(createBPMAuthModuleOptions(options)),
     IdentityModule.forRoot({
       ...options,
+      imports: options.imports,
       memberResolverProvider: options.memberResolverProvider,
     }),
     OrganizationModule,
     AttachmentModule.forRoot({
       ...options,
+      imports: options.imports,
       storageProvider: options.attachmentStorageProvider,
     }),
     FormModule,

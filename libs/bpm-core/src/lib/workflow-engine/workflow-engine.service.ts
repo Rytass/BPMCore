@@ -269,6 +269,7 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         ]);
+        await this.processRunningInstance(manager, instance);
 
         return instance;
       },
@@ -1479,6 +1480,8 @@ export class WorkflowEngineService {
       });
 
       if (!token) {
+        await this.completeInstanceIfNoOpenRuntimeState(manager, instance);
+
         return;
       }
 
@@ -1488,6 +1491,32 @@ export class WorkflowEngineService {
     throw new ConflictException(
       `Approval instance ${instance.id} exceeded maximum processing steps`,
     );
+  }
+
+  private async completeInstanceIfNoOpenRuntimeState(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+  ): Promise<void> {
+    if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
+      return;
+    }
+
+    const waitingTokens = await manager.getRepository(WorkflowTokenEntity).find({
+      where: {
+        instanceId: instance.id,
+        status: WorkflowTokenStatusEnum.WAITING,
+      },
+    });
+
+    if (waitingTokens.length > 0) {
+      return;
+    }
+
+    await manager.getRepository(ApprovalInstanceEntity).save({
+      ...instance,
+      completedAt: new Date(),
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
   }
 
   private async isNodeEntryReady(
@@ -3057,6 +3086,11 @@ export class WorkflowEngineService {
             }),
         ),
       );
+      await this.closeTaskCandidates(
+        manager,
+        openTasks.map((task) => task.id),
+        readCandidateStatusForClosedTask(taskStatus),
+      );
     }
   }
 
@@ -3143,7 +3177,42 @@ export class WorkflowEngineService {
             }),
         ),
       );
+      await this.closeTaskCandidates(
+        manager,
+        cancellableTasks.map((task) => task.id),
+        TaskCandidateStatusEnum.SUPERSEDED,
+      );
     }
+  }
+
+  private async closeTaskCandidates(
+    manager: EntityManager,
+    taskIds: readonly string[],
+    status: TaskCandidateStatusEnum,
+  ): Promise<void> {
+    if (taskIds.length === 0) {
+      return;
+    }
+
+    const candidateRepository = manager.getRepository(TaskCandidateEntity);
+    const candidates = (
+      await candidateRepository.find({ where: { taskId: In([...taskIds]) } })
+    ).filter(
+      (candidate) =>
+        candidate.status === TaskCandidateStatusEnum.PENDING ||
+        candidate.status === TaskCandidateStatusEnum.CLAIMED,
+    );
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    await candidateRepository.save(
+      candidates.map(
+        (candidate): TaskCandidateEntity =>
+          Object.assign(new TaskCandidateEntity(), candidate, { status }),
+      ),
+    );
   }
 
   private async getTemplateOrThrow(
@@ -3788,6 +3857,20 @@ function isTaskRelatedToMember(task: TaskEntity, memberId: string): boolean {
     task.assigneeMemberId === memberId ||
     task.originalAssigneeMemberId === memberId
   );
+}
+
+function readCandidateStatusForClosedTask(
+  taskStatus: TaskStatusEnum,
+): TaskCandidateStatusEnum {
+  if (taskStatus === TaskStatusEnum.TRANSFERRED) {
+    return TaskCandidateStatusEnum.TRANSFERRED;
+  }
+
+  if (taskStatus === TaskStatusEnum.COMPLETED) {
+    return TaskCandidateStatusEnum.COMPLETED;
+  }
+
+  return TaskCandidateStatusEnum.CANCELLED;
 }
 
 function validateSubmittedFormData(

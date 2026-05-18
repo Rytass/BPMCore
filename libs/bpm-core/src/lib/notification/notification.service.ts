@@ -317,6 +317,11 @@ export class NotificationService {
     const results = await candidateTasks.reduce<Promise<SlaScanResult>>(
       async (resultPromise, task): Promise<SlaScanResult> => {
         const currentResult = await resultPromise;
+
+        if (!(await this.tryClaimSlaTask(task.id))) {
+          return currentResult;
+        }
+
         const instance = await this.approvalInstanceRepository.findOne({
           where: { id: task.instanceId },
         });
@@ -396,6 +401,19 @@ export class NotificationService {
     return results;
   }
 
+  private async tryClaimSlaTask(taskId: string): Promise<boolean> {
+    if (!this.taskRepository.query) {
+      return true;
+    }
+
+    const rows = (await this.taskRepository.query(
+      'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS claimed',
+      [`bpm-sla:${taskId}`],
+    )) as readonly { readonly claimed?: boolean }[];
+
+    return rows[0]?.claimed !== false;
+  }
+
   private async createSlaNotificationOnce({
     instance,
     node,
@@ -432,25 +450,33 @@ export class NotificationService {
         return count;
       }
 
-      await this.createNotifications({
-        channels: [NotificationChannelEnum.IN_APP],
-        customTemplate: node.data.notification?.customTemplate ?? null,
-        instanceId: instance.id,
-        payload: {
-          assigneeMemberId: task.assigneeMemberId,
+      try {
+        await this.createNotifications({
+          channels: [NotificationChannelEnum.IN_APP],
+          customTemplate: node.data.notification?.customTemplate ?? null,
           instanceId: instance.id,
-          instanceTitle: instance.title,
-          nodeId: node.id,
-          nodeLabel: node.data.label,
-          onTimeout: node.data.sla?.onTimeout ?? 'REMIND',
+          payload: {
+            assigneeMemberId: task.assigneeMemberId,
+            instanceId: instance.id,
+            instanceTitle: instance.title,
+            nodeId: node.id,
+            nodeLabel: node.data.label,
+            onTimeout: node.data.sla?.onTimeout ?? 'REMIND',
+            recipientMemberId,
+            slaDueAt: task.slaDueAt?.toISOString() ?? null,
+            taskId: task.id,
+          },
           recipientMemberId,
-          slaDueAt: task.slaDueAt?.toISOString() ?? null,
           taskId: task.id,
-        },
-        recipientMemberId,
-        taskId: task.id,
-        type,
-      });
+          type,
+        });
+      } catch (error: unknown) {
+        if (isUniqueConstraintViolation(error)) {
+          return count;
+        }
+
+        throw error;
+      }
 
       return count + 1;
     }, Promise.resolve(0));
@@ -765,6 +791,15 @@ function normalizeNotificationChannels(
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return Array.from(new Set(values));
+}
+
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === '23505'
+  );
 }
 
 function isChannelEnabled(

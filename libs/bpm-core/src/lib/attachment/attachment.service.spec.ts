@@ -70,8 +70,10 @@ describe('AttachmentService', () => {
       storage,
       {
         publicBaseUrl: 'https://bpm.example.com',
+        routePrefix: '/api/attachments',
         signedUrlSecret: 'attachment-secret',
         signedUrlTtlSeconds: 60,
+        storageProviderId: 'local',
       },
     );
 
@@ -104,6 +106,49 @@ describe('AttachmentService', () => {
     expect(url.origin).toBe('https://bpm.example.com');
     expect(url.pathname).toBe(`/api/attachments/${attachment.id}/download`);
     expect(url.searchParams.get('disposition')).toBe('inline');
+  });
+
+  it('records custom storage provider metadata and uses configured signed URL route prefix', async (): Promise<void> => {
+    const attachments: AttachmentEntity[] = [];
+    const service = new AttachmentService(
+      createAttachmentRepository(attachments),
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
+      createStorage(),
+      {
+        publicBaseUrl: 'https://bpm.example.com',
+        routePrefix: '/internal/bpm/files',
+        signedUrlSecret: 'attachment-secret',
+        signedUrlTtlSeconds: 60,
+        storageProviderId: 's3',
+      },
+    );
+
+    const attachment = await service.uploadAttachment({
+      checksumSha256:
+        '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+      contentBase64: Buffer.from('hello').toString('base64'),
+      filename: 'hello.pdf',
+      formFieldPath: 'form.file',
+      instanceId: null,
+      mimeType: 'application/pdf',
+      sizeBytes: 5,
+      taskId: null,
+      uploaderMemberId: 'member-001',
+    });
+    const signedUrl = await service.createSignedUrl({
+      disposition: 'attachment',
+      id: attachment.id,
+      requestedByMemberId: 'member-001',
+    });
+    const url = new URL(signedUrl);
+
+    expect(attachment.storageProvider).toBe('s3');
+    expect(url.pathname).toBe(
+      `/internal/bpm/files/${attachment.id}/download`,
+    );
   });
 
   it('allows workflow-related members to read instance attachments', async (): Promise<void> => {

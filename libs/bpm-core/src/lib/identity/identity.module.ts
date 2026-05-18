@@ -17,6 +17,7 @@ import {
 } from './identity-options';
 
 export interface IdentityModuleOptions extends BPMRootIdentityOptions {
+  readonly imports?: ModuleMetadata['imports'];
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
 }
 
@@ -38,7 +39,10 @@ export class IdentityModule {
 
     return {
       exports: [IdentityService],
-      imports: [TypeOrmModule.forFeature([MemberMetadataCacheEntity])],
+      imports: [
+        ...(options.imports ?? []),
+        TypeOrmModule.forFeature([MemberMetadataCacheEntity]),
+      ],
       module: IdentityModule,
       providers: [
         IdentityQueries,

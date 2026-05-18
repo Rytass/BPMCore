@@ -3,6 +3,10 @@ import { ModuleRef } from '@nestjs/core';
 import { Repository } from 'typeorm';
 import { IdentityService } from '../identity/identity.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
+import {
+  BPM_NOTIFICATION_DISPATCHER,
+  BPMNotificationDispatcher,
+} from './notification-dispatcher.token';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
@@ -100,6 +104,33 @@ describe('NotificationDeliveryService', () => {
     );
   });
 
+  it('dispatches email and webhook notifications through a host dispatcher when provided', async (): Promise<void> => {
+    const dispatch = jest.fn((): Promise<string> => Promise.resolve('queue-1'));
+    const notification = createNotification(NotificationChannelEnum.EMAIL);
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createModuleRef({
+        dispatch,
+      }),
+    );
+
+    await expect(
+      service.deliverNotification(notification, DEFAULT_BPM_NOTIFICATION_OPTIONS),
+    ).resolves.toBe(true);
+
+    expect(dispatch).toHaveBeenCalledWith(
+      notification,
+      DEFAULT_BPM_NOTIFICATION_OPTIONS,
+    );
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryTarget: 'queue-1',
+        status: NotificationStatusEnum.SENT,
+      }),
+    );
+  });
+
   it('records delivery failures and schedules a retry', async (): Promise<void> => {
     const notification = createNotification(NotificationChannelEnum.EMAIL);
     const repository = createNotificationRepository(notification);
@@ -173,6 +204,34 @@ describe('NotificationDeliveryService', () => {
       expect.objectContaining({ take: 7 }),
     );
   });
+
+  it('includes stale in-progress notifications in the next delivery scan', async (): Promise<void> => {
+    const notification = createNotification(NotificationChannelEnum.IN_APP);
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createModuleRef(),
+    );
+
+    await service.deliverPendingNotifications({
+      now: new Date('2026-05-15T00:10:00.000Z'),
+      options: {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        deliveryRetryBaseDelayMs: 60_000,
+      },
+    });
+
+    expect(repository.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.arrayContaining([
+          expect.objectContaining({
+            lastAttemptAt: expect.any(Object),
+            status: NotificationStatusEnum.DELIVERY_IN_PROGRESS,
+          }),
+        ]),
+      }),
+    );
+  });
 });
 
 function createNotification(
@@ -224,9 +283,15 @@ function createNotificationRepository(
   };
 }
 
-function createModuleRef(): ModuleRef {
+function createModuleRef(
+  dispatcher?: BPMNotificationDispatcher,
+): ModuleRef {
   return {
-    get: (token: unknown): IdentityService => {
+    get: (token: unknown): BPMNotificationDispatcher | IdentityService => {
+      if (token === BPM_NOTIFICATION_DISPATCHER && dispatcher) {
+        return dispatcher;
+      }
+
       if (token !== IdentityService) {
         throw new Error('Unexpected module token');
       }

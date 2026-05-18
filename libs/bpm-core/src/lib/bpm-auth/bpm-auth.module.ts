@@ -8,7 +8,7 @@ import {
   BPMAuthModuleOptions,
 } from './bpm-auth.options';
 import { BPMAuthenticatedGuard } from './bpm-auth.guard';
-import { BPMAdminGuard } from './bpm-auth.authorization';
+import { BPMAdminGuard, BPMDesignerGuard } from './bpm-auth.authorization';
 import { ConfigurableBPMAuthContextAccessor } from './configurable-bpm-auth-context.accessor';
 
 @Module({})
@@ -18,6 +18,7 @@ export class BPMAuthModule {
       exports: [
         BPM_AUTH_CONTEXT_ACCESSOR,
         BPMAdminGuard,
+        BPMDesignerGuard,
         BPMAuthenticatedGuard,
       ],
       global: true,
@@ -32,6 +33,7 @@ export class BPMAuthModule {
           useClass: ConfigurableBPMAuthContextAccessor,
         },
         BPMAdminGuard,
+        BPMDesignerGuard,
         BPMAuthenticatedGuard,
       ],
     };
@@ -42,6 +44,7 @@ export class BPMAuthModule {
       exports: [
         BPM_AUTH_CONTEXT_ACCESSOR,
         BPMAdminGuard,
+        BPMDesignerGuard,
         BPMAuthenticatedGuard,
       ],
       global: true,
@@ -58,6 +61,7 @@ export class BPMAuthModule {
           useClass: ConfigurableBPMAuthContextAccessor,
         },
         BPMAdminGuard,
+        BPMDesignerGuard,
         BPMAuthenticatedGuard,
       ],
     };
