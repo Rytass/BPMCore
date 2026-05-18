@@ -58,12 +58,22 @@ export function readApiBaseUrl(): string {
     return explicitApiBaseUrl.replace(/\/$/, '');
   }
 
-  const endpoint = new URL(readGraphQlEndpoint());
+  const graphQlEndpoint = readGraphQlEndpoint();
 
+  return resolveApiBaseUrlFromGraphQlEndpoint(graphQlEndpoint);
+}
+
+export function resolveApiBaseUrlFromGraphQlEndpoint(
+  graphQlEndpoint: string,
+): string {
+  if (!isAbsoluteUrl(graphQlEndpoint)) {
+    return '/api';
+  }
+
+  const endpoint = new URL(graphQlEndpoint);
   endpoint.pathname = '/api';
   endpoint.search = '';
   endpoint.hash = '';
-
   return endpoint.toString().replace(/\/$/, '');
 }
 
@@ -102,4 +112,8 @@ class ApiRequestError extends Error {
   ) {
     super(message);
   }
+}
+
+function isAbsoluteUrl(value: string): boolean {
+  return value.startsWith('http://') || value.startsWith('https://');
 }
