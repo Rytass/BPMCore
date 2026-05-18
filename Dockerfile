@@ -26,6 +26,10 @@ RUN mkdir -p /tmp/runtime && \
   else \
     cp -r dist/apps/${TARGET}/* /tmp/runtime/ && \
     cp -r node_modules /tmp/runtime/node_modules && \
+    mkdir -p /tmp/runtime/apps/api/tools /tmp/runtime/apps/api/src/app && \
+    cp apps/api/tools/reset-demo-data.ts /tmp/runtime/apps/api/tools/reset-demo-data.ts && \
+    cp apps/api/src/app/api-simulation-members.ts /tmp/runtime/apps/api/src/app/api-simulation-members.ts && \
+    cp apps/api/src/app/api-test-member-schema.ts /tmp/runtime/apps/api/src/app/api-test-member-schema.ts && \
     mkdir -p /tmp/runtime/libs/bpm-core/src/lib && \
     cp -r libs/bpm-core/src/lib/database /tmp/runtime/libs/bpm-core/src/lib/database && \
     cp -r libs/bpm-core/src/lib/migrations /tmp/runtime/libs/bpm-core/src/lib/migrations && \
