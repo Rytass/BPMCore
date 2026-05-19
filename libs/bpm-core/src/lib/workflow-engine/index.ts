@@ -1,4 +1,5 @@
 export * from './activity-log.entity';
+export * from './approval-instance-page-info.object';
 export * from './approval-instance.entity';
 export * from './dto/cancel-approval-instance.input';
 export * from './dto/decide-task.input';
@@ -15,4 +16,5 @@ export * from './workflow-engine.enums';
 export * from './workflow-engine.module';
 export * from './workflow-engine.service';
 export * from './workflow-engine.tokens';
+export * from './workflow-service-task-dispatcher.token';
 export * from './workflow-token.entity';

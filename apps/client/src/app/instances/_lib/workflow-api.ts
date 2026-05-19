@@ -286,7 +286,17 @@ export interface ApprovalInstancesPageInput {
 
 export interface ApprovalInstancesPageResult {
   readonly instances: readonly ApprovalInstanceRecord[];
+  readonly pageInfo: ApprovalInstancePageInfoRecord;
   readonly totalCount: number;
+}
+
+export interface ApprovalInstancePageInfoRecord {
+  readonly hasNextPage: boolean;
+  readonly hasPreviousPage: boolean;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly totalCount: number;
+  readonly totalPages: number;
 }
 
 export interface WorkflowDashboardSummaryRecord {
@@ -301,6 +311,10 @@ export interface WorkflowDashboardSummaryRecord {
 
 interface ApprovalInstancesQueryData {
   readonly approvalInstances: readonly InstanceJsonRecord[];
+}
+
+interface ApprovalInstancePageInfoQueryData {
+  readonly approvalInstancePageInfo: ApprovalInstancePageInfoRecord;
 }
 
 interface WorkflowDashboardSummaryQueryData {
@@ -500,7 +514,7 @@ export async function listApprovalInstancesPage({
     templateId: templateId?.trim() || null,
     view,
   };
-  const [pageData, countData] = await Promise.all([
+  const [pageData, pageInfoData] = await Promise.all([
     requestGraphQl<ApprovalInstancesQueryData>(
       `query ApprovalInstancesPage(
         $view: ApprovalInstanceListView
@@ -533,44 +547,40 @@ export async function listApprovalInstancesPage({
       }`,
       variables,
     ),
-    requestGraphQl<ApprovalInstancesQueryData>(
-      `query ApprovalInstancesCount(
+    requestGraphQl<ApprovalInstancePageInfoQueryData>(
+      `query ApprovalInstancePageInfo(
         $view: ApprovalInstanceListView
         $searchText: String
         $state: [ApprovalInstanceState!]
         $templateId: String
+        $page: Int
+        $pageSize: Int
       ) {
-        approvalInstances(
+        approvalInstancePageInfo(
           view: $view
           searchText: $searchText
           state: $state
           templateId: $templateId
+          page: $page
+          pageSize: $pageSize
         ) {
-          completedAt
-          formDataJson
-          formDefinitionSnapshotJson
-          id
-          initiatorMemberId
-          startedAt
-          state
-          templateId
-          templateVersionId
-          title
-          workflowSnapshotJson
+          hasNextPage
+          hasPreviousPage
+          page
+          pageSize
+          totalCount
+          totalPages
         }
       }`,
-      {
-        searchText: variables.searchText,
-        state: variables.state,
-        templateId: variables.templateId,
-        view,
-      },
+      variables,
     ),
   ]);
+  const pageInfo = pageInfoData.approvalInstancePageInfo;
 
   return {
     instances: pageData.approvalInstances.map(parseInstanceJson),
-    totalCount: countData.approvalInstances.length,
+    pageInfo,
+    totalCount: pageInfo.totalCount,
   };
 }
 

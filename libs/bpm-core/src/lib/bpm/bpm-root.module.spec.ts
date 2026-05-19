@@ -5,6 +5,10 @@ import {
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
 import { ATTACHMENT_STORAGE, AttachmentStorage } from '../attachment';
+import {
+  BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+  BPMWorkflowServiceTaskDispatcher,
+} from '../workflow-engine';
 
 @Module({
   providers: [
@@ -31,11 +35,19 @@ describe('BPMRootModule', () => {
       provide: ATTACHMENT_STORAGE,
       useExisting: 'HOST_ATTACHMENT_STORAGE',
     };
+    const workflowServiceTaskDispatcherProvider: Provider<BPMWorkflowServiceTaskDispatcher> =
+      {
+        provide: BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+        useValue: {
+          dispatchWebhook: jest.fn(),
+        },
+      };
 
     const module = BPMRootModule.forRoot({
       attachmentStorageProvider,
       imports: [HostProviderModule],
       memberResolverProvider,
+      workflowServiceTaskDispatcherProvider,
     });
     const importedModules = module.imports ?? [];
 
@@ -47,6 +59,17 @@ describe('BPMRootModule', () => {
           importedModule !== null &&
           'imports' in importedModule &&
           importedModule.imports?.includes(HostProviderModule),
+      ),
+    ).toBe(true);
+    expect(
+      importedModules.some(
+        (importedModule) =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'providers' in importedModule &&
+          importedModule.providers?.includes(
+            workflowServiceTaskDispatcherProvider,
+          ),
       ),
     ).toBe(true);
   });

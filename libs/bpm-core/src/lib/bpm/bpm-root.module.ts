@@ -27,6 +27,7 @@ import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
+import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 
 type BPMModuleImport = DynamicModule | Type<unknown>;
 
@@ -65,6 +66,15 @@ export interface BPMRootModuleOptions
    * `@rytass/bpm-core-nestjs-module` to a specific external identity system.
    */
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
+
+  /**
+   * Host-provided dispatcher for executable workflow service tasks.
+   *
+   * When omitted, BPM sends WEBHOOK service tasks with the built-in `fetch`
+   * dispatcher. Wrapper apps can replace this provider to add auth headers,
+   * request signing, retry queues, or an outbound integration bus.
+   */
+  readonly workflowServiceTaskDispatcherProvider?: Provider<BPMWorkflowServiceTaskDispatcher>;
 }
 
 export interface BPMRootModuleAsyncFactoryOptions
@@ -112,6 +122,14 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    * `@rytass/bpm-core-nestjs-module` to a specific external identity system.
    */
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
+
+  /**
+   * Host-provided dispatcher for executable workflow service tasks.
+   *
+   * This provider is static at module wiring time. If secrets are required,
+   * use a Nest provider with `useFactory` / `inject` here.
+   */
+  readonly workflowServiceTaskDispatcherProvider?: Provider<BPMWorkflowServiceTaskDispatcher>;
 
   /**
    * Async factory returning BPM root options.
@@ -195,7 +213,10 @@ export class BPMRootModule {
           inject: options.inject,
           useFactory: options.useFactory,
         }),
-        WorkflowEngineModule,
+        WorkflowEngineModule.forRoot({
+          serviceTaskDispatcherProvider:
+            options.workflowServiceTaskDispatcherProvider,
+        }),
       ],
       module: BPMRootModule,
     };
@@ -224,7 +245,10 @@ function createBPMFeatureModules(
     DelegationModule,
     NotificationModule,
     SignatureModule.forRoot(options),
-    WorkflowEngineModule,
+    WorkflowEngineModule.forRoot({
+      serviceTaskDispatcherProvider:
+        options.workflowServiceTaskDispatcherProvider,
+    }),
   ];
 }
 

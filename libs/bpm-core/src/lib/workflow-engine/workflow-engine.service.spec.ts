@@ -34,6 +34,7 @@ import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
 import {
   ActivityLogEventTypeEnum,
+  ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
@@ -42,6 +43,7 @@ import {
   WorkflowTokenStatusEnum,
 } from './workflow-engine.enums';
 import { WorkflowEngineService } from './workflow-engine.service';
+import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
 describe('WorkflowEngineService', () => {
@@ -347,6 +349,40 @@ describe('WorkflowEngineService', () => {
     });
 
     fetchSpy.mockRestore();
+  });
+
+  it('uses the injected workflow service task dispatcher for webhook nodes', async (): Promise<void> => {
+    const serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = {
+      dispatchWebhook: jest.fn(() =>
+        Promise.resolve({ ok: true, status: 202 }),
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
+      processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
+      serviceTaskDispatcher,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(serviceTaskDispatcher.dispatchWebhook).toHaveBeenCalledWith({
+      headers: undefined,
+      payload: { amount: 1000, title: '費用申請' },
+      url: 'https://example.test/workflow-hook',
+    });
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+        payload: expect.objectContaining({
+          action: 'WEBHOOK',
+          ok: true,
+          status: 202,
+        }),
+      }),
+    );
   });
 
   it('updates form data from set-form-field service tasks', async (): Promise<void> => {
@@ -840,6 +876,66 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  it('counts and pages filtered approval instances without loading an unpaged list in the client', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const instances = [
+      createApprovalInstance({
+        id: 'purchase-1',
+        title: '採購請款 A',
+      }),
+      createApprovalInstance({
+        id: 'purchase-2',
+        title: '採購請款 B',
+      }),
+      createApprovalInstance({
+        id: 'leave-1',
+        title: '請假申請',
+      }),
+    ];
+
+    fixture.rootInstanceFind.mockResolvedValue(instances);
+    fixture.rootInstanceQueryBuilder.getMany.mockResolvedValue([instances[0]]);
+    fixture.rootInstanceCount.mockResolvedValue(2);
+
+    await expect(
+      fixture.service.listApprovalInstances(undefined, {
+        page: 1,
+        pageSize: 1,
+        searchText: '採購',
+        view: ApprovalInstanceListViewEnum.ALL,
+      }),
+    ).resolves.toEqual([instances[0]]);
+    await expect(
+      fixture.service.countApprovalInstances(undefined, {
+        searchText: '採購',
+        view: ApprovalInstanceListViewEnum.ALL,
+      }),
+    ).resolves.toBe(2);
+    await expect(
+      fixture.service.readApprovalInstancePageInfo(undefined, {
+        page: 1,
+        pageSize: 1,
+        searchText: '採購',
+        view: ApprovalInstanceListViewEnum.ALL,
+      }),
+    ).resolves.toEqual({
+      hasNextPage: true,
+      hasPreviousPage: false,
+      page: 1,
+      pageSize: 1,
+      totalCount: 2,
+      totalPages: 2,
+    });
+    expect(fixture.rootInstanceQueryBuilder.skip).toHaveBeenCalledWith(0);
+    expect(fixture.rootInstanceQueryBuilder.take).toHaveBeenCalledWith(1);
+    expect(fixture.rootInstanceQueryBuilder.getMany).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceCount).toHaveBeenCalledTimes(2);
+  });
+
   it('routes an exclusive gateway through the first matching condition', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -1234,10 +1330,12 @@ interface ServiceFixture {
     Promise<readonly NotificationEntity[]>,
     [Readonly<Record<string, unknown>>]
   >;
+  readonly rootInstanceCount: jest.Mock<Promise<number>, []>;
   readonly rootInstanceFind: jest.Mock<
     Promise<readonly ApprovalInstanceEntity[]>,
     [Readonly<Record<string, unknown>>?]
   >;
+  readonly rootInstanceQueryBuilder: ApprovalInstanceQueryBuilderMock;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
@@ -1252,6 +1350,21 @@ interface ServiceFixture {
   readonly savedWorkflowTokens: readonly WorkflowTokenEntity[];
   readonly savedToken: WorkflowTokenEntity | null;
   readonly service: WorkflowEngineService;
+}
+
+interface ApprovalInstanceQueryBuilderMock {
+  readonly andWhere: jest.Mock<
+    ApprovalInstanceQueryBuilderMock,
+    [string, Readonly<Record<string, unknown>>?]
+  >;
+  readonly getCount: jest.Mock<Promise<number>, []>;
+  readonly getMany: jest.Mock<Promise<readonly ApprovalInstanceEntity[]>, []>;
+  readonly orderBy: jest.Mock<
+    ApprovalInstanceQueryBuilderMock,
+    [string, 'ASC' | 'DESC']
+  >;
+  readonly skip: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
+  readonly take: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
 }
 
 function createServiceFixture({
@@ -1270,6 +1383,7 @@ function createServiceFixture({
   processNotifications = [],
   processOrgUnits = [],
   processWorkflowSnapshot,
+  serviceTaskDispatcher,
   templateVersionStatus,
 }: {
   readonly currentVersionId: string | null;
@@ -1287,6 +1401,7 @@ function createServiceFixture({
   readonly processNotifications?: readonly NotificationEntity[];
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
+  readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
 }): ServiceFixture {
   let savedToken: WorkflowTokenEntity | null = null;
@@ -1316,11 +1431,19 @@ function createServiceFixture({
     Promise<readonly ApprovalInstanceEntity[]>,
     [Readonly<Record<string, unknown>>?]
   >(() => Promise.resolve([createApprovalInstance()]));
+  const rootInstanceCount = jest.fn<Promise<number>, []>(() =>
+    rootInstanceFind().then((instances) => instances.length),
+  );
+  const rootInstanceQueryBuilder = createApprovalInstanceQueryBuilderMock(
+    rootInstanceFind,
+    rootInstanceCount,
+  );
   const rootTaskFind = jest.fn<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
+    createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
     findOne: jest.fn(() => Promise.resolve(createApprovalInstance())),
   });
@@ -1739,7 +1862,9 @@ function createServiceFixture({
   return {
     managerQuery,
     notificationFind,
+    rootInstanceCount,
     rootInstanceFind,
+    rootInstanceQueryBuilder,
     rootTaskFind,
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;
@@ -1784,6 +1909,7 @@ function createServiceFixture({
       delegationService as unknown as DelegationService,
       notificationService as unknown as NotificationService,
       signatureService as unknown as SignatureService,
+      serviceTaskDispatcher,
     ),
     notificationService,
   };
@@ -1797,6 +1923,35 @@ function createRepository<TEntity extends ObjectLiteral>(
     Partial<import('typeorm').Repository<TEntity>>
   > &
     import('typeorm').Repository<TEntity>;
+}
+
+function createApprovalInstanceQueryBuilderMock(
+  rootInstanceFind: jest.Mock<
+    Promise<readonly ApprovalInstanceEntity[]>,
+    [Readonly<Record<string, unknown>>?]
+  >,
+  rootInstanceCount: jest.Mock<Promise<number>, []>,
+): ApprovalInstanceQueryBuilderMock {
+  const queryBuilder: ApprovalInstanceQueryBuilderMock = {
+    andWhere: jest.fn<
+      ApprovalInstanceQueryBuilderMock,
+      [string, Readonly<Record<string, unknown>>?]
+    >((): ApprovalInstanceQueryBuilderMock => queryBuilder),
+    getCount: rootInstanceCount,
+    getMany: jest.fn(() => rootInstanceFind()),
+    orderBy: jest.fn<
+      ApprovalInstanceQueryBuilderMock,
+      [string, 'ASC' | 'DESC']
+    >((): ApprovalInstanceQueryBuilderMock => queryBuilder),
+    skip: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
+      (): ApprovalInstanceQueryBuilderMock => queryBuilder,
+    ),
+    take: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
+      (): ApprovalInstanceQueryBuilderMock => queryBuilder,
+    ),
+  };
+
+  return queryBuilder;
 }
 
 function createTemplate(
@@ -1926,12 +2081,18 @@ function createConditionalAttachmentFormSchema(): FormDefinitionSchema {
 function createApprovalInstance({
   formDefinitionSnapshot,
   formData,
+  id,
+  initiatorMemberId,
   state,
+  title,
   workflowSnapshot,
 }: {
   readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly formData?: Readonly<Record<string, unknown>>;
+  readonly id?: string;
+  readonly initiatorMemberId?: string;
   readonly state?: ApprovalInstanceStateEnum;
+  readonly title?: string;
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
@@ -1944,14 +2105,14 @@ function createApprovalInstance({
         schemaVersion: 1,
       },
     },
-    id: 'instance-1',
-    initiatorMemberId: 'member-001',
+    id: id ?? 'instance-1',
+    initiatorMemberId: initiatorMemberId ?? 'member-001',
     initiatorMetadataSnapshot: {},
     startedAt: new Date('2026-05-04T09:00:00.000Z'),
     state: state ?? ApprovalInstanceStateEnum.RUNNING,
     templateId: 'template-1',
     templateVersionId: 'template-version-1',
-    title: '費用申請',
+    title: title ?? '費用申請',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
     workflowSnapshot: workflowSnapshot ?? {
       edges: [],

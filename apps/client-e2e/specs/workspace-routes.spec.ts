@@ -90,12 +90,23 @@ async function mockWorkspaceGraphQl(page: Page): Promise<void> {
       return;
     }
 
-    if (
-      query.includes('query ApprovalInstancesPage') ||
-      query.includes('query ApprovalInstancesCount')
-    ) {
+    if (query.includes('query ApprovalInstancesPage')) {
       await fulfillGraphQl(route, {
         approvalInstances: readInstances(readApprovalInstanceView(payload)),
+      });
+      return;
+    }
+
+    if (query.includes('query ApprovalInstancePageInfo')) {
+      await fulfillGraphQl(route, {
+        approvalInstancePageInfo: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+          page: 1,
+          pageSize: 10,
+          totalCount: readInstances(readApprovalInstanceView(payload)).length,
+          totalPages: 1,
+        },
       });
       return;
     }

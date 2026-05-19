@@ -17,11 +17,19 @@ import {
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, IsNull, Repository } from 'typeorm';
+import {
+  EntityManager,
+  In,
+  IsNull,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
 import {
   DelegationService,
@@ -69,6 +77,12 @@ import {
   WorkflowDryRunResultObject,
   WorkflowDryRunStepObject,
 } from './workflow-dry-run.object';
+import {
+  BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+  BPMWorkflowServiceTaskDispatcher,
+  BPMWorkflowWebhookDispatchResult,
+  DefaultWorkflowServiceTaskDispatcher,
+} from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
 const MAX_PROCESSING_STEPS = 500;
@@ -167,6 +181,9 @@ export class WorkflowEngineService {
     private readonly delegationService: DelegationService,
     private readonly notificationService: NotificationService,
     private readonly signatureService: SignatureService,
+    @Optional()
+    @Inject(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)
+    private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = new DefaultWorkflowServiceTaskDispatcher(),
   ) {}
 
   async submitApprovalInstance(
@@ -1078,36 +1095,140 @@ export class WorkflowEngineService {
     scope?: WorkflowReadScope,
     options: ListApprovalInstancesOptions = {},
   ): Promise<readonly ApprovalInstanceEntity[]> {
+    const queryBuilder = await this.createFilteredApprovalInstanceQueryBuilder(
+      scope,
+      options,
+    );
+
+    if (!queryBuilder) {
+      return [];
+    }
+
+    queryBuilder.orderBy('approvalInstance.createdAt', 'DESC');
+
+    if (shouldPaginateList(options)) {
+      queryBuilder
+        .skip(readPageOffset(options.page, options.pageSize))
+        .take(normalizePageSize(options.pageSize));
+    }
+
+    return queryBuilder.getMany();
+  }
+
+  async countApprovalInstances(
+    scope?: WorkflowReadScope,
+    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'> = {},
+  ): Promise<number> {
+    const queryBuilder = await this.createFilteredApprovalInstanceQueryBuilder(
+      scope,
+      options,
+    );
+
+    return queryBuilder ? queryBuilder.getCount() : 0;
+  }
+
+  async readApprovalInstancePageInfo(
+    scope?: WorkflowReadScope,
+    options: ListApprovalInstancesOptions = {},
+  ): Promise<{
+    readonly hasNextPage: boolean;
+    readonly hasPreviousPage: boolean;
+    readonly page: number;
+    readonly pageSize: number;
+    readonly totalCount: number;
+    readonly totalPages: number;
+  }> {
+    const totalCount = await this.countApprovalInstances(scope, options);
+    const page = normalizePage(options.page);
+    const pageSize = normalizePageSize(options.pageSize);
+    const totalPages = Math.max(Math.ceil(totalCount / pageSize), 1);
+
+    return {
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+      page,
+      pageSize,
+      totalCount,
+      totalPages,
+    };
+  }
+
+  private async createFilteredApprovalInstanceQueryBuilder(
+    scope?: WorkflowReadScope,
+    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'> = {},
+  ): Promise<SelectQueryBuilder<ApprovalInstanceEntity> | null> {
+    const queryBuilder =
+      this.approvalInstanceRepository.createQueryBuilder('approvalInstance');
+    const readableInstanceIds = await this.applyReadableInstanceFilter(
+      queryBuilder,
+      scope,
+      options,
+    );
+
+    if (readableInstanceIds === false) {
+      return null;
+    }
+
+    const templateId = normalizeText(options.templateId);
+
+    if (options.state?.length) {
+      queryBuilder.andWhere('approvalInstance.state IN (:...states)', {
+        states: [...options.state],
+      });
+    }
+
+    if (templateId) {
+      queryBuilder.andWhere('approvalInstance.templateId = :templateId', {
+        templateId,
+      });
+    }
+
+    applyApprovalInstanceSearchFilter(queryBuilder, options.searchText);
+
+    return queryBuilder;
+  }
+
+  private async applyReadableInstanceFilter(
+    queryBuilder: SelectQueryBuilder<ApprovalInstanceEntity>,
+    scope: WorkflowReadScope | undefined,
+    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'>,
+  ): Promise<readonly string[] | false | null> {
+    if (!scope) {
+      return null;
+    }
+
+    const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
+
+    if (view === ApprovalInstanceListViewEnum.SENT) {
+      queryBuilder.andWhere(
+        'approvalInstance.initiatorMemberId = :initiatorMemberId',
+        {
+          initiatorMemberId: scope.memberId,
+        },
+      );
+
+      return null;
+    }
+
     const readableInstanceIds = await this.listFilteredReadableInstanceIds(
       scope,
       options,
     );
 
     if (readableInstanceIds !== null && !readableInstanceIds.length) {
-      return [];
+      return false;
     }
 
-    const templateId = normalizeText(options.templateId);
-    const instances = await this.approvalInstanceRepository.find({
-      order: { createdAt: 'DESC' },
-      where: {
-        ...(readableInstanceIds === null
-          ? {}
-          : { id: In(readableInstanceIds) }),
-        ...(options.state?.length ? { state: In([...options.state]) } : {}),
-        ...(templateId ? { templateId } : {}),
-      },
-    });
-    const searchText = normalizeText(options.searchText)?.toLocaleLowerCase();
-    const filteredInstances = searchText
-      ? instances.filter((instance) =>
-          [instance.title, instance.initiatorMemberId, instance.id].some(
-            (value) => value.toLocaleLowerCase().includes(searchText),
-          ),
-        )
-      : instances;
+    if (readableInstanceIds !== null) {
+      queryBuilder.andWhere(
+        'approvalInstance.id IN (:...readableInstanceIds)',
+        {
+          readableInstanceIds: [...readableInstanceIds],
+        },
+      );
+    }
 
-    return paginateList(filteredInstances, options.page, options.pageSize);
+    return readableInstanceIds;
   }
 
   async readWorkflowDashboardSummary(
@@ -2934,7 +3055,11 @@ export class WorkflowEngineService {
               instance: buildWorkflowExpressionContext(instance).instance,
               triggeredAt: new Date().toISOString(),
             };
-      const result = await executeWebhookServiceAction(action, payload);
+      const result = await executeWebhookServiceAction(
+        this.serviceTaskDispatcher,
+        action,
+        payload,
+      );
 
       await activityRepository.save(
         activityRepository.create({
@@ -3897,15 +4022,20 @@ function normalizeText(value: string | null | undefined): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function paginateList<TEntity>(
-  items: readonly TEntity[],
+function readPageOffset(
   page: number | null | undefined,
   pageSize: number | null | undefined,
-): readonly TEntity[] {
+): number {
   const normalizedPageSize = normalizePageSize(pageSize);
-  const startIndex = (normalizePage(page) - 1) * normalizedPageSize;
 
-  return items.slice(startIndex, startIndex + normalizedPageSize);
+  return (normalizePage(page) - 1) * normalizedPageSize;
+}
+
+function shouldPaginateList(options: ListApprovalInstancesOptions): boolean {
+  return (
+    typeof options.page !== 'undefined' ||
+    typeof options.pageSize !== 'undefined'
+  );
 }
 
 function normalizePage(value: number | null | undefined): number {
@@ -3918,6 +4048,37 @@ function normalizePageSize(value: number | null | undefined): number {
   }
 
   return Math.min(Number(value), 100);
+}
+
+function applyApprovalInstanceSearchFilter(
+  queryBuilder: SelectQueryBuilder<ApprovalInstanceEntity>,
+  searchTextValue: string | null | undefined,
+): void {
+  const searchText = normalizeText(searchTextValue)?.toLocaleLowerCase();
+
+  if (!searchText) {
+    return;
+  }
+
+  queryBuilder.andWhere(
+    [
+      '(',
+      'LOWER(approvalInstance.title) LIKE :approvalInstanceSearchText',
+      'OR LOWER(approvalInstance.initiatorMemberId) LIKE :approvalInstanceSearchText',
+      'OR LOWER(CAST(approvalInstance.id AS text)) LIKE :approvalInstanceSearchText',
+      ')',
+    ].join(' '),
+    {
+      approvalInstanceSearchText: `%${escapeLikePattern(searchText)}%`,
+    },
+  );
+}
+
+function escapeLikePattern(value: string): string {
+  return value
+    .replace(/\\/gu, '\\\\')
+    .replace(/%/gu, '\\%')
+    .replace(/_/gu, '\\_');
 }
 
 function isInstanceWithinRange(
@@ -4080,38 +4241,19 @@ function normalizeFormFieldPath(path: string): readonly string[] {
 }
 
 async function executeWebhookServiceAction(
+  serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher,
   action: Extract<
     ServiceTaskNode['data']['action'],
     { readonly type: 'WEBHOOK' }
   >,
   payload: unknown,
-): Promise<{
-  readonly error?: string;
-  readonly ok: boolean;
-  readonly status: number | null;
-}> {
+): Promise<BPMWorkflowWebhookDispatchResult> {
   try {
-    const headers = {
-      ...action.headers,
-      ...(hasHeader(action.headers, 'content-type')
-        ? {}
-        : { 'content-type': 'application/json' }),
-    };
-    const response = await fetch(action.url, {
-      body: JSON.stringify(payload),
-      headers,
-      method: 'POST',
+    return await serviceTaskDispatcher.dispatchWebhook({
+      headers: action.headers,
+      payload,
+      url: action.url,
     });
-
-    if (response.ok) {
-      return { ok: true, status: response.status };
-    }
-
-    return {
-      error: await readWebhookResponseError(response),
-      ok: false,
-      status: response.status,
-    };
   } catch (error: unknown) {
     return {
       error: error instanceof Error ? error.message : 'Unknown webhook error',
@@ -4119,26 +4261,6 @@ async function executeWebhookServiceAction(
       status: null,
     };
   }
-}
-
-function hasHeader(
-  headers: Readonly<Record<string, string>> | undefined,
-  name: string,
-): boolean {
-  const normalizedName = name.toLocaleLowerCase();
-
-  return Object.keys(headers ?? {}).some(
-    (headerName) => headerName.toLocaleLowerCase() === normalizedName,
-  );
-}
-
-async function readWebhookResponseError(response: Response): Promise<string> {
-  const body = await response.text();
-  const trimmedBody = body.trim();
-
-  return trimmedBody
-    ? `HTTP ${response.status}: ${trimmedBody.slice(0, 500)}`
-    : `HTTP ${response.status}`;
 }
 
 function readManagerMemberIdFromInitiatorSnapshot(
