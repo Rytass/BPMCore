@@ -273,8 +273,41 @@ export interface LaunchableTemplateRecord {
   readonly version: number;
 }
 
+export type ApprovalInstanceView = 'ALL' | 'CC' | 'SENT';
+
+export interface ApprovalInstancesPageInput {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly searchText: string | null;
+  readonly state: ApprovalInstanceState | null;
+  readonly templateId: string | null;
+  readonly view: ApprovalInstanceView;
+}
+
+export interface ApprovalInstancesPageResult {
+  readonly instances: readonly ApprovalInstanceRecord[];
+  readonly totalCount: number;
+}
+
+export interface WorkflowDashboardSummaryRecord {
+  readonly activeInstanceCount: number;
+  readonly completedInstanceCount: number;
+  readonly overdueTaskCount: number;
+  readonly pendingTaskCount: number;
+  readonly rejectedInstanceCount: number;
+  readonly totalInstanceCount: number;
+  readonly unreadNotificationCount: number;
+}
+
 interface ApprovalInstancesQueryData {
   readonly approvalInstances: readonly InstanceJsonRecord[];
+}
+
+interface WorkflowDashboardSummaryQueryData {
+  readonly workflowDashboardSummary: Omit<
+    WorkflowDashboardSummaryRecord,
+    'unreadNotificationCount'
+  >;
 }
 
 interface ApprovalInstanceQueryData {
@@ -449,6 +482,96 @@ export async function listApprovalInstances(): Promise<
   );
 
   return data.approvalInstances.map(parseInstanceJson);
+}
+
+export async function listApprovalInstancesPage({
+  page,
+  pageSize,
+  searchText,
+  state,
+  templateId,
+  view,
+}: ApprovalInstancesPageInput): Promise<ApprovalInstancesPageResult> {
+  const variables = {
+    page,
+    pageSize,
+    searchText: searchText?.trim() || null,
+    state: state ? [state] : null,
+    templateId: templateId?.trim() || null,
+    view,
+  };
+  const [pageData, countData] = await Promise.all([
+    requestGraphQl<ApprovalInstancesQueryData>(
+      `query ApprovalInstancesPage(
+        $view: ApprovalInstanceListView
+        $searchText: String
+        $state: [ApprovalInstanceState!]
+        $templateId: String
+        $page: Int
+        $pageSize: Int
+      ) {
+        approvalInstances(
+          view: $view
+          searchText: $searchText
+          state: $state
+          templateId: $templateId
+          page: $page
+          pageSize: $pageSize
+        ) {
+          completedAt
+          formDataJson
+          formDefinitionSnapshotJson
+          id
+          initiatorMemberId
+          startedAt
+          state
+          templateId
+          templateVersionId
+          title
+          workflowSnapshotJson
+        }
+      }`,
+      variables,
+    ),
+    requestGraphQl<ApprovalInstancesQueryData>(
+      `query ApprovalInstancesCount(
+        $view: ApprovalInstanceListView
+        $searchText: String
+        $state: [ApprovalInstanceState!]
+        $templateId: String
+      ) {
+        approvalInstances(
+          view: $view
+          searchText: $searchText
+          state: $state
+          templateId: $templateId
+        ) {
+          completedAt
+          formDataJson
+          formDefinitionSnapshotJson
+          id
+          initiatorMemberId
+          startedAt
+          state
+          templateId
+          templateVersionId
+          title
+          workflowSnapshotJson
+        }
+      }`,
+      {
+        searchText: variables.searchText,
+        state: variables.state,
+        templateId: variables.templateId,
+        view,
+      },
+    ),
+  ]);
+
+  return {
+    instances: pageData.approvalInstances.map(parseInstanceJson),
+    totalCount: countData.approvalInstances.length,
+  };
 }
 
 export async function readLaunchContext(
@@ -703,6 +826,43 @@ export async function listApprovalHistoryTasks(
   );
 
   return normalizeTaskRecords(data.approvalHistoryTasks);
+}
+
+export async function readWorkflowDashboardSummary({
+  currentMemberId,
+  from,
+  to,
+}: {
+  readonly currentMemberId: string;
+  readonly from: string | null;
+  readonly to: string | null;
+}): Promise<WorkflowDashboardSummaryRecord> {
+  const [summaryData, notificationResult] = await Promise.all([
+    requestGraphQl<WorkflowDashboardSummaryQueryData>(
+      `query WorkflowDashboardSummary($from: DateTime, $to: DateTime) {
+        workflowDashboardSummary(from: $from, to: $to) {
+          activeInstanceCount
+          completedInstanceCount
+          overdueTaskCount
+          pendingTaskCount
+          rejectedInstanceCount
+          totalInstanceCount
+        }
+      }`,
+      { from, to },
+    ),
+    listNotifications({
+      includeRead: true,
+      page: 1,
+      pageSize: 1,
+      recipientMemberId: currentMemberId,
+    }),
+  ]);
+
+  return {
+    ...summaryData.workflowDashboardSummary,
+    unreadNotificationCount: notificationResult.unreadCount,
+  };
 }
 
 function normalizeTaskRecords(

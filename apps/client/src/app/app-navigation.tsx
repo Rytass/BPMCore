@@ -17,8 +17,10 @@ import {
   HomeIcon,
   ListIcon,
   LogoutIcon,
+  MailIcon,
   MailUnreadIcon,
   NotificationUnreadIcon,
+  SearchIcon,
   ShareIcon,
   SystemIcon,
   SwitchHorizontalIcon,
@@ -38,11 +40,19 @@ interface NavigationItem {
 }
 
 const mainItems: readonly NavigationItem[] = [
-  { href: '/', icon: HomeIcon, label: '工作台' },
+  { href: '/dashboard', icon: HomeIcon, label: '工作台' },
   { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
+  { href: '/sent', icon: MailIcon, label: '我發起的' },
+  { href: '/cc', icon: ShareIcon, label: '抄送給我' },
+  { href: '/search', icon: SearchIcon, label: '案件搜尋' },
   { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
   { href: '/notifications', icon: NotificationUnreadIcon, label: '通知中心' },
-  { href: '/templates', icon: FolderIcon, label: '簽核模板', requiresAdmin: true },
+  {
+    href: '/templates',
+    icon: FolderIcon,
+    label: '簽核模板',
+    requiresAdmin: true,
+  },
   {
     href: '/templates/categories',
     icon: ListIcon,
@@ -50,8 +60,18 @@ const mainItems: readonly NavigationItem[] = [
     requiresAdmin: true,
   },
   { href: '/forms', icon: FileIcon, label: '表單設計', requiresAdmin: true },
-  { href: '/admin/orgs', icon: SystemIcon, label: '組織管理', requiresAdmin: true },
-  { href: '/admin/users', icon: UserIcon, label: '會員對照', requiresAdmin: true },
+  {
+    href: '/admin/orgs',
+    icon: SystemIcon,
+    label: '組織管理',
+    requiresAdmin: true,
+  },
+  {
+    href: '/admin/users',
+    icon: UserIcon,
+    label: '會員對照',
+    requiresAdmin: true,
+  },
   {
     href: '/admin/delegations',
     icon: ShareIcon,
@@ -121,9 +141,7 @@ export function renderAppNavigation(activeHref: string): ReactElement {
   );
 }
 
-function isAdminMember(
-  member: ReturnType<typeof useAuth>['member'],
-): boolean {
+function isAdminMember(member: ReturnType<typeof useAuth>['member']): boolean {
   if (!member) {
     return false;
   }
