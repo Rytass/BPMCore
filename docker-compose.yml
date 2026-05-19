@@ -1,3 +1,8 @@
+# Legacy optional sandbox only.
+#
+# Normal BPMCore development uses Vault-backed develop secrets and the
+# bpm_core_develop Cloud SQL schema. This compose stack is not part of the
+# standard dev, test, staging, or attachment flow.
 services:
   postgres:
     image: postgres:16-alpine
@@ -15,18 +20,6 @@ services:
       timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio:RELEASE.2026-04-11T23-36-07Z
-    command: server /data --console-address ':9001'
-    environment:
-      MINIO_ROOT_USER: bpm
-      MINIO_ROOT_PASSWORD: bpm-password
-    ports:
-      - '9000:9000'
-      - '9001:9001'
-    volumes:
-      - bpm-minio-data:/data
-
   adminer:
     image: adminer:5
     environment:
@@ -39,4 +32,3 @@ services:
 
 volumes:
   bpm-postgres-data:
-  bpm-minio-data:

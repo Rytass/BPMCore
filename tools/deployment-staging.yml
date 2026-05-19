@@ -79,8 +79,6 @@ spec:
           env:
             - name: PORT
               value: '7001'
-            - name: API_URL
-              value: 'http://localhost:6001'
           ports:
             - name: client-http
               containerPort: 7001

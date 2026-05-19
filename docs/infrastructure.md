@@ -42,8 +42,20 @@ PGPASSWORD="<dbfather-password>" psql \
 
 ## Vault Keys
 
-Use `tools/vault-secrets.example.json` as the key list. Do not commit real
-secret values.
+Use `tools/vault-secrets.example.json` as the Vault DB key list. Do not commit
+real secret values. The BPM core TypeORM helpers read `DB_HOST`, `DB_PORT`,
+`DB_USER`, `DB_PASS`, `DB_NAME`, `DB_SCHEMA`, and `DB_SYNC` from the selected
+Vault path.
+
+The wrapper API host also reads Kubernetes environment variables from
+`vault-secret` for runtime-only settings that are not part of the reusable BPM
+module:
+
+| Variable                        | Used by                          | Purpose                                           |
+| ------------------------------- | -------------------------------- | ------------------------------------------------- |
+| `API_SESSION_SECRET`            | `apps/api`                       | HMAC secret for the signed login cookie.          |
+| `BPM_API_PUBLIC_URL`            | `apps/api`                       | Public origin for signed attachment URLs.         |
+| `BPM_ATTACHMENT_SIGNING_SECRET` | `libs/bpm-core` via host options | HMAC secret for attachment download/preview URLs. |
 
 ## Staging Deployment
 
@@ -60,9 +72,15 @@ gcloud container clusters get-credentials rytass-cluster \
   --project develop-server
 
 kubectl create namespace bpm-core-staging
+cp tools/vault-secret-staging.example.yml tools/vault-secret-staging.yml
+# Fill real secret values before applying. Do not commit the generated file.
 kubectl apply -f tools/vault-secret-staging.yml
 kubectl apply -f tools/deployment-staging.yml
 ```
+
+The client runs behind the same host as the API in staging. Browser endpoint
+resolution therefore uses same-origin `/graphql` and `/api`; do not set a plain
+`API_URL` for the client container because the browser bundle does not read it.
 
 The Cloudflare DNS record should be:
 

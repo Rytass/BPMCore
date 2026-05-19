@@ -46,6 +46,10 @@ import { ApiSessionService } from './api-session.service';
     }),
     BPMRootModule.forRoot({
       imports: [ApiAuthModule],
+      attachmentPublicBaseUrl:
+        process.env.BPM_API_PUBLIC_URL ??
+        process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
+      attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
       authContextFactory: buildApiBPMAuthContextFromExecutionContext,
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
