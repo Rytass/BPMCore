@@ -1,5 +1,8 @@
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
-import { ApproverResolver, WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  ApproverResolver,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow';
 import { ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
@@ -10,6 +13,7 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { NotificationEntity } from '../notification/notification.entity';
 import { NotificationService } from '../notification/notification.service';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
@@ -307,6 +311,70 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  it('records webhook failures and continues processing', async (): Promise<void> => {
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('remote failure', { status: 500 }));
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://example.test/workflow-hook',
+      expect.objectContaining({
+        body: expect.stringContaining('"title":"費用申請"'),
+        method: 'POST',
+      }),
+    );
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+        payload: expect.objectContaining({
+          action: 'WEBHOOK',
+          ok: false,
+          status: 500,
+        }),
+      }),
+    );
+    expect(fixture.savedInstance).toMatchObject({
+      completedAt: expect.any(Date),
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+
+    fetchSpy.mockRestore();
+  });
+
+  it('updates form data from set-form-field service tasks', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+        payload: expect.objectContaining({
+          action: 'SET_FORM_FIELD',
+          fieldPath: 'form.approvalLevel',
+        }),
+      }),
+    );
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, approvalLevel: '主管簽核' },
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
   it('resolves a user task assignee from a selected position', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -589,6 +657,16 @@ describe('WorkflowEngineService', () => {
       completedAt: expect.any(Date),
       state: ApprovalInstanceStateEnum.APPROVED,
     });
+    expect(
+      fixture.notificationService.createInstanceCompletedNotification,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instance: expect.objectContaining({
+          id: 'instance-1',
+          state: ApprovalInstanceStateEnum.APPROVED,
+        }),
+      }),
+    );
   });
 
   it('requires a rejection comment before rejecting a task', async (): Promise<void> => {
@@ -696,24 +774,24 @@ describe('WorkflowEngineService', () => {
     });
     expect(fixture.savedTasks).toEqual(
       expect.arrayContaining([
-      expect.objectContaining({
-        id: 'task-1',
-        status: TaskStatusEnum.TRANSFERRED,
-      }),
-      expect.objectContaining({
-        assigneeMemberId: 'member-101',
-        delegationChain: [
-          {
-            from: 'member-finance',
-            reason: 'MANUAL_TRANSFER',
-            ruleId: null,
-            to: 'member-101',
-          },
-        ],
-        originalAssigneeMemberId: 'member-finance',
-        status: TaskStatusEnum.PENDING,
-        tokenId: 'token-1',
-      }),
+        expect.objectContaining({
+          id: 'task-1',
+          status: TaskStatusEnum.TRANSFERRED,
+        }),
+        expect.objectContaining({
+          assigneeMemberId: 'member-101',
+          delegationChain: [
+            {
+              from: 'member-finance',
+              reason: 'MANUAL_TRANSFER',
+              ruleId: null,
+              to: 'member-101',
+            },
+          ],
+          originalAssigneeMemberId: 'member-finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
       ]),
     );
     expect(fixture.savedProcessToken).toBeNull();
@@ -734,10 +812,12 @@ describe('WorkflowEngineService', () => {
 
     expect(fixture.rootTaskFind).toHaveBeenCalledWith({
       order: { createdAt: 'DESC' },
-      where: [{
-        assigneeMemberId: 'member-finance',
-        status: expect.any(Object),
-      }],
+      where: [
+        {
+          assigneeMemberId: 'member-finance',
+          status: expect.any(Object),
+        },
+      ],
     });
   });
 
@@ -839,7 +919,8 @@ describe('WorkflowEngineService', () => {
       formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
       processFormData: { amount: 1500 },
       processWorkflowSnapshot: createExclusiveGatewayWorkflow({
-        highCondition: 'form.amount > 1000 && initiator.memberId == "member-001"',
+        highCondition:
+          'form.amount > 1000 && initiator.memberId == "member-001"',
         includeStructuredCondition: false,
       }),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
@@ -1145,7 +1226,17 @@ interface ServiceFixture {
   >;
   readonly notificationService: Pick<
     NotificationService,
-    'createServiceTaskNotifications' | 'createTaskAssignedNotification'
+    | 'createInstanceCompletedNotification'
+    | 'createServiceTaskNotifications'
+    | 'createTaskAssignedNotification'
+  >;
+  readonly notificationFind: jest.Mock<
+    Promise<readonly NotificationEntity[]>,
+    [Readonly<Record<string, unknown>>]
+  >;
+  readonly rootInstanceFind: jest.Mock<
+    Promise<readonly ApprovalInstanceEntity[]>,
+    [Readonly<Record<string, unknown>>?]
   >;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
@@ -1176,6 +1267,7 @@ function createServiceFixture({
   processFormDefinitionSnapshot,
   processManagerResolutions = [],
   processMemberships = [],
+  processNotifications = [],
   processOrgUnits = [],
   processWorkflowSnapshot,
   templateVersionStatus,
@@ -1192,6 +1284,7 @@ function createServiceFixture({
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
   readonly processMemberships?: readonly MembershipEntity[];
+  readonly processNotifications?: readonly NotificationEntity[];
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
@@ -1219,12 +1312,16 @@ function createServiceFixture({
   const template = createTemplate(currentVersionId);
   const templateVersion = createTemplateVersion(templateVersionStatus);
   const formVersion = createFormVersion(formVersionStatus, formSchema);
+  const rootInstanceFind = jest.fn<
+    Promise<readonly ApprovalInstanceEntity[]>,
+    [Readonly<Record<string, unknown>>?]
+  >(() => Promise.resolve([createApprovalInstance()]));
   const rootTaskFind = jest.fn<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
-    find: jest.fn(() => Promise.resolve([createApprovalInstance()])),
+    find: rootInstanceFind,
     findOne: jest.fn(() => Promise.resolve(createApprovalInstance())),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
@@ -1236,6 +1333,13 @@ function createServiceFixture({
   });
   const taskDecisionRepository = createRepository<TaskDecisionEntity>({
     find: jest.fn(() => Promise.resolve([])),
+  });
+  const notificationFind = jest.fn<
+    Promise<readonly NotificationEntity[]>,
+    [Readonly<Record<string, unknown>>]
+  >(() => Promise.resolve(processNotifications));
+  const notificationRepository = createRepository<NotificationEntity>({
+    find: notificationFind,
   });
   const activityLogRepository = createRepository<ActivityLogEntity>({});
   const delegationService = {
@@ -1250,6 +1354,7 @@ function createServiceFixture({
     ),
   };
   const notificationService = {
+    createInstanceCompletedNotification: jest.fn(() => Promise.resolve([])),
     createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
   };
@@ -1593,6 +1698,10 @@ function createServiceFixture({
         return transactionalTaskDecisionRepository;
       }
 
+      if (target === NotificationEntity) {
+        return notificationRepository;
+      }
+
       if (target === MembershipEntity) {
         return transactionalMembershipRepository;
       }
@@ -1629,6 +1738,8 @@ function createServiceFixture({
 
   return {
     managerQuery,
+    notificationFind,
+    rootInstanceFind,
     rootTaskFind,
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;
@@ -1663,6 +1774,7 @@ function createServiceFixture({
       taskRepository,
       taskCandidateRepository,
       taskDecisionRepository,
+      notificationRepository,
       activityLogRepository,
       templateRepository,
       templateVersionRepository,
@@ -2063,6 +2175,104 @@ function createNotifyServiceTaskWorkflow(): WorkflowDefinition {
         id: 'notify_finance',
         position: { x: 300, y: 160 },
         type: 'serviceTask',
+      },
+    ],
+  };
+}
+
+function createWebhookServiceTaskWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_webhook',
+        source: 'start',
+        target: 'webhook_erp',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_webhook_end',
+        source: 'webhook_erp',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          action: {
+            payload: '{ title: instance.title, amount: form.amount }',
+            type: 'WEBHOOK',
+            url: 'https://example.test/workflow-hook',
+          },
+          label: '同步 ERP',
+        },
+        id: 'webhook_erp',
+        position: { x: 300, y: 160 },
+        type: 'serviceTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function createSetFormFieldServiceTaskWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_set_field',
+        source: 'start',
+        target: 'set_approval_level',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_set_field_end',
+        source: 'set_approval_level',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          action: {
+            fieldPath: 'form.approvalLevel',
+            type: 'SET_FORM_FIELD',
+            value: '"主管簽核"',
+          },
+          label: '設定簽核層級',
+        },
+        id: 'set_approval_level',
+        position: { x: 300, y: 160 },
+        type: 'serviceTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
       },
     ],
   };

@@ -1,14 +1,17 @@
 import { ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
+import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import {
   ApprovalTemplateCategoryStatusEnum,
   ApprovalTemplateListStatusEnum,
+  ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
 import { TemplateService } from './template.service';
+import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 
 describe('TemplateService', () => {
   it('applies backend pagination when listing approval templates and counts active records', async (): Promise<void> => {
@@ -329,6 +332,71 @@ describe('TemplateService', () => {
         categoryId: 'category-1',
       }),
     );
+  });
+
+  it('rejects publishing a draft with workflow lint errors before mutating template state', async (): Promise<void> => {
+    const draftVersion = Object.assign(new ApprovalTemplateVersionEntity(), {
+      archivedAt: null,
+      createdAt: new Date('2026-05-10T00:00:00.000Z'),
+      formDefinitionVersionId: 'form-version-1',
+      id: 'template-version-1',
+      initiatorPolicyCel: null,
+      notificationConfig: null,
+      publishedAt: null,
+      publishedByMemberId: null,
+      slaDefaults: null,
+      status: ApprovalTemplateVersionStatusEnum.DRAFT,
+      templateId: 'template-1',
+      updatedAt: new Date('2026-05-10T00:00:00.000Z'),
+      version: 1,
+      workflowDefinition: EMPTY_WORKFLOW_DEFINITION,
+    });
+    const formVersion = Object.assign(new FormDefinitionVersionEntity(), {
+      archivedAt: null,
+      createdAt: new Date('2026-05-10T00:00:00.000Z'),
+      formDefinitionId: 'form-1',
+      id: 'form-version-1',
+      publishedAt: new Date('2026-05-10T00:00:00.000Z'),
+      publishedByMemberId: 'member-admin',
+      schema: { fields: [], schemaVersion: 1 },
+      status: FormDefinitionVersionStatusEnum.PUBLISHED,
+      uiSchema: { fieldOrder: [] },
+      updatedAt: new Date('2026-05-10T00:00:00.000Z'),
+      version: 1,
+    });
+    const transaction = jest.fn(
+      <TResult>(
+        operation: (
+          manager: Readonly<Record<string, unknown>>,
+        ) => Promise<TResult>,
+      ): Promise<TResult> => operation({}),
+    );
+    const service = new TemplateService(
+      {
+        manager: { transaction },
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateVersionEntity | null> =>
+            Promise.resolve(draftVersion),
+        ),
+      } as unknown as Repository<ApprovalTemplateVersionEntity>,
+      {
+        findOne: jest.fn(
+          (): Promise<FormDefinitionVersionEntity | null> =>
+            Promise.resolve(formVersion),
+        ),
+      } as unknown as Repository<FormDefinitionVersionEntity>,
+      new ConditionService(),
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'workflow.nodes.start does not have a path to an endEvent',
+    );
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('deactivates categories on delete when templates still use them', async (): Promise<void> => {

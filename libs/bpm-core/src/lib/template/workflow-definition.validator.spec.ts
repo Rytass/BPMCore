@@ -64,6 +64,7 @@ describe('workflow definition validator', () => {
     expect(lintWorkflowDefinition(workflow)).toEqual({
       errors: [],
       valid: true,
+      warnings: [],
     });
   });
 
@@ -256,6 +257,111 @@ describe('workflow definition validator', () => {
     );
   });
 
+  it('rejects webhook service tasks without an endpoint URL', (): void => {
+    const workflow: WorkflowDefinition = {
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_webhook',
+          source: 'start',
+          target: 'notify_external',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_webhook_end',
+          source: 'notify_external',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: {
+            action: {
+              type: 'WEBHOOK',
+              url: '',
+            },
+            label: '通知外部系統',
+          },
+          id: 'notify_external',
+          position: { x: 300, y: 160 },
+          type: 'serviceTask',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    };
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.notify_external.action.url is required',
+    );
+  });
+
+  it('rejects set-form-field service tasks without a target field path', (): void => {
+    const workflow: WorkflowDefinition = {
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_set_field',
+          source: 'start',
+          target: 'set_form_field',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_set_field_end',
+          source: 'set_form_field',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: {
+            action: {
+              fieldPath: '',
+              type: 'SET_FORM_FIELD',
+              value: '"approved"',
+            },
+            label: '更新表單欄位',
+          },
+          id: 'set_form_field',
+          position: { x: 300, y: 160 },
+          type: 'serviceTask',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    };
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.set_form_field.action.fieldPath is required',
+    );
+  });
+
   it('allows notify service tasks to be async side branches without outgoing edges', (): void => {
     const workflow: WorkflowDefinition = {
       edges: [
@@ -307,7 +413,131 @@ describe('workflow definition validator', () => {
     expect(lintWorkflowDefinition(workflow)).toEqual({
       errors: [],
       valid: true,
+      warnings: [],
     });
+  });
+
+  it('rejects exclusive splits with fewer than two outgoing edges', (): void => {
+    const workflow: WorkflowDefinition = {
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_gateway',
+          source: 'start',
+          target: 'gateway',
+          type: 'smoothstep',
+        },
+        {
+          data: { isDefault: true },
+          id: 'edge_gateway_end',
+          source: 'gateway',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: { direction: 'split', label: '條件分支' },
+          id: 'gateway',
+          position: { x: 300, y: 160 },
+          type: 'exclusiveGateway',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    };
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.gateway exclusive split requires at least two outgoing edges',
+    );
+  });
+
+  it('rejects workflows with reachable cycles', (): void => {
+    const workflow: WorkflowDefinition = {
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_task',
+          source: 'start',
+          target: 'task_manager',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_task_gateway',
+          source: 'task_manager',
+          target: 'gateway',
+          type: 'smoothstep',
+        },
+        {
+          data: { isDefault: true },
+          id: 'edge_gateway_task',
+          source: 'gateway',
+          target: 'task_manager',
+          type: 'smoothstep',
+        },
+        {
+          data: { condition: 'form.amount <= 1000' },
+          id: 'edge_gateway_end',
+          source: 'gateway',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: {
+              memberIds: ['member-001'],
+              type: 'DIRECT',
+            },
+            decisionPolicy: { type: 'SINGLE' },
+            label: '主管簽核',
+            returnBehavior: { allowedTargets: 'PREVIOUS', allowReturn: true },
+          },
+          id: 'task_manager',
+          position: { x: 300, y: 160 },
+          type: 'userTask',
+        },
+        {
+          data: { direction: 'split', label: '條件分支' },
+          id: 'gateway',
+          position: { x: 520, y: 160 },
+          type: 'exclusiveGateway',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 740, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    };
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow contains a cycle involving node task_manager',
+    );
   });
 
   it('rejects outgoing edges from notify service tasks', (): void => {
