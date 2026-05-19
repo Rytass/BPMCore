@@ -10,6 +10,7 @@ export * from './task-decision.entity';
 export * from './task.entity';
 export * from './workflow-condition-evaluator';
 export * from './workflow-dry-run.object';
+export * from './workflow-dashboard-summary.object';
 export * from './workflow-engine.enums';
 export * from './workflow-engine.module';
 export * from './workflow-engine.service';

@@ -9,6 +9,7 @@ import {
 export interface WorkflowDefinitionLintResult {
   readonly errors: readonly string[];
   readonly valid: boolean;
+  readonly warnings: readonly string[];
 }
 
 export const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
@@ -48,7 +49,7 @@ export function lintWorkflowDefinition(
   const basicErrors = lintBasicShape(definition);
 
   if (basicErrors.length) {
-    return { errors: basicErrors, valid: false };
+    return { errors: basicErrors, valid: false, warnings: [] };
   }
 
   const nodes = definition.nodes;
@@ -72,17 +73,20 @@ export function lintWorkflowDefinition(
   ];
 
   if (topologyErrors.length) {
-    return { errors: topologyErrors, valid: false };
+    return { errors: topologyErrors, valid: false, warnings: [] };
   }
 
   const startNode = startNodes[0];
   const reachabilityErrors = startNode
     ? lintReachability(nodes, edges, startNode.id)
     : [];
+  const cycleErrors = startNode ? lintCycles(edges, startNode.id) : [];
+  const errors = [...reachabilityErrors, ...cycleErrors];
 
   return {
-    errors: reachabilityErrors,
-    valid: reachabilityErrors.length === 0,
+    errors,
+    valid: errors.length === 0,
+    warnings: [],
   };
 }
 
@@ -314,9 +318,7 @@ function lintNotifyRecipients(
   }
 
   if (recipients.type === 'ORG_UNIT_MEMBER' && !recipients.orgUnitId.trim()) {
-    return [
-      `workflow.nodes.${nodeId}.action.recipients.orgUnitId is required`,
-    ];
+    return [`workflow.nodes.${nodeId}.action.recipients.orgUnitId is required`];
   }
 
   if (
@@ -371,9 +373,16 @@ function lintExclusiveGateways(
     .flatMap((node) => {
       const outgoingEdges = edges.filter((edge) => edge.source === node.id);
 
-      return outgoingEdges.some((edge) => edge.data.isDefault)
-        ? []
-        : [`workflow.nodes.${node.id} must include a default outgoing edge`];
+      return [
+        ...(outgoingEdges.length >= 2
+          ? []
+          : [
+              `workflow.nodes.${node.id} exclusive split requires at least two outgoing edges`,
+            ]),
+        ...(outgoingEdges.some((edge) => edge.data.isDefault)
+          ? []
+          : [`workflow.nodes.${node.id} must include a default outgoing edge`]),
+      ];
     });
 }
 
@@ -477,6 +486,46 @@ function hasPathToEnd(
   return edges
     .filter((edge) => edge.source === nodeId)
     .some((edge) => hasPathToEnd(edge.target, nodes, edges, nextVisited));
+}
+
+function lintCycles(
+  edges: readonly WorkflowEdge[],
+  startNodeId: string,
+): readonly string[] {
+  const cyclicNodeIds = readCyclicNodeIds(edges, startNodeId, [], new Set());
+
+  return [...cyclicNodeIds].map(
+    (nodeId) => `workflow contains a cycle involving node ${nodeId}`,
+  );
+}
+
+function readCyclicNodeIds(
+  edges: readonly WorkflowEdge[],
+  nodeId: string,
+  path: readonly string[],
+  visitedNodeIds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  if (path.includes(nodeId)) {
+    return new Set([nodeId]);
+  }
+
+  if (visitedNodeIds.has(nodeId)) {
+    return new Set();
+  }
+
+  const nextVisitedNodeIds = new Set([...visitedNodeIds, nodeId]);
+  const nextPath = [...path, nodeId];
+
+  return edges
+    .filter((edge) => edge.source === nodeId)
+    .map((edge) =>
+      readCyclicNodeIds(edges, edge.target, nextPath, nextVisitedNodeIds),
+    )
+    .reduce<ReadonlySet<string>>(
+      (currentNodeIds, nextNodeIds) =>
+        new Set([...currentNodeIds, ...nextNodeIds]),
+      new Set(),
+    );
 }
 
 function readDuplicateErrors(

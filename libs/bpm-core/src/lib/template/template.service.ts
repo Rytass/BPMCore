@@ -515,6 +515,16 @@ export class TemplateService {
         version.workflowDefinition,
         version.initiatorPolicyCel,
       ),
+      {
+        allowedRootIdentifiers: [
+          'env',
+          'form',
+          'formData',
+          'initiator',
+          'instance',
+          'subject',
+        ],
+      },
     );
     const errors = [...workflowResult.errors, ...conditionErrors];
 

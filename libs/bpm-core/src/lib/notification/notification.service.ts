@@ -13,6 +13,7 @@ import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   EntityManager,
+  IsNull,
   LessThanOrEqual,
   MoreThan,
   Not,
@@ -262,34 +263,78 @@ export class NotificationService {
 
     return uniqueRecipientMemberIds.reduce<
       Promise<readonly NotificationEntity[]>
-    >(async (previousPromise, recipientMemberId): Promise<
-      readonly NotificationEntity[]
-    > => {
-      const previous = await previousPromise;
-      const created = await this.createNotifications(
-        {
-          channels,
-          customTemplate: action.template ?? null,
-          instanceId: instance.id,
-          payload: {
+    >(
+      async (
+        previousPromise,
+        recipientMemberId,
+      ): Promise<readonly NotificationEntity[]> => {
+        const previous = await previousPromise;
+        const created = await this.createNotifications(
+          {
+            channels,
+            customTemplate: action.template ?? null,
             instanceId: instance.id,
-            instanceTitle: instance.title,
-            message:
-              action.template ??
-              `案件 ${instance.title} 的 ${node.data.label} 已送出通知。`,
-            nodeId: node.id,
-            nodeLabel: node.data.label,
+            payload: {
+              instanceId: instance.id,
+              instanceTitle: instance.title,
+              message:
+                action.template ??
+                `案件 ${instance.title} 的 ${node.data.label} 已送出通知。`,
+              nodeId: node.id,
+              nodeLabel: node.data.label,
+              recipientMemberId,
+            },
             recipientMemberId,
+            taskId: null,
+            type: NotificationTypeEnum.WORKFLOW_NOTIFICATION,
           },
-          recipientMemberId,
-          taskId: null,
-          type: NotificationTypeEnum.WORKFLOW_NOTIFICATION,
-        },
-        manager,
-      );
+          manager,
+        );
 
-      return [...previous, ...created];
-    }, Promise.resolve([]));
+        return [...previous, ...created];
+      },
+      Promise.resolve([]),
+    );
+  }
+
+  async createInstanceCompletedNotification({
+    instance,
+    manager,
+  }: {
+    readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
+  }): Promise<readonly NotificationEntity[]> {
+    const repository = manager.getRepository(NotificationEntity);
+    const existingNotification = await repository.findOne({
+      where: {
+        channel: NotificationChannelEnum.IN_APP,
+        instanceId: instance.id,
+        recipientMemberId: instance.initiatorMemberId,
+        taskId: IsNull(),
+        type: NotificationTypeEnum.INSTANCE_COMPLETED,
+      },
+    });
+
+    if (existingNotification) {
+      return [];
+    }
+
+    return this.createNotifications(
+      {
+        channels: [NotificationChannelEnum.IN_APP],
+        instanceId: instance.id,
+        payload: {
+          completedAt: instance.completedAt?.toISOString() ?? null,
+          instanceId: instance.id,
+          instanceTitle: instance.title,
+          recipientMemberId: instance.initiatorMemberId,
+        },
+        recipientMemberId: instance.initiatorMemberId,
+        taskId: null,
+        type: NotificationTypeEnum.INSTANCE_COMPLETED,
+      },
+      manager,
+    );
   }
 
   async runSlaScan(now: Date = new Date()): Promise<SlaScanResult> {

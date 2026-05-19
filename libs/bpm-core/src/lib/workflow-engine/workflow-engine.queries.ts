@@ -1,4 +1,4 @@
-import { Args, Query, Resolver } from '@nestjs/graphql';
+import { Args, Int, Query, Resolver } from '@nestjs/graphql';
 import {
   BPMAuthenticated,
   BPMCurrentAuthContext,
@@ -11,6 +11,11 @@ import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
+import { WorkflowDashboardSummaryObject } from './workflow-dashboard-summary.object';
+import {
+  ApprovalInstanceListViewEnum,
+  ApprovalInstanceStateEnum,
+} from './workflow-engine.enums';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -21,9 +26,52 @@ export class WorkflowEngineQueries {
 
   @Query(() => [ApprovalInstanceEntity])
   async approvalInstances(
+    @Args('view', {
+      nullable: true,
+      type: () => ApprovalInstanceListViewEnum,
+    })
+    view: ApprovalInstanceListViewEnum | null,
+    @Args('searchText', { nullable: true, type: () => String })
+    searchText: string | null,
+    @Args('state', {
+      nullable: true,
+      type: () => [ApprovalInstanceStateEnum],
+    })
+    state: readonly ApprovalInstanceStateEnum[] | null,
+    @Args('templateId', { nullable: true, type: () => String })
+    templateId: string | null,
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
     @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly ApprovalInstanceEntity[]> {
-    return this.workflowEngineService.listApprovalInstances(currentAuthContext);
+    return this.workflowEngineService.listApprovalInstances(
+      currentAuthContext,
+      {
+        page: page ?? undefined,
+        pageSize: pageSize ?? undefined,
+        searchText: searchText ?? undefined,
+        state: state ?? undefined,
+        templateId: templateId ?? undefined,
+        view: view ?? undefined,
+      },
+    );
+  }
+
+  @Query(() => WorkflowDashboardSummaryObject)
+  async workflowDashboardSummary(
+    @Args('from', { nullable: true, type: () => Date }) from: Date | null,
+    @Args('to', { nullable: true, type: () => Date }) to: Date | null,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
+  ): Promise<WorkflowDashboardSummaryObject> {
+    return this.workflowEngineService.readWorkflowDashboardSummary(
+      currentAuthContext,
+      {
+        from: from ?? undefined,
+        to: to ?? undefined,
+      },
+    );
   }
 
   @Query(() => ApprovalInstanceEntity)
@@ -69,9 +117,7 @@ export class WorkflowEngineQueries {
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listApprovalHistoryTasks(
-      currentMemberId,
-    );
+    return this.workflowEngineService.listApprovalHistoryTasks(currentMemberId);
   }
 
   @Query(() => [ApprovalTemplateEntity])

@@ -4,6 +4,7 @@ import { ConditionModule } from '../condition/condition.module';
 import { DelegationModule } from '../delegation/delegation.module';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
+import { NotificationEntity } from '../notification/notification.entity';
 import { NotificationModule } from '../notification/notification.module';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
 import { SignatureModule } from '../signature/signature.module';
@@ -35,6 +36,7 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
       FormDefinitionVersionEntity,
       ManagerResolutionEntity,
       MembershipEntity,
+      NotificationEntity,
       OrgUnitEntity,
       TaskCandidateEntity,
       TaskDecisionEntity,

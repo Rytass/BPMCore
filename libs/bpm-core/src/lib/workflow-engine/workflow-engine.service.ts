@@ -33,6 +33,7 @@ import {
   calculateTaskSlaDueAt,
   NotificationService,
 } from '../notification/notification.service';
+import { NotificationEntity } from '../notification/notification.entity';
 import { SignatureService } from '../signature/signature.service';
 import { ConditionService } from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
@@ -55,6 +56,7 @@ import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
 import {
   ActivityLogEventTypeEnum,
+  ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
@@ -107,6 +109,20 @@ interface RuntimeTaskCandidate {
   readonly sourceType: ApproverResolver['type'];
 }
 
+interface ListApprovalInstancesOptions {
+  readonly page?: number;
+  readonly pageSize?: number;
+  readonly searchText?: string;
+  readonly state?: readonly ApprovalInstanceStateEnum[];
+  readonly templateId?: string;
+  readonly view?: ApprovalInstanceListViewEnum;
+}
+
+interface WorkflowDashboardSummaryOptions {
+  readonly from?: Date;
+  readonly to?: Date;
+}
+
 type WorkflowReadScope = BPMAuthContext;
 type FormConditionOperator =
   | 'equals'
@@ -136,6 +152,8 @@ export class WorkflowEngineService {
     private readonly taskCandidateRepository: Repository<TaskCandidateEntity>,
     @InjectRepository(TaskDecisionEntity)
     private readonly taskDecisionRepository: Repository<TaskDecisionEntity>,
+    @InjectRepository(NotificationEntity)
+    private readonly notificationRepository: Repository<NotificationEntity>,
     @InjectRepository(ActivityLogEntity)
     private readonly activityLogRepository: Repository<ActivityLogEntity>,
     @InjectRepository(ApprovalTemplateEntity)
@@ -563,7 +581,10 @@ export class WorkflowEngineService {
             manager,
             instance,
             activeToken,
-            readWorkflowNodeOrThrow(instance.workflowSnapshot, claimedTask.nodeId),
+            readWorkflowNodeOrThrow(
+              instance.workflowSnapshot,
+              claimedTask.nodeId,
+            ),
           );
           await this.processRunningInstance(manager, instance);
 
@@ -1055,25 +1076,83 @@ export class WorkflowEngineService {
 
   async listApprovalInstances(
     scope?: WorkflowReadScope,
+    options: ListApprovalInstancesOptions = {},
   ): Promise<readonly ApprovalInstanceEntity[]> {
-    if (!scope || canReadAllWorkflows(scope)) {
-      return this.approvalInstanceRepository.find({
-        order: { createdAt: 'DESC' },
-      });
-    }
-
-    const readableInstanceIds = await this.listReadableApprovalInstanceIds(
-      scope.memberId,
+    const readableInstanceIds = await this.listFilteredReadableInstanceIds(
+      scope,
+      options,
     );
 
-    if (!readableInstanceIds.length) {
+    if (readableInstanceIds !== null && !readableInstanceIds.length) {
       return [];
     }
 
-    return this.approvalInstanceRepository.find({
+    const templateId = normalizeText(options.templateId);
+    const instances = await this.approvalInstanceRepository.find({
       order: { createdAt: 'DESC' },
-      where: { id: In(readableInstanceIds) },
+      where: {
+        ...(readableInstanceIds === null
+          ? {}
+          : { id: In(readableInstanceIds) }),
+        ...(options.state?.length ? { state: In([...options.state]) } : {}),
+        ...(templateId ? { templateId } : {}),
+      },
     });
+    const searchText = normalizeText(options.searchText)?.toLocaleLowerCase();
+    const filteredInstances = searchText
+      ? instances.filter((instance) =>
+          [instance.title, instance.initiatorMemberId, instance.id].some(
+            (value) => value.toLocaleLowerCase().includes(searchText),
+          ),
+        )
+      : instances;
+
+    return paginateList(filteredInstances, options.page, options.pageSize);
+  }
+
+  async readWorkflowDashboardSummary(
+    scope?: WorkflowReadScope,
+    options: WorkflowDashboardSummaryOptions = {},
+  ): Promise<{
+    readonly activeInstanceCount: number;
+    readonly completedInstanceCount: number;
+    readonly overdueTaskCount: number;
+    readonly pendingTaskCount: number;
+    readonly rejectedInstanceCount: number;
+    readonly totalInstanceCount: number;
+  }> {
+    const instances = (
+      await this.listApprovalInstances(scope, {
+        view: ApprovalInstanceListViewEnum.ALL,
+      })
+    ).filter((instance) => isInstanceWithinRange(instance, options));
+    const instanceIds = instances.map((instance) => instance.id);
+    const openTasks = instanceIds.length
+      ? await this.taskRepository.find({
+          where: {
+            instanceId: In(instanceIds),
+            status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+          },
+        })
+      : [];
+    const now = Date.now();
+
+    return {
+      activeInstanceCount: instances.filter(
+        (instance) => instance.state === ApprovalInstanceStateEnum.RUNNING,
+      ).length,
+      completedInstanceCount: instances.filter(
+        (instance) => instance.state === ApprovalInstanceStateEnum.APPROVED,
+      ).length,
+      overdueTaskCount: openTasks.filter(
+        (task) => task.slaDueAt && task.slaDueAt.getTime() <= now,
+      ).length,
+      pendingTaskCount: openTasks.length,
+      rejectedInstanceCount: instances.filter(
+        (instance) => instance.state === ApprovalInstanceStateEnum.REJECTED,
+      ).length,
+      totalInstanceCount: instances.length,
+    };
   }
 
   async listLaunchableApprovalTemplates(
@@ -1144,8 +1223,8 @@ export class WorkflowEngineService {
 
     return this.attachTaskCandidateSummaries(
       await this.taskRepository.find({
-      order: { createdAt: 'ASC' },
-      where: { instanceId },
+        order: { createdAt: 'ASC' },
+        where: { instanceId },
       }),
     );
   }
@@ -1355,7 +1434,8 @@ export class WorkflowEngineService {
     if (
       candidates.some(
         (candidate) =>
-          candidate.memberId === memberId || candidate.originalMemberId === memberId,
+          candidate.memberId === memberId ||
+          candidate.originalMemberId === memberId,
       )
     ) {
       return true;
@@ -1365,7 +1445,9 @@ export class WorkflowEngineService {
       where: { taskId: In(taskIds) },
     });
 
-    return decisions.some((decision) => decision.decidedByMemberId === memberId);
+    return decisions.some(
+      (decision) => decision.decidedByMemberId === memberId,
+    );
   }
 
   private async listReadableApprovalInstanceIds(
@@ -1405,6 +1487,43 @@ export class WorkflowEngineService {
       ...candidateTasks.map((task) => task.instanceId),
       ...decisionTasks.map((task) => task.instanceId),
     ]);
+  }
+
+  private async listFilteredReadableInstanceIds(
+    scope: WorkflowReadScope | undefined,
+    options: ListApprovalInstancesOptions,
+  ): Promise<readonly string[] | null> {
+    if (!scope) {
+      return null;
+    }
+
+    const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
+
+    if (view === ApprovalInstanceListViewEnum.SENT) {
+      const initiatedInstances = await this.approvalInstanceRepository.find({
+        where: { initiatorMemberId: scope.memberId },
+      });
+
+      return initiatedInstances.map((instance) => instance.id);
+    }
+
+    if (view === ApprovalInstanceListViewEnum.CC) {
+      const notifications = await this.notificationRepository.find({
+        where: { recipientMemberId: scope.memberId },
+      });
+
+      return uniqueTexts(
+        notifications
+          .map((notification) => notification.instanceId)
+          .filter((instanceId): instanceId is string => Boolean(instanceId)),
+      );
+    }
+
+    if (canReadAllWorkflows(scope)) {
+      return null;
+    }
+
+    return this.listReadableApprovalInstanceIds(scope.memberId);
   }
 
   private async processActiveToken(
@@ -1501,21 +1620,31 @@ export class WorkflowEngineService {
       return;
     }
 
-    const waitingTokens = await manager.getRepository(WorkflowTokenEntity).find({
-      where: {
-        instanceId: instance.id,
-        status: WorkflowTokenStatusEnum.WAITING,
-      },
-    });
+    const waitingTokens = await manager
+      .getRepository(WorkflowTokenEntity)
+      .find({
+        where: {
+          instanceId: instance.id,
+          status: WorkflowTokenStatusEnum.WAITING,
+        },
+      });
 
     if (waitingTokens.length > 0) {
       return;
     }
 
-    await manager.getRepository(ApprovalInstanceEntity).save({
-      ...instance,
-      completedAt: new Date(),
-      state: ApprovalInstanceStateEnum.APPROVED,
+    const completedAt = new Date();
+    const completedInstance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .save({
+        ...instance,
+        completedAt,
+        state: ApprovalInstanceStateEnum.APPROVED,
+      });
+
+    await this.notificationService.createInstanceCompletedNotification({
+      instance: completedInstance,
+      manager,
     });
   }
 
@@ -1917,11 +2046,18 @@ export class WorkflowEngineService {
     );
 
     if (!hasOpenToken) {
-      await instanceRepository.save({
+      const completedInstance = await instanceRepository.save({
         ...instance,
         completedAt,
         state: instanceState,
       });
+
+      if (instanceState === ApprovalInstanceStateEnum.APPROVED) {
+        await this.notificationService.createInstanceCompletedNotification({
+          instance: completedInstance,
+          manager,
+        });
+      }
     }
     await activityRepository.save(
       activityRepository.create({
@@ -2278,20 +2414,22 @@ export class WorkflowEngineService {
       title: instance.title,
     };
     const delegatedCandidates = await Promise.all(
-      resolvedCandidates.map(async (candidate): Promise<RuntimeTaskCandidate> => {
-        const delegationResolution =
-          await this.delegationService.resolveAssignee(
-            candidate.memberId,
-            context,
-          );
+      resolvedCandidates.map(
+        async (candidate): Promise<RuntimeTaskCandidate> => {
+          const delegationResolution =
+            await this.delegationService.resolveAssignee(
+              candidate.memberId,
+              context,
+            );
 
-        return {
-          delegationChain: delegationResolution.delegationChain,
-          memberId: delegationResolution.finalAssigneeMemberId,
-          originalMemberId: candidate.memberId,
-          sourceType: candidate.sourceType,
-        };
-      }),
+          return {
+            delegationChain: delegationResolution.delegationChain,
+            memberId: delegationResolution.finalAssigneeMemberId,
+            originalMemberId: candidate.memberId,
+            sourceType: candidate.sourceType,
+          };
+        },
+      ),
     );
     const uniqueCandidates = uniqueRuntimeCandidates(delegatedCandidates);
 
@@ -2419,7 +2557,9 @@ export class WorkflowEngineService {
       );
     }
 
-    return uniqueTexts(activeMemberships.map((membership) => membership.memberId));
+    return uniqueTexts(
+      activeMemberships.map((membership) => membership.memberId),
+    );
   }
 
   private async resolveInitiatorManagerCandidates(
@@ -2443,10 +2583,10 @@ export class WorkflowEngineService {
 
     return [
       this.resolveFallbackAssignee(
-      instance,
-      fallback,
-      label,
-      `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
+        instance,
+        fallback,
+        label,
+        `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
       ),
     ];
   }
@@ -2689,7 +2829,9 @@ export class WorkflowEngineService {
       .map((membership) => membership.memberId);
 
     if (memberIds.length === 0) {
-      throw new ConflictException(`${label} orgUnit ${orgUnitId} has no active member`);
+      throw new ConflictException(
+        `${label} orgUnit ${orgUnitId} has no active member`,
+      );
     }
 
     return uniqueTexts(memberIds);
@@ -2777,18 +2919,94 @@ export class WorkflowEngineService {
     token: WorkflowTokenEntity,
     node: ServiceTaskNode,
   ): Promise<void> {
-    if (node.data.action.type !== 'NOTIFY') {
-      throw new ConflictException(
-        `Service task ${node.id} action ${node.data.action.type} is not supported in linear processing`,
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const action = node.data.action;
+
+    if (action.type === 'WEBHOOK') {
+      const payload =
+        typeof action.payload === 'string' && action.payload.trim()
+          ? this.conditionService.evaluateValue(
+              action.payload,
+              buildWorkflowExpressionContext(instance),
+              `workflow.nodes.${node.id}.data.action.payload`,
+            )
+          : {
+              instance: buildWorkflowExpressionContext(instance).instance,
+              triggeredAt: new Date().toISOString(),
+            };
+      const result = await executeWebhookServiceAction(action, payload);
+
+      await activityRepository.save(
+        activityRepository.create({
+          actorMemberId: null,
+          eventType: result.ok
+            ? ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED
+            : ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+          instanceId: instance.id,
+          nodeId: node.id,
+          payload: {
+            action: 'WEBHOOK',
+            error: result.error,
+            ok: result.ok,
+            status: result.status,
+            tokenId: token.id,
+            url: action.url,
+          },
+          taskId: null,
+        }),
       );
+      await this.advanceTokenToOutgoingNodes(manager, instance, token, node);
+
+      return;
     }
 
-    const tokenRepository = manager.getRepository(WorkflowTokenEntity);
-    const activityRepository = manager.getRepository(ActivityLogEntity);
+    if (action.type === 'SET_FORM_FIELD') {
+      const value = this.conditionService.evaluateValue(
+        action.value,
+        buildWorkflowExpressionContext(instance),
+        `workflow.nodes.${node.id}.data.action.value`,
+      );
+      const updatedFormData = writeValueAtPath(
+        instance.formData,
+        action.fieldPath,
+        value,
+      );
+      const updatedInstance = await manager
+        .getRepository(ApprovalInstanceEntity)
+        .save({
+          ...instance,
+          formData: updatedFormData,
+        });
+
+      Object.assign(instance, updatedInstance);
+      await activityRepository.save(
+        activityRepository.create({
+          actorMemberId: null,
+          eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+          instanceId: instance.id,
+          nodeId: node.id,
+          payload: {
+            action: 'SET_FORM_FIELD',
+            fieldPath: action.fieldPath,
+            tokenId: token.id,
+          },
+          taskId: null,
+        }),
+      );
+      await this.advanceTokenToOutgoingNodes(
+        manager,
+        updatedInstance,
+        token,
+        node,
+      );
+
+      return;
+    }
+
     const recipients = await this.resolveApproverResolver(
       manager,
       instance,
-      node.data.action.recipients,
+      action.recipients,
       `知會節點「${node.data.label}」`,
     );
     const recipientMemberIds = uniqueTexts(
@@ -2801,7 +3019,7 @@ export class WorkflowEngineService {
       node,
       recipientMemberIds,
     });
-    await tokenRepository.save({
+    await manager.getRepository(WorkflowTokenEntity).save({
       ...token,
       consumedAt: new Date(),
       status: WorkflowTokenStatusEnum.CONSUMED,
@@ -3629,7 +3847,7 @@ function readMemberIdsFromValue(
     const memberIds = value
       .filter(
         (candidate): candidate is string =>
-        typeof candidate === 'string' && Boolean(candidate.trim()),
+          typeof candidate === 'string' && Boolean(candidate.trim()),
       )
       .map((candidate) => candidate.trim());
 
@@ -3673,6 +3891,51 @@ function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {
 
     return true;
   });
+}
+
+function normalizeText(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function paginateList<TEntity>(
+  items: readonly TEntity[],
+  page: number | null | undefined,
+  pageSize: number | null | undefined,
+): readonly TEntity[] {
+  const normalizedPageSize = normalizePageSize(pageSize);
+  const startIndex = (normalizePage(page) - 1) * normalizedPageSize;
+
+  return items.slice(startIndex, startIndex + normalizedPageSize);
+}
+
+function normalizePage(value: number | null | undefined): number {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : 1;
+}
+
+function normalizePageSize(value: number | null | undefined): number {
+  if (!Number.isInteger(value) || Number(value) <= 0) {
+    return 20;
+  }
+
+  return Math.min(Number(value), 100);
+}
+
+function isInstanceWithinRange(
+  instance: ApprovalInstanceEntity,
+  options: WorkflowDashboardSummaryOptions,
+): boolean {
+  const fromTime = options.from?.getTime() ?? null;
+  const toTime = options.to?.getTime() ?? null;
+  const candidateTime = (
+    instance.completedAt ??
+    instance.startedAt ??
+    instance.createdAt
+  ).getTime();
+
+  return (
+    (fromTime === null || candidateTime >= fromTime) &&
+    (toTime === null || candidateTime <= toTime)
+  );
 }
 
 function readDecisionPolicySnapshot(task: TaskEntity): DecisionPolicy {
@@ -3759,6 +4022,123 @@ function readValueAtPath(
 
       return currentValue[segment];
     }, value);
+}
+
+function writeValueAtPath(
+  value: Readonly<Record<string, unknown>>,
+  path: string,
+  nextValue: unknown,
+): Readonly<Record<string, unknown>> {
+  const segments = normalizeFormFieldPath(path);
+
+  if (segments.length === 0) {
+    return value;
+  }
+
+  return writeNestedValue(value, segments, nextValue);
+}
+
+function writeNestedValue(
+  value: Readonly<Record<string, unknown>>,
+  segments: readonly string[],
+  nextValue: unknown,
+): Readonly<Record<string, unknown>> {
+  const [currentSegment, ...remainingSegments] = segments;
+
+  if (!currentSegment) {
+    return value;
+  }
+
+  if (remainingSegments.length === 0) {
+    return { ...value, [currentSegment]: nextValue };
+  }
+
+  const currentValue = value[currentSegment];
+  const nestedValue = isRecord(currentValue) ? currentValue : {};
+
+  return {
+    ...value,
+    [currentSegment]: writeNestedValue(
+      nestedValue,
+      remainingSegments,
+      nextValue,
+    ),
+  };
+}
+
+function normalizeFormFieldPath(path: string): readonly string[] {
+  const segments = path
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments[0] === 'form' || segments[0] === 'formData') {
+    return segments.slice(1);
+  }
+
+  return segments;
+}
+
+async function executeWebhookServiceAction(
+  action: Extract<
+    ServiceTaskNode['data']['action'],
+    { readonly type: 'WEBHOOK' }
+  >,
+  payload: unknown,
+): Promise<{
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly status: number | null;
+}> {
+  try {
+    const headers = {
+      ...action.headers,
+      ...(hasHeader(action.headers, 'content-type')
+        ? {}
+        : { 'content-type': 'application/json' }),
+    };
+    const response = await fetch(action.url, {
+      body: JSON.stringify(payload),
+      headers,
+      method: 'POST',
+    });
+
+    if (response.ok) {
+      return { ok: true, status: response.status };
+    }
+
+    return {
+      error: await readWebhookResponseError(response),
+      ok: false,
+      status: response.status,
+    };
+  } catch (error: unknown) {
+    return {
+      error: error instanceof Error ? error.message : 'Unknown webhook error',
+      ok: false,
+      status: null,
+    };
+  }
+}
+
+function hasHeader(
+  headers: Readonly<Record<string, string>> | undefined,
+  name: string,
+): boolean {
+  const normalizedName = name.toLocaleLowerCase();
+
+  return Object.keys(headers ?? {}).some(
+    (headerName) => headerName.toLocaleLowerCase() === normalizedName,
+  );
+}
+
+async function readWebhookResponseError(response: Response): Promise<string> {
+  const body = await response.text();
+  const trimmedBody = body.trim();
+
+  return trimmedBody
+    ? `HTTP ${response.status}: ${trimmedBody.slice(0, 500)}`
+    : `HTTP ${response.status}`;
 }
 
 function readManagerMemberIdFromInitiatorSnapshot(
@@ -3910,9 +4290,7 @@ function readFormDefinitionSnapshotSchema(
 
 function isFormDefinitionSchema(value: unknown): value is FormDefinitionSchema {
   return (
-    isRecord(value) &&
-    value.schemaVersion === 1 &&
-    Array.isArray(value.fields)
+    isRecord(value) && value.schemaVersion === 1 && Array.isArray(value.fields)
   );
 }
 
@@ -3935,7 +4313,12 @@ function isSubmittedFormFieldRequired(
     field.required ||
     Boolean(
       field.requiredWhen
-        ? evaluateFormConditionExpression(field.requiredWhen, fields, values, false)
+        ? evaluateFormConditionExpression(
+            field.requiredWhen,
+            fields,
+            values,
+            false,
+          )
         : false,
     )
   );
@@ -3964,9 +4347,7 @@ function evaluateFormConditionExpression(
   return evaluateFormConditionRule(rule, field, values[field.fieldKey]);
 }
 
-function parseFormConditionRule(
-  expression: string,
-): {
+function parseFormConditionRule(expression: string): {
   readonly fieldKey: string;
   readonly operator: FormConditionOperator;
   readonly value: string;

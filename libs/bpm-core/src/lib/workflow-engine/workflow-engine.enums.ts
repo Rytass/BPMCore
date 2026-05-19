@@ -10,6 +10,12 @@ export enum ApprovalInstanceStateEnum {
   RUNNING = 'RUNNING',
 }
 
+export enum ApprovalInstanceListViewEnum {
+  ALL = 'ALL',
+  CC = 'CC',
+  SENT = 'SENT',
+}
+
 export enum WorkflowTokenStatusEnum {
   ACTIVE = 'ACTIVE',
   CONSUMED = 'CONSUMED',
@@ -51,6 +57,8 @@ export enum ActivityLogEventTypeEnum {
   INSTANCE_RESUBMITTED = 'INSTANCE_RESUBMITTED',
   INSTANCE_STARTED = 'INSTANCE_STARTED',
   INSTANCE_RETURNED = 'INSTANCE_RETURNED',
+  SERVICE_TASK_EXECUTED = 'SERVICE_TASK_EXECUTED',
+  SERVICE_TASK_FAILED = 'SERVICE_TASK_FAILED',
   SLA_TRIGGERED = 'SLA_TRIGGERED',
   TASK_CREATED = 'TASK_CREATED',
   TASK_DECIDED = 'TASK_DECIDED',
@@ -60,6 +68,10 @@ export enum ActivityLogEventTypeEnum {
 
 registerEnumType(ApprovalInstanceStateEnum, {
   name: 'ApprovalInstanceState',
+});
+
+registerEnumType(ApprovalInstanceListViewEnum, {
+  name: 'ApprovalInstanceListView',
 });
 
 registerEnumType(WorkflowTokenStatusEnum, {
