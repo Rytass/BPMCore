@@ -6,24 +6,25 @@ Use this file as the quick architecture source before changing the project.
 
 - Always write BPM in uppercase.
 - The backend runtime app is `apps/api`.
-- The reusable BPM package boundary is `libs/bpm-core`, imported as `@bpm/core`.
+- The reusable BPM package boundary is `libs/bpm-core`, exposed as
+  `@rytass/bpm-core-nestjs-module`; `@bpm/core` is only an internal path alias.
 - Do not reintroduce `apps/bpm-demo-host` or `@bpm/api/*`.
 
 ## Project Boundaries
 
-- `apps/api`: NestJS host shell only. It wires Vault, TypeORM, GraphQL, CORS, validation, exception filters, health checks, local demo member login/session endpoints, and `BPMRootModule`.
+- `apps/api`: NestJS host shell only. It wires Vault, TypeORM, GraphQL, CORS, validation, exception filters, health checks, DB-backed test-member login/session endpoints, wrapper-app seeding, and `BPMRootModule`.
 - `libs/bpm-core`: reusable BPM backend core. Put BPM domain modules, entities, resolvers, mutations, services, migrations, auth contracts, and TypeORM helpers here.
-- `apps/client`: Next.js backoffice UI. It uses `http://localhost:17603/graphql` and `/api/auth/*` by default.
-- `libs/shared`: shared BPM contracts for workflow, form, condition, and status types.
+- `apps/client`: Next.js backoffice UI. On localhost it uses `http://localhost:17603/graphql` and `http://localhost:17603/api`; on deployed hosts it defaults to same-origin `/graphql` and `/api`.
+- `libs/shared`: shared BPM contracts for workflow, form, condition, identity, organization, and status types.
 
 ## Auth Model
 
 BPMCore does not own login, token issuance, or a user table. The host app must provide:
 
-- a `BPMAuthContext` source through GraphQL/HTTP context or `contextFactory`
+- a `BPMAuthContext` source through GraphQL/HTTP context or `BPMRootModule` `authContextFactory`
 - a `BPM_MEMBER_RESOLVER` provider
 
-There is no mock auth fallback in `@bpm/core`. The demo accounts in `apps/api` are local host fixtures for development and e2e verification only.
+There is no mock auth fallback in `@rytass/bpm-core-nestjs-module`. The test accounts in `apps/api` are DB-backed wrapper-app simulation data in `api_test_members`, seeded by `pnpm demo:reset` / `pnpm staging:reset`, and are not part of the reusable BPM module.
 
 ## Development
 
@@ -33,6 +34,9 @@ Normal local runtime:
 pnpm api
 pnpm client
 ```
+
+Use `pnpm demo:reset` before local scenario testing when the develop schema
+needs a clean Taiwan manufacturing seed.
 
 Normal verification:
 
@@ -45,3 +49,7 @@ pnpm e2e:client
 ```
 
 `docker compose` is not required for normal development. Use Vault-backed develop secrets and `bpm_core/develop` unless the user explicitly asks otherwise.
+
+Staging wrapper-host runtime secrets include `API_SESSION_SECRET`,
+`BPM_API_PUBLIC_URL`, and `BPM_ATTACHMENT_SIGNING_SECRET`; the API host passes
+the BPM attachment values into `BPMRootModule`.

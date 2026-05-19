@@ -62,22 +62,25 @@ host.
 
 ## Quick Start
 
+The host must wire the same authenticated member into both GraphQL context and
+`BPMRootModule`. A minimal host module looks like this:
+
 ```ts
 import { Module } from '@nestjs/common';
 import { GraphQLModule } from '@nestjs/graphql';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
-import {
-  BPMRootModule,
-  BPM_MEMBER_RESOLVER,
-  buildTypeOrmModuleOptions,
-} from '@rytass/bpm-core-nestjs-module';
+import { BPMRootModule, BPM_MEMBER_RESOLVER, buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
-import { ApiMemberResolver } from './api-member.resolver';
+import type { Request } from 'express';
 import { buildBPMAuthContextFromExecutionContext } from './bpm-auth-context';
+import { HostAuthModule } from './host-auth.module';
+import { HostBPMMemberResolver } from './host-bpm-member.resolver';
+import { HostSessionService } from './host-session.service';
 
 @Module({
   imports: [
+    HostAuthModule,
     VaultModule.forRoot({
       path: process.env.VAULT_PATH ?? 'bpm_core/develop',
     }),
@@ -86,17 +89,27 @@ import { buildBPMAuthContextFromExecutionContext } from './bpm-auth-context';
       inject: [VaultService],
       useFactory: buildTypeOrmModuleOptions,
     }),
-    GraphQLModule.forRoot<ApolloDriverConfig>({
-      autoSchemaFile: true,
+    GraphQLModule.forRootAsync<ApolloDriverConfig>({
       driver: ApolloDriver,
-      path: '/graphql',
-      sortSchema: true,
+      imports: [HostAuthModule],
+      inject: [HostSessionService],
+      useFactory: (sessionService: HostSessionService) => ({
+        autoSchemaFile: true,
+        context: async ({ req }: { readonly req?: Request }) => ({
+          bpmAuthContext: await sessionService.readBPMAuthContextFromRequest(req),
+          req,
+        }),
+        driver: ApolloDriver,
+        path: '/graphql',
+        sortSchema: true,
+      }),
     }),
     BPMRootModule.forRoot({
+      imports: [HostAuthModule],
       authContextFactory: buildBPMAuthContextFromExecutionContext,
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
-        useClass: ApiMemberResolver,
+        useExisting: HostBPMMemberResolver,
       },
     }),
   ],
@@ -107,7 +120,8 @@ export class AppModule {}
 ## Auth Context
 
 BPM guards and mutations need the current BPM member. The host may provide the
-context in the GraphQL context object or through `authContextFactory`.
+context in the GraphQL context object and expose it through
+`authContextFactory`.
 
 ```ts
 import type { ExecutionContext } from '@nestjs/common';
@@ -116,20 +130,19 @@ import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
 
 interface HostGraphQLContext {
   readonly bpmAuthContext?: BPMAuthContext | null;
+  readonly req?: {
+    readonly bpmAuthContext?: BPMAuthContext | null;
+  };
 }
 
-export function buildBPMAuthContextFromExecutionContext(
-  context?: ExecutionContext,
-): BPMAuthContext | null {
+export function buildBPMAuthContextFromExecutionContext(context?: ExecutionContext): BPMAuthContext | null {
   if (!context) {
     return null;
   }
 
-  const graphqlContext = GqlExecutionContext.create(context).getContext<
-    HostGraphQLContext | undefined
-  >();
+  const graphqlContext = GqlExecutionContext.create(context).getContext<HostGraphQLContext | undefined>();
 
-  return graphqlContext?.bpmAuthContext ?? null;
+  return graphqlContext?.bpmAuthContext ?? graphqlContext?.req?.bpmAuthContext ?? null;
 }
 ```
 
@@ -149,46 +162,49 @@ export interface BPMAuthContext {
 The package resolves display names, email addresses, and approver candidates
 through `BPM_MEMBER_RESOLVER`.
 
+For a member-base-like directory, prefer the package helper. It creates a Nest
+provider without forcing BPM to depend on the host identity package:
+
 ```ts
-import { Injectable, NotFoundException } from '@nestjs/common';
-import {
-  BPMMemberBaseResolverAdapter,
-  type BPMMemberBaseDirectory,
-  type BPMMemberResolver,
-} from '@rytass/bpm-core-nestjs-module';
-import type { MemberMetadata } from '@rytass/bpm-core-shared';
+import { Injectable, type InjectionToken, type Provider } from '@nestjs/common';
+import { BPM_MEMBER_RESOLVER, type BPMMemberBaseDirectory, createBPMMemberBaseResolverProvider } from '@rytass/bpm-core-nestjs-module';
 
 interface HostMember {
   readonly email: string;
   readonly id: string;
   readonly name: string;
+  readonly permissions: readonly string[];
+  readonly roles: readonly string[];
 }
 
 @Injectable()
-export class HostBPMMemberResolver
-  extends BPMMemberBaseResolverAdapter<HostMember>
-  implements BPMMemberResolver
-{
-  constructor(directory: BPMMemberBaseDirectory<HostMember>) {
-    super(directory, {
+export class HostMemberDirectory implements BPMMemberBaseDirectory<HostMember> {
+  async resolveMember(memberId: string): Promise<HostMember | null> {
+    return findHostMember(memberId);
+  }
+
+  async searchMembers(searchText: string): Promise<readonly HostMember[]> {
+    return searchHostMembers(searchText);
+  }
+}
+
+export const HOST_MEMBER_DIRECTORY: InjectionToken<BPMMemberBaseDirectory<HostMember>> = Symbol('HOST_MEMBER_DIRECTORY');
+
+export const hostMemberProviders: readonly Provider[] = [
+  {
+    provide: HOST_MEMBER_DIRECTORY,
+    useClass: HostMemberDirectory,
+  },
+  createBPMMemberBaseResolverProvider({
+    adapterOptions: {
       readEmail: (member): string => member.email,
       readMemberId: (member): string => member.id,
       readName: (member): string => member.name,
-    });
-  }
-
-  override async resolve(memberId: string): Promise<MemberMetadata> {
-    try {
-      return await super.resolve(memberId);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        throw new NotFoundException(`Member ${memberId} was not found`);
-      }
-
-      throw error;
-    }
-  }
-}
+    },
+    directoryToken: HOST_MEMBER_DIRECTORY,
+    provide: BPM_MEMBER_RESOLVER,
+  }),
+];
 ```
 
 Required resolver contract:
@@ -236,7 +252,7 @@ BPMRootModule.forRootAsync({
       readKey: (keyVersion: number): string => config.getOrThrow<string>(`BPM_SIGNATURE_KEY_V${keyVersion}`),
     },
     signatureTimestampProvider: {
-      createTimestampToken: (): Buffer => Buffer.from('{}', 'utf8'),
+      createTimestampToken: ({ signedAt, signedPayloadHash }): Buffer => Buffer.from(JSON.stringify({ signedAt, signedPayloadHash }), 'utf8'),
     },
   }),
 });
@@ -250,7 +266,7 @@ BPMRootModule.forRootAsync({
 | `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                          |
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                    |
 | `attachmentRoutePrefix`                          | `/api/attachments`             | Prefix used when BPM signs attachment download/preview URLs. |
-| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.   |
+| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.  |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                  |
 | `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.   |
 | `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                   |
@@ -518,36 +534,39 @@ Use shared contracts when building UI clients or host-side integration tests.
 
 ## Import Paths
 
-The root package exports the common host-facing APIs. Stable feature subpaths
-are also published for applications that want narrower imports.
+The package root is the canonical import path for common host-facing APIs.
+Stable feature subpaths are also published for narrower imports such as
+migrations or notification dispatcher tokens.
 
 ```ts
-import {
-  BPMAuthenticatedGuard,
-  BPMMemberBaseResolverAdapter,
-  BPMRootModule,
-  NotificationService,
-  SignatureService,
-  buildTypeOrmModuleOptions,
-} from '@rytass/bpm-core-nestjs-module';
+import { BPMAuthenticatedGuard, BPMRootModule, buildTypeOrmModuleOptions, createBPMMemberBaseResolverProvider } from '@rytass/bpm-core-nestjs-module';
 
 import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
 ```
+
+Use root imports for module wiring, guards, options, and adapter helpers.
+Feature subpaths are intended for narrow integration tokens or migration lists.
+Do not treat internal domain services as the primary host API unless their
+method contracts are explicitly documented.
 
 Do not import from internal compiled paths such as
 `@rytass/bpm-core-nestjs-module/src/lib/...`.
 
 ## Local Development
 
-From this repository:
+From this repository, use the wrapper app to run the backend and client:
 
 ```bash
 pnpm install
-pnpm migration:run
+pnpm demo:reset
 pnpm api
 pnpm client
 ```
+
+`pnpm demo:reset` runs migrations before resetting and seeding develop data. Use
+`pnpm migration:run` separately only when you need migrations without resetting
+the wrapper-app seed scenario.
 
 Default local service URLs:
 
@@ -557,6 +576,12 @@ Default local service URLs:
 
 The normal local flow uses Vault-backed develop secrets. `docker compose` is not
 required for local verification.
+
+`pnpm demo:reset` is a repository wrapper-app command, not a package feature. It
+resets the develop schema and seeds a Taiwan manufacturing scenario through
+`apps/api/tools/reset-demo-data.ts`, including DB-backed test members in
+`api_test_members`. Staging uses the same script through `pnpm staging:reset`
+with `VAULT_PATH=bpm_core/staging`.
 
 ## Verification
 

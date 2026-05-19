@@ -48,6 +48,7 @@ GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部
 - `@rytass/bpm-core-nestjs-module`
 - `@rytass/bpm-core-nestjs-module/attachment`
 - `@rytass/bpm-core-nestjs-module/bpm-auth`
+- `@rytass/bpm-core-nestjs-module/condition`
 - `@rytass/bpm-core-nestjs-module/database`
 - `@rytass/bpm-core-nestjs-module/delegation`
 - `@rytass/bpm-core-nestjs-module/form`
@@ -203,13 +204,13 @@ BPM 會建立 in-app notification records；email/webhook delivery 與 SLA scan 
 `BPM_NOTIFICATION_DISPATCHER`：
 
 ```ts
-import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
+import { BPM_NOTIFICATION_DISPATCHER, type BPMNotificationDispatcher } from '@rytass/bpm-core-nestjs-module/notification';
 
 @Injectable()
-export class HostNotificationDispatcher {
-  async dispatch(notification: NotificationEntity): Promise<string> {
-    return queueNotification(notification);
-  }
+export class HostNotificationDispatcher implements BPMNotificationDispatcher {
+  dispatch: BPMNotificationDispatcher['dispatch'] = async (notification, options) => {
+    return queueNotification(notification, options);
+  };
 }
 ```
 

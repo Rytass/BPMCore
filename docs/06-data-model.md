@@ -6,18 +6,18 @@
 
 ## 表清單
 
-| 領域            | 表                                                                                  |
-| --------------- | ----------------------------------------------------------------------------------- |
-| Identity        | `member_metadata_cache`                                                             |
-| Organization    | `org_units`, `positions`, `memberships`, `manager_resolutions`                      |
-| Delegation      | `delegation_rules`                                                                  |
-| Form            | `form_definitions`, `form_definition_versions`                                      |
-| Template        | `approval_templates`, `approval_template_versions`, `approval_template_categories`   |
+| 領域            | 表                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------- |
+| Identity        | `member_metadata_cache`                                                               |
+| Organization    | `org_units`, `positions`, `memberships`, `manager_resolutions`                        |
+| Delegation      | `delegation_rules`                                                                    |
+| Form            | `form_definitions`, `form_definition_versions`                                        |
+| Template        | `approval_templates`, `approval_template_versions`, `approval_template_categories`    |
 | Workflow Engine | `approval_instances`, `workflow_tokens`, `tasks`, `task_candidates`, `task_decisions` |
-| Audit           | `activity_logs`                                                                     |
-| Attachment      | `attachments`                                                                       |
-| Signature       | `signatures`                                                                        |
-| Notification    | `notifications`, `notification_preferences`                                         |
+| Audit           | `activity_logs`                                                                       |
+| Attachment      | `attachments`                                                                         |
+| Signature       | `signatures`                                                                          |
+| Notification    | `notifications`, `notification_preferences`                                           |
 
 ---
 
@@ -120,12 +120,16 @@ agent_member_id          text                 -- 代理人
 scope_type               text                 -- 'ALL' | 'TEMPLATE_LIST' | 'CONDITION_BASED'
 scope_template_ids       uuid[]               -- scope_type = TEMPLATE_LIST 時
 scope_condition_cel      text                 -- scope_type = CONDITION_BASED 時
+priority                 int DEFAULT 100
 start_at                 timestamptz
-end_at                   timestamptz
+end_at                   timestamptz (nullable)
 requires_confirmation    boolean DEFAULT false
 status                   text                 -- 'ACTIVE' | 'REVOKED' | 'EXPIRED'
 created_at               timestamptz
+updated_at               timestamptz
 created_by_member_id     text
+revoked_at               timestamptz (nullable)
+revoked_by_member_id     text (nullable)
 
 INDEX (principal_member_id, status)
 INDEX (start_at, end_at)
@@ -188,12 +192,12 @@ created_by_member_id        text
 id                          uuid PK
 name                        text
 description                 text (nullable)
-display_order               int
+is_active                   boolean DEFAULT true
+sort_order                  int DEFAULT 0
 created_at                  timestamptz
 updated_at                  timestamptz
 
-UNIQUE (name)
-INDEX (display_order)
+INDEX (sort_order)
 ```
 
 ### `approval_template_versions`
@@ -268,7 +272,7 @@ token_id                    uuid FK → workflow_tokens.id
 node_id                     text                  -- 對應的 user task 節點 id
 original_assignee_member_id text                  -- resolver 解出的原始 assignee
 assignee_member_id          text                  -- 套用 delegation 後的實際 assignee
-assignment_type             text                  -- 'DIRECT' | 'CANDIDATE_GROUP'
+assignment_type             text                  -- 'DIRECT_MEMBER' | 'CANDIDATE_GROUP'
 delegation_chain            jsonb                 -- 代理鏈紀錄 [{from, to, ruleId}]
 status                      text                  -- 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'TRANSFERRED' | 'CANCELLED'
 sla_due_at                  timestamptz (nullable)
@@ -294,6 +298,7 @@ source_type                 text                  -- DIRECT / ORG_UNIT / POSITIO
 delegation_chain            jsonb
 status                      text                  -- PENDING / CLAIMED / COMPLETED / CANCELLED / TRANSFERRED / SUPERSEDED
 claimed_at                  timestamptz (nullable)
+decided_at                  timestamptz (nullable)
 created_at                  timestamptz
 
 INDEX (member_id, status)
@@ -517,14 +522,15 @@ LIMIT 100;
 1. extensions: `uuid-ossp`, `ltree`
 2. organization: `org_units`, `positions`, `memberships`, `manager_resolutions`
 3. identity: `member_metadata_cache`
-4. delegation: `delegation_rules`
-5. form: `form_definitions`, `form_definition_versions`
-6. template: `approval_templates`, `approval_template_versions`
-7. workflow: `approval_instances`, `workflow_tokens`, `tasks`, `task_candidates`, `task_decisions`
-8. signature: `signatures`
-9. attachment: `attachments`
-10. audit: `activity_logs`
-11. notification: `notifications`, `notification_preferences`, SLA idempotency index
+4. form: `form_definitions`, `form_definition_versions`
+5. template: `approval_templates`, `approval_template_versions`
+6. workflow: `approval_instances`, `workflow_tokens`, `tasks`, `task_decisions`
+7. delegation: `delegation_rules`
+8. notification: `notifications`, `notification_preferences`
+9. signature / attachment: `signatures`, `attachments`
+10. template category: `approval_template_categories`
+11. task candidates: `task_candidates`
+12. notification delivery state and SLA idempotency indexes
 
 實際順序以 package 匯出的 `BPM_CORE_MIGRATIONS` 為準。外部宿主應從
 `@rytass/bpm-core-nestjs-module/migrations` 匯入 class list，而不是使用 source glob。

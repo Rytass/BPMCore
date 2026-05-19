@@ -126,7 +126,7 @@ async function processInstance(instanceId: string): Promise<void> {
           break;
 
         case 'serviceTask':
-          await executeServiceAction(node, token); // webhook / 知會通知
+          await executeServiceAction(node, token); // 目前只執行 NOTIFY
           advanceTokenToNext(token);
           break;
 
@@ -598,10 +598,12 @@ async function checkInstanceCompletion(instanceId) {
       state: 'APPROVED',
       completedAt: env.now,
     });
-    await notifications.sendInstanceCompleted(instanceId);
   }
 }
 ```
+
+目前 runtime 完成 instance 時只更新 instance state / completedAt。`INSTANCE_COMPLETED`
+notification type 與 template 已保留，但尚未在 completion path 送出。
 
 ---
 

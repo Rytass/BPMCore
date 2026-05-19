@@ -1,6 +1,6 @@
 # 09 — 開發路線圖
 
-> 盤點更新：2026-05-14。以下核取狀態依目前 `staging` 程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；只有 hook、靜態 mock、或尚未接外部服務的項目會保留未完成並加註。
+> 盤點更新：2026-05-19。以下核取狀態依目前程式碼、既有 e2e spec、以及已完成的瀏覽器驗證紀錄標註；schema 預留但 runtime/UI 尚未支援的項目不標為完成。
 
 ## 里程碑總覽
 
@@ -28,7 +28,7 @@
 - [x] PostgreSQL 連線（TypeORM）
 - [x] Migration 工具設定
 - [x] ESLint / Prettier / commitlint / Husky
-- [x] Docker compose（PG + minio + adminer）
+- [x] Legacy optional Docker compose sandbox（PG + adminer；正常 dev 使用 Vault-backed develop DB）
 - [x] CI: GitHub Actions（PR / `main` / `staging` 會跑 typecheck + lint + test + build；2026-05-11 已在 GitHub Actions 驗證通過）
 - [x] 共用型別 lib（`@rytass/bpm-core-shared`：Workflow JSON Schema、Form Schema、CEL Context Types）
 
@@ -87,10 +87,11 @@
 - [x] `approval_templates`、`approval_template_versions` 表
 - [x] `TemplateModule`：CRUD + 版本管理（fork、publish、rollback）
 - [x] 流程結構靜態驗證器（唯一 Start、連通性、Join / service task 基礎檢查）
-- [x] `ConditionModule` 雛型：CEL evaluator + Context Schema registry
+- [x] `ConditionModule` 雛型：CEL parse / lint / runtime evaluate
   - 整合 `cel-js`
-  - 註冊核心 Context Types
-  - 簡易型別檢查
+  - [ ] Context Schema registry
+  - [ ] Form schema 靜態型別推導與型別檢查
+  - [ ] timeout / maxSteps evaluate guard
 
 **Frontend**
 
@@ -129,7 +130,7 @@
 
 - [x] Start Event / End Event 處理
 - [x] User Task 處理（含 Approver Resolver 5 種類型）
-- [x] Service Task — `NOTIFY` 類型（先不接外部）
+- [x] Service Task — `NOTIFY` 類型（schema 預留 `WEBHOOK` / `SET_FORM_FIELD`，runtime 目前不執行）
 - [x] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
 - [x] Task 決策 API（同意 / 拒絕，先無簽章）
 - [x] Token advance / consume
@@ -293,11 +294,11 @@
 
 ## M5 — 內部試運行（2 週）
 
-- [x] 提供外部 member-base / SSO adapter helper（`BPMMemberBaseResolverAdapter`）
+- [x] 提供外部 member-base / SSO adapter helper（`createBPMMemberBaseResolverProvider`）
 - [x] 整合真實 Email 服務（SMTP delivery）
 - [x] 將 `apps/api` 舊 auth fixtures 換成 DB-backed 測試帳號 seed；正式 host 仍可接 `@rytass/member-base-nestjs-module`
 - [ ] 性能測試：模擬 100 個並發 instance
-- [ ] 安全檢查：CEL sandbox、檔案上傳、SQL injection、XSS
+- [ ] 安全檢查：CEL evaluate guard、檔案上傳、SQL injection、XSS
 - [ ] 試運行 2–3 個真實流程（請假、採購、合約）
 - [ ] 修正 bug、收斂體驗
 - [ ] 寫使用者文件（IT 設計者、一般使用者）
@@ -339,7 +340,7 @@
 1. **先讓引擎跑通最簡 case**（線性流程） → 再加 Gateway → 再加 SLA → 再加代理
 2. **後端模型穩定後再做 UI 優化**（避免 schema 反覆改動）
 3. **模板設計器是門面**：M1 W3 投入時間做好，後續每個 milestone 都加值
-4. **永遠保有 mock resolver / mock email / mock storage**：方便本機開發與測試
+4. **測試替身留在測試層**：production/staging 使用 DB-backed seed 或 host adapter；unit/e2e 可保留 test double 以維持快速回歸。
 
 ---
 

@@ -1,451 +1,279 @@
-# 08 — 前端工作流 JSON Schema (React Flow)
+# 08 — 前端工作流 Schema 與設計器現況
 
-`WorkflowDefinition` 與 React Flow 的資料結構直接對齊，前端拖拉的結果可直接序列化送到後端。
+`WorkflowDefinition` 是 BPMCore 目前儲存於
+`approval_template_versions.workflow_definition` 的 canonical JSON shape。型別來源以
+`libs/shared/src/lib/workflow.ts` 為準；前端 React Flow 設計器會將畫布狀態序列化成
+這個 shape，後端模板驗證器與 workflow engine 也讀取同一份資料。
+
+本文區分兩件事：
+
+- **Shared schema 支援**：型別與後端 validator 可接受的 JSON。
+- **目前 designer UI 支援**：`apps/client` 實際可建立與編輯的能力。
 
 ---
 
 ## 1. 頂層結構
 
-```typescript
+```ts
 interface WorkflowDefinition {
-  // React Flow 標準欄位
-  nodes: WorkflowNode[];
-  edges: WorkflowEdge[];
+  readonly edges: readonly WorkflowEdge[];
+  readonly meta: WorkflowDefinitionMeta;
+  readonly nodes: readonly WorkflowNode[];
+}
 
-  // 流程級設定
-  meta: {
-    schemaVersion: 1; // 此 schema 自身的版本
-    diagramVersion?: string; // 流程圖的設計版本（顯示用）
-  };
+interface WorkflowDefinitionMeta {
+  readonly diagramVersion?: string;
+  readonly schemaVersion: 1;
 }
 ```
 
 ---
 
-## 2. 節點類型 (WorkflowNode)
+## 2. 節點
 
-```typescript
+```ts
 type WorkflowNode = StartEventNode | EndEventNode | UserTaskNode | ServiceTaskNode | ExclusiveGatewayNode | ParallelGatewayNode;
 
-interface BaseNode {
-  id: string; // 唯一 ID（前端產生）
-  position: { x: number; y: number }; // React Flow 座標
-  data: {
-    label: string; // 顯示文字
-    triggerMode?: 'AND' | 'OR'; // 前置條件，Start Event 不使用
-  };
+interface BaseNodeData {
+  readonly label: string;
+  readonly triggerMode?: 'AND' | 'OR';
 }
 ```
 
-### 2.0.1 設計器語意：一個簽核節點代表一個主要簽核責任人
+`triggerMode` 是目前多 incoming edge 的匯合語意：
 
-流程設計器採用「節點拓樸優先」的視覺語意：
+- `AND`：全部前置節點完成後才進入。
+- `OR`：任一前置節點完成後即可進入，並取消同層 sibling token。
 
-- 一個 User Task 在設計器中代表一位主要簽核者。
-- 多人簽核不要藏在同一個節點的簽核策略中，改用多個 User Task 節點表達。
-- 並行簽核用多條 outgoing edge 表示。
-- 匯合條件設定在後續節點的 `data.triggerMode`：
-  - `AND`：全部前置節點完成後才進入此節點。
-  - `OR`：任一前置節點完成後即可進入此節點。
-- 當節點 incoming edge 少於 2 條時，設計器固定 `triggerMode: 'AND'` 且屬性面板不可編輯；若刪除連線後只剩 0 或 1 條 incoming edge，設計器必須自動校正回 `AND`。
+當節點 incoming edge 少於 2 條時，designer 會固定 `triggerMode: 'AND'`。
 
-範例：
+### Start Event
 
-```text
-A -> B -> D
-A -> C -> D
+```ts
+type StartEventNode = BaseWorkflowNode<'startEvent', BaseNodeData>;
 ```
 
-若 D 必須等待 B 與 C 都完成，D 設定 `triggerMode: 'AND'`。  
-若 D 只要 B 或 C 任一完成即可開始，D 設定 `triggerMode: 'OR'`。
+發起權限不寫在 Start Event node data。Designer 目前在版本層級產生
+`initiatorPolicyCel`，支援下列模式：
 
-`decisionPolicy` 目前保留在 schema 中作為 runtime 相容欄位，但設計器固定寫入 `{ type: 'SINGLE' }`，不提供 `SEQUENTIAL`、`PARALLEL_ALL`、`PARALLEL_ANY`、`QUORUM` 的 UI 設定。
+- `NONE`：未設定，視為不限制。
+- `ALL`：所有登入成員。
+- `ORG_UNIT`：限定指定組織，可包含子組織。
+- `ORG_UNIT_POSITION`：限定指定組織 + 職位，可包含子組織。
+- `CUSTOM`：直接輸入 CEL。
 
-### 2.1 Start Event
+目前沒有「指定角色」模式；若需要角色條件，使用 `CUSTOM` CEL。
 
-```typescript
-interface StartEventNode extends BaseNode {
-  type: 'startEvent';
-  data: {
-    label: string;
-  };
+### End Event
+
+```ts
+interface EndEventNodeData extends BaseNodeData {
+  readonly endState?: 'APPROVED' | 'REJECTED';
 }
 ```
 
-> 發起權限不在畫布上直接輸入 CEL。設計器在 Start Event 側欄提供標準 UI 選項（所有人、指定角色、指定組織代碼），再轉成版本層級的 `initiatorPolicyCel` 儲存。Start Event 節點副標會顯示目前發起範圍；未設定時顯示「所有人」。
+`endState` 預設視為 `APPROVED`。
 
-### 2.2 End Event
+### User Task
 
-```typescript
-interface EndEventNode extends BaseNode {
-  type: 'endEvent';
-  data: {
-    label: string;
-    endState?: 'APPROVED' | 'REJECTED'; // 該結束點對應的 instance 狀態，預設 APPROVED
-  };
+```ts
+interface UserTaskNodeData extends BaseNodeData {
+  readonly allowAddSigner: boolean;
+  readonly allowReject: boolean;
+  readonly allowTransfer: boolean;
+  readonly approverResolver: ApproverResolver;
+  readonly decisionPolicy: DecisionPolicy;
+  readonly description?: string;
+  readonly entryCondition?: string;
+  readonly fieldPermissions?: readonly FieldPermission[];
+  readonly notification?: NotificationOverride;
+  readonly returnBehavior: ReturnBehavior;
+  readonly sla?: SlaConfig;
 }
 ```
 
-> 一個流程可有多個 End Event，分別代表不同結局。
+Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
-### 2.3 User Task（簽核節點）
+- 節點名稱。
+- 簽核者來源與 resolver 詳細設定。
+- resolver fallback。
+- `returnBehavior.resubmitStrategy`。
+- 多 incoming edge 時的 `triggerMode`。
 
-```typescript
-interface UserTaskNode extends BaseNode {
-  type: 'userTask';
-  data: {
-    label: string;
-    description?: string;
+Designer 目前固定新建節點的 `decisionPolicy` 為 `{ type: 'SINGLE' }`。多人簽核
+建議用多個 User Task 節點與拓樸表達，而不是把多人藏在單一節點策略中。
 
-    // 簽核者解析
-    approverResolver: ApproverResolver;
+目前 designer 尚未提供 UI 編輯 `description`、`entryCondition`、
+`allowAddSigner`、`allowTransfer`、`allowReject`、`sla`、`fieldPermissions`、
+`notification`。這些欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
-    // 相容欄位。設計器固定 SINGLE，實際多人關係由節點拓樸 + triggerMode 表達。
-    decisionPolicy: DecisionPolicy;
+### Approver Resolver
 
-    // 進入條件（不滿足則跳過）
-    entryCondition?: string; // CEL
-
-    // 退回行為
-    returnBehavior: {
-      allowReturn: boolean;
-      allowedTargets: 'PREVIOUS' | 'INITIATOR' | 'ANY'; // 可退回的範圍
-      resubmitStrategy?: 'RESTART' | 'FROM_RETURN_POINT'; // 發起人重送後的續跑策略
-    };
-
-    // 加簽 / 轉派
-    allowAddSigner: boolean;
-    allowTransfer: boolean;
-    allowReject: boolean; // 是否允許拒絕（部分節點只能同意/退回）
-
-    // SLA
-    sla?: SlaConfig;
-
-    // 表單欄位節點級權限
-    fieldPermissions?: FieldPermission[];
-
-    // 通知客製
-    notification?: NotificationOverride;
-  };
-}
-
-// returnBehavior.resubmitStrategy 預設 RESTART，代表退回發起人後重新送出會從 Start 重跑。
-// 若設為 FROM_RETURN_POINT，發起人修正後會直接回到原本執行退回的簽核節點。
-
+```ts
 type ApproverResolver =
-  | { type: 'DIRECT'; memberIds: string[] } // 設計器 DIRECT 模式只放一位主要簽核者
-  | { type: 'POSITION'; positionId: string }
-  | { type: 'ORG_MANAGER'; levelsUp: number; baseFromInitiator: boolean }
-  | { type: 'DYNAMIC_FORM'; formPath: string } // 例：'form.projectOwner'
-  | { type: 'EXPRESSION'; expression: string }; // CEL 回傳 member_id 或 member_id[]
+  | { readonly memberIds: readonly string[]; readonly type: 'DIRECT' }
+  | { readonly positionId: string; readonly type: 'POSITION' }
+  | {
+      readonly includeDescendants?: boolean;
+      readonly orgUnitId: string;
+      readonly type: 'ORG_UNIT_MEMBER';
+    }
+  | {
+      readonly includeDescendants?: boolean;
+      readonly orgUnitId: string;
+      readonly positionId: string;
+      readonly type: 'ORG_UNIT_POSITION';
+    }
+  | {
+      readonly baseFromInitiator: boolean;
+      readonly fallback?: ApproverResolverFallback;
+      readonly levelsUp: number;
+      readonly type: 'ORG_MANAGER';
+    }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly orgUnitId: string;
+      readonly type: 'ORG_UNIT_MANAGER';
+    }
+  | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
+  | { readonly expression: string; readonly type: 'EXPRESSION' };
 
-type DecisionPolicy =
-  | { type: 'SINGLE' } // 設計器固定使用
-  | { type: 'SEQUENTIAL' }
-  | { type: 'PARALLEL_ALL' }
-  | { type: 'PARALLEL_ANY' }
-  | { type: 'QUORUM'; threshold: number; thresholdType: 'COUNT' | 'PERCENTAGE' };
-
-interface SlaConfig {
-  duration: string; // ISO 8601 duration: 'P3D', 'PT2H'
-  warningAt?: number; // 0~1，達 % 時提醒
-  onTimeout: 'REMIND' | 'AUTO_APPROVE' | 'ESCALATE' | 'TERMINATE_INSTANCE';
-  escalateLevelsUp?: number; // onTimeout = ESCALATE 時用
-}
-
-interface FieldPermission {
-  fieldPath: string;
-  visible: boolean;
-  editable: boolean;
-}
-
-interface NotificationOverride {
-  channels?: ('IN_APP' | 'EMAIL' | 'WEBHOOK')[];
-  customTemplate?: string;
-}
+type ApproverResolverFallback =
+  | { readonly type: 'NONE' }
+  | {
+      readonly allowInitiatorSelfApproval?: boolean;
+      readonly memberId: string;
+      readonly type: 'DIRECT';
+    };
 ```
 
-### 2.4 Service Task（知會 / 系統動作）
+Designer 目前提供 direct member、position、org-unit member、org-unit position、
+initiator manager、specific org-unit manager、dynamic form、expression 等模式。
+後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
+position / org id 是否真實存在。
 
-```typescript
-interface ServiceTaskNode extends BaseNode {
-  type: 'serviceTask';
-  data: {
-    label: string;
-    action: ServiceAction;
-    entryCondition?: string;
-  };
-}
+### Service Task
 
-type ServiceAction = { type: 'NOTIFY'; recipients: ApproverResolver; channels: ('IN_APP' | 'EMAIL')[]; template?: string } | { type: 'WEBHOOK'; url: string; headers?: Record<string, string>; payload?: string /* CEL */ } | { type: 'SET_FORM_FIELD'; fieldPath: string; value: string /* CEL */ }; // 系統寫回表單欄位
+```ts
+type ServiceAction =
+  | {
+      readonly channels: readonly Exclude<NotificationChannel, 'WEBHOOK'>[];
+      readonly recipients: ApproverResolver;
+      readonly template?: string;
+      readonly type: 'NOTIFY';
+    }
+  | {
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly payload?: string;
+      readonly type: 'WEBHOOK';
+      readonly url: string;
+    }
+  | {
+      readonly fieldPath: string;
+      readonly type: 'SET_FORM_FIELD';
+      readonly value: string;
+    };
 ```
 
-> `NOTIFY` 必須至少指定一個知會對象。設計器將知會節點視為 fire-and-forget 的非同步 side task，因此只提供 input 連接點，不提供 output 連接點；DIRECT 知會模式會以 email 作為主要顯示文字，且每位知會對象各佔一行，節點高度依人數自動增加。
+Shared schema 與後端 validator 保留 `WEBHOOK`、`SET_FORM_FIELD` 欄位形狀；目前
+workflow runtime 只會執行 `NOTIFY`。Designer 目前也只建立 `NOTIFY` + `DIRECT`
+members，channel 固定為 `IN_APP`。`WEBHOOK` 與 `SET_FORM_FIELD` 屬於預留 schema，
+不是目前可執行能力。
 
-### 2.5 Exclusive Gateway (XOR)
+### Gateway
 
-```typescript
-interface ExclusiveGatewayNode extends BaseNode {
-  type: 'exclusiveGateway';
-  data: {
-    label: string;
-    direction: 'split' | 'join'; // join 不需要條件，純合流
-  };
-}
-```
+`exclusiveGateway` 已可由 designer 建立，edge 條件以 CEL 儲存在
+`edge.data.condition`，default flow 以 `edge.data.isDefault` 表示。
 
-### 2.6 Parallel Gateway (AND)
-
-> 保留為底層 schema 相容型別。設計器 MVP 不在流程工具中提供 Parallel Gateway；多人簽核以多個 User Task 節點與後續節點 `triggerMode` 表達。
-
-```typescript
-interface ParallelGatewayNode extends BaseNode {
-  type: 'parallelGateway';
-  data: {
-    label: string;
-    direction: 'split' | 'join';
-  };
-}
-```
+`parallelGateway` 是 schema/runtime/唯讀檢視相容型別。Designer palette 目前不提供
+新增 Parallel Gateway；多分支與匯合主要使用多條 edge 搭配後續節點
+`triggerMode`。
 
 ---
 
 ## 3. Edge
 
-```typescript
+```ts
 interface WorkflowEdge {
-  id: string;
-  source: string; // sourceNodeId
-  target: string; // targetNodeId
-  type?: 'smoothstep'; // React Flow edge type，預設 smoothstep
-  data: {
-    label?: string;
-    condition?: string; // CEL，僅 XOR 出邊有意義
-    isDefault?: boolean; // XOR default flow
-  };
+  readonly data: WorkflowEdgeData;
+  readonly id: string;
+  readonly source: string;
+  readonly sourceHandle?: string | null;
+  readonly target: string;
+  readonly targetHandle?: string | null;
+  readonly type?: 'smoothstep';
+}
+
+interface WorkflowEdgeData {
+  readonly condition?: string;
+  readonly conditionFieldKey?: string;
+  readonly conditionOperator?: WorkflowEdgeConditionOperator;
+  readonly conditionValue?: string;
+  readonly isDefault?: boolean;
+  readonly label?: string;
 }
 ```
 
----
-
-## 4. 完整範例
-
-### 4.1 簡單請假流程
-
-```json
-{
-  "meta": { "schemaVersion": 1, "diagramVersion": "v1" },
-  "nodes": [
-    {
-      "id": "start",
-      "type": "startEvent",
-      "position": { "x": 100, "y": 200 },
-      "data": { "label": "開始" }
-    },
-    {
-      "id": "task_manager",
-      "type": "userTask",
-      "position": { "x": 300, "y": 200 },
-      "data": {
-        "label": "直屬主管簽核",
-        "approverResolver": { "type": "ORG_MANAGER", "levelsUp": 1, "baseFromInitiator": true },
-        "decisionPolicy": { "type": "SINGLE" },
-        "returnBehavior": { "allowReturn": true, "allowedTargets": "INITIATOR" },
-        "allowAddSigner": false,
-        "allowTransfer": true,
-        "allowReject": true,
-        "sla": { "duration": "P3D", "warningAt": 0.7, "onTimeout": "REMIND" }
-      }
-    },
-    {
-      "id": "end_approved",
-      "type": "endEvent",
-      "position": { "x": 500, "y": 200 },
-      "data": { "label": "完成", "endState": "APPROVED" }
-    }
-  ],
-  "edges": [
-    { "id": "e1", "source": "start", "target": "task_manager", "type": "smoothstep", "data": {} },
-    { "id": "e2", "source": "task_manager", "target": "end_approved", "type": "smoothstep", "data": {} }
-  ]
-}
-```
-
-### 4.2 含條件分歧 + 會簽
-
-```json
-{
-  "meta": { "schemaVersion": 1 },
-  "nodes": [
-    { "id": "start", "type": "startEvent", "position": { "x": 100, "y": 200 }, "data": { "label": "開始" } },
-
-    {
-      "id": "task_manager",
-      "type": "userTask",
-      "position": { "x": 250, "y": 200 },
-      "data": {
-        "label": "部門主管",
-        "approverResolver": { "type": "ORG_MANAGER", "levelsUp": 1, "baseFromInitiator": true },
-        "decisionPolicy": { "type": "SINGLE" },
-        "returnBehavior": { "allowReturn": true, "allowedTargets": "INITIATOR" },
-        "allowAddSigner": false,
-        "allowTransfer": true,
-        "allowReject": true
-      }
-    },
-
-    { "id": "xor_amount", "type": "exclusiveGateway", "position": { "x": 400, "y": 200 }, "data": { "label": "金額分歧", "direction": "split" } },
-
-    { "id": "and_split", "type": "parallelGateway", "position": { "x": 550, "y": 150 }, "data": { "label": "會簽分流", "direction": "split" } },
-
-    {
-      "id": "task_finance",
-      "type": "userTask",
-      "position": { "x": 700, "y": 100 },
-      "data": {
-        "label": "財務簽核",
-        "approverResolver": { "type": "POSITION", "positionId": "FINANCE_HEAD" },
-        "decisionPolicy": { "type": "SINGLE" },
-        "returnBehavior": { "allowReturn": true, "allowedTargets": "PREVIOUS" },
-        "allowAddSigner": false,
-        "allowTransfer": false,
-        "allowReject": true
-      }
-    },
-
-    {
-      "id": "task_legal",
-      "type": "userTask",
-      "position": { "x": 700, "y": 200 },
-      "data": {
-        "label": "法務簽核",
-        "approverResolver": { "type": "POSITION", "positionId": "LEGAL_HEAD" },
-        "decisionPolicy": { "type": "SINGLE" },
-        "returnBehavior": { "allowReturn": true, "allowedTargets": "PREVIOUS" },
-        "allowAddSigner": false,
-        "allowTransfer": false,
-        "allowReject": true
-      }
-    },
-
-    { "id": "and_join", "type": "parallelGateway", "position": { "x": 850, "y": 150 }, "data": { "label": "會簽合流", "direction": "join" } },
-
-    {
-      "id": "task_cfo",
-      "type": "userTask",
-      "position": { "x": 1000, "y": 150 },
-      "data": {
-        "label": "CFO 簽核",
-        "approverResolver": { "type": "POSITION", "positionId": "CFO" },
-        "decisionPolicy": { "type": "SINGLE" },
-        "returnBehavior": { "allowReturn": true, "allowedTargets": "PREVIOUS" },
-        "allowAddSigner": false,
-        "allowTransfer": false,
-        "allowReject": true
-      }
-    },
-
-    { "id": "end_approved", "type": "endEvent", "position": { "x": 1150, "y": 200 }, "data": { "label": "完成", "endState": "APPROVED" } }
-  ],
-  "edges": [
-    { "id": "e1", "source": "start", "target": "task_manager", "type": "smoothstep", "data": {} },
-    { "id": "e2", "source": "task_manager", "target": "xor_amount", "type": "smoothstep", "data": {} },
-    { "id": "e3", "source": "xor_amount", "target": "and_split", "type": "smoothstep", "data": { "label": "金額 > 100萬", "condition": "form.amount > 1000000" } },
-    { "id": "e4", "source": "xor_amount", "target": "end_approved", "type": "smoothstep", "data": { "label": "其他", "isDefault": true } },
-    { "id": "e5", "source": "and_split", "target": "task_finance", "type": "smoothstep", "data": {} },
-    { "id": "e6", "source": "and_split", "target": "task_legal", "type": "smoothstep", "data": {} },
-    { "id": "e7", "source": "task_finance", "target": "and_join", "type": "smoothstep", "data": {} },
-    { "id": "e8", "source": "task_legal", "target": "and_join", "type": "smoothstep", "data": {} },
-    { "id": "e9", "source": "and_join", "target": "task_cfo", "type": "smoothstep", "data": {} },
-    { "id": "e10", "source": "task_cfo", "target": "end_approved", "type": "smoothstep", "data": {} }
-  ]
-}
-```
+`sourceHandle` / `targetHandle` 是 React Flow rendering metadata，designer 會持久化
+以維持連線位置。`condition` 是 runtime 執行的 CEL expression；
+`conditionFieldKey`、`conditionOperator`、`conditionValue` 是 designer UI 的
+structured condition metadata，供表單式條件編輯與 fallback 顯示。
 
 ---
 
-## 5. 前端設計器架構
+## 4. Designer Runtime
 
-```
-templates/[id]/designer
-├── DesignerCanvas (React Flow)
-│   ├── 自訂 nodeTypes
-│   │   ├── StartEventNode
-│   │   ├── EndEventNode
-│   │   ├── UserTaskNode (顯示節點 label + 簽核者摘要)
-│   │   ├── ServiceTaskNode
-│   │   ├── ExclusiveGatewayNode (菱形 + X)
-│   │   └── ParallelGatewayNode (菱形 + +)
-│   └── 自訂 edgeTypes
-│       └── ConditionalEdge (顯示條件 label)
-├── NodePalette (左側拖拉區)
-├── PropertiesPanel (右側屬性面板)
-│   ├── 節點選中 → 顯示對應屬性表單
-│   └── 邊選中 → 顯示 condition / isDefault
-├── Toolbar
-│   ├── 儲存 (DRAFT)
-│   ├── 發布 (publish)
-│   ├── Dry Run
-│   ├── 版本歷程
-│   └── 自動排版（dagre）
-└── ValidationPanel (底部，顯示 lint 錯誤)
+目前 designer 路徑：
+
+```text
+apps/client/src/app/templates/[id]/designer
 ```
 
-### 5.1 節點屬性面板要支援的設定（User Task）
+主要能力：
 
-- 節點名稱、描述
-- **簽核者**
-  - MVP 使用 DIRECT 單選成員。
-  - 一個簽核節點代表一位主要簽核責任人。
-  - 多人依序或並行簽核應拆成多個節點與連線。
-- **前置條件**
-  - `AND`：全部 incoming 節點完成後才進入本節點。
-  - `OR`：任一 incoming 節點完成後即可進入本節點。
-- **進入條件** (CEL textarea + lint)
-- **退回設定**
-- **權限**：是否允許加簽 / 轉派 / 拒絕
-- **SLA**：duration + onTimeout
-- **欄位權限**：勾選哪些欄位本節點可看 / 可編
-- **通知客製**
+- React Flow 畫布與自訂節點/edge renderer。
+- 節點 palette：Start、End、User Task、Service Task、Exclusive Gateway。
+- User Task resolver 屬性面板。
+- Edge 條件與 default flow 屬性面板。
+- 儲存 draft、發布版本、版本歷程。
+- Dry Run，在設計器中呼叫後端 `dryRunApprovalWorkflow` mutation。
+- 自動排版。
 
-### 5.2 即時驗證
-
-設計器開啟 onChange 即時 lint：
-
-- 流程結構檢查（孤立節點、未連線、無法到達 End）
-- 多前置節點 `AND` / `OR` 前置條件檢查
-- XOR default flow 缺失警告
-- CEL 表達式語法 / 型別檢查（呼叫後端 lint API）
+目前沒有獨立的後端 lint API onChange/onBlur。Designer 會做少量前端 incomplete
+檢查，Dry Run 會呼叫後端模擬；正式發布時，後端 `TemplateService.publish`
+會執行 workflow definition validation 與 CEL lint。
 
 ---
 
-## 6. 流程結構驗證規則
+## 5. 發布驗證現況
 
-模板發布前要通過所有檢查：
+模板發布前目前會檢查：
 
-| 規則          | 檢查內容                                                                           |
-| ------------- | ---------------------------------------------------------------------------------- |
-| 唯一 Start    | 流程必須恰有一個 startEvent                                                        |
-| 至少一個 End  | 流程必須至少有一個 endEvent                                                        |
-| 連通性        | 從 Start 出發必能走到至少一個 End                                                  |
-| 無孤立節點    | 每個節點都要被連到                                                                 |
-| 前置條件      | 多 incoming 節點必須明確使用 `AND` 或 `OR`                                         |
-| 無循環迴路    | 不允許未受控的回邊（DAG 化處理）                                                   |
-| XOR 出邊      | 至少 2 條出邊，且需有 default flow                                                 |
-| 知會對象      | NOTIFY Service Task 必須至少有一位知會對象，且可作為無 output 的非同步 side branch |
-| CEL 表達式    | 所有 CEL 通過型別檢查                                                              |
-| Resolver 存在 | DIRECT 的 member_id、POSITION 的 position_id 都存在於系統                          |
+| 規則              | 目前行為                                                    |
+| ----------------- | ----------------------------------------------------------- |
+| Start             | 必須恰有一個 `startEvent`。                                 |
+| End               | 必須至少有一個 `endEvent`。                                 |
+| 連通性            | 從 Start 可達節點與必要連線會被檢查。                       |
+| User Task         | resolver 必要欄位必須存在。                                 |
+| Service Task      | `NOTIFY` 必須有知會對象；其他 action shape 僅 schema 預留。 |
+| Exclusive Gateway | split 需要 default outgoing edge；條件 edge 會做 CEL lint。 |
+| CEL               | 目前做 parse/lint，不做 context schema 靜態型別推導。       |
+
+目前尚未實作 cycle detector、XOR 至少兩條出邊檢查、resolver id 存在性查詢、或
+frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補 validator 與測試後
+再更新本文。
 
 ---
 
-## 7. 與後端的對應
+## 6. Client Runtime
 
-前端送出的 `WorkflowDefinition` JSON 直接存入：
+前端 GraphQL 與 auth endpoint resolver 的實際行為：
 
-```
-approval_template_versions.workflow_definition (jsonb)
-```
-
-引擎執行時不直接查表，而是讀取 `approval_instances.workflow_snapshot`（發起時拷貝）。
-
-> 引擎內部的「節點操作」只認 node.id 與 node.type，不依賴 React Flow 的 position 等視覺欄位 — 視覺欄位純粹給前端渲染用。
+- localhost / `127.0.0.1`：GraphQL 使用 `http://localhost:17603/graphql`，
+  auth 使用 `http://localhost:17603/api`。
+- deployed hostname：GraphQL 使用 same-origin `/graphql`，auth 使用 same-origin
+  `/api`。
+- `NEXT_PUBLIC_API_URL` 與 `NEXT_PUBLIC_API_AUTH_URL` 可以覆寫；plain `API_URL`
+  不會被 browser bundle 讀取。
+- Auth 使用 `apps/api` 的 signed HTTP-only cookie。Client 登入後會重新讀
+  `/api/auth/me`，未登入時導向 `/login`。

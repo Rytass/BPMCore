@@ -32,34 +32,34 @@
 
 ## 確認的設計決策
 
-| #   | 議題              | 決定                                         | 理由                                                  |
-| --- | ----------------- | -------------------------------------------- | ----------------------------------------------------- |
-| 1   | 流程模型          | **BPMN 2.0 子集**                            | 語意已被產業驗證；儲存使用自訂 JSON 以對齊 React Flow |
-| 2   | 版本綁定          | 修改 = 新版；可回退；instance 鎖定建立時版本 | 歷史資料一致性                                        |
-| 3   | 條件 DSL          | **CEL**                                      | 強型別、可序列化、可靜態檢查                          |
-| 4   | 多租戶            | **單租戶**                                   | 內部單公司部署                                        |
-| 5   | 簽章等級          | **L1 — HMAC + RFC 3161 時戳**                | 內部稽核需求即可                                      |
-| 6   | Sub-process       | **MVP 不做**                                 | 引擎複雜度，可後期再加                                |
-| 7   | i18n              | **不處理**                                   | 內部單一語言                                          |
-| 8   | Identity          | **外部 Resolver Pattern**                    | 系統只存 member_id，metadata 由外部 SSO 解析          |
-| 9   | PDF 模式          | 上傳 + 線上預覽                              | 不做 PDF 上視覺化蓋章覆蓋                             |
-| 10  | 流程設計器        | **React Flow**                               | 使用體驗優先                                          |
-| 11  | 規模              | **單機 Postgres + cron**                     | 內部使用，不需橫向擴展                                |
-| 12  | Inclusive Gateway | **不採用**                                   | 用 Parallel + Exclusive 組合替代，避免 OR Join 複雜度 |
+| #   | 議題              | 決定                                         | 理由                                                               |
+| --- | ----------------- | -------------------------------------------- | ------------------------------------------------------------------ |
+| 1   | 流程模型          | **BPMN 2.0 子集**                            | 語意已被產業驗證；儲存使用自訂 JSON 以對齊 React Flow              |
+| 2   | 版本綁定          | 修改 = 新版；可回退；instance 鎖定建立時版本 | 歷史資料一致性                                                     |
+| 3   | 條件 DSL          | **CEL**                                      | 可序列化；目前已做 parse/lint/evaluate，靜態型別檢查仍是後續強化項 |
+| 4   | 多租戶            | **單租戶**                                   | 內部單公司部署                                                     |
+| 5   | 簽章等級          | **L1 — HMAC + RFC 3161 時戳**                | 內部稽核需求即可                                                   |
+| 6   | Sub-process       | **MVP 不做**                                 | 引擎複雜度，可後期再加                                             |
+| 7   | i18n              | **不處理**                                   | 內部單一語言                                                       |
+| 8   | Identity          | **外部 Resolver Pattern**                    | 系統只存 member_id，metadata 由外部 SSO 解析                       |
+| 9   | PDF 模式          | 上傳 + 線上預覽                              | 不做 PDF 上視覺化蓋章覆蓋                                          |
+| 10  | 流程設計器        | **React Flow**                               | 使用體驗優先                                                       |
+| 11  | 規模              | **單機 Postgres + cron**                     | 內部使用，不需橫向擴展                                             |
+| 12  | Inclusive Gateway | **不採用**                                   | 用 Parallel + Exclusive 組合替代，避免 OR Join 複雜度              |
 
 ## BPMN 子集
 
-| 元素                    | 採用 | 替代方案                  |
-| ----------------------- | ---- | ------------------------- |
-| Start / End Event       | ✅   | —                         |
-| User Task               | ✅   | 簽核                      |
-| Service Task            | ✅   | 知會 / 系統動作           |
-| Exclusive Gateway (XOR) | ✅   | —                         |
-| Parallel Gateway (AND)  | ✅   | —                         |
-| Inclusive Gateway (OR)  | ❌   | AND + 各分支內 XOR        |
-| Boundary Timer Event    | ✅   | SLA 逾時                  |
-| Sub-Process             | ❌   | 後期再加                  |
-| Pool / Lane             | ❌   | 由 Approver Resolver 取代 |
+| 元素                    | 採用 | 替代方案                                                       |
+| ----------------------- | ---- | -------------------------------------------------------------- |
+| Start / End Event       | ✅   | —                                                              |
+| User Task               | ✅   | 簽核                                                           |
+| Service Task            | ✅   | 目前 runtime 執行 `NOTIFY`；webhook / set-field 為 schema 預留 |
+| Exclusive Gateway (XOR) | ✅   | —                                                              |
+| Parallel Gateway (AND)  | ✅   | —                                                              |
+| Inclusive Gateway (OR)  | ❌   | AND + 各分支內 XOR                                             |
+| Boundary Timer Event    | ✅   | SLA 逾時                                                       |
+| Sub-Process             | ❌   | 後期再加                                                       |
+| Pool / Lane             | ❌   | 由 Approver Resolver 取代                                      |
 
 詳見 [03 — BPMN 引擎](./03-bpmn-engine.md)。
 
@@ -72,21 +72,20 @@ delegation/       代理規則 + 解析
 form/             FormDefinition + 版本
 template/         ApprovalTemplate + 版本 + 發布/回退
 workflow-engine/  Instance / Task / 狀態機 / Token 管理 / Scheduler
-condition/        CEL Evaluator + Context Schema
+condition/        CEL parse / lint / evaluate（Context Schema registry 尚未實作）
 signature/        L1 HMAC + RFC 3161
 attachment/       附件儲存（預設 local，可替換 storage adapter）
 notification/     通知（in-app + email + webhook）
 audit/            ActivityLog (append-only)
-reporting/        Inbox / Sent / Search / Dashboard
+reporting/        Inbox / Notifications 已實作；Sent / CC / Search / Dashboard 規劃中
 ```
 
 ## 前端結構（Next.js）
 
 ```
+/                                   工作台與發起簽核入口
 /inbox                                我的待簽
-/sent                                 我發起的
-/cc                                   被知會的
-/search                               條件搜尋
+/notifications                        通知中心
 /templates                            模板列表（IT）
   /templates/[id]/designer            流程設計器（React Flow）
   /templates/[id]/versions            版本管理
@@ -98,6 +97,9 @@ reporting/        Inbox / Sent / Search / Dashboard
 /admin/users                          帳號管理（member_id 對照）
 /admin/delegations                    代理規則
 ```
+
+`/sent`、`/cc`、`/search`、`/dashboard` 屬於後續 W12 規劃，尚不是目前 client
+實作頁面。
 
 ## 不在 MVP 範圍
 

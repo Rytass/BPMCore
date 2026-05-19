@@ -67,11 +67,11 @@ ApprovalTemplateVersion
                        └──────────────────┘
 ```
 
-| 狀態 | 描述 | 可發起新 instance | 可被 instance 引用 |
-|---|---|---|---|
-| **DRAFT** | 編輯中 | ❌ | ❌ |
-| **PUBLISHED** | 唯一一個是 current | ✅（如果是 current） | ✅ |
-| **ARCHIVED** | 曾發布過的歷史版本 | ❌ | ✅（歷史 instance） |
+| 狀態          | 描述               | 可發起新 instance    | 可被 instance 引用  |
+| ------------- | ------------------ | -------------------- | ------------------- |
+| **DRAFT**     | 編輯中             | ❌                   | ❌                  |
+| **PUBLISHED** | 唯一一個是 current | ✅（如果是 current） | ✅                  |
+| **ARCHIVED**  | 曾發布過的歷史版本 | ❌                   | ✅（歷史 instance） |
 
 **關鍵不變式**：在任意時間點，一個 template 最多只有一個 PUBLISHED 版本（即 current）。
 
@@ -113,7 +113,7 @@ POST /templates/{id}/versions/{versionId}/publish
 
 事務內：
   1. 驗證該版本為 DRAFT
-  2. 執行靜態分析（流程結構合法性、CEL 表達式型別檢查）
+  2. 執行發布驗證（流程結構合法性、CEL parse/lint）
   3. 若 template 已有 current PUBLISHED 版本：
      - 該版本 status → ARCHIVED
      - archived_at = now()
@@ -164,12 +164,13 @@ ApprovalInstance
 
 ### 4.2 為什麼 instance 同時需要 `template_version_id` 與 `*_snapshot`？
 
-| 欄位 | 用途 |
-|---|---|
-| `template_version_id` | 強引用，可關聯查詢「哪些 instance 用了某個版本」 |
-| `workflow_snapshot` | 自我封閉的不可變副本，**即使 version 表的紀錄被誤刪也能恢復** |
+| 欄位                  | 用途                                                          |
+| --------------------- | ------------------------------------------------------------- |
+| `template_version_id` | 強引用，可關聯查詢「哪些 instance 用了某個版本」              |
+| `workflow_snapshot`   | 自我封閉的不可變副本，**即使 version 表的紀錄被誤刪也能恢復** |
 
 **儲存策略**：
+
 - `workflow_snapshot` 與 `form_definition_snapshot` 用 JSONB
 - 可額外加 `snapshot_hash` 欄位，相同內容指向同一份內容（Postgres 不直接支援 dedup，但可在 application 層管理一張 `WorkflowSnapshot` 表去重）
 
@@ -199,13 +200,13 @@ POST /instances
 
 ## 5. 表單版本同樣處理
 
-| FormDefinition | FormDefinitionVersion |
-|---|---|
-| 邏輯實體（穩定 ID） | 版本實體 |
-| current_version_id | status (DRAFT/PUBLISHED/ARCHIVED) |
-| | schema (JSONB) |
-| | ui_schema (JSONB) |
-| | published_at |
+| FormDefinition      | FormDefinitionVersion             |
+| ------------------- | --------------------------------- |
+| 邏輯實體（穩定 ID） | 版本實體                          |
+| current_version_id  | status (DRAFT/PUBLISHED/ARCHIVED) |
+|                     | schema (JSONB)                    |
+|                     | ui_schema (JSONB)                 |
+|                     | published_at                      |
 
 > 模板版本綁定的是 `form_definition_version_id`，不是 `form_definition_id`。即使表單後續更新，已發布的模板版本不受影響。
 
@@ -214,16 +215,19 @@ POST /instances
 ## 6. UI 行為
 
 ### 模板列表頁
+
 - 顯示每個模板的 current version 資訊
 - 可看版本歷程（v1 → v2 → v3 ...）
 - 標示哪個是 current、哪些是 archived
 
 ### 模板設計器
+
 - 開啟 current published 版本 → 自動 fork 新 DRAFT 版本（提示使用者）
 - 也可直接從 archived 版本 fork（複製其內容到新 DRAFT）
 - DRAFT 才能編輯
 
 ### 版本管理頁
+
 - 列出所有版本
 - 可比對任兩個版本的差異（diff）
 - 可從 archived 版本複製內容到新 DRAFT
@@ -233,22 +237,24 @@ POST /instances
 
 ## 7. 例外處理
 
-| 情境 | 處理 |
-|---|---|
-| 多人同時編輯同一個 DRAFT | Optimistic locking（版本號或 updated_at 衝突偵測）|
-| 發布時靜態分析失敗 | 回傳錯誤，不修改任何狀態 |
-| 已發布版本要修正 typo | 仍須 fork 新版本 → 編輯 → 發布（不允許就地修改） |
-| Form 還是 DRAFT 但 Template 想發布 | 阻擋發布（綁定的 form 必須是 PUBLISHED） |
-| 系統清理舊 archived 版本 | **不允許**（除非該版本沒有任何 instance 引用） |
+| 情境                               | 處理                                               |
+| ---------------------------------- | -------------------------------------------------- |
+| 多人同時編輯同一個 DRAFT           | Optimistic locking（版本號或 updated_at 衝突偵測） |
+| 發布時靜態分析失敗                 | 回傳錯誤，不修改任何狀態                           |
+| 已發布版本要修正 typo              | 仍須 fork 新版本 → 編輯 → 發布（不允許就地修改）   |
+| Form 還是 DRAFT 但 Template 想發布 | 阻擋發布（綁定的 form 必須是 PUBLISHED）           |
+| 系統清理舊 archived 版本           | **不允許**（除非該版本沒有任何 instance 引用）     |
 
 ---
 
 ## 8. 模板的 Dry Run
 
 模板發布前可以 Dry Run：
+
 1. 給定假的 initiator + 表單值
 2. 引擎執行流程模擬（純記憶體，不寫 DB）
 3. 顯示會走的路徑、會派發給哪些人、預期 SLA
 4. 用於驗證流程設計正確性
 
-詳見 [09 — 開發路線圖](./09-roadmap.md) M4 規劃。
+Dry Run 已在 W7 完成，設計器會呼叫後端 `dryRunApprovalWorkflow` mutation 顯示
+模擬路徑與派發結果。後續仍可加強欄位權限、統計與更完整的 lint 診斷。

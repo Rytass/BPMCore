@@ -10,12 +10,12 @@
 | 02  | [領域模型](./02-domain-model.md)                         | 10 個核心領域的職責                               |
 | 03  | [BPMN 引擎](./03-bpmn-engine.md)                         | BPMN 標準完整解釋（Token、Gateway、Event）        |
 | 04  | [模板版本機制](./04-versioning.md)                       | 模板與表單的版本管理與回退                        |
-| 05  | [CEL 條件機制](./05-conditions-cel.md)                   | CEL 表達式、Context Schema、應用點                |
+| 05  | [CEL 條件機制](./05-conditions-cel.md)                   | CEL parse/lint/evaluate 現況與後續強化項          |
 | 06  | [資料模型 (ER)](./06-data-model.md)                      | 資料表設計與關聯                                  |
 | 07  | [流程執行細節](./07-workflow-execution.md)               | 狀態機、Token 流轉、Resolver、Delegation 解析順序 |
 | 08  | [前端工作流 JSON Schema](./08-frontend-schema.md)        | React Flow 對應的 WorkflowDefinition              |
 | 09  | [開發路線圖](./09-roadmap.md)                            | M1–M4 里程碑與週級任務拆解                        |
-| 10  | [BPM 嵌入式模組與 Auth 設計](./10-bpm-embedding-auth.md) | NestJS 宿主整合、Auth contract 與 API host 邊界 |
+| 10  | [BPM 嵌入式模組與 Auth 設計](./10-bpm-embedding-auth.md) | NestJS 宿主整合、Auth contract 與 API host 邊界   |
 
 ## Stack
 
