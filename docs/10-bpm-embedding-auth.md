@@ -122,6 +122,10 @@ export interface BPMMemberResolver {
         provide: BPM_MEMBER_RESOLVER,
         useExisting: HostMemberResolverAdapter,
       },
+      workflowServiceTaskDispatcherProvider: {
+        provide: BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+        useClass: HostWorkflowServiceTaskDispatcher,
+      },
       attachmentStorageProvider: {
         provide: ATTACHMENT_STORAGE,
         useFactory: () => createHostStorageAdapter(),
@@ -147,6 +151,13 @@ export interface BPMMemberResolver {
 })
 export class AppModule {}
 ```
+
+`HostWorkflowServiceTaskDispatcher` 是 wrapper app 的外部整合點。BPMCore 只定義
+`BPMWorkflowServiceTaskDispatcher` contract；預設實作會直接以 `fetch` 對
+`WEBHOOK` service task URL 發出 JSON `POST`。正式宿主若需要 request signing、
+retry queue、tenant router、稽核紀錄或內部 integration bus，應透過
+`workflowServiceTaskDispatcherProvider` 替換，而不是把外部整合細節放進
+`@rytass/bpm-core-nestjs-module`。
 
 ## Domain Authorization
 

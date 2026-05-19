@@ -175,10 +175,12 @@ type ServiceAction =
     };
 ```
 
-Shared schema 與後端 validator 保留 `WEBHOOK`、`SET_FORM_FIELD` 欄位形狀；目前
-workflow runtime 只會執行 `NOTIFY`。Designer 目前也只建立 `NOTIFY` + `DIRECT`
-members，channel 固定為 `IN_APP`。`WEBHOOK` 與 `SET_FORM_FIELD` 屬於預留 schema，
-不是目前可執行能力。
+Shared schema 與後端 validator 支援 `NOTIFY`、`WEBHOOK`、`SET_FORM_FIELD`。
+workflow runtime 會執行這三種 service task：`WEBHOOK` 預設以 JSON `POST`
+dispatch，且可由宿主透過 `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` 替換成 signing、
+queue 或 integration bus。Designer 目前只建立 `NOTIFY` + `DIRECT` members，
+channel 固定為 `IN_APP`；`WEBHOOK` 與 `SET_FORM_FIELD` 目前仍屬於 schema/API
+能力，尚未提供 designer 表單介面。
 
 ### Gateway
 

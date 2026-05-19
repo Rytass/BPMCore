@@ -130,7 +130,7 @@
 
 - [x] Start Event / End Event 處理
 - [x] User Task 處理（含 Approver Resolver 5 種類型）
-- [x] Service Task — `NOTIFY` 類型（schema 預留 `WEBHOOK` / `SET_FORM_FIELD`，runtime 目前不執行）
+- [x] Service Task — `NOTIFY`、`WEBHOOK`、`SET_FORM_FIELD` runtime；`WEBHOOK` 可由宿主注入 dispatcher
 - [x] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
 - [x] Task 決策 API（同意 / 拒絕，先無簽章）
 - [x] Token advance / consume

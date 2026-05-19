@@ -260,47 +260,48 @@ BPMRootModule.forRootAsync({
 
 ### Configuration Reference
 
-| Option                                           | Default                        | Description                                                  |
-| ------------------------------------------------ | ------------------------------ | ------------------------------------------------------------ |
-| `authContextFactory`                             | `undefined`                    | Reads `BPMAuthContext` from NestJS `ExecutionContext`.       |
-| `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                          |
-| `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                    |
-| `attachmentRoutePrefix`                          | `/api/attachments`             | Prefix used when BPM signs attachment download/preview URLs. |
-| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.  |
-| `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                  |
-| `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.   |
-| `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                   |
-| `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                   |
-| `notificationInAppEnabled`                       | `true`                         | Enables in-app notification records.                         |
-| `notificationEmailEnabled`                       | `auto`                         | Enables email when SMTP settings are complete.               |
-| `notificationEmailSmtpHost`                      | `null`                         | SMTP host.                                                   |
-| `notificationEmailSmtpPort`                      | `null`                         | SMTP port.                                                   |
-| `notificationEmailSmtpSecure`                    | `false`                        | `true` for implicit TLS, `false` for STARTTLS.               |
-| `notificationEmailSmtpUsername`                  | `null`                         | SMTP username.                                               |
-| `notificationEmailSmtpPassword`                  | `null`                         | SMTP password or app password.                               |
-| `notificationEmailFrom`                          | `null`                         | Email sender address.                                        |
-| `notificationWebhookEnabled`                     | `auto`                         | Enables webhook when URL and signing secret are complete.    |
-| `notificationWebhookEndpointUrl`                 | `null`                         | Default webhook endpoint URL.                                |
-| `notificationWebhookSigningSecret`               | `null`                         | HMAC secret for webhook payload signatures.                  |
-| `notificationDeliverySchedulerEnabled`           | `false`                        | Runs pending email/webhook delivery loop in this process.    |
-| `notificationDeliveryScanIntervalMs`             | `30000`                        | Delivery scheduler interval.                                 |
-| `notificationDeliveryBatchSize`                  | `25`                           | Maximum pending notifications per delivery scan.             |
-| `notificationDeliveryMaxAttempts`                | `3`                            | Attempts before a notification is marked failed.             |
-| `notificationDeliveryRetryBaseDelayMs`           | `60000`                        | Base retry delay multiplied by attempt count.                |
-| `notificationSlaSchedulerEnabled`                | `false`                        | Runs automatic SLA scan loop in this process.                |
-| `notificationSlaScanIntervalMs`                  | `60000`                        | SLA scheduler interval.                                      |
-| `notificationSlaTimeoutRemindEnabled`            | `true`                         | Enables SLA timeout `REMIND`.                                |
-| `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                          |
-| `notificationSlaTimeoutEscalateEnabled`          | `false`                        | Enables SLA timeout `ESCALATE`.                              |
-| `notificationSlaTimeoutTerminateInstanceEnabled` | `false`                        | Enables SLA timeout `TERMINATE_INSTANCE`.                    |
-| `notificationTemplateEngine`                     | `simple`                       | `simple` or `handlebars`.                                    |
-| `notificationDefaultChannels`                    | `[IN_APP]`                     | Fallback channels when a workflow node has no channel list.  |
-| `notificationDefaultEmailDigestMode`             | `INSTANT`                      | Default digest mode for missing preferences.                 |
-| `notificationDefaultInAppPreferenceEnabled`      | `true`                         | Default in-app preference for missing preferences.           |
-| `notificationDefaultEmailPreferenceEnabled`      | `true`                         | Default email preference for missing preferences.            |
-| `signatureCurrentKeyVersion`                     | `1`                            | Key version used for new signatures.                         |
-| `signatureKeyProvider`                           | local development key provider | Host key provider for signing and verification.              |
-| `signatureTimestampProvider`                     | mock timestamp provider        | Host timestamp token provider.                               |
+| Option                                           | Default                        | Description                                                    |
+| ------------------------------------------------ | ------------------------------ | -------------------------------------------------------------- |
+| `authContextFactory`                             | `undefined`                    | Reads `BPMAuthContext` from NestJS `ExecutionContext`.         |
+| `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                            |
+| `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                      |
+| `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks. |
+| `attachmentRoutePrefix`                          | `/api/attachments`             | Prefix used when BPM signs attachment download/preview URLs.   |
+| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
+| `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
+| `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.     |
+| `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                     |
+| `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                     |
+| `notificationInAppEnabled`                       | `true`                         | Enables in-app notification records.                           |
+| `notificationEmailEnabled`                       | `auto`                         | Enables email when SMTP settings are complete.                 |
+| `notificationEmailSmtpHost`                      | `null`                         | SMTP host.                                                     |
+| `notificationEmailSmtpPort`                      | `null`                         | SMTP port.                                                     |
+| `notificationEmailSmtpSecure`                    | `false`                        | `true` for implicit TLS, `false` for STARTTLS.                 |
+| `notificationEmailSmtpUsername`                  | `null`                         | SMTP username.                                                 |
+| `notificationEmailSmtpPassword`                  | `null`                         | SMTP password or app password.                                 |
+| `notificationEmailFrom`                          | `null`                         | Email sender address.                                          |
+| `notificationWebhookEnabled`                     | `auto`                         | Enables webhook when URL and signing secret are complete.      |
+| `notificationWebhookEndpointUrl`                 | `null`                         | Default webhook endpoint URL.                                  |
+| `notificationWebhookSigningSecret`               | `null`                         | HMAC secret for webhook payload signatures.                    |
+| `notificationDeliverySchedulerEnabled`           | `false`                        | Runs pending email/webhook delivery loop in this process.      |
+| `notificationDeliveryScanIntervalMs`             | `30000`                        | Delivery scheduler interval.                                   |
+| `notificationDeliveryBatchSize`                  | `25`                           | Maximum pending notifications per delivery scan.               |
+| `notificationDeliveryMaxAttempts`                | `3`                            | Attempts before a notification is marked failed.               |
+| `notificationDeliveryRetryBaseDelayMs`           | `60000`                        | Base retry delay multiplied by attempt count.                  |
+| `notificationSlaSchedulerEnabled`                | `false`                        | Runs automatic SLA scan loop in this process.                  |
+| `notificationSlaScanIntervalMs`                  | `60000`                        | SLA scheduler interval.                                        |
+| `notificationSlaTimeoutRemindEnabled`            | `true`                         | Enables SLA timeout `REMIND`.                                  |
+| `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                            |
+| `notificationSlaTimeoutEscalateEnabled`          | `false`                        | Enables SLA timeout `ESCALATE`.                                |
+| `notificationSlaTimeoutTerminateInstanceEnabled` | `false`                        | Enables SLA timeout `TERMINATE_INSTANCE`.                      |
+| `notificationTemplateEngine`                     | `simple`                       | `simple` or `handlebars`.                                      |
+| `notificationDefaultChannels`                    | `[IN_APP]`                     | Fallback channels when a workflow node has no channel list.    |
+| `notificationDefaultEmailDigestMode`             | `INSTANT`                      | Default digest mode for missing preferences.                   |
+| `notificationDefaultInAppPreferenceEnabled`      | `true`                         | Default in-app preference for missing preferences.             |
+| `notificationDefaultEmailPreferenceEnabled`      | `true`                         | Default email preference for missing preferences.              |
+| `signatureCurrentKeyVersion`                     | `1`                            | Key version used for new signatures.                           |
+| `signatureKeyProvider`                           | local development key provider | Host key provider for signing and verification.                |
+| `signatureTimestampProvider`                     | mock timestamp provider        | Host timestamp token provider.                                 |
 
 Production deployments should override all local development secrets.
 
@@ -465,6 +466,70 @@ import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/noti
   exports: [BPM_NOTIFICATION_DISPATCHER],
 })
 export class HostNotificationModule {}
+```
+
+Workflow service tasks are a separate integration point from notification
+delivery. `WEBHOOK` service-task nodes run inside the workflow engine and use
+`BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`. The default dispatcher sends a JSON
+`POST` with `fetch`; wrapper apps can replace it when outbound workflow actions
+must be signed, queued, audited, or routed through an internal integration
+service:
+
+```ts
+import { Injectable } from '@nestjs/common';
+import {
+  BPMRootModule,
+  BPM_MEMBER_RESOLVER,
+  BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+  BPMWorkflowServiceTaskDispatcher,
+  BPMWorkflowWebhookDispatchInput,
+  BPMWorkflowWebhookDispatchResult,
+} from '@rytass/bpm-core-nestjs-module';
+
+interface IntegrationBusResult {
+  readonly accepted: boolean;
+  readonly reason?: string;
+}
+
+interface IntegrationBus {
+  enqueue(
+    topic: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): Promise<IntegrationBusResult>;
+}
+
+@Injectable()
+class HostWorkflowServiceTaskDispatcher implements BPMWorkflowServiceTaskDispatcher {
+  constructor(private readonly integrationBus: IntegrationBus) {}
+
+  async dispatchWebhook(
+    input: BPMWorkflowWebhookDispatchInput,
+  ): Promise<BPMWorkflowWebhookDispatchResult> {
+    const result = await this.integrationBus.enqueue('bpm.workflow.webhook', {
+      headers: input.headers ?? {},
+      payload: input.payload,
+      url: input.url,
+    });
+
+    return {
+      ok: result.accepted,
+      status: result.accepted ? 202 : null,
+      error: result.accepted ? undefined : result.reason,
+    };
+  }
+}
+
+BPMRootModule.forRoot({
+  authContextFactory: buildBPMAuthContextFromExecutionContext,
+  memberResolverProvider: {
+    provide: BPM_MEMBER_RESOLVER,
+    useClass: HostBPMMemberResolver,
+  },
+  workflowServiceTaskDispatcherProvider: {
+    provide: BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+    useClass: HostWorkflowServiceTaskDispatcher,
+  },
+});
 ```
 
 SLA timeout actions that change workflow state are disabled by default:
