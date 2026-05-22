@@ -141,6 +141,32 @@ export class NotificationService {
     });
   }
 
+  async markAllNotificationsRead({
+    recipientMemberId,
+  }: {
+    readonly recipientMemberId: string;
+  }): Promise<number> {
+    const trimmedRecipientMemberId = recipientMemberId.trim();
+
+    if (!trimmedRecipientMemberId) {
+      return 0;
+    }
+
+    const result = await this.notificationRepository.update(
+      {
+        channel: NotificationChannelEnum.IN_APP,
+        recipientMemberId: trimmedRecipientMemberId,
+        status: Not(NotificationStatusEnum.READ),
+      },
+      {
+        readAt: new Date(),
+        status: NotificationStatusEnum.READ,
+      },
+    );
+
+    return result.affected ?? 0;
+  }
+
   async markNotificationRead({
     id,
     readerMemberId,

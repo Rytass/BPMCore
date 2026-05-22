@@ -1,4 +1,4 @@
-import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { Args, Int, Mutation, Resolver } from '@nestjs/graphql';
 import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
@@ -20,6 +20,17 @@ export class NotificationMutations {
     return this.notificationService.markNotificationRead({
       id,
       readerMemberId: currentMemberId ?? readerMemberId ?? null,
+    });
+  }
+
+  @Mutation(() => Int)
+  async markAllNotificationsRead(
+    @BPMCurrentMemberId() currentMemberId: string,
+    @Args('recipientMemberId', { nullable: true, type: () => String })
+    recipientMemberId?: string | null,
+  ): Promise<number> {
+    return this.notificationService.markAllNotificationsRead({
+      recipientMemberId: currentMemberId ?? recipientMemberId ?? '',
     });
   }
 

@@ -126,6 +126,63 @@ describe('NotificationService', () => {
     expect(readNotification.status).toBe(NotificationStatusEnum.READ);
   });
 
+  it('marks every unread in-app notification of a recipient as read in one update', async (): Promise<void> => {
+    const update = jest.fn<
+      Promise<{ readonly affected: number }>,
+      [Record<string, unknown>, Record<string, unknown>]
+    >(() => Promise.resolve({ affected: 3 }));
+    const service = new NotificationService(
+      {
+        update,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    const affected = await service.markAllNotificationsRead({
+      recipientMemberId: 'member-001',
+    });
+
+    expect(affected).toBe(3);
+    expect(update).toHaveBeenCalledTimes(1);
+    const [criteria, patch] = update.mock.calls[0];
+
+    expect(criteria).toMatchObject({
+      channel: NotificationChannelEnum.IN_APP,
+      recipientMemberId: 'member-001',
+    });
+    expect(patch).toMatchObject({
+      status: NotificationStatusEnum.READ,
+    });
+    expect(patch.readAt).toBeInstanceOf(Date);
+  });
+
+  it('returns zero affected when the recipient id is blank without touching the repository', async (): Promise<void> => {
+    const update = jest.fn();
+    const service = new NotificationService(
+      {
+        update,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.markAllNotificationsRead({ recipientMemberId: '   ' }),
+    ).resolves.toBe(0);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('uses configured defaults for missing notification preferences', async (): Promise<void> => {
     const service = new NotificationService(
       createRepository<NotificationEntity>(),
