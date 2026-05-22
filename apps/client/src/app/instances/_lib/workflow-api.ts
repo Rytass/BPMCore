@@ -1406,6 +1406,23 @@ export async function markNotificationRead({
   return data.markNotificationRead;
 }
 
+export async function markAllNotificationsRead({
+  recipientMemberId,
+}: {
+  readonly recipientMemberId: string;
+}): Promise<number> {
+  const data = await requestGraphQl<{
+    readonly markAllNotificationsRead: number;
+  }>(
+    `mutation MarkAllNotificationsRead($recipientMemberId: String) {
+      markAllNotificationsRead(recipientMemberId: $recipientMemberId)
+    }`,
+    { recipientMemberId },
+  );
+
+  return data.markAllNotificationsRead;
+}
+
 export async function readNotificationPreference(
   memberId: string,
 ): Promise<NotificationPreferenceRecord> {
