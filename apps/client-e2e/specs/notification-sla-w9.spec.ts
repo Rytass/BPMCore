@@ -15,25 +15,30 @@ test.describe('W9 notifications and SLA', () => {
     await authenticateApiMember(page);
   });
 
-  test('shows in-app notifications and marks a notification as read', async ({
+  test('opens the notification drawer from the bell button and marks a notification as read', async ({
     page,
   }): Promise<void> => {
     await mockNotificationGraphQl(page);
 
-    await page.goto('/notifications');
-    await expect(page.getByRole('heading', { name: '通知中心' })).toBeVisible();
+    await page.goto('/dashboard');
     await expect(
       page.getByRole('button', { name: '通知中心，1 則未讀' }),
     ).toBeVisible();
-    await expect(page.getByText('目前有 1 則未讀通知。')).toBeVisible();
+
+    await page.getByRole('button', { name: /^通知中心/ }).click();
     await expect(page.getByText('新的待簽任務')).toBeVisible();
     await expect(page.getByText('SLA 即將到期')).toBeVisible();
-    await expect(page.getByRole('button', { name: '重新整理' })).toHaveCount(1);
-    await expect(page.getByRole('button', { name: '重設偏好' })).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: '標為已讀' }),
+    ).toHaveCount(1);
 
     await page.getByRole('button', { name: '標為已讀' }).click();
-    await expect(page.getByText('目前有 0 則未讀通知。')).toBeVisible();
-    await expect(page.getByRole('table').getByText('已讀')).toHaveCount(2);
+    await expect(
+      page.getByRole('button', { name: '標為已讀' }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: '通知中心，1 則未讀' }),
+    ).toHaveCount(0);
   });
 
   test('marks an unread notification as read before opening its instance', async ({
@@ -41,34 +46,30 @@ test.describe('W9 notifications and SLA', () => {
   }): Promise<void> => {
     await mockNotificationGraphQl(page);
 
-    await page.goto('/notifications');
-    await expect(page.getByText('目前有 1 則未讀通知。')).toBeVisible();
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: /^通知中心/ }).click();
+    await expect(page.getByText('新的待簽任務')).toBeVisible();
 
     await page
-      .getByRole('row', { name: /新的待簽任務/ })
       .getByRole('button', { name: '查看案件' })
+      .first()
       .click();
     await expect(page).toHaveURL(new RegExp(`/instances/${INSTANCE_ID}$`));
-
-    await page.goto('/notifications');
-    await expect(page.getByText('目前有 0 則未讀通知。')).toBeVisible();
-    await expect(page.getByRole('table').getByText('已讀')).toHaveCount(2);
   });
 
-  test('paginates notifications from the API result set', async ({
+  test('loads additional notifications via the load more action', async ({
     page,
   }): Promise<void> => {
     await mockPaginatedNotificationGraphQl(page);
 
-    await page.goto('/notifications');
-    await expect(page.getByText('顯示 1-10 筆，共 12 筆')).toBeVisible();
-    await expect(page.getByText('通知 1', { exact: true })).toBeVisible();
-    await expect(page.getByText('通知 11', { exact: true })).toHaveCount(0);
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: /^通知中心/ }).click();
 
-    await page.getByRole('button', { name: 'Go to 2 page' }).click();
-    await expect(page.getByText('顯示 11-12 筆，共 12 筆')).toBeVisible();
-    await expect(page.getByText('通知 11', { exact: true })).toBeVisible();
-    await expect(page.getByText('通知 1', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('通知 1', { exact: true })).toBeVisible();
+    await expect(page.getByText('通知 60', { exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: '載入更多' }).click();
+    await expect(page.getByText('通知 60', { exact: true })).toBeVisible();
   });
 
   test('shows SLA countdown in inbox pending tasks', async ({
@@ -93,7 +94,7 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
 
     if (query.includes('query Notifications')) {
       const pageNumber = readNumberVariable(payload.variables, 'page', 1);
-      const pageSize = readNumberVariable(payload.variables, 'pageSize', 10);
+      const pageSize = readNumberVariable(payload.variables, 'pageSize', 50);
       const notifications = readNotifications(read);
 
       await fulfillGraphQl(route, {
@@ -121,6 +122,14 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('mutation MarkAllNotificationsRead')) {
+      read = true;
+      await fulfillGraphQl(route, {
+        markAllNotificationsRead: 1,
+      });
+      return;
+    }
+
     if (query.includes('mutation MarkNotificationRead')) {
       read = true;
       await fulfillGraphQl(route, {
@@ -136,6 +145,11 @@ async function mockNotificationGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('query DashboardOverview')) {
+      await fulfillGraphQl(route, readDashboardOverview());
+      return;
+    }
+
     await fulfillGraphQl(route, {});
   });
 }
@@ -147,8 +161,8 @@ async function mockPaginatedNotificationGraphQl(page: Page): Promise<void> {
 
     if (query.includes('query Notifications')) {
       const pageNumber = readNumberVariable(payload.variables, 'page', 1);
-      const pageSize = readNumberVariable(payload.variables, 'pageSize', 10);
-      const notifications = readManyNotifications(12);
+      const pageSize = readNumberVariable(payload.variables, 'pageSize', 50);
+      const notifications = readManyNotifications(60);
 
       await fulfillGraphQl(route, {
         notificationCount: notifications.length,
@@ -156,14 +170,14 @@ async function mockPaginatedNotificationGraphQl(page: Page): Promise<void> {
           (pageNumber - 1) * pageSize,
           pageNumber * pageSize,
         ),
-        unreadNotificationCount: 12,
+        unreadNotificationCount: notifications.length,
       });
       return;
     }
 
     if (query.includes('query UnreadNotificationCount')) {
       await fulfillGraphQl(route, {
-        unreadNotificationCount: 12,
+        unreadNotificationCount: 60,
       });
       return;
     }
@@ -172,6 +186,11 @@ async function mockPaginatedNotificationGraphQl(page: Page): Promise<void> {
       await fulfillGraphQl(route, {
         notificationPreference: readPreference(),
       });
+      return;
+    }
+
+    if (query.includes('query DashboardOverview')) {
+      await fulfillGraphQl(route, readDashboardOverview());
       return;
     }
 
@@ -289,6 +308,19 @@ function readPreference(): Readonly<Record<string, unknown>> {
     quietHoursEnd: null,
     quietHoursStart: null,
     updatedAt: CREATED_AT,
+  };
+}
+
+function readDashboardOverview(): Readonly<Record<string, unknown>> {
+  return {
+    inboxTasks: [],
+    sentInstances: [],
+    workflowSummary: {
+      activeInstances: 0,
+      completedInstances: 0,
+      overdueTasks: 0,
+      pendingTasks: 0,
+    },
   };
 }
 
