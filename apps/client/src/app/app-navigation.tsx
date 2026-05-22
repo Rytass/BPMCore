@@ -40,67 +40,101 @@ interface NavigationItem {
   readonly requiresAdmin?: boolean;
 }
 
-const mainItems: readonly NavigationItem[] = [
-  { href: '/dashboard', icon: HomeIcon, label: '工作台' },
-  { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
-  { href: '/sent', icon: MailIcon, label: '我發起的' },
-  { href: '/cc', icon: ShareIcon, label: '抄送給我' },
-  { href: '/search', icon: SearchIcon, label: '案件搜尋' },
-  { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
+interface NavigationGroup {
+  readonly title: string;
+  readonly items: readonly NavigationItem[];
+}
+
+const navigationGroups: readonly NavigationGroup[] = [
   {
-    href: '/templates',
-    icon: FolderIcon,
-    label: '簽核模板',
-    requiresAdmin: true,
+    title: '我的工作',
+    items: [
+      { href: '/dashboard', icon: HomeIcon, label: '工作台' },
+      { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
+      { href: '/sent', icon: MailIcon, label: '我發起的' },
+      { href: '/cc', icon: ShareIcon, label: '抄送給我' },
+    ],
   },
   {
-    href: '/templates/categories',
-    icon: ListIcon,
-    label: '模板分類',
-    requiresAdmin: true,
-  },
-  { href: '/forms', icon: FileIcon, label: '表單設計', requiresAdmin: true },
-  {
-    href: '/admin/orgs',
-    icon: SystemIcon,
-    label: '組織管理',
-    requiresAdmin: true,
+    title: '查詢與代理',
+    items: [
+      { href: '/search', icon: SearchIcon, label: '案件搜尋' },
+      { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
+    ],
   },
   {
-    href: '/admin/users',
-    icon: UserIcon,
-    label: '會員對照',
-    requiresAdmin: true,
+    title: '簽核設計',
+    items: [
+      {
+        href: '/templates',
+        icon: FolderIcon,
+        label: '簽核模板',
+        requiresAdmin: true,
+      },
+      {
+        href: '/templates/categories',
+        icon: ListIcon,
+        label: '模板分類',
+        requiresAdmin: true,
+      },
+      {
+        href: '/forms',
+        icon: FileIcon,
+        label: '表單設計',
+        requiresAdmin: true,
+      },
+    ],
   },
   {
-    href: '/admin/delegations',
-    icon: ShareIcon,
-    label: '代理設定',
-    requiresAdmin: true,
+    title: '系統管理',
+    items: [
+      {
+        href: '/admin/orgs',
+        icon: SystemIcon,
+        label: '組織管理',
+        requiresAdmin: true,
+      },
+      {
+        href: '/admin/users',
+        icon: UserIcon,
+        label: '會員對照',
+        requiresAdmin: true,
+      },
+      {
+        href: '/admin/delegations',
+        icon: ShareIcon,
+        label: '代理設定',
+        requiresAdmin: true,
+      },
+    ],
   },
 ];
 
 export function renderAppNavigation(activeHref: string): ReactElement {
   const { member } = useAuth();
   const { unreadCount } = useNotificationUnread();
-  const visibleItems = mainItems.filter(
-    (item) => !item.requiresAdmin || isAdminMember(member),
-  );
+  const isAdmin = isAdminMember(member);
+  const visibleGroups = navigationGroups
+    .map((group) => ({
+      title: group.title,
+      items: group.items.filter((item) => !item.requiresAdmin || isAdmin),
+    }))
+    .filter((group) => group.items.length > 0);
 
-  return (
-    <Navigation exactActivatedMatch>
-      <NavigationHeader title="BPM Admin">
-        <Image
-          alt=""
-          className={styles.logo}
-          height={24}
-          priority
-          src="/rytass-logo.png"
-          width={24}
-        />
-      </NavigationHeader>
-      <NavigationOptionCategory title="Approval Engine">
-        {visibleItems.map((item) => (
+  const children = [
+    <NavigationHeader key="header" title="BPM Admin">
+      <Image
+        alt=""
+        className={styles.logo}
+        height={24}
+        priority
+        src="/rytass-logo.png"
+        width={24}
+      />
+    </NavigationHeader>,
+    ...visibleGroups.map((group) => (
+      <NavigationOptionCategory key={group.title} title={group.title}>
+        {group.items.map((item) => (
           <NavigationOption
             active={item.href === activeHref}
             href={item.href}
@@ -110,45 +144,47 @@ export function renderAppNavigation(activeHref: string): ReactElement {
           />
         ))}
       </NavigationOptionCategory>
-      <NavigationFooter>
-        <NavigationUserMenu
-          options={[
-            {
-              id: 'notification-settings',
-              name: '通知設定',
-            },
-            {
-              id: 'logout',
-              name: '登出',
-            },
-          ]}
-          onSelect={(option): void => {
-            if (option.id === 'notification-settings') {
-              window.location.assign('/settings/notifications');
+    )),
+    <NavigationFooter key="footer">
+      <NavigationUserMenu
+        options={[
+          {
+            id: 'notification-settings',
+            name: '通知設定',
+          },
+          {
+            id: 'logout',
+            name: '登出',
+          },
+        ]}
+        onSelect={(option): void => {
+          if (option.id === 'notification-settings') {
+            window.location.assign('/settings/notifications');
 
-              return;
-            }
+            return;
+          }
 
-            if (option.id === 'logout') {
-              void logoutAndRedirect();
-            }
-          }}
-        >
-          <NavigationMemberName />
-        </NavigationUserMenu>
-        <NotificationBell unreadCount={unreadCount} />
-        <NavigationIconButton
-          aria-label="登出"
-          icon={LogoutIcon}
-          onClick={(): void => {
+          if (option.id === 'logout') {
             void logoutAndRedirect();
-          }}
-          title="登出"
-          type="button"
-        />
-      </NavigationFooter>
-    </Navigation>
-  );
+          }
+        }}
+      >
+        <NavigationMemberName />
+      </NavigationUserMenu>
+      <NotificationBell unreadCount={unreadCount} />
+      <NavigationIconButton
+        aria-label="登出"
+        icon={LogoutIcon}
+        onClick={(): void => {
+          void logoutAndRedirect();
+        }}
+        title="登出"
+        type="button"
+      />
+    </NavigationFooter>,
+  ];
+
+  return <Navigation exactActivatedMatch>{children}</Navigation>;
 }
 
 function isAdminMember(member: ReturnType<typeof useAuth>['member']): boolean {
