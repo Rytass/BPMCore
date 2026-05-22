@@ -30,6 +30,7 @@ import type { IconDefinition } from '@mezzanine-ui/icons';
 import styles from './app-navigation.module.scss';
 import { useAuth } from './auth-provider';
 import { logoutApi } from './_lib/api-auth-client';
+import { useNotificationDrawer } from './notification-drawer-provider';
 import { useNotificationUnread } from './notification-unread-provider';
 
 interface NavigationItem {
@@ -46,7 +47,6 @@ const mainItems: readonly NavigationItem[] = [
   { href: '/cc', icon: ShareIcon, label: '抄送給我' },
   { href: '/search', icon: SearchIcon, label: '案件搜尋' },
   { href: '/delegations', icon: SwitchHorizontalIcon, label: '我的代理' },
-  { href: '/notifications', icon: NotificationUnreadIcon, label: '通知中心' },
   {
     href: '/templates',
     icon: FolderIcon,
@@ -114,11 +114,21 @@ export function renderAppNavigation(activeHref: string): ReactElement {
         <NavigationUserMenu
           options={[
             {
+              id: 'notification-settings',
+              name: '通知設定',
+            },
+            {
               id: 'logout',
               name: '登出',
             },
           ]}
           onSelect={(option): void => {
+            if (option.id === 'notification-settings') {
+              window.location.assign('/settings/notifications');
+
+              return;
+            }
+
             if (option.id === 'logout') {
               void logoutAndRedirect();
             }
@@ -159,6 +169,8 @@ function NotificationBell({
 }: {
   readonly unreadCount: number;
 }): ReactElement {
+  const { open } = useNotificationDrawer();
+
   return (
     <span className={styles.notificationBell}>
       <NavigationIconButton
@@ -167,7 +179,7 @@ function NotificationBell({
         }
         icon={NotificationUnreadIcon}
         onClick={(): void => {
-          window.location.assign('/notifications');
+          open();
         }}
         title="通知中心"
         type="button"
