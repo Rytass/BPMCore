@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.8 — 2026-05-28
+
+### Fixed
+
+- **`React.ReactElement` return-type annotation** in
+  `BPMRoutesProvider` and `RouterAdapterProvider` referenced the
+  unimported `React` namespace. Compiled fine under typical `jsx:
+  'react-jsx'` configs (which globalize the namespace) but broke
+  under stricter consumer setups. Now uses the directly-imported
+  `ReactElement` type to match the rest of the file.
+
+### Changed
+
+- **Dashboard "未讀通知" metric tile** now navigates to `routes.inbox()`
+  instead of `routes.notifications()`. The previous target had no
+  matching `pages/notifications` shim, so the click 404'd on hosts
+  that hadn't built their own page at that path. Inbox is the
+  most-actionable next step for an unread-notification click; the
+  notification drawer bell stays available globally for in-place
+  review.
+
+### Documentation
+
+- **`BPMRoutes.notifications()` JSDoc clarified** as a host-extension
+  point: BPM's built-in views do not navigate to it by default. The
+  default factory still returns `'/notifications'` so consumers can
+  mount their own page at that path if desired; no BPM-shipped
+  `pages/notifications` shim exists.
+
+### Why a patch
+
+Bug fix + behavior preservation. No public API change.
+
 ## 0.3.7 — 2026-05-28
 
 ### Documentation
