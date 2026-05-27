@@ -230,29 +230,29 @@ data in. Three rules keep the mirror idempotent:
    live queries (`orgUnits`, `orgUnitCount`, etc.) filter soft-deleted
    rows automatically.
 
-Quick wire-up using only this package's exports:
+Quick wire-up using only this package's exports. Note the flat input
+shape on the create/update mutations (no `{id, input: {...}}` wrapper):
 
 ```ts
 import {
+  readOrganizationDashboard,
   createOrgUnit,
   updateOrgUnit,
-  orgUnits,
 } from '@rytass/bpm-core-client/organization';
+import type { OrgUnitType } from '@rytass/bpm-core-shared';
 
 async function upsertOrgUnit(hostUnit: {
   code: string;
   name: string;
-  type: 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
+  type: OrgUnitType;
   parentCode: string | null;
   hostId: string;
 }): Promise<string> {
-  const existing = (await orgUnits({ searchText: hostUnit.code })).find(
-    (u) => u.code === hostUnit.code,
-  );
+  // One round trip pulls every org unit; index by code in your sync loop.
+  const dash = await readOrganizationDashboard({ orgUnitPageSize: null });
+  const existing = dash.orgUnits.find((u) => u.code === hostUnit.code);
   const parentId = hostUnit.parentCode
-    ? (await orgUnits({ searchText: hostUnit.parentCode })).find(
-        (u) => u.code === hostUnit.parentCode,
-      )?.id ?? null
+    ? dash.orgUnits.find((u) => u.code === hostUnit.parentCode)?.id ?? null
     : null;
   const metadataJson = JSON.stringify({ hostId: hostUnit.hostId });
 
@@ -260,17 +260,53 @@ async function upsertOrgUnit(hostUnit: {
     return (
       await updateOrgUnit({
         id: existing.id,
-        input: { ...hostUnit, parentId, metadataJson },
+        code: hostUnit.code,
+        name: hostUnit.name,
+        type: hostUnit.type,
+        parentId,
+        metadataJson,
       })
     ).id;
   }
-  return (await createOrgUnit({ ...hostUnit, parentId, metadataJson })).id;
+  return (
+    await createOrgUnit({
+      code: hostUnit.code,
+      name: hostUnit.name,
+      type: hostUnit.type,
+      parentId,
+      metadataJson,
+    })
+  ).id;
 }
 ```
 
 `createPosition`, `createMembership`, `updateMembership`, and
-`createManagerResolution` follow the same pattern. For bulk tree moves
-in one transaction, see `commitOrgUnitTreeDraft`.
+`createManagerResolution` follow the same flat-input pattern. For bulk
+tree moves in one transaction, see `commitOrgUnitTreeDraft`. **Only**
+that one mutation is transactional — sequential `createMembership` calls
+are independent and partial-failures stay committed.
+
+### Server-side base URL override
+
+The GraphQL client resolves its endpoint via `NEXT_PUBLIC_API_URL` or
+same-origin. Node scripts that aren't running inside Next.js (cron
+workers, one-off org seeds, integration tests) should call
+`configureBPMClient` from the root package barrel once at startup:
+
+```ts
+import { configureBPMClient } from '@rytass/bpm-core-client';
+
+configureBPMClient({
+  baseUrl: 'https://api.shuttle.example.com',
+  // Optional: inject your own fetch (e.g. node-fetch) or default headers.
+  fetch: globalThis.fetch,
+  headers: { 'X-Service-Token': process.env.BPM_SYNC_TOKEN ?? '' },
+});
+```
+
+All subsequent calls to `requestGraphQl` and the REST auth client honor
+the override. Both `baseUrl` and `headers` are static for the process
+lifetime — call `configureBPMClient` again to replace.
 
 ## Auth REST Endpoints
 

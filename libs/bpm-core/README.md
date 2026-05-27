@@ -215,6 +215,60 @@ clear admin / designer guards; otherwise BPM resolvers reject with
 `BPMAuthenticatedGuard`. The host does not need to add `@BPMAuthenticated()`
 on top of them.
 
+### Mapping from a host RBAC system (e.g. Casbin)
+
+BPM does not call the host's RBAC engine — it reads exact-string `roles`
+and `permissions` arrays off `BPMAuthContext`. Hosts using Casbin /
+Permify / OPA must **project their grouping policy** into the BPM
+literals inside their `authContextFactory`. A worked Casbin example:
+
+```ts
+import { Inject, Injectable, type ExecutionContext } from '@nestjs/common';
+import { GqlExecutionContext } from '@nestjs/graphql';
+import { CASBIN_ENFORCER, type CasbinEnforcer } from '@your-host/auth';
+import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
+
+const HOST_TO_BPM_ROLES: Readonly<Record<string, string>> = {
+  approval_admin: 'BPM_ADMIN',
+  approval_designer: 'BPM_DESIGNER',
+};
+
+@Injectable()
+export class BPMAuthContextFactory {
+  constructor(@Inject(CASBIN_ENFORCER) private readonly enforcer: CasbinEnforcer) {}
+
+  async build(ctx: ExecutionContext): Promise<BPMAuthContext | null> {
+    const req = GqlExecutionContext.create(ctx).getContext<{
+      req?: { member?: { id: string; email: string; name: string } };
+    }>().req;
+    const member = req?.member;
+    if (!member) return null;
+
+    // 1. Look up the host's Casbin role assignments for this member.
+    const hostRoles = await this.enforcer.getRolesForUser(member.id);
+
+    // 2. Translate into BPM's exact-string literals. Unknown host roles
+    //    do nothing — BPM only checks for the documented strings.
+    const bpmRoles = hostRoles
+      .map((r) => HOST_TO_BPM_ROLES[r])
+      .filter((r): r is string => Boolean(r));
+
+    return {
+      memberId: member.id,
+      email: member.email,
+      name: member.name,
+      roles: bpmRoles,
+      permissions: [], // Host can also use `bpm:*` style permissions if preferred.
+      metadata: {},
+    };
+  }
+}
+```
+
+> The host owns the mapping table. Keep it in one place (a constant
+> module or a database table) so adding a new BPM tier in a future
+> BPMCore release becomes a one-line addition.
+
 ## Member Resolver
 
 The package resolves display names, email addresses, and approver candidates
@@ -342,66 +396,75 @@ and observable:
 ### Worked example: idempotent sync
 
 The example below uses only published exports from
-`@rytass/bpm-core-client/organization`. It pushes a host org tree into
-BPM, handling the create-or-update path by checking `code` matches.
-Verified exports: `orgUnits`, `createOrgUnit`, `updateOrgUnit`,
-`deleteOrgUnit`, `createPosition`, `createMembership`, `updateMembership`,
-`createManagerResolution`, `commitOrgUnitTreeDraft`.
+`@rytass/bpm-core-client/organization`. It loads the entire BPM-side
+state once via `readOrganizationDashboard()`, builds a `code → record`
+index, then upserts each host node. Verified exports (all with flat
+input shapes — no `{id, input: {...}}` wrapping):
+
+- `readOrganizationDashboard({ orgUnitPageSize, orgUnitSearchText, ... })`
+- `createOrgUnit({ code, name, type, parentId, metadataJson })`
+- `updateOrgUnit({ id, code, name, type, parentId, metadataJson })`
+- `deleteOrgUnit(id)` (soft-delete)
+- `commitOrgUnitTreeDraft({ baseUpdatedAt, draft })` (transactional batch moves)
+- `createPosition` / `updatePosition` (key on `code`)
+- `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId)`)
+- `createManagerResolution` / `updateManagerResolution`
 
 ```ts
 import {
+  readOrganizationDashboard,
   createOrgUnit,
   updateOrgUnit,
-  createPosition,
-  createMembership,
-  orgUnits,
   type OrgUnitRecord,
 } from '@rytass/bpm-core-client/organization';
+import type { OrgUnitType } from '@rytass/bpm-core-shared';
 
 interface HostOrgUnit {
-  readonly hostId: string;     // e.g. ERP primary key — your host-FK
-  readonly code: string;       // stable across sync runs
+  readonly hostId: string;          // e.g. ERP primary key — your host-FK
+  readonly code: string;            // stable across sync runs
   readonly name: string;
-  readonly type: 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
+  readonly type: OrgUnitType;       // 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM'
   readonly parentCode: string | null;
 }
 
-async function syncOrgUnit(host: HostOrgUnit): Promise<OrgUnitRecord> {
-  // 1. Look up by host's stable code; BPM enforces uniqueness.
-  const existing = (
-    await orgUnits({ page: 1, pageSize: 1, searchText: host.code })
-  ).find((u) => u.code === host.code);
+async function syncOrgTree(
+  hostNodes: readonly HostOrgUnit[],
+): Promise<void> {
+  // 1. Single round trip: load every existing BPM org unit, index by code.
+  const dashboard = await readOrganizationDashboard({ orgUnitPageSize: null });
+  const byCode = new Map<string, OrgUnitRecord>(
+    dashboard.orgUnits.map((unit) => [unit.code, unit]),
+  );
 
-  const parentId = host.parentCode
-    ? (await orgUnits({ searchText: host.parentCode })).find(
-        (u) => u.code === host.parentCode,
-      )?.id ?? null
-    : null;
+  // 2. Topo-sort by parent so a parent always exists before its child
+  //    is upserted (createOrgUnit needs the parentId to be valid).
+  const ordered = topoSortByParent(hostNodes);
 
-  // 2. Stash the host-FK back into metadata so future reconciliations
-  //    can chase the pointer either direction.
-  const metadataJson = JSON.stringify({ hostId: host.hostId });
+  for (const host of ordered) {
+    const parentId =
+      host.parentCode != null ? (byCode.get(host.parentCode)?.id ?? null) : null;
+    const metadataJson = JSON.stringify({ hostId: host.hostId });
+    const existing = byCode.get(host.code);
 
-  if (existing) {
-    return updateOrgUnit({
-      id: existing.id,
-      input: {
-        code: host.code,
-        name: host.name,
-        type: host.type,
-        parentId,
-        metadataJson,
-      },
-    });
+    const saved = existing
+      ? await updateOrgUnit({
+          id: existing.id,
+          code: host.code,
+          name: host.name,
+          type: host.type,
+          parentId,
+          metadataJson,
+        })
+      : await createOrgUnit({
+          code: host.code,
+          name: host.name,
+          type: host.type,
+          parentId,
+          metadataJson,
+        });
+
+    byCode.set(saved.code, saved);
   }
-
-  return createOrgUnit({
-    code: host.code,
-    name: host.name,
-    type: host.type,
-    parentId,
-    metadataJson,
-  });
 }
 ```
 
@@ -410,6 +473,19 @@ The same pattern works for `Position` (key on `code`), `Membership`
 `ManagerResolution` (unique by scope shape + active flag). For bulk
 tree-shape changes (multi-node moves under a single parent),
 `commitOrgUnitTreeDraft` accepts the full draft in one transaction.
+
+> **Atomicity caveat.** Only `commitOrgUnitTreeDraft` is transactional.
+> Sequential `createMembership` / `createPosition` calls are independent
+> mutations — if the 401st call in a batch of 500 fails, the prior 400
+> stay committed. Wrap your sync loop in a "from-cursor" resume strategy
+> if you need at-least-once semantics across crashes.
+
+> **Programmatic base URL.** Server-side scripts that aren't running
+> under Next.js (cron workers, one-off seeds) cannot rely on
+> `NEXT_PUBLIC_API_URL` resolution — call `configureBPMClient({ baseUrl,
+> fetch, headers })` from `@rytass/bpm-core-client` once at startup to
+> point the transport at the right host and inject a session cookie or
+> bearer token.
 
 ### What you do NOT mirror
 
@@ -659,6 +735,43 @@ bootstrap, `attachmentRoutePrefix` must be supplied at module wiring time:
   return.
 - A process can only mount BPM under a single prefix. Multi-tenant hosts that
   want different prefixes per tenant should run separate processes.
+
+### Cross-origin authentication
+
+Signed attachment URLs carry the auth **inside the URL** itself —
+specifically a query-string signature derived from
+`attachmentSignedUrlSecret` and `attachmentSignedUrlTtlSeconds`. The
+browser does **not** send the session cookie to fetch the attachment;
+BPM's controller verifies the signature instead.
+
+This means:
+
+- The attachment URL is safe to embed in `<img>` / `<a href>` /
+  `<iframe>` tags across origins; CORS is not in the auth path.
+- Anyone who possesses the URL (until TTL expiry) can fetch the file.
+  Choose `attachmentSignedUrlTtlSeconds` short enough that a leaked URL
+  expires before exploitation (we suggest **600s** in production).
+- Hosts that need true cross-tenant isolation should keep
+  `attachmentPublicBaseUrl` pointing at a CDN edge that enforces its own
+  authz on top — BPM's signature is freshness, not authorization.
+
+### Disabling the `/auth/test-members` endpoint in production
+
+Hosts wired with the demo seed (typical for `pnpm demo:reset` /
+`pnpm staging:reset`) expose `GET /auth/test-members` so the login form
+shows a clickable list of fixture accounts. **Do not ship this in
+production.** Two ways to keep it out:
+
+1. The endpoint is **owned by the wrapper host**, not by BPM —
+   `@rytass/bpm-core-nestjs-module` does not register it. Simply omit
+   the wrapper module / controller that serves
+   `/auth/test-members`. The reference implementation in BPMCore's
+   `apps/api` only exposes it when `NODE_ENV !== 'production'`; copy
+   that pattern in your own auth controller.
+2. The browser-side `listApiTestMembers()` client function tolerates a
+   `404` / `401` and returns an empty array, so removing the endpoint
+   degrades gracefully — the login form simply hides the demo-account
+   picker.
 
 ## Notifications and SLA
 
