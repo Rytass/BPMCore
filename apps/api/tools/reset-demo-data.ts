@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { createHash, createHmac } from 'crypto';
 import { DataSource, DataSourceOptions, QueryRunner } from 'typeorm';
 import {
   API_SIMULATION_MEMBER_SEEDS,
@@ -1707,7 +1708,7 @@ async function seedSignatures(queryRunner: QueryRunner): Promise<void> {
         TASK_IDS.EXPENSE_APPROVED_FINANCE,
         'member-101',
         'approved-finance-expense',
-        'approved-manager-expense-hash',
+        '3a8932db18817962040e61fd527f40829d315a378a300fd0dfbc7ec2ea150033',
         '2026-05-05T07:20:00.000Z',
       ),
       signatureRow(
@@ -2424,24 +2425,53 @@ function signatureRow(
   instanceId: string,
   taskId: string,
   signerMemberId: string,
-  hashPrefix: string,
+  _hashPrefix: string,
   previousSignatureHash: string | null,
   signedAt: string,
 ): SeedRow {
+  const signedPayload = { actionAt: signedAt, signerMemberId, taskId };
+  const signedPayloadHash = hashStableJson(signedPayload);
+
   return {
     algorithm: text('HMAC-SHA256'),
     id: text(id),
     instance_id: text(instanceId),
     key_version: numberCell(1),
     previous_signature_hash: text(previousSignatureHash),
-    signature: text(`${hashPrefix}-signature`),
+    signature: text(
+      createHmac('sha256', 'bpm-core-local-signature-key-v1')
+        .update(signedPayloadHash)
+        .digest('base64'),
+    ),
     signed_at: text(signedAt),
-    signed_payload: jsonb({ actionAt: signedAt, signerMemberId, taskId }),
-    signed_payload_hash: text(`${hashPrefix}-hash`),
+    signed_payload: jsonb(signedPayload),
+    signed_payload_hash: text(signedPayloadHash),
     signer_member_id: text(signerMemberId),
     task_id: text(taskId),
     timestamp_token: text(null),
   };
+}
+
+function hashStableJson(value: unknown): string {
+  return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+
+  return `{${Object.entries(value as Readonly<Record<string, unknown>>)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(
+      ([key, entryValue]) =>
+        `${JSON.stringify(key)}:${stableStringify(entryValue)}`,
+    )
+    .join(',')}}`;
 }
 
 function decisionRow(
