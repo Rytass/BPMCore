@@ -1,4 +1,5 @@
 import { DynamicModule, Module, Provider } from '@nestjs/common';
+import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConditionModule } from '../condition/condition.module';
 import { DelegationModule } from '../delegation/delegation.module';
@@ -23,7 +24,8 @@ import { BPM_WORKFLOW_ENGINE_SERVICE } from './workflow-engine.tokens';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
-export interface WorkflowEngineModuleOptions {
+export interface WorkflowEngineModuleOptions
+  extends Pick<ModuleMetadata, 'imports'> {
   readonly serviceTaskDispatcherProvider?: Provider<BPMWorkflowServiceTaskDispatcher>;
 }
 
@@ -63,6 +65,7 @@ export interface WorkflowEngineModuleOptions {
 export class WorkflowEngineModule {
   static forRoot(options: WorkflowEngineModuleOptions = {}): DynamicModule {
     return {
+      imports: options.imports ? [...options.imports] : [],
       module: WorkflowEngineModule,
       providers: options.serviceTaskDispatcherProvider
         ? [options.serviceTaskDispatcherProvider]

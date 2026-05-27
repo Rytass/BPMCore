@@ -1,15 +1,62 @@
 {
   "name": "@rytass/bpm-core-nestjs-module",
-  "version": "0.0.1",
+  "version": "0.1.2",
+  "description": "Embeddable NestJS BPM approval workflow module: workflow engine, approval templates, forms, organization/member contracts, attachments, signatures, notifications, delegation, and TypeORM migrations.",
+  "keywords": [
+    "bpm",
+    "approval",
+    "workflow",
+    "nestjs",
+    "graphql",
+    "typeorm",
+    "postgres",
+    "form-builder",
+    "rytass"
+  ],
+  "homepage": "https://github.com/Rytass/BPMCore#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rytass/BPMCore.git",
+    "directory": "libs/bpm-core"
+  },
+  "bugs": {
+    "url": "https://github.com/Rytass/BPMCore/issues"
+  },
+  "author": "Rytass <hello@rytass.com>",
+  "license": "MIT",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "type": "commonjs",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "attachment": ["./src/lib/attachment/index.d.ts"],
+      "bpm-auth": ["./src/lib/bpm-auth/index.d.ts"],
+      "condition": ["./src/lib/condition/index.d.ts"],
+      "database": ["./src/lib/database/index.d.ts"],
+      "delegation": ["./src/lib/delegation/index.d.ts"],
+      "form": ["./src/lib/form/index.d.ts"],
+      "identity": ["./src/lib/identity/index.d.ts"],
+      "migrations": ["./src/lib/migrations/index.d.ts"],
+      "notification": ["./src/lib/notification/index.d.ts"],
+      "organization": ["./src/lib/organization/index.d.ts"],
+      "signature": ["./src/lib/signature/index.d.ts"],
+      "template": ["./src/lib/template/index.d.ts"],
+      "workflow-engine": ["./src/lib/workflow-engine/index.d.ts"]
+    }
+  },
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
+    "./package.json": "./package.json",
     "./attachment": {
       "types": "./src/lib/attachment/index.d.ts",
       "default": "./src/lib/attachment/index.js"
@@ -68,18 +115,26 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/graphql": "^13.4.0",
     "@nestjs/typeorm": "^11.0.1",
+    "@rytass/bpm-core-shared": "^0.1.0",
+    "@rytass/secret-adapter-vault-nestjs": "^0.4.5 || ^0.5.0",
+    "express": "^4.0.0 || ^5.0.0",
     "graphql": "^16.0.0",
-    "reflect-metadata": "^0.1.13",
+    "reflect-metadata": "^0.1.13 || ^0.2.0",
     "typeorm": "^0.3.0"
   },
+  "peerDependenciesMeta": {
+    "@rytass/secret-adapter-vault-nestjs": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    }
+  },
   "dependencies": {
-    "@rytass/bpm-core-shared": "0.0.1",
-    "@rytass/secret-adapter-vault-nestjs": "^0.4.5",
     "@rytass/storages": "^0.2.6",
     "@rytass/storages-adapter-local": "^0.2.9",
     "cel-js": "^0.8.2",
     "class-validator": "^0.15.1",
-    "express": "^5.2.1",
     "handlebars": "^4.7.9",
     "nodemailer": "^8.0.7",
     "tslib": "^2.3.0"

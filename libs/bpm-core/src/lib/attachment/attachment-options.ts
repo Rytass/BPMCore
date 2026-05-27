@@ -10,7 +10,8 @@ export interface BPMRootAttachmentOptions {
   /**
    * Route prefix used by the host application for BPM attachment endpoints.
    *
-   * Defaults to `/api/attachments`.
+   * Drives both the Nest controller mount path and the path embedded in BPM
+   * signed attachment URLs. Defaults to `/attachments`.
    */
   readonly attachmentRoutePrefix?: string | null;
 
@@ -43,7 +44,7 @@ export const BPM_ATTACHMENT_OPTIONS: InjectionToken<BPMResolvedAttachmentOptions
 
 export const DEFAULT_BPM_ATTACHMENT_OPTIONS: BPMResolvedAttachmentOptions = {
   publicBaseUrl: 'http://localhost:17603',
-  routePrefix: '/api/attachments',
+  routePrefix: '/attachments',
   signedUrlSecret: 'bpm-core-local-attachment-url-key-v1',
   signedUrlTtlSeconds: 300,
   storageProviderId: 'local',
@@ -52,12 +53,24 @@ export const DEFAULT_BPM_ATTACHMENT_OPTIONS: BPMResolvedAttachmentOptions = {
 export function resolveBPMAttachmentOptions(
   options: BPMRootAttachmentOptions = {},
 ): BPMResolvedAttachmentOptions {
+  const resolvedSignedUrlSecret =
+    normalizeText(options.attachmentSignedUrlSecret) ??
+    DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
+
+  if (
+    resolvedSignedUrlSecret === DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret &&
+    process.env.NODE_ENV === 'production'
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[@rytass/bpm-core-nestjs-module] attachmentSignedUrlSecret is using the built-in local development value. Set BPMRootModuleOptions.attachmentSignedUrlSecret to a strong secret before serving production traffic — signed attachment URLs would otherwise be forgeable.',
+    );
+  }
+
   return {
     publicBaseUrl: normalizePublicBaseUrl(options.attachmentPublicBaseUrl),
     routePrefix: normalizeRoutePrefix(options.attachmentRoutePrefix),
-    signedUrlSecret:
-      normalizeText(options.attachmentSignedUrlSecret) ??
-      DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret,
+    signedUrlSecret: resolvedSignedUrlSecret,
     signedUrlTtlSeconds: normalizePositiveInteger(
       options.attachmentSignedUrlTtlSeconds,
       DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlTtlSeconds,
@@ -66,6 +79,20 @@ export function resolveBPMAttachmentOptions(
       normalizeText(options.attachmentStorageProviderId) ??
       DEFAULT_BPM_ATTACHMENT_OPTIONS.storageProviderId,
   };
+}
+
+/**
+ * Normalizes an attachment route prefix into the form Nest expects on a
+ * controller decorator (no leading slash, no trailing slash).
+ *
+ * Returns the BPM default `attachments` path when no value is provided.
+ */
+export function resolveAttachmentControllerPath(
+  value: string | null | undefined,
+): string {
+  const normalizedPrefix = normalizeRoutePrefix(value);
+
+  return normalizedPrefix.replace(/^\//, '');
 }
 
 function normalizePublicBaseUrl(value: string | null | undefined): string {

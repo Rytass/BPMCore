@@ -936,6 +936,55 @@ describe('WorkflowEngineService', () => {
     expect(fixture.rootInstanceCount).toHaveBeenCalledTimes(2);
   });
 
+  it('filters readable approval instances with SQL EXISTS conditions instead of loading readable id lists', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.listApprovalInstances(
+      createAuthContext('member-finance'),
+      {
+        page: 1,
+        pageSize: 20,
+        view: ApprovalInstanceListViewEnum.ALL,
+      },
+    );
+
+    expect(fixture.rootInstanceQueryBuilder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('FROM "task_candidates"'),
+      { readableMemberId: 'member-finance' },
+    );
+    expect(fixture.rootInstanceQueryBuilder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('FROM "task_decisions"'),
+      { readableMemberId: 'member-finance' },
+    );
+    expect(fixture.rootTaskFind).not.toHaveBeenCalled();
+    expect(fixture.notificationFind).not.toHaveBeenCalled();
+  });
+
+  it('filters CC approval instances with a notification EXISTS condition', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.listApprovalInstances(
+      createAuthContext('member-finance'),
+      {
+        view: ApprovalInstanceListViewEnum.CC,
+      },
+    );
+
+    expect(fixture.rootInstanceQueryBuilder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('FROM "notifications"'),
+      { readableMemberId: 'member-finance' },
+    );
+    expect(fixture.notificationFind).not.toHaveBeenCalled();
+  });
+
   it('routes an exclusive gateway through the first matching condition', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

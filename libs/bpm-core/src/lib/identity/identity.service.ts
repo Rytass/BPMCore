@@ -1,6 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import {
   BPM_IDENTITY_OPTIONS,
@@ -83,19 +83,72 @@ export class IdentityService {
   async resolveMembers(
     memberIds: readonly string[],
   ): Promise<readonly MemberMetadata[]> {
-    const uniqueMemberIds = [...new Set(memberIds)];
-    const resolved = await Promise.all(
-      uniqueMemberIds.map((memberId) => this.resolveMember(memberId)),
-    );
-    const byId = new Map(
-      resolved.map((metadata): readonly [string, MemberMetadata] => [
-        metadata.memberId,
-        metadata,
-      ]),
+    const uniqueMemberIds = [...new Set(memberIds)].filter(
+      (memberId) => memberId.length > 0,
     );
 
+    if (uniqueMemberIds.length === 0) {
+      return [];
+    }
+
+    const now = new Date();
+    const cachedRows = await this.cacheRepository.find({
+      where: { memberId: In([...uniqueMemberIds]) },
+    });
+    const cacheEntityByMemberId = new Map(
+      cachedRows.map((row): readonly [string, MemberMetadataCacheEntity] => [
+        row.memberId,
+        row,
+      ]),
+    );
+    const metadataByMemberId = new Map<string, MemberMetadata>();
+    const staleMemberIds: string[] = [];
+
+    for (const memberId of uniqueMemberIds) {
+      const cached = cacheEntityByMemberId.get(memberId);
+
+      if (cached && cached.expiresAt > now) {
+        metadataByMemberId.set(memberId, cached.metadata);
+      } else {
+        staleMemberIds.push(memberId);
+      }
+    }
+
+    if (staleMemberIds.length > 0) {
+      const resolvedMap =
+        await this.memberResolver.resolveMany(staleMemberIds);
+      const expiresAt = new Date(
+        now.getTime() + this.identityOptions.memberMetadataCacheTtlMs,
+      );
+      const entitiesToSave: MemberMetadataCacheEntity[] = [];
+
+      for (const memberId of staleMemberIds) {
+        const metadata = resolvedMap.get(memberId);
+
+        if (!metadata) {
+          continue;
+        }
+
+        const cacheEntity =
+          cacheEntityByMemberId.get(memberId) ??
+          new MemberMetadataCacheEntity();
+
+        cacheEntity.memberId = memberId;
+        cacheEntity.metadata = metadata;
+        cacheEntity.fetchedAt = now;
+        cacheEntity.expiresAt = expiresAt;
+
+        entitiesToSave.push(cacheEntity);
+        metadataByMemberId.set(memberId, metadata);
+      }
+
+      if (entitiesToSave.length > 0) {
+        await this.cacheRepository.save(entitiesToSave);
+      }
+    }
+
     return memberIds
-      .map((memberId) => byId.get(memberId))
+      .map((memberId) => metadataByMemberId.get(memberId))
       .filter((metadata): metadata is MemberMetadata => Boolean(metadata));
   }
 

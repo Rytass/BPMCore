@@ -13,7 +13,10 @@
         "main": "libs/bpm-core/src/index.ts",
         "tsConfig": "libs/bpm-core/tsconfig.lib.json",
         "generatePackageJson": true,
-        "assets": ["libs/bpm-core/*.md"]
+        "assets": [
+          "libs/bpm-core/*.md",
+          { "input": ".", "glob": "LICENSE", "output": "." }
+        ]
       }
     },
     "test": {
@@ -29,6 +32,27 @@
       "options": {
         "command": "tsc --noEmit -p libs/bpm-core/tsconfig.lib.json"
       }
+    },
+    "pkg-quality": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "commands": [
+          "pnpm exec publint dist/libs/bpm-core"
+        ],
+        "parallel": false
+      }
+    },
+    "pkg-quality-attw": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "pnpm exec attw --pack dist/libs/bpm-core"
+      }
+    },
+    "prepublish-check": {
+      "executor": "nx:noop",
+      "dependsOn": ["typecheck", "lint", "test", "build", "pkg-quality"]
     }
   }
 }

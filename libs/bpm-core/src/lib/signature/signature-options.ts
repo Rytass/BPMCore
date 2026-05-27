@@ -75,6 +75,26 @@ export const DEFAULT_BPM_SIGNATURE_OPTIONS: BPMResolvedSignatureOptions = {
 export function resolveBPMSignatureOptions(
   options: BPMRootSignatureOptions = {},
 ): BPMResolvedSignatureOptions {
+  const usingDefaultKeyProvider = !options.signatureKeyProvider;
+  const usingDefaultTimestampProvider = !options.signatureTimestampProvider;
+
+  if (
+    (usingDefaultKeyProvider || usingDefaultTimestampProvider) &&
+    process.env.NODE_ENV === 'production'
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[@rytass/bpm-core-nestjs-module] decision signatures are using built-in local development providers (${
+        [
+          usingDefaultKeyProvider ? 'signatureKeyProvider' : null,
+          usingDefaultTimestampProvider ? 'signatureTimestampProvider' : null,
+        ]
+          .filter(Boolean)
+          .join(', ')
+      }). Replace them with KMS / Vault / RFC3161 providers before serving production traffic — signature chains would otherwise be unverifiable on rotation.`,
+    );
+  }
+
   return {
     currentKeyVersion: normalizePositiveInteger(
       options.signatureCurrentKeyVersion,

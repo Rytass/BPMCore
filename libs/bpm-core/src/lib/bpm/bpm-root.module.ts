@@ -99,6 +99,16 @@ export interface BPMRootModuleAsyncOptions extends Pick<
   'imports'
 > {
   /**
+   * Controller mount path used by the BPM attachment endpoints.
+   *
+   * Set at module wiring time because Nest reads controller path metadata
+   * synchronously when the application starts. Async factories cannot drive
+   * this value; only static URL routing decisions should set it. Defaults to
+   * `/attachments`.
+   */
+  readonly attachmentRoutePrefix?: string | null;
+
+  /**
    * Host-provided storage adapter for BPM attachments.
    *
    * This provider is static at module wiring time. If secrets are required,
@@ -145,8 +155,42 @@ export interface BPMRootModuleAsyncOptions extends Pick<
     | Promise<BPMRootModuleAsyncFactoryOptions>;
 }
 
+/**
+ * Aggregate entry point that wires every BPM domain module
+ * (`BPMAuthModule`, `IdentityModule`, `OrganizationModule`, `FormModule`,
+ * `TemplateModule`, `WorkflowEngineModule`, `DelegationModule`,
+ * `NotificationModule`, `SignatureModule`, `AttachmentModule`) into a
+ * NestJS host application.
+ *
+ * Hosts call `forRoot` or `forRootAsync` once from their root `AppModule`.
+ * BPMCore does **not** own login, GraphQL setup, TypeORM bootstrap, or
+ * Vault loading — those remain the host's responsibility. See
+ * `docs/10-bpm-embedding-auth.md` and `docs/11-consumer-quickstart.md` for
+ * the full contract.
+ *
+ * The host must avoid Nest's `app.setGlobalPrefix(...)`; BPM controllers
+ * mount at relative paths driven by their respective options (notably
+ * `attachmentRoutePrefix`).
+ *
+ * @example
+ * ```ts
+ * BPMRootModule.forRoot({
+ *   authContextFactory: readBPMAuthContextFromGqlContext,
+ *   memberResolverProvider: {
+ *     provide: BPM_MEMBER_RESOLVER,
+ *     useClass: HostMemberResolver,
+ *   },
+ *   attachmentPublicBaseUrl: process.env.BPM_PUBLIC_BASE_URL,
+ *   attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
+ * });
+ * ```
+ */
 @Module({})
 export class BPMRootModule {
+  /**
+   * Static configuration. Use this when all BPM options are known at module
+   * wiring time (no async secret loading needed).
+   */
   static forRoot(options: BPMRootModuleOptions): DynamicModule {
     const featureModules = createBPMFeatureModules(options);
 
@@ -157,6 +201,18 @@ export class BPMRootModule {
     };
   }
 
+  /**
+   * Async configuration. Use this when BPM options must be resolved at
+   * runtime — typically when SMTP, webhook, or signature secrets are
+   * loaded from Vault / KMS / a host `ConfigService`.
+   *
+   * Routing-time decisions such as `attachmentRoutePrefix`,
+   * `memberResolverProvider`, `attachmentStorageProvider`, and
+   * `workflowServiceTaskDispatcherProvider` are read from the top-level
+   * options object (not from the `useFactory` return value), because
+   * Nest reads controller path metadata and provider tokens synchronously
+   * during application bootstrap.
+   */
   static forRootAsync(options: BPMRootModuleAsyncOptions): DynamicModule {
     const authOptions: BPMAuthModuleAsyncOptions = {
       imports: options.imports,
@@ -199,6 +255,7 @@ export class BPMRootModule {
         }),
         OrganizationModule,
         AttachmentModule.forRootAsync({
+          attachmentRoutePrefix: options.attachmentRoutePrefix,
           imports: options.imports,
           inject: options.inject,
           storageProvider: options.attachmentStorageProvider,
@@ -214,6 +271,7 @@ export class BPMRootModule {
           useFactory: options.useFactory,
         }),
         WorkflowEngineModule.forRoot({
+          imports: options.imports,
           serviceTaskDispatcherProvider:
             options.workflowServiceTaskDispatcherProvider,
         }),
@@ -246,6 +304,7 @@ function createBPMFeatureModules(
     NotificationModule,
     SignatureModule.forRoot(options),
     WorkflowEngineModule.forRoot({
+      imports: options.imports,
       serviceTaskDispatcherProvider:
         options.workflowServiceTaskDispatcherProvider,
     }),

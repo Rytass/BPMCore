@@ -1104,7 +1104,7 @@ export class WorkflowEngineService {
       return [];
     }
 
-    queryBuilder.orderBy('approvalInstance.createdAt', 'DESC');
+    queryBuilder.orderBy('"approvalInstance"."created_at"', 'DESC');
 
     if (shouldPaginateList(options)) {
       queryBuilder
@@ -1159,26 +1159,26 @@ export class WorkflowEngineService {
   ): Promise<SelectQueryBuilder<ApprovalInstanceEntity> | null> {
     const queryBuilder =
       this.approvalInstanceRepository.createQueryBuilder('approvalInstance');
-    const readableInstanceIds = await this.applyReadableInstanceFilter(
+    const hasReadableInstances = this.applyReadableInstanceFilter(
       queryBuilder,
       scope,
       options,
     );
 
-    if (readableInstanceIds === false) {
+    if (!hasReadableInstances) {
       return null;
     }
 
     const templateId = normalizeText(options.templateId);
 
     if (options.state?.length) {
-      queryBuilder.andWhere('approvalInstance.state IN (:...states)', {
+      queryBuilder.andWhere('"approvalInstance"."state" IN (:...states)', {
         states: [...options.state],
       });
     }
 
     if (templateId) {
-      queryBuilder.andWhere('approvalInstance.templateId = :templateId', {
+      queryBuilder.andWhere('"approvalInstance"."template_id" = :templateId', {
         templateId,
       });
     }
@@ -1188,47 +1188,90 @@ export class WorkflowEngineService {
     return queryBuilder;
   }
 
-  private async applyReadableInstanceFilter(
+  private applyReadableInstanceFilter(
     queryBuilder: SelectQueryBuilder<ApprovalInstanceEntity>,
     scope: WorkflowReadScope | undefined,
     options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'>,
-  ): Promise<readonly string[] | false | null> {
+  ): boolean {
     if (!scope) {
-      return null;
+      return true;
     }
 
     const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
 
     if (view === ApprovalInstanceListViewEnum.SENT) {
       queryBuilder.andWhere(
-        'approvalInstance.initiatorMemberId = :initiatorMemberId',
+        '"approvalInstance"."initiator_member_id" = :readableMemberId',
         {
-          initiatorMemberId: scope.memberId,
+          readableMemberId: scope.memberId,
         },
       );
 
-      return null;
+      return true;
     }
 
-    const readableInstanceIds = await this.listFilteredReadableInstanceIds(
-      scope,
-      options,
+    if (view === ApprovalInstanceListViewEnum.CC) {
+      queryBuilder.andWhere(
+        `
+          EXISTS (
+            SELECT 1
+            FROM "notifications" "readableNotification"
+            WHERE "readableNotification"."instance_id" = "approvalInstance"."id"
+              AND "readableNotification"."recipient_member_id" = :readableMemberId
+          )
+        `,
+        {
+          readableMemberId: scope.memberId,
+        },
+      );
+
+      return true;
+    }
+
+    if (canReadAllWorkflows(scope)) {
+      return true;
+    }
+
+    queryBuilder.andWhere(
+      `
+        (
+          "approvalInstance"."initiator_member_id" = :readableMemberId
+          OR EXISTS (
+            SELECT 1
+            FROM "tasks" "readableTask"
+            WHERE "readableTask"."instance_id" = "approvalInstance"."id"
+              AND (
+                "readableTask"."assignee_member_id" = :readableMemberId
+                OR "readableTask"."original_assignee_member_id" = :readableMemberId
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "task_candidates" "readableCandidate"
+            INNER JOIN "tasks" "readableCandidateTask"
+              ON "readableCandidateTask"."id" = "readableCandidate"."task_id"
+            WHERE "readableCandidateTask"."instance_id" = "approvalInstance"."id"
+              AND (
+                "readableCandidate"."member_id" = :readableMemberId
+                OR "readableCandidate"."original_member_id" = :readableMemberId
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "task_decisions" "readableDecision"
+            INNER JOIN "tasks" "readableDecisionTask"
+              ON "readableDecisionTask"."id" = "readableDecision"."task_id"
+            WHERE "readableDecisionTask"."instance_id" = "approvalInstance"."id"
+              AND "readableDecision"."decided_by_member_id" = :readableMemberId
+          )
+        )
+      `,
+      {
+        readableMemberId: scope.memberId,
+      },
     );
 
-    if (readableInstanceIds !== null && !readableInstanceIds.length) {
-      return false;
-    }
-
-    if (readableInstanceIds !== null) {
-      queryBuilder.andWhere(
-        'approvalInstance.id IN (:...readableInstanceIds)',
-        {
-          readableInstanceIds: [...readableInstanceIds],
-        },
-      );
-    }
-
-    return readableInstanceIds;
+    return true;
   }
 
   async readWorkflowDashboardSummary(
@@ -1569,82 +1612,6 @@ export class WorkflowEngineService {
     return decisions.some(
       (decision) => decision.decidedByMemberId === memberId,
     );
-  }
-
-  private async listReadableApprovalInstanceIds(
-    memberId: string,
-  ): Promise<readonly string[]> {
-    const initiatedInstances = await this.approvalInstanceRepository.find({
-      where: { initiatorMemberId: memberId },
-    });
-    const relatedTasks = await this.taskRepository.find({
-      where: [
-        { assigneeMemberId: memberId },
-        { originalAssigneeMemberId: memberId },
-      ],
-    });
-    const candidateRows = await this.taskCandidateRepository.find({
-      where: [{ memberId }, { originalMemberId: memberId }],
-    });
-    const candidateTaskIds = uniqueTexts(
-      candidateRows.map((candidate) => candidate.taskId),
-    );
-    const candidateTasks = candidateTaskIds.length
-      ? await this.taskRepository.find({ where: { id: In(candidateTaskIds) } })
-      : [];
-    const decisions = await this.taskDecisionRepository.find({
-      where: { decidedByMemberId: memberId },
-    });
-    const decisionTaskIds = uniqueTexts(
-      decisions.map((decision) => decision.taskId),
-    );
-    const decisionTasks = decisionTaskIds.length
-      ? await this.taskRepository.find({ where: { id: In(decisionTaskIds) } })
-      : [];
-
-    return uniqueTexts([
-      ...initiatedInstances.map((instance) => instance.id),
-      ...relatedTasks.map((task) => task.instanceId),
-      ...candidateTasks.map((task) => task.instanceId),
-      ...decisionTasks.map((task) => task.instanceId),
-    ]);
-  }
-
-  private async listFilteredReadableInstanceIds(
-    scope: WorkflowReadScope | undefined,
-    options: ListApprovalInstancesOptions,
-  ): Promise<readonly string[] | null> {
-    if (!scope) {
-      return null;
-    }
-
-    const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
-
-    if (view === ApprovalInstanceListViewEnum.SENT) {
-      const initiatedInstances = await this.approvalInstanceRepository.find({
-        where: { initiatorMemberId: scope.memberId },
-      });
-
-      return initiatedInstances.map((instance) => instance.id);
-    }
-
-    if (view === ApprovalInstanceListViewEnum.CC) {
-      const notifications = await this.notificationRepository.find({
-        where: { recipientMemberId: scope.memberId },
-      });
-
-      return uniqueTexts(
-        notifications
-          .map((notification) => notification.instanceId)
-          .filter((instanceId): instanceId is string => Boolean(instanceId)),
-      );
-    }
-
-    if (canReadAllWorkflows(scope)) {
-      return null;
-    }
-
-    return this.listReadableApprovalInstanceIds(scope.memberId);
   }
 
   private async processActiveToken(
@@ -4063,9 +4030,9 @@ function applyApprovalInstanceSearchFilter(
   queryBuilder.andWhere(
     [
       '(',
-      'LOWER(approvalInstance.title) LIKE :approvalInstanceSearchText',
-      'OR LOWER(approvalInstance.initiatorMemberId) LIKE :approvalInstanceSearchText',
-      'OR LOWER(CAST(approvalInstance.id AS text)) LIKE :approvalInstanceSearchText',
+      'LOWER("approvalInstance"."title") LIKE :approvalInstanceSearchText',
+      'OR LOWER("approvalInstance"."initiator_member_id") LIKE :approvalInstanceSearchText',
+      'OR LOWER(CAST("approvalInstance"."id" AS text)) LIKE :approvalInstanceSearchText',
       ')',
     ].join(' '),
     {

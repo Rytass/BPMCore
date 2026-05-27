@@ -25,6 +25,22 @@ interface ErrorResponseBody {
   readonly timestamp: string;
 }
 
+/**
+ * Global Nest exception filter that normalizes both HTTP and GraphQL error
+ * responses into a consistent JSON body with `statusCode`, `error`,
+ * `message`, `path`, and `timestamp`.
+ *
+ * Wire it from your bootstrap:
+ *
+ * ```ts
+ * import { AllExceptionsFilter } from '@rytass/bpm-core-nestjs-module';
+ *
+ * app.useGlobalFilters(new AllExceptionsFilter());
+ * ```
+ *
+ * Hosts that already have a custom global filter can keep their own; this
+ * filter is provided as a convenience and is not required by BPM.
+ */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);

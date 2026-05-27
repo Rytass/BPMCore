@@ -212,7 +212,7 @@ describe('AttachmentService', () => {
         id: attachment.id,
         requestedByMemberId: 'member-decision-actor',
       }),
-    ).resolves.toContain(`/api/attachments/${attachment.id}/download`);
+    ).resolves.toContain(`/attachments/${attachment.id}/download`);
     await expect(
       service.listAttachments({
         instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',

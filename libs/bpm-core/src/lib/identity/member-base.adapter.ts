@@ -3,6 +3,15 @@ import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { BPMAuthContext } from '../bpm-auth';
 import { BPMMemberResolver } from './member-resolver.interface';
 
+/**
+ * Structural contract a host identity backend should implement (or a thin
+ * adapter wrap) so BPM can be plugged into any `member-base`-style
+ * directory without coupling `@rytass/bpm-core-nestjs-module` to a
+ * specific identity package.
+ *
+ * `TMember` is the host's own member shape; the adapter walks it through
+ * {@link BPMMemberBaseAdapterOptions} field readers.
+ */
 export interface BPMMemberBaseDirectory<TMember> {
   readonly resolveMember: (memberId: string) => Promise<TMember | null>;
   readonly resolveMembers?: (
@@ -11,6 +20,18 @@ export interface BPMMemberBaseDirectory<TMember> {
   readonly searchMembers?: (searchText: string) => Promise<readonly TMember[]>;
 }
 
+/**
+ * Per-host field readers that tell the adapter how to extract canonical
+ * BPM fields out of the host's `TMember`. Each reader is optional;
+ * sensible defaults are inferred when the host uses common conventions
+ * (`memberId` / `id` / `sub` for the member id, `email` for the email,
+ * `name` / `displayName` for the name, etc.).
+ *
+ * Provide `readPermissions` and `readRoles` if you want BPM's
+ * `BPMAdminGuard` / `BPMDesignerGuard` to receive the host's RBAC
+ * strings; otherwise the resolved `BPMAuthContext` will carry empty
+ * arrays.
+ */
 export interface BPMMemberBaseAdapterOptions<TMember> {
   readonly readCustomFields?: (
     member: TMember,
@@ -81,6 +102,24 @@ export class BPMMemberBaseResolverAdapter<TMember>
   }
 }
 
+/**
+ * Helper for hosts that already hold an authenticated `TMember` (for
+ * example from `@rytass/member-base-nestjs-module`) and want to project it
+ * into a {@link BPMAuthContext} without writing the boilerplate by hand.
+ *
+ * Returns `null` when the input is nullish or when the member is missing
+ * an id — never throws. Pair this with `BPMRootModuleOptions.authContextFactory`
+ * so BPM resolvers receive the projected context on every request.
+ *
+ * @example
+ * ```ts
+ * const bpmAuth = createBPMAuthContextFromMemberBaseMember(memberBaseUser, {
+ *   readRoles: (m) => m.roles,
+ *   readPermissions: (m) => m.permissions,
+ *   readCustomFields: (m) => ({ tenantId: m.tenantId }),
+ * });
+ * ```
+ */
 export function createBPMAuthContextFromMemberBaseMember<TMember>(
   member: TMember | null | undefined,
   options: BPMMemberBaseAdapterOptions<TMember> = {},
@@ -101,6 +140,29 @@ export function createBPMAuthContextFromMemberBaseMember<TMember>(
     : null;
 }
 
+/**
+ * Builds a Nest `Provider` that adapts a host-provided
+ * {@link BPMMemberBaseDirectory} into a {@link BPMMemberResolver}, then
+ * registers it under the host-chosen injection token (typically
+ * {@link BPM_MEMBER_RESOLVER}).
+ *
+ * Pass the result inside `BPMRootModuleOptions.memberResolverProvider`.
+ *
+ * @example
+ * ```ts
+ * BPMRootModule.forRoot({
+ *   memberResolverProvider: createBPMMemberBaseResolverProvider({
+ *     provide: BPM_MEMBER_RESOLVER,
+ *     directoryToken: HOST_MEMBER_DIRECTORY,
+ *     adapterOptions: {
+ *       readEmail: (m) => m.email,
+ *       readName: (m) => m.name,
+ *     },
+ *   }),
+ *   // ...
+ * });
+ * ```
+ */
 export function createBPMMemberBaseResolverProvider<TMember>({
   adapterOptions,
   directoryToken,

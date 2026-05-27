@@ -1,5 +1,14 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 
+/**
+ * The minimum authentication context BPM needs to make authorization
+ * decisions. Hosts construct this from their own session / JWT / RBAC
+ * source and surface it through `BPMRootModuleOptions.authContextFactory`.
+ *
+ * `roles` and `permissions` are matched against the string sets defined in
+ * `BPMAdminGuard` and `BPMDesignerGuard` — see the role / permission table
+ * in `libs/bpm-core/README.md` for the exact strings.
+ */
 export interface BPMAuthContext {
   readonly memberId: string;
   readonly metadata: Readonly<Record<string, unknown>>;

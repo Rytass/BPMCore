@@ -19,6 +19,11 @@ Current version: `0.0.1`
 The package is intended for NestJS backend hosts. It does not include the
 Next.js backoffice UI and does not provide a production auth system by itself.
 
+Frontend / cross-framework consumers should use
+[`@rytass/bpm-core-client`](../bpm-core-client/README.md) for the GraphQL
+transport, REST auth client, and pre-baked typed operations against this
+backend module.
+
 ## Install
 
 ```bash
@@ -26,6 +31,12 @@ pnpm add @rytass/bpm-core-nestjs-module @rytass/bpm-core-shared
 pnpm add @nestjs/common @nestjs/core @nestjs/graphql @nestjs/typeorm graphql typeorm reflect-metadata
 pnpm add pg
 ```
+
+**TypeScript moduleResolution**: prefer `node16`, `nodenext`, or `bundler` in
+your `tsconfig.json` so the package's `exports` field is honored. Classic
+`moduleResolution: "node"` also works through the `typesVersions` fallback
+shipped with this package, but is on TypeScript's long-term deprecation
+path — new hosts should opt in to modern resolution.
 
 If your host uses Apollo GraphQL:
 
@@ -63,7 +74,13 @@ host.
 ## Quick Start
 
 The host must wire the same authenticated member into both GraphQL context and
-`BPMRootModule`. A minimal host module looks like this:
+`BPMRootModule`. BPM expects host root-level routing — do **not** call Nest's
+`setGlobalPrefix()`. BPM controllers (notably `AttachmentController`) hardcode
+relative paths and use `attachmentRoutePrefix` to mount themselves; if you
+want a prefix in production URLs, set `attachmentRoutePrefix` or push the
+prefix into a reverse proxy.
+
+A minimal host module looks like this:
 
 ```ts
 import { Module } from '@nestjs/common';
@@ -156,6 +173,47 @@ export interface BPMAuthContext {
   readonly roles: readonly string[];
 }
 ```
+
+BPM also exports param decorators so host resolvers don't need to call
+`authContextFactory` directly:
+
+```ts
+import {
+  BPMAuthenticated,
+  BPMCurrentAuthContext,
+  BPMCurrentMemberId,
+  type BPMAuthContext,
+} from '@rytass/bpm-core-nestjs-module';
+
+@Resolver()
+class HostResolver {
+  @Query(() => HostSummary)
+  @BPMAuthenticated()
+  hostSummary(
+    @BPMCurrentAuthContext() auth: BPMAuthContext,
+    @BPMCurrentMemberId() memberId: string,
+  ): HostSummary {
+    return buildHostSummary(auth, memberId);
+  }
+}
+```
+
+## Role and Permission Contract
+
+BPM guards inspect `BPMAuthContext.roles` and `BPMAuthContext.permissions` with
+exact-string matching. The host must inject one of the following strings to
+clear admin / designer guards; otherwise BPM resolvers reject with
+`ForbiddenException`.
+
+| Tier             | Accepted roles or permissions                                                                                                                                                                                  | Guards / decorators / helpers                                                |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Admin            | `roles: ['BPM_ADMIN']`; or `permissions` contains one of `bpm:*`, `bpm:admin`, `bpm.admin`, `bpm:admin:*`                                                                                                      | `BPMAdminGuard`, `@BPMAdminOnly()`, `isBPMAdmin(authContext)`                |
+| Designer         | Includes admin; or `roles: ['BPM_DESIGNER']`; or `permissions` contains one of `bpm:design`, `bpm.design`, `bpm.form.design`, `bpm.template.design`, `bpm:form:design`, `bpm:template:design`                  | `BPMDesignerGuard`, `@BPMDesignerOnly()`, `isBPMDesigner(authContext)`       |
+| Authenticated    | `BPMAuthContext.memberId` is non-empty                                                                                                                                                                         | `BPMAuthenticatedGuard`, `@BPMAuthenticated()`                               |
+
+`@BPMAdminOnly()` and `@BPMDesignerOnly()` already chain
+`BPMAuthenticatedGuard`. The host does not need to add `@BPMAuthenticated()`
+on top of them.
 
 ## Member Resolver
 
@@ -266,7 +324,7 @@ BPMRootModule.forRootAsync({
 | `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                            |
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                      |
 | `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks. |
-| `attachmentRoutePrefix`                          | `/api/attachments`             | Prefix used when BPM signs attachment download/preview URLs.   |
+| `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below). |
 | `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
 | `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.     |
@@ -294,7 +352,7 @@ BPMRootModule.forRootAsync({
 | `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                            |
 | `notificationSlaTimeoutEscalateEnabled`          | `false`                        | Enables SLA timeout `ESCALATE`.                                |
 | `notificationSlaTimeoutTerminateInstanceEnabled` | `false`                        | Enables SLA timeout `TERMINATE_INSTANCE`.                      |
-| `notificationTemplateEngine`                     | `simple`                       | `simple` or `handlebars`.                                      |
+| `notificationTemplateEngine`                     | `simple`                       | `simple` only — `handlebars` is reserved and currently rendered as `simple`. |
 | `notificationDefaultChannels`                    | `[IN_APP]`                     | Fallback channels when a workflow node has no channel list.    |
 | `notificationDefaultEmailDigestMode`             | `INSTANT`                      | Default digest mode for missing preferences.                   |
 | `notificationDefaultInAppPreferenceEnabled`      | `true`                         | Default in-app preference for missing preferences.             |
@@ -331,6 +389,14 @@ Expected Vault keys:
 | `DB_USER`   | PostgreSQL username.       |
 | `DB_PASS`   | PostgreSQL password.       |
 | `DB_SCHEMA` | PostgreSQL schema.         |
+
+`buildTypeOrmModuleOptions` adds `autoLoadEntities: true` so the NestJS
+`TypeOrmModule` picks up BPM entities through each domain module's
+`TypeOrmModule.forFeature`. `buildBPMDataSourceOptions()` returns
+`entities: []` because TypeORM CLI tooling reads entities from the host's own
+glob; if you plan to run `typeorm migration:generate` or
+`typeorm migration:show` from a script, attach BPM entities to the data
+source yourself.
 
 Use `buildBPMDataSourceOptions()` when your host already has database secrets
 and does not want the Vault adapter:
@@ -424,10 +490,55 @@ Signed attachment URLs are served by BPM's attachment controller. Configure
 Set `attachmentStorageProviderId` when replacing local storage so attachment
 metadata does not incorrectly say `local`.
 
+`attachmentRoutePrefix` controls two things at the same time:
+
+1. The path BPM bakes into signed URLs
+   (`${publicBaseUrl}${routePrefix}/:id/download`).
+2. The Nest controller mount path. `AttachmentModule.forRoot` /
+   `forRootAsync` call `Reflect.defineMetadata(PATH_METADATA, ...)` on
+   `AttachmentController` so the controller actually serves on the same path
+   the signed URL points to.
+
+The default is `/attachments`, matching the BPM controller's relative
+declaration. BPM no longer assumes the host calls `setGlobalPrefix('api')`;
+do not enable `setGlobalPrefix` on a BPM host. To expose the attachment
+endpoint under a different prefix, set `attachmentRoutePrefix` (for example
+`/internal/bpm/attachments`) — BPM rewrites both the controller path and the
+signed URL accordingly. Alternative URL shaping should happen at a reverse
+proxy (Nginx, Cloudflare, k8s ingress), not via Nest globalPrefix.
+
+Because Nest reads controller path metadata synchronously at application
+bootstrap, `attachmentRoutePrefix` must be supplied at module wiring time:
+
+- `BPMRootModule.forRoot` reads `options.attachmentRoutePrefix` directly.
+- `BPMRootModule.forRootAsync` exposes `attachmentRoutePrefix` at the
+  top-level (sibling of `useFactory`), not as part of the async factory
+  return.
+- A process can only mount BPM under a single prefix. Multi-tenant hosts that
+  want different prefixes per tenant should run separate processes.
+
 ## Notifications and SLA
 
 BPM creates in-app notifications by default. Email and webhook delivery are
 disabled unless enough configuration is present or explicitly enabled.
+
+The `auto` setting on `notificationEmailEnabled` only activates email delivery
+when **all** of the following are non-empty strings:
+
+- `notificationEmailSmtpHost`
+- `notificationEmailSmtpPort`
+- `notificationEmailSmtpUsername`
+- `notificationEmailSmtpPassword`
+- `notificationEmailFrom`
+
+If any one of those is missing, email stays off even on `auto`. Webhook
+`auto` requires both `notificationWebhookEndpointUrl` and
+`notificationWebhookSigningSecret`.
+
+`notificationTemplateEngine: 'handlebars'` is currently a reserved value; the
+runtime template renderer still uses the built-in `simple` renderer regardless
+of this setting. Leave it as `simple` until the Handlebars implementation is
+wired.
 
 Delivery and SLA schedulers are disabled by default. Enable them only in a
 dedicated worker process or in a single-replica host that intentionally owns
@@ -473,7 +584,13 @@ delivery. `WEBHOOK` service-task nodes run inside the workflow engine and use
 `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`. The default dispatcher sends a JSON
 `POST` with `fetch`; wrapper apps can replace it when outbound workflow actions
 must be signed, queued, audited, or routed through an internal integration
-service:
+service.
+
+`BPMRootModule.forRoot` / `forRootAsync` forward the host `imports` to the
+internal `WorkflowEngineModule.forRoot`, so the dispatcher provider may use
+`useFactory` plus `inject` to read host-side tokens such as Vault secrets or
+shared integration bus instances. Providers do not have to live in a
+`@Global()` module to be injectable from the dispatcher.
 
 ```ts
 import { Injectable } from '@nestjs/common';
@@ -566,6 +683,11 @@ BPMRootModule.forRoot({
 Keep old signature keys readable after rotation. Verification needs the key
 version stored on each signature row.
 
+Both `readKey` and `createTimestampToken` accept either a synchronous return
+or a `Promise`; the example above uses async because production KMS / TSA
+clients are typically network-bound. Returning a synchronous value is fine
+for in-memory or local-file providers.
+
 ## GraphQL Surface
 
 Importing `BPMRootModule` registers GraphQL resolvers for:
@@ -604,11 +726,28 @@ Stable feature subpaths are also published for narrower imports such as
 migrations or notification dispatcher tokens.
 
 ```ts
-import { BPMAuthenticatedGuard, BPMRootModule, buildTypeOrmModuleOptions, createBPMMemberBaseResolverProvider } from '@rytass/bpm-core-nestjs-module';
+import {
+  AllExceptionsFilter,
+  BPMAdminGuard,
+  BPMAdminOnly,
+  BPMAuthenticated,
+  BPMAuthenticatedGuard,
+  BPMCurrentAuthContext,
+  BPMCurrentMemberId,
+  BPMDesignerGuard,
+  BPMDesignerOnly,
+  BPMRootModule,
+  buildTypeOrmModuleOptions,
+  createBPMMemberBaseResolverProvider,
+} from '@rytass/bpm-core-nestjs-module';
 
 import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 import { BPM_NOTIFICATION_DISPATCHER } from '@rytass/bpm-core-nestjs-module/notification';
 ```
+
+`AllExceptionsFilter` is the BPM-aware global exception filter the wrapper
+app uses on its NestJS bootstrap; hosts that want consistent GraphQL/HTTP
+error responses can call `app.useGlobalFilters(new AllExceptionsFilter())`.
 
 Use root imports for module wiring, guards, options, and adapter helpers.
 Feature subpaths are intended for narrow integration tokens or migration lists.

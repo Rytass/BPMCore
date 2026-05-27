@@ -1,15 +1,52 @@
 {
   "name": "@rytass/bpm-core-shared",
-  "version": "0.0.1",
+  "version": "0.1.2",
+  "description": "Shared TypeScript contracts for the Rytass BPM approval workflow stack (workflow, form, condition, identity, organization, status types).",
+  "keywords": [
+    "bpm",
+    "approval",
+    "workflow",
+    "form",
+    "schema",
+    "graphql",
+    "rytass",
+    "types"
+  ],
+  "homepage": "https://github.com/Rytass/BPMCore#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rytass/BPMCore.git",
+    "directory": "libs/shared"
+  },
+  "bugs": {
+    "url": "https://github.com/Rytass/BPMCore/issues"
+  },
+  "author": "Rytass <hello@rytass.com>",
+  "license": "MIT",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "type": "commonjs",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "condition": ["./src/lib/condition.d.ts"],
+      "form": ["./src/lib/form.d.ts"],
+      "status": ["./src/lib/status.d.ts"],
+      "workflow": ["./src/lib/workflow.d.ts"]
+    }
+  },
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
+    "./package.json": "./package.json",
     "./condition": {
       "types": "./src/lib/condition.d.ts",
       "default": "./src/lib/condition.js"
