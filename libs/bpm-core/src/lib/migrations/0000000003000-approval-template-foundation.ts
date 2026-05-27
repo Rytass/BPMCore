@@ -1,9 +1,9 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class ApprovalTemplateFoundation2026050403000
+export class ApprovalTemplateFoundation0000000003000
   implements MigrationInterface
 {
-  readonly name = 'ApprovalTemplateFoundation2026050403000';
+  readonly name = 'ApprovalTemplateFoundation0000000003000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

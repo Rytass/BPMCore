@@ -1,35 +1,37 @@
 import { MigrationInterface } from 'typeorm';
-import { EnablePostgresExtensions2026043000000 } from './0000000000000-enable-postgres-extensions';
-import { IdentityOrganizationFoundation2026043001000 } from './0000000001000-identity-organization-foundation';
-import { FormBuilderFoundation2026050202000 } from './0000000002000-form-builder-foundation';
-import { ApprovalTemplateFoundation2026050403000 } from './0000000003000-approval-template-foundation';
-import { WorkflowEngineFoundation2026050404000 } from './0000000004000-workflow-engine-foundation';
+import { EnablePostgresExtensions0000000000001 } from './0000000000001-enable-postgres-extensions';
+import { IdentityOrganizationFoundation0000000001000 } from './0000000001000-identity-organization-foundation';
+import { FormBuilderFoundation0000000002000 } from './0000000002000-form-builder-foundation';
+import { ApprovalTemplateFoundation0000000003000 } from './0000000003000-approval-template-foundation';
+import { WorkflowEngineFoundation0000000004000 } from './0000000004000-workflow-engine-foundation';
 import { DelegationRules0000000005000 } from './0000000005000-delegation-rules';
 import { NotificationsSla0000000006000 } from './0000000006000-notifications-sla';
 import { SignaturesAttachments0000000007000 } from './0000000007000-signatures-attachments';
-import { ApprovalTemplateCategories2026051208000 } from './0000000008000-approval-template-categories';
-import { TaskCandidates2026051309000 } from './0000000009000-task-candidates';
+import { ApprovalTemplateCategories0000000008000 } from './0000000008000-approval-template-categories';
+import { TaskCandidates0000000009000 } from './0000000009000-task-candidates';
 import { NotificationDeliveryState0000000010000 } from './0000000010000-notification-delivery-state';
 import { RemoveAttachmentEncryptionKey0000000011000 } from './0000000011000-remove-attachment-encryption-key';
 import { NotificationSlaIdempotency0000000012000 } from './0000000012000-notification-sla-idempotency';
+import { WorkflowQueryIndexes0000000013000 } from './0000000013000-workflow-query-indexes';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
-  EnablePostgresExtensions2026043000000,
-  IdentityOrganizationFoundation2026043001000,
-  FormBuilderFoundation2026050202000,
-  ApprovalTemplateFoundation2026050403000,
-  WorkflowEngineFoundation2026050404000,
+  EnablePostgresExtensions0000000000001,
+  IdentityOrganizationFoundation0000000001000,
+  FormBuilderFoundation0000000002000,
+  ApprovalTemplateFoundation0000000003000,
+  WorkflowEngineFoundation0000000004000,
   DelegationRules0000000005000,
   NotificationsSla0000000006000,
   SignaturesAttachments0000000007000,
-  ApprovalTemplateCategories2026051208000,
-  TaskCandidates2026051309000,
+  ApprovalTemplateCategories0000000008000,
+  TaskCandidates0000000009000,
   NotificationDeliveryState0000000010000,
   RemoveAttachmentEncryptionKey0000000011000,
   NotificationSlaIdempotency0000000012000,
+  WorkflowQueryIndexes0000000013000,
 ];
 
-export * from './0000000000000-enable-postgres-extensions';
+export * from './0000000000001-enable-postgres-extensions';
 export * from './0000000001000-identity-organization-foundation';
 export * from './0000000002000-form-builder-foundation';
 export * from './0000000003000-approval-template-foundation';
@@ -42,3 +44,4 @@ export * from './0000000009000-task-candidates';
 export * from './0000000010000-notification-delivery-state';
 export * from './0000000011000-remove-attachment-encryption-key';
 export * from './0000000012000-notification-sla-idempotency';
+export * from './0000000013000-workflow-query-indexes';

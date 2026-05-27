@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class TaskCandidates2026051309000 implements MigrationInterface {
-  readonly name = 'TaskCandidates2026051309000';
+export class TaskCandidates0000000009000 implements MigrationInterface {
+  readonly name = 'TaskCandidates0000000009000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

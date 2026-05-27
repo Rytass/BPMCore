@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class FormBuilderFoundation2026050202000 implements MigrationInterface {
-  readonly name = 'FormBuilderFoundation2026050202000';
+export class FormBuilderFoundation0000000002000 implements MigrationInterface {
+  readonly name = 'FormBuilderFoundation0000000002000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
