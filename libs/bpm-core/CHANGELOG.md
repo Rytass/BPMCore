@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.5 — 2026-05-28
+
+### Documentation
+
+- **Identity contract clarifications.** `BPMMemberResolver.resolve` JSDoc
+  now states the unknown-id contract explicitly (throw
+  `MemberNotFoundException`); `resolveMany` documents the diverging
+  partial-success contract (omit unknown ids from the returned `Map`).
+  Both methods cross-link `identityMemberMetadataCacheTtlMs`
+  (default 5 min) so consumers know BPM caches their resolver responses.
+- **`BPMRootModule` JSDoc dangling refs removed.** The previous
+  references to `docs/10-bpm-embedding-auth.md` and
+  `docs/11-consumer-quickstart.md` (files that never shipped) are now
+  inline pointers to the README sections.
+- **New "Organization data ownership" README section.** Documents that
+  BPM is authoritative for `org_units`, `positions`, `memberships`, and
+  `manager_resolutions` (no host-injectable resolver pattern, unlike
+  members), the rationale (approver-routing / tree-diff hot path), the
+  mirror pattern using `OrgUnit.code` as the natural key and the
+  `metadata` JSON for host foreign-keys, and an idempotent worked
+  example using only `@rytass/bpm-core-client/organization` exports.
+
+### Why a patch
+
+No public type signatures change. JSDoc + README only.
+
+## 0.1.4 — 2026-05-27
+
+### Fixed
+
+- **Re-publish of the 0.1.3 release.** The 0.1.3 tarball was inadvertently
+  published from `libs/bpm-core/` instead of from `dist/libs/bpm-core/`,
+  shipping only TypeScript sources with `main: "./src/index.js"` pointing
+  at non-existent files. 0.1.3 has been **deprecated on npm**. The
+  publish procedure (`docs/api-reference.md` Publish Procedure section
+  and `tools/publish/finalize-dist-package.mjs` header) now codifies the
+  correct flow: `nx build` → `finalize-dist-package.mjs` →
+  `cd dist/libs/<pkg> && npm publish`.
+
+### Documentation
+
+- Publish-procedure-from-dist section added to `docs/api-reference.md`.
+- `tools/publish/finalize-dist-package.mjs` header warning expanded.
+
+## 0.1.3 — 2026-05-27 (deprecated on npm)
+
+**DO NOT INSTALL — broken release.** Published from source dir instead
+of dist dir; tarball contains only `.ts` files. Use 0.1.4 or newer.
+
 ## 0.1.2 — 2026-05-27
 
 ### Fixed

@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.5 — 2026-05-28
+
+### Documentation
+
+- **README "Organization mirror pattern" section.** Condensed pointer to
+  the full pattern in `@rytass/bpm-core-nestjs-module`'s README plus a
+  client-side worked example using `createOrgUnit`, `updateOrgUnit`,
+  `deleteOrgUnit`, `commitOrgUnitTreeDraft`, `createPosition`,
+  `createMembership`, `createManagerResolution`. Clarifies that BPM owns
+  the org graph and host applications mirror their existing org data in
+  rather than expose a resolver (in contrast to the member-resolver
+  pattern).
+
+### Why a patch
+
+No type or runtime change. README only.
+
+## 0.1.4 — 2026-05-27
+
+No source changes. Bumped in lockstep with
+`@rytass/bpm-core-nestjs-module@0.1.4` (re-publish after the 0.1.3
+backend tarball shipped only `.ts` source — see that package's CHANGELOG).
+
+## 0.1.3 — 2026-05-27 (deprecated on npm)
+
+Lockstep bump alongside the broken 0.1.3 backend release. Avoid;
+upgrade directly to 0.1.4 or newer.
+
 ## 0.1.2 — 2026-05-27
 
 No source changes. Bumped in lockstep with
