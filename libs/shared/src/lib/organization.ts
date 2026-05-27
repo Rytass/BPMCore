@@ -1,4 +1,15 @@
-export type OrgUnitType = 'company' | 'division' | 'department' | 'team';
+/**
+ * Org-unit type — matches the BPM GraphQL `OrgUnitType` enum SDL names
+ * (UPPERCASE). The server stores the value lower-cased internally
+ * (`'company'` etc. in the database row), but every read and write
+ * across the GraphQL wire and the REST surface uses the UPPERCASE form.
+ *
+ * Consumers of `@rytass/bpm-core-client/organization` must pass these
+ * UPPERCASE literals to `createOrgUnit` / `updateOrgUnit` (and the
+ * `readOrganizationDashboard` `orgUnitType` filter), and will receive
+ * UPPERCASE values back on `OrgUnitRecord.type`.
+ */
+export type OrgUnitType = 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
 
 export type ManagerResolutionScopeType = 'MEMBER' | 'ORG_UNIT' | 'POSITION';
 
