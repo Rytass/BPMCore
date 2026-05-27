@@ -38,7 +38,6 @@ import {
   Button,
   Icon,
   Input,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -92,7 +91,7 @@ import {
   PositionRecord,
   readOrganizationDashboard,
 } from '@rytass/bpm-core-client/organization';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   ApprovalTemplateVersionRecord,
   WorkflowDryRunResultRecord,
@@ -1290,10 +1289,7 @@ export function TemplateDesignerView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
         <PageHeader>
           <ContentHeader
@@ -1520,8 +1516,7 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {renderDryRunModal()}
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 
   function renderDryRunModal(): ReactElement {

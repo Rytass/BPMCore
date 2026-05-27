@@ -12,7 +12,6 @@ import {
   FilterArea,
   FilterLine,
   FormField,
-  Layout,
   PageHeader,
   RadioGroup,
   Section,
@@ -22,7 +21,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { useAuth } from '../../../lib/auth-provider';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   NotificationDigestMode,
   NotificationPreferenceRecord,
@@ -131,10 +130,7 @@ export function SettingsNotificationsView({
   const controlsDisabled = loading || saving;
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="調整站內通知、Email 通知與摘要頻率。"
@@ -260,8 +256,7 @@ export function SettingsNotificationsView({
             )}
           </Section>
         </SectionGroup>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

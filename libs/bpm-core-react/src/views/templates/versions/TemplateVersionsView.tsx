@@ -3,7 +3,6 @@
 import { ReactElement, useEffect, useMemo, useState } from 'react';
 import {
   Button,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -12,7 +11,7 @@ import {
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import { useRouterAdapter } from '../../../lib/router-adapter';
 import {
   readTemplateDesigner,
@@ -136,10 +135,7 @@ export function TemplateVersionsView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="查看發布、歸檔與 rollback 狀態。"
@@ -172,8 +168,7 @@ export function TemplateVersionsView({
             />
           </Section>
         </SectionGroup>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

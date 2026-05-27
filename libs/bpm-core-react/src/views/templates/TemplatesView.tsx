@@ -10,7 +10,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -26,7 +25,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './templates.module.scss';
 import { formatDateTime } from '../../lib/format-date-time';
-import { AppNavigation } from '../../components/app-navigation';
+import { AppLayout } from '../../components/app-navigation';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import {
   TemplateCategoryOption,
@@ -234,10 +233,7 @@ export function TemplatesView({
 
   return (
     <>
-      <Layout>
-        <AppNavigation activeHref={activeHref} />
-
-        <Layout.Main>
+      <AppLayout activeHref={activeHref}>
           <PageHeader>
             <ContentHeader
               description="建立流程模板、維護草稿與發布版本。"
@@ -357,8 +353,7 @@ export function TemplatesView({
               />
             </Section>
           </SectionGroup>
-        </Layout.Main>
-      </Layout>
+        </AppLayout>
 
       <TemplateNameModal
         categoryOptions={[

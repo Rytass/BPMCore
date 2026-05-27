@@ -6,7 +6,6 @@ import {
   BaseCard,
   Button,
   CardGroup,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -20,7 +19,7 @@ import {
 } from '@rytass/bpm-core-client/workflow';
 import { useAuth } from '../lib/auth-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
-import { AppNavigation } from './app-navigation';
+import { AppLayout } from './app-navigation';
 import styles from './dashboard-page.module.scss';
 
 export interface DashboardPageProps {
@@ -124,10 +123,7 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
   );
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="查看待處理簽核、近期通知與你發起的案件進度。"
@@ -177,8 +173,7 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
             </CardGroup>
           </Section>
         </SectionGroup>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

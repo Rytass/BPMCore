@@ -8,7 +8,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -29,7 +28,7 @@ import {
 } from '@rytass/bpm-core-client/workflow';
 import { useRouterAdapter } from '../lib/router-adapter';
 import { formatDateTime } from '../lib/format-date-time';
-import { AppNavigation } from './app-navigation';
+import { AppLayout } from './app-navigation';
 import styles from './approval-instance-list-page.module.scss';
 
 export interface ApprovalInstanceListPageProps {
@@ -234,10 +233,7 @@ export function ApprovalInstanceListPage({
   );
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader description={description} title={title} />
         </PageHeader>
@@ -331,8 +327,7 @@ export function ApprovalInstanceListPage({
             />
           </Section>
         </SectionGroup>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

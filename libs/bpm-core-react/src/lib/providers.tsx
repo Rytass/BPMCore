@@ -31,7 +31,7 @@ interface ProvidersProps {
  * - `<NotificationUnreadProvider>` (polls unread count)
  * - `<NotificationDrawerProvider>` (controls drawer open/close state)
  * - `<NotificationDrawer />` mounted at the root so the bell-icon button in
- *   `<AppNavigation />` can open it.
+ *   `<AppLayout />` can open it.
  *
  * Consumer hosts wrap this **inside** a `<RouterAdapterProvider>` (provided
  * by the `pages/*` subpath shims when consuming via Next.js, or wired by

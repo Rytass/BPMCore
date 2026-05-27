@@ -3,7 +3,6 @@
 import { type Key, ReactElement, useEffect, useMemo, useState } from 'react';
 import {
   Button,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -28,7 +27,7 @@ import {
 import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
 import { useRouterAdapter } from '../../lib/router-adapter';
-import { AppNavigation } from '../../components/app-navigation';
+import { AppLayout } from '../../components/app-navigation';
 
 type InboxTabKey = 'history' | 'pending' | 'tracking';
 
@@ -252,10 +251,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref="/inbox" />
-
-      <Layout.Main>
+    <AppLayout activeHref="/inbox">
         <PageHeader>
           <ContentHeader
             description={`目前以 ${member?.name ?? currentMemberId ?? '目前登入會員'} 查詢待處理與歷史簽核任務。`}
@@ -324,8 +320,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
             ) : null}
           </Section>
         </SectionGroup>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

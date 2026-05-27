@@ -1,7 +1,8 @@
 'use client';
 
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import {
+  Layout,
   Navigation,
   NavigationFooter,
   NavigationHeader,
@@ -40,12 +41,12 @@ interface NavigationItem {
   readonly requiresAdmin?: boolean;
 }
 
-interface NavigationGroup {
+export interface AppNavigationGroup {
   readonly title: string;
   readonly items: readonly NavigationItem[];
 }
 
-const DEFAULT_NAVIGATION_GROUPS: readonly NavigationGroup[] = [
+const DEFAULT_NAVIGATION_GROUPS: readonly AppNavigationGroup[] = [
   {
     title: '我的工作',
     items: [
@@ -80,7 +81,7 @@ const DEFAULT_NAVIGATION_GROUPS: readonly NavigationGroup[] = [
   },
 ];
 
-export interface AppNavigationProps {
+export interface AppLayoutProps {
   /** Override the active href detection (defaults to router's pathname). */
   readonly activeHref?: string;
   /** Logo image URL displayed in the sidebar header. */
@@ -91,22 +92,30 @@ export interface AppNavigationProps {
    * Override the entire navigation tree. When omitted, the default 4-group
    * BPM admin nav (`我的工作` / `查詢與代理` / `簽核設計` / `系統管理`) is used.
    */
-  readonly groups?: readonly NavigationGroup[];
+  readonly groups?: readonly AppNavigationGroup[];
+  /** Page content rendered inside the Mezzanine `<Layout.Main>` slot. */
+  readonly children?: ReactNode;
 }
 
 /**
- * BPM admin sidebar — composes Mezzanine UI `<Navigation>` with the
- * default 4-group BPM tree. Reads `useAuth` to gate admin-only routes,
- * `useNotificationUnread` to render the bell badge count, and the host's
- * `RouterAdapter` to derive the active route. Calls `logoutApi()` and
- * navigates back to `/login` on logout.
+ * BPM admin layout shell — composes Mezzanine `<Layout>` + `<Navigation>`
+ * with the default 4-group BPM tree, and exposes a `children` prop that
+ * fills the `<Layout.Main>` slot.
+ *
+ * Why a single component instead of a `<Navigation>` wrapper: Mezzanine
+ * `<Layout>` discovers its slot children by component-identity match
+ * (`child.type === Navigation` / `LayoutMain` / etc.). Any custom wrapper
+ * around `<Navigation>` is silently dropped, so the sidebar disappears.
+ * Keeping the `<Navigation>` element as a direct child of `<Layout>` here
+ * is mandatory for the slot to register.
  */
-export function AppNavigation({
+export function AppLayout({
   activeHref,
   logoSrc = '/rytass-logo.png',
   title = 'BPM Admin',
   groups = DEFAULT_NAVIGATION_GROUPS,
-}: AppNavigationProps = {}): ReactElement {
+  children,
+}: AppLayoutProps): ReactElement {
   const router = useRouterAdapter();
   const { member } = useAuth();
   const { unreadCount } = useNotificationUnread();
@@ -124,7 +133,7 @@ export function AppNavigation({
     router.replace('/login');
   };
 
-  const children = [
+  const navigationChildren = [
     <NavigationHeader key="header" title={title}>
       <img alt="" className={styles.logo} height={24} src={logoSrc} width={24} />
     </NavigationHeader>,
@@ -172,7 +181,12 @@ export function AppNavigation({
     </NavigationFooter>,
   ];
 
-  return <Navigation exactActivatedMatch>{children}</Navigation>;
+  return (
+    <Layout>
+      <Navigation exactActivatedMatch>{navigationChildren}</Navigation>
+      <Layout.Main>{children}</Layout.Main>
+    </Layout>
+  );
 }
 
 function isAdminMember(member: ReturnType<typeof useAuth>['member']): boolean {

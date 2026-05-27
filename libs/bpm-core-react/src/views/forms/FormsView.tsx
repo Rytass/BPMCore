@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Button,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -18,7 +17,7 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../../lib/format-date-time';
-import { AppNavigation } from '../../components/app-navigation';
+import { AppLayout } from '../../components/app-navigation';
 import {
   createFormDefinition,
   FormDefinitionListStatus,
@@ -149,10 +148,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
 
   return (
     <>
-      <Layout>
-        <AppNavigation activeHref="/forms" />
-
-        <Layout.Main>
+      <AppLayout activeHref="/forms">
           <PageHeader>
             <ContentHeader
               description="建立表單定義、管理草稿與已發布版本，提供流程模板綁定使用。"
@@ -217,8 +213,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
               />
             </Section>
           </SectionGroup>
-        </Layout.Main>
-      </Layout>
+        </AppLayout>
 
       <FormNameModal
         confirmText="建立"

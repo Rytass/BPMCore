@@ -28,7 +28,7 @@ interface NotificationUnreadProviderProps {
 /**
  * Polls BPM for the current member's unread notification count via
  * `readUnreadNotificationCount` and exposes it through context for
- * `<AppNavigation />` (bell badge) and `<NotificationDrawer />` (header
+ * `<AppLayout />` (bell badge) and `<NotificationDrawer />` (header
  * count). Refresh is triggered on mount and whenever the auth member id
  * changes; consumers can call `refreshUnreadCount()` after acknowledging
  * a notification.

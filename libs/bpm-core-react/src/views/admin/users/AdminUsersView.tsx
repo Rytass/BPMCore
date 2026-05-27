@@ -15,7 +15,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -27,7 +26,7 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './users.module.scss';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   listMemberDirectoryPage,
   MemberProfileRecord,
@@ -189,10 +188,7 @@ export function AdminUsersView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。"
@@ -271,8 +267,7 @@ export function AdminUsersView({
           positionsById={positionsById}
           resolvedManager={detailResolvedManager}
         />
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

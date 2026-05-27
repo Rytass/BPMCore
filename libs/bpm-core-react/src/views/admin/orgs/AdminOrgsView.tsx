@@ -18,7 +18,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -80,7 +79,7 @@ import {
 } from '../../../components/org-unit-tree-draft-editor';
 import type { OrgUnitHierarchyDraftChange } from '../../../lib/org-tree-draft';
 import styles from './orgs.module.scss';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
 type OrgUnitViewMode = 'FLOW' | 'TABLE';
@@ -662,10 +661,7 @@ export function AdminOrgsView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"
@@ -923,8 +919,7 @@ export function AdminOrgsView({
             {visibleDeleteConfirmation?.description ?? ''}
           </Typography>
         </Modal>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

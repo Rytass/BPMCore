@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.1.2`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.2.0`.
+Last verified against: `libs/shared@0.1.2`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.3.1`.
 
 ---
 
@@ -525,8 +525,9 @@ React UI library. Four export families: root barrel (foundation), `next` (Next.j
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `AppNavigation` | Component | Four-group sidebar + notification bell |
-| `AppNavigationProps` | interface | `{ activeHref }` |
+| `AppLayout` | Component | Mezzanine `<Layout>` + four-group `<Navigation>` shell. Children fill `<Layout.Main>`. Replaces standalone `<Navigation>` wrappers — Mezzanine `<Layout>` filters children by component identity, so a wrapper like `<AppNavigation>` is silently dropped. |
+| `AppLayoutProps` | interface | `{ activeHref?, logoSrc?, title?, groups?, children? }` |
+| `AppNavigationGroup` | interface | `{ title, items: { href, icon, label, requiresAdmin? }[] }` — shape for overriding the nav tree via `groups` |
 | `NotificationDrawer` | Component | Mezzanine Drawer + NotificationCenter |
 | `ApprovalInstanceListPage` | Component | Shared list page (inbox / sent / cc / search) |
 | `ApprovalInstanceListPageProps` | interface | view / state / title / description / etc. |

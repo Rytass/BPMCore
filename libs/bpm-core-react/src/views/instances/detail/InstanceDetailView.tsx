@@ -25,7 +25,6 @@ import * as dagre from 'dagre';
 import {
   AutoComplete,
   Button,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -86,7 +85,7 @@ import {
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
 import { PDFPreview } from '../../../components/pdf-preview';
 
@@ -933,10 +932,7 @@ export function InstanceDetailView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref="/inbox" />
-
-      <Layout.Main>
+    <AppLayout activeHref="/inbox">
         <PageHeader>
           <ContentHeader
             description={
@@ -1414,8 +1410,7 @@ export function InstanceDetailView({
             </BPMFormField>
           </div>
         </Modal>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 

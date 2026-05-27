@@ -25,7 +25,6 @@ import {
   DateTimePicker,
   Icon,
   Input,
-  Layout,
   PageHeader,
   Section,
   SectionGroup,
@@ -69,7 +68,7 @@ import {
   TextFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../../lib/format-date-time';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   createFieldDefinition,
   FormBuilderRecord,
@@ -982,10 +981,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
 
   return (
     <>
-      <Layout>
-        <AppNavigation activeHref="/forms" />
-
-        <Layout.Main>
+      <AppLayout activeHref="/forms">
           <PageHeader>
             <ContentHeader
               description={headerDescription}
@@ -1050,8 +1046,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
               </div>
             </Section>
           </SectionGroup>
-        </Layout.Main>
-      </Layout>
+        </AppLayout>
 
       <FormNameModal
         confirmText="儲存"

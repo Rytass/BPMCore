@@ -10,7 +10,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -27,7 +26,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   ApprovalTemplateCategoryRecord,
   ApprovalTemplateCategoryStatus,
@@ -254,10 +253,7 @@ export function TemplateCategoriesView({
 
   return (
     <>
-      <Layout>
-        <AppNavigation activeHref={activeHref} />
-
-        <Layout.Main>
+      <AppLayout activeHref={activeHref}>
           <PageHeader>
             <ContentHeader
               description="維護簽核模板分類，供模板建立、篩選與列表標示使用。"
@@ -350,8 +346,7 @@ export function TemplateCategoriesView({
               />
             </Section>
           </SectionGroup>
-        </Layout.Main>
-      </Layout>
+        </AppLayout>
 
       <CategoryModal
         loading={saving}

@@ -20,7 +20,6 @@ import {
   FilterLine,
   FormField,
   Input,
-  Layout,
   Modal,
   PageHeader,
   Section,
@@ -40,7 +39,7 @@ import { BPMFormField } from '../../../components/bpm-form-field';
 import styles from './delegations.module.scss';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
-import { AppNavigation } from '../../../components/app-navigation';
+import { AppLayout } from '../../../components/app-navigation';
 import {
   DelegationRuleRecord,
   DelegationRuleStatus,
@@ -431,10 +430,7 @@ export function AdminDelegationsView({
   }
 
   return (
-    <Layout>
-      <AppNavigation activeHref={activeHref} />
-
-      <Layout.Main>
+    <AppLayout activeHref={activeHref}>
         <PageHeader>
           <ContentHeader
             description="設定簽核代理規則，讓符合範圍的待簽任務自動改派給代理人。"
@@ -687,8 +683,7 @@ export function AdminDelegationsView({
             </BPMFormField>
           </div>
         </Modal>
-      </Layout.Main>
-    </Layout>
+      </AppLayout>
   );
 }
 
