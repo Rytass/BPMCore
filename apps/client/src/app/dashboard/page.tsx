@@ -1,8 +1,1 @@
-'use client';
-
-import type { ReactElement } from 'react';
-import { DashboardPage } from '../_components/dashboard-page';
-
-export default function DashboardRoutePage(): ReactElement {
-  return <DashboardPage activeHref="/dashboard" />;
-}
+export { default, metadata } from '@rytass/bpm-core-react/pages/dashboard';
