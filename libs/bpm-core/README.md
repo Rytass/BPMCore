@@ -353,15 +353,22 @@ export class BPMAuthContextFactory {
 
     return {
       memberId: member.id,
-      email: member.email,
-      name: member.name,
       roles: bpmRoles,
       permissions: [], // Host can also use `bpm:*` style permissions if preferred.
-      metadata: {},
+      // The BPMAuthContext shape does NOT include name/email — those are
+      // surfaced through BPMMemberResolver instead. If you want them
+      // available to downstream resolvers without an extra resolver call,
+      // stash them in `metadata` (BPM passes it through unchanged).
+      metadata: { name: member.name, email: member.email },
     };
   }
 }
 ```
+
+> **`BPMAuthContext` shape**: `{ memberId, roles, permissions, metadata }`
+> — exactly four fields. The host's `name` / `email` are not part of the
+> contract; resolvers call `BPMMemberResolver.resolve(memberId)` when
+> they need display data.
 
 > The host owns the mapping table. Keep it in one place (a constant
 > module or a database table) so adding a new BPM tier in a future
@@ -482,10 +489,15 @@ and observable:
    uniqueness; use your host's stable identifier here (e.g. an LDAP DN
    slug or a internal ERP code). On a re-sync, look up existing entities
    by `code` before deciding INSERT vs UPDATE.
-2. **`metadata` is the host-FK stash.** Both `OrgUnit` and `Membership`
-   carry an opaque `metadata` JSON object that BPM never introspects.
-   Store your host's primary key here (e.g. `{ shuttleOrgUnitId: 12345 }`)
-   so you can chase the back-pointer when reconciling.
+2. **`metadataJson` is write-only.** The mutations
+   (`createOrgUnit`/`updateOrgUnit`/`createPosition`/`updatePosition`)
+   accept a `metadataJson` string that BPM stores verbatim. **However**,
+   `OrgUnitRecord` and `PositionRecord` returned by
+   `readOrganizationDashboard` do NOT include the metadata field —
+   it's intentionally hidden so the JSON blob doesn't bloat every
+   pagination payload. **For reconciliation, always key on `code`**
+   (which IS returned). Treat `metadataJson` as a debugging/audit
+   stash, not a live FK pointer.
 3. **Soft delete via `deleteOrgUnit` / `deleteMembership` / `deleteManagerResolution`.** Deletes set
    `deletedAt` rather than removing rows. BPM's query layer hides
    soft-deleted rows automatically; reading `orgUnitCount()` will report
@@ -511,7 +523,11 @@ input shapes — no `{id, input: {...}}` wrapping):
 - `updateOrgUnit({ id, code, name, type, parentId, metadataJson })`
 - `deleteOrgUnit(id)` (soft-delete)
 - `commitOrgUnitTreeDraft({ moves: { id, parentId, baseUpdatedAt }[] })` (transactional batch moves — each entry's `baseUpdatedAt` is the row's last-known `updatedAt`, used by BPM for optimistic-locking conflict detection)
-- `createPosition` / `updatePosition` (key on `code`)
+- `createPosition({ code, name, level, metadataJson })` — `level` (1+) controls hierarchy weight (higher = more senior, used by manager-resolution priority sort); `metadataJson` is required (pass `'{}'` if unused)
+- `updatePosition({ id, code, name, level, metadataJson })` — every field except `id` is `T | null`; pass `null` to leave a field unchanged
+- `createMembership({ memberId, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — `positionId` and `effectiveTo` accept `null`; `effectiveFrom` is an ISO timestamp string. Uniqueness key is `(memberId, orgUnitId, positionId)`
+- `updateMembership({ id, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — every field except `id` is `T | null`
+- `createManagerResolution({ scopeType, scopeId, managerMemberId, priority, effectiveFrom, effectiveTo })` — `scopeType` is `'MEMBER' | 'ORG_UNIT' | 'POSITION'`; `priority` orders the resolver chain (lower number = checked first)
 - `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId)`)
 - `createManagerResolution` / `updateManagerResolution`
 

@@ -223,9 +223,12 @@ data in. Three rules keep the mirror idempotent:
 1. **Use `code` as the natural key.** Both `OrgUnit` and `Position`
    carry a unique `code` you control. On every sync, look up by `code`
    before deciding INSERT vs UPDATE.
-2. **Stash the host-FK in `metadata`.** Both entities carry an opaque
-   `metadata` JSON BPM never introspects — store your host's primary
-   key there to chase pointers back during reconciliation.
+2. **`metadataJson` is write-only.** The mutations accept it for audit
+   purposes — BPM stores the JSON verbatim — but the records returned
+   by `readOrganizationDashboard` do NOT include the metadata field
+   (kept out of paginated payloads). **Always reconcile by `code`**;
+   treat `metadataJson` as an audit/debugging breadcrumb, not a live
+   FK pointer.
 3. **Soft-delete via the `delete*` mutations.** They set `deletedAt`;
    live queries (`orgUnits`, `orgUnitCount`, etc.) filter soft-deleted
    rows automatically.
