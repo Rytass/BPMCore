@@ -22,6 +22,50 @@ Bump the "Last verified against" line at the top to the current version of each 
 
 ---
 
+## Publish Procedure (DO NOT SKIP)
+
+The four packages have **two different publish flows** because they use different builders. Mixing them up has already caused a broken 0.1.3 release that had to be deprecated.
+
+### Backend packages — publish from `dist/libs/<pkg>`
+
+`@rytass/bpm-core-shared`, `@rytass/bpm-core-client`, `@rytass/bpm-core-nestjs-module` use `@nx/js:tsc` with `generatePackageJson: true`. The `dist/libs/<pkg>/package.json` is the one that gets published — it has `main: "./src/index.js"` pointing at compiled artifacts. The source `libs/<pkg>/package.json` is for the monorepo dev experience and points at `.ts` files that npm consumers do not see.
+
+```bash
+# Always:
+npx nx run-many -t build -p shared,bpm-core-client,bpm-core
+node tools/publish/finalize-dist-package.mjs \
+  dist/libs/shared dist/libs/bpm-core-client dist/libs/bpm-core
+for pkg in shared bpm-core-client bpm-core; do
+  cd dist/libs/$pkg && npm publish --access public
+done
+```
+
+**Never** `cd libs/<pkg> && npm publish` for these — the published tarball will contain only `.ts` files and fail with `main: "./src/index.js"` not found.
+
+### Frontend package — publish from `libs/bpm-core-react/`
+
+`@rytass/bpm-core-react` uses Vite library mode, which emits to `libs/bpm-core-react/dist/`. Its `package.json` already has `files: ["dist", "README.md", "LICENSE", "CHANGELOG.md"]` and `main: "./dist/index.cjs"` pointing at the in-tree dist. Publish from the lib directory itself:
+
+```bash
+npx nx build bpm-core-react
+cd libs/bpm-core-react && npm publish --access public
+```
+
+### Consumer setup gotchas
+
+Hosts that consume `@rytass/bpm-core-react` through pnpm (strict mode) need this in their `next.config.js`, otherwise Next 16 Turbopack fails to resolve transitive peer deps like `@rytass/bpm-core-client/workflow` from inside the pnpm-isolated bpm-core-react dir:
+
+```js
+/** @type {import('next').NextConfig} */
+module.exports = {
+  transpilePackages: ['@rytass/bpm-core-react'],
+};
+```
+
+This is documented in `libs/bpm-core-react/README.md` and reproduced verbatim in `docs/11-consumer-quickstart.md` so consumers do not stumble on it.
+
+---
+
 ## Package Map
 
 ```

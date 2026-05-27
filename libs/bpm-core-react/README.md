@@ -6,7 +6,7 @@ This package composes [`@mezzanine-ui/react`](https://www.npmjs.com/package/@mez
 
 ## Status
 
-`0.2.0` — early POC release. Only the login chain is built out (`/views/login`, `/pages/login`, providers). The remaining 17 views (inbox, instances, templates, forms, admin, settings, delegations) are planned for subsequent 0.2.x point releases.
+`0.3.0` — full admin surface: 12 view subpaths, 19 Next.js page shims (`pages/<feature>`), the `next` subpath (`BPMNextProviders`), and the foundation root barrel.
 
 ## Install
 
@@ -15,6 +15,18 @@ pnpm add @rytass/bpm-core-react @rytass/bpm-core-client @rytass/bpm-core-shared 
 ```
 
 Peer requirements: React 18+, Mezzanine UI 1.1+. Next.js is required only when consuming the `pages/*` subpath; framework-agnostic consumers can use `views/*` directly with their own router adapter.
+
+### Next.js + pnpm setup
+
+If your host uses Next.js (15+) with pnpm strict mode, add the package to `transpilePackages` in `next.config.js`. Without this, Next's Turbopack cannot resolve transitive peer-dep imports such as `@rytass/bpm-core-client/workflow` from inside pnpm-isolated `node_modules/.pnpm/...` paths.
+
+```js
+/** @type {import('next').NextConfig} */
+module.exports = {
+  reactStrictMode: true,
+  transpilePackages: ['@rytass/bpm-core-react'],
+};
+```
 
 ## Usage
 

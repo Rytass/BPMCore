@@ -19,6 +19,14 @@
  *
  * Example:
  *   node tools/publish/finalize-dist-package.mjs dist/libs/bpm-core-client
+ *
+ * ⚠️  IMPORTANT — publish only from dist/libs/<pkg>, never from libs/<pkg>:
+ *     The source libs/<pkg>/package.json deliberately points `main` at
+ *     ./src/index.js but ships only .ts files. That layout is correct for
+ *     in-monorepo path-alias dev, but NPM consumers receive a non-functional
+ *     tarball. Always: nx build -> this finalize script -> cd dist/libs/<pkg>
+ *     -> npm publish. See docs/api-reference.md "Publish Procedure" for the
+ *     canonical sequence and the consumer-side transpilePackages caveat.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';

@@ -215,9 +215,20 @@ await dataSource.destroy();
 
 ```bash
 pnpm add @rytass/bpm-core-client @rytass/bpm-core-shared
+# 若要連 UI 一起拿（含 20 個內建頁面）：
+pnpm add @rytass/bpm-core-react @mezzanine-ui/react @mezzanine-ui/icons
 ```
 
 > `@rytass/bpm-core-client` 沒有 React peer dependency，純 `fetch`-based。
+
+> **Next.js + pnpm strict 必修**：若有裝 `@rytass/bpm-core-react`，`next.config.js` 必須加 `transpilePackages: ['@rytass/bpm-core-react']`，否則 Turbopack 無法解析 lib 內部對 `@rytass/bpm-core-client/workflow` 等 subpath 的 transitive peer-dep 引用，build 會炸 `Module not found`。
+>
+> ```js
+> module.exports = {
+>   reactStrictMode: true,
+>   transpilePackages: ['@rytass/bpm-core-react'],
+> };
+> ```
 
 ### 2. 環境變數（`.env.local`）
 
