@@ -63,6 +63,60 @@ function MyLoginPage() {
 
 For SPA / Remix / Tanstack Router hosts, supply a `RouterAdapter` that bridges your router primitives.
 
+### Mounting BPM under a non-root URL prefix
+
+If your host already owns the `/` namespace (Shuttle, an existing
+admin console, etc.), wrap the BPM tree in `<BPMRoutesProvider>` and
+override every internal cross-link to a prefixed path. The full
+`BPMRoutes` contract has **19 entries** — overriding only some leaves
+the rest pointing at the unprefixed defaults, which usually 404s on
+your host. Use a small factory to keep the override exhaustive:
+
+```tsx
+import {
+  BPMRoutesProvider,
+  createDefaultBPMRoutes,
+  type BPMRoutes,
+} from '@rytass/bpm-core-react/next';
+
+function createPrefixedRoutes(prefix: string): BPMRoutes {
+  const trim = prefix.replace(/\/$/, '');
+  return {
+    ...createDefaultBPMRoutes(), // safety net for any future routes
+    dashboard:             () => `${trim}`,
+    inbox:                 () => `${trim}/inbox`,
+    sent:                  () => `${trim}/sent`,
+    cc:                    () => `${trim}/cc`,
+    search:                () => `${trim}/search`,
+    delegations:           () => `${trim}/delegations`,
+    notifications:         () => `${trim}/notifications`,
+    caseDetail:    (id)         => `${trim}/instances/${id}`,
+    caseNew:       (templateId) => templateId
+      ? `${trim}/instances/new?templateId=${encodeURIComponent(templateId)}`
+      : `${trim}/instances/new`,
+    templates:             () => `${trim}/templates`,
+    templateDesigner:   (id) => `${trim}/templates/${id}/designer`,
+    templateVersions:   (id) => `${trim}/templates/${id}/versions`,
+    templateCategories:    () => `${trim}/templates/categories`,
+    forms:                 () => `${trim}/forms`,
+    formBuilder:        (id) => `${trim}/forms/${id}/builder`,
+    notificationSettings:  () => `${trim}/settings/notifications`,
+    adminOrgs:             () => `${trim}/admin/orgs`,
+    adminUsers:            () => `${trim}/admin/users`,
+    adminDelegations:      () => `${trim}/admin/delegations`,
+  };
+}
+
+// In your layout:
+<BPMRoutesProvider value={createPrefixedRoutes('/operations/approval')}>
+  <BPMNextProviders>{children}</BPMNextProviders>
+</BPMRoutesProvider>
+```
+
+`createDefaultBPMRoutes()` is the source of truth for the route shape;
+spreading it first means new BPMCore versions that add routes never
+silently regress your host.
+
 ## License
 
 MIT

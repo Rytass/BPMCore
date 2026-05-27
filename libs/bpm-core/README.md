@@ -14,7 +14,7 @@ directory integration, storage adapters, and deployment.
 
 ## Package Status
 
-Current version: `0.0.1`
+Current version: `0.1.7`
 
 The package is intended for NestJS backend hosts. It does not include the
 Next.js backoffice UI and does not provide a production auth system by itself.
@@ -197,6 +197,104 @@ class HostResolver {
   }
 }
 ```
+
+### Bring-your-own-host-auth (for hosts that already have auth)
+
+The BPM React `<AuthProvider>` calls `POST /auth/login`, `GET /auth/me`,
+and `POST /auth/logout` on the BPM API host and expects responses that
+match the `ApiMember` shape (exported from `@rytass/bpm-core-client`):
+
+```ts
+interface ApiMember {
+  readonly memberId: string;
+  readonly email: string;
+  readonly name: string;
+  readonly roles: readonly string[];
+  readonly permissions: readonly string[];
+  readonly expiresAt: string; // ISO 8601
+}
+```
+
+Status-code contract:
+
+| Endpoint              | Success     | Failure                             |
+| --------------------- | ----------- | ----------------------------------- |
+| `POST /auth/login`    | `200` + `ApiMember` JSON      | `401` (bad credentials) / `400` (validation) |
+| `GET /auth/me`        | `200` + `ApiMember` JSON      | `401` (no session — React client treats as anonymous, not error) |
+| `POST /auth/logout`   | `204` (or `200` empty)        | `401` ignored |
+
+Session lifetime is owned by the host. The React `<AuthProvider>`
+relies on `credentials: 'include'` plus an HTTP-only cookie issued by
+the host on successful login — BPM does **not** issue cookies itself.
+
+Hosts that already have their own JWT / cookie auth have two integration
+patterns:
+
+#### Pattern A — Extend the host API surface
+
+Add `/auth/login`, `/auth/me`, `/auth/logout` controllers to your
+existing NestJS host. Internally those endpoints call the host's
+existing auth service (e.g. `MemberBaseService.login()`) and emit the
+`ApiMember` shape. This is the simplest integration when BPM and the
+host run on the same origin. Example for a member-base host:
+
+```ts
+@Controller('auth')
+export class HostAuthController {
+  constructor(private readonly memberBase: MemberBaseService) {}
+
+  @Post('login')
+  async login(@Body() input: LoginInput, @Res({ passthrough: true }) res: Response): Promise<ApiMember> {
+    const { member, accessToken, refreshToken } = await this.memberBase.login(input);
+    // Set the host's existing HTTP-only cookies; the React client will
+    // forward them on subsequent /auth/me and /graphql calls.
+    res.cookie('access_token', accessToken, { httpOnly: true, sameSite: 'lax' });
+    res.cookie('refresh_token', refreshToken, { httpOnly: true, sameSite: 'lax' });
+    return projectMemberToApiMember(member);
+  }
+
+  @Get('me')
+  async me(@Req() req: Request): Promise<ApiMember> {
+    const member = await this.memberBase.resolveCurrentMember(req); // throws 401 if no cookie
+    return projectMemberToApiMember(member);
+  }
+
+  @Post('logout')
+  @HttpCode(204)
+  logout(@Res({ passthrough: true }) res: Response): void {
+    res.clearCookie('access_token');
+    res.clearCookie('refresh_token');
+  }
+}
+```
+
+The `projectMemberToApiMember` helper is host-specific — map your own
+member shape to BPM's expectations, project Casbin roles into the BPM
+role-literal strings (see "Mapping from a host RBAC system" below),
+and compute `expiresAt` from the token TTL.
+
+#### Pattern B — Run BPM on a separate auth host
+
+When BPM lives on its own subdomain (e.g. `bpm.example.com`) separate
+from the main app at `app.example.com`, you can run a thin wrapper
+host that **only** owns the `/auth/*` endpoints and a session cookie
+scoped to `*.example.com`. The BPM React client points at this
+subdomain via `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_API_AUTH_URL`
+(or `configureBPMClient` for server-side). The wrapper host
+internally calls back to the main app to verify the user.
+
+This pattern is heavier (cross-origin cookies, CORS) but lets the main
+app stay completely decoupled from BPM's auth surface. Use it only
+when a same-origin deployment is impossible.
+
+#### Cross-host auth precedence
+
+If the consumer wants the React client to skip the BPM auth entirely
+and rely on the host's existing session check at the Next.js layer,
+the simplest path is to **not mount `<AuthProvider>` from
+`@rytass/bpm-core-react`** and instead implement a host-side
+`useAuth()` shim that returns the host's session. This is rare — most
+consumers find Pattern A simpler.
 
 ## Role and Permission Contract
 
@@ -388,10 +486,17 @@ and observable:
    carry an opaque `metadata` JSON object that BPM never introspects.
    Store your host's primary key here (e.g. `{ shuttleOrgUnitId: 12345 }`)
    so you can chase the back-pointer when reconciling.
-3. **Soft delete via `deleteOrgUnit` / `deleteMembership`.** Deletes set
+3. **Soft delete via `deleteOrgUnit` / `deleteMembership` / `deleteManagerResolution`.** Deletes set
    `deletedAt` rather than removing rows. BPM's query layer hides
    soft-deleted rows automatically; reading `orgUnitCount()` will report
    the live count.
+4. **Positions are intentionally not deletable.** There is no
+   `deletePosition` mutation — positions are part of the historical
+   record (every signed approval task references the assignee's position
+   at sign time, so deleting a position would lose audit data). Retire a
+   position by removing all active memberships referencing it; the
+   position itself stays. Use `updatePosition({ id, name: 'retired-' + oldName, ... })`
+   if you want a UI hint that a position is no longer in use.
 
 ### Worked example: idempotent sync
 
@@ -405,7 +510,7 @@ input shapes — no `{id, input: {...}}` wrapping):
 - `createOrgUnit({ code, name, type, parentId, metadataJson })`
 - `updateOrgUnit({ id, code, name, type, parentId, metadataJson })`
 - `deleteOrgUnit(id)` (soft-delete)
-- `commitOrgUnitTreeDraft({ baseUpdatedAt, draft })` (transactional batch moves)
+- `commitOrgUnitTreeDraft({ moves: { id, parentId, baseUpdatedAt }[] })` (transactional batch moves — each entry's `baseUpdatedAt` is the row's last-known `updatedAt`, used by BPM for optimistic-locking conflict detection)
 - `createPosition` / `updatePosition` (key on `code`)
 - `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId)`)
 - `createManagerResolution` / `updateManagerResolution`
@@ -423,7 +528,7 @@ interface HostOrgUnit {
   readonly hostId: string;          // e.g. ERP primary key — your host-FK
   readonly code: string;            // stable across sync runs
   readonly name: string;
-  readonly type: OrgUnitType;       // 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM'
+  readonly type: OrgUnitType;       // 'company' | 'division' | 'department' | 'team'
   readonly parentCode: string | null;
 }
 
@@ -652,6 +757,32 @@ Required environment variables for direct Vault loading:
 | `VAULT_ACCOUNT`  | Vault userpass account.             |
 | `VAULT_PASSWORD` | Vault userpass password.            |
 | `VAULT_PATH`     | Vault KV path, defaults to develop. |
+
+### Sharing a Postgres cluster with the host
+
+Hosts that already run their own Postgres (and their own Vault path,
+e.g. `shuttle/develop`) have three options for where BPM's 22 tables
+live. Pick the one that matches your operational model:
+
+| Option | When to use | Trade-off |
+|---|---|---|
+| **Same database, same schema (`public`)** | Tiny prototypes, monorepo dev | Table-name collision risk — BPM owns `org_units`, `positions`, etc., common names. Audit your host's tables before choosing. |
+| **Same database, separate schema** (recommended) | Most production hosts | Clean isolation; pg_dump per-schema; one connection pool. Set `DB_SCHEMA=bpm_core` in BPM's Vault path. Host stays on its own schema (typically `public`). |
+| **Separate database** | Hard multi-tenant or compliance boundary | Two pools; cross-schema joins impossible (BPM doesn't need them); migration runners stay completely independent. |
+
+For option B (separate schema), the host's own TypeORM `forRoot()` and
+BPM's `buildTypeOrmModuleOptions` create **two distinct connections**
+to the same Postgres cluster with different `schema:` settings — that
+is the cleanest separation Nest's TypeORM module supports.
+
+Vault paths can be split independently: keep `shuttle/develop` for the
+host and create `bpm_core/develop` for BPM secrets. BPM's helper reads
+its own path; the host's auth module reads its own. They do not
+interfere.
+
+> **Schema migrations** are per-schema. Run BPM's migrations against
+> the schema named in `DB_SCHEMA`; the host's migrations stay on its
+> own schema. There is no cross-schema migration coordination.
 
 ## Migrations
 
