@@ -93,6 +93,13 @@ export default defineConfig({
       ],
       rollupTypes: false,
       tsconfigPath: 'tsconfig.lib.json',
+      // Without this, vite-plugin-dts resolves the monorepo path aliases
+      // from tsconfig.base.json (e.g. `@rytass/bpm-core-client` →
+      // `libs/bpm-core-client/src/index.ts`) into the emitted .d.ts files
+      // as relative paths that escape the published tarball. Strip the
+      // path map for the publish build so import specifiers stay as the
+      // original package names.
+      compilerOptions: { paths: {} },
     }),
   ],
   build: {
