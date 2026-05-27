@@ -1,6 +1,11 @@
 'use client';
 
-import { createContext, useContext, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 
 /**
  * Framework-agnostic router contract every BPM view consumes.
@@ -43,7 +48,7 @@ export interface RouterAdapterProviderProps {
 export function RouterAdapterProvider({
   value,
   children,
-}: RouterAdapterProviderProps): React.ReactElement {
+}: RouterAdapterProviderProps): ReactElement {
   return (
     <RouterAdapterContext.Provider value={value}>
       {children}

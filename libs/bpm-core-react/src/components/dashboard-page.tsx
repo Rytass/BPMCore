@@ -97,8 +97,13 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
         value: readMetricValue(summary.pendingTaskCount, loading),
       },
       {
+        // 未讀通知 — clicking the tile routes to inbox where pending
+        // tasks are the most actionable next step. The notification
+        // drawer bell stays available globally for in-place review.
+        // (Hosts that want a dedicated /notifications page can override
+        // `routes.notifications` and swap this href accordingly.)
         caption: '尚未讀取的站內通知',
-        href: routes.notifications(),
+        href: routes.inbox(),
         label: '未讀通知',
         value: readMetricValue(summary.unreadNotificationCount, loading),
       },

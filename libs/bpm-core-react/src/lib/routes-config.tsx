@@ -1,6 +1,12 @@
 'use client';
 
-import { createContext, useContext, useMemo, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useMemo,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 
 /**
  * Framework-agnostic path mapping every BPM view uses for internal
@@ -33,7 +39,15 @@ export interface BPMRoutes {
   search(): string;
   /** Personal delegation rules. */
   delegations(): string;
-  /** Notification list. */
+  /**
+   * Reserved for hosts that want a dedicated `/notifications` page —
+   * BPM's built-in views do **not** navigate here by default (the
+   * notification drawer mounted by `<BPMNextProviders>` is the primary
+   * unread-notification UX). The `createDefaultBPMRoutes()` factory
+   * returns `'/notifications'` so consumers can mount their own page
+   * at that path if desired; no BPM-shipped `pages/notifications`
+   * shim exists.
+   */
   notifications(): string;
 
   /**
@@ -142,7 +156,7 @@ export interface BPMRoutesProviderProps {
 export function BPMRoutesProvider({
   value,
   children,
-}: BPMRoutesProviderProps): React.ReactElement {
+}: BPMRoutesProviderProps): ReactElement {
   const resolved = useMemo(() => value ?? createDefaultBPMRoutes(), [value]);
   return (
     <BPMRoutesContext.Provider value={resolved}>
