@@ -1,0 +1,14 @@
+.instanceFilterArea {
+  :global(.mzn-filter-area__actions) {
+    display: none;
+  }
+
+  :global(.mzn-form-field__label-area) {
+    display: none;
+  }
+
+  :global(.mzn-form-field__control-field-slot--main) {
+    width: 100%;
+    min-width: 0;
+  }
+}

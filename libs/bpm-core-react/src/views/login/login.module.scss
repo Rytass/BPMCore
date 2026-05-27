@@ -1,0 +1,75 @@
+.loginPage {
+  align-items: center;
+  background: var(--mzn-color-bg-body);
+  display: flex;
+  min-height: 100vh;
+  justify-content: center;
+  padding: 32px;
+}
+
+.loginPanel {
+  border: 1px solid var(--mzn-color-border);
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 440px;
+  padding: 32px;
+  width: 100%;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+}
+
+.brandLogo {
+  border-radius: 8px;
+  height: 40px;
+  width: 40px;
+  object-fit: contain;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.demoUsers {
+  border-top: 1px solid var(--mzn-color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 20px;
+}
+
+.demoUserList {
+  display: grid;
+  gap: 8px;
+}
+
+.demoUserButton {
+  background: transparent;
+  border: 1px solid var(--mzn-color-border);
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.demoUserButton:hover {
+  border-color: var(--mzn-color-primary);
+}
+
+.demoUserButton span:last-child {
+  color: var(--mzn-color-text-secondary);
+  font-size: 12px;
+}

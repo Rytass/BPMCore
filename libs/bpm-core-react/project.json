@@ -1,0 +1,23 @@
+{
+  "name": "bpm-core-react",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/bpm-core-react/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist"],
+      "options": {
+        "cwd": "libs/bpm-core-react",
+        "command": "vite build"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p libs/bpm-core-react/tsconfig.lib.json"
+      }
+    }
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "name": "@rytass/bpm-core-react",
+  "version": "0.2.0",
+  "description": "BPM approval workflow React components and views for the Rytass BPM stack. Self-contained AuthProvider, NotificationDrawer, AppNavigation, plus full views for inbox / instances / templates / forms / admin / settings that compose on top of Mezzanine UI and the BPM client functions.",
+  "keywords": [
+    "bpm",
+    "approval",
+    "workflow",
+    "react",
+    "ui",
+    "components",
+    "mezzanine",
+    "rytass"
+  ],
+  "homepage": "https://github.com/Rytass/BPMCore#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rytass/BPMCore.git",
+    "directory": "libs/bpm-core-react"
+  },
+  "bugs": {
+    "url": "https://github.com/Rytass/BPMCore/issues"
+  },
+  "author": "Rytass <hello@rytass.com>",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "type": "module",
+  "sideEffects": [
+    "**/*.css",
+    "**/*.scss"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json",
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "import": "./dist/next/index.js",
+      "require": "./dist/next/index.cjs"
+    },
+    "./views/workflow": {
+      "types": "./dist/views/workflow/index.d.ts",
+      "import": "./dist/views/workflow/index.js",
+      "require": "./dist/views/workflow/index.cjs"
+    },
+    "./views/instances": {
+      "types": "./dist/views/instances/index.d.ts",
+      "import": "./dist/views/instances/index.js",
+      "require": "./dist/views/instances/index.cjs"
+    },
+    "./views/settings": {
+      "types": "./dist/views/settings/index.d.ts",
+      "import": "./dist/views/settings/index.js",
+      "require": "./dist/views/settings/index.cjs"
+    },
+    "./views/admin": {
+      "types": "./dist/views/admin/index.d.ts",
+      "import": "./dist/views/admin/index.js",
+      "require": "./dist/views/admin/index.cjs"
+    },
+    "./views/login": {
+      "types": "./dist/views/login/index.d.ts",
+      "import": "./dist/views/login/index.js",
+      "require": "./dist/views/login/index.cjs"
+    },
+    "./views/dashboard": {
+      "types": "./dist/views/dashboard/index.d.ts",
+      "import": "./dist/views/dashboard/index.js",
+      "require": "./dist/views/dashboard/index.cjs"
+    },
+    "./views/inbox": {
+      "types": "./dist/views/inbox/index.d.ts",
+      "import": "./dist/views/inbox/index.js",
+      "require": "./dist/views/inbox/index.cjs"
+    },
+    "./views/sent": {
+      "types": "./dist/views/sent/index.d.ts",
+      "import": "./dist/views/sent/index.js",
+      "require": "./dist/views/sent/index.cjs"
+    },
+    "./views/cc": {
+      "types": "./dist/views/cc/index.d.ts",
+      "import": "./dist/views/cc/index.js",
+      "require": "./dist/views/cc/index.cjs"
+    },
+    "./views/search": {
+      "types": "./dist/views/search/index.d.ts",
+      "import": "./dist/views/search/index.js",
+      "require": "./dist/views/search/index.cjs"
+    },
+    "./views/delegations": {
+      "types": "./dist/views/delegations/index.d.ts",
+      "import": "./dist/views/delegations/index.js",
+      "require": "./dist/views/delegations/index.cjs"
+    },
+    "./views/instances/detail": {
+      "types": "./dist/views/instances/detail/index.d.ts",
+      "import": "./dist/views/instances/detail/index.js",
+      "require": "./dist/views/instances/detail/index.cjs"
+    },
+    "./views/instances/new": {
+      "types": "./dist/views/instances/new/index.d.ts",
+      "import": "./dist/views/instances/new/index.js",
+      "require": "./dist/views/instances/new/index.cjs"
+    },
+    "./views/templates": {
+      "types": "./dist/views/templates/index.d.ts",
+      "import": "./dist/views/templates/index.js",
+      "require": "./dist/views/templates/index.cjs"
+    },
+    "./views/templates/categories": {
+      "types": "./dist/views/templates/categories/index.d.ts",
+      "import": "./dist/views/templates/categories/index.js",
+      "require": "./dist/views/templates/categories/index.cjs"
+    },
+    "./views/templates/designer": {
+      "types": "./dist/views/templates/designer/index.d.ts",
+      "import": "./dist/views/templates/designer/index.js",
+      "require": "./dist/views/templates/designer/index.cjs"
+    },
+    "./views/templates/versions": {
+      "types": "./dist/views/templates/versions/index.d.ts",
+      "import": "./dist/views/templates/versions/index.js",
+      "require": "./dist/views/templates/versions/index.cjs"
+    },
+    "./views/forms": {
+      "types": "./dist/views/forms/index.d.ts",
+      "import": "./dist/views/forms/index.js",
+      "require": "./dist/views/forms/index.cjs"
+    },
+    "./views/forms/builder": {
+      "types": "./dist/views/forms/builder/index.d.ts",
+      "import": "./dist/views/forms/builder/index.js",
+      "require": "./dist/views/forms/builder/index.cjs"
+    },
+    "./views/forms/renderer": {
+      "types": "./dist/views/forms/renderer/index.d.ts",
+      "import": "./dist/views/forms/renderer/index.js",
+      "require": "./dist/views/forms/renderer/index.cjs"
+    },
+    "./views/settings/notifications": {
+      "types": "./dist/views/settings/notifications/index.d.ts",
+      "import": "./dist/views/settings/notifications/index.js",
+      "require": "./dist/views/settings/notifications/index.cjs"
+    },
+    "./views/admin/users": {
+      "types": "./dist/views/admin/users/index.d.ts",
+      "import": "./dist/views/admin/users/index.js",
+      "require": "./dist/views/admin/users/index.cjs"
+    },
+    "./views/admin/orgs": {
+      "types": "./dist/views/admin/orgs/index.d.ts",
+      "import": "./dist/views/admin/orgs/index.js",
+      "require": "./dist/views/admin/orgs/index.cjs"
+    },
+    "./views/admin/delegations": {
+      "types": "./dist/views/admin/delegations/index.d.ts",
+      "import": "./dist/views/admin/delegations/index.js",
+      "require": "./dist/views/admin/delegations/index.cjs"
+    },
+    "./pages/root": {
+      "types": "./dist/pages/root/index.d.ts",
+      "import": "./dist/pages/root/index.js",
+      "require": "./dist/pages/root/index.cjs"
+    },
+    "./pages/login": {
+      "types": "./dist/pages/login/index.d.ts",
+      "import": "./dist/pages/login/index.js",
+      "require": "./dist/pages/login/index.cjs"
+    },
+    "./pages/dashboard": {
+      "types": "./dist/pages/dashboard/index.d.ts",
+      "import": "./dist/pages/dashboard/index.js",
+      "require": "./dist/pages/dashboard/index.cjs"
+    },
+    "./pages/inbox": {
+      "types": "./dist/pages/inbox/index.d.ts",
+      "import": "./dist/pages/inbox/index.js",
+      "require": "./dist/pages/inbox/index.cjs"
+    },
+    "./pages/sent": {
+      "types": "./dist/pages/sent/index.d.ts",
+      "import": "./dist/pages/sent/index.js",
+      "require": "./dist/pages/sent/index.cjs"
+    },
+    "./pages/cc": {
+      "types": "./dist/pages/cc/index.d.ts",
+      "import": "./dist/pages/cc/index.js",
+      "require": "./dist/pages/cc/index.cjs"
+    },
+    "./pages/search": {
+      "types": "./dist/pages/search/index.d.ts",
+      "import": "./dist/pages/search/index.js",
+      "require": "./dist/pages/search/index.cjs"
+    },
+    "./pages/delegations": {
+      "types": "./dist/pages/delegations/index.d.ts",
+      "import": "./dist/pages/delegations/index.js",
+      "require": "./dist/pages/delegations/index.cjs"
+    },
+    "./pages/instances/detail": {
+      "types": "./dist/pages/instances/detail/index.d.ts",
+      "import": "./dist/pages/instances/detail/index.js",
+      "require": "./dist/pages/instances/detail/index.cjs"
+    },
+    "./pages/instances/new": {
+      "types": "./dist/pages/instances/new/index.d.ts",
+      "import": "./dist/pages/instances/new/index.js",
+      "require": "./dist/pages/instances/new/index.cjs"
+    },
+    "./pages/templates": {
+      "types": "./dist/pages/templates/index.d.ts",
+      "import": "./dist/pages/templates/index.js",
+      "require": "./dist/pages/templates/index.cjs"
+    },
+    "./pages/templates/categories": {
+      "types": "./dist/pages/templates/categories/index.d.ts",
+      "import": "./dist/pages/templates/categories/index.js",
+      "require": "./dist/pages/templates/categories/index.cjs"
+    },
+    "./pages/templates/designer": {
+      "types": "./dist/pages/templates/designer/index.d.ts",
+      "import": "./dist/pages/templates/designer/index.js",
+      "require": "./dist/pages/templates/designer/index.cjs"
+    },
+    "./pages/templates/versions": {
+      "types": "./dist/pages/templates/versions/index.d.ts",
+      "import": "./dist/pages/templates/versions/index.js",
+      "require": "./dist/pages/templates/versions/index.cjs"
+    },
+    "./pages/forms": {
+      "types": "./dist/pages/forms/index.d.ts",
+      "import": "./dist/pages/forms/index.js",
+      "require": "./dist/pages/forms/index.cjs"
+    },
+    "./pages/forms/builder": {
+      "types": "./dist/pages/forms/builder/index.d.ts",
+      "import": "./dist/pages/forms/builder/index.js",
+      "require": "./dist/pages/forms/builder/index.cjs"
+    },
+    "./pages/settings/notifications": {
+      "types": "./dist/pages/settings/notifications/index.d.ts",
+      "import": "./dist/pages/settings/notifications/index.js",
+      "require": "./dist/pages/settings/notifications/index.cjs"
+    },
+    "./pages/admin/users": {
+      "types": "./dist/pages/admin/users/index.d.ts",
+      "import": "./dist/pages/admin/users/index.js",
+      "require": "./dist/pages/admin/users/index.cjs"
+    },
+    "./pages/admin/orgs": {
+      "types": "./dist/pages/admin/orgs/index.d.ts",
+      "import": "./dist/pages/admin/orgs/index.js",
+      "require": "./dist/pages/admin/orgs/index.cjs"
+    },
+    "./pages/admin/delegations": {
+      "types": "./dist/pages/admin/delegations/index.d.ts",
+      "import": "./dist/pages/admin/delegations/index.js",
+      "require": "./dist/pages/admin/delegations/index.cjs"
+    }
+  },
+  "peerDependencies": {
+    "@rytass/bpm-core-client": "^0.1.2",
+    "@rytass/bpm-core-shared": "^0.1.2",
+    "@mezzanine-ui/react": "^1.1.0",
+    "@mezzanine-ui/icons": "^1.0.2",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@mezzanine-ui/icons": {
+      "optional": false
+    }
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "moment": "^2.30.1"
+  }
+}

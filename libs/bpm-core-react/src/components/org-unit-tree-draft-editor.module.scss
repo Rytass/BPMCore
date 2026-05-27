@@ -1,0 +1,96 @@
+.orgTreeEditor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.orgTreeSummary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--mzn-color-border, #d9dce1);
+  border-radius: 8px;
+  background: var(--mzn-color-bg, #fff);
+}
+
+.orgTreeChangeList {
+  display: grid;
+  gap: 4px;
+  max-height: 128px;
+  margin: 0;
+  padding-left: 18px;
+  overflow: auto;
+  color: var(--mzn-color-text-neutral, #5f6673);
+  font-size: 13px;
+}
+
+.orgTreeCanvas {
+  width: 100%;
+  height: min(720px, calc(100vh - 300px));
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--mzn-color-border, #d9dce1);
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+.orgTreeNode {
+  display: grid;
+  gap: 6px;
+  width: 232px;
+  min-height: 118px;
+  padding: 12px;
+  border: 1px solid var(--mzn-color-border, #d9dce1);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 12px rgb(20 28 44 / 8%);
+}
+
+.orgTreeNodeRoot {
+  min-height: 86px;
+  border-style: dashed;
+  background: #eef4ff;
+}
+
+.orgTreeNodeSelected {
+  border-color: var(--mzn-color-primary, #0057ff);
+  box-shadow: 0 0 0 3px rgb(0 87 255 / 14%);
+}
+
+.orgTreeNodeChanged {
+  border-color: var(--mzn-color-primary, #0057ff);
+}
+
+.orgTreeNodeDeleted {
+  opacity: 0.58;
+}
+
+.orgTreeNodeHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.orgTreeNodeHeader > :global(.mzn-typography) {
+  min-width: 0;
+}
+
+.orgTreeNodeBadge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #e4f0ff;
+  color: var(--mzn-color-primary, #0057ff);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.orgTreeNodeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
