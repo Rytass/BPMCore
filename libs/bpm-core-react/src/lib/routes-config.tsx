@@ -36,11 +36,20 @@ export interface BPMRoutes {
   /** Notification list. */
   notifications(): string;
 
-  /** Detail page for one approval instance. */
+  /**
+   * Detail page for one approval instance.
+   *
+   * @example default → `/instances/abc123`
+   */
   caseDetail(instanceId: string): string;
   /**
    * Launch a new approval instance. When `templateId` is passed, the
-   * launch form is pre-populated for that template.
+   * launch form is pre-populated for that template — by default this is
+   * appended as a `?templateId=` query string so the path itself stays
+   * stable for routing.
+   *
+   * @example default `caseNew()` → `/instances/new`
+   * @example default `caseNew('tpl-1')` → `/instances/new?templateId=tpl-1`
    */
   caseNew(templateId?: string): string;
 

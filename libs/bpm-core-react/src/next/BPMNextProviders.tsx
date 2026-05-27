@@ -12,13 +12,39 @@ import {
   RouterAdapterProvider,
   type RouterAdapter,
 } from '@rytass/bpm-core-react';
+import type { CalendarLocale } from '@mezzanine-ui/react/moment';
 
-interface BPMNextProvidersProps {
+export interface BPMNextProvidersProps {
   readonly children: ReactNode;
+  /**
+   * Override the Mezzanine calendar locale. Forwarded to the inner
+   * `<Providers>`. Defaults to `CalendarLocale.ZH_TW`.
+   */
+  readonly locale?: CalendarLocale;
+  /**
+   * Routes that must remain accessible without a BPM session — visiting
+   * these does not redirect to `loginPath` even when `member` is null.
+   * Forwarded to `<AuthProvider>`. Defaults to `['/login']`.
+   *
+   * Hosts that mount BPM under a non-root prefix (see
+   * `<BPMRoutesProvider>`) should typically expand this to include their
+   * own auth-bypass paths.
+   */
+  readonly publicPaths?: readonly string[];
+  /**
+   * Where to redirect unauthenticated users. Forwarded to
+   * `<AuthProvider>`. Defaults to `'/login'`. Hosts owning their own
+   * login route (the recommended case) override this to their host
+   * route, e.g. `'/auth/sign-in'`.
+   */
+  readonly loginPath?: string;
 }
 
 function BPMNextProvidersBody({
   children,
+  locale,
+  publicPaths,
+  loginPath,
 }: BPMNextProvidersProps): ReactElement {
   const nextRouter = useRouter();
   const pathname = usePathname();
@@ -38,17 +64,44 @@ function BPMNextProvidersBody({
 
   return (
     <RouterAdapterProvider value={adapter}>
-      <BPMProviders>{children}</BPMProviders>
+      <BPMProviders
+        locale={locale}
+        publicPaths={publicPaths}
+        loginPath={loginPath}
+      >
+        {children}
+      </BPMProviders>
     </RouterAdapterProvider>
   );
 }
 
-export function BPMNextProviders({
-  children,
-}: BPMNextProvidersProps): ReactElement {
+/**
+ * One-line Next.js App Router shim for the full BPM provider stack.
+ * Mounts in the host's root layout (or layout for the BPM sub-tree):
+ *
+ * ```tsx
+ * import { BPMNextProviders } from '@rytass/bpm-core-react/next';
+ *
+ * export default function RootLayout({ children }) {
+ *   return (
+ *     <html><body>
+ *       <BPMNextProviders loginPath="/auth/sign-in">
+ *         {children}
+ *       </BPMNextProviders>
+ *     </body></html>
+ *   );
+ * }
+ * ```
+ *
+ * Forwards every prop on {@link BPMNextProvidersProps} to the inner
+ * `<Providers>` and `<AuthProvider>`. For per-feature path remapping
+ * (BPM internal navigation), additionally wrap with
+ * `<BPMRoutesProvider>` exported from the same subpath.
+ */
+export function BPMNextProviders(props: BPMNextProvidersProps): ReactElement {
   return (
     <Suspense fallback={null}>
-      <BPMNextProvidersBody>{children}</BPMNextProvidersBody>
+      <BPMNextProvidersBody {...props} />
     </Suspense>
   );
 }
