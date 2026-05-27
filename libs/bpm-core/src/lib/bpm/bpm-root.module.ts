@@ -164,9 +164,9 @@ export interface BPMRootModuleAsyncOptions extends Pick<
  *
  * Hosts call `forRoot` or `forRootAsync` once from their root `AppModule`.
  * BPMCore does **not** own login, GraphQL setup, TypeORM bootstrap, or
- * Vault loading — those remain the host's responsibility. See
- * `docs/10-bpm-embedding-auth.md` and `docs/11-consumer-quickstart.md` for
- * the full contract.
+ * Vault loading — those remain the host's responsibility. See the
+ * package README sections "Embedding & auth", "Organization data
+ * ownership", and "Consumer quickstart" for the full contract.
  *
  * The host must avoid Nest's `app.setGlobalPrefix(...)`; BPM controllers
  * mount at relative paths driven by their respective options (notably

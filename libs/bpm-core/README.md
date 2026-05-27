@@ -275,6 +275,149 @@ export interface BPMMemberResolver {
 }
 ```
 
+## Organization Data Ownership
+
+> **Read this before integrating BPM into a host that already has its own
+> organization model.** The org-integration shape is **asymmetric** with
+> member integration above — knowing which side owns what saves a day of
+> source spelunking.
+
+### Ownership claim
+
+BPM is the **sole authority** for four organization tables:
+
+| Table | Owns |
+|---|---|
+| `org_units` | Department / division / company nodes (typed by `OrgUnitType`) |
+| `positions` | Job titles, with optional org-unit scoping |
+| `memberships` | Member × org-unit × position relations (the join table that puts a member at a position inside a unit) |
+| `manager_resolutions` | "Who is whose manager" rules (per-member, per-org-unit, or per-position scope), consumed by the `ORG_MANAGER` approver resolver |
+
+There is **no** host-injectable `OrgUnitResolver` / `PositionResolver` /
+`MembershipResolver` pattern, deliberately so. If you went looking for
+the symmetric counterpart to `BPMMemberResolver`, stop now — it doesn't
+exist, and the rest of this section explains why and what to do instead.
+
+### Why no resolver
+
+The BPM workflow engine reads the org graph on hot paths:
+
+- **Approver routing** — every running instance evaluates `UserTaskNode`
+  candidates (resolved via `DIRECT`, `POSITION`, `ORG_MANAGER`, or
+  `CANDIDATE_GROUP`) against the current org snapshot. A `ParallelGateway`
+  fanning out to "all managers in the IT division" may touch dozens of
+  membership rows in one step.
+- **Tree-diff commits** — `commitOrgUnitTreeDraft` writes batched moves
+  inside a single transaction, with referential integrity against
+  `memberships` and `manager_resolutions`. Round-tripping each lookup
+  through a host adapter would make this prohibitively chatty.
+- **Reporting** — admin dashboards aggregate counts across the full graph.
+
+A read-through adapter would force the host to mirror BPM's tree
+semantics (ltree paths, soft-delete masking, position-vs-org-unit join
+shape) anyway. We chose to make BPM authoritative so the contract is one
+direction only.
+
+### Mirror pattern
+
+Host applications that already maintain their own org structure should
+**mirror their data into BPM** through the GraphQL mutations exposed by
+`@rytass/bpm-core-client/organization`. Three rules keep this idempotent
+and observable:
+
+1. **`OrgUnit.code` is your natural key.** Every `createOrgUnit` /
+   `createPosition` accepts a `code` field that you control. BPM enforces
+   uniqueness; use your host's stable identifier here (e.g. an LDAP DN
+   slug or a internal ERP code). On a re-sync, look up existing entities
+   by `code` before deciding INSERT vs UPDATE.
+2. **`metadata` is the host-FK stash.** Both `OrgUnit` and `Membership`
+   carry an opaque `metadata` JSON object that BPM never introspects.
+   Store your host's primary key here (e.g. `{ shuttleOrgUnitId: 12345 }`)
+   so you can chase the back-pointer when reconciling.
+3. **Soft delete via `deleteOrgUnit` / `deleteMembership`.** Deletes set
+   `deletedAt` rather than removing rows. BPM's query layer hides
+   soft-deleted rows automatically; reading `orgUnitCount()` will report
+   the live count.
+
+### Worked example: idempotent sync
+
+The example below uses only published exports from
+`@rytass/bpm-core-client/organization`. It pushes a host org tree into
+BPM, handling the create-or-update path by checking `code` matches.
+Verified exports: `orgUnits`, `createOrgUnit`, `updateOrgUnit`,
+`deleteOrgUnit`, `createPosition`, `createMembership`, `updateMembership`,
+`createManagerResolution`, `commitOrgUnitTreeDraft`.
+
+```ts
+import {
+  createOrgUnit,
+  updateOrgUnit,
+  createPosition,
+  createMembership,
+  orgUnits,
+  type OrgUnitRecord,
+} from '@rytass/bpm-core-client/organization';
+
+interface HostOrgUnit {
+  readonly hostId: string;     // e.g. ERP primary key — your host-FK
+  readonly code: string;       // stable across sync runs
+  readonly name: string;
+  readonly type: 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
+  readonly parentCode: string | null;
+}
+
+async function syncOrgUnit(host: HostOrgUnit): Promise<OrgUnitRecord> {
+  // 1. Look up by host's stable code; BPM enforces uniqueness.
+  const existing = (
+    await orgUnits({ page: 1, pageSize: 1, searchText: host.code })
+  ).find((u) => u.code === host.code);
+
+  const parentId = host.parentCode
+    ? (await orgUnits({ searchText: host.parentCode })).find(
+        (u) => u.code === host.parentCode,
+      )?.id ?? null
+    : null;
+
+  // 2. Stash the host-FK back into metadata so future reconciliations
+  //    can chase the pointer either direction.
+  const metadataJson = JSON.stringify({ hostId: host.hostId });
+
+  if (existing) {
+    return updateOrgUnit({
+      id: existing.id,
+      input: {
+        code: host.code,
+        name: host.name,
+        type: host.type,
+        parentId,
+        metadataJson,
+      },
+    });
+  }
+
+  return createOrgUnit({
+    code: host.code,
+    name: host.name,
+    type: host.type,
+    parentId,
+    metadataJson,
+  });
+}
+```
+
+The same pattern works for `Position` (key on `code`), `Membership`
+(unique by `memberId × orgUnitId × positionId`), and
+`ManagerResolution` (unique by scope shape + active flag). For bulk
+tree-shape changes (multi-node moves under a single parent),
+`commitOrgUnitTreeDraft` accepts the full draft in one transaction.
+
+### What you do NOT mirror
+
+Member identity itself stays in your host's user table — BPM reaches it
+through `BPMMemberResolver` (see the previous section). Only the
+**org structure** (who reports where, what unit they sit in, who manages
+them) needs to live inside BPM.
+
 ## Root Module Configuration
 
 Use `BPMRootModule.forRoot()` for static configuration or

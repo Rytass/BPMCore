@@ -151,9 +151,9 @@ default endpoint, no cookie jar. Treat them the same as Server Components.
 
 ## Endpoint Resolution
 
-By default the client targets the same origin (no `/api` prefix) — see
-[`docs/10-bpm-embedding-auth.md`](../../docs/10-bpm-embedding-auth.md) for the
-host contract. Endpoint resolution rules:
+By default the client targets the same origin (no `/api` prefix) — see the
+"Embedding & auth" section of `@rytass/bpm-core-nestjs-module`'s README for
+the host-side contract. Endpoint resolution rules:
 
 | Source                                          | Behavior                                                                   |
 | ----------------------------------------------- | -------------------------------------------------------------------------- |
@@ -205,6 +205,72 @@ on subsequent calls.
 Every subpath uses the same `requestGraphQl` transport from the root. Hosts
 can mix and match — for example a read-only dashboard might only import
 `workflow` queries, never reaching for `/organization` mutations.
+
+## Organization Mirror Pattern (Important)
+
+> **TL;DR:** BPM owns the org graph (`org_units`, `positions`,
+> `memberships`, `manager_resolutions`). Hosts with their own org model
+> mirror data **into** BPM via the `/organization` mutations rather than
+> exposing a host-side resolver. See the
+> "Organization Data Ownership" section of
+> `@rytass/bpm-core-nestjs-module`'s README for the rationale.
+
+The integration shape is **asymmetric** with `BPMMemberResolver`:
+member identity stays in the host's user table and BPM reaches in via
+the resolver token; the org structure lives in BPM and the host pushes
+data in. Three rules keep the mirror idempotent:
+
+1. **Use `code` as the natural key.** Both `OrgUnit` and `Position`
+   carry a unique `code` you control. On every sync, look up by `code`
+   before deciding INSERT vs UPDATE.
+2. **Stash the host-FK in `metadata`.** Both entities carry an opaque
+   `metadata` JSON BPM never introspects — store your host's primary
+   key there to chase pointers back during reconciliation.
+3. **Soft-delete via the `delete*` mutations.** They set `deletedAt`;
+   live queries (`orgUnits`, `orgUnitCount`, etc.) filter soft-deleted
+   rows automatically.
+
+Quick wire-up using only this package's exports:
+
+```ts
+import {
+  createOrgUnit,
+  updateOrgUnit,
+  orgUnits,
+} from '@rytass/bpm-core-client/organization';
+
+async function upsertOrgUnit(hostUnit: {
+  code: string;
+  name: string;
+  type: 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
+  parentCode: string | null;
+  hostId: string;
+}): Promise<string> {
+  const existing = (await orgUnits({ searchText: hostUnit.code })).find(
+    (u) => u.code === hostUnit.code,
+  );
+  const parentId = hostUnit.parentCode
+    ? (await orgUnits({ searchText: hostUnit.parentCode })).find(
+        (u) => u.code === hostUnit.parentCode,
+      )?.id ?? null
+    : null;
+  const metadataJson = JSON.stringify({ hostId: hostUnit.hostId });
+
+  if (existing) {
+    return (
+      await updateOrgUnit({
+        id: existing.id,
+        input: { ...hostUnit, parentId, metadataJson },
+      })
+    ).id;
+  }
+  return (await createOrgUnit({ ...hostUnit, parentId, metadataJson })).id;
+}
+```
+
+`createPosition`, `createMembership`, `updateMembership`, and
+`createManagerResolution` follow the same pattern. For bulk tree moves
+in one transaction, see `commitOrgUnitTreeDraft`.
 
 ## Auth REST Endpoints
 
