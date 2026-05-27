@@ -37,6 +37,7 @@ import {
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import { AppLayout } from '../../../components/app-navigation';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
 
@@ -83,6 +84,7 @@ function NewApprovalInstanceContent({
   readonly templateId?: string;
 }): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const templateId = templateIdProp ?? null;
@@ -144,7 +146,7 @@ function NewApprovalInstanceContent({
         {
           name: '發起',
           onClick: (): void =>
-            router.push(`/instances/new?templateId=${record.id}`),
+            router.push(routes.caseNew(record.id)),
           variant: 'base-primary',
         },
       ],
@@ -223,7 +225,7 @@ function NewApprovalInstanceContent({
         }),
       });
 
-      router.push(`/instances/${instanceId}`);
+      router.push(routes.caseDetail(instanceId));
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {

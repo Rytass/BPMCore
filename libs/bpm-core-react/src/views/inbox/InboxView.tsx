@@ -27,6 +27,7 @@ import {
 import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
 import { useRouterAdapter } from '../../lib/router-adapter';
+import { useBPMRoutes } from '../../lib/routes-config';
 import { AppLayout } from '../../components/app-navigation';
 
 type InboxTabKey = 'history' | 'pending' | 'tracking';
@@ -66,6 +67,7 @@ export interface InboxViewProps {}
  */
 export function InboxView(_props: InboxViewProps = {}): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [activeTab, setActiveTab] = useState<InboxTabKey>('pending');
@@ -124,13 +126,13 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
       render: (record): ReturnType<TableActions<InboxTaskRow>['render']> => [
         {
           name: '處理',
-          onClick: (): void => router.push(`/instances/${record.instanceId}`),
+          onClick: (): void => router.push(routes.caseDetail(record.instanceId)),
         },
       ],
       variant: 'base-secondary',
       width: 88,
     }),
-    [router],
+    [router, routes],
   );
   const historyColumns = useMemo(
     (): TableColumn<ApprovalHistoryRow>[] => [
@@ -194,13 +196,13 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
       ): ReturnType<TableActions<ApprovalHistoryRow>['render']> => [
         {
           name: '查看',
-          onClick: (): void => router.push(`/instances/${record.instanceId}`),
+          onClick: (): void => router.push(routes.caseDetail(record.instanceId)),
         },
       ],
       variant: 'base-secondary',
       width: 88,
     }),
-    [router],
+    [router, routes],
   );
   const trackingRows = useMemo(
     (): ApprovalHistoryRow[] =>
@@ -251,7 +253,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
   }
 
   return (
-    <AppLayout activeHref="/inbox">
+    <AppLayout activeHref={routes.inbox()}>
         <PageHeader>
           <ContentHeader
             description={`目前以 ${member?.name ?? currentMemberId ?? '目前登入會員'} 查詢待處理與歷史簽核任務。`}
@@ -260,7 +262,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
             <Button
               icon={PlusIcon}
               iconType="leading"
-              onClick={(): void => router.push('/instances/new')}
+              onClick={(): void => router.push(routes.caseNew())}
               variant="base-primary"
             >
               發起簽核

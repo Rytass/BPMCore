@@ -26,6 +26,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import { AppLayout } from '../../../components/app-navigation';
 import {
   ApprovalTemplateCategoryRecord,
@@ -71,8 +72,10 @@ export interface TemplateCategoriesViewProps {
 }
 
 export function TemplateCategoriesView({
-  activeHref = '/templates/categories',
+  activeHref,
 }: TemplateCategoriesViewProps = {}): ReactElement {
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.templateCategories();
   const [categories, setCategories] = useState<
     readonly ApprovalTemplateCategoryRecord[]
   >([]);
@@ -253,7 +256,7 @@ export function TemplateCategoriesView({
 
   return (
     <>
-      <AppLayout activeHref={activeHref}>
+      <AppLayout activeHref={resolvedActiveHref}>
           <PageHeader>
             <ContentHeader
               description="維護簽核模板分類，供模板建立、篩選與列表標示使用。"

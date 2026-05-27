@@ -100,6 +100,7 @@ import {
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
 import { FormNameModal } from '../form-name-modal';
@@ -481,6 +482,7 @@ export interface FormBuilderViewProps {
 
 export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const formDefinitionId = formId;
   const [record, setRecord] = useState<FormBuilderRecord | null>(null);
   const [draft, setDraft] = useState<FormDefinitionVersionRecord | null>(null);
@@ -615,7 +617,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
       return;
     }
 
-    router.push('/forms');
+    router.push(routes.forms());
   }
   const latestPublishedVersion = useMemo(
     (): FormDefinitionVersionRecord | null =>
@@ -981,7 +983,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
 
   return (
     <>
-      <AppLayout activeHref="/forms">
+      <AppLayout activeHref={routes.forms()}>
           <PageHeader>
             <ContentHeader
               description={headerDescription}

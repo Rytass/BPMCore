@@ -9,6 +9,7 @@ export * from './lib/notification-drawer-provider';
 export * from './lib/notification-unread-provider';
 export * from './lib/providers';
 export * from './lib/router-adapter';
+export * from './lib/routes-config';
 
 export * from './components/admin-pickers';
 export * from './components/app-navigation';

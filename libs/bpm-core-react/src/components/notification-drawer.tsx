@@ -23,6 +23,7 @@ import { useAuth } from '../lib/auth-provider';
 import { useNotificationDrawer } from '../lib/notification-drawer-provider';
 import { useNotificationUnread } from '../lib/notification-unread-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
+import { useBPMRoutes } from '../lib/routes-config';
 
 type FilterValue = 'all' | 'read' | 'unread';
 
@@ -54,6 +55,7 @@ const PAGE_SIZE = 50;
  */
 export function NotificationDrawer(): ReactElement | null {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const { member } = useAuth();
   const { close, isOpen } = useNotificationDrawer();
   const { refreshUnreadCount } = useNotificationUnread();
@@ -150,12 +152,12 @@ export function NotificationDrawer(): ReactElement | null {
           await refreshUnreadCount();
         }
         close();
-        router.push(`/instances/${record.instanceId}`);
+        router.push(routes.caseDetail(record.instanceId));
       } catch (e: unknown) {
         setError(readErrorMessage(e));
       }
     },
-    [close, currentMemberId, refreshUnreadCount, router],
+    [close, currentMemberId, refreshUnreadCount, router, routes],
   );
 
   const filteredRows = useMemo(

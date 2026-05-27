@@ -39,6 +39,7 @@ import { BPMFormField } from '../../../components/bpm-form-field';
 import styles from './delegations.module.scss';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import { AppLayout } from '../../../components/app-navigation';
 import {
   DelegationRuleRecord,
@@ -120,8 +121,10 @@ export interface AdminDelegationsViewProps {
 }
 
 export function AdminDelegationsView({
-  activeHref = '/admin/delegations',
+  activeHref,
 }: AdminDelegationsViewProps = {}): ReactElement {
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.adminDelegations();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
@@ -430,7 +433,7 @@ export function AdminDelegationsView({
   }
 
   return (
-    <AppLayout activeHref={activeHref}>
+    <AppLayout activeHref={resolvedActiveHref}>
         <PageHeader>
           <ContentHeader
             description="設定簽核代理規則，讓符合範圍的待簽任務自動改派給代理人。"

@@ -25,6 +25,7 @@ import {
   listFormDefinitionsPage,
 } from '@rytass/bpm-core-client/form';
 import { useRouterAdapter } from '../../lib/router-adapter';
+import { useBPMRoutes } from '../../lib/routes-config';
 import { FormNameModal } from './form-name-modal';
 
 const FORM_PAGE_SIZE_OPTIONS = [10, 20, 50];
@@ -51,6 +52,7 @@ export interface FormsViewProps {}
 
 export function FormsView(_props: FormsViewProps = {}): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const [forms, setForms] = useState<readonly FormDefinitionRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,7 +126,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
       ): ReturnType<TableActions<FormDefinitionRow>['render']> => [
         {
           name: '編輯',
-          onClick: (): void => router.push(`/forms/${record.id}/builder`),
+          onClick: (): void => router.push(routes.formBuilder(record.id)),
         },
       ],
       variant: 'base-secondary',
@@ -140,7 +142,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
     try {
       const formId = await createFormDefinition(name);
       setCreateModalOpen(false);
-      router.push(`/forms/${formId}/builder`);
+      router.push(routes.formBuilder(formId));
     } finally {
       setCreating(false);
     }
@@ -148,7 +150,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
 
   return (
     <>
-      <AppLayout activeHref="/forms">
+      <AppLayout activeHref={routes.forms()}>
           <PageHeader>
             <ContentHeader
               description="建立表單定義、管理草稿與已發布版本，提供流程模板綁定使用。"

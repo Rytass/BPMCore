@@ -13,6 +13,7 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { AppLayout } from '../../../components/app-navigation';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import {
   readTemplateDesigner,
   rollbackApprovalTemplateVersion,
@@ -39,9 +40,11 @@ export interface TemplateVersionsViewProps {
 
 export function TemplateVersionsView({
   templateId,
-  activeHref = '/templates',
+  activeHref,
 }: TemplateVersionsViewProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.templates();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,7 +138,7 @@ export function TemplateVersionsView({
   }
 
   return (
-    <AppLayout activeHref={activeHref}>
+    <AppLayout activeHref={resolvedActiveHref}>
         <PageHeader>
           <ContentHeader
             description="查看發布、歸檔與 rollback 狀態。"
@@ -143,7 +146,7 @@ export function TemplateVersionsView({
           >
             <Button
               onClick={(): void =>
-                router.push(`/templates/${templateId}/designer`)
+                router.push(routes.templateDesigner(templateId))
               }
               variant="base-secondary"
             >

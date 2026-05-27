@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import {
   Background,
   ControlButton,
@@ -509,9 +510,11 @@ export interface TemplateDesignerViewProps {
 
 export function TemplateDesignerView({
   templateId,
-  activeHref = '/templates',
+  activeHref,
 }: TemplateDesignerViewProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.templates();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
@@ -610,7 +613,7 @@ export function TemplateDesignerView({
       return;
     }
 
-    router.push('/templates');
+    router.push(routes.templates());
   }
 
   const selectedNode = useMemo(
@@ -1289,7 +1292,7 @@ export function TemplateDesignerView({
   }
 
   return (
-    <AppLayout activeHref={activeHref}>
+    <AppLayout activeHref={resolvedActiveHref}>
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
         <PageHeader>
           <ContentHeader

@@ -37,6 +37,7 @@ import { BPMFormField } from '../../components/bpm-form-field';
 import { formatDateTime } from '../../lib/format-date-time';
 import { AppLayout } from '../../components/app-navigation';
 import { useAuth } from '../../lib/auth-provider';
+import { useBPMRoutes } from '../../lib/routes-config';
 import {
   DelegationRuleRecord,
   DelegationRuleStatus,
@@ -114,8 +115,10 @@ export interface DelegationsViewProps {
 }
 
 export function DelegationsView({
-  activeHref = '/delegations',
+  activeHref,
 }: DelegationsViewProps = {}): ReactElement {
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.delegations();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
@@ -401,7 +404,7 @@ export function DelegationsView({
   }
 
   return (
-    <AppLayout activeHref={activeHref}>
+    <AppLayout activeHref={resolvedActiveHref}>
         <PageHeader>
           <ContentHeader
             description="設定自己的簽核代理，讓指定期間內的新待簽任務自動交由代理人處理。"

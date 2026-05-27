@@ -79,6 +79,7 @@ import {
 } from '../../../components/org-unit-tree-draft-editor';
 import type { OrgUnitHierarchyDraftChange } from '../../../lib/org-tree-draft';
 import styles from './orgs.module.scss';
+import { useBPMRoutes } from '../../../lib/routes-config';
 import { AppLayout } from '../../../components/app-navigation';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
@@ -246,8 +247,10 @@ export interface AdminOrgsViewProps {
 }
 
 export function AdminOrgsView({
-  activeHref = '/admin/orgs',
+  activeHref,
 }: AdminOrgsViewProps = {}): ReactElement {
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.adminOrgs();
   const [activeTab, setActiveTab] = useState<AdminOrgTab>('ORG_UNITS');
   const [deleteConfirmation, setDeleteConfirmation] =
     useState<DeleteConfirmationState | null>(null);
@@ -661,7 +664,7 @@ export function AdminOrgsView({
   }
 
   return (
-    <AppLayout activeHref={activeHref}>
+    <AppLayout activeHref={resolvedActiveHref}>
         <PageHeader>
           <ContentHeader
             description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"

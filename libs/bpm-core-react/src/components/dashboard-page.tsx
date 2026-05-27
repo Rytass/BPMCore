@@ -19,6 +19,7 @@ import {
 } from '@rytass/bpm-core-client/workflow';
 import { useAuth } from '../lib/auth-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
+import { useBPMRoutes } from '../lib/routes-config';
 import { AppLayout } from './app-navigation';
 import styles from './dashboard-page.module.scss';
 
@@ -50,6 +51,7 @@ const EMPTY_DASHBOARD_SUMMARY: WorkflowDashboardSummaryRecord = {
  */
 export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [error, setError] = useState<string | null>(null);
@@ -90,36 +92,36 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
     (): readonly Metric[] => [
       {
         caption: '目前需要你處理的任務',
-        href: '/inbox',
+        href: routes.inbox(),
         label: '待處理簽核',
         value: readMetricValue(summary.pendingTaskCount, loading),
       },
       {
         caption: '尚未讀取的站內通知',
-        href: '/notifications',
+        href: routes.notifications(),
         label: '未讀通知',
         value: readMetricValue(summary.unreadNotificationCount, loading),
       },
       {
         caption: '目前仍在流程中的案件',
-        href: '/search',
+        href: routes.search(),
         label: '進行中案件',
         value: readMetricValue(summary.activeInstanceCount, loading),
       },
       {
         caption: '已超過 SLA 的待處理任務',
-        href: '/inbox',
+        href: routes.inbox(),
         label: '逾時任務',
         value: readMetricValue(summary.overdueTaskCount, loading),
       },
       {
         caption: '你有權限查看的全部案件',
-        href: '/search',
+        href: routes.search(),
         label: '案件總數',
         value: readMetricValue(summary.totalInstanceCount, loading),
       },
     ],
-    [loading, summary],
+    [loading, routes, summary],
   );
 
   return (
@@ -132,7 +134,7 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
             <Button
               icon={PlusIcon}
               iconType="leading"
-              onClick={(): void => router.push('/instances/new')}
+              onClick={(): void => router.push(routes.caseNew())}
               variant="base-primary"
             >
               發起簽核

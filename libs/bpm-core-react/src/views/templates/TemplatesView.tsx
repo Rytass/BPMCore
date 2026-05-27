@@ -27,6 +27,7 @@ import styles from './templates.module.scss';
 import { formatDateTime } from '../../lib/format-date-time';
 import { AppLayout } from '../../components/app-navigation';
 import { useRouterAdapter } from '../../lib/router-adapter';
+import { useBPMRoutes } from '../../lib/routes-config';
 import {
   TemplateCategoryOption,
   TemplateNameModal,
@@ -70,9 +71,11 @@ export interface TemplatesViewProps {
 }
 
 export function TemplatesView({
-  activeHref = '/templates',
+  activeHref,
 }: TemplatesViewProps = {}): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
+  const resolvedActiveHref = activeHref ?? routes.templates();
   const [templates, setTemplates] = useState<readonly ApprovalTemplateRecord[]>(
     [],
   );
@@ -194,16 +197,16 @@ export function TemplatesView({
             !launchableTemplateIds.has(template.id),
           name: '發起',
           onClick: (): void =>
-            router.push(`/instances/new?templateId=${record.id}`),
+            router.push(routes.caseNew(record.id)),
           variant: 'base-primary',
         },
         {
           name: '設計',
-          onClick: (): void => router.push(`/templates/${record.id}/designer`),
+          onClick: (): void => router.push(routes.templateDesigner(record.id)),
         },
         {
           name: '版本',
-          onClick: (): void => router.push(`/templates/${record.id}/versions`),
+          onClick: (): void => router.push(routes.templateVersions(record.id)),
         },
       ],
       variant: 'base-secondary',
@@ -225,7 +228,7 @@ export function TemplatesView({
     try {
       const templateId = await createApprovalTemplate({ categoryId, name });
       setCreateModalOpen(false);
-      router.push(`/templates/${templateId}/designer`);
+      router.push(routes.templateDesigner(templateId));
     } finally {
       setCreating(false);
     }
@@ -233,7 +236,7 @@ export function TemplatesView({
 
   return (
     <>
-      <AppLayout activeHref={activeHref}>
+      <AppLayout activeHref={resolvedActiveHref}>
           <PageHeader>
             <ContentHeader
               description="建立流程模板、維護草稿與發布版本。"

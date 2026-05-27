@@ -27,6 +27,7 @@ import {
   type ApprovalInstanceView,
 } from '@rytass/bpm-core-client/workflow';
 import { useRouterAdapter } from '../lib/router-adapter';
+import { useBPMRoutes } from '../lib/routes-config';
 import { formatDateTime } from '../lib/format-date-time';
 import { AppLayout } from './app-navigation';
 import styles from './approval-instance-list-page.module.scss';
@@ -84,6 +85,7 @@ export function ApprovalInstanceListPage({
   view,
 }: ApprovalInstanceListPageProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const [error, setError] = useState<string | null>(null);
   const [initiatorProfilesById, setInitiatorProfilesById] = useState<
     ReadonlyMap<string, MemberProfileRecord>
@@ -223,7 +225,7 @@ export function ApprovalInstanceListPage({
       ): ReturnType<TableActions<ApprovalInstanceRow>['render']> => [
         {
           name: '查看',
-          onClick: (): void => router.push(`/instances/${record.id}`),
+          onClick: (): void => router.push(routes.caseDetail(record.id)),
         },
       ],
       variant: 'base-secondary',

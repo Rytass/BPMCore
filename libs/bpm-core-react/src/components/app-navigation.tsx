@@ -32,6 +32,7 @@ import { useAuth } from '../lib/auth-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
 import { useNotificationDrawer } from '../lib/notification-drawer-provider';
 import { useNotificationUnread } from '../lib/notification-unread-provider';
+import { useBPMRoutes, type BPMRoutes } from '../lib/routes-config';
 import styles from './app-navigation.module.scss';
 
 interface NavigationItem {
@@ -46,40 +47,44 @@ export interface AppNavigationGroup {
   readonly items: readonly NavigationItem[];
 }
 
-const DEFAULT_NAVIGATION_GROUPS: readonly AppNavigationGroup[] = [
-  {
-    title: '我的工作',
-    items: [
-      { href: '/dashboard', icon: HomeIcon, label: '工作台' },
-      { href: '/inbox', icon: MailUnreadIcon, label: '我的待簽' },
-      { href: '/sent', icon: MailIcon, label: '我發起的' },
-      { href: '/cc', icon: ShareIcon, label: '抄送給我' },
-    ],
-  },
-  {
-    title: '查詢與代理',
-    items: [
-      { href: '/search', icon: SearchIcon, label: '搜尋' },
-      { href: '/delegations', icon: SwitchHorizontalIcon, label: '個人代理' },
-    ],
-  },
-  {
-    title: '簽核設計',
-    items: [
-      { href: '/templates', icon: FolderIcon, label: '簽核模板', requiresAdmin: true },
-      { href: '/templates/categories', icon: ListIcon, label: '模板分類', requiresAdmin: true },
-      { href: '/forms', icon: FileIcon, label: '表單設計', requiresAdmin: true },
-    ],
-  },
-  {
-    title: '系統管理',
-    items: [
-      { href: '/admin/orgs', icon: SystemIcon, label: '組織管理', requiresAdmin: true },
-      { href: '/admin/users', icon: UserIcon, label: '會員對照', requiresAdmin: true },
-      { href: '/admin/delegations', icon: ShareIcon, label: '代理設定', requiresAdmin: true },
-    ],
-  },
-];
+function createDefaultNavigationGroups(
+  routes: BPMRoutes,
+): readonly AppNavigationGroup[] {
+  return [
+    {
+      title: '我的工作',
+      items: [
+        { href: routes.dashboard(), icon: HomeIcon, label: '工作台' },
+        { href: routes.inbox(), icon: MailUnreadIcon, label: '我的待簽' },
+        { href: routes.sent(), icon: MailIcon, label: '我發起的' },
+        { href: routes.cc(), icon: ShareIcon, label: '抄送給我' },
+      ],
+    },
+    {
+      title: '查詢與代理',
+      items: [
+        { href: routes.search(), icon: SearchIcon, label: '搜尋' },
+        { href: routes.delegations(), icon: SwitchHorizontalIcon, label: '個人代理' },
+      ],
+    },
+    {
+      title: '簽核設計',
+      items: [
+        { href: routes.templates(), icon: FolderIcon, label: '簽核模板', requiresAdmin: true },
+        { href: routes.templateCategories(), icon: ListIcon, label: '模板分類', requiresAdmin: true },
+        { href: routes.forms(), icon: FileIcon, label: '表單設計', requiresAdmin: true },
+      ],
+    },
+    {
+      title: '系統管理',
+      items: [
+        { href: routes.adminOrgs(), icon: SystemIcon, label: '組織管理', requiresAdmin: true },
+        { href: routes.adminUsers(), icon: UserIcon, label: '會員對照', requiresAdmin: true },
+        { href: routes.adminDelegations(), icon: ShareIcon, label: '代理設定', requiresAdmin: true },
+      ],
+    },
+  ];
+}
 
 export interface AppLayoutProps {
   /** Override the active href detection (defaults to router's pathname). */
@@ -113,15 +118,17 @@ export function AppLayout({
   activeHref,
   logoSrc = '/rytass-logo.png',
   title = 'BPM Admin',
-  groups = DEFAULT_NAVIGATION_GROUPS,
+  groups,
   children,
 }: AppLayoutProps): ReactElement {
   const router = useRouterAdapter();
+  const routes = useBPMRoutes();
   const { member } = useAuth();
   const { unreadCount } = useNotificationUnread();
   const resolvedActive = activeHref ?? router.pathname ?? '';
   const isAdmin = isAdminMember(member);
-  const visibleGroups = groups
+  const resolvedGroups = groups ?? createDefaultNavigationGroups(routes);
+  const visibleGroups = resolvedGroups
     .map((group) => ({
       title: group.title,
       items: group.items.filter((item) => !item.requiresAdmin || isAdmin),
@@ -158,7 +165,7 @@ export function AppLayout({
         ]}
         onSelect={(option): void => {
           if (option.id === 'notification-settings') {
-            router.push('/settings/notifications');
+            router.push(routes.notificationSettings());
             return;
           }
           if (option.id === 'logout') {
