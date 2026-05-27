@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.10 — 2026-05-28
+
+### Documentation
+
+- **Pattern A response status contract table** added — explicit success
+  / auth-fail / validation-fail HTTP status codes for `/auth/login`,
+  `/auth/me`, `/auth/logout`. Also notes that `roles` and `permissions`
+  must be arrays (not `null`/`undefined`), and shows the
+  `projectMemberToApiMember` skeleton mapping `ApiMember.email: string`
+  (not `string | null`).
+- **"Concrete wiring" snippet** for the recommended same-database
+  separate-schema option B: dual `TypeOrmModule.forRootAsync` with
+  `name: 'bpm'` so the host's existing connection and BPM's stay
+  isolated. Also shows handing `typeormConnectionName: 'bpm'` to
+  `BPMRootModule.forRootAsync`.
+- **`createBPMMemberBaseResolverProvider<HostMember>` generic** added
+  to the README example with a callout about why omitting it causes
+  TS to infer `unknown`.
+- "Current version" line refreshed to `0.1.10`.
+
+### Why a patch
+
+Documentation only.
+
 ## 0.1.9 — 2026-05-28
 
 ### Documentation

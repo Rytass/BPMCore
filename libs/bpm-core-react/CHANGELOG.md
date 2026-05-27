@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.7 — 2026-05-28
+
+### Documentation
+
+- **`transpilePackages` list expanded** to include `@rytass/bpm-core-client`
+  and `@rytass/bpm-core-shared` alongside `@rytass/bpm-core-react`. With
+  pnpm strict mode + Turbopack, transitive peer-dep resolution into
+  `node_modules/.pnpm/...` requires every package in the chain to be
+  listed explicitly — previous versions only mentioned `@rytass/bpm-core-react`.
+- **README "Status" banner refreshed** to `0.3.7` with a note pointing
+  at the per-release CHANGELOG history.
+
+### Why a patch
+
+Documentation only.
+
 ## 0.3.6 — 2026-05-28
 
 No source change. Lockstep peerDependency bump to `^0.1.9`.

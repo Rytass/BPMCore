@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.10 — 2026-05-28
+
+### Documentation
+
+- README "Current version" line refreshed to `0.1.10`.
+
+### Why a patch
+
+No source change.
+
 ## 0.1.9 — 2026-05-28
 
 ### Fixed
