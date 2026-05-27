@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.8 — 2026-05-28
+
+### Documentation
+
+- README "Organization Mirror Pattern" updated to match the
+  `@rytass/bpm-core-nestjs-module@0.1.8` README's clarification that
+  `metadataJson` is write-only — records returned by
+  `readOrganizationDashboard` don't surface metadata; reconcile by
+  `code` instead.
+
+### Why a patch
+
+No source change.
+
 ## 0.1.7 — 2026-05-28
 
 ### Documentation

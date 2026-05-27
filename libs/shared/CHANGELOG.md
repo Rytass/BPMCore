@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.8 — 2026-05-28
+
+No source change. Lockstep bump alongside
+`@rytass/bpm-core-nestjs-module@0.1.8` (README drift fixes for Casbin
+example, position signatures, and metadataJson write-only clarification).
+
 ## 0.1.7 — 2026-05-28
 
 ### ⚠️ Type-level breaking (consumers writing literal values)

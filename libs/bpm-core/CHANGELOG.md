@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.8 — 2026-05-28
+
+### Documentation
+
+- **Casbin example BPMAuthContext shape corrected.** The 0.1.6/0.1.7
+  example returned `{ memberId, email, name, roles, permissions,
+  metadata }` — the actual `BPMAuthContext` interface is
+  `{ memberId, roles, permissions, metadata }` (no `email`, no `name`).
+  Example now stashes display data inside `metadata`, with an explicit
+  callout that name/email reach resolvers through `BPMMemberResolver`
+  instead.
+- **`createPosition` / `updatePosition` / `createMembership` /
+  `updateMembership` / `createManagerResolution` exact signatures
+  added** to the org Worked Example section. The 0.1.7 README only
+  listed function names; downstream developers were guessing input
+  shapes (e.g. mandatory `level` and `metadataJson` on positions).
+- **`metadataJson` write-only clarification.** The "host-FK stash"
+  rule was misleading: `metadataJson` is accepted by every mutation
+  but the records returned by `readOrganizationDashboard` do NOT
+  surface a `metadata` field. Updated to "always reconcile by `code`;
+  treat `metadataJson` as audit/debugging breadcrumb, not a live FK
+  pointer."
+
+### Why a patch
+
+Documentation only. No source change.
+
 ## 0.1.7 — 2026-05-28
 
 ### Documentation
