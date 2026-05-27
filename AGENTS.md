@@ -40,11 +40,20 @@
   - Use pure functions, `map`/`reduce`/`filter`.
   - Prefer `readonly` and `const` over `let`.
 
+## Public API Reference (MANDATORY)
+
+- The canonical inventory of every export from every `libs/*` package is `docs/api-reference.md`.
+- **Maintenance invariant**: ANY change under `libs/*/src/**` (adding, removing, renaming, or moving a symbol), or any edit to a `package.json` `exports` map, `tsconfig.base.json` paths, or `libs/bpm-core-react/vite.config.ts` `PLANNED_ENTRIES` MUST update `docs/api-reference.md` in the same commit.
+- Bump the "Last verified against" line at the top of `docs/api-reference.md` to the new version string for each affected package.
+- Before adding a new export, check the file first — likely something close already exists and can be extended instead.
+- After finishing a libs edit, grep your diff against the doc to confirm every new/removed symbol is reflected.
+- CI does not enforce this yet; humans and agents are the enforcement. Refusing or forgetting to update this file is a defect, same severity as forgetting a test.
+
 ## BPM Project Decisions
 
 - Project name: `bpm`
 - Internal workspace/path scope: `@bpm`
-- Public package names: `@rytass/bpm-core-nestjs-module`, `@rytass/bpm-core-shared`
+- Public package names: `@rytass/bpm-core-shared`, `@rytass/bpm-core-client`, `@rytass/bpm-core-nestjs-module`, `@rytass/bpm-core-react`
 - Monorepo: Nx integrated workspace
 - Backend runtime app: `apps/api` (NestJS + GraphQL Code-First + TypeORM + PostgreSQL host shell)
 - Frontend: Next.js App Router + React Flow + Mezzanine UI
