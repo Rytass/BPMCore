@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-shared",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Shared TypeScript contracts for the Rytass BPM approval workflow stack (workflow, form, condition, identity, organization, status types).",
   "keywords": [
     "bpm",
