@@ -296,6 +296,125 @@ the simplest path is to **not mount `<AuthProvider>` from
 `useAuth()` shim that returns the host's session. This is rare — most
 consumers find Pattern A simpler.
 
+### Machine-to-machine authentication
+
+Server-side scripts (org seeds, cron workers, integration tests) call
+`configureBPMClient` to set the GraphQL base URL and optional default
+headers, then must establish a session. Three patterns work:
+
+#### Pattern 1 — Service member + login flow (recommended)
+
+Create a dedicated BPM admin member (e.g. `bpm-sync@svc.example.com`),
+store its credentials in Vault, and let the script call `loginApi`
+during bootstrap. The login response sets an HTTP-only session cookie
+that subsequent `requestGraphQl` calls automatically include.
+
+```ts
+import { configureBPMClient, loginApi } from '@rytass/bpm-core-client';
+
+async function bootstrap(): Promise<void> {
+  configureBPMClient({
+    baseUrl: process.env.BPM_API_URL ?? 'http://localhost:17603',
+    fetch: globalThis.fetch,
+  });
+  await loginApi({
+    identifier: process.env.BPM_SYNC_IDENTIFIER!,
+    password: process.env.BPM_SYNC_PASSWORD!,
+  });
+  // Subsequent calls to readOrganizationDashboard / createOrgUnit / etc.
+  // automatically forward the session cookie.
+}
+```
+
+Caveats: `globalThis.fetch` on Node 20+ does **not** maintain a cookie
+jar across calls by default — set up one of:
+
+- `undici`'s `Agent` with `cookies` enabled, then `setGlobalDispatcher(agent)`
+- the `tough-cookie` + `node-fetch-cookies` pairing
+- BPM's `configureBPMClient({ fetch: cookieAwareFetch })` injection
+
+Without a cookie jar, the login succeeds but no subsequent call carries
+the session. Most production deployments already use `undici` with
+cookie support; verify before shipping.
+
+#### Pattern 2 — Service token header (when supported by host)
+
+If your wrapper host issues a long-lived service token (e.g. a JWT
+signed with a known shared secret), pass it through
+`configureBPMClient`'s `headers`:
+
+```ts
+configureBPMClient({
+  baseUrl: process.env.BPM_API_URL!,
+  headers: { Authorization: `Bearer ${process.env.BPM_SERVICE_TOKEN!}` },
+});
+```
+
+This requires the wrapper host's auth middleware to honor `Authorization`
+headers (member-base hosts can be configured to do so via
+`authStrategy: 'jwt'` in addition to `cookieMode: true`).
+
+#### Pattern 3 — Direct cookie injection (testing only)
+
+For integration tests where you've already obtained a session cookie
+out-of-band (e.g. from a Playwright fixture), pass it raw:
+
+```ts
+configureBPMClient({
+  baseUrl: 'http://localhost:17603',
+  headers: { Cookie: 'access_token=<jwt>; refresh_token=<jwt>' },
+});
+```
+
+Do not use this in production scripts — cookies expire and the script
+must handle refresh, which means you actually want Pattern 1.
+
+### Coexisting with a host's existing `<AuthProvider>`
+
+Many host applications (Shuttle, custom admin panels) already mount
+their own `<AuthProvider>` at the root of the Next.js tree. BPM's
+`<AuthProvider>` (mounted indirectly via `<BPMNextProviders>`) is a
+**separate context** that only tracks BPM session state. The two do
+not conflict — they coexist as parallel React contexts:
+
+```tsx
+// app/layout.tsx — host's root layout (untouched)
+import { HostAuthProvider } from '@your-host/auth';
+
+export default function RootLayout({ children }) {
+  return (
+    <html><body>
+      <HostAuthProvider>{children}</HostAuthProvider>
+    </body></html>
+  );
+}
+
+// app/operations/approval/layout.tsx — BPM sub-tree
+'use client';
+import { BPMNextProviders } from '@rytass/bpm-core-react/next';
+
+export default function ApprovalLayout({ children }) {
+  return (
+    <BPMNextProviders loginPath="/login">
+      {children}
+    </BPMNextProviders>
+  );
+}
+```
+
+Rules of thumb:
+
+- **Scope `<BPMNextProviders>` to the BPM sub-tree** — never put it at
+  the root. Otherwise every host page goes through BPM's auth gate,
+  which redirects unauthenticated users to BPM's `/login`.
+- **BPM auth and host auth share the cookie jar** when same-origin.
+  If `<BPMNextProviders loginPath="/login">` and the host's auth share
+  `/login`, the same login form can satisfy both — implement the host
+  login endpoint to also satisfy `/auth/login` from BPM's contract.
+- **Do not import `<AuthProvider>` from `@rytass/bpm-core-react`
+  directly** if you've already mounted `<BPMNextProviders>` —
+  double-wrapping creates redundant `/auth/me` polls.
+
 ## Role and Permission Contract
 
 BPM guards inspect `BPMAuthContext.roles` and `BPMAuthContext.permissions` with
@@ -544,7 +663,7 @@ interface HostOrgUnit {
   readonly hostId: string;          // e.g. ERP primary key — your host-FK
   readonly code: string;            // stable across sync runs
   readonly name: string;
-  readonly type: OrgUnitType;       // 'company' | 'division' | 'department' | 'team'
+  readonly type: OrgUnitType;       // 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM'
   readonly parentCode: string | null;
 }
 

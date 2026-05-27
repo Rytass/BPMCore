@@ -1,15 +1,16 @@
 import { requestGraphQl } from '../graphql-client';
+import type {
+  OrgUnitType,
+  ManagerResolutionScopeType,
+} from '@rytass/bpm-core-shared';
 
-export type OrgUnitType =
-  | 'COMPANY'
-  | 'DEPARTMENT'
-  | 'DIVISION'
-  | 'TEAM'
-  | 'company'
-  | 'department'
-  | 'division'
-  | 'team';
-export type ManagerResolutionScopeType = 'MEMBER' | 'ORG_UNIT' | 'POSITION';
+/**
+ * Re-exported from `@rytass/bpm-core-shared` for consumer convenience —
+ * the single source of truth lives there. Both import paths produce
+ * the same TypeScript type, so consumers may pick whichever subpath
+ * they already import from elsewhere.
+ */
+export type { OrgUnitType, ManagerResolutionScopeType };
 
 export interface OrgUnitRecord {
   readonly code: string;
