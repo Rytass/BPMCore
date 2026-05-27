@@ -1,0 +1,52 @@
+# Changelog
+
+All notable changes to `@rytass/bpm-core-client` are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
+Conventional Commits — see `nx.json` for the release config.
+
+## 0.1.2 — 2026-05-27
+
+No source changes. Bumped in lockstep with
+`@rytass/bpm-core-nestjs-module@0.1.2` (see its CHANGELOG for the
+migration class-name fix).
+
+## 0.1.1 — 2026-05-27
+
+No source changes. Version bumped in lockstep with
+`@rytass/bpm-core-nestjs-module@0.1.1` so the fixed-versioning release
+group stays aligned (see `nx.json` `release.projectsRelationship`).
+
+## 0.1.0 — Unreleased
+
+### Added
+
+- Initial published surface extracted from `apps/client` of the BPMCore
+  monorepo:
+  - Root: `requestGraphQl`, endpoint resolvers, REST auth client (`loginApi`,
+    `logoutApi`, `readApiCurrentMember`, `listApiTestMembers`), member
+    directory queries (`resolveMembers`, `searchMembers`,
+    `listMemberDirectoryPage`).
+  - `/organization`: org unit / position / membership / manager resolution
+    queries and mutations.
+  - `/form`: form definition CRUD, version management, schema rendering
+    helpers.
+  - `/template`: approval template CRUD, category management, version
+    publish / rollback.
+  - `/workflow`: instance / task / notification / attachment / signature
+    operations.
+- Endpoint defaults: `http://localhost:17603/graphql` on local hostnames,
+  same-origin `/graphql` on deployed hostnames, plus root-level
+  `/auth/*` (no `/api` prefix). Overridable through `NEXT_PUBLIC_API_URL`
+  and `NEXT_PUBLIC_API_AUTH_URL`.
+
+### Notes
+
+- `@rytass/bpm-core-shared` is a `peerDependency` (`^0.1.0`).
+- The package ships without `"type"` at source level so Next.js webpack
+  resolving the path alias to TypeScript source does not flag CJS / ESM
+  conflicts; the publish pipeline injects `"type": "commonjs"` into the
+  tarball's `package.json`.

@@ -1,0 +1,66 @@
+{
+  "name": "bpm-core-client",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/bpm-core-client/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/libs/bpm-core-client",
+        "main": "libs/bpm-core-client/src/index.ts",
+        "tsConfig": "libs/bpm-core-client/tsconfig.lib.json",
+        "generatePackageJson": true,
+        "assets": [
+          "libs/bpm-core-client/*.md",
+          { "input": ".", "glob": "LICENSE", "output": "." }
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/libs/bpm-core-client"],
+      "options": {
+        "jestConfig": "libs/bpm-core-client/jest.config.cts",
+        "passWithNoTests": true
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p libs/bpm-core-client/tsconfig.lib.json"
+      }
+    },
+    "finalize-dist": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/dist/libs/bpm-core-client"],
+      "dependsOn": ["build"],
+      "options": {
+        "command": "node tools/publish/finalize-dist-package.mjs dist/libs/bpm-core-client"
+      }
+    },
+    "pkg-quality": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["finalize-dist"],
+      "options": {
+        "commands": [
+          "pnpm exec publint dist/libs/bpm-core-client"
+        ],
+        "parallel": false
+      }
+    },
+    "pkg-quality-attw": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["finalize-dist"],
+      "options": {
+        "command": "pnpm exec attw --pack dist/libs/bpm-core-client"
+      }
+    },
+    "prepublish-check": {
+      "executor": "nx:noop",
+      "dependsOn": ["typecheck", "lint", "test", "finalize-dist", "pkg-quality"]
+    }
+  }
+}
