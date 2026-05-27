@@ -1,3 +1,9 @@
+import {
+  readBPMClientConfig,
+  readBPMConfiguredHeaders,
+  resolveBPMFetch,
+} from './client-config';
+
 const LOCAL_GRAPHQL_ENDPOINT = 'http://localhost:17603/graphql';
 const SAME_ORIGIN_GRAPHQL_ENDPOINT = '/graphql';
 
@@ -40,7 +46,8 @@ export async function requestGraphQl<TData>(
   query: string,
   variables?: Readonly<Record<string, unknown>>,
 ): Promise<TData> {
-  const response = await fetch(readGraphQlEndpoint(), {
+  const fetchImpl = resolveBPMFetch();
+  const response = await fetchImpl(readGraphQlEndpoint(), {
     body: JSON.stringify({ query, variables }),
     credentials: 'include',
     headers: buildGraphQlHeaders(),
@@ -75,6 +82,12 @@ export async function requestGraphQl<TData>(
  *    runtimes such as Node SSR).
  */
 export function readGraphQlEndpoint(): string {
+  const configured = readBPMClientConfig().baseUrl?.trim();
+  if (configured) {
+    return configured.endsWith('/graphql')
+      ? configured
+      : `${configured.replace(/\/$/, '')}/graphql`;
+  }
   return (
     readOptionalPublicEnvValue(process.env.NEXT_PUBLIC_API_URL) ??
     resolveDefaultGraphQlEndpoint(readBrowserHostname())
@@ -97,6 +110,7 @@ export function resolveDefaultGraphQlEndpoint(
 
 function buildGraphQlHeaders(): Readonly<Record<string, string>> {
   return {
+    ...readBPMConfiguredHeaders(),
     'Content-Type': 'application/json',
   };
 }

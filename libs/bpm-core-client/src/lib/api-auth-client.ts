@@ -1,4 +1,9 @@
 import { readGraphQlEndpoint } from './graphql-client';
+import {
+  readBPMClientConfig,
+  readBPMConfiguredHeaders,
+  resolveBPMFetch,
+} from './client-config';
 
 /**
  * Authenticated BPM member returned by {@link loginApi} and
@@ -102,6 +107,11 @@ export async function readApiCurrentMember(): Promise<ApiMember | null> {
  *    assumed to expose both `/graphql` and `/auth/*` at the same origin.
  */
 export function readApiBaseUrl(): string {
+  const config = readBPMClientConfig();
+  if (config.authBaseUrl?.trim()) {
+    return config.authBaseUrl.trim().replace(/\/$/, '');
+  }
+
   const explicitApiBaseUrl = process.env.NEXT_PUBLIC_API_AUTH_URL?.trim();
 
   if (explicitApiBaseUrl) {
@@ -131,9 +141,12 @@ async function requestApi<TData>(
   path: string,
   init?: RequestInit,
 ): Promise<TData> {
-  const response = await fetch(`${readApiBaseUrl()}${path}`, {
+  const fetchImpl = resolveBPMFetch();
+  const configuredHeaders = readBPMConfiguredHeaders();
+  const response = await fetchImpl(`${readApiBaseUrl()}${path}`, {
     credentials: 'include',
     ...init,
+    headers: { ...configuredHeaders, ...(init?.headers ?? {}) },
   });
 
   if (!response.ok) {
