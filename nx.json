@@ -68,5 +68,40 @@
       "dependsOn": ["^build"],
       "inputs": ["production", "^production"]
     }
+  },
+  "release": {
+    "projects": ["shared", "bpm-core", "bpm-core-client"],
+    "projectsRelationship": "fixed",
+    "releaseTagPattern": "v{version}",
+    "version": {
+      "preVersionCommand": "pnpm nx run-many -t prepublish-check -p shared,bpm-core,bpm-core-client --parallel 1",
+      "conventionalCommits": true,
+      "fallbackCurrentVersionResolver": "disk",
+      "generatorOptions": {
+        "currentVersionResolver": "git-tag",
+        "specifierSource": "conventional-commits",
+        "updateDependents": "auto"
+      }
+    },
+    "changelog": {
+      "workspaceChangelog": {
+        "file": "CHANGELOG.md",
+        "createRelease": "github"
+      },
+      "projectChangelogs": {
+        "file": "{projectRoot}/CHANGELOG.md",
+        "renderOptions": {
+          "authors": true,
+          "commitReferences": true,
+          "versionTitleDate": true
+        }
+      }
+    },
+    "git": {
+      "commit": true,
+      "commitMessage": "chore(release): publish v{version}",
+      "tag": true,
+      "tagMessage": "v{version}"
+    }
   }
 }

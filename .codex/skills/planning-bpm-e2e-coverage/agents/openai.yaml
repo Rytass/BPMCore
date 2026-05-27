@@ -1,0 +1,6 @@
+interface:
+  display_name: 'BPM E2E Coverage'
+  short_description: 'Plan complete BPMCore e2e coverage'
+  default_prompt: 'Use $planning-bpm-e2e-coverage to draft a complete BPMCore e2e verification plan for the current implementation.'
+policy:
+  allow_implicit_invocation: true

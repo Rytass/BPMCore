@@ -55,8 +55,18 @@
       "@rytass/bpm-core-nestjs-module/workflow-engine": [
         "./libs/bpm-core/src/lib/workflow-engine/index.ts"
       ],
-      "@bpm/core/organization": [
-        "./libs/bpm-core/src/lib/organization/index.ts"
+      "@rytass/bpm-core-client": ["./libs/bpm-core-client/src/index.ts"],
+      "@rytass/bpm-core-client/organization": [
+        "./libs/bpm-core-client/src/lib/organization/index.ts"
+      ],
+      "@rytass/bpm-core-client/form": [
+        "./libs/bpm-core-client/src/lib/form/index.ts"
+      ],
+      "@rytass/bpm-core-client/template": [
+        "./libs/bpm-core-client/src/lib/template/index.ts"
+      ],
+      "@rytass/bpm-core-client/workflow": [
+        "./libs/bpm-core-client/src/lib/workflow/index.ts"
       ],
       "@bpm/shared": ["./libs/shared/src/index.ts"],
       "@bpm/shared/condition": ["./libs/shared/src/lib/condition.ts"],
@@ -71,6 +81,142 @@
       "@rytass/bpm-core-shared/status": ["./libs/shared/src/lib/status.ts"],
       "@rytass/bpm-core-shared/workflow": [
         "./libs/shared/src/lib/workflow.ts"
+      ],
+      "@rytass/bpm-core-react": ["./libs/bpm-core-react/src/index.ts"],
+      "@rytass/bpm-core-react/next": [
+        "./libs/bpm-core-react/src/next/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/workflow": [
+        "./libs/bpm-core-react/src/views/workflow/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/instances": [
+        "./libs/bpm-core-react/src/views/instances/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/settings": [
+        "./libs/bpm-core-react/src/views/settings/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/admin": [
+        "./libs/bpm-core-react/src/views/admin/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/login": [
+        "./libs/bpm-core-react/src/views/login/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/dashboard": [
+        "./libs/bpm-core-react/src/views/dashboard/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/inbox": [
+        "./libs/bpm-core-react/src/views/inbox/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/sent": [
+        "./libs/bpm-core-react/src/views/sent/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/cc": [
+        "./libs/bpm-core-react/src/views/cc/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/search": [
+        "./libs/bpm-core-react/src/views/search/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/delegations": [
+        "./libs/bpm-core-react/src/views/delegations/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/instances/detail": [
+        "./libs/bpm-core-react/src/views/instances/detail/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/instances/new": [
+        "./libs/bpm-core-react/src/views/instances/new/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/templates": [
+        "./libs/bpm-core-react/src/views/templates/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/templates/categories": [
+        "./libs/bpm-core-react/src/views/templates/categories/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/templates/designer": [
+        "./libs/bpm-core-react/src/views/templates/designer/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/templates/versions": [
+        "./libs/bpm-core-react/src/views/templates/versions/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/forms": [
+        "./libs/bpm-core-react/src/views/forms/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/forms/builder": [
+        "./libs/bpm-core-react/src/views/forms/builder/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/forms/renderer": [
+        "./libs/bpm-core-react/src/views/forms/renderer/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/settings/notifications": [
+        "./libs/bpm-core-react/src/views/settings/notifications/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/admin/users": [
+        "./libs/bpm-core-react/src/views/admin/users/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/admin/orgs": [
+        "./libs/bpm-core-react/src/views/admin/orgs/index.ts"
+      ],
+      "@rytass/bpm-core-react/views/admin/delegations": [
+        "./libs/bpm-core-react/src/views/admin/delegations/index.ts"
+      ],
+      "@rytass/bpm-core-react/pages/root": [
+        "./libs/bpm-core-react/src/pages/root/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/login": [
+        "./libs/bpm-core-react/src/pages/login/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/dashboard": [
+        "./libs/bpm-core-react/src/pages/dashboard/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/inbox": [
+        "./libs/bpm-core-react/src/pages/inbox/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/sent": [
+        "./libs/bpm-core-react/src/pages/sent/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/cc": [
+        "./libs/bpm-core-react/src/pages/cc/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/search": [
+        "./libs/bpm-core-react/src/pages/search/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/delegations": [
+        "./libs/bpm-core-react/src/pages/delegations/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/instances/detail": [
+        "./libs/bpm-core-react/src/pages/instances/detail/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/instances/new": [
+        "./libs/bpm-core-react/src/pages/instances/new/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/templates": [
+        "./libs/bpm-core-react/src/pages/templates/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/templates/categories": [
+        "./libs/bpm-core-react/src/pages/templates/categories/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/templates/designer": [
+        "./libs/bpm-core-react/src/pages/templates/designer/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/templates/versions": [
+        "./libs/bpm-core-react/src/pages/templates/versions/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/forms": [
+        "./libs/bpm-core-react/src/pages/forms/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/forms/builder": [
+        "./libs/bpm-core-react/src/pages/forms/builder/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/settings/notifications": [
+        "./libs/bpm-core-react/src/pages/settings/notifications/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/admin/users": [
+        "./libs/bpm-core-react/src/pages/admin/users/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/admin/orgs": [
+        "./libs/bpm-core-react/src/pages/admin/orgs/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/admin/delegations": [
+        "./libs/bpm-core-react/src/pages/admin/delegations/index.tsx"
       ]
     }
   },
