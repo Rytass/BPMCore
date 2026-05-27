@@ -6,7 +6,7 @@ This package composes [`@mezzanine-ui/react`](https://www.npmjs.com/package/@mez
 
 ## Status
 
-`0.3.0` — full admin surface: 12 view subpaths, 19 Next.js page shims (`pages/<feature>`), the `next` subpath (`BPMNextProviders`), and the foundation root barrel.
+`0.3.7` — adds `BPMRoutesProvider` for host-controlled path remapping (0.3.2), forwards `loginPath` / `publicPaths` / `locale` on `BPMNextProviders` (0.3.3), 19 view subpaths + 19 Next.js page shims (`pages/<feature>`), `next` subpath barrel, and foundation root barrel. See `CHANGELOG.md` for the per-release history.
 
 ## Install
 
@@ -24,7 +24,16 @@ If your host uses Next.js (15+) with pnpm strict mode, add the package to `trans
 /** @type {import('next').NextConfig} */
 module.exports = {
   reactStrictMode: true,
-  transpilePackages: ['@rytass/bpm-core-react'],
+  // Include the sibling packages too — BPM views import from
+  // `@rytass/bpm-core-client/workflow`, `/organization`, `/template`,
+  // `/form` and re-export shared types from `@rytass/bpm-core-shared`.
+  // pnpm strict mode + Turbopack rejects the transitive resolution
+  // without each entry listed explicitly.
+  transpilePackages: [
+    '@rytass/bpm-core-react',
+    '@rytass/bpm-core-client',
+    '@rytass/bpm-core-shared',
+  ],
 };
 ```
 

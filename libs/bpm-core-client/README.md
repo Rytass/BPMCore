@@ -18,7 +18,7 @@ functions directly from any framework (Next.js / Vite / Remix / plain Node).
 
 ## Package Status
 
-Current version: `0.1.7`
+Current version: `0.1.10`
 
 The package intentionally stays framework-agnostic so it can be reused from
 Next.js Server Components, Server Actions, plain React, or non-React

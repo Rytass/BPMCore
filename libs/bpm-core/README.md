@@ -14,7 +14,7 @@ directory integration, storage adapters, and deployment.
 
 ## Package Status
 
-Current version: `0.1.7`
+Current version: `0.1.10`
 
 The package is intended for NestJS backend hosts. It does not include the
 Next.js backoffice UI and does not provide a production auth system by itself.
@@ -272,6 +272,31 @@ The `projectMemberToApiMember` helper is host-specific — map your own
 member shape to BPM's expectations, project Casbin roles into the BPM
 role-literal strings (see "Mapping from a host RBAC system" below),
 and compute `expiresAt` from the token TTL.
+
+```ts
+function projectMemberToApiMember(member: HostMember): ApiMember {
+  return {
+    memberId: member.id,
+    email: member.email ?? '',         // ApiMember.email is `string`, not `string | null`
+    name: member.name,
+    roles: projectHostRolesToBPMRoles(member.roles), // [] if no admin/designer claim
+    permissions: [],                   // optional — return [] if not used
+    expiresAt: new Date(Date.now() + JWT_TTL_MS).toISOString(),
+  };
+}
+```
+
+Response status contract that BPM's React client expects:
+
+| Endpoint | Success | Auth fail | Validation fail |
+|---|---|---|---|
+| `POST /auth/login` | `200` + `ApiMember` JSON, set HTTP-only cookie | `401` | `400` |
+| `GET /auth/me` | `200` + `ApiMember` JSON | `401` (client treats as anonymous, **not error**) | n/a |
+| `POST /auth/logout` | `204` (or `200` with empty body) | `401` ignored — client clears local state anyway | n/a |
+
+`roles` and `permissions` MUST be arrays (use `[]` for no claim), not
+`null` or `undefined` — the React client's `member.roles.includes(...)`
+checks would crash otherwise.
 
 #### Pattern B — Run BPM on a separate auth host
 
@@ -531,7 +556,10 @@ export const hostMemberProviders: readonly Provider[] = [
     provide: HOST_MEMBER_DIRECTORY,
     useClass: HostMemberDirectory,
   },
-  createBPMMemberBaseResolverProvider({
+  createBPMMemberBaseResolverProvider<HostMember>({
+    // ^^^^^^^^^^^^ explicit generic is recommended — without it,
+    // TS infers `unknown` for the adapter callbacks below and you get
+    // "Parameter 'member' implicitly has an 'any' type" errors.
     adapterOptions: {
       readEmail: (member): string => member.email,
       readMemberId: (member): string => member.id,
@@ -909,6 +937,40 @@ For option B (separate schema), the host's own TypeORM `forRoot()` and
 BPM's `buildTypeOrmModuleOptions` create **two distinct connections**
 to the same Postgres cluster with different `schema:` settings — that
 is the cleanest separation Nest's TypeORM module supports.
+
+Concrete wiring:
+
+```ts
+// apps/api/src/app/app.module.ts
+@Module({
+  imports: [
+    // Host's existing TypeORM connection (default name, host's schema).
+    TypeOrmModule.forRootAsync({
+      imports: [HostVaultModule],
+      inject: [HostVaultService],
+      useFactory: (vault) => buildHostDataSourceOptions(vault),  // schema: 'public'
+    }),
+    // BPM's own connection (named, separate schema, separate Vault path).
+    TypeOrmModule.forRootAsync({
+      name: 'bpm',                              // <-- distinct connection name
+      imports: [BPMVaultModule],
+      inject: [BPMVaultService],
+      useFactory: buildTypeOrmModuleOptions,    // reads DB_SCHEMA=bpm_core from Vault
+    }),
+    // Hand BPM the connection name so its repositories bind to the right pool.
+    BPMRootModule.forRootAsync({
+      typeormConnectionName: 'bpm',
+      // ...
+    }),
+  ],
+})
+```
+
+If the host runs only one Vault path (e.g. `shuttle/develop`) and you
+want to keep secrets there, expose `bpm_core/*` keys under the host
+path with a prefix and provide a custom factory that reads them — BPM
+doesn't require its own Vault path, only that the secrets are
+available to `buildTypeOrmModuleOptions`.
 
 Vault paths can be split independently: keep `shuttle/develop` for the
 host and create `bpm_core/develop` for BPM secrets. BPM's helper reads
