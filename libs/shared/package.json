@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-shared",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Shared TypeScript contracts for the Rytass BPM approval workflow stack (workflow, form, condition, identity, organization, status types).",
   "keywords": [
     "bpm",
@@ -35,10 +35,18 @@
   "types": "./src/index.d.ts",
   "typesVersions": {
     "*": {
-      "condition": ["./src/lib/condition.d.ts"],
-      "form": ["./src/lib/form.d.ts"],
-      "status": ["./src/lib/status.d.ts"],
-      "workflow": ["./src/lib/workflow.d.ts"]
+      "condition": [
+        "./src/lib/condition.d.ts"
+      ],
+      "form": [
+        "./src/lib/form.d.ts"
+      ],
+      "status": [
+        "./src/lib/status.d.ts"
+      ],
+      "workflow": [
+        "./src/lib/workflow.d.ts"
+      ]
     }
   },
   "exports": {
