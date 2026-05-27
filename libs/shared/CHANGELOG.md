@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.6 — 2026-05-28
+
+No source changes. Lockstep bump alongside
+`@rytass/bpm-core-nestjs-module@0.1.6` (new `MemberNotFoundException`
+export) and `@rytass/bpm-core-client@0.1.6` (new `configureBPMClient`).
+
 ## 0.1.5 — 2026-05-28
 
 ### Documentation

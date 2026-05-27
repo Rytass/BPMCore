@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.6 — 2026-05-28
+
+### Added
+
+- **`MemberNotFoundException`** is now exported from the root barrel
+  (and `/identity` subpath). The `BPMMemberResolver.resolve` JSDoc has
+  referenced this class for two releases without actually shipping it;
+  hosts can now `throw new MemberNotFoundException(memberId)` directly.
+
+### Documentation
+
+- **README "Mapping from a host RBAC system (e.g. Casbin)"**: worked
+  example showing how to project a host's grouping policy
+  (`enforcer.getRolesForUser(memberId)`) into BPM's exact-string role
+  literals inside `authContextFactory`.
+- **README "Cross-origin authentication"** under Attachment Storage:
+  documents that signed URLs carry auth inside the URL (not via cookie),
+  what the TTL controls, and the production-grade defenses on top.
+- **README "Disabling the `/auth/test-members` endpoint in production"**:
+  clarifies that the endpoint is wrapper-host-owned (BPM does not
+  register it) and that the React client degrades gracefully when the
+  endpoint is absent.
+- **README Worked Example rewritten** to call the actual published
+  `@rytass/bpm-core-client/organization` exports
+  (`readOrganizationDashboard`, flat-input `createOrgUnit` /
+  `updateOrgUnit`) — the 0.1.5 example called functions that didn't
+  exist. Adds an "Atomicity caveat" note clarifying that only
+  `commitOrgUnitTreeDraft` is transactional; sequential
+  `createMembership` calls are independent.
+
+### Why a patch
+
+`MemberNotFoundException` is purely additive. Other changes are docs.
+
 ## 0.1.5 — 2026-05-28
 
 ### Documentation

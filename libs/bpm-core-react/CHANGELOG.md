@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.3 — 2026-05-28
+
+### Fixed
+
+- **Dist `.d.ts` files leaked workspace-source paths.** The 0.3.0–0.3.2
+  release shipped declaration files that contained relative imports back
+  into the vendor's monorepo (e.g. `import { ApiMember } from
+  '../../libs/bpm-core-client/src/index.ts'`), which broke `tsc` for any
+  consumer that didn't have BPMCore's source on disk at that exact
+  relative path. The build now passes `compilerOptions.paths: {}` to
+  `vite-plugin-dts` so the published types reference packages by their
+  npm names (`@rytass/bpm-core-client`) rather than by resolved aliases.
+
+### Added
+
+- **`BPMNextProviders` props are now typed and forwarded.** The
+  `loginPath`, `publicPaths`, and `locale` props were always accepted by
+  the inner `<Providers>` but the `next` subpath wrapper hid them. They
+  are now part of the exported `BPMNextProvidersProps` interface and
+  forwarded through. Default `loginPath` remains `'/login'`, so hosts
+  with a different auth route must pass their override explicitly.
+
+### Documentation
+
+- `BPMRoutes.caseDetail` and `BPMRoutes.caseNew(templateId?)` JSDoc
+  carries `@example` annotations showing the default factory's literal
+  paths so consumers can see what they're overriding without reading
+  the source.
+
+### Why a patch
+
+The d.ts fix only affected consumers' type-check experience — runtime
+behavior didn't change. The `BPMNextProviders` props forwarding is
+additive (props were silently dropped before, now they work).
+
 ## 0.3.2 — 2026-05-28
 
 ### Added

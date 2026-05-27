@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.6 — 2026-05-28
+
+### Added
+
+- **`configureBPMClient({ baseUrl, authBaseUrl, fetch, headers })`**.
+  Server-side Node scripts (cron workers, org seeds, integration tests)
+  can now override the GraphQL endpoint, REST auth base URL, fetch
+  implementation, and default request headers programmatically without
+  relying on `NEXT_PUBLIC_API_URL` environment resolution. Both the
+  `requestGraphQl` GraphQL transport and the REST auth client honor the
+  override. Browser consumers under Next.js typically still rely on
+  `NEXT_PUBLIC_API_URL` and do not need to call this.
+
+  ```ts
+  import { configureBPMClient } from '@rytass/bpm-core-client';
+
+  configureBPMClient({
+    baseUrl: 'https://api.shuttle.example.com',
+    headers: { 'X-Service-Token': process.env.BPM_SYNC_TOKEN ?? '' },
+  });
+  ```
+
+### Documentation
+
+- README "Organization Mirror Pattern" rewritten with the correct
+  flat-input API shape (`updateOrgUnit({ id, code, name, type,
+  parentId, metadataJson })`, not the `{ id, input: {...} }` form the
+  0.1.5 example incorrectly showed). Adds a "Server-side base URL
+  override" section pointing at `configureBPMClient`.
+
+### Why a patch
+
+`configureBPMClient` is purely additive. Existing callers see no
+change to behavior unless they call the new API.
+
 ## 0.1.5 — 2026-05-28
 
 ### Documentation
