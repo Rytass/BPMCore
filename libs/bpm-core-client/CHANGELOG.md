@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.9 — 2026-05-28
+
+### Fixed
+
+- **`OrgUnitType` and `ManagerResolutionScopeType` are now re-exports
+  from `@rytass/bpm-core-shared`.** Previous versions shipped two
+  divergent local definitions: the shared package declared
+  `'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM'` (UPPERCASE only,
+  matching the GraphQL wire) while this package declared the union of
+  both cases. Consumers importing the type from different subpaths
+  received different unions — silent at compile time, surprising at
+  review time. Both subpaths now refer to the single source of truth.
+
+### Why a patch
+
+Type-level realignment, no runtime behavior change. Consumers using
+the UPPERCASE literals (the working path) see no difference; consumers
+relying on lowercase (the broken path that failed at GraphQL anyway)
+were already getting runtime errors and need to migrate.
+
 ## 0.1.8 — 2026-05-28
 
 ### Documentation

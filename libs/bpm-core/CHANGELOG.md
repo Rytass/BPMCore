@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.9 — 2026-05-28
+
+### Documentation
+
+- **README "Machine-to-machine authentication" section** added under
+  Auth Context. Documents three patterns for server-side scripts (org
+  seeds, cron workers, integration tests) to authenticate against BPM:
+  (1) service member + login flow with cookie-jar fetch (recommended),
+  (2) service token header for hosts that issue long-lived JWTs,
+  (3) direct cookie injection for testing only.
+- **README "Coexisting with a host's existing `<AuthProvider>`"** added
+  under Auth Context. Explains that BPM's React provider is a separate
+  context safe to nest under a host provider, with three rules of
+  thumb (scope to sub-tree, share cookie jar same-origin, don't
+  double-wrap `<AuthProvider>` directly).
+
+### Why a patch
+
+Documentation only.
+
 ## 0.1.8 — 2026-05-28
 
 ### Documentation

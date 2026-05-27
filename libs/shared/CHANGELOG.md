@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.9 — 2026-05-28
+
+No source change. Lockstep bump alongside
+`@rytass/bpm-core-nestjs-module@0.1.9` (machine-to-machine auth +
+nested AuthProvider docs) and `@rytass/bpm-core-client@0.1.9`
+(`OrgUnitType` is now a re-export from this package, not a separate
+definition — see that CHANGELOG).
+
 ## 0.1.8 — 2026-05-28
 
 No source change. Lockstep bump alongside
