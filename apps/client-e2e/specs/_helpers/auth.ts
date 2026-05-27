@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 
-const API_URL = process.env.E2E_API_URL ?? 'http://localhost:17603/api';
+const API_URL = process.env.E2E_API_URL ?? 'http://localhost:17603';
 
 export async function authenticateApiMember(
   page: Page,

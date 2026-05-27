@@ -345,7 +345,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentPreviewUrl')) {
       await fulfillGraphQl(route, {
         attachmentPreviewUrl:
-          '/api/attachments/attachment-pdf/download?token=e2e-preview-token',
+          '/attachments/attachment-pdf/download?token=e2e-preview-token',
       });
       return;
     }
@@ -353,7 +353,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentDownloadUrl')) {
       await fulfillGraphQl(route, {
         attachmentDownloadUrl:
-          '/api/attachments/attachment-pdf/download?token=e2e-download-token',
+          '/attachments/attachment-pdf/download?token=e2e-download-token',
       });
       return;
     }
