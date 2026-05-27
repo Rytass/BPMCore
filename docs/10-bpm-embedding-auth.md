@@ -11,21 +11,29 @@ member-base 初始化、TypeORM、GraphQL 與 Vault 等基礎設施由宿主系�
 
 ## 模組邊界
 
-`BPMRootModule` 是可嵌入入口，負責組合 BPM domain modules：
+`BPMRootModule` 是可嵌入入口，負責組合 BPM domain modules。`forRoot` /
+`forRootAsync` 回傳的 `DynamicModule` 內含 **11 個 child imports**：
 
 ```text
 BPMRootModule
-├── BPMAuthModule
+├── NotificationOptionsModule    ← 提供 BPM_NOTIFICATION_OPTIONS token 給其他模組注入
+├── BPMAuthModule                ← @Global，提供 BPMAuthenticatedGuard / BPMAdminGuard / BPMDesignerGuard
 ├── IdentityModule
 ├── OrganizationModule
+├── AttachmentModule             ← @Global，掛 AttachmentController
 ├── FormModule
 ├── TemplateModule
-├── WorkflowEngineModule
 ├── DelegationModule
 ├── NotificationModule
-├── SignatureModule
-└── AttachmentModule
+├── SignatureModule              ← @Global，註冊 SignatureService
+└── WorkflowEngineModule
 ```
+
+`NotificationOptionsModule` 是把 `BPMRootModuleOptions.notification*` 欄位
+normalize 成 `BPM_NOTIFICATION_OPTIONS` provider 的中介模組；`NotificationModule`
+和 `WorkflowEngineModule` 都會注入它。三個 `@Global()` 模組
+（`BPMAuthModule` / `AttachmentModule` / `SignatureModule`）會把它們匯出的
+guard 與 service 暴露到整個 host 而不需要 re-import。
 
 `apps/api` 作為本 repo 的宿主範例，仍自行設定 Vault、TypeORM、
 GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部系統只需
@@ -89,6 +97,43 @@ const bpmAuthContext = createBPMAuthContextFromMemberBaseMember(memberBaseUser, 
   readRoles: (member) => member.roles,
 });
 ```
+
+## Role / Permission Contract
+
+`BPMAuthContext.roles` 與 `permissions` 是字串陣列，BPM 內部 guard 用「字串比對」決定使用者是不是 BPM admin 或 designer。宿主需要在自己的 adapter 中送入下列其中一個字串才能通過對應的 guard，否則 BPM resolver / mutation 會直接 `ForbiddenException`。
+
+| 角色等級 | 通過條件（roles 或 permissions 任一即可）                                                                                       | 對應 Nest guard / decorator                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Admin    | `roles` 含 `BPM_ADMIN` ；或 `permissions` 含 `bpm:*` / `bpm:admin` / `bpm.admin` / `bpm:admin:*`                                | `BPMAdminGuard`、`@BPMAdminOnly()`、`isBPMAdmin(authContext)`                            |
+| Designer | 同時含括 Admin；或 `roles` 含 `BPM_DESIGNER`；或 `permissions` 含 `bpm:design` / `bpm.design` / `bpm.form.design` / `bpm.template.design` / `bpm:form:design` / `bpm:template:design` | `BPMDesignerGuard`、`@BPMDesignerOnly()`、`isBPMDesigner(authContext)` |
+| 一般已登入 | `BPMAuthContext.memberId` 非空                                                                                                | `BPMAuthenticatedGuard`、`@BPMAuthenticated()`                                          |
+
+字串清單與行為來源：`libs/bpm-core/src/lib/bpm-auth/bpm-auth.authorization.ts`（admin/designer 集合）、`libs/bpm-core/src/lib/bpm-auth/bpm-auth.guard.ts`（一般已登入）。
+
+宿主取得當前 `BPMAuthContext` / `memberId` 時，建議使用 `@rytass/bpm-core-nestjs-module` 提供的 param decorators，而不是再呼叫 `authContextFactory`：
+
+```ts
+import {
+  BPMAuthenticated,
+  BPMCurrentAuthContext,
+  BPMCurrentMemberId,
+  type BPMAuthContext,
+} from '@rytass/bpm-core-nestjs-module';
+
+@Resolver()
+class HostResolver {
+  @Query(() => HostSummary)
+  @BPMAuthenticated()
+  hostSummary(
+    @BPMCurrentAuthContext() auth: BPMAuthContext,
+    @BPMCurrentMemberId() memberId: string,
+  ): HostSummary {
+    return buildHostSummary(auth, memberId);
+  }
+}
+```
+
+`@BPMAdminOnly()` / `@BPMDesignerOnly()` 自動串接 `BPMAuthenticatedGuard`，宿主自己的 admin / template designer resolver 可以直接掛上，不必再額外加 `@BPMAuthenticated()`。
 
 ## Member Resolver Contract
 
@@ -198,10 +243,20 @@ BPMRootModule.forRoot({
 如果 storage adapter 需要 secret，可讓 `attachmentStorageProvider` 自己使用
 `useFactory` / `inject`。BPMCore 只依賴 storage contract，不依賴特定雲端儲存。
 
-Signed attachment URL 的 host 路徑可由 `attachmentRoutePrefix` 設定，預設為
-`/api/attachments`。若宿主換成 S3、MinIO 或 GCS 等 adapter，應同步設定
-`attachmentStorageProviderId`，讓 `attachments.storage_provider` 記錄真實 adapter
-標識，而不是預設的 `local`。
+`attachmentRoutePrefix` 同時控制兩件事：
+
+1. BPM 在 `attachment.service.ts` 內建的 signed URL 路徑（`${publicBaseUrl}${routePrefix}/:id/download`）。
+2. `AttachmentController` 在 Nest 內實際掛載的 controller path。`AttachmentModule.forRoot/forRootAsync` 會在執行時呼叫 `Reflect.defineMetadata(PATH_METADATA, ...)` 把 controller 的 `@Controller()` 路徑改成 `attachmentRoutePrefix`。
+
+預設值是 `/attachments`，與 controller 的相對宣告 `@Controller('attachments')` 對齊；BPMCore 不再假設宿主使用 `setGlobalPrefix('api')`。如果宿主仍要把 BPM endpoint 對外公開成 `/api/attachments`，把 `attachmentRoutePrefix: '/api/attachments'` 設進 `BPMRootModule.forRoot` 即可，**不需要、也不應該再使用 NestJS 的 `setGlobalPrefix`**。
+
+由於 Nest 是在 application bootstrap 同步讀 controller path metadata，`attachmentRoutePrefix` 必須在 wiring time 決定：
+
+- `BPMRootModule.forRoot` 直接讀 `options.attachmentRoutePrefix`。
+- `BPMRootModule.forRootAsync` 把 `attachmentRoutePrefix` 提升到 top-level 選項，**不是**從 `useFactory` 回傳值取得（async secret 也不應該驅動 URL 路由決策）。
+- 同一個 process 只能有單一 BPM `attachmentRoutePrefix`；多 tenant / 多 host 共用一個 process 並不支援以不同 prefix 各自掛載。
+
+若宿主換成 S3、MinIO 或 GCS 等 adapter，應同步設定 `attachmentStorageProviderId`，讓 `attachments.storage_provider` 記錄真實 adapter 標識，而不是預設的 `local`。
 
 ## Notification / Worker Contract
 
@@ -261,13 +316,18 @@ import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 - 從 host session 建立 `BPMAuthContext`；目前不再保留 header impersonation fallback。
 - 透過 `@rytass/bpm-core-nestjs-module` 引入 `BPMRootModule` 與 host-facing contracts。
 
-API auth endpoints：
+`apps/api` 已經完全不使用 Nest `setGlobalPrefix`；所有 controller 都以 root 相對路徑掛載，sample endpoint 因此會出現在 host 根目錄下：
 
-- `GET /api/auth/test-members`：列出可登入的 DB-backed 測試帳號。
-- `POST /api/auth/login`：以 `{ identifier, password }` 登入；`identifier` 可用 member id 或 email，
+- `GET /auth/test-members`：列出可登入的 DB-backed 測試帳號。
+- `POST /auth/login`：以 `{ identifier, password }` 登入；`identifier` 可用 member id 或 email，
   seeded test password 固定為 `demo`。
-- `GET /api/auth/me`：讀取目前 session member。
-- `POST /api/auth/logout`：清除 API session cookie。
+- `GET /auth/me`：讀取目前 session member。
+- `POST /auth/logout`：清除 API session cookie。
+- `GET /health`：apps/api 內建 health probe。
+- `GET /attachments/:id/download`：BPM core attachment endpoint（路徑可由 `attachmentRoutePrefix` 覆寫）。
+- `POST /graphql`：Apollo GraphQL endpoint。
+
+宿主若要在自己的 deployment 用 `/api/` 之類 prefix，請改用 reverse proxy（nginx / Cloudflare / k8s ingress）做 path rewrite，**不**要回到 `setGlobalPrefix` — `BPMCore` 與 `apps/api` 的測試、e2e、`apps/client` URL resolver 都已假設 host root 直接服務 BPM 路徑。
 
 `@rytass/bpm-core-nestjs-module` 現在是 monorepo 內的 package boundary，
 host app 不再依賴舊的 standalone app project。public surface 以
@@ -285,3 +345,29 @@ helper 為主。
 
 這個 app 可以留在 repo 作為 embedding contract 的活文件，也能成為之後釋出
 BPMCore package 前的防回歸測試。
+
+## Frontend / Client Integration
+
+`@rytass/bpm-core-client` 是與本後端模組配對的 framework-agnostic GraphQL / REST 客戶端 package，從 `apps/client` 抽離。Next.js、Vite、Remix、純 Node 服務都可直接使用，**不**依賴 React、Apollo、urql。
+
+```
+@rytass/bpm-core-nestjs-module  ← NestJS 後端 module（本文件）
+@rytass/bpm-core-shared         ← 前後端共用型別
+@rytass/bpm-core-client         ← 前端 GraphQL / REST 客戶端
+```
+
+`@rytass/bpm-core-client` public surface：
+
+- 根 (`@rytass/bpm-core-client`): `requestGraphQl`、`readGraphQlEndpoint`、`readApiBaseUrl`、`loginApi` / `logoutApi` / `readApiCurrentMember` / `listApiTestMembers`、`resolveMembers` / `searchMembers`。
+- `/organization`: org unit / position / membership / manager resolution 的查詢與 mutation。
+- `/form`: form definition CRUD、版本管理、`form-rendering` schema parser。
+- `/template`: approval template CRUD、category 管理、版本 publish / revert。
+- `/workflow`: instance submit / decide / cancel、task / notification / attachment / signature 查詢。
+
+預設 endpoint：
+
+- localhost → `http://localhost:17603/graphql` + `http://localhost:17603/auth/*`。
+- 其他 hostname → 同 origin `/graphql` 與 root-level `/auth/*`。
+- 可以 `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_API_AUTH_URL` 覆寫。
+
+完整使用範例與 React Query / SWR 範例見 `libs/bpm-core-client/README.md`。`apps/client` 已全面改用此 package，不再保留 `apps/client/src/app/_lib/*-api.ts` 內的 BPM 操作；hosts 部署自己的 Next.js client 時可以直接複製 `apps/client` 的 page 結構作為起手式。

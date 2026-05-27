@@ -272,10 +272,10 @@ frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補
 前端 GraphQL 與 auth endpoint resolver 的實際行為：
 
 - localhost / `127.0.0.1`：GraphQL 使用 `http://localhost:17603/graphql`，
-  auth 使用 `http://localhost:17603/api`。
+  auth 使用 `http://localhost:17603`（root origin，不再有 `/api` prefix）。
 - deployed hostname：GraphQL 使用 same-origin `/graphql`，auth 使用 same-origin
-  `/api`。
+  根路徑下的 `/auth/...`。
 - `NEXT_PUBLIC_API_URL` 與 `NEXT_PUBLIC_API_AUTH_URL` 可以覆寫；plain `API_URL`
   不會被 browser bundle 讀取。
 - Auth 使用 `apps/api` 的 signed HTTP-only cookie。Client 登入後會重新讀
-  `/api/auth/me`，未登入時導向 `/login`。
+  `/auth/me`，未登入時導向 `/login`。

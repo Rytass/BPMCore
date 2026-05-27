@@ -79,8 +79,9 @@ kubectl apply -f tools/deployment-staging.yml
 ```
 
 The client runs behind the same host as the API in staging. Browser endpoint
-resolution therefore uses same-origin `/graphql` and `/api`; do not set a plain
-`API_URL` for the client container because the browser bundle does not read it.
+resolution therefore uses same-origin `/graphql` plus root-level `/auth/...`
+and `/attachments/...`; do not set a plain `API_URL` for the client container
+because the browser bundle does not read it.
 
 The Cloudflare DNS record should be:
 

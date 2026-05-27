@@ -16,6 +16,8 @@
 | 08  | [前端工作流 JSON Schema](./08-frontend-schema.md)        | React Flow 對應的 WorkflowDefinition              |
 | 09  | [開發路線圖](./09-roadmap.md)                            | M1–M4 里程碑與週級任務拆解                        |
 | 10  | [BPM 嵌入式模組與 Auth 設計](./10-bpm-embedding-auth.md) | NestJS 宿主整合、Auth contract 與 API host 邊界   |
+| 11  | [Consumer Quickstart](./11-consumer-quickstart.md)       | 從零接入三個 npm package 的最短路徑               |
+| ★   | [Public API Reference](./api-reference.md)               | 4 個 lib 套件所有 export 的完整清冊（必維護）     |
 
 ## Stack
 
