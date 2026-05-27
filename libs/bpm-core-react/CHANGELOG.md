@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.4 — 2026-05-28
+
+### Documentation
+
+- **README "Mounting BPM under a non-root URL prefix"** added. Shows
+  the exhaustive `createPrefixedRoutes(prefix)` factory covering all
+  **19** `BPMRoutes` entries (previously the README only sketched
+  2-3). Spreading `createDefaultBPMRoutes()` first means new BPMCore
+  versions that add routes never silently regress consumer hosts.
+
+### Why a patch
+
+Documentation-only. No source change.
+
 ## 0.3.3 — 2026-05-28
 
 ### Fixed

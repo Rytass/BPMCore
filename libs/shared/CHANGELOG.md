@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.7 — 2026-05-28
+
+### ⚠️ Type-level breaking (consumers writing literal values)
+
+- **`OrgUnitType` literal case corrected**: was `'company' | 'division'
+  | 'department' | 'team'` (lowercase, matched the database row values
+  but **not** the GraphQL SDL); now `'COMPANY' | 'DIVISION' |
+  'DEPARTMENT' | 'TEAM'` (UPPERCASE, matches what the GraphQL wire
+  actually carries on every read and every write).
+
+  Consumers calling `createOrgUnit({ type: 'company' })` against the
+  published `@rytass/bpm-core-client@0.1.6` or earlier received a
+  GraphQL enum-coercion error at runtime — the lowercase form was
+  rejected by the BPM server. The TS type was misleading. This release
+  realigns the type with the wire reality.
+
+  Migration: update any literal `'company'` / `'division'` /
+  `'department'` / `'team'` passed to `createOrgUnit` / `updateOrgUnit`
+  / `readOrganizationDashboard` `orgUnitType` filter to the UPPERCASE
+  form. JSDoc on the type explains the casing.
+
+### Documentation
+
+- JSDoc added to `OrgUnitType` explaining the lowercase database value
+  vs UPPERCASE wire format asymmetry.
+
+### Why a patch (despite the rename)
+
+The lowercase form did not work in practice — any consumer who got
+past `tsc` failed at runtime against the GraphQL server. Calling this a
+patch reflects "fixing a documented contract" rather than "changing
+working behavior".
+
 ## 0.1.6 — 2026-05-28
 
 No source changes. Lockstep bump alongside

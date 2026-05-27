@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-react",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "BPM approval workflow React components and views for the Rytass BPM stack. Self-contained AuthProvider, NotificationDrawer, AppNavigation, plus full views for inbox / instances / templates / forms / admin / settings that compose on top of Mezzanine UI and the BPM client functions.",
   "keywords": [
     "bpm",
@@ -278,8 +278,8 @@
     }
   },
   "peerDependencies": {
-    "@rytass/bpm-core-client": "^0.1.6",
-    "@rytass/bpm-core-shared": "^0.1.6",
+    "@rytass/bpm-core-client": "^0.1.7",
+    "@rytass/bpm-core-shared": "^0.1.7",
     "@mezzanine-ui/react": "^1.1.0",
     "@mezzanine-ui/icons": "^1.0.2",
     "react": "^18.0.0 || ^19.0.0",

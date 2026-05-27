@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.1.7 — 2026-05-28
+
+### Documentation
+
+- **README "Bring-your-own-host-auth" recipe** added under Auth
+  Context. Documents the `ApiMember` JSON shape, the expected status
+  codes for `/auth/login`, `/auth/me`, `/auth/logout`, and two
+  integration patterns: (A) extend the host API with `/auth/*`
+  controllers that emit `ApiMember` (recommended for member-base
+  hosts), or (B) run a thin wrapper host on a separate subdomain.
+- **README "Sharing a Postgres cluster with the host"** added under
+  Database Setup. Compares same-schema / separate-schema / separate-DB
+  trade-offs, recommends separate-schema, clarifies Vault path
+  isolation between host and BPM.
+- **`commitOrgUnitTreeDraft` signature corrected** in the Worked
+  Example listing — previously `{ baseUpdatedAt, draft }` (incorrect),
+  now `{ moves: { id, parentId, baseUpdatedAt }[] }` matching the
+  actual export.
+- **`OrgUnitType` literal case corrected** in the README's example
+  comment — previously `'COMPANY' | 'DIVISION' | ...`, now `'company'
+  | 'division' | ...`. (See `@rytass/bpm-core-shared@0.1.7` for the
+  actual TS type change.)
+- **"Positions are intentionally not deletable" note** added to the
+  Organization mirror pattern. Explains why no `deletePosition`
+  mutation exists and how to retire a position safely.
+- **README "Package Status" current-version line refreshed** to
+  `0.1.7`.
+
+### Why a patch
+
+Documentation-only. No public API change beyond what
+`@rytass/bpm-core-shared@0.1.7` ships.
+
 ## 0.1.6 — 2026-05-28
 
 ### Added
