@@ -1,15 +1,26 @@
 'use client';
 
-// One-line Next.js App Router shim for BPM. Reads `next/navigation` hooks,
-// builds a `RouterAdapter`, then composes `<RouterAdapterProvider>` and the
-// shared `<BPMProviders>`. Wrapped in `<Suspense>` so static prerender of
-// routes like `/404` does not fail on `useSearchParams()` during `next build`.
+// One-line Next.js App Router shim for BPM. Reads `next/navigation`
+// router/pathname hooks, builds a `RouterAdapter`, then composes
+// `<RouterAdapterProvider>` and the shared `<BPMProviders>`.
+//
+// IMPORTANT: This component intentionally does NOT call
+// `useSearchParams()`. Doing so triggers Next.js's CSR bailout at static
+// prerender, and any `<Suspense fallback={null}>` we wrap around it then
+// erases `<RouterAdapterProvider>` from the SSR/hydration tree — leaving
+// every BPM view to throw "must be used inside <RouterAdapterProvider>"
+// when it mounts. None of the shipped BPM views consume
+// `RouterAdapter.searchParams()` anyway; hosts that need reactive query
+// string state should call Next's `useSearchParams()` directly in their
+// page (with their own Suspense). The lazy default getter below is
+// good enough for read-on-demand callers.
 
-import { Suspense, useMemo, type ReactElement, type ReactNode } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useMemo, type ReactElement, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   Providers as BPMProviders,
   RouterAdapterProvider,
+  defaultBrowserSearchParams,
   type RouterAdapter,
 } from '@rytass/bpm-core-react';
 import type { CalendarLocale } from '@mezzanine-ui/react/moment';
@@ -40,41 +51,6 @@ export interface BPMNextProvidersProps {
   readonly loginPath?: string;
 }
 
-function BPMNextProvidersBody({
-  children,
-  locale,
-  publicPaths,
-  loginPath,
-}: BPMNextProvidersProps): ReactElement {
-  const nextRouter = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
-  const adapter = useMemo<RouterAdapter>(
-    () => ({
-      pathname,
-      push: (href: string): void => nextRouter.push(href),
-      replace: (href: string): void => nextRouter.replace(href),
-      back: (): void => nextRouter.back(),
-      searchParams: (): URLSearchParams =>
-        new URLSearchParams(searchParams?.toString() ?? ''),
-    }),
-    [nextRouter, pathname, searchParams],
-  );
-
-  return (
-    <RouterAdapterProvider value={adapter}>
-      <BPMProviders
-        locale={locale}
-        publicPaths={publicPaths}
-        loginPath={loginPath}
-      >
-        {children}
-      </BPMProviders>
-    </RouterAdapterProvider>
-  );
-}
-
 /**
  * One-line Next.js App Router shim for the full BPM provider stack.
  * Mounts in the host's root layout (or layout for the BPM sub-tree):
@@ -98,10 +74,35 @@ function BPMNextProvidersBody({
  * (BPM internal navigation), additionally wrap with
  * `<BPMRoutesProvider>` exported from the same subpath.
  */
-export function BPMNextProviders(props: BPMNextProvidersProps): ReactElement {
+export function BPMNextProviders({
+  children,
+  locale,
+  publicPaths,
+  loginPath,
+}: BPMNextProvidersProps): ReactElement {
+  const nextRouter = useRouter();
+  const pathname = usePathname();
+
+  const adapter = useMemo<RouterAdapter>(
+    () => ({
+      pathname,
+      push: (href: string): void => nextRouter.push(href),
+      replace: (href: string): void => nextRouter.replace(href),
+      back: (): void => nextRouter.back(),
+      searchParams: (): URLSearchParams => defaultBrowserSearchParams(),
+    }),
+    [nextRouter, pathname],
+  );
+
   return (
-    <Suspense fallback={null}>
-      <BPMNextProvidersBody {...props} />
-    </Suspense>
+    <RouterAdapterProvider value={adapter}>
+      <BPMProviders
+        locale={locale}
+        publicPaths={publicPaths}
+        loginPath={loginPath}
+      >
+        {children}
+      </BPMProviders>
+    </RouterAdapterProvider>
   );
 }

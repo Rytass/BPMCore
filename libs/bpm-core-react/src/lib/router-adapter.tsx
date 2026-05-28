@@ -65,8 +65,10 @@ export function useRouterAdapter(): RouterAdapter {
   if (!value) {
     throw new Error(
       'useRouterAdapter must be used inside <RouterAdapterProvider>. ' +
-        'In Next.js, wrap your app with <NextRouterAdapterProvider> from ' +
-        '`@rytass/bpm-core-react/pages/router-adapter`.',
+        'In Next.js, wrap your app with <BPMNextProviders> from ' +
+        '`@rytass/bpm-core-react/next` (it mounts <RouterAdapterProvider> ' +
+        'internally). For non-Next hosts, build your own RouterAdapter ' +
+        'and pass it to <RouterAdapterProvider value={...}>.',
     );
   }
   return value;
