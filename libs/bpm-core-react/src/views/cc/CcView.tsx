@@ -3,17 +3,15 @@
 import type { ReactElement } from 'react';
 import { ApprovalInstanceListPage } from '../../components/approval-instance-list-page';
 
-export interface CcViewProps {}
 
 /**
  * Framework-agnostic view for the BPM "cc" inbox — instances the current
  * member is copied on. Mechanical port of
  * `apps/client/src/app/cc/page.tsx`.
  */
-export function CcView(_props: CcViewProps = {}): ReactElement {
+export function CcView(): ReactElement {
   return (
     <ApprovalInstanceListPage
-      activeHref="/cc"
       defaultState={null}
       description="查看抄送給你的簽核案件。"
       emptyMessage="目前沒有抄送給你的簽核案件。"

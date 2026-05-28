@@ -21,8 +21,6 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { useAuth } from '../../../lib/auth-provider';
-import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 import {
   NotificationDigestMode,
   NotificationPreferenceRecord,
@@ -63,15 +61,8 @@ const DEFAULT_PREFERENCE: NotificationPreferenceRecord = {
   updatedAt: '',
 };
 
-export interface SettingsNotificationsViewProps {
-  readonly activeHref?: string;
-}
 
-export function SettingsNotificationsView({
-  activeHref,
-}: SettingsNotificationsViewProps = {}): ReactElement {
-  const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.notificationSettings();
+export function SettingsNotificationsView(): ReactElement {
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [preference, setPreference] =
@@ -133,7 +124,7 @@ export function SettingsNotificationsView({
   const controlsDisabled = loading || saving;
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <PageHeader>
           <ContentHeader
             description="調整站內通知、Email 通知與摘要頻率。"
@@ -259,7 +250,7 @@ export function SettingsNotificationsView({
             )}
           </Section>
         </SectionGroup>
-      </AppLayout>
+      </>
   );
 }
 

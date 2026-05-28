@@ -39,8 +39,6 @@ import { BPMFormField } from '../../../components/bpm-form-field';
 import styles from './delegations.module.scss';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
-import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 import {
   DelegationRuleRecord,
   DelegationRuleStatus,
@@ -116,15 +114,8 @@ const SCOPE_FILTER_OPTIONS: readonly ScopeFilterOption[] = [
   { id: 'TEMPLATE_LIST', name: '指定模板', scopeType: 'TEMPLATE_LIST' },
 ];
 
-export interface AdminDelegationsViewProps {
-  readonly activeHref?: string;
-}
 
-export function AdminDelegationsView({
-  activeHref,
-}: AdminDelegationsViewProps = {}): ReactElement {
-  const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.adminDelegations();
+export function AdminDelegationsView(): ReactElement {
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
@@ -433,7 +424,7 @@ export function AdminDelegationsView({
   }
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <PageHeader>
           <ContentHeader
             description="設定簽核代理規則，讓符合範圍的待簽任務自動改派給代理人。"
@@ -686,7 +677,7 @@ export function AdminDelegationsView({
             </BPMFormField>
           </div>
         </Modal>
-      </AppLayout>
+      </>
   );
 }
 

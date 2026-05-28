@@ -79,8 +79,6 @@ import {
 } from '../../../components/org-unit-tree-draft-editor';
 import type { OrgUnitHierarchyDraftChange } from '../../../lib/org-tree-draft';
 import styles from './orgs.module.scss';
-import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
 type OrgUnitViewMode = 'FLOW' | 'TABLE';
@@ -242,15 +240,8 @@ const POSITION_TABLE_MIN_WIDTH = 908;
 const MEMBERSHIP_TABLE_MIN_WIDTH = 1292;
 const MANAGER_TABLE_MIN_WIDTH = 1124;
 
-export interface AdminOrgsViewProps {
-  readonly activeHref?: string;
-}
 
-export function AdminOrgsView({
-  activeHref,
-}: AdminOrgsViewProps = {}): ReactElement {
-  const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.adminOrgs();
+export function AdminOrgsView(): ReactElement {
   const [activeTab, setActiveTab] = useState<AdminOrgTab>('ORG_UNITS');
   const [deleteConfirmation, setDeleteConfirmation] =
     useState<DeleteConfirmationState | null>(null);
@@ -664,7 +655,7 @@ export function AdminOrgsView({
   }
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <PageHeader>
           <ContentHeader
             description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"
@@ -922,7 +913,7 @@ export function AdminOrgsView({
             {visibleDeleteConfirmation?.description ?? ''}
           </Typography>
         </Modal>
-      </AppLayout>
+      </>
   );
 }
 

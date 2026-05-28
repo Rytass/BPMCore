@@ -3,17 +3,15 @@
 import type { ReactElement } from 'react';
 import { ApprovalInstanceListPage } from '../../components/approval-instance-list-page';
 
-export interface SentViewProps {}
 
 /**
  * Framework-agnostic view for the BPM "sent" inbox — instances the current
  * member has initiated. Mechanical port of
  * `apps/client/src/app/sent/page.tsx`.
  */
-export function SentView(_props: SentViewProps = {}): ReactElement {
+export function SentView(): ReactElement {
   return (
     <ApprovalInstanceListPage
-      activeHref="/sent"
       defaultState={null}
       description="查看由你發起的簽核案件與目前流程狀態。"
       emptyMessage="目前沒有由你發起的簽核案件。"

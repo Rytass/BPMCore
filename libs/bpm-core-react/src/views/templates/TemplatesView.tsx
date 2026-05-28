@@ -25,7 +25,6 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './templates.module.scss';
 import { formatDateTime } from '../../lib/format-date-time';
-import { AppLayout } from '../../components/app-navigation';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
 import {
@@ -66,16 +65,10 @@ type TemplateRow = Readonly<
     }
 >;
 
-export interface TemplatesViewProps {
-  readonly activeHref?: string;
-}
 
-export function TemplatesView({
-  activeHref,
-}: TemplatesViewProps = {}): ReactElement {
+export function TemplatesView(): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.templates();
   const [templates, setTemplates] = useState<readonly ApprovalTemplateRecord[]>(
     [],
   );
@@ -236,7 +229,7 @@ export function TemplatesView({
 
   return (
     <>
-      <AppLayout activeHref={resolvedActiveHref}>
+      <>
           <PageHeader>
             <ContentHeader
               description="建立流程模板、維護草稿與發布版本。"
@@ -356,7 +349,7 @@ export function TemplatesView({
               />
             </Section>
           </SectionGroup>
-        </AppLayout>
+        </>
 
       <TemplateNameModal
         categoryOptions={[

@@ -1,17 +1,9 @@
-.logo {
-  display: block;
-  height: 24px;
-  margin: auto;
-  object-fit: contain;
-  width: 24px;
-}
-
-.notificationBell {
+.root {
   display: inline-flex;
   position: relative;
 }
 
-.notificationBadge {
+.badge {
   align-items: center;
   background: #d92d20;
   border: 1px solid #fff;

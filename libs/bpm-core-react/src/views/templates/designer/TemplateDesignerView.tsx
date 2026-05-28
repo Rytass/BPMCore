@@ -92,7 +92,6 @@ import {
   PositionRecord,
   readOrganizationDashboard,
 } from '@rytass/bpm-core-client/organization';
-import { AppLayout } from '../../../components/app-navigation';
 import {
   ApprovalTemplateVersionRecord,
   WorkflowDryRunResultRecord,
@@ -505,16 +504,13 @@ const nodeTypes: NodeTypes = {
 
 export interface TemplateDesignerViewProps {
   readonly templateId: string;
-  readonly activeHref?: string;
 }
 
 export function TemplateDesignerView({
   templateId,
-  activeHref,
 }: TemplateDesignerViewProps): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.templates();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
@@ -1292,7 +1288,7 @@ export function TemplateDesignerView({
   }
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
         <PageHeader>
           <ContentHeader
@@ -1519,7 +1515,7 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {renderDryRunModal()}
-      </AppLayout>
+      </>
   );
 
   function renderDryRunModal(): ReactElement {

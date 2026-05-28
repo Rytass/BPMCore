@@ -26,8 +26,6 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import styles from './users.module.scss';
-import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 import {
   listMemberDirectoryPage,
   MemberProfileRecord,
@@ -52,15 +50,8 @@ type MemberRow = Readonly<
 
 const MEMBER_PAGE_SIZE_OPTIONS = [10, 20, 50];
 
-export interface AdminUsersViewProps {
-  readonly activeHref?: string;
-}
 
-export function AdminUsersView({
-  activeHref,
-}: AdminUsersViewProps = {}): ReactElement {
-  const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.adminUsers();
+export function AdminUsersView(): ReactElement {
   const [detailMember, setDetailMember] = useState<MemberProfileRecord | null>(
     null,
   );
@@ -191,7 +182,7 @@ export function AdminUsersView({
   }
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <PageHeader>
           <ContentHeader
             description="會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。"
@@ -270,7 +261,7 @@ export function AdminUsersView({
           positionsById={positionsById}
           resolvedManager={detailResolvedManager}
         />
-      </AppLayout>
+      </>
   );
 }
 

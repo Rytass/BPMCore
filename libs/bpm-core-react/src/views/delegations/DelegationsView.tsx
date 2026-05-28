@@ -35,9 +35,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { BPMFormField } from '../../components/bpm-form-field';
 import { formatDateTime } from '../../lib/format-date-time';
-import { AppLayout } from '../../components/app-navigation';
 import { useAuth } from '../../lib/auth-provider';
-import { useBPMRoutes } from '../../lib/routes-config';
 import {
   DelegationRuleRecord,
   DelegationRuleStatus,
@@ -110,15 +108,8 @@ const SCOPE_OPTIONS: readonly ScopeOption[] = [
   { id: 'TEMPLATE_LIST', name: '指定模板' },
 ];
 
-export interface DelegationsViewProps {
-  readonly activeHref?: string;
-}
 
-export function DelegationsView({
-  activeHref,
-}: DelegationsViewProps = {}): ReactElement {
-  const routes = useBPMRoutes();
-  const resolvedActiveHref = activeHref ?? routes.delegations();
+export function DelegationsView(): ReactElement {
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [agentMember, setAgentMember] = useState<MemberOption | null>(null);
@@ -404,7 +395,7 @@ export function DelegationsView({
   }
 
   return (
-    <AppLayout activeHref={resolvedActiveHref}>
+    <>
         <PageHeader>
           <ContentHeader
             description="設定自己的簽核代理，讓指定期間內的新待簽任務自動交由代理人處理。"
@@ -603,7 +594,7 @@ export function DelegationsView({
             </BPMFormField>
           </div>
         </Modal>
-      </AppLayout>
+      </>
   );
 }
 

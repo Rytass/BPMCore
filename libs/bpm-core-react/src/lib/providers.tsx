@@ -30,8 +30,9 @@ interface ProvidersProps {
  * - `<AuthProvider>` (BPM session via REST `/auth/*`)
  * - `<NotificationUnreadProvider>` (polls unread count)
  * - `<NotificationDrawerProvider>` (controls drawer open/close state)
- * - `<NotificationDrawer />` mounted at the root so the bell-icon button in
- *   `<AppLayout />` can open it.
+ * - `<NotificationDrawer />` mounted at the root so the host navigation
+ *   bell (`<BPMNotificationBellButton />` or any custom trigger calling
+ *   `useNotificationDrawer().open`) can open it.
  *
  * Consumer hosts wrap this **inside** a `<RouterAdapterProvider>` (provided
  * by the `pages/*` subpath shims when consuming via Next.js, or wired by

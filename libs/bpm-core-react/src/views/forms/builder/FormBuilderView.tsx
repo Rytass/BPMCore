@@ -68,7 +68,6 @@ import {
   TextFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../../lib/format-date-time';
-import { AppLayout } from '../../../components/app-navigation';
 import {
   createFieldDefinition,
   FormBuilderRecord,
@@ -983,7 +982,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
 
   return (
     <>
-      <AppLayout activeHref={routes.forms()}>
+      <>
           <PageHeader>
             <ContentHeader
               description={headerDescription}
@@ -1048,7 +1047,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
               </div>
             </Section>
           </SectionGroup>
-        </AppLayout>
+        </>
 
       <FormNameModal
         confirmText="儲存"

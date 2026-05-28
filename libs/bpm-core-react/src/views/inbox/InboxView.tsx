@@ -28,7 +28,6 @@ import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
-import { AppLayout } from '../../components/app-navigation';
 
 type InboxTabKey = 'history' | 'pending' | 'tracking';
 
@@ -58,14 +57,13 @@ type ApprovalHistoryRow = Readonly<
     }
 >;
 
-export interface InboxViewProps {}
 
 /**
  * Framework-agnostic view for the BPM "我的待簽" inbox. Mechanical port of
  * `apps/client/src/app/inbox/page.tsx` — renders pending tasks, tracking,
  * and history tabs.
  */
-export function InboxView(_props: InboxViewProps = {}): ReactElement {
+export function InboxView(): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const { member } = useAuth();
@@ -253,7 +251,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
   }
 
   return (
-    <AppLayout activeHref={routes.inbox()}>
+    <>
         <PageHeader>
           <ContentHeader
             description={`目前以 ${member?.name ?? currentMemberId ?? '目前登入會員'} 查詢待處理與歷史簽核任務。`}
@@ -322,7 +320,7 @@ export function InboxView(_props: InboxViewProps = {}): ReactElement {
             ) : null}
           </Section>
         </SectionGroup>
-      </AppLayout>
+      </>
   );
 }
 

@@ -2,7 +2,6 @@
 
 import type { ReactElement } from 'react';
 
-export interface RootViewProps {}
 
 /**
  * Framework-agnostic placeholder for the BPM root path. Server-side redirect
@@ -12,6 +11,6 @@ export interface RootViewProps {}
  *
  * Mechanical port of `apps/client/src/app/page.tsx`.
  */
-export function RootView(_props: RootViewProps = {}): ReactElement | null {
+export function RootView(): ReactElement | null {
   return null;
 }

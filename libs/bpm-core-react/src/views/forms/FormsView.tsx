@@ -17,7 +17,6 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatDateTime } from '../../lib/format-date-time';
-import { AppLayout } from '../../components/app-navigation';
 import {
   createFormDefinition,
   FormDefinitionListStatus,
@@ -48,9 +47,8 @@ type FormDefinitionRow = Readonly<
 
 type FormStatusTabKey = 'ALL' | FormDefinitionListStatus;
 
-export interface FormsViewProps {}
 
-export function FormsView(_props: FormsViewProps = {}): ReactElement {
+export function FormsView(): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const [forms, setForms] = useState<readonly FormDefinitionRecord[]>([]);
@@ -150,7 +148,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
 
   return (
     <>
-      <AppLayout activeHref={routes.forms()}>
+      <>
           <PageHeader>
             <ContentHeader
               description="建立表單定義、管理草稿與已發布版本，提供流程模板綁定使用。"
@@ -215,7 +213,7 @@ export function FormsView(_props: FormsViewProps = {}): ReactElement {
               />
             </Section>
           </SectionGroup>
-        </AppLayout>
+        </>
 
       <FormNameModal
         confirmText="建立"

@@ -38,7 +38,6 @@ import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
 import { useRouterAdapter } from '../../../lib/router-adapter';
 import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
 
 const FORM_SECTION_STYLE: CSSProperties = {
@@ -250,7 +249,7 @@ function NewApprovalInstanceContent({
   }
 
   return (
-    <AppLayout activeHref="/">
+    <>
         <PageHeader>
           <ContentHeader
             description={
@@ -322,13 +321,13 @@ function NewApprovalInstanceContent({
             </div>
           </Section>
         </SectionGroup>
-      </AppLayout>
+      </>
   );
 }
 
 function NewApprovalInstanceLoading(): ReactElement {
   return (
-    <AppLayout activeHref="/">
+    <>
         <PageHeader>
           <ContentHeader
             description="選擇可發起的已發布模板後填寫表單內容。"
@@ -343,7 +342,7 @@ function NewApprovalInstanceLoading(): ReactElement {
             </Typography>
           </Section>
         </SectionGroup>
-      </AppLayout>
+      </>
   );
 }
 

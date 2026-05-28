@@ -27,8 +27,9 @@ interface NotificationDrawerProviderProps {
 /**
  * Controls the open/closed state of the BPM notification drawer. Wraps
  * children with a context that `<NotificationDrawer />` reads to mount /
- * hide itself, and that `<AppLayout />` reads to open the drawer when
- * the bell icon is clicked.
+ * hide itself, and that the host navigation reads (via
+ * `<BPMNotificationBellButton />` or `useNotificationDrawer().open`) to
+ * open the drawer when the bell icon is clicked.
  *
  * When used outside this provider, the returned hook is a safe no-op so
  * components don't crash in test or storybook environments.

@@ -20,12 +20,8 @@ import {
 import { useAuth } from '../lib/auth-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
 import { useBPMRoutes } from '../lib/routes-config';
-import { AppLayout } from './app-navigation';
 import styles from './dashboard-page.module.scss';
 
-export interface DashboardPageProps {
-  readonly activeHref: string;
-}
 
 interface Metric {
   readonly caption: string;
@@ -49,7 +45,7 @@ const EMPTY_DASHBOARD_SUMMARY: WorkflowDashboardSummaryRecord = {
  * currently-authenticated member. Reads {@link readWorkflowDashboardSummary}
  * and renders five metric tiles that navigate via {@link useRouterAdapter}.
  */
-export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement {
+export function DashboardPage(): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const { member } = useAuth();
@@ -130,57 +126,57 @@ export function DashboardPage({ activeHref }: DashboardPageProps): ReactElement 
   );
 
   return (
-    <AppLayout activeHref={activeHref}>
-        <PageHeader>
-          <ContentHeader
-            description="查看待處理簽核、近期通知與你發起的案件進度。"
-            title="工作台"
+    <>
+      <PageHeader>
+        <ContentHeader
+          description="查看待處理簽核、近期通知與你發起的案件進度。"
+          title="工作台"
+        >
+          <Button
+            icon={PlusIcon}
+            iconType="leading"
+            onClick={(): void => router.push(routes.caseNew())}
+            variant="base-primary"
           >
-            <Button
-              icon={PlusIcon}
-              iconType="leading"
-              onClick={(): void => router.push(routes.caseNew())}
-              variant="base-primary"
-            >
-              發起簽核
-            </Button>
-          </ContentHeader>
-        </PageHeader>
+            發起簽核
+          </Button>
+        </ContentHeader>
+      </PageHeader>
 
-        <SectionGroup>
-          <Section>
-            {error ? (
-              <Typography color="text-error" variant="body">
-                {error}
-              </Typography>
-            ) : null}
-            <CardGroup>
-              {metrics.map((metric) => (
-                <BaseCard
-                  aria-label={`前往${metric.label}`}
-                  className={styles.metricCard}
-                  description={metric.value}
-                  key={metric.label}
-                  onClick={(): void => router.push(metric.href)}
-                  onKeyDown={(event: KeyboardEvent<HTMLElement>): void => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      router.push(metric.href);
-                    }
-                  }}
-                  role="link"
-                  tabIndex={0}
-                  title={metric.label}
-                >
-                  <Typography color="text-neutral" variant="caption">
-                    {metric.caption}
-                  </Typography>
-                </BaseCard>
-              ))}
-            </CardGroup>
-          </Section>
-        </SectionGroup>
-      </AppLayout>
+      <SectionGroup>
+        <Section>
+          {error ? (
+            <Typography color="text-error" variant="body">
+              {error}
+            </Typography>
+          ) : null}
+          <CardGroup>
+            {metrics.map((metric) => (
+              <BaseCard
+                aria-label={`前往${metric.label}`}
+                className={styles.metricCard}
+                description={metric.value}
+                key={metric.label}
+                onClick={(): void => router.push(metric.href)}
+                onKeyDown={(event: KeyboardEvent<HTMLElement>): void => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    router.push(metric.href);
+                  }
+                }}
+                role="link"
+                tabIndex={0}
+                title={metric.label}
+              >
+                <Typography color="text-neutral" variant="caption">
+                  {metric.caption}
+                </Typography>
+              </BaseCard>
+            ))}
+          </CardGroup>
+        </Section>
+      </SectionGroup>
+    </>
   );
 }
 

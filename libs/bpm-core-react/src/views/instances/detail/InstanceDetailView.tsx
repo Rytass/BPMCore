@@ -85,8 +85,6 @@ import {
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
-import { useBPMRoutes } from '../../../lib/routes-config';
-import { AppLayout } from '../../../components/app-navigation';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
 import { PDFPreview } from '../../../components/pdf-preview';
 
@@ -304,7 +302,6 @@ export interface InstanceDetailViewProps {
 export function InstanceDetailView({
   instanceId,
 }: InstanceDetailViewProps): ReactElement {
-  const routes = useBPMRoutes();
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
   const [activityLogs, setActivityLogs] = useState<
@@ -934,7 +931,7 @@ export function InstanceDetailView({
   }
 
   return (
-    <AppLayout activeHref={routes.inbox()}>
+    <>
         <PageHeader>
           <ContentHeader
             description={
@@ -1412,7 +1409,7 @@ export function InstanceDetailView({
             </BPMFormField>
           </div>
         </Modal>
-      </AppLayout>
+      </>
   );
 }
 

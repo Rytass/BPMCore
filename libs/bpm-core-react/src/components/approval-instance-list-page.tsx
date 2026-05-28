@@ -29,11 +29,9 @@ import {
 import { useRouterAdapter } from '../lib/router-adapter';
 import { useBPMRoutes } from '../lib/routes-config';
 import { formatDateTime } from '../lib/format-date-time';
-import { AppLayout } from './app-navigation';
 import styles from './approval-instance-list-page.module.scss';
 
 export interface ApprovalInstanceListPageProps {
-  readonly activeHref: string;
   readonly defaultState: ApprovalInstanceState | null;
   readonly description: string;
   readonly emptyMessage: string;
@@ -76,7 +74,6 @@ const STATE_FILTER_OPTIONS: readonly StateFilterOption[] = [
  * `/instances/:id` on row action.
  */
 export function ApprovalInstanceListPage({
-  activeHref,
   defaultState,
   description,
   emptyMessage,
@@ -235,101 +232,101 @@ export function ApprovalInstanceListPage({
   );
 
   return (
-    <AppLayout activeHref={activeHref}>
-        <PageHeader>
-          <ContentHeader description={description} title={title} />
-        </PageHeader>
+    <>
+      <PageHeader>
+        <ContentHeader description={description} title={title} />
+      </PageHeader>
 
-        <SectionGroup>
-          <Section
-            filterArea={
-              <FilterArea className={styles.instanceFilterArea} size="sub">
-                <FilterLine>
-                  <Filter span={3}>
-                    <FormField
+      <SectionGroup>
+        <Section
+          filterArea={
+            <FilterArea className={styles.instanceFilterArea} size="sub">
+              <FilterLine>
+                <Filter span={3}>
+                  <FormField
+                    fullWidth
+                    layout={FormFieldLayout.VERTICAL}
+                    name="instanceSearchText"
+                  >
+                    <Input
                       fullWidth
-                      layout={FormFieldLayout.VERTICAL}
-                      name="instanceSearchText"
-                    >
-                      <Input
-                        fullWidth
-                        onChange={(
-                          event: ChangeEvent<HTMLInputElement>,
-                        ): void => {
-                          setSearchText(event.target.value);
-                          setInstancePage(1);
-                        }}
-                        placeholder={searchPlaceholder}
-                        size="sub"
-                        value={searchText}
-                        variant="base"
-                      />
-                    </FormField>
-                  </Filter>
-                  <Filter span={2}>
-                    <FormField
+                      onChange={(
+                        event: ChangeEvent<HTMLInputElement>,
+                      ): void => {
+                        setSearchText(event.target.value);
+                        setInstancePage(1);
+                      }}
+                      placeholder={searchPlaceholder}
+                      size="sub"
+                      value={searchText}
+                      variant="base"
+                    />
+                  </FormField>
+                </Filter>
+                <Filter span={2}>
+                  <FormField
+                    fullWidth
+                    layout={FormFieldLayout.VERTICAL}
+                    name="instanceState"
+                  >
+                    <Select
+                      clearable={false}
                       fullWidth
-                      layout={FormFieldLayout.VERTICAL}
-                      name="instanceState"
-                    >
-                      <Select
-                        clearable={false}
-                        fullWidth
-                        onChange={(option): void => {
-                          setStateFilter(readSelectedStateFilterOption(option));
-                          setInstancePage(1);
-                        }}
-                        options={[...STATE_FILTER_OPTIONS]}
-                        placeholder="狀態"
-                        renderValue={(value): string =>
-                          `狀態：${readStateFilterLabel(value)}`
-                        }
-                        size="sub"
-                        value={stateFilter}
-                      />
-                    </FormField>
-                  </Filter>
-                </FilterLine>
-              </FilterArea>
-            }
-          >
-            {error ? (
-              <Typography color="text-error" variant="body">
-                {error}
-              </Typography>
-            ) : null}
-            {!error && !loading && rows.length === 0 ? (
-              <Typography color="text-neutral" variant="body">
-                {emptyMessage}
-              </Typography>
-            ) : null}
-            <Table
-              actions={tableActions}
-              columns={columns}
-              dataSource={[...rows]}
-              fullWidth
-              loading={loading}
-              pagination={{
-                current: instancePage,
-                onChange: (page): void => {
-                  setInstancePage(page);
-                },
-                onChangePageSize: (pageSize): void => {
-                  setInstancePage(1);
-                  setInstancePageSize(pageSize);
-                },
-                pageSize: instancePageSize,
-                pageSizeLabel: '每頁筆數',
-                pageSizeOptions: INSTANCE_PAGE_SIZE_OPTIONS,
-                renderResultSummary: (from, to, total): string =>
-                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
-                showPageSizeOptions: true,
-                total: instanceTotalCount,
-              }}
-            />
-          </Section>
-        </SectionGroup>
-      </AppLayout>
+                      onChange={(option): void => {
+                        setStateFilter(readSelectedStateFilterOption(option));
+                        setInstancePage(1);
+                      }}
+                      options={[...STATE_FILTER_OPTIONS]}
+                      placeholder="狀態"
+                      renderValue={(value): string =>
+                        `狀態：${readStateFilterLabel(value)}`
+                      }
+                      size="sub"
+                      value={stateFilter}
+                    />
+                  </FormField>
+                </Filter>
+              </FilterLine>
+            </FilterArea>
+          }
+        >
+          {error ? (
+            <Typography color="text-error" variant="body">
+              {error}
+            </Typography>
+          ) : null}
+          {!error && !loading && rows.length === 0 ? (
+            <Typography color="text-neutral" variant="body">
+              {emptyMessage}
+            </Typography>
+          ) : null}
+          <Table
+            actions={tableActions}
+            columns={columns}
+            dataSource={[...rows]}
+            fullWidth
+            loading={loading}
+            pagination={{
+              current: instancePage,
+              onChange: (page): void => {
+                setInstancePage(page);
+              },
+              onChangePageSize: (pageSize): void => {
+                setInstancePage(1);
+                setInstancePageSize(pageSize);
+              },
+              pageSize: instancePageSize,
+              pageSizeLabel: '每頁筆數',
+              pageSizeOptions: INSTANCE_PAGE_SIZE_OPTIONS,
+              renderResultSummary: (from, to, total): string =>
+                `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+              showPageSizeOptions: true,
+              total: instanceTotalCount,
+            }}
+          />
+        </Section>
+      </SectionGroup>
+    </>
   );
 }
 
