@@ -8,6 +8,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.4.0 — 2026-05-28
+
+### Breaking
+
+- **`<AppLayout>` removed from the public surface.** The 4-group
+  Mezzanine `<Layout>` + `<Navigation>` shell BPM used to ship is no
+  longer part of `@rytass/bpm-core-react`. Hosts are expected to own
+  their navigation chrome and mount BPM views inside their existing
+  sidebar / top bar. Together with `AppLayout`, the following exports
+  are gone: `AppLayout`, `AppLayoutProps`, `AppNavigationGroup`.
+- **Views no longer self-wrap.** Every view (`InboxView`, `FormsView`,
+  `TemplatesView`, `AdminOrgsView`, … 13 in total) used to render
+  `<AppLayout activeHref=…>…</AppLayout>` internally. They now return
+  the page content fragment (a `<PageHeader>` + `<SectionGroup>`
+  composition) so a host layout can wrap them. The `activeHref?` prop
+  on `TemplatesView` / `DelegationsView` / `TemplateDesignerView` /
+  `TemplateVersionsView` / `TemplateCategoriesView` / `AdminOrgsView` /
+  `AdminUsersView` / `AdminDelegationsView` /
+  `SettingsNotificationsView` is removed because it had no consumer
+  after the layout was lifted out.
+- **`DashboardPage` props simplified to `{}`** — `activeHref` removed
+  for the same reason. The component still renders the five-metric
+  workflow dashboard fragment unchanged.
+- **`ApprovalInstanceListPage` no longer accepts `activeHref`.** The
+  thin delegators (`SentView`, `CcView`, `SearchView`) drop the
+  hard-coded `activeHref` argument accordingly.
+
+### Added
+
+- **`<BPMNotificationBellButton />`** — drop-in notification bell for
+  host navigations. Opens the BPM `<NotificationDrawer />` (mounted by
+  `<Providers>`) on click and renders an unread-count badge from
+  `<NotificationUnreadProvider>`. Visual chrome uses Mezzanine
+  `NavigationIconButton`, but the button is decoupled from the
+  Mezzanine `<Navigation>` container — drop it anywhere in your nav.
+  Hosts that want a fully custom trigger can skip this widget and
+  consume `useNotificationDrawer().open` + `useNotificationUnread().unreadCount`
+  directly.
+- **`useBPMMember()` hook** — host-facing alias of `useAuth().member`.
+  Returns the currently authenticated `ApiMember | null` without
+  exposing the broader `useAuth()` surface.
+- **`useBPMLogout()` hook** — host-facing alias of `useAuth().logout`.
+  Returns `() => Promise<void>` that calls `logoutApi()` and redirects
+  to the configured `loginPath`. Mount on host logout buttons / menu
+  items so the host nav does not need to import `useAuth()` directly.
+
+### Removed
+
+- `AppLayout`, `AppLayoutProps`, `AppNavigationGroup` (see Breaking).
+- `components/app-navigation.tsx` and `components/app-navigation.module.scss`
+  are deleted from the lib source tree.
+
+### Why a minor (0.x semver)
+
+The library is still in `0.x` so breaking changes ride a minor bump per
+the project's release convention. The change targets a single consumer
+in the monorepo (`apps/client`) plus any external consumer wiring
+`@rytass/bpm-core-react` into their own host — both are expected to
+follow the migration recipe below.
+
+### Migration
+
+If your host re-exported page shims (`pages/<feature>`), you only need
+to add a layout wrapper:
+
+```diff
+  // app/layout.tsx
+  import { BPMNextProviders } from '@rytass/bpm-core-react/next';
++ import { MyHostLayout } from './_components/host-layout';
+
+  export default function RootLayout({ children }) {
+    return (
+      <html lang="zh-TW"><body>
+-       <BPMNextProviders>{children}</BPMNextProviders>
++       <BPMNextProviders>
++         <MyHostLayout>{children}</MyHostLayout>
++       </BPMNextProviders>
+      </body></html>
+    );
+  }
+```
+
+For a reference `MyHostLayout` that reproduces the legacy 4-group BPM
+nav using `useBPMRoutes` + `useBPMMember` + `useBPMLogout` +
+`<BPMNotificationBellButton />`, copy
+`apps/client/src/app/_components/host-layout.tsx` from the BPMCore
+repo. Adjust groups, branding, and which routes you expose to match
+your host.
+
+If your host imported `AppLayout` directly, swap to the same host
+layout pattern — `AppLayout` is no longer exported.
+
+### Documentation
+
+- README's `Usage` section rewritten around the new integration shape
+  (host owns the layout; BPM provides widgets).
+- New `docs/integration-guide.md` with a step-by-step host integration
+  walkthrough, the recommended 4-group nav structure (`我的工作` /
+  `查詢與代理` / `簽核設計` / `系統管理`), and notes on consuming the
+  widgets / hooks.
+- `docs/api-reference.md` updated to reflect the new root-barrel
+  surface (`useBPMMember`, `useBPMLogout`, `BPMNotificationBellButton`)
+  and the removal of `AppLayout` / `AppLayoutProps` /
+  `AppNavigationGroup`.
+
 ## 0.3.8 — 2026-05-28
 
 ### Fixed

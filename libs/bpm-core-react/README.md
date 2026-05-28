@@ -6,7 +6,7 @@ This package composes [`@mezzanine-ui/react`](https://www.npmjs.com/package/@mez
 
 ## Status
 
-`0.3.7` — adds `BPMRoutesProvider` for host-controlled path remapping (0.3.2), forwards `loginPath` / `publicPaths` / `locale` on `BPMNextProviders` (0.3.3), 19 view subpaths + 19 Next.js page shims (`pages/<feature>`), `next` subpath barrel, and foundation root barrel. See `CHANGELOG.md` for the per-release history.
+`0.4.0` (breaking) — drops the bundled navigation shell. BPM views no longer wrap themselves in an `<AppLayout>` / Mezzanine `<Navigation>`; the host owns the layout chrome and mounts BPM views inside its own sidebar / top bar. New host-facing widgets ship in the root barrel: `useBPMMember`, `useBPMLogout`, `<BPMNotificationBellButton />`. See `CHANGELOG.md` for the migration walkthrough, and `docs/integration-guide.md` for a host integration recipe.
 
 ## Install
 
@@ -39,12 +39,77 @@ module.exports = {
 
 ## Usage
 
-### Drop-in Next.js page
+### Host integration shape
+
+BPM ships **page bodies, providers, and widgets** — never a full layout.
+The host wires its own `<Layout>` / `<Navigation>` (or its own design
+system equivalent), then drops BPM widgets and views into the slots:
 
 ```tsx
-// app/login/page.tsx
-export { default, metadata } from '@rytass/bpm-core-react/pages/login';
+// app/layout.tsx
+import { BPMNextProviders } from '@rytass/bpm-core-react/next';
+import { MyHostLayout } from './host-layout';
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-TW"><body>
+      <BPMNextProviders>
+        <MyHostLayout>{children}</MyHostLayout>
+      </BPMNextProviders>
+    </body></html>
+  );
+}
 ```
+
+```tsx
+// app/host-layout.tsx
+'use client';
+import {
+  BPMNotificationBellButton,
+  useBPMLogout,
+  useBPMMember,
+  useBPMRoutes,
+  useRouterAdapter,
+} from '@rytass/bpm-core-react';
+
+export function MyHostLayout({ children }) {
+  const router = useRouterAdapter();
+  const routes = useBPMRoutes();
+  const member = useBPMMember();
+  const logout = useBPMLogout();
+  return (
+    <div className="grid grid-cols-[240px_1fr]">
+      <aside>
+        <h1>My Console</h1>
+        <ul>
+          <li><a href={routes.dashboard()}>工作台</a></li>
+          <li><a href={routes.inbox()}>我的待簽</a></li>
+          {/* …host's own nav items… */}
+        </ul>
+        <div className="flex items-center gap-2">
+          <span>{member?.name}</span>
+          <BPMNotificationBellButton />
+          <button onClick={() => logout()}>登出</button>
+        </div>
+      </aside>
+      <main>{children}</main>
+    </div>
+  );
+}
+```
+
+The page shims under `pages/*` are unchanged — they remain one-line
+`{ default, metadata }` re-exports and are mounted under the host
+layout exactly like any other Next.js page:
+
+```tsx
+// app/inbox/page.tsx
+export { default, metadata } from '@rytass/bpm-core-react/pages/inbox';
+```
+
+For an end-to-end reference layout (with the original 4-group BPM nav
+structure, admin-only filtering, and member display), see
+`apps/client/src/app/_components/host-layout.tsx` in the BPMCore repo.
 
 ### Framework-agnostic view
 
