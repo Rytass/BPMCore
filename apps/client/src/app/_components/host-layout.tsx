@@ -138,15 +138,10 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
       <NavigationUserMenu
         options={[
           { id: 'notification-settings', name: '通知設定' },
-          { id: 'logout', name: '登出' },
         ]}
         onSelect={(option): void => {
           if (option.id === 'notification-settings') {
             router.push(routes.notificationSettings());
-            return;
-          }
-          if (option.id === 'logout') {
-            void logout();
           }
         }}
       >
