@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.4.1 — 2026-05-28
+
+### Fixed
+
+- **`<BPMNextProviders>` no longer breaks BPM views under Next.js 16 App
+  Router prerender.** Previous versions wrapped the provider body in
+  `<Suspense fallback={null}>` so that `useSearchParams()` could survive
+  the static prerender phase. In Next 16, `useSearchParams()` triggers a
+  client-side bailout at prerender time, the `<Suspense>` boundary then
+  rendered `null`, and `<RouterAdapterProvider>` — which lived **inside**
+  that boundary — vanished from the SSR/hydration tree. Every BPM view
+  that called `useRouterAdapter()` on mount then threw
+  `must be used inside <RouterAdapterProvider>` and Next.js surfaced the
+  global error overlay.
+
+  Fix: removed `useSearchParams()` from `BPMNextProviders` entirely. The
+  `searchParams()` method on the wired-up `RouterAdapter` now returns a
+  lazy snapshot from `defaultBrowserSearchParams()` (i.e.
+  `window.location.search` on the client, empty `URLSearchParams` on
+  the server). The `<Suspense>` wrapper is gone, so
+  `<RouterAdapterProvider>` always mounts immediately and is present in
+  every BPM view's ancestor chain throughout SSR and hydration.
+
+- **Error thrown by `useRouterAdapter()` outside a provider pointed at a
+  dead subpath.** The hint string referenced
+  `<NextRouterAdapterProvider>` from
+  `@rytass/bpm-core-react/pages/router-adapter` — neither the component
+  nor the subpath has ever existed in the published package. Replaced
+  with an accurate hint that names `<BPMNextProviders>` from
+  `@rytass/bpm-core-react/next` (Next.js hosts) and
+  `<RouterAdapterProvider>` (other hosts).
+
+### Trade-off
+
+- `RouterAdapter.searchParams()` is no longer reactive. Components that
+  read it inside a render body will see the URL at first mount but will
+  not re-render when the query string changes (without an accompanying
+  pathname change). None of the shipped BPM views consume this method,
+  so the change is API-compatible for the in-repo consumer. Hosts that
+  want reactive query-string state should call Next's
+  `useSearchParams()` directly in their page (wrapped in their own
+  `<Suspense>` per Next 16 conventions), not via the BPM
+  `RouterAdapter`.
+
+### Why a patch
+
+Bug fix only. Public API surface unchanged — same exports, same component
+shape, same prop types.
+
 ## 0.4.0 — 2026-05-28
 
 ### Breaking
