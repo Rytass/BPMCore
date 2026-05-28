@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.1.2`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.3.1`.
+Last verified against: `libs/shared@0.1.2`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.0`.
 
 ---
 
@@ -498,7 +498,9 @@ Workflow execution engine — the heaviest module.
 
 # 📦 `@rytass/bpm-core-react`
 
-React UI library. Four export families: root barrel (foundation), `next` (Next.js wrapper), `views/*` (pure React), `pages/*` (Next.js Server Component shims).
+React UI library. Four export families: root barrel (foundation + host integration widgets), `next` (Next.js wrapper), `views/*` (pure React page bodies — no layout shell), `pages/*` (Next.js Server Component shims).
+
+**Integration model (0.4.0+)**: BPMCore does not ship a navigation shell or sidebar. Hosts own the `<Layout>` / `<Navigation>` chrome and mount BPM views inside their existing layout. The root barrel exports building blocks the host wires into its own nav (`useBPMMember`, `useBPMLogout`, `<BPMNotificationBellButton />`). See `docs/integration-guide.md` and `apps/client/src/app/_components/host-layout.tsx` for a reference host layout.
 
 ## `@rytass/bpm-core-react` (root)
 
@@ -506,33 +508,39 @@ React UI library. Four export families: root barrel (foundation), `next` (Next.j
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
-| `useAuth()` | hook | Current member + login/logout methods |
+| `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
+| `useBPMMember()` | hook | Host-facing alias of `useAuth().member` — current `ApiMember \| null` |
+| `useBPMLogout()` | hook | Host-facing alias of `useAuth().logout` — `() => Promise<void>`, runs `logoutApi()` + redirect to `loginPath` |
 | `RouterAdapter` | interface | Framework-agnostic router contract (pathname / push / replace / back / searchParams) |
 | `RouterAdapterProvider` | Component | Inject host's RouterAdapter |
 | `RouterAdapterProviderProps` | interface | Provider props |
 | `useRouterAdapter()` | hook | Read current adapter |
 | `defaultBrowserSearchParams()` | function | Fallback reader from `window.location.search` |
+| `BPMRoutes` | interface | Path mapping every BPM view uses (dashboard / inbox / caseDetail / templates / forms / admin / …) |
+| `BPMRoutesProvider` | Component | Override host BPM internal paths |
+| `BPMRoutesProviderProps` | interface | `{ value?, children }` |
+| `createDefaultBPMRoutes()` | function | Factory returning the default `BPMRoutes` literal map |
+| `useBPMRoutes()` | hook | Read the active `BPMRoutes` (falls back to default when no provider) |
 | `NotificationDrawerProvider` | Component | Drawer open/close context |
-| `useNotificationDrawer()` | hook | Drawer state + open/close handlers |
+| `useNotificationDrawer()` | hook | Drawer state + open/close handlers (host wires its own trigger here) |
 | `NotificationUnreadProvider` | Component | Polls unread notification count |
-| `useNotificationUnread()` | hook | Unread count + refresh trigger |
+| `useNotificationUnread()` | hook | Unread count + refresh trigger (host wires its own badge here) |
 | `formatDateTime(value)` | function | moment-based `YYYY-MM-DD HH:mm:ss` formatter |
 
 ### Reusable Components
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `AppLayout` | Component | Mezzanine `<Layout>` + four-group `<Navigation>` shell. Children fill `<Layout.Main>`. Replaces standalone `<Navigation>` wrappers — Mezzanine `<Layout>` filters children by component identity, so a wrapper like `<AppNavigation>` is silently dropped. |
-| `AppLayoutProps` | interface | `{ activeHref?, logoSrc?, title?, groups?, children? }` |
-| `AppNavigationGroup` | interface | `{ title, items: { href, icon, label, requiresAdmin? }[] }` — shape for overriding the nav tree via `groups` |
-| `NotificationDrawer` | Component | Mezzanine Drawer + NotificationCenter |
-| `ApprovalInstanceListPage` | Component | Shared list page (inbox / sent / cc / search) |
-| `ApprovalInstanceListPageProps` | interface | view / state / title / description / etc. |
-| `DashboardPage` | Component | Five-metric workflow dashboard |
-| `DashboardPageProps` | interface | `{ activeHref }` |
+| `BPMNotificationBellButton` | Component | Drop-in bell icon button for host nav — opens BPM `<NotificationDrawer />` + shows unread badge. Visual chrome: Mezzanine `NavigationIconButton` (decoupled from `<Navigation>` container, usable anywhere). |
+| `BPMNotificationBellButtonProps` | interface | `{ label? }` — override aria-label / tooltip (defaults to `通知中心`). |
+| `NotificationDrawer` | Component | Mezzanine Drawer + NotificationCenter (overlay portal; mounted by `<Providers>`) |
+| `ApprovalInstanceListPage` | Component | Shared list page body (inbox / sent / cc / search). Returns content fragment — host wraps in its own layout. |
+| `ApprovalInstanceListPageProps` | interface | `{ defaultState, description, emptyMessage, searchPlaceholder, title, view }` |
+| `DashboardPage` | Component | Five-metric workflow dashboard (content fragment) |
+| `DashboardPageProps` | interface | `{}` (no props) |
 | `BPMFormField` | Component | Mezzanine FormField wrapper (TIGHT / HORIZONTAL defaults) |
 | `MemberPicker` / `OrgUnitPicker` / `PositionPicker` | Component | Picker components for admin pages |
 | `readMemberOption()` / `readOrgUnitOption()` / `readPositionOption()` | function | record → picker option |
