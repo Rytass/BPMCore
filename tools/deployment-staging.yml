@@ -54,14 +54,14 @@ spec:
               containerPort: 6001
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /health
               port: 6001
             initialDelaySeconds: 15
             periodSeconds: 60
             failureThreshold: 5
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /health
               port: 6001
             initialDelaySeconds: 8
             periodSeconds: 10
