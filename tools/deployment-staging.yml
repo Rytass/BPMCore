@@ -131,9 +131,15 @@ spec:
       services:
         - name: main
           port: 6001
-    - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/api`)
+    - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/auth`)
       kind: Rule
-      priority: 10
+      priority: 20
+      services:
+        - name: main
+          port: 6001
+    - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/attachments`)
+      kind: Rule
+      priority: 20
       services:
         - name: main
           port: 6001
