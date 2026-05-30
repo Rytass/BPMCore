@@ -752,9 +752,26 @@ function applySetEdgeDefault(
         return { ...edge, data: { ...edge.data, isDefault: false } };
       }
 
-      return edge.id === targetEdge.id
-        ? { ...edge, data: { ...edge.data, isDefault: command.isDefault } }
-        : edge;
+      if (edge.id !== targetEdge.id) {
+        return edge;
+      }
+
+      // Becoming the default ("其他情況") means it carries no condition; clear
+      // any stale condition so the edge reads cleanly as the else path.
+      return command.isDefault
+        ? {
+            ...edge,
+            data: {
+              ...edge.data,
+              condition: undefined,
+              conditionFieldKey: undefined,
+              conditionOperator: undefined,
+              conditionValue: undefined,
+              isDefault: true,
+              label: undefined,
+            },
+          }
+        : { ...edge, data: { ...edge.data, isDefault: false } };
     }),
   };
 

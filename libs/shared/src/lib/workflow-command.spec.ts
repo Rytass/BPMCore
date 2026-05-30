@@ -1,4 +1,8 @@
-import { readFallbackWorkflowDefinition } from './workflow-graph';
+import {
+  readFallbackWorkflowDefinition,
+  readWorkflowDefinitionIssue,
+} from './workflow-graph';
+import { WorkflowDefinition } from './workflow';
 import {
   WorkflowCommandOptions,
   WorkflowDesignerState,
@@ -206,5 +210,69 @@ describe('applyWorkflowMacroCommand', () => {
         type: 'DIRECT',
       });
     }
+  });
+});
+
+describe('readWorkflowDefinitionIssue — exclusive gateway default path', () => {
+  function gatewayDefinition(
+    edges: WorkflowDefinition['edges'],
+  ): WorkflowDefinition {
+    return {
+      edges,
+      meta: { schemaVersion: 1 },
+      nodes: [
+        { data: { label: '開始' }, id: 'start', position: { x: 0, y: 0 }, type: 'startEvent' },
+        {
+          data: { direction: 'split', label: '分流', triggerMode: 'AND' },
+          id: 'gw',
+          position: { x: 0, y: 0 },
+          type: 'exclusiveGateway',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+          id: 'end',
+          position: { x: 0, y: 0 },
+          type: 'endEvent',
+        },
+      ],
+    };
+  }
+
+  it('flags a gateway whose outputs all have conditions but no "其他情況" default', () => {
+    const issue = readWorkflowDefinitionIssue(
+      gatewayDefinition([
+        { data: {}, id: 'e0', source: 'start', target: 'gw' },
+        {
+          data: { condition: 'form.amount > 100000', label: '金額>10萬' },
+          id: 'e1',
+          source: 'gw',
+          target: 'end',
+        },
+      ]),
+    );
+
+    expect(issue).toContain('其他情況');
+  });
+
+  it('passes once one output edge is the default path', () => {
+    const issue = readWorkflowDefinitionIssue(
+      gatewayDefinition([
+        { data: {}, id: 'e0', source: 'start', target: 'gw' },
+        {
+          data: { condition: 'form.amount > 100000', label: '金額>10萬' },
+          id: 'e1',
+          source: 'gw',
+          target: 'end',
+        },
+        {
+          data: { isDefault: true, label: '其他情況' },
+          id: 'e2',
+          source: 'gw',
+          target: 'end',
+        },
+      ]),
+    );
+
+    expect(issue).toBeNull();
   });
 });

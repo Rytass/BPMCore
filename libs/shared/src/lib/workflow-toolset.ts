@@ -155,10 +155,11 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   },
   {
     name: 'set_user_task_approver',
-    description: '設定簽核節點的簽核人員解析策略（會將決策政策重設為 SINGLE）。',
+    description:
+      '設定簽核節點的簽核人員（會將決策政策重設為 SINGLE）。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。',
     inputSchema: objectSchema(
       { nodeId: { type: 'string' }, approverResolver: APPROVER_RESOLVER_SCHEMA },
-      ['nodeId', 'approverResolver'],
+      ['nodeId'],
     ),
     kind: 'mutation',
   },
@@ -269,7 +270,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'insert_approval_step',
     description:
-      '高階：新增一個簽核節點並一次設定其簽核人員（可選 label 與插入錨點）。等同 add_node + set_user_task_approver。',
+      '高階：新增一個簽核關卡。approverResolver 可省略 —— 省略或資料不全時，預設為「直屬主管」（ORG_MANAGER，從申請人往上 1 層），不需要真實會員 id。畫初稿時建議直接省略簽核人、先把流程結構建出來。',
     inputSchema: objectSchema(
       {
         approverResolver: APPROVER_RESOLVER_SCHEMA,
@@ -277,14 +278,14 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
         anchorEdgeId: { type: ['string', 'null'] },
         anchorAfterNodeId: { type: ['string', 'null'] },
       },
-      ['approverResolver'],
+      [],
     ),
     kind: 'macro',
   },
   {
     name: 'insert_notification',
     description:
-      '高階：新增一個系統節點並一次設定其動作（可選 label 與插入錨點）。等同 add_node + set_service_action。',
+      '高階：新增一個系統通知關卡。action 可省略 —— 省略或資料不全時，預設為站內通知（NOTIFY / IN_APP / 收件者為直屬主管）。',
     inputSchema: objectSchema(
       {
         action: SERVICE_ACTION_SCHEMA,
@@ -292,7 +293,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
         anchorEdgeId: { type: ['string', 'null'] },
         anchorAfterNodeId: { type: ['string', 'null'] },
       },
-      ['action'],
+      [],
     ),
     kind: 'macro',
   },
@@ -333,6 +334,27 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'validate_workflow',
     description: '檢查目前流程設定是否完整，回傳問題描述（無問題則為 null）。',
     inputSchema: objectSchema({}, []),
+    kind: 'query',
+  },
+  {
+    name: 'list_org_units',
+    description:
+      '列出組織單位（id、名稱），供指定 ORG_UNIT_MEMBER / ORG_UNIT_POSITION / ORG_UNIT_MANAGER 簽核人時取得真實 orgUnitId。',
+    inputSchema: objectSchema({}, []),
+    kind: 'query',
+  },
+  {
+    name: 'list_positions',
+    description:
+      '列出職位（id、名稱），供指定 POSITION / ORG_UNIT_POSITION 簽核人時取得真實 positionId。',
+    inputSchema: objectSchema({}, []),
+    kind: 'query',
+  },
+  {
+    name: 'search_members',
+    description:
+      '依關鍵字搜尋會員（回傳 id、姓名、email），供指定 DIRECT 簽核人或通知收件者時取得真實 memberId。使用者點名某人時先用這個查到 id 再設定。',
+    inputSchema: objectSchema({ query: { type: 'string' } }, ['query']),
     kind: 'query',
   },
 ];
@@ -449,7 +471,33 @@ export type WorkflowToolResult =
   | { readonly ok: true; readonly kind: 'query'; readonly data: unknown }
   | { readonly ok: false; readonly error: string };
 
+export interface WorkflowDirectoryItem {
+  readonly id: string;
+  readonly name: string;
+  readonly email?: string;
+}
+
+/**
+ * Host-injected resolver for organisation data. Lets the directory query tools
+ * (`list_org_units` / `list_positions` / `search_members`) surface the real ids
+ * an LLM needs to assign concrete approvers — without the pure toolset knowing
+ * where the data comes from. The React designer backs this with its already
+ * loaded org/position data plus the BPM client's member search.
+ */
+export interface WorkflowDirectory {
+  readonly listOrgUnits: () => Promise<readonly WorkflowDirectoryItem[]>;
+  readonly listPositions: () => Promise<readonly WorkflowDirectoryItem[]>;
+  readonly searchMembers: (
+    query: string,
+  ) => Promise<readonly WorkflowDirectoryItem[]>;
+}
+
 export interface ExecuteWorkflowToolOptions extends WorkflowCommandOptions {
+  /**
+   * Host-injected organisation directory. When absent, directory query tools
+   * report `available: false` so the assistant falls back to defaults.
+   */
+  readonly directory?: WorkflowDirectory;
   /**
    * Resolves a form version id to its schema (host-managed). Required only if
    * a tool needs the bound form schema. Not used by the current toolset, which
@@ -463,13 +511,14 @@ export interface ExecuteWorkflowToolOptions extends WorkflowCommandOptions {
 /**
  * Execute a single LLM tool call against the designer state. Mutations and
  * macros return the new state + a fresh snapshot; queries return read-only data.
+ * Async because directory query tools may fetch from the host (GraphQL).
  */
-export function executeWorkflowTool(
+export async function executeWorkflowTool(
   state: WorkflowDesignerState,
   toolName: string,
   rawInput: unknown,
   options: ExecuteWorkflowToolOptions = {},
-): WorkflowToolResult {
+): Promise<WorkflowToolResult> {
   const tool = WORKFLOW_TOOL_BY_NAME.get(toolName);
 
   if (!tool) {
@@ -480,7 +529,11 @@ export function executeWorkflowTool(
 
   try {
     if (tool.kind === 'query') {
-      return { data: runQueryTool(state, toolName), kind: 'query', ok: true };
+      return {
+        data: await runQueryTool(state, toolName, input, options),
+        kind: 'query',
+        ok: true,
+      };
     }
 
     if (tool.kind === 'macro') {
@@ -515,10 +568,12 @@ function finalizeMutation(
   };
 }
 
-function runQueryTool(
+async function runQueryTool(
   state: WorkflowDesignerState,
   toolName: string,
-): unknown {
+  input: Readonly<Record<string, unknown>>,
+  options: ExecuteWorkflowToolOptions,
+): Promise<unknown> {
   if (toolName === 'get_workflow_snapshot') {
     return readWorkflowSnapshot(state);
   }
@@ -531,8 +586,35 @@ function runQueryTool(
     return readFormFieldCatalog(state.formSchema);
   }
 
+  if (toolName === 'list_org_units') {
+    return readDirectoryResult(options.directory?.listOrgUnits());
+  }
+
+  if (toolName === 'list_positions') {
+    return readDirectoryResult(options.directory?.listPositions());
+  }
+
+  if (toolName === 'search_members') {
+    const query = typeof input['query'] === 'string' ? input['query'] : '';
+
+    return readDirectoryResult(options.directory?.searchMembers(query));
+  }
+
   // validate_workflow
   return { issue: readWorkflowIssue(state) };
+}
+
+async function readDirectoryResult(
+  pending: Promise<readonly WorkflowDirectoryItem[]> | undefined,
+): Promise<{
+  readonly available: boolean;
+  readonly items: readonly WorkflowDirectoryItem[];
+}> {
+  if (!pending) {
+    return { available: false, items: [] };
+  }
+
+  return { available: true, items: await pending };
 }
 
 // ── Command builders (parse LLM input → typed command) ──────────────────────
@@ -836,69 +918,164 @@ function readAnchor(
   };
 }
 
+/**
+ * The always-valid default approver: the initiator's direct manager (one level
+ * up). Needs no member/org id, so a draft built purely from this passes
+ * validation — letting the assistant draw a flow from one sentence.
+ */
+const DEFAULT_MANAGER_RESOLVER: ApproverResolver = {
+  baseFromInitiator: true,
+  levelsUp: 1,
+  type: 'ORG_MANAGER',
+};
+
+const DEFAULT_NOTIFY_ACTION: ServiceAction = {
+  channels: ['IN_APP'],
+  recipients: DEFAULT_MANAGER_RESOLVER,
+  type: 'NOTIFY',
+};
+
+/**
+ * Coerce an LLM-supplied approver resolver into a valid one, **never throwing**.
+ * When required ids are missing (the model can't know real member/org ids), we
+ * fall back to {@link DEFAULT_MANAGER_RESOLVER} so the operation still succeeds;
+ * `validate_workflow` surfaces anything that still needs the user's attention.
+ */
 function parseApproverResolver(value: unknown): ApproverResolver {
   if (!isRecord(value)) {
-    throw new Error('approverResolver 必須為物件。');
+    return DEFAULT_MANAGER_RESOLVER;
   }
 
-  const type = value['type'];
+  switch (value['type']) {
+    case 'DIRECT': {
+      const memberIds = readStringArray(value['memberIds']);
 
-  if (typeof type !== 'string') {
-    throw new Error('approverResolver.type 必須為字串。');
+      return memberIds.length > 0
+        ? { memberIds, type: 'DIRECT' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'POSITION': {
+      const positionId = readNonEmptyString(value['positionId']);
+
+      return positionId
+        ? { positionId, type: 'POSITION' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'ORG_UNIT_MEMBER': {
+      const orgUnitId = readNonEmptyString(value['orgUnitId']);
+
+      return orgUnitId
+        ? {
+            orgUnitId,
+            type: 'ORG_UNIT_MEMBER',
+            ...readOptionalBoolean(value, 'includeDescendants', 'includeDescendants'),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'ORG_UNIT_POSITION': {
+      const orgUnitId = readNonEmptyString(value['orgUnitId']);
+      const positionId = readNonEmptyString(value['positionId']);
+
+      return orgUnitId && positionId
+        ? {
+            orgUnitId,
+            positionId,
+            type: 'ORG_UNIT_POSITION',
+            ...readOptionalBoolean(value, 'includeDescendants', 'includeDescendants'),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'ORG_MANAGER':
+      return {
+        baseFromInitiator: value['baseFromInitiator'] !== false,
+        levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        type: 'ORG_MANAGER',
+      };
+    case 'ORG_UNIT_MANAGER': {
+      const orgUnitId = readNonEmptyString(value['orgUnitId']);
+
+      return orgUnitId
+        ? { orgUnitId, type: 'ORG_UNIT_MANAGER' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'DYNAMIC_FORM': {
+      const formPath = readNonEmptyString(value['formPath']);
+
+      return formPath
+        ? { formPath, type: 'DYNAMIC_FORM' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'EXPRESSION': {
+      const expression = readNonEmptyString(value['expression']);
+
+      return expression
+        ? { expression, type: 'EXPRESSION' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    default:
+      return DEFAULT_MANAGER_RESOLVER;
   }
-
-  // Discriminant + required-key validation; the JSON Schema guides the model to
-  // the right shape, so a structural cast after these checks is safe.
-  const requiredKeysByType: Readonly<Record<string, readonly string[]>> = {
-    DIRECT: ['memberIds'],
-    DYNAMIC_FORM: ['formPath'],
-    EXPRESSION: ['expression'],
-    ORG_MANAGER: ['baseFromInitiator', 'levelsUp'],
-    ORG_UNIT_MANAGER: ['orgUnitId'],
-    ORG_UNIT_MEMBER: ['orgUnitId'],
-    ORG_UNIT_POSITION: ['orgUnitId', 'positionId'],
-    POSITION: ['positionId'],
-  };
-  const requiredKeys = requiredKeysByType[type];
-
-  if (!requiredKeys) {
-    throw new Error(`approverResolver.type 不支援：${type}。`);
-  }
-
-  const missingKey = requiredKeys.find((key) => value[key] === undefined);
-
-  if (missingKey) {
-    throw new Error(`approverResolver(${type}) 缺少必要欄位：${missingKey}。`);
-  }
-
-  return value as unknown as ApproverResolver;
 }
 
+/** Coerce an LLM-supplied service action, **never throwing** (defaults to NOTIFY). */
 function parseServiceAction(value: unknown): ServiceAction {
   if (!isRecord(value)) {
-    throw new Error('action 必須為物件。');
+    return DEFAULT_NOTIFY_ACTION;
   }
 
-  const type = value['type'];
-  const requiredKeysByType: Readonly<Record<string, readonly string[]>> = {
-    NOTIFY: ['channels', 'recipients'],
-    SET_FORM_FIELD: ['fieldPath', 'value'],
-    WEBHOOK: ['url'],
+  if (value['type'] === 'WEBHOOK') {
+    const url = readNonEmptyString(value['url']);
+
+    return url
+      ? { type: 'WEBHOOK', url, ...readOptionalString(value, 'payload', 'payload') }
+      : DEFAULT_NOTIFY_ACTION;
+  }
+
+  if (value['type'] === 'SET_FORM_FIELD') {
+    const fieldPath = readNonEmptyString(value['fieldPath']);
+    const fieldValue = readNonEmptyString(value['value']);
+
+    return fieldPath && fieldValue
+      ? { fieldPath, type: 'SET_FORM_FIELD', value: fieldValue }
+      : DEFAULT_NOTIFY_ACTION;
+  }
+
+  // NOTIFY (default for any other / missing type).
+  return {
+    channels: readNotifyChannels(value['channels']),
+    recipients: parseApproverResolver(value['recipients']),
+    type: 'NOTIFY',
+    ...readOptionalString(value, 'template', 'template'),
   };
-  const requiredKeys =
-    typeof type === 'string' ? requiredKeysByType[type] : undefined;
+}
 
-  if (!requiredKeys) {
-    throw new Error(`action.type 不支援：${String(type)}。`);
-  }
+function readStringArray(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : [];
+}
 
-  const missingKey = requiredKeys.find((key) => value[key] === undefined);
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
 
-  if (missingKey) {
-    throw new Error(`action(${type}) 缺少必要欄位：${missingKey}。`);
-  }
+function readPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
 
-  return value as unknown as ServiceAction;
+function readNotifyChannels(
+  value: unknown,
+): readonly ('IN_APP' | 'EMAIL')[] {
+  const channels = Array.isArray(value)
+    ? value.filter(
+        (item): item is 'IN_APP' | 'EMAIL' =>
+          item === 'IN_APP' || item === 'EMAIL',
+      )
+    : [];
+
+  return channels.length > 0 ? channels : ['IN_APP'];
 }
 
 function readToolError(error: unknown): string {

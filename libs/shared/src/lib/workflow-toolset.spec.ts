@@ -2,6 +2,7 @@ import { readFallbackWorkflowDefinition } from './workflow-graph';
 import { WorkflowDesignerState } from './workflow-command';
 import {
   WORKFLOW_TOOLSET,
+  WorkflowDirectory,
   WorkflowSnapshot,
   executeWorkflowTool,
   readWorkflowSnapshot,
@@ -42,8 +43,12 @@ describe('WORKFLOW_TOOLSET', () => {
 });
 
 describe('executeWorkflowTool', () => {
-  it('returns an error for an unknown tool', () => {
-    const result = executeWorkflowTool(initialState(), 'no_such_tool', {});
+  it('returns an error for an unknown tool', async () => {
+    const result = await executeWorkflowTool(
+      initialState(),
+      'no_such_tool',
+      {},
+    );
 
     expect(result.ok).toBe(false);
 
@@ -52,8 +57,8 @@ describe('executeWorkflowTool', () => {
     }
   });
 
-  it('runs a mutation tool and returns a fresh snapshot', () => {
-    const result = executeWorkflowTool(
+  it('runs a mutation tool and returns a fresh snapshot', async () => {
+    const result = await executeWorkflowTool(
       initialState(),
       'add_node',
       { nodeType: 'userTask' },
@@ -69,8 +74,8 @@ describe('executeWorkflowTool', () => {
     }
   });
 
-  it('runs a macro tool (insert_approval_step)', () => {
-    const result = executeWorkflowTool(
+  it('runs a macro tool (insert_approval_step)', async () => {
+    const result = await executeWorkflowTool(
       initialState(),
       'insert_approval_step',
       {
@@ -91,21 +96,60 @@ describe('executeWorkflowTool', () => {
     }
   });
 
-  it('rejects a malformed approver resolver', () => {
-    const result = executeWorkflowTool(initialState(), 'set_user_task_approver', {
-      approverResolver: { type: 'DIRECT' },
-      nodeId: 'whatever',
-    });
+  it('coerces a malformed approver resolver to the manager default instead of failing', async () => {
+    const added = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
 
-    expect(result.ok).toBe(false);
+    expect(added.ok).toBe(true);
 
-    if (!result.ok) {
-      expect(result.error).toContain('缺少必要欄位');
+    if (!(added.ok && added.kind === 'mutation')) {
+      return;
+    }
+
+    const nodeId =
+      added.snapshot.nodes.find((node) => node.type === 'userTask')?.id ?? '';
+    const result = await executeWorkflowTool(
+      added.result.state,
+      'set_user_task_approver',
+      { approverResolver: { type: 'DIRECT' }, nodeId },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(true);
+
+    if (result.ok && result.kind === 'mutation') {
+      const userTask = result.snapshot.nodes.find((node) => node.id === nodeId);
+
+      expect(userTask?.summary).toContain('簽核人=ORG_MANAGER');
     }
   });
 
-  it('answers the get_workflow_snapshot query without mutating', () => {
-    const result = executeWorkflowTool(
+  it('draws a draft approval step with no approver supplied (manager default)', async () => {
+    const result = await executeWorkflowTool(
+      initialState(),
+      'insert_approval_step',
+      { label: '主管簽核' },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(true);
+
+    if (result.ok && result.kind === 'macro') {
+      const userTask = result.snapshot.nodes.find(
+        (node) => node.type === 'userTask',
+      );
+
+      expect(userTask?.label).toBe('主管簽核');
+      expect(result.snapshot.issue).toBeNull();
+    }
+  });
+
+  it('answers the get_workflow_snapshot query without mutating', async () => {
+    const result = await executeWorkflowTool(
       initialState(),
       'get_workflow_snapshot',
       {},
@@ -123,13 +167,54 @@ describe('executeWorkflowTool', () => {
     }
   });
 
-  it('reports validation issues via validate_workflow', () => {
-    const result = executeWorkflowTool(initialState(), 'validate_workflow', {});
+  it('reports validation issues via validate_workflow', async () => {
+    const result = await executeWorkflowTool(
+      initialState(),
+      'validate_workflow',
+      {},
+    );
 
     expect(result.ok).toBe(true);
 
     if (result.ok && result.kind === 'query') {
       expect(result.data).toEqual({ issue: null });
+    }
+  });
+
+  it('search_members reports unavailable without an injected directory', async () => {
+    const result = await executeWorkflowTool(initialState(), 'search_members', {
+      query: '財務',
+    });
+
+    expect(result.ok).toBe(true);
+
+    if (result.ok && result.kind === 'query') {
+      expect(result.data).toEqual({ available: false, items: [] });
+    }
+  });
+
+  it('search_members returns members from the injected directory', async () => {
+    const directory: WorkflowDirectory = {
+      listOrgUnits: async () => [],
+      listPositions: async () => [],
+      searchMembers: async (query) => [
+        { email: 'amy@example.com', id: 'm-1', name: `${query}-王小明` },
+      ],
+    };
+    const result = await executeWorkflowTool(
+      initialState(),
+      'search_members',
+      { query: '財務' },
+      { directory },
+    );
+
+    expect(result.ok).toBe(true);
+
+    if (result.ok && result.kind === 'query') {
+      expect(result.data).toEqual({
+        available: true,
+        items: [{ email: 'amy@example.com', id: 'm-1', name: '財務-王小明' }],
+      });
     }
   });
 });

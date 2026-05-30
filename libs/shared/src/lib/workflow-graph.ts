@@ -616,6 +616,19 @@ export function readWorkflowDefinitionIssue(
       !edge.data.isDefault &&
       !edge.data.condition,
   );
+  // An exclusive gateway must always keep one "其他情況" (default) outgoing edge,
+  // otherwise the flow has no path when none of the conditions match.
+  const gatewayMissingDefault = definition.nodes.find((node) => {
+    if (node.type !== 'exclusiveGateway') {
+      return false;
+    }
+
+    const outgoing = definition.edges.filter(
+      (edge) => edge.source === node.id,
+    );
+
+    return outgoing.length > 0 && !outgoing.some((edge) => edge.data.isDefault);
+  });
 
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
@@ -629,6 +642,10 @@ export function readWorkflowDefinitionIssue(
 
   if (incompleteConditionEdge) {
     return '條件分流的每條輸出連線都需要先設定條件。';
+  }
+
+  if (gatewayMissingDefault) {
+    return '條件分流需要保留一條「其他情況」預設路徑（用 set_edge_default 將其中一條輸出連線設為預設）。';
   }
 
   return null;
