@@ -79,6 +79,17 @@ spec:
           env:
             - name: PORT
               value: '7001'
+            # Workflow designer AI assistant (opt-in). The key lives in the
+            # vault-secret Secret; `optional` keeps the pod healthy if it is unset
+            # (the assistant then shows a disabled placeholder).
+            - name: BPM_AI_ASSISTANT_ENABLED
+              value: 'true'
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vault-secret
+                  key: OPENAI_API_KEY
+                  optional: true
           ports:
             - name: client-http
               containerPort: 7001
