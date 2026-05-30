@@ -30,6 +30,9 @@ node_modules
 /coverage
 /.env
 /.env.*
+# Local env files in any package (e.g. apps/client/.env.local)
+.env.local
+.env.*.local
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log
