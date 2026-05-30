@@ -5,6 +5,7 @@ import {
   CSSProperties,
   MouseEvent as ReactMouseEvent,
   ReactElement,
+  SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -12,6 +13,7 @@ import {
   useState,
 } from 'react';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import { useWorkflowDesignerController } from './use-workflow-designer-controller';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import {
   Background,
@@ -63,7 +65,6 @@ import {
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
-  FormFieldOption,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -506,6 +507,13 @@ export interface TemplateDesignerViewProps {
   readonly templateId: string;
 }
 
+/** Resolve a React SetStateAction against the current value (no `any`). */
+function resolveSetStateAction<T>(action: SetStateAction<T>, current: T): T {
+  return typeof action === 'function'
+    ? (action as (previous: T) => T)(current)
+    : action;
+}
+
 export function TemplateDesignerView({
   templateId,
 }: TemplateDesignerViewProps): ReactElement {
@@ -515,22 +523,90 @@ export function TemplateDesignerView({
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
   );
-  const [workflowDefinition, setWorkflowDefinition] =
-    useState<WorkflowDefinition>(readFallbackWorkflowDefinition());
   const [loadedDesignerSnapshot, setLoadedDesignerSnapshot] = useState('');
-  const [formDefinitionVersionId, setFormDefinitionVersionId] = useState<
-    string | null
-  >(null);
-  const [initiatorPolicyCel, setInitiatorPolicyCel] = useState<string | null>(
-    null,
-  );
   const [initiatorPolicyModeDraft, setInitiatorPolicyModeDraft] =
     useState<Exclude<InitiatorPolicyMode, 'CUSTOM'> | null>(null);
   const [initiatorPolicyDraftOverride, setInitiatorPolicyDraftOverride] =
     useState<InitiatorPolicyDraft | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>('start');
-  const [selectedEdgeIds, setSelectedEdgeIds] = useState<readonly string[]>([]);
-  const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
+  const flowCanvasRef = useRef<HTMLDivElement | null>(null);
+  const [flowViewport, setFlowViewport] = useState<Viewport | undefined>(
+    undefined,
+  );
+
+  // The pure command reducer (shared with the LLM toolset) owns the workflow
+  // graph, selection, form binding, and initiator policy. Every logical
+  // mutation flows through `controller.dispatch`; the dagre layout + viewport
+  // are injected here so the pure layer stays free of DOM concerns.
+  const controller = useWorkflowDesignerController({
+    initialState: {
+      definition: readFallbackWorkflowDefinition(),
+      editingEdgeId: null,
+      formDefinitionVersionId: null,
+      formSchema: null,
+      initiatorPolicyCel: null,
+      selectedEdgeIds: [],
+      selectedNodeId: 'start',
+    },
+    layout: layoutWorkflowDefinition,
+    onLayout: (definition): void => {
+      const nextViewport = readWorkflowViewport(
+        definition,
+        flowCanvasRef.current,
+      );
+
+      if (nextViewport) {
+        setFlowViewport(nextViewport);
+      }
+    },
+  });
+  const workflowDefinition = controller.state.definition;
+  const formDefinitionVersionId = controller.state.formDefinitionVersionId;
+  const initiatorPolicyCel = controller.state.initiatorPolicyCel;
+  const selectedNodeId = controller.state.selectedNodeId;
+  const selectedEdgeIds = controller.state.selectedEdgeIds;
+  const editingEdgeId = controller.state.editingEdgeId;
+  const setWorkflowDefinition = (
+    action: SetStateAction<WorkflowDefinition>,
+  ): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      definition: resolveSetStateAction(action, current.definition),
+    }));
+  const setFormDefinitionVersionId = (
+    action: SetStateAction<string | null>,
+  ): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      formDefinitionVersionId: resolveSetStateAction(
+        action,
+        current.formDefinitionVersionId,
+      ),
+    }));
+  const setInitiatorPolicyCel = (action: SetStateAction<string | null>): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      initiatorPolicyCel: resolveSetStateAction(
+        action,
+        current.initiatorPolicyCel,
+      ),
+    }));
+  const setSelectedNodeId = (action: SetStateAction<string | null>): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      selectedNodeId: resolveSetStateAction(action, current.selectedNodeId),
+    }));
+  const setSelectedEdgeIds = (
+    action: SetStateAction<readonly string[]>,
+  ): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      selectedEdgeIds: resolveSetStateAction(action, current.selectedEdgeIds),
+    }));
+  const setEditingEdgeId = (action: SetStateAction<string | null>): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      editingEdgeId: resolveSetStateAction(action, current.editingEdgeId),
+    }));
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -565,10 +641,6 @@ export function TemplateDesignerView({
   const [dryRunResult, setDryRunResult] =
     useState<WorkflowDryRunResultRecord | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
-  const [flowViewport, setFlowViewport] = useState<Viewport | undefined>(
-    undefined,
-  );
-  const flowCanvasRef = useRef<HTMLDivElement | null>(null);
 
   useEffect((): void => {
     void refreshDesigner();
@@ -624,32 +696,19 @@ export function TemplateDesignerView({
   const hasDeletableSelection =
     selectedEdgeIds.length > 0 || selectedNodeCanDelete;
   const removeSelectedWorkflowElements = useCallback((): void => {
-    const selectedNodeIdToRemove =
-      selectedNode && isWorkflowNodeRemovable(selectedNode)
-        ? selectedNode.id
-        : null;
+    // Remove the selected edges first, then the selected node (which also drops
+    // any edges still attached to it and resets selection). Both flow through
+    // the same reducer the LLM toolset uses.
+    controller
+      .getState()
+      .selectedEdgeIds.forEach((edgeId) =>
+        controller.dispatch({ edgeId, type: 'deleteEdge' }),
+      );
 
-    setWorkflowDefinition((currentDefinition) => ({
-      ...currentDefinition,
-      edges: currentDefinition.edges.filter(
-        (edge) =>
-          !selectedEdgeIds.includes(edge.id) &&
-          edge.source !== selectedNodeIdToRemove &&
-          edge.target !== selectedNodeIdToRemove,
-      ),
-      nodes: selectedNodeIdToRemove
-        ? currentDefinition.nodes.filter(
-            (node) => node.id !== selectedNodeIdToRemove,
-          )
-        : currentDefinition.nodes,
-    }));
-    setSelectedEdgeIds([]);
-    setEditingEdgeId(null);
-
-    if (selectedNodeIdToRemove) {
-      setSelectedNodeId('start');
+    if (selectedNode && isWorkflowNodeRemovable(selectedNode)) {
+      controller.dispatch({ nodeId: selectedNode.id, type: 'deleteNode' });
     }
-  }, [selectedEdgeIds, selectedNode]);
+  }, [controller, selectedNode]);
 
   useEffect((): (() => void) | undefined => {
     if (!hasDeletableSelection) {
@@ -758,6 +817,18 @@ export function TemplateDesignerView({
       mergeSelectedOption(formVersionOptions, selectedFormVersionOption),
     [formVersionOptions, selectedFormVersionOption],
   );
+  const selectedFormSchema = selectedFormVersionOption?.schema ?? null;
+
+  // Keep the reducer's form schema in sync with the bound form version so that
+  // `setEdgeCondition` commands compile against the right fields.
+  useEffect((): void => {
+    if (controller.getState().formSchema !== selectedFormSchema) {
+      controller.replaceState((current) => ({
+        ...current,
+        formSchema: selectedFormSchema,
+      }));
+    }
+  }, [controller, selectedFormSchema]);
   const workflowIssue = useMemo(
     (): string | null => readWorkflowDefinitionIssue(workflowDefinition),
     [workflowDefinition],
@@ -1009,27 +1080,19 @@ export function TemplateDesignerView({
   }
 
   function handleConnect(connection: Connection): void {
-    if (!isWorkflowConnectionValid(connection, workflowDefinition.nodes)) {
+    if (
+      !isWorkflowConnectionValid(connection, workflowDefinition.nodes) ||
+      !connection.source ||
+      !connection.target
+    ) {
       return;
     }
 
-    const shouldOpenConditionSettings = workflowDefinition.nodes.some(
-      (node) =>
-        node.id === connection.source && node.type === 'exclusiveGateway',
-    );
-    const nextEdge = createWorkflowEdge(
-      connection.source,
-      connection.target,
-      {},
-    );
-
-    setWorkflowDefinition((currentDefinition) => ({
-      ...currentDefinition,
-      edges: [...currentDefinition.edges, nextEdge],
-    }));
-    setSelectedNodeId(null);
-    setSelectedEdgeIds([nextEdge.id]);
-    setEditingEdgeId(shouldOpenConditionSettings ? nextEdge.id : null);
+    controller.dispatch({
+      source: connection.source,
+      target: connection.target,
+      type: 'connectEdge',
+    });
   }
 
   function handleEdgeClick(event: ReactMouseEvent, edge: FlowEdge): void {
@@ -1048,28 +1111,9 @@ export function TemplateDesignerView({
   }
 
   function addWorkflowNode(type: NodePaletteType): void {
-    const nodeIndex = readNextWorkflowNodeIndex(workflowDefinition.nodes, type);
-    const node = createWorkflowNode(type, nodeIndex);
-    const inserted = insertWorkflowNodeIntoDefinition({
-      definition: workflowDefinition,
-      node,
-      selectedEdgeId: selectedEdgeIds.length === 1 ? selectedEdgeIds[0] : null,
-      selectedNodeId,
-    });
-    const nextDefinition = layoutWorkflowDefinition(inserted.definition);
-    const nextViewport = readWorkflowViewport(
-      nextDefinition,
-      flowCanvasRef.current,
-    );
-
-    setWorkflowDefinition(nextDefinition);
-    setSelectedNodeId(inserted.selectedNodeId);
-    setSelectedEdgeIds(inserted.selectedEdgeIds);
-    setEditingEdgeId(inserted.editingEdgeId);
-
-    if (nextViewport) {
-      setFlowViewport(nextViewport);
-    }
+    // The reducer derives the insertion anchor from the current selection and
+    // flags `effects.layout`, so the controller re-runs dagre + viewport.
+    controller.dispatch({ nodeType: type, type: 'addNode' });
   }
 
   function updateSelectedNodeLabel(label: string): void {
@@ -1077,7 +1121,7 @@ export function TemplateDesignerView({
       return;
     }
 
-    updateNode(selectedNode.id, (node) => renameWorkflowNode(node, label));
+    controller.dispatch({ label, nodeId: selectedNode.id, type: 'renameNode' });
   }
 
   function updateUserTaskResolver(approverResolver: ApproverResolver): void {
@@ -1085,18 +1129,11 @@ export function TemplateDesignerView({
       return;
     }
 
-    updateNode(selectedNode.id, (node) =>
-      node.type === 'userTask'
-        ? {
-            ...node,
-            data: {
-              ...node.data,
-              approverResolver,
-              decisionPolicy: { type: 'SINGLE' },
-            },
-          }
-        : node,
-    );
+    controller.dispatch({
+      approverResolver,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskApprover',
+    });
   }
 
   function updateUserTaskReturnResubmitStrategy(
@@ -1106,20 +1143,11 @@ export function TemplateDesignerView({
       return;
     }
 
-    updateNode(selectedNode.id, (node) =>
-      node.type === 'userTask'
-        ? {
-            ...node,
-            data: {
-              ...node.data,
-              returnBehavior: {
-                ...node.data.returnBehavior,
-                resubmitStrategy,
-              },
-            },
-          }
-        : node,
-    );
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      resubmitStrategy,
+      type: 'setUserTaskReturnResubmitStrategy',
+    });
   }
 
   function updateServiceAction(action: ServiceAction): void {
@@ -1127,17 +1155,11 @@ export function TemplateDesignerView({
       return;
     }
 
-    updateNode(selectedNode.id, (node) =>
-      node.type === 'serviceTask'
-        ? {
-            ...node,
-            data: {
-              ...node.data,
-              action,
-            },
-          }
-        : node,
-    );
+    controller.dispatch({
+      action,
+      nodeId: selectedNode.id,
+      type: 'setServiceAction',
+    });
   }
 
   function updateInitiatorPolicyDraft(
@@ -1159,75 +1181,15 @@ export function TemplateDesignerView({
       return;
     }
 
-    updateNode(selectedNode.id, (node) =>
-      applyWorkflowNodeTriggerMode(node, triggerMode),
-    );
-  }
-
-  function updateNode(
-    nodeId: string,
-    updater: (node: WorkflowNode) => WorkflowNode,
-  ): void {
-    setWorkflowDefinition((currentDefinition) => ({
-      ...currentDefinition,
-      nodes: currentDefinition.nodes.map((node) =>
-        node.id === nodeId ? updater(node) : node,
-      ),
-    }));
-  }
-
-  function updateWorkflowEdge(
-    edgeId: string,
-    updater: (edge: WorkflowEdge) => WorkflowEdge,
-  ): void {
-    setWorkflowDefinition((currentDefinition) => ({
-      ...currentDefinition,
-      edges: currentDefinition.edges.map((edge) =>
-        edge.id === edgeId ? updater(edge) : edge,
-      ),
-    }));
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      triggerMode,
+      type: 'setNodeTriggerMode',
+    });
   }
 
   function updateSelectedEdgeDefault(edgeId: string, checked: boolean): void {
-    setWorkflowDefinition((currentDefinition) => {
-      const targetEdge = currentDefinition.edges.find(
-        (edge) => edge.id === edgeId,
-      );
-
-      if (!targetEdge) {
-        return currentDefinition;
-      }
-
-      return {
-        ...currentDefinition,
-        edges: currentDefinition.edges.map((edge) => {
-          if (
-            checked &&
-            edge.source === targetEdge.source &&
-            edge.id !== targetEdge.id &&
-            isExclusiveGatewaySourceEdge(edge, currentDefinition.nodes)
-          ) {
-            return {
-              ...edge,
-              data: {
-                ...edge.data,
-                isDefault: false,
-              },
-            };
-          }
-
-          return edge.id === targetEdge.id
-            ? {
-                ...edge,
-                data: {
-                  ...edge.data,
-                  isDefault: checked,
-                },
-              }
-            : edge;
-        }),
-      };
-    });
+    controller.dispatch({ edgeId, isDefault: checked, type: 'setEdgeDefault' });
   }
 
   function updateSelectedEdgeConditionState({
@@ -1241,50 +1203,18 @@ export function TemplateDesignerView({
     readonly operator?: WorkflowEdgeConditionOperator | null;
     readonly value?: string | null;
   }): void {
-    const schema = selectedFormVersionOption?.schema ?? null;
-
-    updateWorkflowEdge(edgeId, (currentEdge) => {
-      const nextFieldKey =
-        fieldKey ?? currentEdge.data.conditionFieldKey ?? null;
-      const field = readConditionField(schema, nextFieldKey);
-      const nextOperator = readNextConditionOperator(
-        field,
-        operator ?? currentEdge.data.conditionOperator ?? null,
-      );
-      const nextValue = readNextConditionValue(
-        field,
-        nextOperator,
-        value ?? currentEdge.data.conditionValue ?? null,
-      );
-      const nextLabel = readConditionLabel(field, nextOperator, nextValue);
-
-      return {
-        ...currentEdge,
-        data: {
-          ...currentEdge.data,
-          condition: readConditionExpression(field, nextOperator, nextValue),
-          conditionFieldKey: field?.fieldKey,
-          conditionOperator: nextOperator,
-          conditionValue: nextValue,
-          isDefault: false,
-          label: nextLabel,
-        },
-      };
+    // The reducer compiles the condition against the synced `formSchema`.
+    controller.dispatch({
+      edgeId,
+      fieldKey,
+      operator,
+      type: 'setEdgeCondition',
+      value,
     });
   }
 
   function applyAutoLayout(): void {
-    const nextDefinition = layoutWorkflowDefinition(workflowDefinition);
-    const nextViewport = readWorkflowViewport(
-      nextDefinition,
-      flowCanvasRef.current,
-    );
-
-    setWorkflowDefinition(nextDefinition);
-
-    if (nextViewport) {
-      setFlowViewport(nextViewport);
-    }
+    controller.dispatch({ type: 'autoLayout' });
   }
 
   return (
@@ -2756,30 +2686,6 @@ function readFlowEdge(
   };
 }
 
-function renameWorkflowNode(node: WorkflowNode, label: string): WorkflowNode {
-  if (node.type === 'startEvent') {
-    return { ...node, data: { ...node.data, label } };
-  }
-
-  if (node.type === 'endEvent') {
-    return { ...node, data: { ...node.data, label } };
-  }
-
-  if (node.type === 'userTask') {
-    return { ...node, data: { ...node.data, label } };
-  }
-
-  if (node.type === 'serviceTask') {
-    return { ...node, data: { ...node.data, label } };
-  }
-
-  if (node.type === 'exclusiveGateway') {
-    return { ...node, data: { ...node.data, label } };
-  }
-
-  return { ...node, data: { ...node.data, label } };
-}
-
 function applyWorkflowNodeTriggerMode(
   node: WorkflowNode,
   triggerMode: WorkflowNodeTriggerMode,
@@ -2858,284 +2764,6 @@ function normalizeSingleIncomingTriggerModes(
   );
 
   return hasNodeChanges ? { ...definition, nodes } : definition;
-}
-
-function createWorkflowNode(
-  type: NodePaletteType,
-  index: number,
-): WorkflowNode {
-  const id = `${type}_${index}`;
-  const base = {
-    id,
-    position: { x: 260 + index * 48, y: 120 + index * 42 },
-  };
-
-  if (type === 'userTask') {
-    return {
-      ...base,
-      data: {
-        allowAddSigner: false,
-        allowReject: true,
-        allowTransfer: true,
-        approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
-        decisionPolicy: { type: 'SINGLE' },
-        label: `簽核節點 ${index}`,
-        returnBehavior: {
-          allowReturn: true,
-          allowedTargets: 'INITIATOR',
-          resubmitStrategy: 'RESTART',
-        },
-        triggerMode: 'AND',
-      },
-      type,
-    };
-  }
-
-  if (type === 'serviceTask') {
-    return {
-      ...base,
-      data: {
-        action: {
-          channels: ['IN_APP'],
-          recipients: { memberIds: ['member-001'], type: 'DIRECT' },
-          type: 'NOTIFY',
-        },
-        label: `知會節點 ${index}`,
-        triggerMode: 'AND',
-      },
-      type,
-    };
-  }
-
-  return {
-    ...base,
-    data: {
-      direction: 'split',
-      label: `條件分流 ${index}`,
-      triggerMode: 'AND',
-    },
-    type,
-  };
-}
-
-function readNextWorkflowNodeIndex(
-  nodes: readonly WorkflowNode[],
-  type: NodePaletteType,
-): number {
-  const usedIndexes = new Set(
-    nodes
-      .filter((node) => node.type === type)
-      .map((node) => Number(node.id.replace(`${type}_`, '')))
-      .filter((index) => Number.isInteger(index) && index > 0),
-  );
-
-  return (
-    Array.from({ length: nodes.length + 1 }, (_, index) => index + 1).find(
-      (index) => !usedIndexes.has(index),
-    ) ?? nodes.length + 1
-  );
-}
-
-function insertWorkflowNodeIntoDefinition({
-  definition,
-  node,
-  selectedEdgeId,
-  selectedNodeId,
-}: {
-  readonly definition: WorkflowDefinition;
-  readonly node: WorkflowNode;
-  readonly selectedEdgeId: string | null;
-  readonly selectedNodeId: string | null;
-}): Readonly<{
-  definition: WorkflowDefinition;
-  editingEdgeId: string | null;
-  selectedEdgeIds: readonly string[];
-  selectedNodeId: string | null;
-}> {
-  const selectedEdge = selectedEdgeId
-    ? (definition.edges.find((edge) => edge.id === selectedEdgeId) ?? null)
-    : null;
-  const selectedNode = selectedNodeId
-    ? (definition.nodes.find((candidate) => candidate.id === selectedNodeId) ??
-      null)
-    : null;
-
-  if (selectedEdge) {
-    return insertWorkflowNodeAtEdge(definition, node, selectedEdge);
-  }
-
-  if (selectedNode) {
-    return insertWorkflowNodeAfterNode(definition, node, selectedNode);
-  }
-
-  return {
-    definition: { ...definition, nodes: [...definition.nodes, node] },
-    editingEdgeId: null,
-    selectedEdgeIds: [],
-    selectedNodeId: node.id,
-  };
-}
-
-function insertWorkflowNodeAtEdge(
-  definition: WorkflowDefinition,
-  node: WorkflowNode,
-  edge: WorkflowEdge,
-): Readonly<{
-  definition: WorkflowDefinition;
-  editingEdgeId: string | null;
-  selectedEdgeIds: readonly string[];
-  selectedNodeId: string | null;
-}> {
-  if (!isWorkflowNodeInputConnectable(node)) {
-    return {
-      definition,
-      editingEdgeId: null,
-      selectedEdgeIds: [edge.id],
-      selectedNodeId: null,
-    };
-  }
-
-  if (!isWorkflowNodeOutputConnectable(node)) {
-    const incomingEdge = createWorkflowEdge(edge.source, node.id, {});
-
-    return {
-      definition: {
-        ...definition,
-        edges: [...definition.edges, incomingEdge],
-        nodes: [...definition.nodes, node],
-      },
-      editingEdgeId: null,
-      selectedEdgeIds: [],
-      selectedNodeId: node.id,
-    };
-  }
-
-  const incomingEdge = createWorkflowEdge(edge.source, node.id, edge.data);
-  const outgoingEdge = createWorkflowEdge(
-    node.id,
-    edge.target,
-    readInsertedOutgoingEdgeData(node, edge),
-  );
-  const shouldEditOutgoingEdge = isExclusiveGatewaySourceEdge(outgoingEdge, [
-    ...definition.nodes,
-    node,
-  ]);
-
-  return {
-    definition: {
-      ...definition,
-      edges: definition.edges.flatMap((currentEdge) =>
-        currentEdge.id === edge.id
-          ? [incomingEdge, outgoingEdge]
-          : [currentEdge],
-      ),
-      nodes: [...definition.nodes, node],
-    },
-    editingEdgeId: shouldEditOutgoingEdge ? outgoingEdge.id : null,
-    selectedEdgeIds: shouldEditOutgoingEdge ? [outgoingEdge.id] : [],
-    selectedNodeId: shouldEditOutgoingEdge ? null : node.id,
-  };
-}
-
-function insertWorkflowNodeAfterNode(
-  definition: WorkflowDefinition,
-  node: WorkflowNode,
-  sourceNode: WorkflowNode,
-): Readonly<{
-  definition: WorkflowDefinition;
-  editingEdgeId: string | null;
-  selectedEdgeIds: readonly string[];
-  selectedNodeId: string | null;
-}> {
-  if (!isWorkflowNodeOutputConnectable(sourceNode)) {
-    return {
-      definition: { ...definition, nodes: [...definition.nodes, node] },
-      editingEdgeId: null,
-      selectedEdgeIds: [],
-      selectedNodeId: node.id,
-    };
-  }
-
-  const firstOutgoingEdge =
-    definition.edges.find((edge) => edge.source === sourceNode.id) ?? null;
-
-  if (firstOutgoingEdge && isWorkflowNodeOutputConnectable(node)) {
-    return insertWorkflowNodeAtEdge(definition, node, firstOutgoingEdge);
-  }
-
-  const endNode = definition.nodes.find(
-    (candidate) => candidate.type === 'endEvent',
-  );
-
-  if (
-    endNode &&
-    sourceNode.id !== endNode.id &&
-    isWorkflowNodeOutputConnectable(node)
-  ) {
-    const incomingEdge = createWorkflowEdge(sourceNode.id, node.id, {});
-    const outgoingEdge = createWorkflowEdge(
-      node.id,
-      endNode.id,
-      readInsertedOutgoingEdgeData(node, incomingEdge),
-    );
-    const shouldEditOutgoingEdge = isExclusiveGatewaySourceEdge(outgoingEdge, [
-      ...definition.nodes,
-      node,
-    ]);
-
-    return {
-      definition: {
-        ...definition,
-        edges: [...definition.edges, incomingEdge, outgoingEdge],
-        nodes: [...definition.nodes, node],
-      },
-      editingEdgeId: shouldEditOutgoingEdge ? outgoingEdge.id : null,
-      selectedEdgeIds: shouldEditOutgoingEdge ? [outgoingEdge.id] : [],
-      selectedNodeId: shouldEditOutgoingEdge ? null : node.id,
-    };
-  }
-
-  const incomingEdge = createWorkflowEdge(sourceNode.id, node.id, {});
-
-  return {
-    definition: {
-      ...definition,
-      edges: [...definition.edges, incomingEdge],
-      nodes: [...definition.nodes, node],
-    },
-    editingEdgeId: null,
-    selectedEdgeIds: [],
-    selectedNodeId: node.id,
-  };
-}
-
-function createWorkflowEdge(
-  source: string,
-  target: string,
-  data: WorkflowEdgeData,
-): WorkflowEdge {
-  return {
-    data,
-    id: `edge_${source}_${target}_${Date.now()}_${Math.random()
-      .toString(36)
-      .slice(2, 8)}`,
-    source,
-    sourceHandle: WORKFLOW_OUTPUT_HANDLE_ID,
-    target,
-    targetHandle: WORKFLOW_INPUT_HANDLE_ID,
-    type: 'smoothstep',
-  };
-}
-
-function readInsertedOutgoingEdgeData(
-  node: WorkflowNode,
-  _replacedEdge: WorkflowEdge,
-): WorkflowEdgeData {
-  if (node.type === 'exclusiveGateway') {
-    return { isDefault: true, label: '其他情況' };
-  }
-
-  return {};
 }
 
 function readFallbackWorkflowDefinition(): WorkflowDefinition {
@@ -4228,178 +3856,10 @@ function readConditionValueOptions(
   return [];
 }
 
-function readNextConditionOperator(
-  field: FormFieldDefinition | null,
-  operator: WorkflowEdgeConditionOperator | null,
-): WorkflowEdgeConditionOperator | undefined {
-  if (!field) {
-    return undefined;
-  }
-
-  const operatorIds = readConditionOperatorIds(field);
-
-  return operator && operatorIds.includes(operator) ? operator : operatorIds[0];
-}
-
-function readNextConditionValue(
-  field: FormFieldDefinition | null,
-  operator: WorkflowEdgeConditionOperator | undefined,
-  value: string | null,
-): string | undefined {
-  if (!field || !operator || !shouldConditionOperatorUseValue(operator)) {
-    return undefined;
-  }
-
-  const valueOptions = readConditionValueOptions(field);
-
-  if (valueOptions.length === 0) {
-    return value ?? undefined;
-  }
-
-  return valueOptions.some((option) => option.id === value)
-    ? (value ?? undefined)
-    : valueOptions[0]?.id;
-}
-
 function shouldConditionOperatorUseValue(
   operator: WorkflowEdgeConditionOperator,
 ): boolean {
   return CONDITION_OPERATORS_REQUIRING_VALUE.includes(operator);
-}
-
-function readConditionLabel(
-  field: FormFieldDefinition | null,
-  operator: WorkflowEdgeConditionOperator | undefined,
-  value: string | undefined,
-): string | undefined {
-  if (!field || !operator) {
-    return undefined;
-  }
-
-  const operatorLabel = readConditionOperatorLabel(operator);
-
-  if (!shouldConditionOperatorUseValue(operator)) {
-    return `${field.label} ${operatorLabel}`;
-  }
-
-  if (!value) {
-    return undefined;
-  }
-
-  return `${field.label} ${operatorLabel} ${readConditionValueLabel(
-    field,
-    value,
-  )}`;
-}
-
-function readConditionOperatorLabel(
-  operator: WorkflowEdgeConditionOperator,
-): string {
-  return (
-    CONDITION_OPERATOR_OPTIONS.find((option) => option.id === operator)?.name ??
-    operator
-  );
-}
-
-function readConditionValueLabel(
-  field: FormFieldDefinition,
-  value: string,
-): string {
-  if (field.type === 'boolean') {
-    return value === 'true' ? '是' : '否';
-  }
-
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
-    return readFormFieldOption(field.options, value)?.label ?? value;
-  }
-
-  return value;
-}
-
-function readFormFieldOption(
-  options: readonly FormFieldOption[],
-  value: string,
-): FormFieldOption | null {
-  return options.find((option) => option.value === value) ?? null;
-}
-
-function readConditionExpression(
-  field: FormFieldDefinition | null,
-  operator: WorkflowEdgeConditionOperator | undefined,
-  value: string | undefined,
-): string | undefined {
-  if (!field || !operator) {
-    return undefined;
-  }
-
-  const fieldReference = readFormFieldReference(field.fieldKey);
-
-  if (operator === 'IS_FILLED') {
-    return `${fieldReference} != null && ${fieldReference} != ""`;
-  }
-
-  if (operator === 'IS_EMPTY') {
-    return `${fieldReference} == null || ${fieldReference} == ""`;
-  }
-
-  if (!value) {
-    return undefined;
-  }
-
-  return `${fieldReference} ${readConditionExpressionOperator(
-    operator,
-  )} ${readConditionExpressionValue(field, value)}`;
-}
-
-function readFormFieldReference(fieldKey: string): string {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(fieldKey)
-    ? `form.${fieldKey}`
-    : `form[${JSON.stringify(fieldKey)}]`;
-}
-
-function readConditionExpressionOperator(
-  operator: WorkflowEdgeConditionOperator,
-): string {
-  if (operator === 'EQUALS') {
-    return '==';
-  }
-
-  if (operator === 'NOT_EQUALS') {
-    return '!=';
-  }
-
-  if (operator === 'GREATER_THAN') {
-    return '>';
-  }
-
-  if (operator === 'GREATER_THAN_OR_EQUALS') {
-    return '>=';
-  }
-
-  if (operator === 'LESS_THAN') {
-    return '<';
-  }
-
-  return '<=';
-}
-
-function readConditionExpressionValue(
-  field: FormFieldDefinition,
-  value: string,
-): string {
-  if (field.type === 'boolean') {
-    return value === 'true' ? 'true' : 'false';
-  }
-
-  if (field.type === 'money' || field.type === 'number') {
-    return Number.isFinite(Number(value)) ? value : JSON.stringify(value);
-  }
-
-  return JSON.stringify(value);
 }
 
 function readEdgeCanvasLabel(
