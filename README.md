@@ -133,6 +133,16 @@ the seed scenario. `pnpm api` and `pnpm client` are long-running dev servers.
 Start them in separate terminals when running the browser app or Playwright e2e
 suite.
 
+## Designer AI Assistant
+
+The flow designer page ships an optional LLM chat assistant: describe a workflow
+in natural language and it draws/edits it on the canvas through the shared
+workflow toolset. It is hidden by default; enable it per deployment with
+`BPM_AI_ASSISTANT_ENABLED=true` + `OPENAI_API_KEY` on the Next.js client host
+(locally, `apps/client/.env.local`). See
+[docs/12-ai-assistant.md](./docs/12-ai-assistant.md) for usage, architecture,
+env vars, and deployment.
+
 ## Verification
 
 Repository-wide checks:
