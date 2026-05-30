@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.1.2`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.0`.
+Last verified against: `libs/shared@0.1.10`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.1`.
 
 ---
 
@@ -180,6 +180,68 @@ Form-schema definitions.
 | `GatewayDirection` | type | `'split' \| 'join'` |
 | `WorkflowEdge` / `WorkflowEdgeData` | interface | Edge with optional condition |
 | `WorkflowEdgeConditionOperator` | type | Edge condition operators |
+
+## `@rytass/bpm-core-shared/workflow-graph`
+
+Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no React, DOM, or dagre). Canonical home for the designer's graph operations; reused by the command layer below and the frontend.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `NodePaletteType` | type | `'userTask' \| 'serviceTask' \| 'exclusiveGateway'` |
+| `WorkflowConnectionCandidate` | interface | Source/target/handle candidate for connection validation |
+| `WorkflowNodeInsertResult` | interface | Definition + post-insert selection intent |
+| `WorkflowEdgeIdFactory` | type | Injectable edge-id generator |
+| `ConditionOperatorOption` / `ConditionValueOption` | interface | Condition UI option shapes |
+| `WORKFLOW_INPUT_HANDLE_ID` / `WORKFLOW_OUTPUT_HANDLE_ID` | const | ReactFlow handle ids |
+| `WORKFLOW_NODE_TYPE_LABELS` | const | zh-TW node type labels |
+| `CONDITION_OPERATOR_OPTIONS` / `CONDITION_OPERATORS_REQUIRING_VALUE` | const | Condition operator catalog |
+| `defaultWorkflowEdgeId` | function | Default edge id factory |
+| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
+| `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
+| `insertWorkflowNodeIntoDefinition` / `insertWorkflowNodeAtEdge` / `insertWorkflowNodeAfterNode` | function | Node insertion strategies |
+| `renameWorkflowNode` / `applyWorkflowNodeTriggerMode` | function | Node data transforms |
+| `normalizeDesignerWorkflowDefinition` / `removeAsyncNotifyOutgoingEdges` / `normalizeSingleIncomingTriggerModes` | function | Definition normalizers |
+| `readFallbackWorkflowDefinition` / `isEmptyDesignerWorkflowDefinition` | function | Empty/default definition |
+| `isWorkflowConnectionValid` / `isWorkflowNodeRemovable` / `isWorkflowNodeInputConnectable` / `isWorkflowNodeOutputConnectable` / `isAsyncNotifyServiceTask` | function | Connection rules |
+| `isExclusiveGatewaySourceEdge` / `isParallelGatewaySourceEdge` / `toggleSelectedEdgeId` | function | Gateway/edge helpers |
+| `readWorkflowDefinitionIssue` / `readApproverResolverIssue` / `hasConfiguredConditionEdges` / `readServiceTaskMemberIds` | function | Validation |
+| `readConditionField` / `readConditionOperator` / `readConditionOperatorIds` / `readConditionValueOptions` / `readNextConditionOperator` / `readNextConditionValue` / `shouldConditionOperatorUseValue` / `readConditionLabel` / `readConditionOperatorLabel` / `readConditionValueLabel` / `readFormFieldOption` / `readConditionExpression` / `readFormFieldReference` / `readConditionExpressionOperator` / `readConditionExpressionValue` | function | Condition compilation (UI state → CEL) |
+
+## `@rytass/bpm-core-shared/workflow-command`
+
+The serialisable command layer + pure reducer that both the designer UI and the LLM assistant drive the workflow through (single dispatch path).
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
+| `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/…) |
+| `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
+| `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
+| `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
+| `WorkflowCommandResult` | interface | `{ state, changed, error, issue, effects }` |
+| `WorkflowCommandOptions` | interface | `{ createEdgeId? }` for deterministic runs |
+| `applyWorkflowCommand` | function | Pure reducer for a single primitive command |
+| `applyWorkflowMacroCommand` | function | Expands + folds a macro into primitives |
+| `applyWorkflowCommands` | function | Folds a batch of primitives, threading state |
+| `expandMacroCommand` | function | Macro → primitive command sequence |
+
+## `@rytass/bpm-core-shared/workflow-toolset`
+
+Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-only snapshot view.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
+| `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
+| `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries) |
+| `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
+| `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
+| `readWorkflowSnapshot` | function | State → snapshot |
+| `WorkflowToolResult` | type | Discriminated `{ ok, kind, … }` result |
+| `ExecuteWorkflowToolOptions` | interface | Execution options (`createEdgeId?`, `resolveFormSchema?`) |
+| `executeWorkflowTool` | function | Run one tool call (parse input → command → reducer) |
 
 ---
 
