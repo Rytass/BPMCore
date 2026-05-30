@@ -46,6 +46,15 @@
       ],
       "workflow": [
         "./src/lib/workflow.d.ts"
+      ],
+      "workflow-graph": [
+        "./src/lib/workflow-graph.d.ts"
+      ],
+      "workflow-command": [
+        "./src/lib/workflow-command.d.ts"
+      ],
+      "workflow-toolset": [
+        "./src/lib/workflow-toolset.d.ts"
       ]
     }
   },
@@ -70,6 +79,18 @@
     "./workflow": {
       "types": "./src/lib/workflow.d.ts",
       "default": "./src/lib/workflow.js"
+    },
+    "./workflow-graph": {
+      "types": "./src/lib/workflow-graph.d.ts",
+      "default": "./src/lib/workflow-graph.js"
+    },
+    "./workflow-command": {
+      "types": "./src/lib/workflow-command.d.ts",
+      "default": "./src/lib/workflow-command.js"
+    },
+    "./workflow-toolset": {
+      "types": "./src/lib/workflow-toolset.d.ts",
+      "default": "./src/lib/workflow-toolset.js"
     }
   },
   "dependencies": {

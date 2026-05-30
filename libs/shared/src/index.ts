@@ -4,3 +4,6 @@ export * from './lib/identity';
 export * from './lib/organization';
 export * from './lib/status';
 export * from './lib/workflow';
+export * from './lib/workflow-graph';
+export * from './lib/workflow-command';
+export * from './lib/workflow-toolset';

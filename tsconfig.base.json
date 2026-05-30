@@ -73,6 +73,15 @@
       "@bpm/shared/form": ["./libs/shared/src/lib/form.ts"],
       "@bpm/shared/status": ["./libs/shared/src/lib/status.ts"],
       "@bpm/shared/workflow": ["./libs/shared/src/lib/workflow.ts"],
+      "@bpm/shared/workflow-graph": [
+        "./libs/shared/src/lib/workflow-graph.ts"
+      ],
+      "@bpm/shared/workflow-command": [
+        "./libs/shared/src/lib/workflow-command.ts"
+      ],
+      "@bpm/shared/workflow-toolset": [
+        "./libs/shared/src/lib/workflow-toolset.ts"
+      ],
       "@rytass/bpm-core-shared": ["./libs/shared/src/index.ts"],
       "@rytass/bpm-core-shared/condition": [
         "./libs/shared/src/lib/condition.ts"
@@ -81,6 +90,15 @@
       "@rytass/bpm-core-shared/status": ["./libs/shared/src/lib/status.ts"],
       "@rytass/bpm-core-shared/workflow": [
         "./libs/shared/src/lib/workflow.ts"
+      ],
+      "@rytass/bpm-core-shared/workflow-graph": [
+        "./libs/shared/src/lib/workflow-graph.ts"
+      ],
+      "@rytass/bpm-core-shared/workflow-command": [
+        "./libs/shared/src/lib/workflow-command.ts"
+      ],
+      "@rytass/bpm-core-shared/workflow-toolset": [
+        "./libs/shared/src/lib/workflow-toolset.ts"
       ],
       "@rytass/bpm-core-react": ["./libs/bpm-core-react/src/index.ts"],
       "@rytass/bpm-core-react/next": [
