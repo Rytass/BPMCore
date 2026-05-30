@@ -63,3 +63,24 @@ pnpm e2e:client
 Staging wrapper-host runtime secrets include `API_SESSION_SECRET`,
 `BPM_API_PUBLIC_URL`, and `BPM_ATTACHMENT_SIGNING_SECRET`; the API host passes
 the BPM attachment values into `BPMRootModule`.
+
+## Template Designer AI Assistant
+
+The flow designer page ships an LLM chat assistant (`WorkflowChatDrawer`) that
+drives the workflow **toolset** to draw/edit the flow from natural language. It
+runs through the Next.js route `apps/client/src/app/api/chat/route.ts` (a one-line
+re-export of `createWorkflowChatPOST` from `@rytass/bpm-core-react/next/workflow-chat-route`).
+Tools have no server `execute` — every tool call is executed in the browser via
+`useWorkflowDesignerController.executeTool`, so the assistant can only do what a
+user can do on that page (other requests are declined by the system prompt).
+
+The feature is **opt-in and hidden by default** at the lib level. The designer
+page shim shows it only when `BPM_AI_ASSISTANT_ENABLED=true`; without
+`OPENAI_API_KEY` the toggle is shown disabled as a placeholder. `TemplateDesignerView`
+also accepts `showAiAssistant` / `aiAssistantAvailable` props for direct control.
+
+Next.js server env (the client host, not `apps/api`), in `apps/client/.env.local`:
+- `BPM_AI_ASSISTANT_ENABLED` — `'true'` to show the assistant (default hidden).
+- `OPENAI_API_KEY` — OpenAI key (server-only, never `NEXT_PUBLIC_`). The route
+  talks to OpenAI directly via `@ai-sdk/openai` — no Vercel AI Gateway.
+- `BPM_LLM_MODEL` — optional OpenAI model id; defaults to `gpt-5.4-mini`.

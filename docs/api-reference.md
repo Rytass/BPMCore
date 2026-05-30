@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.1.10`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.1`.
+Last verified against: `libs/shared@0.1.10`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.2`.
 
 ---
 
@@ -619,6 +619,19 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary |
+
+## `@rytass/bpm-core-react/next/workflow-chat-route`
+
+Server route handler for the template-designer LLM assistant. The host wires it in one line (`apps/client/src/app/api/chat/route.ts` → `export const POST = createWorkflowChatPOST()`). Holds the OpenAI key, runs `streamText`, declares `WORKFLOW_TOOLSET` as tools with **no `execute`** (forwarded to the browser). Talks to OpenAI directly via `@ai-sdk/openai` (no AI Gateway); reads `OPENAI_API_KEY` (server-only) and `BPM_LLM_MODEL` (optional OpenAI model id, default `gpt-5.4-mini`).
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `createWorkflowChatPOST` | function | Build the Next.js `POST(request)` handler; opts `{ model?, system? }` |
+| `buildWorkflowAiSdkTools` | function | Convert `WORKFLOW_TOOLSET` (JSON Schema) → AI SDK `ToolSet` (no execute) |
+| `WORKFLOW_CHAT_SYSTEM_PROMPT` | const | Strict design-only guardrail prompt (zh-TW) |
+| `WorkflowChatRouteOptions` | interface | `{ model?, system? }` |
+
+> The chat UI itself (`WorkflowChatDrawer`, `useWorkflowChat`, `useWorkflowDesignerController`) is internal to the isolated `views/templates/designer` entry and not separately exported.
 
 ## Views (pure React, require a RouterAdapter)
 
