@@ -13,5 +13,15 @@ export default async function TemplateDesignerPage({
   readonly params: Promise<{ readonly id: string }>;
 }): Promise<ReactElement> {
   const { id } = await params;
-  return <TemplateDesignerView templateId={id} />;
+
+  // AI assistant is opt-in per deployment. `BPM_AI_ASSISTANT_ENABLED` shows the
+  // feature; `OPENAI_API_KEY` decides whether it's usable (else a disabled
+  // placeholder). Both are server-only env on the Next.js host.
+  return (
+    <TemplateDesignerView
+      aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
+      showAiAssistant={process.env.BPM_AI_ASSISTANT_ENABLED === 'true'}
+      templateId={id}
+    />
+  );
 }

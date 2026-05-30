@@ -13,7 +13,9 @@ import {
   useState,
 } from 'react';
 import { useRouterAdapter } from '../../../lib/router-adapter';
+import type { WorkflowDirectory } from '@rytass/bpm-core-shared';
 import { useWorkflowDesignerController } from './use-workflow-designer-controller';
+import { WorkflowChatDrawer } from './workflow-chat-drawer';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import {
   Background,
@@ -505,6 +507,17 @@ const nodeTypes: NodeTypes = {
 
 export interface TemplateDesignerViewProps {
   readonly templateId: string;
+  /**
+   * Render the AI assistant toggle at all. Default `false` — the feature is
+   * hidden unless the host opts in (e.g. a deployment that has it configured).
+   */
+  readonly showAiAssistant?: boolean;
+  /**
+   * Whether the LLM backend is configured (e.g. the host has an API key set).
+   * Default `true`. When `false`, the toggle is shown but disabled and labelled
+   * as not configured — a placeholder rather than a broken feature.
+   */
+  readonly aiAssistantAvailable?: boolean;
 }
 
 /** Resolve a React SetStateAction against the current value (no `any`). */
@@ -515,6 +528,8 @@ function resolveSetStateAction<T>(action: SetStateAction<T>, current: T): T {
 }
 
 export function TemplateDesignerView({
+  aiAssistantAvailable = true,
+  showAiAssistant = false,
   templateId,
 }: TemplateDesignerViewProps): ReactElement {
   const router = useRouterAdapter();
@@ -533,11 +548,39 @@ export function TemplateDesignerView({
     undefined,
   );
 
+  // Org/position data is loaded further down; mirror it into refs so the stable
+  // `directory` object below always reads the latest without re-creation.
+  const orgUnitsRef = useRef<readonly OrgUnitRecord[]>([]);
+  const positionsRef = useRef<readonly PositionRecord[]>([]);
+  // Backs the assistant's member/org lookup query tools (search_members /
+  // list_org_units / list_positions) — host data, injected into the toolset.
+  const directory = useMemo<WorkflowDirectory>(
+    () => ({
+      listOrgUnits: async () =>
+        orgUnitsRef.current.map((unit) => ({ id: unit.id, name: unit.name })),
+      listPositions: async () =>
+        positionsRef.current.map((position) => ({
+          id: position.id,
+          name: position.name,
+        })),
+      searchMembers: async (query) =>
+        readMemberSelectOptions(await searchMemberOptions(query)).map(
+          (member) => ({
+            email: member.email,
+            id: member.memberId,
+            name: member.name,
+          }),
+        ),
+    }),
+    [],
+  );
+
   // The pure command reducer (shared with the LLM toolset) owns the workflow
   // graph, selection, form binding, and initiator policy. Every logical
   // mutation flows through `controller.dispatch`; the dagre layout + viewport
   // are injected here so the pure layer stays free of DOM concerns.
   const controller = useWorkflowDesignerController({
+    directory,
     initialState: {
       definition: readFallbackWorkflowDefinition(),
       editingEdgeId: null,
@@ -635,12 +678,16 @@ export function TemplateDesignerView({
   const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
     [],
   );
+  // Keep the directory's refs pointed at the latest loaded org data.
+  orgUnitsRef.current = orgUnits;
+  positionsRef.current = positions;
   const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
   const [dryRunResult, setDryRunResult] =
     useState<WorkflowDryRunResultRecord | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect((): void => {
     void refreshDesigner();
@@ -1228,6 +1275,15 @@ export function TemplateDesignerView({
             onBackClick={handleBackToTemplates}
             title={record?.template.name ?? '流程設計器'}
           >
+            {showAiAssistant ? (
+              <Button
+                disabled={!aiAssistantAvailable}
+                onClick={(): void => setChatOpen((current) => !current)}
+                variant={chatOpen ? 'base-primary' : 'base-secondary'}
+              >
+                {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
+              </Button>
+            ) : null}
             <Button
               aria-label="儲存草稿"
               disabled={
@@ -1445,6 +1501,13 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {renderDryRunModal()}
+        {showAiAssistant && aiAssistantAvailable ? (
+          <WorkflowChatDrawer
+            controller={controller}
+            onClose={(): void => setChatOpen(false)}
+            open={chatOpen}
+          />
+        ) : null}
       </>
   );
 

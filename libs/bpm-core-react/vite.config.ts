@@ -17,6 +17,9 @@ const PLANNED_ENTRIES: Readonly<Record<string, string>> = {
   // Next.js drop-in provider shim (consumer's layout uses this once).
   'next/index': 'src/next/index.ts',
 
+  // Next.js route handler for the workflow designer LLM assistant.
+  'next/workflow-chat-route': 'src/next/workflow-chat-route.ts',
+
   // Grouped view barrels — preferred entry point for most consumers.
   // Heavy views (designer / builder / instance detail) stay isolated.
   'views/workflow/index': 'src/views/workflow/index.ts',
@@ -114,6 +117,7 @@ export default defineConfig({
     rollupOptions: {
       external: (id): boolean => {
         if (id.startsWith('react') || id.startsWith('next')) return true;
+        if (id === 'ai' || id.startsWith('@ai-sdk/')) return true;
         if (id.startsWith('@rytass/bpm-core-')) return true;
         if (id.startsWith('@mezzanine-ui/')) return true;
         if (id.startsWith('@xyflow/')) return true;

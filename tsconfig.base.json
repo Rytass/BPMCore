@@ -104,6 +104,9 @@
       "@rytass/bpm-core-react/next": [
         "./libs/bpm-core-react/src/next/index.ts"
       ],
+      "@rytass/bpm-core-react/next/workflow-chat-route": [
+        "./libs/bpm-core-react/src/next/workflow-chat-route.ts"
+      ],
       "@rytass/bpm-core-react/views/workflow": [
         "./libs/bpm-core-react/src/views/workflow/index.ts"
       ],

@@ -4,6 +4,7 @@ import {
   WorkflowCommandResult,
   WorkflowDesignerState,
   WorkflowMacroCommand,
+  WorkflowDirectory,
   WorkflowSnapshot,
   WORKFLOW_TOOLSET,
   WorkflowTool,
@@ -33,6 +34,8 @@ export interface UseWorkflowDesignerControllerOptions {
   readonly layout: (definition: WorkflowDefinition) => WorkflowDefinition;
   /** Notified with the laid-out definition so the host can refit the viewport. */
   readonly onLayout?: (definition: WorkflowDefinition) => void;
+  /** Org directory backing the LLM's member/org lookup query tools. */
+  readonly directory?: WorkflowDirectory;
 }
 
 export interface WorkflowDesignerController {
@@ -46,8 +49,12 @@ export interface WorkflowDesignerController {
   readonly dispatchMacro: (
     command: WorkflowMacroCommand,
   ) => WorkflowCommandResult;
-  /** Execute an LLM tool call by name; mutations commit + relayout. */
-  readonly executeTool: (toolName: string, input: unknown) => WorkflowToolResult;
+  /** Execute an LLM tool call by name; mutations commit + relayout. Async
+   * because directory query tools may fetch from the host. */
+  readonly executeTool: (
+    toolName: string,
+    input: unknown,
+  ) => Promise<WorkflowToolResult>;
   /** Replace the whole state (e.g. after loading a draft from the server). */
   readonly replaceState: (
     next:
@@ -59,6 +66,7 @@ export interface WorkflowDesignerController {
 }
 
 export function useWorkflowDesignerController({
+  directory,
   initialState,
   layout,
   onLayout,
@@ -67,6 +75,9 @@ export function useWorkflowDesignerController({
   // Mirror state in a ref so dispatch reads the freshest value even when called
   // multiple times within one React batch (e.g. a macro fold by the UI).
   const stateRef = useRef<WorkflowDesignerState>(initialState);
+  // Latest directory, read at tool-call time (avoids re-creating executeTool).
+  const directoryRef = useRef<WorkflowDirectory | undefined>(directory);
+  directoryRef.current = directory;
 
   const commit = useCallback(
     (result: WorkflowCommandResult): WorkflowCommandResult => {
@@ -107,8 +118,13 @@ export function useWorkflowDesignerController({
   );
 
   const executeTool = useCallback(
-    (toolName: string, input: unknown): WorkflowToolResult => {
-      const result = executeWorkflowTool(stateRef.current, toolName, input);
+    async (toolName: string, input: unknown): Promise<WorkflowToolResult> => {
+      const result = await executeWorkflowTool(
+        stateRef.current,
+        toolName,
+        input,
+        { directory: directoryRef.current },
+      );
 
       if (result.ok && (result.kind === 'mutation' || result.kind === 'macro')) {
         const committed = commit(result.result);
