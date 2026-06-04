@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.1.10`, `libs/bpm-core-client@0.1.2`, `libs/bpm-core@0.1.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.2`.
+Last verified against: `libs/shared@0.1.10`, `libs/bpm-core-client@0.1.11`, `libs/bpm-core@0.1.11` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.4.4`.
 
 ---
 
@@ -301,7 +301,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Records | `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `FormBuilderRecord`, `FormSchemaLintResult` |
 | Type | `FormDefinitionListStatus` |
 | Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()` |
-| Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `forkFormDefinition()` |
+| Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
 | Factory | `createFieldDefinition()` |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
@@ -330,10 +330,10 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 | Category | Names |
 |---|---|
-| Records | `ApprovalTemplateRecord`, `ApprovalTemplateCategoryRecord`, `ApprovalTemplateVersionRecord`, `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `PublishedFormVersionOption`, `MemberProfileRecord`, `WorkflowDryRunStepRecord`, `WorkflowDryRunResultRecord`, `TemplateDesignerRecord`, `ApprovalTemplatesPage`, `ApprovalTemplateCategoriesPage` |
+| Records | `ApprovalTemplateRecord`, `ApprovalTemplateCategoryRecord`, `ApprovalTemplateVersionRecord`, `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `PublishedFormVersionOption`, `MemberProfileRecord`, `WorkflowDryRunStepRecord`, `WorkflowDryRunResultRecord`, `TemplateDesignerRecord`, `ApprovalTemplatesPage`, `ApprovalTemplateCategoriesPage`, `ComposeApprovalTemplateWithFormResult` |
 | Types | `ApprovalTemplateListStatus`, `ApprovalTemplateCategoryStatus` |
 | Queries | `listApprovalTemplates()`, `listApprovalTemplatesPage()`, `listApprovalTemplateCategoriesPage()`, `readTemplateDesigner()`, `searchPublishedFormVersionOptions()`, `resolveMemberOptions()`, `searchMemberOptions()` |
-| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()` |
+| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()` |
 | Dry-run | `dryRunApprovalWorkflow()` |
 
 ## `@rytass/bpm-core-client/workflow`
@@ -348,7 +348,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
 | Delegation | `DelegationScopeType`, `DelegationRuleStatus`, `DelegationRuleRecord` |
-| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationRecord`, `NotificationPreferenceRecord` |
+| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord`, `NotificationPreferenceRecord` |
 | Attachment / Signature | `AttachmentRecord`, `SignatureRecord`, `SignatureVerificationRecord` |
 | Template embed | `ApprovalTemplateRecord`, `ApprovalTemplateVersionRecord` |
 | Dashboard | `WorkflowDashboardSummaryRecord` |
@@ -411,7 +411,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 14-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 17-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -459,16 +459,36 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Service | `FormService` |
 | Module | `FormModule` |
 
+> `FormService.createFormDefinition` / `updateFormDefinitionDraft` /
+> `publishFormDefinitionVersion` / `publishFormDefinitionContent` accept an
+> optional trailing `manager?: EntityManager` (backward-compatible) so they can
+> join an outer transaction. Used by
+> `TemplateService.composeApprovalTemplateWithForm`.
+>
+> Form definitions keep no draft in parallel with a published version: before
+> the first publish the single draft is updated in place; afterwards
+> `publishFormDefinitionContent` publishes a brand-new version directly
+> (content-identical saves are a no-op returning the current version).
+
 ## `@rytass/bpm-core-nestjs-module/template`
 
 | Category | Names |
 |---|---|
 | Entities | `ApprovalTemplateEntity`, `ApprovalTemplateVersionEntity`, `ApprovalTemplateCategoryEntity` |
-| DTOs | `ApprovalTemplateInput` |
+| DTOs | `ApprovalTemplateInput`, `ComposeApprovalTemplateWithFormInput` |
+| Objects | `ComposeApprovalTemplateWithFormObject` (`ComposeApprovalTemplateWithFormResult`) |
 | Validators | `WorkflowDefinitionValidator` |
 | Enums | `TemplateEnums` |
 | Service | `TemplateService` |
 | Module | `TemplateModule` |
+
+> `composeApprovalTemplateWithForm` mutation (`ComposeTemplateMutations`) builds
+> and optionally publishes a form definition together with the approval template
+> that binds it, atomically in a single DB transaction. The `publish` flag
+> toggles draft-only vs. publish-both. `TemplateService` methods
+> (`createApprovalTemplate` / `updateApprovalTemplateDraft` /
+> `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
+> trailing `manager?: EntityManager` for this composition (backward-compatible).
 
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
@@ -535,11 +555,11 @@ Workflow execution engine — the heaviest module.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 14-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 17-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-14 ordered migrations:
+17 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001`
 2. `IdentityOrganizationFoundation0000000001000`
@@ -555,6 +575,9 @@ Workflow execution engine — the heaviest module.
 12. `RemoveAttachmentEncryptionKey0000000011000`
 13. `NotificationSlaIdempotency0000000012000`
 14. `WorkflowQueryIndexes0000000013000`
+15. `NotificationResolution0000000014000`
+16. `BackfillStaleNotificationResolution0000000015000`
+17. `ArchiveParallelFormDrafts0000000016000`
 
 ---
 
@@ -581,7 +604,7 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `RouterAdapterProviderProps` | interface | Provider props |
 | `useRouterAdapter()` | hook | Read current adapter |
 | `defaultBrowserSearchParams()` | function | Fallback reader from `window.location.search` |
-| `BPMRoutes` | interface | Path mapping every BPM view uses (dashboard / inbox / caseDetail / templates / forms / admin / …) |
+| `BPMRoutes` | interface | Path mapping every BPM view uses (dashboard / inbox / caseDetail / templates / admin / …) |
 | `BPMRoutesProvider` | Component | Override host BPM internal paths |
 | `BPMRoutesProviderProps` | interface | `{ value?, children }` |
 | `createDefaultBPMRoutes()` | function | Factory returning the default `BPMRoutes` literal map |
@@ -642,7 +665,6 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/workflow` | `InboxView`, `SentView`, `CcView`, `SearchView` |
 | `views/instances` | `InstanceNewView` (detail stays isolated due to weight) |
 | `views/templates` | `TemplatesView`, `TemplateCategoriesView`, `TemplateVersionsView` (designer isolated) |
-| `views/forms` | `FormsView`, `FormRenderer` / `FormRendererView` (builder isolated) |
 | `views/settings` | `SettingsNotificationsView` |
 | `views/admin` | `AdminUsersView`, `AdminOrgsView`, `AdminDelegationsView` |
 
@@ -663,19 +685,20 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
-| `views/instances/detail` | `InstanceDetailView` | `@xyflow/react`, `dagre` |
+| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
 | `views/instances/new` | `InstanceNewView` | medium |
-| `views/templates/designer` | `TemplateDesignerView` | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
+| `views/templates/compose` | `TemplateComposeWizardView`, `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
+| `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
-| `views/forms/builder` | `FormBuilderView` | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
+| `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
 | `views/forms/renderer` | `FormRendererView` (alias of `FormRenderer`) | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |
 
 ## Pages (Next.js Server Component shims)
 
-19 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
+20 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
 
 ```ts
 export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
@@ -695,10 +718,9 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
 | `pages/instances/new` | `/instances/new` | Yes | reads `?templateId=` |
 | `pages/templates` | `/templates` | No | — |
 | `pages/templates/categories` | `/templates/categories` | No | — |
+| `pages/templates/compose` | `/templates/compose` | No | — |
 | `pages/templates/designer` | `/templates/[id]/designer` | Yes | `params.id` → `templateId` |
 | `pages/templates/versions` | `/templates/[id]/versions` | Yes | `params.id` → `templateId` |
-| `pages/forms` | `/forms` | No | — |
-| `pages/forms/builder` | `/forms/[id]/builder` | Yes | `params.id` → `formId` |
 | `pages/settings/notifications` | `/settings/notifications` | No | — |
 | `pages/admin/users` | `/admin/users` | No | — |
 | `pages/admin/orgs` | `/admin/orgs` | No | — |

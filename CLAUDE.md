@@ -84,3 +84,6 @@ Next.js server env (the client host, not `apps/api`), in `apps/client/.env.local
 - `OPENAI_API_KEY` — OpenAI key (server-only, never `NEXT_PUBLIC_`). The route
   talks to OpenAI directly via `@ai-sdk/openai` — no Vercel AI Gateway.
 - `BPM_LLM_MODEL` — optional OpenAI model id; defaults to `gpt-5.4-mini`.
+- `BPM_TEMPLATE_DRY_RUN_ENABLED` — set to `'false'` to hide the designer's
+  "試跑流程" (dry-run) button (shown by default). `TemplateDesignerView` also
+  accepts a `showDryRun` prop for direct control.

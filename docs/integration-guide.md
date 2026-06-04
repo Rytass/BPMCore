@@ -80,7 +80,7 @@ BPM used to ship internally — feel free to remap, omit, or add groups.
 |---|---|---|
 | 我的工作 | 工作台 (`routes.dashboard`) · 我的待簽 (`routes.inbox`) · 我發起的 (`routes.sent`) · 抄送給我 (`routes.cc`) | Per-member workflow |
 | 查詢與代理 | 搜尋 (`routes.search`) · 個人代理 (`routes.delegations`) | Cross-instance + personal delegation |
-| 簽核設計 | 簽核模板 (`routes.templates`) · 模板分類 (`routes.templateCategories`) · 表單設計 (`routes.forms`) | Admin-only |
+| 簽核設計 | 簽核模板 (`routes.templates`) · 模板分類 (`routes.templateCategories`) | Admin-only |
 | 系統管理 | 組織管理 (`routes.adminOrgs`) · 會員對照 (`routes.adminUsers`) · 代理設定 (`routes.adminDelegations`) | Admin-only |
 
 ### Reference implementation

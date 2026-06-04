@@ -123,15 +123,19 @@ tasks, notifications, attachments, signatures, and delegations.
 ```bash
 pnpm install
 pnpm demo:reset
-pnpm api
-pnpm client
+pnpm dev
 ```
 
 `pnpm demo:reset` runs migrations before resetting and seeding develop data. Use
 `pnpm migration:run` separately only when you need migrations without resetting
-the seed scenario. `pnpm api` and `pnpm client` are long-running dev servers.
-Start them in separate terminals when running the browser app or Playwright e2e
-suite.
+the seed scenario.
+
+`pnpm dev` launches both long-running dev servers — `pnpm api`
+(http://localhost:17603/graphql) and `pnpm client` (http://localhost:17602) —
+in a single tiled **tmux** session (`scripts/dev-tmux.sh`). Re-running attaches
+to the existing session; stop everything with `tmux kill-session -t bpm-core-dev`.
+Prefer separate terminals (or no tmux)? Run `pnpm api` and `pnpm client`
+individually instead.
 
 ## Designer AI Assistant
 
