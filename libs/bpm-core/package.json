@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-nestjs-module",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Embeddable NestJS BPM approval workflow module: workflow engine, approval templates, forms, organization/member contracts, attachments, signatures, notifications, delegation, and TypeORM migrations.",
   "keywords": [
     "bpm",
