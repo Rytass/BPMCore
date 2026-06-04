@@ -14,6 +14,7 @@ import {
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { NotificationEntity } from '../notification/notification.entity';
+import { NotificationResolutionEnum } from '../notification/notification.enums';
 import { NotificationService } from '../notification/notification.service';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
@@ -703,6 +704,14 @@ describe('WorkflowEngineService', () => {
         }),
       }),
     );
+    expect(
+      fixture.notificationService.resolveTaskNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolution: NotificationResolutionEnum.APPROVED,
+        supersedeOthers: true,
+      }),
+    );
   });
 
   it('requires a rejection comment before rejecting a task', async (): Promise<void> => {
@@ -775,6 +784,14 @@ describe('WorkflowEngineService', () => {
       completedAt: expect.any(Date),
       state: ApprovalInstanceStateEnum.REJECTED,
     });
+    expect(
+      fixture.notificationService.resolveTaskNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolution: NotificationResolutionEnum.REJECTED,
+        supersedeOthers: true,
+      }),
+    );
   });
 
   it('transfers a task without advancing the token', async (): Promise<void> => {
@@ -835,6 +852,14 @@ describe('WorkflowEngineService', () => {
       ActivityLogEventTypeEnum.TASK_DECIDED,
       ActivityLogEventTypeEnum.TASK_CREATED,
     ]);
+    expect(
+      fixture.notificationService.resolveTaskNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolution: NotificationResolutionEnum.TRANSFERRED,
+        supersedeOthers: true,
+      }),
+    );
   });
 
   it('lists pending inbox tasks by assignee', async (): Promise<void> => {
@@ -1374,6 +1399,8 @@ interface ServiceFixture {
     | 'createInstanceCompletedNotification'
     | 'createServiceTaskNotifications'
     | 'createTaskAssignedNotification'
+    | 'resolveTaskNotifications'
+    | 'supersedeInstanceTaskNotifications'
   >;
   readonly notificationFind: jest.Mock<
     Promise<readonly NotificationEntity[]>,
@@ -1529,6 +1556,8 @@ function createServiceFixture({
     createInstanceCompletedNotification: jest.fn(() => Promise.resolve([])),
     createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
+    resolveTaskNotifications: jest.fn(() => Promise.resolve()),
+    supersedeInstanceTaskNotifications: jest.fn(() => Promise.resolve()),
   };
   const attachmentService = {
     bindFormDataAttachmentsToInstance: jest.fn(() => Promise.resolve()),

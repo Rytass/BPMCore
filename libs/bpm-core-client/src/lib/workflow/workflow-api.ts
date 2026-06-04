@@ -151,7 +151,19 @@ export type NotificationType =
   | 'TASK_ASSIGNED'
   | 'TASK_TRANSFERRED';
 
+export type NotificationResolution =
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'RETURNED'
+  | 'SUPERSEDED'
+  | 'TRANSFERRED';
+
 export interface NotificationRecord {
+  /**
+   * Whether the recipient can still act on this notification (an unresolved
+   * task assignment). Server-derived; drives the inline 同意/拒絕 actions.
+   */
+  readonly actionable: boolean;
   readonly attemptCount: number;
   readonly body: string;
   readonly channel: NotificationChannel;
@@ -166,6 +178,9 @@ export interface NotificationRecord {
   readonly payloadJson: string;
   readonly readAt: string | null;
   readonly recipientMemberId: string;
+  /** How an actionable notification was resolved; `null` while still open. */
+  readonly resolution: NotificationResolution | null;
+  readonly resolvedAt: string | null;
   readonly sentAt: string | null;
   readonly status: NotificationStatus;
   readonly taskId: string | null;
@@ -1334,6 +1349,7 @@ export async function listNotifications({
         pageSize: $pageSize
         recipientMemberId: $recipientMemberId
       ) {
+        actionable
         attemptCount
         body
         channel
@@ -1348,6 +1364,8 @@ export async function listNotifications({
         payloadJson
         readAt
         recipientMemberId
+        resolution
+        resolvedAt
         sentAt
         status
         taskId

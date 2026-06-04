@@ -7,16 +7,23 @@ import {
   useMemo,
   useState,
   type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
 } from 'react';
 import Drawer from '@mezzanine-ui/react/Drawer';
+import Modal from '@mezzanine-ui/react/Modal';
 import NotificationCenter from '@mezzanine-ui/react/NotificationCenter';
+import Textarea from '@mezzanine-ui/react/Textarea';
 import type { NotificationSeverity } from '@mezzanine-ui/core/notification-center';
+import type { DropdownOption } from '@mezzanine-ui/core/dropdown/dropdown';
 import {
+  decideTask,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationRecord,
+  type NotificationResolution,
   type NotificationType,
 } from '@rytass/bpm-core-client/workflow';
 import { useAuth } from '../lib/auth-provider';
@@ -45,6 +52,64 @@ const TIME_GROUP_LABEL: Readonly<Record<TimeGroup, string>> = {
 
 const PAGE_SIZE = 50;
 
+/** Identifiers for the per-notification `...` dropdown menu entries. */
+type NotificationAction = 'approve' | 'reject' | 'view' | 'read';
+
+/**
+ * Build the `...` dropdown options for one notification. Approve / reject are
+ * offered only while the server still reports the notification as `actionable`
+ * (an unresolved task assignment) — once the task is decided / cancelled the
+ * backend flips `actionable` to false, so a stale "同意" can never appear.
+ * "查看案件" needs an `instanceId`; "標為已讀" only shows while unread.
+ */
+function buildNotificationOptions(
+  record: NotificationRecord,
+): readonly DropdownOption[] {
+  return [
+    ...(record.actionable
+      ? ([
+          { id: 'approve', name: '同意' },
+          { id: 'reject', name: '拒絕' },
+        ] satisfies DropdownOption[])
+      : []),
+    ...(record.instanceId
+      ? ([{ id: 'view', name: '查看案件' }] satisfies DropdownOption[])
+      : []),
+    ...(record.status !== 'READ'
+      ? ([{ id: 'read', name: '標為已讀' }] satisfies DropdownOption[])
+      : []),
+  ];
+}
+
+/**
+ * Title shown for a resolved task-assignment notification, replacing the
+ * stored "新的待簽任務" wording so a decided card no longer reads as pending.
+ * The stored `body` is kept as historical context (which case / node).
+ */
+const RESOLVED_TITLE: Readonly<Record<NotificationResolution, string>> = {
+  APPROVED: '簽核任務已同意',
+  REJECTED: '簽核任務已拒絕',
+  RETURNED: '簽核任務已退回',
+  SUPERSEDED: '簽核任務已結束',
+  TRANSFERRED: '簽核任務已轉派',
+};
+
+function resolveDisplayTitle(record: NotificationRecord): string {
+  return record.resolution ? RESOLVED_TITLE[record.resolution] : record.title;
+}
+
+/**
+ * Severity (icon colour) for a notification. Once resolved, it reflects the
+ * outcome — green for approved, red for rejected, neutral otherwise — instead
+ * of the original by-type colour.
+ */
+function resolveSeverity(record: NotificationRecord): NotificationSeverity {
+  if (record.resolution === 'APPROVED') return 'success';
+  if (record.resolution === 'REJECTED') return 'error';
+  if (record.resolution) return 'info';
+  return toSeverity(record.type);
+}
+
 /**
  * Right-side notification drawer mounted at the root by `<Providers>`.
  * Opens / closes via `useNotificationDrawer()`, polls
@@ -66,7 +131,15 @@ export function NotificationDrawer(): ReactElement | null {
   const [loading, setLoading] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterValue>('all');
+  const [rejectTarget, setRejectTarget] = useState<NotificationRecord | null>(
+    null,
+  );
+  const [rejectReason, setRejectReason] = useState('');
+  const [deciding, setDeciding] = useState(false);
+
+  const trimmedRejectReason = rejectReason.trim();
 
   const loadPage = useCallback(
     async (nextPage: number, append: boolean): Promise<void> => {
@@ -97,6 +170,8 @@ export function NotificationDrawer(): ReactElement | null {
 
   useEffect((): void => {
     if (!isOpen || !currentMemberId) return;
+    setError(null);
+    setNotice(null);
     void loadPage(1, false);
   }, [isOpen, currentMemberId, loadPage]);
 
@@ -160,6 +235,101 @@ export function NotificationDrawer(): ReactElement | null {
     [close, currentMemberId, refreshUnreadCount, router, routes],
   );
 
+  const handleApprove = useCallback(
+    async (record: NotificationRecord): Promise<void> => {
+      if (!record.taskId || !currentMemberId || deciding) return;
+      setDeciding(true);
+      setError(null);
+      setNotice(null);
+      try {
+        await decideTask({
+          action: 'APPROVED',
+          comment: null,
+          decidedByMemberId: currentMemberId,
+          taskId: record.taskId,
+        });
+        setNotice(`已同意「${record.title}」。`);
+        await loadPage(1, false);
+      } catch (e: unknown) {
+        setError(readErrorMessage(e));
+      } finally {
+        setDeciding(false);
+      }
+    },
+    [currentMemberId, deciding, loadPage],
+  );
+
+  const openRejectModal = useCallback((record: NotificationRecord): void => {
+    setRejectTarget(record);
+    setRejectReason('');
+  }, []);
+
+  const closeRejectModal = useCallback((): void => {
+    setRejectTarget(null);
+    setRejectReason('');
+  }, []);
+
+  const handleRejectConfirm = useCallback(async (): Promise<void> => {
+    const target = rejectTarget;
+    if (!target?.taskId || !currentMemberId || !trimmedRejectReason || deciding)
+      return;
+    setDeciding(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await decideTask({
+        action: 'REJECTED',
+        comment: trimmedRejectReason,
+        decidedByMemberId: currentMemberId,
+        taskId: target.taskId,
+      });
+      setRejectTarget(null);
+      setRejectReason('');
+      setNotice(`已拒絕「${target.title}」。`);
+      await loadPage(1, false);
+    } catch (e: unknown) {
+      setError(readErrorMessage(e));
+    } finally {
+      setDeciding(false);
+    }
+  }, [currentMemberId, deciding, loadPage, rejectTarget, trimmedRejectReason]);
+
+  const handleBadgeSelect = useCallback(
+    (record: NotificationRecord, option: DropdownOption): void => {
+      const action = option.id as NotificationAction;
+      if (action === 'approve') void handleApprove(record);
+      else if (action === 'reject') openRejectModal(record);
+      else if (action === 'view') void handleOpenInstance(record);
+      else if (action === 'read') void handleMarkRead(record.id);
+    },
+    [handleApprove, handleMarkRead, handleOpenInstance, openRejectModal],
+  );
+
+  const handleCardActivate = useCallback(
+    (record: NotificationRecord, target: EventTarget | null): void => {
+      // Let clicks on the `...` menu button (and its icon) open the dropdown
+      // instead of navigating away. The icon renders as an <svg>, so guard on
+      // `Element` (not `HTMLElement`) — SVG nodes are not HTMLElements.
+      if (target instanceof Element && target.closest('button')) return;
+      void handleOpenInstance(record);
+    },
+    [handleOpenInstance],
+  );
+
+  const handleCardKeyDown = useCallback(
+    (
+      record: NotificationRecord,
+      event: ReactKeyboardEvent<HTMLDivElement>,
+    ): void => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target instanceof Element && event.target.closest('button'))
+        return;
+      event.preventDefault();
+      void handleOpenInstance(record);
+    },
+    [handleOpenInstance],
+  );
+
   const filteredRows = useMemo(
     (): readonly NotificationRecord[] =>
       rows.filter((row): boolean => {
@@ -197,6 +367,7 @@ export function NotificationDrawer(): ReactElement | null {
   if (!currentMemberId) return null;
 
   return (
+    <>
     <Drawer
       bottomGhostActionDisabled={bulkLoading || loading}
       bottomGhostActionLoading={bulkLoading}
@@ -236,6 +407,17 @@ export function NotificationDrawer(): ReactElement | null {
             {error}
           </p>
         ) : null}
+        {notice ? (
+          <p
+            role="status"
+            style={{
+              color: 'var(--mzn-color-text-success, #079455)',
+              padding: '12px 16px',
+            }}
+          >
+            {notice}
+          </p>
+        ) : null}
         {groupedRows.length === 0 ? (
           <p
             style={{
@@ -247,50 +429,88 @@ export function NotificationDrawer(): ReactElement | null {
             {loading ? '載入中…' : '目前沒有通知'}
           </p>
         ) : null}
-        {groupedRows.map(([group, items], groupIndex) => (
+        {groupedRows.map(([group, items]) => (
           <Fragment key={group}>
-            {items.map((record, itemIndex) => (
-              <NotificationCenter
-                appendTips={
-                  groupIndex === groupedRows.length - 1 &&
-                  itemIndex === items.length - 1 &&
-                  !hasMore
-                    ? '已顯示全部通知'
-                    : undefined
-                }
-                cancelButtonText={
-                  record.status !== 'READ' ? '標為已讀' : undefined
-                }
-                description={record.body}
-                key={record.id}
-                onCancel={
-                  record.status !== 'READ'
-                    ? (): void => {
-                        void handleMarkRead(record.id);
-                      }
-                    : undefined
-                }
-                onConfirm={
-                  record.instanceId
-                    ? (): void => {
-                        void handleOpenInstance(record);
-                      }
-                    : undefined
-                }
-                confirmButtonText={record.instanceId ? '查看案件' : undefined}
-                prependTips={itemIndex === 0 ? TIME_GROUP_LABEL[group] : undefined}
-                reference={record.id}
-                severity={toSeverity(record.type)}
-                showBadge={record.status !== 'READ'}
-                timeStamp={record.createdAt}
-                title={record.title}
-                type="drawer"
-              />
-            ))}
+            {items.map((record, itemIndex) => {
+              const openable = record.instanceId !== null;
+
+              return (
+                <div
+                  key={record.id}
+                  onClick={
+                    openable
+                      ? (event: ReactMouseEvent<HTMLDivElement>): void => {
+                          handleCardActivate(record, event.target);
+                        }
+                      : undefined
+                  }
+                  onKeyDown={
+                    openable
+                      ? (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+                          handleCardKeyDown(record, event);
+                        }
+                      : undefined
+                  }
+                  role={openable ? 'button' : undefined}
+                  style={openable ? { cursor: 'pointer' } : undefined}
+                  tabIndex={openable ? 0 : undefined}
+                >
+                  <NotificationCenter
+                    description={record.body}
+                    onBadgeSelect={(option: DropdownOption): void => {
+                      handleBadgeSelect(record, option);
+                    }}
+                    options={[...buildNotificationOptions(record)]}
+                    prependTips={
+                      itemIndex === 0 ? TIME_GROUP_LABEL[group] : undefined
+                    }
+                    reference={record.id}
+                    severity={resolveSeverity(record)}
+                    showBadge={record.status !== 'READ'}
+                    timeStamp={record.createdAt}
+                    title={resolveDisplayTitle(record)}
+                    type="drawer"
+                  />
+                </div>
+              );
+            })}
           </Fragment>
         ))}
       </div>
     </Drawer>
+      <Modal
+        cancelText="取消"
+        confirmButtonProps={{
+          disabled: !trimmedRejectReason,
+          variant: 'destructive-primary',
+        }}
+        confirmText="送出拒絕"
+        loading={deciding}
+        modalStatusType="error"
+        modalType="standard"
+        onCancel={closeRejectModal}
+        onClose={closeRejectModal}
+        onConfirm={(): void => {
+          void handleRejectConfirm();
+        }}
+        open={rejectTarget !== null}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText="拒絕案件時必須留下原因，供發起人與後續追蹤查看。"
+        title="拒絕原因"
+      >
+        <Textarea
+          autoFocus
+          onChange={(event: ChangeEvent<HTMLTextAreaElement>): void => {
+            setRejectReason(event.target.value);
+          }}
+          placeholder="請輸入拒絕原因"
+          rows={4}
+          value={rejectReason}
+        />
+      </Modal>
+    </>
   );
 }
 

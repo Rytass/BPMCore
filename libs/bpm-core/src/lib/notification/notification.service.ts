@@ -13,6 +13,7 @@ import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   EntityManager,
+  In,
   IsNull,
   LessThanOrEqual,
   MoreThan,
@@ -40,9 +41,15 @@ import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
+  NotificationResolutionEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
+
+const ACTIONABLE_NOTIFICATION_TYPES: readonly NotificationTypeEnum[] = [
+  NotificationTypeEnum.TASK_ASSIGNED,
+  NotificationTypeEnum.TASK_TRANSFERRED,
+];
 import {
   BPM_NOTIFICATION_OPTIONS,
   BPMResolvedNotificationOptions,
@@ -360,6 +367,94 @@ export class NotificationService {
         type: NotificationTypeEnum.INSTANCE_COMPLETED,
       },
       manager,
+    );
+  }
+
+  /**
+   * Resolve the open task-assignment notifications for a decided task, so the
+   * inline 同意/拒絕 actions stop being offered once the task no longer needs
+   * the recipient. The acting member's notification records the actual
+   * decision (`resolution`); every other candidate's notification is marked
+   * `SUPERSEDED` when the task has ended. Runs inside the caller's
+   * transaction `manager` so it commits atomically with the decision.
+   */
+  async resolveTaskNotifications({
+    actingMemberId,
+    manager,
+    resolution,
+    supersedeOthers,
+    taskId,
+  }: {
+    readonly actingMemberId: string;
+    readonly manager: EntityManager;
+    readonly resolution: NotificationResolutionEnum;
+    readonly supersedeOthers: boolean;
+    readonly taskId: string;
+  }): Promise<void> {
+    const repository = manager.getRepository(NotificationEntity);
+    const resolvedAt = new Date();
+
+    await repository.update(
+      {
+        recipientMemberId: actingMemberId,
+        resolvedAt: IsNull(),
+        taskId,
+        type: In(ACTIONABLE_NOTIFICATION_TYPES),
+      },
+      {
+        readAt: resolvedAt,
+        resolution,
+        resolvedAt,
+        status: NotificationStatusEnum.READ,
+      },
+    );
+
+    if (supersedeOthers) {
+      await repository.update(
+        {
+          recipientMemberId: Not(actingMemberId),
+          resolvedAt: IsNull(),
+          taskId,
+          type: In(ACTIONABLE_NOTIFICATION_TYPES),
+        },
+        {
+          readAt: resolvedAt,
+          resolution: NotificationResolutionEnum.SUPERSEDED,
+          resolvedAt,
+          status: NotificationStatusEnum.READ,
+        },
+      );
+    }
+  }
+
+  /**
+   * Mark every still-open task-assignment notification for an instance as
+   * `SUPERSEDED` — used when the whole instance is cancelled, so lingering
+   * "待簽" notifications can no longer be actioned. Runs inside the caller's
+   * transaction `manager`.
+   */
+  async supersedeInstanceTaskNotifications({
+    instanceId,
+    manager,
+  }: {
+    readonly instanceId: string;
+    readonly manager: EntityManager;
+  }): Promise<void> {
+    const repository = manager.getRepository(NotificationEntity);
+    const resolvedAt = new Date();
+
+    await repository.update(
+      {
+        instanceId,
+        resolvedAt: IsNull(),
+        type: In(ACTIONABLE_NOTIFICATION_TYPES),
+      },
+      {
+        readAt: resolvedAt,
+        resolution: NotificationResolutionEnum.SUPERSEDED,
+        resolvedAt,
+        status: NotificationStatusEnum.READ,
+      },
     );
   }
 
@@ -940,6 +1035,8 @@ function createNotificationEntity({
     payload: input.payload,
     readAt: null,
     recipientMemberId: input.recipientMemberId,
+    resolution: null,
+    resolvedAt: null,
     sentAt: isInApp ? new Date() : null,
     status: isInApp
       ? NotificationStatusEnum.SENT

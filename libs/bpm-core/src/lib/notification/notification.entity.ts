@@ -8,9 +8,16 @@ import {
 } from 'typeorm';
 import {
   NotificationChannelEnum,
+  NotificationResolutionEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
+
+const ACTIONABLE_NOTIFICATION_TYPES: ReadonlySet<NotificationTypeEnum> =
+  new Set([
+    NotificationTypeEnum.TASK_ASSIGNED,
+    NotificationTypeEnum.TASK_TRANSFERRED,
+  ]);
 
 @Entity('notifications')
 @Index('IDX_notifications_pending_delivery', [
@@ -59,6 +66,14 @@ export class NotificationEntity {
   @Field(() => NotificationStatusEnum)
   status!: NotificationStatusEnum;
 
+  @Column('text', { name: 'resolution', nullable: true })
+  @Field(() => NotificationResolutionEnum, { nullable: true })
+  resolution!: NotificationResolutionEnum | null;
+
+  @Column('timestamptz', { name: 'resolved_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  resolvedAt!: Date | null;
+
   @Column('timestamptz', { name: 'sent_at', nullable: true })
   @Field(() => Date, { nullable: true })
   sentAt!: Date | null;
@@ -98,5 +113,17 @@ export class NotificationEntity {
   @Field(() => String)
   get payloadJson(): string {
     return JSON.stringify(this.payload ?? {});
+  }
+
+  /**
+   * Whether the recipient can still act on this notification (i.e. it is an
+   * unresolved task-assignment). Drives the inline 同意/拒絕 actions on the
+   * client so they are never offered for an already-decided task.
+   */
+  @Field(() => Boolean)
+  get actionable(): boolean {
+    return (
+      ACTIONABLE_NOTIFICATION_TYPES.has(this.type) && this.resolution == null
+    );
   }
 }

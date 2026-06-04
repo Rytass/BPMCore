@@ -19,6 +19,21 @@ export enum NotificationStatusEnum {
   SENT = 'SENT',
 }
 
+/**
+ * Action-lifecycle of an actionable notification (TASK_ASSIGNED /
+ * TASK_TRANSFERRED), orthogonal to the delivery `status`. `null` resolution
+ * means the action is still OPEN (awaiting the recipient's decision); any
+ * non-null value means the notification has been resolved and its inline
+ * 同意/拒絕 actions must no longer be offered.
+ */
+export enum NotificationResolutionEnum {
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+  RETURNED = 'RETURNED',
+  TRANSFERRED = 'TRANSFERRED',
+  SUPERSEDED = 'SUPERSEDED',
+}
+
 export enum NotificationTypeEnum {
   INSTANCE_COMPLETED = 'INSTANCE_COMPLETED',
   SLA_OVERDUE = 'SLA_OVERDUE',
@@ -38,6 +53,10 @@ registerEnumType(NotificationDigestModeEnum, {
 
 registerEnumType(NotificationStatusEnum, {
   name: 'NotificationStatus',
+});
+
+registerEnumType(NotificationResolutionEnum, {
+  name: 'NotificationResolution',
 });
 
 registerEnumType(NotificationTypeEnum, {

@@ -42,6 +42,7 @@ import {
   NotificationService,
 } from '../notification/notification.service';
 import { NotificationEntity } from '../notification/notification.entity';
+import { NotificationResolutionEnum } from '../notification/notification.enums';
 import { SignatureService } from '../signature/signature.service';
 import { ConditionService } from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
@@ -524,6 +525,14 @@ export class WorkflowEngineService {
             claimedCandidate,
           );
 
+          await this.notificationService.resolveTaskNotifications({
+            actingMemberId: input.decidedByMemberId,
+            manager,
+            resolution: NotificationResolutionEnum.TRANSFERRED,
+            supersedeOthers: true,
+            taskId: claimedTask.id,
+          });
+
           return decision;
         }
 
@@ -567,6 +576,22 @@ export class WorkflowEngineService {
             taskId: completedTask.id,
           }),
         );
+
+        // Resolve the recipient's "待簽" notification so its inline 同意/拒絕
+        // actions disappear once the task is decided. When the task has ended
+        // (rejected / returned, or an approval that completed it), every other
+        // candidate's notification is superseded too; a non-completing approval
+        // on a multi-approver task leaves the remaining approvers' open.
+        const taskEnded =
+          input.action !== TaskDecisionActionEnum.APPROVED || shouldCompleteTask;
+
+        await this.notificationService.resolveTaskNotifications({
+          actingMemberId: input.decidedByMemberId,
+          manager,
+          resolution: mapDecisionToResolution(input.action),
+          supersedeOthers: taskEnded,
+          taskId: completedTask.id,
+        });
 
         if (
           input.action === TaskDecisionActionEnum.APPROVED &&
@@ -675,6 +700,10 @@ export class WorkflowEngineService {
           cancelledAt,
           TaskStatusEnum.CANCELLED,
         );
+        await this.notificationService.supersedeInstanceTaskNotifications({
+          instanceId: instance.id,
+          manager,
+        });
         const cancelledInstance = await instanceRepository.save({
           ...instance,
           completedAt: cancelledAt,
@@ -4704,4 +4733,19 @@ function readDryRunStepMessage(
   }
 
   return '節點條件通過。';
+}
+
+function mapDecisionToResolution(
+  action: TaskDecisionActionEnum,
+): NotificationResolutionEnum {
+  switch (action) {
+    case TaskDecisionActionEnum.APPROVED:
+      return NotificationResolutionEnum.APPROVED;
+    case TaskDecisionActionEnum.REJECTED:
+      return NotificationResolutionEnum.REJECTED;
+    case TaskDecisionActionEnum.RETURNED:
+      return NotificationResolutionEnum.RETURNED;
+    case TaskDecisionActionEnum.TRANSFERRED:
+      return NotificationResolutionEnum.TRANSFERRED;
+  }
 }
