@@ -69,17 +69,18 @@ export interface BPMRoutes {
 
   /** Template index. */
   templates(): string;
+  /**
+   * Unified "form + flow" creation wizard. Designs a form and an approval
+   * flow together, then publishes both atomically. This is the only place
+   * forms are designed — there is no separate standalone form builder page.
+   */
+  templateCompose(): string;
   /** Template designer (xyflow canvas). */
   templateDesigner(templateId: string): string;
   /** Template version history. */
   templateVersions(templateId: string): string;
   /** Template categories admin. */
   templateCategories(): string;
-
-  /** Form definitions index. */
-  forms(): string;
-  /** Form-builder (CodeMirror schema editor + preview). */
-  formBuilder(formId: string): string;
 
   /** Per-member notification preferences. */
   notificationSettings(): string;
@@ -114,12 +115,10 @@ export function createDefaultBPMRoutes(): BPMRoutes {
         : '/instances/new',
 
     templates: () => '/templates',
+    templateCompose: () => '/templates/compose',
     templateDesigner: (templateId) => `/templates/${templateId}/designer`,
     templateVersions: (templateId) => `/templates/${templateId}/versions`,
     templateCategories: () => '/templates/categories',
-
-    forms: () => '/forms',
-    formBuilder: (formId) => `/forms/${formId}/builder`,
 
     notificationSettings: () => '/settings/notifications',
 

@@ -4,6 +4,7 @@ import {
   ChangeEvent,
   CSSProperties,
   Key,
+  MouseEvent,
   ReactElement,
   useEffect,
   useMemo,
@@ -25,7 +26,6 @@ import {
   DateTimePicker,
   Icon,
   Input,
-  PageHeader,
   Section,
   SectionGroup,
   Select,
@@ -36,21 +36,18 @@ import {
   Toggle,
   Typography,
 } from '@mezzanine-ui/react';
-import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import {
   AlignLeftIcon,
   CalendarIcon,
-  CheckedOutlineIcon,
   CheckedIcon,
+  CheckedOutlineIcon,
   CurrencyDollarIcon,
   DotDragVerticalIcon,
   DotGridIcon,
-  EditIcon,
   FileAttachmentIcon,
   FileIcon,
   ListIcon,
   PlusIcon,
-  SaveIcon,
   TrashIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
@@ -67,17 +64,7 @@ import {
   SelectFieldDefinition,
   TextFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { formatDateTime } from '../../../lib/format-date-time';
-import {
-  createFieldDefinition,
-  FormBuilderRecord,
-  FormDefinitionVersionRecord,
-  forkFormDefinition,
-  publishFormDefinitionVersion,
-  readFormBuilder,
-  updateFormDefinition,
-  updateFormDefinitionDraft,
-} from '@rytass/bpm-core-client/form';
+import { createFieldDefinition } from '@rytass/bpm-core-client/form';
 import {
   buildConditionExpression,
   buildFormRendererValues,
@@ -98,15 +85,12 @@ import {
   readFieldOptionAsSelectOption,
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
-import { useRouterAdapter } from '../../../lib/router-adapter';
-import { useBPMRoutes } from '../../../lib/routes-config';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
-import { FormNameModal } from '../form-name-modal';
 import { JsonCodeEditor } from './json-code-editor';
 
 type FieldType = FormFieldDefinition['type'];
-type BuilderTabKey = 'design' | 'preview' | 'versions' | 'advanced';
+type BuilderTabKey = 'design' | 'preview' | 'advanced';
 type FieldOptionRow = Readonly<
   Record<string, unknown> & {
     index: number;
@@ -115,21 +99,6 @@ type FieldOptionRow = Readonly<
     value: string;
   }
 >;
-
-type VersionRow = Readonly<
-  Record<string, unknown> & {
-    key: string;
-    publishedAt: string;
-    status: FormDefinitionVersionRecord['status'];
-    updatedAt: string;
-    version: string;
-  }
->;
-
-type BuilderSnapshot = Readonly<{
-  schemaJson: string;
-  uiSchemaJson: string;
-}>;
 
 type FieldTypeOption = Readonly<{
   description: string;
@@ -283,11 +252,20 @@ const FIELD_BLOCK_REQUIRED_STYLE: CSSProperties = {
 };
 
 const FIELD_BLOCK_STYLE: CSSProperties = {
+  cursor: 'pointer',
   userSelect: 'none',
 };
 
 const FIELD_BLOCK_DRAGGING_STYLE: CSSProperties = {
   filter: 'drop-shadow(0 8px 18px rgba(0, 0, 0, 0.12))',
+};
+
+// Selected field: tint the whole card with a light brand fill over the surface
+// so the active row is obvious without relying on the (removed) edit button.
+const FIELD_BLOCK_SELECTED_CARD_STYLE: CSSProperties = {
+  backgroundColor:
+    'color-mix(in srgb, var(--mzn-color-primary) 8%, var(--mzn-color-bg-surface))',
+  boxShadow: 'inset 0 0 0 1px var(--mzn-color-border-primary)',
 };
 
 const EMPTY_CANVAS_STYLE: CSSProperties = {
@@ -473,25 +451,34 @@ const CONDITION_RULE_CONFIGS: readonly ConditionRuleConfig[] = [
 
 export interface FormBuilderViewProps {
   /**
-   * The id of the form definition being edited. Routed via the host's
-   * dynamic segment (e.g. `[id]` in Next.js).
+   * Initial (or controlled) schema value.
+   * If omitted, the builder starts with empty schema / uiSchema.
    */
-  readonly formId: string;
+  readonly value?: {
+    readonly schema: FormDefinitionSchema;
+    readonly uiSchema: FormUiSchema;
+  };
+
+  /** Called whenever the schema or uiSchema changes. */
+  readonly onChange?: (next: {
+    readonly schema: FormDefinitionSchema;
+    readonly uiSchema: FormUiSchema;
+  }) => void;
 }
 
-export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement {
-  const router = useRouterAdapter();
-  const routes = useBPMRoutes();
-  const formDefinitionId = formId;
-  const [record, setRecord] = useState<FormBuilderRecord | null>(null);
-  const [draft, setDraft] = useState<FormDefinitionVersionRecord | null>(null);
-  const [schema, setSchema] = useState<FormDefinitionSchema>(EMPTY_SCHEMA);
-  const [uiSchema, setUiSchema] = useState<FormUiSchema>(EMPTY_UI_SCHEMA);
+export function FormBuilderView({
+  onChange,
+  value,
+}: FormBuilderViewProps): ReactElement {
+  const initialSchema = value?.schema ?? EMPTY_SCHEMA;
+  const initialUiSchema = value?.uiSchema ?? EMPTY_UI_SCHEMA;
+  const [schema, setSchema] = useState<FormDefinitionSchema>(initialSchema);
+  const [uiSchema, setUiSchema] = useState<FormUiSchema>(initialUiSchema);
   const [schemaJsonText, setSchemaJsonText] = useState(
-    stringifyJson(EMPTY_SCHEMA),
+    stringifyJson(initialSchema),
   );
   const [uiSchemaJsonText, setUiSchemaJsonText] = useState(
-    stringifyJson(EMPTY_UI_SCHEMA),
+    stringifyJson(initialUiSchema),
   );
   const [previewValues, setPreviewValues] = useState<FormRendererValues>({});
   const [advancedSchemaMessage, setAdvancedSchemaMessage] = useState<
@@ -499,19 +486,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
   >(null);
   const [activeTab, setActiveTab] = useState<BuilderTabKey>('design');
   const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [renameModalOpen, setRenameModalOpen] = useState(false);
-  const [loadedSnapshot, setLoadedSnapshot] = useState<BuilderSnapshot>(
-    readBuilderSnapshot(EMPTY_SCHEMA, EMPTY_UI_SCHEMA),
-  );
-  const [loading, setLoading] = useState(true);
-  const [renaming, setRenaming] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect((): void => {
-    void refreshBuilder();
-  }, [formDefinitionId]);
-
   useEffect((): void => {
     const hasSelectedField = schema.fields.some(
       (field) => field.fieldKey === selectedFieldKey,
@@ -546,207 +520,9 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
       null,
     [schema.fields, selectedFieldKey],
   );
-  const versionRows = useMemo(
-    (): VersionRow[] =>
-      (record?.versions ?? []).map((version) => ({
-        key: version.id,
-        publishedAt: formatDateTime(version.publishedAt),
-        status: version.status,
-        updatedAt: formatDateTime(version.updatedAt),
-        version: `v${version.version}`,
-      })),
-    [record],
-  );
-  const versionColumns = useMemo(
-    (): TableColumn<VersionRow>[] => [
-      { dataIndex: 'version', key: 'version', title: '版本', width: 120 },
-      {
-        key: 'status',
-        render: (record: VersionRow): ReactElement => (
-          <FormVersionStatusBadge status={record.status} />
-        ),
-        title: '狀態',
-        width: 140,
-      },
-      {
-        dataIndex: 'updatedAt',
-        key: 'updatedAt',
-        title: '最後更新',
-        width: 180,
-      },
-      {
-        dataIndex: 'publishedAt',
-        key: 'publishedAt',
-        title: '發布時間',
-        width: 180,
-      },
-    ],
-    [],
-  );
-  const currentSnapshot = useMemo(
-    (): BuilderSnapshot => readBuilderSnapshot(schema, uiSchema),
-    [schema, uiSchema],
-  );
-  const hasUnsavedChanges =
-    currentSnapshot.schemaJson !== loadedSnapshot.schemaJson ||
-    currentSnapshot.uiSchemaJson !== loadedSnapshot.uiSchemaJson;
-
-  useEffect((): (() => void) => {
-    function handleBeforeUnload(event: BeforeUnloadEvent): void {
-      if (!hasUnsavedChanges) {
-        return;
-      }
-
-      event.preventDefault();
-      event.returnValue = '';
-    }
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return (): void => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [hasUnsavedChanges]);
-
-  function handleBackToForms(): void {
-    if (
-      hasUnsavedChanges &&
-      !window.confirm('目前有尚未儲存的表單草稿，確定要離開嗎？')
-    ) {
-      return;
-    }
-
-    router.push(routes.forms());
-  }
-  const latestPublishedVersion = useMemo(
-    (): FormDefinitionVersionRecord | null =>
-      readPublishedVersion(
-        record?.versions ?? [],
-        record?.definition.currentVersionId,
-      ),
-    [record?.definition.currentVersionId, record?.versions],
-  );
-  const openedVersion =
-    draft ?? latestPublishedVersion ?? record?.versions[0] ?? null;
-  const openedContentPublished =
-    !hasUnsavedChanges && openedVersion?.status === 'PUBLISHED';
-  const headerDescription = readHeaderDescription({
-    hasUnsavedChanges,
-    latestPublishedVersion,
-    openedContentPublished,
-    openedVersion,
-  });
-  const publishDisabled =
-    saving || (!hasUnsavedChanges && openedContentPublished && !draft);
-  const publishButtonText = hasUnsavedChanges
-    ? '保存並發布'
-    : draft
-      ? '發布草稿'
-      : openedContentPublished
-        ? '已發布'
-        : '發布版本';
-
-  async function refreshBuilder(): Promise<void> {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const nextRecord = await readFormBuilder(formDefinitionId);
-      const nextDraft =
-        nextRecord.versions.find((version) => version.status === 'DRAFT') ??
-        null;
-
-      setRecord(nextRecord);
-      setDraft(nextDraft);
-      const nextSchema =
-        nextDraft?.schema ?? nextRecord.versions[0]?.schema ?? EMPTY_SCHEMA;
-      const nextUiSchema =
-        nextDraft?.uiSchema ??
-        nextRecord.versions[0]?.uiSchema ??
-        EMPTY_UI_SCHEMA;
-
-      setSchema(nextSchema);
-      setUiSchema(nextUiSchema);
-      setLoadedSnapshot(readBuilderSnapshot(nextSchema, nextUiSchema));
-      setSchemaJsonText(stringifyJson(nextSchema));
-      setUiSchemaJsonText(stringifyJson(nextUiSchema));
-      setSelectedFieldKey(
-        nextDraft?.schema.fields[0]?.fieldKey ??
-          nextRecord.versions[0]?.schema.fields[0]?.fieldKey ??
-          null,
-      );
-      setAdvancedSchemaMessage(null);
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function saveCurrentDraft(): Promise<FormDefinitionVersionRecord> {
-    const targetDraft = draft ?? (await forkFormDefinition(formDefinitionId));
-    const nextDraft = await updateFormDefinitionDraft(
-      targetDraft.id,
-      schema,
-      uiSchema,
-    );
-
-    setDraft(nextDraft);
-
-    return nextDraft;
-  }
-
-  async function handleSaveDraft(): Promise<void> {
-    setSaving(true);
-    setError(null);
-
-    try {
-      await saveCurrentDraft();
-      await refreshBuilder();
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handlePublish(): Promise<void> {
-    setSaving(true);
-    setError(null);
-
-    try {
-      const savedDraft = await saveCurrentDraft();
-      await publishFormDefinitionVersion(savedDraft.id);
-      await refreshBuilder();
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleRenameForm(name: string): Promise<void> {
-    if (!record) {
-      throw new Error('尚未載入表單資料');
-    }
-
-    setRenaming(true);
-
-    try {
-      const updatedDefinition = await updateFormDefinition(
-        record.definition.id,
-        name,
-      );
-
-      setRecord({
-        ...record,
-        definition: updatedDefinition,
-      });
-      setRenameModalOpen(false);
-    } finally {
-      setRenaming(false);
-    }
-  }
+  useEffect((): void => {
+    onChange?.({ schema, uiSchema });
+  }, [schema, uiSchema]);
 
   function handleAddField(type: FieldType): void {
     const nextIndex = schema.fields.length + 1;
@@ -983,52 +759,9 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
   return (
     <>
       <>
-          <PageHeader>
-            <ContentHeader
-              description={headerDescription}
-              onBackClick={handleBackToForms}
-              title={record?.definition.name ?? '表單設計器'}
-            >
-              <Button
-                aria-label="修改表單名稱"
-                disabled={renaming || !record}
-                icon={EditIcon}
-                iconType="icon-only"
-                onClick={(): void => setRenameModalOpen(true)}
-                variant="base-ghost"
-              >
-                修改表單名稱
-              </Button>
-              <Button
-                aria-label="儲存草稿"
-                disabled={saving || !hasUnsavedChanges}
-                icon={SaveIcon}
-                iconType="icon-only"
-                onClick={(): void => void handleSaveDraft()}
-                variant="base-secondary"
-              >
-                儲存草稿
-              </Button>
-              <Button
-                disabled={publishDisabled}
-                icon={CheckedIcon}
-                iconType="leading"
-                onClick={(): void => void handlePublish()}
-                variant="base-primary"
-              >
-                {publishButtonText}
-              </Button>
-            </ContentHeader>
-          </PageHeader>
-
           <SectionGroup>
             <Section>
               <div style={WORKBENCH_STYLE}>
-                {error ? (
-                  <Typography color="text-error" variant="body">
-                    {error}
-                  </Typography>
-                ) : null}
                 <Tab
                   activeKey={activeTab}
                   onChange={handleTabChange}
@@ -1036,28 +769,17 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
                 >
                   <TabItem key="design">設計</TabItem>
                   <TabItem key="preview">預覽</TabItem>
-                  <TabItem key="versions">版本</TabItem>
                   <TabItem key="advanced">進階</TabItem>
                 </Tab>
 
                 {activeTab === 'design' ? renderDesignTab() : null}
                 {activeTab === 'preview' ? renderPreviewTab() : null}
-                {activeTab === 'versions' ? renderVersionsTab() : null}
                 {activeTab === 'advanced' ? renderAdvancedTab() : null}
               </div>
             </Section>
           </SectionGroup>
         </>
 
-      <FormNameModal
-        confirmText="儲存"
-        initialName={record?.definition.name ?? ''}
-        loading={renaming}
-        onClose={(): void => setRenameModalOpen(false)}
-        onSubmit={handleRenameForm}
-        open={renameModalOpen}
-        title="修改表單名稱"
-      />
     </>
   );
 
@@ -1071,7 +793,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
           <div style={FIELD_LIBRARY_STYLE}>
             {FIELD_TYPE_OPTIONS.map((option) => (
               <Button
-                disabled={saving}
                 icon={option.icon}
                 iconType="leading"
                 key={option.type}
@@ -1105,7 +826,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
                         <Draggable
                           draggableId={field.fieldKey}
                           index={index}
-                          isDragDisabled={saving}
                           key={field.fieldKey}
                         >
                           {(draggableProvided, snapshot): ReactElement =>
@@ -1134,14 +854,12 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
                 </div>
                 <div style={EMPTY_CANVAS_ACTIONS_STYLE}>
                   <Button
-                    disabled={saving}
                     onClick={(): void => handleAddField('text')}
                     variant="base-primary"
                   >
                     新增文字欄位
                   </Button>
                   <Button
-                    disabled={saving}
                     onClick={(): void => handleAddField('textarea')}
                     variant="base-secondary"
                   >
@@ -1199,7 +917,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             value={field.label}
             variant="base"
           />,
-          saving,
         )}
         {renderSettingsFormRow(
           '欄位 Key',
@@ -1212,7 +929,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             value={field.fieldKey}
             variant="base"
           />,
-          saving,
         )}
         {renderSettingsFormRow(
           '提示文字',
@@ -1227,7 +943,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             value={field.placeholder ?? ''}
             variant="base"
           />,
-          saving,
         )}
         {renderTypeSpecificSettings(field)}
       </div>
@@ -1298,7 +1013,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
           'fieldDefaultValue',
           field.type === 'textarea' ? (
             renderSettingsTextarea({
-              disabled: saving,
               name: 'fieldDefaultValue',
               onChange: (value): void =>
                 updateSelectedTextField({ defaultValue: value || undefined }),
@@ -1318,7 +1032,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
               variant="base"
             />
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           '最小長度',
@@ -1329,7 +1042,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             '例如：2',
             { min: 0 },
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           '最大長度',
@@ -1340,7 +1052,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             '例如：100',
             { min: 1 },
           ),
-          saving,
         )}
       </>
     );
@@ -1362,7 +1073,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             field.type === 'money' ? '例如：1000' : '輸入預設數值',
             { max: field.maximum, min: field.minimum },
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           '最小值',
@@ -1372,7 +1082,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             (value): void => updateSelectedNumberField({ minimum: value }),
             '例如：0',
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           '最大值',
@@ -1382,7 +1091,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             (value): void => updateSelectedNumberField({ maximum: value }),
             '例如：999999',
           ),
-          saving,
         )}
       </>
     );
@@ -1397,7 +1105,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
         readStringDefaultValue(field.defaultValue),
         (value): void => updateSelectedDateField({ defaultValue: value }),
       ),
-      saving,
     );
   }
 
@@ -1451,13 +1158,11 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
               }
             />
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           '選項',
           'fieldOptions',
           renderFieldOptionsTable(field),
-          saving,
           true,
         )}
       </>
@@ -1491,7 +1196,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
         placeholder="選擇預設狀態"
         value={readSelectOption(BOOLEAN_DEFAULT_OPTIONS, defaultValue)}
       />,
-      saving,
     );
   }
 
@@ -1509,13 +1213,11 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             '例如：1',
             { min: 1 },
           ),
-          saving,
         )}
         {renderSettingsFormRow(
           'MIME',
           'fieldAcceptedMimeTypes',
           renderSettingsTextarea({
-            disabled: saving,
             name: 'fieldAcceptedMimeTypes',
             onChange: (value): void =>
               updateSelectedFileUploadField({
@@ -1593,7 +1295,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
       <div style={CONDITION_RULE_CONTROL_STYLE}>
         <Toggle
           checked={enabled}
-          disabled={saving}
           label={enabled ? '已啟用' : '不啟用'}
           onChange={(event: ChangeEvent<HTMLInputElement>): void =>
             updateSelectedConditionRule(
@@ -1679,7 +1380,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
           )
         ) : null}
       </div>,
-      saving,
       true,
     );
   }
@@ -1754,14 +1454,12 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
   }
 
   function renderSettingsTextarea({
-    disabled,
     name,
     onChange,
     placeholder,
     rows,
     value,
   }: {
-    readonly disabled: boolean;
     readonly name: string;
     readonly onChange: (value: string) => void;
     readonly placeholder: string;
@@ -1771,7 +1469,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     return (
       <Textarea
         aria-label={name}
-        disabled={disabled}
         onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
           onChange(event.target.value)
         }
@@ -1899,7 +1596,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     const optionActions: TableActions<FieldOptionRow> = {
       render: (row): ReturnType<TableActions<FieldOptionRow>['render']> => [
         {
-          disabled: (): boolean => saving || field.options.length <= 1,
+          disabled: (): boolean => field.options.length <= 1,
           icon: TrashIcon,
           iconType: 'icon-only',
           name: '移除選項',
@@ -1924,7 +1621,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
         />
         <div style={OPTION_ACTIONS_STYLE}>
           <Button
-            disabled={saving}
             icon={PlusIcon}
             iconType="leading"
             onClick={(): void =>
@@ -1960,7 +1656,13 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
           ...draggableProvided.draggableProps.style,
         }}
       >
-        <BaseCard>
+        <BaseCard
+          style={
+            field.fieldKey === selectedField?.fieldKey
+              ? FIELD_BLOCK_SELECTED_CARD_STYLE
+              : undefined
+          }
+        >
           {renderFieldBlockContent(field, draggableProvided, isDragging)}
         </BaseCard>
       </div>
@@ -1971,7 +1673,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     label: string,
     name: string,
     control: ReactElement,
-    disabled: boolean,
     wide = false,
   ): ReactElement {
     return (
@@ -1979,7 +1680,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
         style={wide ? FIELD_SETTINGS_ROW_WIDE_STYLE : FIELD_SETTINGS_ROW_STYLE}
       >
         <div style={FIELD_SETTINGS_VALUE_STYLE}>
-          <BPMFormField disabled={disabled} label={label} name={name}>
+          <BPMFormField label={label} name={name}>
             {control}
           </BPMFormField>
         </div>
@@ -1995,9 +1696,10 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     return (
       <div
         {...(draggableProvided.dragHandleProps ?? {})}
-        aria-label="拖曳排序欄位"
+        aria-label="選取或拖曳排序欄位"
+        onClick={(): void => setSelectedFieldKey(field.fieldKey)}
         style={FIELD_BLOCK_ROW_STYLE}
-        title="拖曳排序"
+        title="點擊選取，拖曳排序"
       >
         <span
           aria-label="拖曳排序"
@@ -2026,11 +1728,16 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             {field.required ? ' 必填' : ' 選填'} ·{field.fieldKey}
           </Typography>
         </div>
-        <div style={FIELD_BLOCK_ACTIONS_STYLE}>
+        <div
+          onClick={(event: MouseEvent<HTMLDivElement>): void =>
+            event.stopPropagation()
+          }
+          style={FIELD_BLOCK_ACTIONS_STYLE}
+        >
           <div style={FIELD_BLOCK_REQUIRED_STYLE}>
             <Toggle
               checked={Boolean(field.required)}
-              disabled={saving || isDragging}
+              disabled={isDragging}
               label="必填"
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                 updateFieldRequired(field.fieldKey, event.target.checked)
@@ -2039,19 +1746,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
           </div>
           <Button
             disabled={isDragging}
-            icon={EditIcon}
-            iconType="icon-only"
-            onClick={(): void => setSelectedFieldKey(field.fieldKey)}
-            variant={
-              field.fieldKey === selectedField?.fieldKey
-                ? 'base-primary'
-                : 'base-ghost'
-            }
-          >
-            編輯欄位
-          </Button>
-          <Button
-            disabled={saving || isDragging}
             icon={TrashIcon}
             iconType="icon-only"
             onClick={(): void => handleRemoveField(field.fieldKey)}
@@ -2080,21 +1774,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     );
   }
 
-  function renderVersionsTab(): ReactElement {
-    return (
-      <div style={STACK_STYLE}>
-        <Typography component="h2" variant="h3">
-          版本紀錄
-        </Typography>
-        <Table
-          columns={versionColumns}
-          dataSource={versionRows}
-          loading={loading}
-        />
-      </div>
-    );
-  }
-
   function renderAdvancedTab(): ReactElement {
     return (
       <div style={STACK_STYLE}>
@@ -2106,7 +1785,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             'Form Schema',
             'schemaJson',
             <JsonCodeEditor
-              disabled={saving}
               height="360px"
               name="schemaJson"
               onChange={updateSchemaJson}
@@ -2118,7 +1796,6 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
             'UI Schema',
             'uiSchemaJson',
             <JsonCodeEditor
-              disabled={saving}
               height="240px"
               name="uiSchemaJson"
               onChange={updateUiSchemaJson}
@@ -2148,7 +1825,7 @@ export function FormBuilderView({ formId }: FormBuilderViewProps): ReactElement 
     return (
       <div style={ADVANCED_SCHEMA_ROW_STYLE}>
         <div style={ADVANCED_SCHEMA_VALUE_STYLE}>
-          <BPMFormField disabled={saving} label={label} name={name}>
+          <BPMFormField label={label} name={name}>
             {control}
           </BPMFormField>
         </div>
@@ -2238,81 +1915,6 @@ function readNextOptionValue(
     : value;
 }
 
-function readBuilderSnapshot(
-  schema: FormDefinitionSchema,
-  uiSchema: FormUiSchema,
-): BuilderSnapshot {
-  return {
-    schemaJson: stringifyJson(schema),
-    uiSchemaJson: stringifyJson(uiSchema),
-  };
-}
-
-function readPublishedVersion(
-  versions: readonly FormDefinitionVersionRecord[],
-  currentVersionId: string | null | undefined,
-): FormDefinitionVersionRecord | null {
-  return (
-    (currentVersionId
-      ? versions.find((version) => version.id === currentVersionId)
-      : null) ??
-    versions.find((version) => version.status === 'PUBLISHED') ??
-    null
-  );
-}
-
-function readHeaderDescription({
-  hasUnsavedChanges,
-  latestPublishedVersion,
-  openedContentPublished,
-  openedVersion,
-}: {
-  readonly hasUnsavedChanges: boolean;
-  readonly latestPublishedVersion: FormDefinitionVersionRecord | null;
-  readonly openedContentPublished: boolean;
-  readonly openedVersion: FormDefinitionVersionRecord | null;
-}): string {
-  const editState = hasUnsavedChanges ? '有未儲存修改' : '沒有未儲存修改';
-  const openedState = readOpenedVersionState({
-    hasUnsavedChanges,
-    openedContentPublished,
-    openedVersion,
-  });
-  const publishedState = latestPublishedVersion
-    ? `目前發布 v${latestPublishedVersion.version}：${formatDateTime(
-        latestPublishedVersion.publishedAt,
-      )}`
-    : '目前沒有已發布版本';
-
-  return `${editState} · ${openedState} · ${publishedState}`;
-}
-
-function readOpenedVersionState({
-  hasUnsavedChanges,
-  openedContentPublished,
-  openedVersion,
-}: {
-  readonly hasUnsavedChanges: boolean;
-  readonly openedContentPublished: boolean;
-  readonly openedVersion: FormDefinitionVersionRecord | null;
-}): string {
-  if (hasUnsavedChanges) {
-    return openedVersion
-      ? `修改尚未發布，來源 v${openedVersion.version}`
-      : '修改尚未發布';
-  }
-
-  if (openedContentPublished && openedVersion) {
-    return `當前內容已發布 v${openedVersion.version}`;
-  }
-
-  if (openedVersion) {
-    return `當前內容尚未發布 v${openedVersion.version}`;
-  }
-
-  return '當前內容尚未發布';
-}
-
 function moveItemByIndex<TItem>(
   items: readonly TItem[],
   sourceIndex: number,
@@ -2333,22 +1935,3 @@ function moveItemByIndex<TItem>(
   ];
 }
 
-function FormVersionStatusBadge({
-  status,
-}: {
-  readonly status: FormDefinitionVersionRecord['status'];
-}): ReactElement {
-  if (status === 'PUBLISHED') {
-    return <Badge size="sub" text="已發布" variant="dot-success" />;
-  }
-
-  if (status === 'ARCHIVED') {
-    return <Badge size="sub" text="已封存" variant="dot-inactive" />;
-  }
-
-  return <Badge size="sub" text="草稿" variant="dot-warning" />;
-}
-
-function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '發生未知錯誤';
-}

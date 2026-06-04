@@ -59,7 +59,7 @@ const CodeMirror = dynamic<ReactCodeMirrorProps>(
 );
 
 interface JsonCodeEditorProps {
-  readonly disabled: boolean;
+  readonly disabled?: boolean;
   readonly height: string;
   readonly name: string;
   readonly onChange: (value: string) => void;
@@ -68,7 +68,7 @@ interface JsonCodeEditorProps {
 }
 
 export function JsonCodeEditor({
-  disabled,
+  disabled = false,
   height,
   name,
   onChange,

@@ -12,7 +12,6 @@ import {
   NavigationUserMenu,
 } from '@mezzanine-ui/react';
 import {
-  FileIcon,
   FolderIcon,
   HomeIcon,
   ListIcon,
@@ -71,7 +70,6 @@ function createNavigationGroups(routes: BPMRoutes): readonly NavigationGroup[] {
       items: [
         { href: routes.templates(), icon: FolderIcon, label: '簽核模板', requiresAdmin: true },
         { href: routes.templateCategories(), icon: ListIcon, label: '模板分類', requiresAdmin: true },
-        { href: routes.forms(), icon: FileIcon, label: '表單設計', requiresAdmin: true },
       ],
     },
     {
@@ -93,9 +91,9 @@ export interface HostLayoutProps {
  * Reference host layout for embedding BPMCore views. Demonstrates the
  * recommended integration shape — host owns the `<Layout>` / `<Navigation>`
  * shell and composes BPM-provided widgets (`<BPMNotificationBellButton />`,
- * `useBPMLogout`, `useBPMMember`) into its own chrome. The 4-group nav
- * structure mirrors the one BPM used to ship with internally; consumers
- * are free to remap or omit groups.
+ * `useBPMLogout`, `useBPMMember`) into its own chrome. The nav mirrors the
+ * structure BPM used to ship with internally; consumers are free to remap
+ * or omit groups.
  */
 export function HostLayout({ children }: HostLayoutProps): ReactElement {
   const router = useRouterAdapter();
