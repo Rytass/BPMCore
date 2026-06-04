@@ -2,7 +2,6 @@
 
 import { ReactElement, useEffect, useMemo, useState } from 'react';
 import {
-  Button,
   PageHeader,
   Section,
   SectionGroup,
@@ -138,17 +137,9 @@ export function TemplateVersionsView({
         <PageHeader>
           <ContentHeader
             description="查看發布、歸檔與 rollback 狀態。"
+            onBackClick={(): void => router.push(routes.templates())}
             title={record?.template.name ?? '模板版本'}
-          >
-            <Button
-              onClick={(): void =>
-                router.push(routes.templateDesigner(templateId))
-              }
-              variant="base-secondary"
-            >
-              回設計器
-            </Button>
-          </ContentHeader>
+          />
         </PageHeader>
 
         <SectionGroup>

@@ -3,6 +3,7 @@
 import { ChangeEvent, ReactElement, useEffect, useState } from 'react';
 import { Input, Modal, Select, Typography } from '@mezzanine-ui/react';
 import { BPMFormField } from '../../components/bpm-form-field';
+import styles from './templates.module.scss';
 
 export interface TemplateCategoryOption {
   readonly categoryId: string | null;
@@ -80,37 +81,39 @@ export function TemplateNameModal({
       size="narrow"
       title={title}
     >
-      <BPMFormField label="模板名稱" name="templateName" required>
-        <Input
-          autoFocus
-          fullWidth
-          onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-            setName(event.target.value);
-            setError(null);
-          }}
-          placeholder="例如：費用申請流程"
-          value={name}
-          variant="base"
-        />
-      </BPMFormField>
-      <BPMFormField label="分類" name="templateCategory">
-        <Select
-          clearable={false}
-          fullWidth
-          onChange={(option): void => {
-            setCategory(readCategoryOption(option, categoryOptions));
-            setError(null);
-          }}
-          options={[...categoryOptions]}
-          placeholder="選擇分類"
-          value={category}
-        />
-      </BPMFormField>
-      {error ? (
-        <Typography color="text-error" variant="body">
-          {error}
-        </Typography>
-      ) : null}
+      <div className={styles.templateModalFields}>
+        <BPMFormField label="模板名稱" name="templateName" required>
+          <Input
+            autoFocus
+            fullWidth
+            onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+              setName(event.target.value);
+              setError(null);
+            }}
+            placeholder="例如：費用申請流程"
+            value={name}
+            variant="base"
+          />
+        </BPMFormField>
+        <BPMFormField label="分類" name="templateCategory">
+          <Select
+            clearable={false}
+            fullWidth
+            onChange={(option): void => {
+              setCategory(readCategoryOption(option, categoryOptions));
+              setError(null);
+            }}
+            options={[...categoryOptions]}
+            placeholder="選擇分類"
+            value={category}
+          />
+        </BPMFormField>
+        {error ? (
+          <Typography color="text-error" variant="body">
+            {error}
+          </Typography>
+        ) : null}
+      </div>
     </Modal>
   );
 }

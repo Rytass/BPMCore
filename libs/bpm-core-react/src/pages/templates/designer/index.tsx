@@ -17,10 +17,14 @@ export default async function TemplateDesignerPage({
   // AI assistant is opt-in per deployment. `BPM_AI_ASSISTANT_ENABLED` shows the
   // feature; `OPENAI_API_KEY` decides whether it's usable (else a disabled
   // placeholder). Both are server-only env on the Next.js host.
+  //
+  // The dry-run button shows by default; set `BPM_TEMPLATE_DRY_RUN_ENABLED` to
+  // `'false'` to hide it for a deployment.
   return (
     <TemplateDesignerView
       aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
       showAiAssistant={process.env.BPM_AI_ASSISTANT_ENABLED === 'true'}
+      showDryRun={process.env.BPM_TEMPLATE_DRY_RUN_ENABLED !== 'false'}
       templateId={id}
     />
   );

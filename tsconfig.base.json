@@ -152,6 +152,9 @@
       "@rytass/bpm-core-react/views/templates/categories": [
         "./libs/bpm-core-react/src/views/templates/categories/index.ts"
       ],
+      "@rytass/bpm-core-react/views/templates/compose": [
+        "./libs/bpm-core-react/src/views/templates/compose/index.ts"
+      ],
       "@rytass/bpm-core-react/views/templates/designer": [
         "./libs/bpm-core-react/src/views/templates/designer/index.ts"
       ],
@@ -214,6 +217,9 @@
       ],
       "@rytass/bpm-core-react/pages/templates/categories": [
         "./libs/bpm-core-react/src/pages/templates/categories/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/templates/compose": [
+        "./libs/bpm-core-react/src/pages/templates/compose/index.tsx"
       ],
       "@rytass/bpm-core-react/pages/templates/designer": [
         "./libs/bpm-core-react/src/pages/templates/designer/index.tsx"

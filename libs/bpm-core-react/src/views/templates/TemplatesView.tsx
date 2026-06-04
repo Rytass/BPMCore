@@ -27,16 +27,11 @@ import styles from './templates.module.scss';
 import { formatDateTime } from '../../lib/format-date-time';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
-import {
-  TemplateCategoryOption,
-  TemplateNameModal,
-  UNCATEGORIZED_TEMPLATE_CATEGORY_OPTION,
-} from './template-name-modal';
+import { TemplateCategoryOption } from './template-name-modal';
 import {
   ApprovalTemplateListStatus,
   ApprovalTemplateRecord,
   ApprovalTemplateCategoryRecord,
-  createApprovalTemplate,
   listApprovalTemplateCategoriesPage,
   listApprovalTemplatesPage,
 } from '@rytass/bpm-core-client/template';
@@ -81,8 +76,6 @@ export function TemplatesView(): ReactElement {
   const [launchableTemplateIds, setLaunchableTemplateIds] = useState<
     ReadonlySet<string>
   >(new Set());
-  const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [templatePage, setTemplatePage] = useState(1);
@@ -208,25 +201,6 @@ export function TemplatesView(): ReactElement {
     [launchableTemplateIds, router],
   );
 
-  async function handleCreateTemplate({
-    categoryId,
-    name,
-  }: {
-    readonly categoryId: string | null;
-    readonly name: string;
-  }): Promise<void> {
-    setCreating(true);
-    setError(null);
-
-    try {
-      const templateId = await createApprovalTemplate({ categoryId, name });
-      setCreateModalOpen(false);
-      router.push(routes.templateDesigner(templateId));
-    } finally {
-      setCreating(false);
-    }
-  }
-
   return (
     <>
       <>
@@ -236,10 +210,9 @@ export function TemplatesView(): ReactElement {
               title="簽核模板"
             >
               <Button
-                disabled={creating}
                 icon={PlusIcon}
                 iconType="leading"
-                onClick={(): void => setCreateModalOpen(true)}
+                onClick={(): void => router.push(routes.templateCompose())}
                 variant="base-primary"
               >
                 建立模板
@@ -350,20 +323,6 @@ export function TemplatesView(): ReactElement {
             </Section>
           </SectionGroup>
         </>
-
-      <TemplateNameModal
-        categoryOptions={[
-          UNCATEGORIZED_TEMPLATE_CATEGORY_OPTION,
-          ...categoryOptions,
-        ]}
-        confirmText="建立"
-        initialName=""
-        loading={creating}
-        onClose={(): void => setCreateModalOpen(false)}
-        onSubmit={handleCreateTemplate}
-        open={createModalOpen}
-        title="建立簽核模板"
-      />
     </>
   );
 }

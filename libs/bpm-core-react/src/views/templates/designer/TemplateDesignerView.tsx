@@ -16,6 +16,7 @@ import { useRouterAdapter } from '../../../lib/router-adapter';
 import type { WorkflowDirectory } from '@rytass/bpm-core-shared';
 import { useWorkflowDesignerController } from './use-workflow-designer-controller';
 import { WorkflowChatDrawer } from './workflow-chat-drawer';
+import { FormBuilderView } from '../../forms/builder/FormBuilderView';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import {
   Background,
@@ -53,6 +54,7 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
+import Drawer from '@mezzanine-ui/react/Drawer';
 import {
   CheckedIcon,
   DotGridIcon,
@@ -67,6 +69,7 @@ import {
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
+  FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -80,6 +83,7 @@ import {
   WorkflowNodeTriggerMode,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
+import { readFormBuilder } from '@rytass/bpm-core-client/form';
 import {
   OrgUnitOption,
   OrgUnitPicker,
@@ -98,6 +102,7 @@ import {
 import {
   ApprovalTemplateVersionRecord,
   WorkflowDryRunResultRecord,
+  composeApprovalTemplateWithForm,
   dryRunApprovalWorkflow,
   forkApprovalTemplate,
   MemberProfileRecord,
@@ -126,6 +131,8 @@ type FlowEdgeData = Readonly<WorkflowEdgeData>;
 type FlowEdge = Edge<FlowEdgeData>;
 type NodePaletteType = 'exclusiveGateway' | 'serviceTask' | 'userTask';
 type FormVersionSelectOption = Readonly<{
+  formDefinitionId: string;
+  formName: string;
   id: string;
   name: string;
   schema: FormDefinitionSchema;
@@ -334,6 +341,23 @@ const BUTTON_ROW_STYLE: CSSProperties = {
   gap: 8,
 };
 
+// Keep the form-version dropdown and the "編輯表單" button on a single line
+// (dropdown grows, button hugs the right) to save vertical space.
+const FORM_BIND_ROW_STYLE: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+};
+
+const FORM_BIND_FIELD_STYLE: CSSProperties = {
+  flex: '1 1 auto',
+  minWidth: 0,
+};
+
+const FORM_BIND_BUTTON_STYLE: CSSProperties = {
+  flex: '0 0 auto',
+};
+
 const TOOL_GROUP_STYLE: CSSProperties = {
   display: 'grid',
   gap: 8,
@@ -496,6 +520,40 @@ const INITIATOR_POLICY_CUSTOM_OPTION: InitiatorPolicyModeOption = {
 };
 const DRY_RUN_MEMBER_ID = 'member-001';
 
+const FORM_EDIT_DRAWER_BODY_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  height: '100%',
+};
+
+const FORM_EDIT_DRAWER_CONTENT_STYLE: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const FORM_EDIT_DRAWER_FOOTER_STYLE: CSSProperties = {
+  borderTop: '1px solid var(--mzn-color-border-neutral)',
+  display: 'flex',
+  gap: 8,
+  paddingTop: 12,
+};
+
+const FORM_EDIT_EMPTY_SCHEMA: FormDefinitionSchema = {
+  fields: [],
+  schemaVersion: 1,
+};
+
+const FORM_EDIT_EMPTY_UI_SCHEMA: FormUiSchema = {
+  layout: [],
+  schemaVersion: 1,
+};
+
+type FormDraft = Readonly<{
+  schema: FormDefinitionSchema;
+  uiSchema: FormUiSchema;
+}>;
+
 const nodeTypes: NodeTypes = {
   endEvent: WorkflowNodeCard,
   exclusiveGateway: WorkflowNodeCard,
@@ -506,7 +564,52 @@ const nodeTypes: NodeTypes = {
 };
 
 export interface TemplateDesignerViewProps {
-  readonly templateId: string;
+  /**
+   * Template id to load. Required in non-embedded mode; unused in embedded mode.
+   */
+  readonly templateId?: string;
+  /**
+   * When `true`, the component operates in embedded / wizard mode:
+   * - No `readTemplateDesigner` call (no templateId needed).
+   * - Only org data is loaded for approver pickers.
+   * - PageHeader / ContentHeader, form-version binding, dry-run, and the AI
+   *   drawer are hidden.
+   * - Mutations flow out via `onWorkflowChange` / `onInitiatorPolicyChange`
+   *   rather than save-draft / publish actions.
+   * Default `false`.
+   */
+  readonly embedded?: boolean;
+  /**
+   * In embedded mode: the formSchema used for condition-edge compilation,
+   * injected from outside (e.g. the wizard already knows the form). Replaces
+   * the "bind form version" picker. Pass `null` to clear.
+   */
+  readonly formSchemaOverride?: FormDefinitionSchema | null;
+  /**
+   * In embedded mode: the initial workflow definition to seed the canvas.
+   * Falls back to an empty start→end workflow when omitted.
+   */
+  readonly initialWorkflowDefinition?: WorkflowDefinition;
+  /**
+   * In embedded mode: the initial initiator-policy CEL expression.
+   * Falls back to `null` (no policy) when omitted.
+   */
+  readonly initialInitiatorPolicyCel?: string | null;
+  /**
+   * In embedded mode: called whenever the workflow definition changes so the
+   * host can persist the current canvas state.
+   */
+  readonly onWorkflowChange?: (definition: WorkflowDefinition) => void;
+  /**
+   * In embedded mode: called whenever the initiator-policy CEL changes.
+   */
+  readonly onInitiatorPolicyChange?: (cel: string | null) => void;
+  /**
+   * Render the "試跑流程" (dry-run) button at all. Default `true`. Hosts can
+   * pass `false` to hide it (e.g. deployments that don't expose dry-run).
+   * Has no effect in embedded mode, where the PageHeader is hidden entirely.
+   */
+  readonly showDryRun?: boolean;
   /**
    * Render the AI assistant toggle at all. Default `false` — the feature is
    * hidden unless the host opts in (e.g. a deployment that has it configured).
@@ -529,7 +632,14 @@ function resolveSetStateAction<T>(action: SetStateAction<T>, current: T): T {
 
 export function TemplateDesignerView({
   aiAssistantAvailable = true,
+  embedded = false,
+  formSchemaOverride,
+  initialInitiatorPolicyCel,
+  initialWorkflowDefinition,
+  onInitiatorPolicyChange,
+  onWorkflowChange,
   showAiAssistant = false,
+  showDryRun = true,
   templateId,
 }: TemplateDesignerViewProps): ReactElement {
   const router = useRouterAdapter();
@@ -582,13 +692,22 @@ export function TemplateDesignerView({
   const controller = useWorkflowDesignerController({
     directory,
     initialState: {
-      definition: readFallbackWorkflowDefinition(),
+      definition:
+        embedded && initialWorkflowDefinition != null
+          ? initialWorkflowDefinition
+          : readFallbackWorkflowDefinition(),
       editingEdgeId: null,
       formDefinitionVersionId: null,
       formSchema: null,
-      initiatorPolicyCel: null,
+      initiatorPolicyCel:
+        embedded && initialInitiatorPolicyCel !== undefined
+          ? initialInitiatorPolicyCel
+          : null,
       selectedEdgeIds: [],
-      selectedNodeId: 'start',
+      selectedNodeId:
+        embedded && initialWorkflowDefinition != null
+          ? (initialWorkflowDefinition.nodes[0]?.id ?? 'start')
+          : 'start',
     },
     layout: layoutWorkflowDefinition,
     onLayout: (definition): void => {
@@ -688,10 +807,24 @@ export function TemplateDesignerView({
     useState<WorkflowDryRunResultRecord | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [formEditOpen, setFormEditOpen] = useState(false);
+  const [formDraft, setFormDraft] = useState<FormDraft | null>(null);
+  const [formDraftDirty, setFormDraftDirty] = useState(false);
+  const [formDraftLoading, setFormDraftLoading] = useState(false);
+  const publishButtonText =
+    hasUnsavedChanges || formDraftDirty
+      ? '保存並發布'
+      : draft
+        ? '發布草稿'
+        : '已發布';
 
   useEffect((): void => {
-    void refreshDesigner();
-  }, [templateId]);
+    if (embedded) {
+      void loadOrganizationData();
+    } else {
+      void refreshDesigner();
+    }
+  }, [embedded, templateId]);
 
   useEffect((): (() => void) => {
     function handleBeforeUnload(event: BeforeUnloadEvent): void {
@@ -866,16 +999,21 @@ export function TemplateDesignerView({
   );
   const selectedFormSchema = selectedFormVersionOption?.schema ?? null;
 
-  // Keep the reducer's form schema in sync with the bound form version so that
-  // `setEdgeCondition` commands compile against the right fields.
+  // Keep the reducer's form schema in sync with the effective schema source:
+  // - embedded mode: driven by `formSchemaOverride` (wizard owns the form).
+  // - non-embedded mode: driven by the selected published form version.
+  const effectiveFormSchema: FormDefinitionSchema | null = embedded
+    ? (formSchemaOverride ?? null)
+    : selectedFormSchema;
+
   useEffect((): void => {
-    if (controller.getState().formSchema !== selectedFormSchema) {
+    if (controller.getState().formSchema !== effectiveFormSchema) {
       controller.replaceState((current) => ({
         ...current,
-        formSchema: selectedFormSchema,
+        formSchema: effectiveFormSchema,
       }));
     }
-  }, [controller, selectedFormSchema]);
+  }, [controller, effectiveFormSchema]);
   const workflowIssue = useMemo(
     (): string | null => readWorkflowDefinitionIssue(workflowDefinition),
     [workflowDefinition],
@@ -889,13 +1027,53 @@ export function TemplateDesignerView({
     [initiatorPolicyDraft],
   );
 
+  // Embedded mode: propagate workflow / initiatorPolicy changes to the host.
+  useEffect((): void => {
+    if (embedded) {
+      onWorkflowChange?.(workflowDefinition);
+    }
+    // onWorkflowChange is intentionally omitted from deps — we only track the
+    // value change, not the callback identity.
+  }, [embedded, workflowDefinition]);
+
+  useEffect((): void => {
+    if (embedded) {
+      onInitiatorPolicyChange?.(initiatorPolicyCel);
+    }
+  }, [embedded, initiatorPolicyCel]);
+
+  /**
+   * Embedded mode: load only the organisation data needed for approver pickers.
+   * Does not touch the workflow / form-version / snapshot state.
+   */
+  async function loadOrganizationData(): Promise<void> {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const organizationDashboard = await readOrganizationDashboard();
+
+      setOrgUnits(organizationDashboard.orgUnits);
+      setPositions(organizationDashboard.positions);
+      setMemberships(organizationDashboard.memberships);
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /**
+   * Non-embedded mode: load both the template record and the organisation data,
+   * then seed the controller with the draft / latest version.
+   */
   async function refreshDesigner(): Promise<void> {
     setLoading(true);
     setError(null);
 
     try {
       const [nextRecord, organizationDashboard] = await Promise.all([
-        readTemplateDesigner(templateId),
+        readTemplateDesigner(templateId as string),
         readOrganizationDashboard(),
       ]);
       const nextDraft =
@@ -943,6 +1121,9 @@ export function TemplateDesignerView({
       );
       setSelectedEdgeIds([]);
       setEditingEdgeId(null);
+      // Reset form draft so next open of the drawer reloads the latest version.
+      setFormDraft(null);
+      setFormDraftDirty(false);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -1013,7 +1194,7 @@ export function TemplateDesignerView({
     }
   }
 
-  async function handleSaveDraft(): Promise<ApprovalTemplateVersionRecord> {
+  async function commitDesigner(publish: boolean): Promise<void> {
     setSaving(true);
     setError(null);
 
@@ -1028,18 +1209,49 @@ export function TemplateDesignerView({
         throw new Error(issue);
       }
 
-      const targetDraft = draft ?? (await forkApprovalTemplate(templateId));
-      const nextDraft = await updateApprovalTemplateDraft({
-        formDefinitionVersionId,
-        initiatorPolicyCel,
-        versionId: targetDraft.id,
-        workflowDefinition,
-      });
+      if (formDraftDirty && formDraft !== null) {
+        await composeApprovalTemplateWithForm({
+          category: record?.template.category ?? null,
+          categoryId: record?.template.categoryId ?? null,
+          formDefinitionId: selectedFormVersionOption?.formDefinitionId ?? null,
+          formDescription: null,
+          formName:
+            selectedFormVersionOption?.formName ??
+            record?.template.name ??
+            '表單',
+          initiatorPolicyCel,
+          notificationConfig: null,
+          publish,
+          schema: formDraft.schema,
+          slaDefaults: null,
+          templateDescription: null,
+          templateId: templateId ?? null,
+          templateName: record?.template.name ?? '模板',
+          uiSchema: formDraft.uiSchema,
+          workflowDefinition,
+        });
+        setFormDraftDirty(false);
+        setFormDraft(null);
+        await refreshDesigner();
+      } else {
+        const targetDraft =
+          draft ?? (await forkApprovalTemplate(templateId as string));
 
-      setDraft(nextDraft);
-      await refreshDesigner();
+        const nextDraft = await updateApprovalTemplateDraft({
+          formDefinitionVersionId,
+          initiatorPolicyCel,
+          versionId: targetDraft.id,
+          workflowDefinition,
+        });
 
-      return nextDraft;
+        setDraft(nextDraft);
+
+        if (publish) {
+          await publishApprovalTemplateVersion(nextDraft.id);
+        }
+
+        await refreshDesigner();
+      }
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
       throw requestError;
@@ -1048,19 +1260,12 @@ export function TemplateDesignerView({
     }
   }
 
-  async function handlePublish(): Promise<void> {
-    setSaving(true);
-    setError(null);
+  async function handleSaveDraft(): Promise<void> {
+    await commitDesigner(false);
+  }
 
-    try {
-      const savedDraft = await handleSaveDraft();
-      await publishApprovalTemplateVersion(savedDraft.id);
-      await refreshDesigner();
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
+  async function handlePublish(): Promise<void> {
+    await commitDesigner(true);
   }
 
   function openDryRunModal(): void {
@@ -1106,6 +1311,48 @@ export function TemplateDesignerView({
       setDryRunError(readErrorMessage(requestError));
     } finally {
       setDryRunRunning(false);
+    }
+  }
+
+  async function openFormEditDrawer(): Promise<void> {
+    setFormEditOpen(true);
+
+    if (formDraft !== null) {
+      return;
+    }
+
+    const boundFormDefinitionId =
+      selectedFormVersionOption?.formDefinitionId ?? null;
+
+    if (!boundFormDefinitionId) {
+      setFormDraft({
+        schema: FORM_EDIT_EMPTY_SCHEMA,
+        uiSchema: FORM_EDIT_EMPTY_UI_SCHEMA,
+      });
+
+      return;
+    }
+
+    setFormDraftLoading(true);
+
+    try {
+      const builderRecord = await readFormBuilder(boundFormDefinitionId);
+      const draftVersion =
+        builderRecord.versions.find((v) => v.status === 'DRAFT') ??
+        builderRecord.versions.find(
+          (v) => v.id === builderRecord.definition.currentVersionId,
+        ) ??
+        builderRecord.versions[0] ??
+        null;
+
+      setFormDraft({
+        schema: draftVersion?.schema ?? FORM_EDIT_EMPTY_SCHEMA,
+        uiSchema: draftVersion?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA,
+      });
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setFormDraftLoading(false);
     }
   }
 
@@ -1267,66 +1514,70 @@ export function TemplateDesignerView({
   return (
     <>
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
-        <PageHeader>
-          <ContentHeader
-            description={`${draft ? `草稿 v${draft.version}` : '尚未建立草稿'} ·${
-              record?.template.currentVersionId ? ' 已發布版本' : ' 尚未發布'
-            }`}
-            onBackClick={handleBackToTemplates}
-            title={record?.template.name ?? '流程設計器'}
-          >
-            {showAiAssistant ? (
+        {!embedded ? (
+          <PageHeader>
+            <ContentHeader
+              description={`${draft ? `草稿 v${draft.version}` : '尚未建立草稿'} ·${
+                record?.template.currentVersionId ? ' 已發布版本' : ' 尚未發布'
+              }`}
+              onBackClick={handleBackToTemplates}
+              title={record?.template.name ?? '流程設計器'}
+            >
+              {showAiAssistant ? (
+                <Button
+                  disabled={!aiAssistantAvailable}
+                  onClick={(): void => setChatOpen((current) => !current)}
+                  variant={chatOpen ? 'base-primary' : 'base-secondary'}
+                >
+                  {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
+                </Button>
+              ) : null}
               <Button
-                disabled={!aiAssistantAvailable}
-                onClick={(): void => setChatOpen((current) => !current)}
-                variant={chatOpen ? 'base-primary' : 'base-secondary'}
+                aria-label="儲存草稿"
+                disabled={
+                  saving ||
+                  Boolean(workflowIssue) ||
+                  Boolean(initiatorPolicyIssue)
+                }
+                icon={SaveIcon}
+                iconType="icon-only"
+                onClick={(): void => void handleSaveDraft()}
+                variant="base-secondary"
               >
-                {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
+                儲存草稿
               </Button>
-            ) : null}
-            <Button
-              aria-label="儲存草稿"
-              disabled={
-                saving ||
-                Boolean(workflowIssue) ||
-                Boolean(initiatorPolicyIssue)
-              }
-              icon={SaveIcon}
-              iconType="icon-only"
-              onClick={(): void => void handleSaveDraft()}
-              variant="base-secondary"
-            >
-              儲存草稿
-            </Button>
-            <Button
-              disabled={
-                loading ||
-                Boolean(workflowIssue) ||
-                Boolean(initiatorPolicyIssue)
-              }
-              icon={EyeIcon}
-              iconType="leading"
-              onClick={openDryRunModal}
-              variant="base-secondary"
-            >
-              試跑流程
-            </Button>
-            <Button
-              disabled={
-                saving ||
-                !draft ||
-                Boolean(workflowIssue) ||
-                Boolean(initiatorPolicyIssue)
-              }
-              icon={CheckedIcon}
-              iconType="leading"
-              onClick={(): void => void handlePublish()}
-              variant="base-primary"
-            >
-              發布版本
-            </Button>
-          </ContentHeader>
-        </PageHeader>
+              {showDryRun ? (
+                <Button
+                  disabled={
+                    loading ||
+                    Boolean(workflowIssue) ||
+                    Boolean(initiatorPolicyIssue)
+                  }
+                  icon={EyeIcon}
+                  iconType="leading"
+                  onClick={openDryRunModal}
+                  variant="base-secondary"
+                >
+                  試跑流程
+                </Button>
+              ) : null}
+              <Button
+                disabled={
+                  saving ||
+                  (!draft && !hasUnsavedChanges && !formDraftDirty) ||
+                  Boolean(workflowIssue) ||
+                  Boolean(initiatorPolicyIssue)
+                }
+                icon={CheckedIcon}
+                iconType="leading"
+                onClick={(): void => void handlePublish()}
+                variant="base-primary"
+              >
+                {publishButtonText}
+              </Button>
+            </ContentHeader>
+          </PageHeader>
+        ) : null}
 
         <SectionGroup>
           <Section>
@@ -1346,52 +1597,68 @@ export function TemplateDesignerView({
                   {initiatorPolicyIssue}
                 </Typography>
               ) : null}
-              <div style={FORM_STACK_STYLE}>
-                <BPMFormField
-                  hintText={
-                    formVersionBindingLocked
-                      ? '已設定條件分流條件。請先移除所有條件，才能更換綁定表單版本。'
-                      : undefined
-                  }
-                  label="綁定表單版本"
-                  name="formDefinitionVersionId"
-                  required
-                >
-                  <AutoComplete
-                    asyncData
-                    disabled={loading || formVersionBindingLocked}
-                    disabledOptionsFilter
-                    emptyText="沒有符合的已發布表單版本"
-                    isForceClearable={
-                      Boolean(formDefinitionVersionId) &&
-                      !formVersionBindingLocked
+              {!embedded ? (
+                <div style={FORM_STACK_STYLE}>
+                  <BPMFormField
+                    hintText={
+                      formVersionBindingLocked
+                        ? '已設定條件分流條件。請先移除所有條件，才能更換綁定表單版本。'
+                        : undefined
                     }
-                    loading={formVersionLoading}
-                    loadingText="搜尋表單版本中..."
-                    mode="single"
-                    onChange={(option): void => {
-                      if (!formVersionBindingLocked) {
-                        setFormDefinitionVersionId(option?.id ?? null);
-                      }
-                    }}
-                    onClear={(): void => {
-                      if (!formVersionBindingLocked) {
-                        setFormDefinitionVersionId(null);
-                      }
-                    }}
-                    onSearch={handleSearchFormVersions}
-                    onVisibilityChange={(open): void => {
-                      if (open && !formVersionBindingLocked) {
-                        void handleSearchFormVersions('');
-                      }
-                    }}
-                    options={[...visibleFormVersionOptions]}
-                    placeholder="選擇已發布表單版本"
-                    searchDebounceTime={300}
-                    value={selectedFormVersionOption}
-                  />
-                </BPMFormField>
-              </div>
+                    label="綁定表單版本"
+                    name="formDefinitionVersionId"
+                    required
+                  >
+                    <div style={FORM_BIND_ROW_STYLE}>
+                      <div style={FORM_BIND_FIELD_STYLE}>
+                        <AutoComplete
+                          asyncData
+                          disabled={loading || formVersionBindingLocked}
+                          disabledOptionsFilter
+                          emptyText="沒有符合的已發布表單版本"
+                          isForceClearable={
+                            Boolean(formDefinitionVersionId) &&
+                            !formVersionBindingLocked
+                          }
+                          loading={formVersionLoading}
+                          loadingText="搜尋表單版本中..."
+                          mode="single"
+                          onChange={(option): void => {
+                            if (!formVersionBindingLocked) {
+                              setFormDefinitionVersionId(option?.id ?? null);
+                            }
+                          }}
+                          onClear={(): void => {
+                            if (!formVersionBindingLocked) {
+                              setFormDefinitionVersionId(null);
+                            }
+                          }}
+                          onSearch={handleSearchFormVersions}
+                          onVisibilityChange={(open): void => {
+                            if (open && !formVersionBindingLocked) {
+                              void handleSearchFormVersions('');
+                            }
+                          }}
+                          options={[...visibleFormVersionOptions]}
+                          placeholder="選擇已發布表單版本"
+                          searchDebounceTime={300}
+                          value={selectedFormVersionOption}
+                        />
+                      </div>
+                      <Button
+                        disabled={loading}
+                        onClick={(): void => {
+                          void openFormEditDrawer();
+                        }}
+                        style={FORM_BIND_BUTTON_STYLE}
+                        variant="base-secondary"
+                      >
+                        編輯表單
+                      </Button>
+                    </div>
+                  </BPMFormField>
+                </div>
+              ) : null}
               <div style={TWO_COLUMN_STYLE}>
                 <div ref={flowCanvasRef} style={FLOW_CANVAS_STYLE}>
                   <ReactFlow
@@ -1500,13 +1767,69 @@ export function TemplateDesignerView({
           </Section>
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
-        {renderDryRunModal()}
-        {showAiAssistant && aiAssistantAvailable ? (
+        {!embedded && showDryRun ? renderDryRunModal() : null}
+        {!embedded && showAiAssistant && aiAssistantAvailable ? (
           <WorkflowChatDrawer
             controller={controller}
             onClose={(): void => setChatOpen(false)}
             open={chatOpen}
           />
+        ) : null}
+        {!embedded ? (
+          <Drawer
+            headerTitle="編輯表單"
+            isHeaderDisplay
+            onClose={(): void => setFormEditOpen(false)}
+            open={formEditOpen}
+            size="wide"
+          >
+            <div style={FORM_EDIT_DRAWER_BODY_STYLE}>
+              <div style={FORM_EDIT_DRAWER_CONTENT_STYLE}>
+                {formDraftLoading ? (
+                  <Typography color="text-neutral" variant="body">
+                    載入中…
+                  </Typography>
+                ) : (
+                  <FormBuilderView
+                    onChange={(next): void => {
+                      setFormDraft(next);
+                    }}
+                    value={
+                      formDraft ?? {
+                        schema: FORM_EDIT_EMPTY_SCHEMA,
+                        uiSchema: FORM_EDIT_EMPTY_UI_SCHEMA,
+                      }
+                    }
+                  />
+                )}
+              </div>
+              <div style={FORM_EDIT_DRAWER_FOOTER_STYLE}>
+                <Button
+                  disabled={formDraftLoading}
+                  onClick={(): void => {
+                    if (formDraft !== null) {
+                      setFormDraftDirty(true);
+                      controller.replaceState((current) => ({
+                        ...current,
+                        formSchema: formDraft.schema,
+                      }));
+                    }
+
+                    setFormEditOpen(false);
+                  }}
+                  variant="base-primary"
+                >
+                  套用
+                </Button>
+                <Button
+                  onClick={(): void => setFormEditOpen(false)}
+                  variant="base-secondary"
+                >
+                  取消
+                </Button>
+              </div>
+            </div>
+          </Drawer>
         ) : null}
       </>
   );
@@ -3243,6 +3566,8 @@ function readFormVersionSelectOptions(
   options: readonly PublishedFormVersionOption[],
 ): readonly FormVersionSelectOption[] {
   return options.map((option) => ({
+    formDefinitionId: option.formDefinitionId,
+    formName: option.formName,
     id: option.id,
     name: `${option.formName} ｜ v${option.version}`,
     schema: option.schema,
