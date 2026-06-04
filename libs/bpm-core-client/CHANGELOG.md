@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.2.0 — 2026-06-04
+
+### Breaking
+
+- **`forkFormDefinition` is removed** from
+  `@rytass/bpm-core-client/form`, mirroring its removal from the
+  backend schema. Replace
+  `forkFormDefinition` → `updateFormDefinitionDraft` →
+  `publishFormDefinitionVersion` chains with a single
+  `publishFormDefinitionContent(formDefinitionId, schema, uiSchema)`
+  call.
+
+### Added
+
+- **`publishFormDefinitionContent()`** in
+  `@rytass/bpm-core-client/form`: atomic save-and-publish of form
+  content. In-place draft before the first publish, brand-new published
+  version afterwards, no-op for identical content.
+- **`composeApprovalTemplateWithForm()`** and the workflow dry-run
+  operations in `@rytass/bpm-core-client/template`: typed client
+  operations for the unified form + flow compose mutation.
+- **`NotificationResolution`** type and resolution fields on
+  notification records in `@rytass/bpm-core-client/workflow`.
+
+### Why a minor
+
+Removes the `forkFormDefinition` export — breaking under 0.x SemVer
+conventions (0.1.x → 0.2.0).
+
 ## 0.1.10 — 2026-05-28
 
 ### Documentation

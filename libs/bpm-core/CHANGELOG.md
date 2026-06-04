@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.2.0 — 2026-06-04
+
+### Breaking
+
+- **`forkFormDefinition` is removed** from `FormService` and from the
+  GraphQL schema. Form definitions no longer keep a DRAFT version in
+  parallel with a published one: before the first publish the single
+  draft is updated in place; after publishing, every save publishes a
+  brand-new version directly. Callers that previously chained
+  `forkFormDefinition` → `updateFormDefinitionDraft` →
+  `publishFormDefinitionVersion` should call the new
+  `publishFormDefinitionContent` mutation instead.
+- **Parallel drafts are archived by migration.** Migration
+  `ArchiveParallelFormDrafts0000000016000` marks every DRAFT version
+  whose definition already has a published current version as
+  `ARCHIVED`. Their content is preserved in the version history but is
+  no longer editable.
+- **`updateFormDefinitionDraft` is now only valid before the first
+  publish.** It still rejects non-DRAFT versions with a 409, and after
+  this release a published definition never has a DRAFT version to
+  update.
+
+### Added
+
+- **`publishFormDefinitionContent(input, publishedByMemberId?, manager?)`**
+  (service + GraphQL mutation + `PublishFormDefinitionContentInput`):
+  publishes the given schema/uiSchema as the current version atomically.
+  Before the first publish it updates the in-place draft and publishes
+  it; afterwards it creates and publishes a brand-new version
+  (version + 1). Content identical to the current published version is
+  a no-op that returns the current version.
+- **`composeApprovalTemplateWithForm`** (service + GraphQL mutation +
+  `ComposeApprovalTemplateWithFormInput` / result object): creates or
+  updates a form definition and an approval template draft in one
+  transaction, optionally publishing both. Published forms bind through
+  `publishFormDefinitionContent`; never-published forms keep their
+  in-place draft until publish.
+- **Notification resolution lifecycle.** Actionable task notifications
+  (`TASK_ASSIGNED` / `TASK_TRANSFERRED`) now carry a
+  `resolution` (`APPROVED` / `REJECTED` / `RETURNED` / `TRANSFERRED` /
+  `SUPERSEDED`) and `resolvedAt`. The workflow engine resolves them on
+  task decisions and transfers (`NotificationService.resolveTaskNotifications`),
+  and migration `BackfillStaleNotificationResolution0000000015000`
+  backfills rows created before the wiring existed.
+- **Legacy migration-name reconciliation.**
+  `reconcileLegacyMigrationNames(dataSource)` renames stale rows in the
+  TypeORM migrations table on boot so renumbered migration classes are
+  not re-run against existing databases.
+- Migrations `0000000014000-notification-resolution`,
+  `0000000015000-backfill-stale-notification-resolution`, and
+  `0000000016000-archive-parallel-form-drafts` — `BPM_CORE_MIGRATIONS`
+  now lists 17 classes.
+
+### Why a minor
+
+Removes `forkFormDefinition` and retires the parallel-draft model —
+breaking under 0.x SemVer conventions (0.1.x → 0.2.0).
+
 ## 0.1.10 — 2026-05-28
 
 ### Documentation

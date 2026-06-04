@@ -8,6 +8,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.5.0 — 2026-06-04
+
+Covers all changes since 0.4.1, including the undocumented internal
+0.4.2–0.4.4 version bumps.
+
+### Breaking
+
+- **The standalone forms area is removed.** Forms are now designed only
+  inside the template compose wizard and the designer's form drawer.
+  Removed surfaces:
+  - `FormsView` and the `./views/forms` subpath (the
+    `./views/forms/builder` and `./views/forms/renderer` subpaths
+    remain).
+  - The `./pages/forms` and `./pages/forms/builder` Next.js page shims
+    (`/forms`, `/forms/[id]/builder`). Hosts must delete the
+    corresponding `app/forms/**` re-export files.
+  - `BPMRoutes.forms()` and `BPMRoutes.formBuilder(formId)` — hosts
+    providing a custom `BPMRoutes` map must drop these members.
+- **`FormBuilderView` is now a pure controlled panel.** The `formId`
+  and `embedded` props are removed; the component no longer loads from
+  or saves to the server. Use `value` / `onChange` only — server
+  persistence happens through the compose wizard or
+  `composeApprovalTemplateWithForm`.
+- **`TemplateNameModal` is removed.** Template creation goes through
+  the compose wizard; the name-and-category modal flow no longer
+  exists. `TemplateCategoryOption` now lives in `TemplatesView`.
+
+### Added
+
+- **Template compose wizard** (`./views/templates/compose`,
+  `./pages/templates/compose`, route `/templates/compose`):
+  `TemplateComposeWizardView` designs a form and an approval flow
+  together — the form step embeds the builder, the review step can
+  dry-run the flow — and publishes both atomically.
+- **Designer upgrades** (`TemplateDesignerView`): embedded mode for
+  wizard reuse, an in-page form edit drawer, a dry-run button
+  (`showDryRun` prop / `BPM_TEMPLATE_DRY_RUN_ENABLED` env on the page
+  shim), and one-click save-and-publish — the publish button forks and
+  saves the draft as needed instead of requiring a separate save-draft
+  step first.
+- **Instance detail sections.** `InstanceDetailView` is split into
+  individually exported `InstanceFormSection` /
+  `InstanceAttachmentsSection` / `InstanceTasksSection` /
+  `InstanceSignaturesSection` / `InstanceHistorySection`, toggleable
+  via `showForm` / `showAttachments` / `showTasks` / `showSignatures` /
+  `showHistory` props.
+- **Notification drawer resolution states.** Resolved task
+  notifications render their outcome instead of offering stale
+  approve / reject actions.
+
+### Changed
+
+- `TemplatesView`: the create entry routes to the compose wizard (one
+  primary 建立模板 button); the modal-based create flow is removed.
+
+### Why a minor
+
+Removes the standalone forms surfaces and `FormBuilderView`'s
+server-backed mode — breaking under 0.x SemVer conventions
+(0.4.x → 0.5.0).
+
 ## 0.4.1 — 2026-05-28
 
 ### Fixed
