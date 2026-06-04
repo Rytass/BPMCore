@@ -13,6 +13,9 @@ import { NotificationDeliveryState0000000010000 } from './0000000010000-notifica
 import { RemoveAttachmentEncryptionKey0000000011000 } from './0000000011000-remove-attachment-encryption-key';
 import { NotificationSlaIdempotency0000000012000 } from './0000000012000-notification-sla-idempotency';
 import { WorkflowQueryIndexes0000000013000 } from './0000000013000-workflow-query-indexes';
+import { NotificationResolution0000000014000 } from './0000000014000-notification-resolution';
+import { BackfillStaleNotificationResolution0000000015000 } from './0000000015000-backfill-stale-notification-resolution';
+import { ArchiveParallelFormDrafts0000000016000 } from './0000000016000-archive-parallel-form-drafts';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -29,6 +32,9 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   RemoveAttachmentEncryptionKey0000000011000,
   NotificationSlaIdempotency0000000012000,
   WorkflowQueryIndexes0000000013000,
+  NotificationResolution0000000014000,
+  BackfillStaleNotificationResolution0000000015000,
+  ArchiveParallelFormDrafts0000000016000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -45,3 +51,6 @@ export * from './0000000010000-notification-delivery-state';
 export * from './0000000011000-remove-attachment-encryption-key';
 export * from './0000000012000-notification-sla-idempotency';
 export * from './0000000013000-workflow-query-indexes';
+export * from './0000000014000-notification-resolution';
+export * from './0000000015000-backfill-stale-notification-resolution';
+export * from './0000000016000-archive-parallel-form-drafts';

@@ -5,12 +5,20 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
+import {
+  EntityManager,
+  FindOptionsWhere,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 import { FormDefinitionEntity } from './form-definition.entity';
 import { FormDefinitionVersionEntity } from './form-definition-version.entity';
 import {
   CreateFormDefinitionInput,
   LintFormSchemaInput,
+  PublishFormDefinitionContentInput,
   UpdateFormDefinitionDraftInput,
   UpdateFormDefinitionInput,
 } from './dto/form-definition.input';
@@ -20,8 +28,6 @@ import {
 } from './form.enums';
 import { FormSchemaLintResultObject } from './form-schema-lint.object';
 import {
-  EMPTY_FORM_SCHEMA,
-  EMPTY_FORM_UI_SCHEMA,
   lintFormSchemaJson,
   parseAndValidateFormSchemas,
 } from './form-schema.validator';
@@ -47,44 +53,50 @@ export class FormService {
 
   async createFormDefinition(
     input: CreateFormDefinitionInput,
+    manager?: EntityManager,
   ): Promise<FormDefinitionEntity> {
     const schemas = this.parseSchemasOrThrow(
       input.schemaJson,
       input.uiSchemaJson,
     );
+    const run = (txManager: EntityManager): Promise<FormDefinitionEntity> =>
+      this.createFormDefinitionWithManager(txManager, input, schemas);
 
-    return this.formDefinitionRepository.manager.transaction(
-      async (manager): Promise<FormDefinitionEntity> => {
-        const definitionRepository =
-          manager.getRepository(FormDefinitionEntity);
-        const versionRepository = manager.getRepository(
-          FormDefinitionVersionEntity,
-        );
-        const definition = await definitionRepository.save(
-          definitionRepository.create({
-            createdByMemberId: input.createdByMemberId,
-            currentVersionId: null,
-            description: input.description,
-            name: input.name,
-          }),
-        );
+    return manager
+      ? run(manager)
+      : this.formDefinitionRepository.manager.transaction(run);
+  }
 
-        await versionRepository.save(
-          versionRepository.create({
-            archivedAt: null,
-            formDefinitionId: definition.id,
-            publishedAt: null,
-            publishedByMemberId: null,
-            schema: schemas.schema,
-            status: FormDefinitionVersionStatusEnum.DRAFT,
-            uiSchema: schemas.uiSchema,
-            version: 1,
-          }),
-        );
-
-        return definition;
-      },
+  private async createFormDefinitionWithManager(
+    manager: EntityManager,
+    input: CreateFormDefinitionInput,
+    schemas: ReturnType<typeof parseAndValidateFormSchemas>,
+  ): Promise<FormDefinitionEntity> {
+    const definitionRepository = manager.getRepository(FormDefinitionEntity);
+    const versionRepository = manager.getRepository(FormDefinitionVersionEntity);
+    const definition = await definitionRepository.save(
+      definitionRepository.create({
+        createdByMemberId: input.createdByMemberId,
+        currentVersionId: null,
+        description: input.description,
+        name: input.name,
+      }),
     );
+
+    await versionRepository.save(
+      versionRepository.create({
+        archivedAt: null,
+        formDefinitionId: definition.id,
+        publishedAt: null,
+        publishedByMemberId: null,
+        schema: schemas.schema,
+        status: FormDefinitionVersionStatusEnum.DRAFT,
+        uiSchema: schemas.uiSchema,
+        version: 1,
+      }),
+    );
+
+    return definition;
   }
 
   async updateFormDefinition(
@@ -155,9 +167,12 @@ export class FormService {
 
   async updateFormDefinitionDraft(
     input: UpdateFormDefinitionDraftInput,
+    manager?: EntityManager,
   ): Promise<FormDefinitionVersionEntity> {
+    const versionRepository = this.formVersions(manager);
     const existing = await this.getFormDefinitionVersionOrThrow(
       input.versionId,
+      manager,
     );
 
     if (existing.status !== FormDefinitionVersionStatusEnum.DRAFT) {
@@ -170,55 +185,116 @@ export class FormService {
       input.schemaJson,
       input.uiSchemaJson,
     );
-    const next = this.formDefinitionVersionRepository.merge(existing, {
+    const next = versionRepository.merge(existing, {
       schema: schemas.schema,
       uiSchema: schemas.uiSchema,
     });
 
-    return this.formDefinitionVersionRepository.save(next);
+    return versionRepository.save(next);
   }
 
-  async forkFormDefinition(
-    formDefinitionId: string,
+  /**
+   * Publishes the given form content as the current version atomically.
+   *
+   * Form definitions do not keep a draft in parallel with a published
+   * version: before the first publish the single draft is updated in place
+   * and published; afterwards every save publishes a brand-new version
+   * (version + 1) directly. Saving content identical to the current
+   * published version is a no-op that returns the current version.
+   */
+  async publishFormDefinitionContent(
+    input: PublishFormDefinitionContentInput,
+    publishedByMemberId?: string,
+    manager?: EntityManager,
   ): Promise<FormDefinitionVersionEntity> {
-    const definition = await this.getFormDefinitionOrThrow(formDefinitionId);
-    const existingDraft = await this.formDefinitionVersionRepository.findOne({
+    const schemas = this.parseSchemasOrThrow(
+      input.schemaJson,
+      input.uiSchemaJson,
+    );
+    const run = async (
+      txManager: EntityManager,
+    ): Promise<FormDefinitionVersionEntity> => {
+      const definition = await this.getFormDefinitionOrThrow(
+        input.formDefinitionId,
+        txManager,
+      );
+      const versionRepository = txManager.getRepository(
+        FormDefinitionVersionEntity,
+      );
+      const draft = await this.findDraftVersion(definition.id, txManager);
+
+      if (draft) {
+        const updated = await versionRepository.save(
+          versionRepository.merge(draft, {
+            schema: schemas.schema,
+            uiSchema: schemas.uiSchema,
+          }),
+        );
+
+        return this.publishFormDefinitionVersionWithManager(
+          txManager,
+          updated,
+          publishedByMemberId,
+        );
+      }
+
+      const current = definition.currentVersionId
+        ? await this.getFormDefinitionVersionOrThrow(
+            definition.currentVersionId,
+            txManager,
+          )
+        : null;
+
+      if (current && hasSameFormContent(current, schemas)) {
+        return current;
+      }
+
+      const created = await versionRepository.save(
+        versionRepository.create({
+          archivedAt: null,
+          formDefinitionId: definition.id,
+          publishedAt: null,
+          publishedByMemberId: null,
+          schema: schemas.schema,
+          status: FormDefinitionVersionStatusEnum.DRAFT,
+          uiSchema: schemas.uiSchema,
+          version: await this.readNextVersionNumber(definition.id, txManager),
+        }),
+      );
+
+      return this.publishFormDefinitionVersionWithManager(
+        txManager,
+        created,
+        publishedByMemberId,
+      );
+    };
+
+    return manager
+      ? run(manager)
+      : this.formDefinitionRepository.manager.transaction(run);
+  }
+
+  async findDraftVersion(
+    formDefinitionId: string,
+    manager?: EntityManager,
+  ): Promise<FormDefinitionVersionEntity | null> {
+    return this.formVersions(manager).findOne({
       where: {
-        formDefinitionId: definition.id,
+        formDefinitionId,
         status: FormDefinitionVersionStatusEnum.DRAFT,
       },
     });
-
-    if (existingDraft) {
-      throw new ConflictException(
-        'A draft form definition version already exists',
-      );
-    }
-
-    const source = definition.currentVersionId
-      ? await this.getFormDefinitionVersionOrThrow(definition.currentVersionId)
-      : null;
-    const nextVersion = await this.readNextVersionNumber(definition.id);
-
-    return this.formDefinitionVersionRepository.save(
-      this.formDefinitionVersionRepository.create({
-        archivedAt: null,
-        formDefinitionId: definition.id,
-        publishedAt: null,
-        publishedByMemberId: null,
-        schema: source?.schema ?? EMPTY_FORM_SCHEMA,
-        status: FormDefinitionVersionStatusEnum.DRAFT,
-        uiSchema: source?.uiSchema ?? EMPTY_FORM_UI_SCHEMA,
-        version: nextVersion,
-      }),
-    );
   }
 
   async publishFormDefinitionVersion(
     versionId: string,
     publishedByMemberId?: string,
+    manager?: EntityManager,
   ): Promise<FormDefinitionVersionEntity> {
-    const version = await this.getFormDefinitionVersionOrThrow(versionId);
+    const version = await this.getFormDefinitionVersionOrThrow(
+      versionId,
+      manager,
+    );
 
     if (version.status !== FormDefinitionVersionStatusEnum.DRAFT) {
       throw new ConflictException(
@@ -231,49 +307,61 @@ export class FormService {
       JSON.stringify(version.uiSchema),
     );
 
-    return this.formDefinitionRepository.manager.transaction(
-      async (manager): Promise<FormDefinitionVersionEntity> => {
-        const definitionRepository =
-          manager.getRepository(FormDefinitionEntity);
-        const versionRepository = manager.getRepository(
-          FormDefinitionVersionEntity,
-        );
-        const definition = await definitionRepository.findOne({
-          where: { deletedAt: IsNull(), id: version.formDefinitionId },
-        });
+    const run = (
+      txManager: EntityManager,
+    ): Promise<FormDefinitionVersionEntity> =>
+      this.publishFormDefinitionVersionWithManager(
+        txManager,
+        version,
+        publishedByMemberId,
+      );
 
-        if (!definition) {
-          throw new NotFoundException(
-            `Form definition ${version.formDefinitionId} was not found`,
-          );
-        }
+    return manager
+      ? run(manager)
+      : this.formDefinitionRepository.manager.transaction(run);
+  }
 
-        if (definition.currentVersionId) {
-          await versionRepository.update(
-            { id: definition.currentVersionId },
-            {
-              archivedAt: new Date(),
-              status: FormDefinitionVersionStatusEnum.ARCHIVED,
-            },
-          );
-        }
+  private async publishFormDefinitionVersionWithManager(
+    manager: EntityManager,
+    version: FormDefinitionVersionEntity,
+    publishedByMemberId?: string,
+  ): Promise<FormDefinitionVersionEntity> {
+    const definitionRepository = manager.getRepository(FormDefinitionEntity);
+    const versionRepository = manager.getRepository(FormDefinitionVersionEntity);
+    const definition = await definitionRepository.findOne({
+      where: { deletedAt: IsNull(), id: version.formDefinitionId },
+    });
 
-        const published = versionRepository.merge(version, {
-          archivedAt: null,
-          publishedAt: new Date(),
-          publishedByMemberId: publishedByMemberId ?? null,
-          status: FormDefinitionVersionStatusEnum.PUBLISHED,
-        });
-        const saved = await versionRepository.save(published);
-        await definitionRepository.save(
-          definitionRepository.merge(definition, {
-            currentVersionId: saved.id,
-          }),
-        );
+    if (!definition) {
+      throw new NotFoundException(
+        `Form definition ${version.formDefinitionId} was not found`,
+      );
+    }
 
-        return saved;
-      },
+    if (definition.currentVersionId) {
+      await versionRepository.update(
+        { id: definition.currentVersionId },
+        {
+          archivedAt: new Date(),
+          status: FormDefinitionVersionStatusEnum.ARCHIVED,
+        },
+      );
+    }
+
+    const published = versionRepository.merge(version, {
+      archivedAt: null,
+      publishedAt: new Date(),
+      publishedByMemberId: publishedByMemberId ?? null,
+      status: FormDefinitionVersionStatusEnum.PUBLISHED,
+    });
+    const saved = await versionRepository.save(published);
+    await definitionRepository.save(
+      definitionRepository.merge(definition, {
+        currentVersionId: saved.id,
+      }),
     );
+
+    return saved;
   }
 
   async rollbackFormDefinitionVersion(
@@ -342,10 +430,27 @@ export class FormService {
     };
   }
 
+  private formDefinitions(
+    manager?: EntityManager,
+  ): Repository<FormDefinitionEntity> {
+    return manager
+      ? manager.getRepository(FormDefinitionEntity)
+      : this.formDefinitionRepository;
+  }
+
+  private formVersions(
+    manager?: EntityManager,
+  ): Repository<FormDefinitionVersionEntity> {
+    return manager
+      ? manager.getRepository(FormDefinitionVersionEntity)
+      : this.formDefinitionVersionRepository;
+  }
+
   private async getFormDefinitionOrThrow(
     id: string,
+    manager?: EntityManager,
   ): Promise<FormDefinitionEntity> {
-    const entity = await this.formDefinitionRepository.findOne({
+    const entity = await this.formDefinitions(manager).findOne({
       where: { deletedAt: IsNull(), id },
     });
 
@@ -400,8 +505,9 @@ export class FormService {
 
   private async getFormDefinitionVersionOrThrow(
     id: string,
+    manager?: EntityManager,
   ): Promise<FormDefinitionVersionEntity> {
-    const entity = await this.formDefinitionVersionRepository.findOne({
+    const entity = await this.formVersions(manager).findOne({
       where: { id },
     });
 
@@ -416,8 +522,9 @@ export class FormService {
 
   private async readNextVersionNumber(
     formDefinitionId: string,
+    manager?: EntityManager,
   ): Promise<number> {
-    const row = await this.formDefinitionVersionRepository
+    const row = await this.formVersions(manager)
       .createQueryBuilder('version')
       .select('MAX(version.version)', 'maxVersion')
       .where('version.form_definition_id = :formDefinitionId', {
@@ -476,6 +583,16 @@ function createFormDefinitionWhere(
   }
 
   return { deletedAt: IsNull() };
+}
+
+function hasSameFormContent(
+  version: FormDefinitionVersionEntity,
+  schemas: ReturnType<typeof parseAndValidateFormSchemas>,
+): boolean {
+  return (
+    JSON.stringify(version.schema) === JSON.stringify(schemas.schema) &&
+    JSON.stringify(version.uiSchema) === JSON.stringify(schemas.uiSchema)
+  );
 }
 
 function applyCurrentVersionSummary(

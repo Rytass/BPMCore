@@ -1,7 +1,10 @@
-import { ObjectLiteral, Repository } from 'typeorm';
+import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { FormDefinitionEntity } from './form-definition.entity';
 import { FormDefinitionVersionEntity } from './form-definition-version.entity';
-import { FormDefinitionListStatusEnum } from './form.enums';
+import {
+  FormDefinitionListStatusEnum,
+  FormDefinitionVersionStatusEnum,
+} from './form.enums';
 import { FormService } from './form.service';
 
 describe('FormService', () => {
@@ -124,6 +127,120 @@ describe('FormService', () => {
       id: expect.any(Object),
     });
   });
+
+  describe('publishFormDefinitionContent', () => {
+    const changedSchemaJson = JSON.stringify({
+      fields: [
+        { fieldKey: 'text_1', label: '姓名', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    });
+
+    it('publishes a brand-new version when published content changed', async (): Promise<void> => {
+      const definition = Object.assign(createFormDefinition('def-1'), {
+        currentVersionId: 'version-1',
+      });
+      const currentVersion = createVersion({
+        id: 'version-1',
+        status: FormDefinitionVersionStatusEnum.PUBLISHED,
+      });
+      const versionRepository = createVersionRepository({
+        currentVersion,
+        maxVersion: 1,
+      });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      const published = await service.publishFormDefinitionContent(
+        {
+          formDefinitionId: 'def-1',
+          schemaJson: changedSchemaJson,
+          uiSchemaJson: null,
+        },
+        'member-1',
+        createManager(createDefinitionRepository(definition), versionRepository),
+      );
+
+      expect(published.status).toBe(FormDefinitionVersionStatusEnum.PUBLISHED);
+      expect(published.version).toBe(2);
+      expect(published.publishedByMemberId).toBe('member-1');
+      expect(versionRepository.update).toHaveBeenCalledWith(
+        { id: 'version-1' },
+        expect.objectContaining({
+          status: FormDefinitionVersionStatusEnum.ARCHIVED,
+        }),
+      );
+      expect(definition.currentVersionId).toBe(published.id);
+    });
+
+    it('returns the current version untouched when content is identical', async (): Promise<void> => {
+      const definition = Object.assign(createFormDefinition('def-1'), {
+        currentVersionId: 'version-1',
+      });
+      const currentVersion = createVersion({
+        id: 'version-1',
+        schema: JSON.parse(changedSchemaJson) as Record<string, unknown>,
+        status: FormDefinitionVersionStatusEnum.PUBLISHED,
+      });
+      const versionRepository = createVersionRepository({
+        currentVersion,
+        maxVersion: 1,
+      });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      const published = await service.publishFormDefinitionContent(
+        {
+          formDefinitionId: 'def-1',
+          schemaJson: changedSchemaJson,
+          uiSchemaJson: null,
+        },
+        'member-1',
+        createManager(createDefinitionRepository(definition), versionRepository),
+      );
+
+      expect(published).toBe(currentVersion);
+      expect(versionRepository.save).not.toHaveBeenCalled();
+      expect(versionRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('updates and publishes the pre-publish draft in place', async (): Promise<void> => {
+      const definition = createFormDefinition('def-1');
+      const draft = createVersion({
+        id: 'version-1',
+        status: FormDefinitionVersionStatusEnum.DRAFT,
+      });
+      const versionRepository = createVersionRepository({
+        draft,
+        maxVersion: 1,
+      });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      const published = await service.publishFormDefinitionContent(
+        {
+          formDefinitionId: 'def-1',
+          schemaJson: changedSchemaJson,
+          uiSchemaJson: null,
+        },
+        'member-1',
+        createManager(createDefinitionRepository(definition), versionRepository),
+      );
+
+      expect(published.id).toBe('version-1');
+      expect(published.version).toBe(1);
+      expect(published.status).toBe(FormDefinitionVersionStatusEnum.PUBLISHED);
+      expect(JSON.stringify(published.schema)).toBe(changedSchemaJson);
+      expect(versionRepository.update).not.toHaveBeenCalled();
+      expect(definition.currentVersionId).toBe('version-1');
+    });
+  });
 });
 
 function createFormDefinition(id: string): FormDefinitionEntity {
@@ -141,4 +258,114 @@ function createFormDefinition(id: string): FormDefinitionEntity {
 
 function createRepository<TEntity extends ObjectLiteral>(): Repository<TEntity> {
   return {} as Repository<TEntity>;
+}
+
+function createVersion(overrides: {
+  readonly id: string;
+  readonly schema?: Record<string, unknown>;
+  readonly status: FormDefinitionVersionStatusEnum;
+}): FormDefinitionVersionEntity {
+  return Object.assign(new FormDefinitionVersionEntity(), {
+    archivedAt: null,
+    formDefinitionId: 'def-1',
+    id: overrides.id,
+    publishedAt: null,
+    publishedByMemberId: null,
+    schema: overrides.schema ?? { fields: [], schemaVersion: 1 },
+    status: overrides.status,
+    uiSchema: { layout: [], schemaVersion: 1 },
+    version: 1,
+  });
+}
+
+function createDefinitionRepository(
+  definition: FormDefinitionEntity,
+): Repository<FormDefinitionEntity> {
+  return {
+    findOne: jest.fn(
+      (): Promise<FormDefinitionEntity> => Promise.resolve(definition),
+    ),
+    merge: (
+      target: FormDefinitionEntity,
+      source: Partial<FormDefinitionEntity>,
+    ): FormDefinitionEntity => Object.assign(target, source),
+    save: jest.fn(
+      (entity: FormDefinitionEntity): Promise<FormDefinitionEntity> =>
+        Promise.resolve(entity),
+    ),
+  } as unknown as Repository<FormDefinitionEntity>;
+}
+
+function createVersionRepository(options: {
+  readonly currentVersion?: FormDefinitionVersionEntity;
+  readonly draft?: FormDefinitionVersionEntity;
+  readonly maxVersion: number;
+}): Repository<FormDefinitionVersionEntity> {
+  const versionsById = new Map(
+    [options.currentVersion, options.draft]
+      .filter(
+        (version): version is FormDefinitionVersionEntity =>
+          version !== undefined,
+      )
+      .map((version) => [version.id, version]),
+  );
+
+  return {
+    create: (
+      data: Partial<FormDefinitionVersionEntity>,
+    ): FormDefinitionVersionEntity =>
+      Object.assign(new FormDefinitionVersionEntity(), data),
+    createQueryBuilder: (): unknown => {
+      const builder = {
+        getRawOne: (): Promise<{ readonly maxVersion: number }> =>
+          Promise.resolve({ maxVersion: options.maxVersion }),
+        select: (): unknown => builder,
+        where: (): unknown => builder,
+      };
+
+      return builder;
+    },
+    findOne: jest.fn(
+      ({
+        where,
+      }: {
+        readonly where: { readonly id?: string };
+      }): Promise<FormDefinitionVersionEntity | null> =>
+        Promise.resolve(
+          where.id !== undefined
+            ? (versionsById.get(where.id) ?? null)
+            : (options.draft ?? null),
+        ),
+    ),
+    merge: (
+      target: FormDefinitionVersionEntity,
+      source: Partial<FormDefinitionVersionEntity>,
+    ): FormDefinitionVersionEntity => Object.assign(target, source),
+    save: jest.fn(
+      (
+        entity: FormDefinitionVersionEntity,
+      ): Promise<FormDefinitionVersionEntity> => {
+        const saved = entity.id
+          ? entity
+          : Object.assign(entity, { id: `version-${versionsById.size + 1}` });
+
+        versionsById.set(saved.id, saved);
+
+        return Promise.resolve(saved);
+      },
+    ),
+    update: jest.fn((): Promise<void> => Promise.resolve()),
+  } as unknown as Repository<FormDefinitionVersionEntity>;
+}
+
+function createManager(
+  definitionRepository: Repository<FormDefinitionEntity>,
+  versionRepository: Repository<FormDefinitionVersionEntity>,
+): EntityManager {
+  return {
+    getRepository: (entity: unknown): unknown =>
+      entity === FormDefinitionEntity
+        ? definitionRepository
+        : versionRepository,
+  } as unknown as EntityManager;
 }

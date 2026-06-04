@@ -77,8 +77,8 @@ interface PublishVersionMutationData {
   readonly publishFormDefinitionVersion: VersionJsonRecord;
 }
 
-interface ForkFormDefinitionMutationData {
-  readonly forkFormDefinition: VersionJsonRecord;
+interface PublishContentMutationData {
+  readonly publishFormDefinitionContent: VersionJsonRecord;
 }
 
 interface LintFormSchemaQueryData {
@@ -279,12 +279,20 @@ export async function publishFormDefinitionVersion(
   return parseVersionJson(data.publishFormDefinitionVersion);
 }
 
-export async function forkFormDefinition(
+/**
+ * Publishes the given content as the form's current version atomically.
+ * Before the first publish the single draft is updated and published;
+ * afterwards a brand-new published version is created directly. Content
+ * identical to the current published version is a no-op.
+ */
+export async function publishFormDefinitionContent(
   formDefinitionId: string,
+  schema: FormDefinitionSchema,
+  uiSchema: FormUiSchema,
 ): Promise<FormDefinitionVersionRecord> {
-  const data = await requestGraphQl<ForkFormDefinitionMutationData>(
-    `mutation ForkFormDefinition($formDefinitionId: String!) {
-      forkFormDefinition(formDefinitionId: $formDefinitionId) {
+  const data = await requestGraphQl<PublishContentMutationData>(
+    `mutation PublishFormDefinitionContent($input: PublishFormDefinitionContentInput!) {
+      publishFormDefinitionContent(input: $input) {
         id
         publishedAt
         schemaJson
@@ -294,10 +302,16 @@ export async function forkFormDefinition(
         version
       }
     }`,
-    { formDefinitionId },
+    {
+      input: {
+        formDefinitionId,
+        schemaJson: JSON.stringify(schema),
+        uiSchemaJson: JSON.stringify(uiSchema),
+      },
+    },
   );
 
-  return parseVersionJson(data.forkFormDefinition);
+  return parseVersionJson(data.publishFormDefinitionContent);
 }
 
 export async function lintFormSchema(

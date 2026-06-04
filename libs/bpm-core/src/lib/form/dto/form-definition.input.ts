@@ -61,6 +61,23 @@ export class UpdateFormDefinitionDraftInput {
 }
 
 @InputType()
+export class PublishFormDefinitionContentInput {
+  @Field(() => ID)
+  @IsUUID()
+  formDefinitionId!: string;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  schemaJson!: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  uiSchemaJson!: string | null;
+}
+
+@InputType()
 export class LintFormSchemaInput {
   @Field()
   @IsString()

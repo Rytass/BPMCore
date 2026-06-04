@@ -5,6 +5,7 @@ import { FormDefinitionVersionEntity } from './form-definition-version.entity';
 import { FormService } from './form.service';
 import {
   CreateFormDefinitionInput,
+  PublishFormDefinitionContentInput,
   UpdateFormDefinitionDraftInput,
   UpdateFormDefinitionInput,
 } from './dto/form-definition.input';
@@ -40,10 +41,14 @@ export class FormMutations {
   }
 
   @Mutation(() => FormDefinitionVersionEntity)
-  async forkFormDefinition(
-    @Args('formDefinitionId', { type: () => String }) formDefinitionId: string,
+  async publishFormDefinitionContent(
+    @Args('input') input: PublishFormDefinitionContentInput,
+    @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<FormDefinitionVersionEntity> {
-    return this.formService.forkFormDefinition(formDefinitionId);
+    return this.formService.publishFormDefinitionContent(
+      input,
+      currentMemberId,
+    );
   }
 
   @Mutation(() => FormDefinitionVersionEntity)
