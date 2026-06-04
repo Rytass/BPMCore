@@ -10,6 +10,8 @@ import { ensureApiTestMemberTable } from '../src/app/api-test-member-schema';
 // because it runs through ts-node before the package is built.
 // eslint-disable-next-line @nx/enforce-module-boundaries
 import { buildDataSourceOptionsFromVaultEnv } from '../../../libs/bpm-core/src/lib/database/typeorm.config';
+// eslint-disable-next-line @nx/enforce-module-boundaries
+import { reconcileLegacyMigrationNames } from '../../../libs/bpm-core/src/lib/database/reconcile-legacy-migrations';
 
 type SqlScalar = string | number | boolean | null | readonly string[];
 
@@ -503,6 +505,7 @@ async function main(): Promise<void> {
   await dataSource.initialize();
 
   try {
+    await reconcileLegacyMigrationNames(dataSource);
     await dataSource.runMigrations();
     await resetAndSeed(dataSource, readSchema(options));
   } finally {

@@ -1,4 +1,5 @@
 import dataSource from './data-source';
+import { reconcileLegacyMigrationNames } from './reconcile-legacy-migrations';
 
 async function run(): Promise<void> {
   const action = process.argv[2] ?? 'run';
@@ -12,6 +13,7 @@ async function run(): Promise<void> {
       return;
     }
 
+    await reconcileLegacyMigrationNames(source);
     await source.runMigrations();
   } finally {
     await source.destroy();
