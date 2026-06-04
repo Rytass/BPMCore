@@ -5,8 +5,9 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "nx run-many -t build",
-    "api": "PORT=17603 nx serve api",
-    "client": "nx dev client --port=17602",
+    "dev": "sh scripts/dev-tmux.sh",
+    "api": "PORT=17603 nx serve api --tui=false",
+    "client": "nx dev client --port=17602 --tui=false",
     "e2e:client": "playwright test -c apps/client-e2e/playwright.config.ts",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
