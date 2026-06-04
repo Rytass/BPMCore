@@ -6,10 +6,21 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
-import { FindOptionsWhere, ILike, IsNull, Not, Repository } from 'typeorm';
+import {
+  EntityManager,
+  FindOptionsWhere,
+  ILike,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import { FormDefinitionEntity } from '../form/form-definition.entity';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { FormService } from '../form/form.service';
+import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
+import { ComposeApprovalTemplateWithFormObject } from './compose-approval-template.object';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
@@ -62,56 +73,246 @@ export class TemplateService {
     @InjectRepository(FormDefinitionVersionEntity)
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
     private readonly conditionService: ConditionService,
+    private readonly formService: FormService,
   ) {}
 
   async createApprovalTemplate(
     input: CreateApprovalTemplateInput,
+    manager?: EntityManager,
+  ): Promise<ApprovalTemplateEntity> {
+    const run = (txManager: EntityManager): Promise<ApprovalTemplateEntity> =>
+      this.createApprovalTemplateWithManager(txManager, input);
+
+    return manager
+      ? run(manager)
+      : this.templateRepository.manager.transaction(run);
+  }
+
+  private async createApprovalTemplateWithManager(
+    manager: EntityManager,
+    input: CreateApprovalTemplateInput,
   ): Promise<ApprovalTemplateEntity> {
     await this.validateOptionalFormDefinitionVersion(
       input.formDefinitionVersionId,
+      manager,
     );
     const category = await this.validateOptionalTemplateCategory(
       input.categoryId,
+      manager,
+    );
+    const templateRepository = manager.getRepository(ApprovalTemplateEntity);
+    const versionRepository = manager.getRepository(
+      ApprovalTemplateVersionEntity,
+    );
+    const template = await templateRepository.save(
+      templateRepository.create({
+        category: input.category ?? category?.name ?? null,
+        categoryId: category?.id ?? null,
+        createdByMemberId: input.createdByMemberId,
+        currentVersionId: null,
+        description: input.description,
+        name: input.name,
+      }),
     );
 
+    await versionRepository.save(
+      versionRepository.create({
+        archivedAt: null,
+        formDefinitionVersionId: input.formDefinitionVersionId,
+        initiatorPolicyCel: null,
+        notificationConfig: null,
+        publishedAt: null,
+        publishedByMemberId: null,
+        slaDefaults: null,
+        status: ApprovalTemplateVersionStatusEnum.DRAFT,
+        templateId: template.id,
+        version: 1,
+        workflowDefinition: EMPTY_WORKFLOW_DEFINITION,
+      }),
+    );
+
+    return template;
+  }
+
+  /**
+   * Atomically build (and optionally publish) a form definition together with
+   * the approval template that binds it. The whole flow runs in a single DB
+   * transaction so a partial failure rolls back both sides.
+   */
+  async composeApprovalTemplateWithForm(
+    input: ComposeApprovalTemplateWithFormInput,
+    currentMemberId: string | null,
+  ): Promise<ComposeApprovalTemplateWithFormObject> {
     return this.templateRepository.manager.transaction(
-      async (manager): Promise<ApprovalTemplateEntity> => {
-        const templateRepository = manager.getRepository(
-          ApprovalTemplateEntity,
+      async (manager): Promise<ComposeApprovalTemplateWithFormObject> => {
+        const formDefinitionVersion = await this.resolveComposedFormVersion(
+          manager,
+          input,
+          currentMemberId,
         );
-        const versionRepository = manager.getRepository(
-          ApprovalTemplateVersionEntity,
-        );
-        const template = await templateRepository.save(
-          templateRepository.create({
-            category: input.category ?? category?.name ?? null,
-            categoryId: category?.id ?? null,
-            createdByMemberId: input.createdByMemberId,
-            currentVersionId: null,
-            description: input.description,
-            name: input.name,
-          }),
+        const templateDraftVersion =
+          await this.resolveComposedTemplateDraftVersion(
+            manager,
+            input,
+            currentMemberId,
+          );
+
+        let templateVersion = await this.updateApprovalTemplateDraft(
+          {
+            formDefinitionVersionId: formDefinitionVersion.id,
+            initiatorPolicyCel: input.initiatorPolicyCel,
+            notificationConfigJson: input.notificationConfigJson,
+            slaDefaultsJson: input.slaDefaultsJson,
+            versionId: templateDraftVersion.id,
+            workflowDefinitionJson: input.workflowDefinitionJson,
+          },
+          manager,
         );
 
-        await versionRepository.save(
-          versionRepository.create({
-            archivedAt: null,
-            formDefinitionVersionId: input.formDefinitionVersionId,
-            initiatorPolicyCel: null,
-            notificationConfig: null,
-            publishedAt: null,
-            publishedByMemberId: null,
-            slaDefaults: null,
-            status: ApprovalTemplateVersionStatusEnum.DRAFT,
-            templateId: template.id,
-            version: 1,
-            workflowDefinition: EMPTY_WORKFLOW_DEFINITION,
-          }),
-        );
+        if (input.publish) {
+          templateVersion = await this.publishApprovalTemplateVersion(
+            templateDraftVersion.id,
+            currentMemberId ?? undefined,
+            manager,
+          );
+        }
 
-        return template;
+        const formDefinition = await manager
+          .getRepository(FormDefinitionEntity)
+          .findOneByOrFail({ id: formDefinitionVersion.formDefinitionId });
+        const template = await manager
+          .getRepository(ApprovalTemplateEntity)
+          .findOneByOrFail({ id: templateVersion.templateId });
+
+        return {
+          formDefinition,
+          formDefinitionVersion,
+          published: input.publish,
+          template,
+          templateVersion,
+        };
       },
     );
+  }
+
+  private async resolveComposedFormVersion(
+    manager: EntityManager,
+    input: ComposeApprovalTemplateWithFormInput,
+    currentMemberId: string | null,
+  ): Promise<FormDefinitionVersionEntity> {
+    if (!input.formDefinitionId) {
+      const definition = await this.formService.createFormDefinition(
+        {
+          createdByMemberId: currentMemberId,
+          description: input.formDescription,
+          name: input.formName,
+          schemaJson: input.schemaJson,
+          uiSchemaJson: input.uiSchemaJson,
+        },
+        manager,
+      );
+      const draft = await this.formService.findDraftVersion(
+        definition.id,
+        manager,
+      );
+
+      if (!draft) {
+        throw new NotFoundException(
+          `Form definition ${definition.id} draft version was not created`,
+        );
+      }
+
+      return input.publish
+        ? this.formService.publishFormDefinitionVersion(
+            draft.id,
+            currentMemberId ?? undefined,
+            manager,
+          )
+        : draft;
+    }
+
+    const existingDraft = await this.formService.findDraftVersion(
+      input.formDefinitionId,
+      manager,
+    );
+
+    if (existingDraft) {
+      const updated = await this.formService.updateFormDefinitionDraft(
+        {
+          schemaJson: input.schemaJson ?? '',
+          uiSchemaJson: input.uiSchemaJson ?? '',
+          versionId: existingDraft.id,
+        },
+        manager,
+      );
+
+      return input.publish
+        ? this.formService.publishFormDefinitionVersion(
+            updated.id,
+            currentMemberId ?? undefined,
+            manager,
+          )
+        : updated;
+    }
+
+    // Published definitions no longer keep a parallel draft: edits publish a
+    // new version immediately (content-identical saves reuse the current
+    // version) so the template draft can bind a published form version.
+    return this.formService.publishFormDefinitionContent(
+      {
+        formDefinitionId: input.formDefinitionId,
+        schemaJson: input.schemaJson,
+        uiSchemaJson: input.uiSchemaJson,
+      },
+      currentMemberId ?? undefined,
+      manager,
+    );
+  }
+
+  private async resolveComposedTemplateDraftVersion(
+    manager: EntityManager,
+    input: ComposeApprovalTemplateWithFormInput,
+    currentMemberId: string | null,
+  ): Promise<ApprovalTemplateVersionEntity> {
+    if (!input.templateId) {
+      const template = await this.createApprovalTemplate(
+        {
+          category: input.category,
+          categoryId: input.categoryId,
+          createdByMemberId: currentMemberId,
+          description: input.templateDescription,
+          formDefinitionVersionId: null,
+          name: input.templateName,
+        },
+        manager,
+      );
+      const draft = await this.findDraftTemplateVersion(template.id, manager);
+
+      if (!draft) {
+        throw new NotFoundException(
+          `Approval template ${template.id} draft version was not created`,
+        );
+      }
+
+      return draft;
+    }
+
+    return (
+      (await this.findDraftTemplateVersion(input.templateId, manager)) ??
+      (await this.forkApprovalTemplate(input.templateId, manager))
+    );
+  }
+
+  private async findDraftTemplateVersion(
+    templateId: string,
+    manager?: EntityManager,
+  ): Promise<ApprovalTemplateVersionEntity | null> {
+    return this.templateVersions(manager).findOne({
+      where: {
+        status: ApprovalTemplateVersionStatusEnum.DRAFT,
+        templateId,
+      },
+    });
   }
 
   async updateApprovalTemplate(
@@ -300,8 +501,13 @@ export class TemplateService {
 
   async updateApprovalTemplateDraft(
     input: UpdateApprovalTemplateDraftInput,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const existing = await this.getTemplateVersionOrThrow(input.versionId);
+    const versionRepository = this.templateVersions(manager);
+    const existing = await this.getTemplateVersionOrThrow(
+      input.versionId,
+      manager,
+    );
 
     if (existing.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
       throw new ConflictException(
@@ -311,11 +517,12 @@ export class TemplateService {
 
     await this.validateOptionalFormDefinitionVersion(
       input.formDefinitionVersionId,
+      manager,
     );
     const workflowDefinition = this.parseWorkflowDefinitionOrThrow(
       input.workflowDefinitionJson,
     );
-    const next = this.templateVersionRepository.merge(existing, {
+    const next = versionRepository.merge(existing, {
       formDefinitionVersionId: input.formDefinitionVersionId,
       initiatorPolicyCel: input.initiatorPolicyCel,
       notificationConfig: parseOptionalJsonObject(input.notificationConfigJson),
@@ -323,14 +530,16 @@ export class TemplateService {
       workflowDefinition,
     });
 
-    return this.templateVersionRepository.save(next);
+    return versionRepository.save(next);
   }
 
   async forkApprovalTemplate(
     templateId: string,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const template = await this.getTemplateOrThrow(templateId);
-    const existingDraft = await this.templateVersionRepository.findOne({
+    const versionRepository = this.templateVersions(manager);
+    const template = await this.getTemplateOrThrow(templateId, manager);
+    const existingDraft = await versionRepository.findOne({
       where: {
         status: ApprovalTemplateVersionStatusEnum.DRAFT,
         templateId: template.id,
@@ -344,12 +553,12 @@ export class TemplateService {
     }
 
     const source = template.currentVersionId
-      ? await this.getTemplateVersionOrThrow(template.currentVersionId)
+      ? await this.getTemplateVersionOrThrow(template.currentVersionId, manager)
       : null;
-    const nextVersion = await this.readNextVersionNumber(template.id);
+    const nextVersion = await this.readNextVersionNumber(template.id, manager);
 
-    return this.templateVersionRepository.save(
-      this.templateVersionRepository.create({
+    return versionRepository.save(
+      versionRepository.create({
         archivedAt: null,
         formDefinitionVersionId: source?.formDefinitionVersionId ?? null,
         initiatorPolicyCel: source?.initiatorPolicyCel ?? null,
@@ -369,8 +578,9 @@ export class TemplateService {
   async publishApprovalTemplateVersion(
     versionId: string,
     publishedByMemberId?: string,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const version = await this.getTemplateVersionOrThrow(versionId);
+    const version = await this.getTemplateVersionOrThrow(versionId, manager);
 
     if (version.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
       throw new ConflictException(
@@ -378,52 +588,65 @@ export class TemplateService {
       );
     }
 
-    await this.validatePublishableVersion(version);
+    await this.validatePublishableVersion(version, manager);
 
-    return this.templateRepository.manager.transaction(
-      async (manager): Promise<ApprovalTemplateVersionEntity> => {
-        const templateRepository = manager.getRepository(
-          ApprovalTemplateEntity,
-        );
-        const versionRepository = manager.getRepository(
-          ApprovalTemplateVersionEntity,
-        );
-        const template = await templateRepository.findOne({
-          where: { deletedAt: IsNull(), id: version.templateId },
-        });
+    const run = (
+      txManager: EntityManager,
+    ): Promise<ApprovalTemplateVersionEntity> =>
+      this.publishApprovalTemplateVersionWithManager(
+        txManager,
+        version,
+        publishedByMemberId,
+      );
 
-        if (!template) {
-          throw new NotFoundException(
-            `Approval template ${version.templateId} was not found`,
-          );
-        }
+    return manager
+      ? run(manager)
+      : this.templateRepository.manager.transaction(run);
+  }
 
-        if (template.currentVersionId) {
-          await versionRepository.update(
-            { id: template.currentVersionId },
-            {
-              archivedAt: new Date(),
-              status: ApprovalTemplateVersionStatusEnum.ARCHIVED,
-            },
-          );
-        }
-
-        const published = versionRepository.merge(version, {
-          archivedAt: null,
-          publishedAt: new Date(),
-          publishedByMemberId: publishedByMemberId ?? null,
-          status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
-        });
-        const saved = await versionRepository.save(published);
-        await templateRepository.save(
-          templateRepository.merge(template, {
-            currentVersionId: saved.id,
-          }),
-        );
-
-        return saved;
-      },
+  private async publishApprovalTemplateVersionWithManager(
+    manager: EntityManager,
+    version: ApprovalTemplateVersionEntity,
+    publishedByMemberId?: string,
+  ): Promise<ApprovalTemplateVersionEntity> {
+    const templateRepository = manager.getRepository(ApprovalTemplateEntity);
+    const versionRepository = manager.getRepository(
+      ApprovalTemplateVersionEntity,
     );
+    const template = await templateRepository.findOne({
+      where: { deletedAt: IsNull(), id: version.templateId },
+    });
+
+    if (!template) {
+      throw new NotFoundException(
+        `Approval template ${version.templateId} was not found`,
+      );
+    }
+
+    if (template.currentVersionId) {
+      await versionRepository.update(
+        { id: template.currentVersionId },
+        {
+          archivedAt: new Date(),
+          status: ApprovalTemplateVersionStatusEnum.ARCHIVED,
+        },
+      );
+    }
+
+    const published = versionRepository.merge(version, {
+      archivedAt: null,
+      publishedAt: new Date(),
+      publishedByMemberId: publishedByMemberId ?? null,
+      status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const saved = await versionRepository.save(published);
+    await templateRepository.save(
+      templateRepository.merge(template, {
+        currentVersionId: saved.id,
+      }),
+    );
+
+    return saved;
   }
 
   async rollbackApprovalTemplateVersion(
@@ -486,6 +709,7 @@ export class TemplateService {
 
   private async validatePublishableVersion(
     version: ApprovalTemplateVersionEntity,
+    manager?: EntityManager,
   ): Promise<void> {
     if (!version.formDefinitionVersionId) {
       throw new BadRequestException(
@@ -493,7 +717,7 @@ export class TemplateService {
       );
     }
 
-    const formVersion = await this.formDefinitionVersionRepository.findOne({
+    const formVersion = await this.formVersions(manager).findOne({
       where: { id: version.formDefinitionVersionId },
     });
 
@@ -535,12 +759,13 @@ export class TemplateService {
 
   private async validateOptionalFormDefinitionVersion(
     formDefinitionVersionId: string | null | undefined,
+    manager?: EntityManager,
   ): Promise<void> {
     if (!formDefinitionVersionId) {
       return;
     }
 
-    const formVersion = await this.formDefinitionVersionRepository.findOne({
+    const formVersion = await this.formVersions(manager).findOne({
       where: { id: formDefinitionVersionId },
     });
 
@@ -553,18 +778,50 @@ export class TemplateService {
 
   private async validateOptionalTemplateCategory(
     categoryId: string | null | undefined,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateCategoryEntity | null> {
     if (!categoryId) {
       return null;
     }
 
-    return this.getTemplateCategoryOrThrow(categoryId);
+    return this.getTemplateCategoryOrThrow(categoryId, manager);
+  }
+
+  private templates(manager?: EntityManager): Repository<ApprovalTemplateEntity> {
+    return manager
+      ? manager.getRepository(ApprovalTemplateEntity)
+      : this.templateRepository;
+  }
+
+  private templateVersions(
+    manager?: EntityManager,
+  ): Repository<ApprovalTemplateVersionEntity> {
+    return manager
+      ? manager.getRepository(ApprovalTemplateVersionEntity)
+      : this.templateVersionRepository;
+  }
+
+  private templateCategories(
+    manager?: EntityManager,
+  ): Repository<ApprovalTemplateCategoryEntity> {
+    return manager
+      ? manager.getRepository(ApprovalTemplateCategoryEntity)
+      : this.templateCategoryRepository;
+  }
+
+  private formVersions(
+    manager?: EntityManager,
+  ): Repository<FormDefinitionVersionEntity> {
+    return manager
+      ? manager.getRepository(FormDefinitionVersionEntity)
+      : this.formDefinitionVersionRepository;
   }
 
   private async getTemplateOrThrow(
     id: string,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateEntity> {
-    const entity = await this.templateRepository.findOne({
+    const entity = await this.templates(manager).findOne({
       relations: { categoryDetail: true },
       where: { deletedAt: IsNull(), id },
     });
@@ -578,8 +835,9 @@ export class TemplateService {
 
   private async getTemplateCategoryOrThrow(
     id: string,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateCategoryEntity> {
-    const entity = await this.templateCategoryRepository.findOne({
+    const entity = await this.templateCategories(manager).findOne({
       where: { id },
     });
 
@@ -607,8 +865,9 @@ export class TemplateService {
 
   private async getTemplateVersionOrThrow(
     id: string,
+    manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const entity = await this.templateVersionRepository.findOne({
+    const entity = await this.templateVersions(manager).findOne({
       where: { id },
     });
 
@@ -621,8 +880,11 @@ export class TemplateService {
     return entity;
   }
 
-  private async readNextVersionNumber(templateId: string): Promise<number> {
-    const row = await this.templateVersionRepository
+  private async readNextVersionNumber(
+    templateId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const row = await this.templateVersions(manager)
       .createQueryBuilder('version')
       .select('MAX(version.version)', 'maxVersion')
       .where('version.template_id = :templateId', { templateId })

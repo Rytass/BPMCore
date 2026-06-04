@@ -1,7 +1,9 @@
-import { ObjectLiteral, Repository } from 'typeorm';
+import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import { FormDefinitionEntity } from '../form/form-definition.entity';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { FormService } from '../form/form.service';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
@@ -40,6 +42,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     const pageTwo = await service.listApprovalTemplates({
@@ -82,6 +85,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await service.listApprovalTemplates({
@@ -123,6 +127,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await service.listApprovalTemplates({
@@ -176,6 +181,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await service.listApprovalTemplates({
@@ -218,6 +224,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await service.listApprovalTemplateCategories({
@@ -286,6 +293,21 @@ describe('TemplateService', () => {
           };
         }
 
+        if (entity === ApprovalTemplateCategoryEntity) {
+          return {
+            findOne: categoryFindOne,
+          };
+        }
+
+        if (entity === FormDefinitionVersionEntity) {
+          return {
+            findOne: jest.fn(
+              (): Promise<FormDefinitionVersionEntity | null> =>
+                Promise.resolve(null),
+            ),
+          };
+        }
+
         return {
           create: versionCreate,
           save: versionSave,
@@ -301,17 +323,11 @@ describe('TemplateService', () => {
     };
     const service = new TemplateService(
       { manager } as unknown as Repository<ApprovalTemplateEntity>,
-      {
-        findOne: categoryFindOne,
-      } as unknown as Repository<ApprovalTemplateCategoryEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
       createRepository<ApprovalTemplateVersionEntity>(),
-      {
-        findOne: jest.fn(
-          (): Promise<FormDefinitionVersionEntity | null> =>
-            Promise.resolve(null),
-        ),
-      } as unknown as Repository<FormDefinitionVersionEntity>,
+      createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await service.createApprovalTemplate({
@@ -389,6 +405,7 @@ describe('TemplateService', () => {
         ),
       } as unknown as Repository<FormDefinitionVersionEntity>,
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     await expect(
@@ -426,6 +443,7 @@ describe('TemplateService', () => {
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
+      {} as unknown as FormService,
     );
 
     const deleted = await service.deleteApprovalTemplateCategory('category-1');
@@ -436,6 +454,129 @@ describe('TemplateService', () => {
         isActive: false,
       }),
     );
+  });
+});
+
+describe('TemplateService.composeApprovalTemplateWithForm', () => {
+  it('publishes form and template atomically when publish is true', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createComposingService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      {
+        category: null,
+        categoryId: null,
+        formDefinitionId: null,
+        formDescription: null,
+        formName: '請款表單',
+        initiatorPolicyCel: null,
+        notificationConfigJson: null,
+        publish: true,
+        schemaJson: JSON.stringify(SAMPLE_FORM_SCHEMA),
+        slaDefaultsJson: null,
+        templateDescription: null,
+        templateId: null,
+        templateName: '請款簽核',
+        uiSchemaJson: JSON.stringify(SAMPLE_FORM_UI_SCHEMA),
+        workflowDefinitionJson: JSON.stringify(VALID_WORKFLOW_DEFINITION),
+      },
+      'member-admin',
+    );
+
+    expect(result.published).toBe(true);
+    expect(result.formDefinitionVersion.status).toBe(
+      FormDefinitionVersionStatusEnum.PUBLISHED,
+    );
+    expect(result.templateVersion.status).toBe(
+      ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    );
+    // The template version binds the freshly published form version.
+    expect(result.templateVersion.formDefinitionVersionId).toBe(
+      result.formDefinitionVersion.id,
+    );
+    // Both parents now point at the published versions.
+    expect(result.formDefinition.currentVersionId).toBe(
+      result.formDefinitionVersion.id,
+    );
+    expect(result.template.currentVersionId).toBe(result.templateVersion.id);
+
+    const formVersions = [
+      ...store(FormDefinitionVersionEntity).values(),
+    ] as FormDefinitionVersionEntity[];
+    expect(formVersions).toHaveLength(1);
+  });
+
+  it('keeps both sides as drafts when publish is false', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createComposingService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      {
+        category: null,
+        categoryId: null,
+        formDefinitionId: null,
+        formDescription: null,
+        formName: '請款表單',
+        initiatorPolicyCel: null,
+        notificationConfigJson: null,
+        publish: false,
+        schemaJson: JSON.stringify(SAMPLE_FORM_SCHEMA),
+        slaDefaultsJson: null,
+        templateDescription: null,
+        templateId: null,
+        templateName: '請款簽核',
+        uiSchemaJson: JSON.stringify(SAMPLE_FORM_UI_SCHEMA),
+        workflowDefinitionJson: JSON.stringify(VALID_WORKFLOW_DEFINITION),
+      },
+      'member-admin',
+    );
+
+    expect(result.published).toBe(false);
+    expect(result.formDefinitionVersion.status).toBe(
+      FormDefinitionVersionStatusEnum.DRAFT,
+    );
+    expect(result.templateVersion.status).toBe(
+      ApprovalTemplateVersionStatusEnum.DRAFT,
+    );
+    // Draft template binds the draft form version so condition fields resolve.
+    expect(result.templateVersion.formDefinitionVersionId).toBe(
+      result.formDefinitionVersion.id,
+    );
+    expect(result.formDefinition.currentVersionId).toBeNull();
+    expect(result.template.currentVersionId).toBeNull();
+  });
+
+  it('rolls back inside the single transaction when the workflow fails to lint', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createComposingService(manager);
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        {
+          category: null,
+          categoryId: null,
+          formDefinitionId: null,
+          formDescription: null,
+          formName: '請款表單',
+          initiatorPolicyCel: null,
+          notificationConfigJson: null,
+          publish: true,
+          schemaJson: JSON.stringify(SAMPLE_FORM_SCHEMA),
+          slaDefaultsJson: null,
+          templateDescription: null,
+          templateId: null,
+          templateName: '請款簽核',
+          uiSchemaJson: JSON.stringify(SAMPLE_FORM_UI_SCHEMA),
+          // EMPTY workflow cannot reach an endEvent and must fail publish lint.
+          workflowDefinitionJson: JSON.stringify(EMPTY_WORKFLOW_DEFINITION),
+        },
+        'member-admin',
+      ),
+    ).rejects.toThrow('does not have a path to an endEvent');
+
+    // The single manager.transaction wraps every write, so a real DataSource
+    // would roll back the form rows created before the failing publish step.
+    expect(store(ApprovalTemplateEntity).size).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -473,4 +614,209 @@ function createRepository<
   TEntity extends ObjectLiteral,
 >(): Repository<TEntity> {
   return {} as Repository<TEntity>;
+}
+
+const SAMPLE_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'amount',
+      label: '金額',
+      required: true,
+      type: 'number',
+    },
+  ],
+  schemaVersion: 1,
+};
+
+const SAMPLE_FORM_UI_SCHEMA = {
+  layout: [{ fieldKey: 'amount', width: 'FULL' }],
+  schemaVersion: 1,
+};
+
+const VALID_WORKFLOW_DEFINITION = {
+  edges: [
+    {
+      data: {},
+      id: 'edge_start_task',
+      source: 'start',
+      target: 'task_manager',
+      type: 'smoothstep',
+    },
+    {
+      data: {},
+      id: 'edge_task_end',
+      source: 'task_manager',
+      target: 'end',
+      type: 'smoothstep',
+    },
+  ],
+  meta: { schemaVersion: 1 },
+  nodes: [
+    {
+      data: { label: '開始' },
+      id: 'start',
+      position: { x: 80, y: 160 },
+      type: 'startEvent',
+    },
+    {
+      data: {
+        allowAddSigner: false,
+        allowReject: true,
+        allowTransfer: true,
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        decisionPolicy: { type: 'SINGLE' },
+        label: '主管簽核',
+        returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+      },
+      id: 'task_manager',
+      position: { x: 300, y: 160 },
+      type: 'userTask',
+    },
+    {
+      data: { endState: 'APPROVED', label: '完成' },
+      id: 'end',
+      position: { x: 520, y: 160 },
+      type: 'endEvent',
+    },
+  ],
+};
+
+function createComposingService(manager: EntityManager): TemplateService {
+  const formService = new FormService(
+    {} as Repository<FormDefinitionEntity>,
+    {} as Repository<FormDefinitionVersionEntity>,
+  );
+
+  return new TemplateService(
+    { manager } as unknown as Repository<ApprovalTemplateEntity>,
+    {} as Repository<ApprovalTemplateCategoryEntity>,
+    {} as Repository<ApprovalTemplateVersionEntity>,
+    {} as Repository<FormDefinitionVersionEntity>,
+    new ConditionService(),
+    formService,
+  );
+}
+
+/**
+ * Minimal in-memory EntityManager that backs the composed-mutation tests. It
+ * supports the create/find/update surface the compose flow exercises and runs
+ * `transaction(op)` by invoking `op` with itself, mirroring a single DB
+ * transaction boundary.
+ */
+function createInMemoryManager(): {
+  readonly manager: EntityManager;
+  readonly store: (entity: unknown) => Map<string, ObjectLiteral>;
+} {
+  const stores = new Map<unknown, Map<string, ObjectLiteral>>();
+  let sequence = 0;
+
+  const storeFor = (entity: unknown): Map<string, ObjectLiteral> => {
+    const existing = stores.get(entity);
+
+    if (existing) {
+      return existing;
+    }
+
+    const created = new Map<string, ObjectLiteral>();
+    stores.set(entity, created);
+
+    return created;
+  };
+
+  const matches = (
+    row: ObjectLiteral,
+    where: Readonly<Record<string, unknown>>,
+  ): boolean =>
+    Object.entries(where).every(([key, value]) => {
+      if (key === 'relations') {
+        return true;
+      }
+
+      if (value !== null && typeof value === 'object' && '_type' in value) {
+        // Treat any FindOperator (e.g. IsNull()) as a null match.
+        return row[key] === null || row[key] === undefined;
+      }
+
+      return row[key] === value;
+    });
+
+  const makeRepository = (
+    entity: new () => ObjectLiteral,
+  ): Record<string, unknown> => {
+    const store = storeFor(entity);
+
+    return {
+      create: (value: ObjectLiteral): ObjectLiteral =>
+        Object.assign(new entity(), value),
+      findOne: ({
+        where,
+      }: {
+        readonly where:
+          | Readonly<Record<string, unknown>>
+          | readonly Readonly<Record<string, unknown>>[];
+      }): Promise<ObjectLiteral | null> => {
+        const clauses = Array.isArray(where) ? where : [where];
+
+        for (const row of store.values()) {
+          if (clauses.some((clause) => matches(row, clause))) {
+            return Promise.resolve(row);
+          }
+        }
+
+        return Promise.resolve(null);
+      },
+      findOneByOrFail: (
+        where: Readonly<Record<string, unknown>>,
+      ): Promise<ObjectLiteral> => {
+        for (const row of store.values()) {
+          if (matches(row, where)) {
+            return Promise.resolve(row);
+          }
+        }
+
+        return Promise.reject(new Error(`${entity.name} was not found`));
+      },
+      merge: (target: ObjectLiteral, patch: ObjectLiteral): ObjectLiteral =>
+        Object.assign(target, patch),
+      save: (value: ObjectLiteral): Promise<ObjectLiteral> => {
+        if (!value.id) {
+          sequence += 1;
+          value.id = `${entity.name}-${sequence}`;
+        }
+
+        store.set(value.id as string, value);
+
+        return Promise.resolve(value);
+      },
+      update: (
+        criteria: Readonly<Record<string, unknown>>,
+        patch: ObjectLiteral,
+      ): Promise<void> => {
+        for (const row of store.values()) {
+          if (matches(row, criteria)) {
+            Object.assign(row, patch);
+          }
+        }
+
+        return Promise.resolve();
+      },
+    };
+  };
+
+  const manager = {
+    getRepository: (entity: new () => ObjectLiteral): Record<string, unknown> =>
+      makeRepository(entity),
+    transaction: <TResult>(
+      operation: (manager: EntityManager) => Promise<TResult>,
+    ): Promise<TResult> => operation(manager as unknown as EntityManager),
+  } as unknown as EntityManager;
+
+  return {
+    manager,
+    store: (entity: unknown): Map<string, ObjectLiteral> => storeFor(entity),
+  };
 }

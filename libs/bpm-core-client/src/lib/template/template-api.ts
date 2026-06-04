@@ -1,4 +1,4 @@
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import { FormDefinitionSchema, FormUiSchema } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
 
@@ -180,6 +180,30 @@ interface ForkTemplateMutationData {
 
 interface DryRunApprovalWorkflowMutationData {
   readonly dryRunApprovalWorkflow: WorkflowDryRunResultRecord;
+}
+
+interface ComposeApprovalTemplateWithFormMutationData {
+  readonly composeApprovalTemplateWithForm: {
+    readonly formDefinition: Pick<
+      FormDefinitionRecord,
+      'currentVersionId' | 'id'
+    >;
+    readonly formDefinitionVersion: Pick<
+      FormDefinitionVersionRecord,
+      'id' | 'status' | 'version'
+    >;
+    readonly published: boolean;
+    readonly template: Pick<ApprovalTemplateRecord, 'currentVersionId' | 'id'>;
+    readonly templateVersion: VersionJsonRecord;
+  };
+}
+
+export interface ComposeApprovalTemplateWithFormResult {
+  readonly formDefinitionId: string;
+  readonly formDefinitionVersionId: string;
+  readonly published: boolean;
+  readonly templateId: string;
+  readonly templateVersion: ApprovalTemplateVersionRecord;
 }
 
 interface VersionJsonRecord extends Omit<
@@ -731,6 +755,104 @@ export async function dryRunApprovalWorkflow({
   );
 
   return data.dryRunApprovalWorkflow;
+}
+
+export async function composeApprovalTemplateWithForm({
+  category,
+  categoryId,
+  formDefinitionId,
+  formDescription,
+  formName,
+  initiatorPolicyCel,
+  notificationConfig,
+  publish,
+  schema,
+  slaDefaults,
+  templateDescription,
+  templateId,
+  templateName,
+  uiSchema,
+  workflowDefinition,
+}: {
+  readonly category: string | null;
+  readonly categoryId: string | null;
+  readonly formDefinitionId: string | null;
+  readonly formDescription: string | null;
+  readonly formName: string;
+  readonly initiatorPolicyCel: string | null;
+  readonly notificationConfig: Readonly<Record<string, unknown>> | null;
+  readonly publish: boolean;
+  readonly schema: FormDefinitionSchema;
+  readonly slaDefaults: Readonly<Record<string, unknown>> | null;
+  readonly templateDescription: string | null;
+  readonly templateId: string | null;
+  readonly templateName: string;
+  readonly uiSchema: FormUiSchema;
+  readonly workflowDefinition: WorkflowDefinition;
+}): Promise<ComposeApprovalTemplateWithFormResult> {
+  const data = await requestGraphQl<ComposeApprovalTemplateWithFormMutationData>(
+    `mutation ComposeApprovalTemplateWithForm($input: ComposeApprovalTemplateWithFormInput!) {
+      composeApprovalTemplateWithForm(input: $input) {
+        formDefinition {
+          currentVersionId
+          id
+        }
+        formDefinitionVersion {
+          id
+          status
+          version
+        }
+        published
+        template {
+          currentVersionId
+          id
+        }
+        templateVersion {
+          archivedAt
+          formDefinitionVersionId
+          id
+          initiatorPolicyCel
+          notificationConfigJson
+          publishedAt
+          slaDefaultsJson
+          status
+          updatedAt
+          version
+          workflowDefinitionJson
+        }
+      }
+    }`,
+    {
+      input: {
+        category,
+        categoryId,
+        formDefinitionId,
+        formDescription,
+        formName,
+        initiatorPolicyCel,
+        notificationConfigJson: notificationConfig
+          ? JSON.stringify(notificationConfig)
+          : null,
+        publish,
+        schemaJson: JSON.stringify(schema),
+        slaDefaultsJson: slaDefaults ? JSON.stringify(slaDefaults) : null,
+        templateDescription,
+        templateId,
+        templateName,
+        uiSchemaJson: JSON.stringify(uiSchema),
+        workflowDefinitionJson: JSON.stringify(workflowDefinition),
+      },
+    },
+  );
+  const result = data.composeApprovalTemplateWithForm;
+
+  return {
+    formDefinitionId: result.formDefinition.id,
+    formDefinitionVersionId: result.formDefinitionVersion.id,
+    published: result.published,
+    templateId: result.template.id,
+    templateVersion: parseVersionJson(result.templateVersion),
+  };
 }
 
 async function readFormDefinitionVersions(
