@@ -27,7 +27,6 @@ import styles from './templates.module.scss';
 import { formatDateTime } from '../../lib/format-date-time';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
-import { TemplateCategoryOption } from './template-name-modal';
 import {
   ApprovalTemplateListStatus,
   ApprovalTemplateRecord,
@@ -48,6 +47,12 @@ const TEMPLATE_STATUS_TABS: readonly {
 ];
 
 const TEMPLATE_CATEGORY_PAGE_SIZE = 100;
+
+export interface TemplateCategoryOption {
+  readonly categoryId: string | null;
+  readonly id: string;
+  readonly name: string;
+}
 
 type TemplateStatusTabKey = 'ALL' | ApprovalTemplateListStatus;
 
