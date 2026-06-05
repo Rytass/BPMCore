@@ -32,6 +32,51 @@ export type TaskDecisionAction =
   | 'RETURNED'
   | 'TRANSFERRED';
 
+export type AdhocDirectiveType =
+  | 'COMPLETION_NOTIFY'
+  | 'COUNTERSIGN'
+  | 'PRE_APPROVAL'
+  | 'STAGE_NOTIFY';
+
+export type AdhocDirectiveStatus = 'CANCELLED' | 'CONSUMED' | 'PENDING';
+
+export type AdhocTargetKind =
+  | 'MEMBER'
+  | 'ORG_UNIT_MEMBER'
+  | 'POSITION'
+  | 'WEBHOOK';
+
+export type AdhocPreApprovalRejectBehavior =
+  | 'REJECT_INSTANCE'
+  | 'RETURN_TO_ORIGIN';
+
+export interface AdhocTargetOptions {
+  readonly includeDescendants?: boolean;
+  readonly kind: AdhocTargetKind;
+  readonly memberIds?: readonly string[];
+  readonly orgUnitId?: string;
+  readonly positionId?: string;
+  readonly webhookHeaders?: Readonly<Record<string, string>>;
+  readonly webhookUrl?: string;
+}
+
+export interface AdhocDirectiveRecord {
+  readonly channels: readonly NotificationChannel[] | null;
+  readonly comment: string | null;
+  readonly consumedAt: string | null;
+  readonly createdAt: string;
+  readonly createdByMemberId: string;
+  readonly id: string;
+  readonly instanceId: string;
+  readonly onReject: AdhocPreApprovalRejectBehavior | null;
+  readonly originNodeId: string;
+  readonly originTaskId: string;
+  readonly status: AdhocDirectiveStatus;
+  readonly targetKind: AdhocTargetKind;
+  readonly targetValueJson: string;
+  readonly type: AdhocDirectiveType;
+}
+
 export interface ApprovalInstanceRecord {
   readonly completedAt: string | null;
   readonly formData: WorkflowFormData;
@@ -61,6 +106,9 @@ export type WorkflowFormData = Readonly<
 >;
 
 export interface TaskRecord {
+  readonly adhocDirectiveId: string | null;
+  readonly adhocOriginTaskId: string | null;
+  readonly adhocType: AdhocDirectiveType | null;
   readonly assigneeMemberId: string | null;
   readonly assignmentType: TaskAssignmentType;
   readonly candidateMemberIds: readonly string[];
@@ -70,6 +118,7 @@ export interface TaskRecord {
   readonly delegationChainJson: string;
   readonly id: string;
   readonly instanceId: string;
+  readonly isAdhoc: boolean;
   readonly nodeId: string;
   readonly openedAt: string | null;
   readonly originalAssigneeMemberId: string | null;
@@ -749,6 +798,9 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         workflowSnapshotJson
       }
       tasks(instanceId: $id) {
+        adhocDirectiveId
+        adhocOriginTaskId
+        adhocType
         assigneeMemberId
         assignmentType
         candidateMemberIds
@@ -758,6 +810,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         delegationChainJson
         id
         instanceId
+        isAdhoc
         nodeId
         openedAt
         originalAssigneeMemberId
@@ -801,6 +854,9 @@ export async function listInboxTasks(
   const data = await requestGraphQl<InboxTasksQueryData>(
     `query InboxTasks($assigneeMemberId: String!) {
       inboxTasks(assigneeMemberId: $assigneeMemberId) {
+        adhocDirectiveId
+        adhocOriginTaskId
+        adhocType
         assigneeMemberId
         assignmentType
         candidateMemberIds
@@ -810,6 +866,7 @@ export async function listInboxTasks(
         delegationChainJson
         id
         instanceId
+        isAdhoc
         nodeId
         openedAt
         originalAssigneeMemberId
@@ -830,6 +887,9 @@ export async function listApprovalHistoryTasks(
   const data = await requestGraphQl<ApprovalHistoryTasksQueryData>(
     `query ApprovalHistoryTasks($assigneeMemberId: String!) {
       approvalHistoryTasks(assigneeMemberId: $assigneeMemberId) {
+        adhocDirectiveId
+        adhocOriginTaskId
+        adhocType
         assigneeMemberId
         assignmentType
         candidateMemberIds
@@ -839,6 +899,7 @@ export async function listApprovalHistoryTasks(
         delegationChainJson
         id
         instanceId
+        isAdhoc
         nodeId
         openedAt
         originalAssigneeMemberId
@@ -895,10 +956,14 @@ function normalizeTaskRecords(
 ): readonly TaskRecord[] {
   return tasks.map((task) => ({
     ...task,
+    adhocDirectiveId: task.adhocDirectiveId ?? null,
+    adhocOriginTaskId: task.adhocOriginTaskId ?? null,
+    adhocType: task.adhocType ?? null,
     assignmentType: task.assignmentType ?? 'DIRECT_MEMBER',
     candidateMemberIds: task.candidateMemberIds ?? [],
     decisionPolicySnapshotJson:
       task.decisionPolicySnapshotJson ?? JSON.stringify({ type: 'SINGLE' }),
+    isAdhoc: task.isAdhoc ?? false,
   }));
 }
 
@@ -1616,6 +1681,220 @@ export async function resubmitApprovalInstance({
       },
     },
   );
+}
+
+const ADHOC_DIRECTIVE_FIELDS = `
+  channels
+  comment
+  consumedAt
+  createdAt
+  createdByMemberId
+  id
+  instanceId
+  onReject
+  originNodeId
+  originTaskId
+  status
+  targetKind
+  targetValueJson
+  type
+`;
+
+const ADHOC_TASK_FIELDS = `
+  adhocDirectiveId
+  adhocOriginTaskId
+  adhocType
+  assigneeMemberId
+  assignmentType
+  candidateMemberIds
+  completedAt
+  createdAt
+  decisionPolicySnapshotJson
+  delegationChainJson
+  id
+  instanceId
+  isAdhoc
+  nodeId
+  openedAt
+  originalAssigneeMemberId
+  slaDueAt
+  status
+  tokenId
+`;
+
+interface RequestAdhocCountersignMutationData {
+  readonly requestAdhocCountersign: AdhocDirectiveRecord;
+}
+
+interface RequestAdhocPreApprovalMutationData {
+  readonly requestAdhocPreApproval: TaskRecord;
+}
+
+interface ConfigureAdhocStageNotificationMutationData {
+  readonly configureAdhocStageNotification: AdhocDirectiveRecord;
+}
+
+interface ConfigureAdhocCompletionNotificationMutationData {
+  readonly configureAdhocCompletionNotification: AdhocDirectiveRecord;
+}
+
+interface CancelAdhocDirectiveMutationData {
+  readonly cancelAdhocDirective: AdhocDirectiveRecord;
+}
+
+interface AdhocDirectivesQueryData {
+  readonly adhocDirectives: readonly AdhocDirectiveRecord[];
+}
+
+function buildAdhocTargetInput(
+  target: AdhocTargetOptions,
+): Readonly<Record<string, unknown>> {
+  return {
+    includeDescendants: target.includeDescendants ?? null,
+    kind: target.kind,
+    memberIds: target.memberIds ? [...target.memberIds] : null,
+    orgUnitId: target.orgUnitId ?? null,
+    positionId: target.positionId ?? null,
+    webhookHeadersJson: target.webhookHeaders
+      ? JSON.stringify(target.webhookHeaders)
+      : null,
+    webhookUrl: target.webhookUrl ?? null,
+  };
+}
+
+export async function requestAdhocCountersign({
+  comment = null,
+  target,
+  taskId,
+}: {
+  readonly comment?: string | null;
+  readonly target: AdhocTargetOptions;
+  readonly taskId: string;
+}): Promise<AdhocDirectiveRecord> {
+  const data = await requestGraphQl<RequestAdhocCountersignMutationData>(
+    `mutation RequestAdhocCountersign($taskId: ID!, $target: AdhocTargetInput!, $comment: String) {
+      requestAdhocCountersign(taskId: $taskId, target: $target, comment: $comment) {
+        ${ADHOC_DIRECTIVE_FIELDS}
+      }
+    }`,
+    { comment, target: buildAdhocTargetInput(target), taskId },
+  );
+
+  return data.requestAdhocCountersign;
+}
+
+export async function requestAdhocPreApproval({
+  comment = null,
+  onReject,
+  target,
+  taskId,
+}: {
+  readonly comment?: string | null;
+  readonly onReject: AdhocPreApprovalRejectBehavior;
+  readonly target: AdhocTargetOptions;
+  readonly taskId: string;
+}): Promise<TaskRecord> {
+  const data = await requestGraphQl<RequestAdhocPreApprovalMutationData>(
+    `mutation RequestAdhocPreApproval($taskId: ID!, $target: AdhocTargetInput!, $onReject: AdhocPreApprovalRejectBehavior!, $comment: String) {
+      requestAdhocPreApproval(taskId: $taskId, target: $target, onReject: $onReject, comment: $comment) {
+        ${ADHOC_TASK_FIELDS}
+      }
+    }`,
+    {
+      comment,
+      onReject,
+      target: buildAdhocTargetInput(target),
+      taskId,
+    },
+  );
+
+  return data.requestAdhocPreApproval;
+}
+
+export async function configureAdhocStageNotification({
+  channels = null,
+  target,
+  taskId,
+}: {
+  readonly channels?: readonly NotificationChannel[] | null;
+  readonly target: AdhocTargetOptions;
+  readonly taskId: string;
+}): Promise<AdhocDirectiveRecord> {
+  const data =
+    await requestGraphQl<ConfigureAdhocStageNotificationMutationData>(
+      `mutation ConfigureAdhocStageNotification($taskId: ID!, $input: AdhocNotificationInput!) {
+        configureAdhocStageNotification(taskId: $taskId, input: $input) {
+          ${ADHOC_DIRECTIVE_FIELDS}
+        }
+      }`,
+      {
+        input: {
+          channels: channels ? [...channels] : null,
+          target: buildAdhocTargetInput(target),
+        },
+        taskId,
+      },
+    );
+
+  return data.configureAdhocStageNotification;
+}
+
+export async function configureAdhocCompletionNotification({
+  channels = null,
+  target,
+  taskId,
+}: {
+  readonly channels?: readonly NotificationChannel[] | null;
+  readonly target: AdhocTargetOptions;
+  readonly taskId: string;
+}): Promise<AdhocDirectiveRecord> {
+  const data =
+    await requestGraphQl<ConfigureAdhocCompletionNotificationMutationData>(
+      `mutation ConfigureAdhocCompletionNotification($taskId: ID!, $input: AdhocNotificationInput!) {
+        configureAdhocCompletionNotification(taskId: $taskId, input: $input) {
+          ${ADHOC_DIRECTIVE_FIELDS}
+        }
+      }`,
+      {
+        input: {
+          channels: channels ? [...channels] : null,
+          target: buildAdhocTargetInput(target),
+        },
+        taskId,
+      },
+    );
+
+  return data.configureAdhocCompletionNotification;
+}
+
+export async function cancelAdhocDirective(
+  directiveId: string,
+): Promise<AdhocDirectiveRecord> {
+  const data = await requestGraphQl<CancelAdhocDirectiveMutationData>(
+    `mutation CancelAdhocDirective($directiveId: ID!) {
+      cancelAdhocDirective(directiveId: $directiveId) {
+        ${ADHOC_DIRECTIVE_FIELDS}
+      }
+    }`,
+    { directiveId },
+  );
+
+  return data.cancelAdhocDirective;
+}
+
+export async function listAdhocDirectives(
+  instanceId: string,
+): Promise<readonly AdhocDirectiveRecord[]> {
+  const data = await requestGraphQl<AdhocDirectivesQueryData>(
+    `query AdhocDirectives($instanceId: String!) {
+      adhocDirectives(instanceId: $instanceId) {
+        ${ADHOC_DIRECTIVE_FIELDS}
+      }
+    }`,
+    { instanceId },
+  );
+
+  return data.adhocDirectives;
 }
 
 export function readApprovalInstanceCaseTitle(
