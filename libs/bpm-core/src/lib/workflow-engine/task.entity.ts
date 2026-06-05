@@ -5,6 +5,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { AdhocDirectiveTypeEnum } from './adhoc.enums';
 import {
   TaskAssignmentTypeEnum,
   TaskStatusEnum,
@@ -57,6 +58,22 @@ export class TaskEntity {
   @Column('timestamptz', { name: 'sla_due_at', nullable: true })
   @Field(() => Date, { nullable: true })
   slaDueAt!: Date | null;
+
+  @Column('boolean', { default: false, name: 'is_adhoc' })
+  @Field()
+  isAdhoc!: boolean;
+
+  @Column('text', { name: 'adhoc_type', nullable: true })
+  @Field(() => AdhocDirectiveTypeEnum, { nullable: true })
+  adhocType!: AdhocDirectiveTypeEnum | null;
+
+  @Column('uuid', { name: 'adhoc_origin_task_id', nullable: true })
+  @Field(() => ID, { nullable: true })
+  adhocOriginTaskId!: string | null;
+
+  @Column('uuid', { name: 'adhoc_directive_id', nullable: true })
+  @Field(() => ID, { nullable: true })
+  adhocDirectiveId!: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   @Field()

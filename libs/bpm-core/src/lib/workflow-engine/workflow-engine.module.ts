@@ -13,6 +13,7 @@ import { MembershipEntity } from '../organization/membership.entity';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { ActivityLogEntity } from './activity-log.entity';
+import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -37,6 +38,7 @@ export interface WorkflowEngineModuleOptions
     SignatureModule,
     TypeOrmModule.forFeature([
       ActivityLogEntity,
+      AdhocDirectiveEntity,
       ApprovalInstanceEntity,
       ApprovalTemplateEntity,
       ApprovalTemplateVersionEntity,

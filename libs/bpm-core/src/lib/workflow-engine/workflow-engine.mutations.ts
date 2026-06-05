@@ -1,16 +1,24 @@
-import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { Args, ID, Mutation, Resolver } from '@nestjs/graphql';
 import {
   BPMAdminOnly,
   BPMAuthenticated,
   BPMCurrentMemberId,
 } from '../bpm-auth';
+import { AdhocDirectiveEntity } from './adhoc-directive.entity';
+import {
+  AdhocDirectiveTypeEnum,
+  AdhocPreApprovalRejectBehaviorEnum,
+} from './adhoc.enums';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { AdhocNotificationInput } from './dto/adhoc-notification.input';
+import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { TaskDecisionEntity } from './task-decision.entity';
+import { TaskEntity } from './task.entity';
 import { WorkflowDryRunResultObject } from './workflow-dry-run.object';
 import { WorkflowEngineService } from './workflow-engine.service';
 
@@ -81,5 +89,81 @@ export class WorkflowEngineMutations {
     return Promise.resolve(
       this.workflowEngineService.dryRunApprovalWorkflow(input),
     );
+  }
+
+  @Mutation(() => AdhocDirectiveEntity)
+  async requestAdhocCountersign(
+    @Args('taskId', { type: () => ID }) taskId: string,
+    @Args('target') target: AdhocTargetInput,
+    @Args('comment', { nullable: true, type: () => String })
+    comment: string | null,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<AdhocDirectiveEntity> {
+    return this.workflowEngineService.requestAdhocCountersign({
+      comment,
+      requestedByMemberId: currentMemberId,
+      target,
+      taskId,
+    });
+  }
+
+  @Mutation(() => TaskEntity)
+  async requestAdhocPreApproval(
+    @Args('taskId', { type: () => ID }) taskId: string,
+    @Args('target') target: AdhocTargetInput,
+    @Args('onReject', { type: () => AdhocPreApprovalRejectBehaviorEnum })
+    onReject: AdhocPreApprovalRejectBehaviorEnum,
+    @Args('comment', { nullable: true, type: () => String })
+    comment: string | null,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<TaskEntity> {
+    return this.workflowEngineService.requestAdhocPreApproval({
+      comment,
+      onReject,
+      requestedByMemberId: currentMemberId,
+      target,
+      taskId,
+    });
+  }
+
+  @Mutation(() => AdhocDirectiveEntity)
+  async configureAdhocStageNotification(
+    @Args('taskId', { type: () => ID }) taskId: string,
+    @Args('input') input: AdhocNotificationInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<AdhocDirectiveEntity> {
+    return this.workflowEngineService.configureAdhocNotification({
+      channels: input.channels,
+      requestedByMemberId: currentMemberId,
+      target: input.target,
+      taskId,
+      type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+    });
+  }
+
+  @Mutation(() => AdhocDirectiveEntity)
+  async configureAdhocCompletionNotification(
+    @Args('taskId', { type: () => ID }) taskId: string,
+    @Args('input') input: AdhocNotificationInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<AdhocDirectiveEntity> {
+    return this.workflowEngineService.configureAdhocNotification({
+      channels: input.channels,
+      requestedByMemberId: currentMemberId,
+      target: input.target,
+      taskId,
+      type: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+    });
+  }
+
+  @Mutation(() => AdhocDirectiveEntity)
+  async cancelAdhocDirective(
+    @Args('directiveId', { type: () => ID }) directiveId: string,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<AdhocDirectiveEntity> {
+    return this.workflowEngineService.cancelAdhocDirective({
+      cancelledByMemberId: currentMemberId,
+      directiveId,
+    });
   }
 }

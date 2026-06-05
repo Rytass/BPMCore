@@ -17,6 +17,7 @@ import {
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -42,7 +43,10 @@ import {
   NotificationService,
 } from '../notification/notification.service';
 import { NotificationEntity } from '../notification/notification.entity';
-import { NotificationResolutionEnum } from '../notification/notification.enums';
+import {
+  NotificationChannelEnum,
+  NotificationResolutionEnum,
+} from '../notification/notification.enums';
 import { SignatureService } from '../signature/signature.service';
 import { ConditionService } from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
@@ -59,6 +63,14 @@ import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.inp
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { ActivityLogEntity } from './activity-log.entity';
+import { AdhocDirectiveEntity } from './adhoc-directive.entity';
+import {
+  AdhocDirectiveStatusEnum,
+  AdhocDirectiveTypeEnum,
+  AdhocPreApprovalRejectBehaviorEnum,
+  AdhocTargetKindEnum,
+} from './adhoc.enums';
+import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -124,6 +136,24 @@ interface RuntimeTaskCandidate {
   readonly sourceType: ApproverResolver['type'];
 }
 
+type AdhocTargetValue = {
+  readonly includeDescendants?: boolean;
+  readonly kind: AdhocTargetKindEnum;
+  readonly memberIds?: readonly string[];
+  readonly orgUnitId?: string;
+  readonly positionId?: string;
+  readonly webhookHeaders?: Readonly<Record<string, string>>;
+  readonly webhookUrl?: string;
+};
+
+type AdhocStageOutcome = 'APPROVED' | 'REJECTED' | 'RETURNED';
+
+interface AdhocOperationContext {
+  readonly instance: ApprovalInstanceEntity;
+  readonly node: UserTaskNode;
+  readonly task: TaskEntity;
+}
+
 interface ListApprovalInstancesOptions {
   readonly page?: number;
   readonly pageSize?: number;
@@ -171,6 +201,8 @@ export class WorkflowEngineService {
     private readonly notificationRepository: Repository<NotificationEntity>,
     @InjectRepository(ActivityLogEntity)
     private readonly activityLogRepository: Repository<ActivityLogEntity>,
+    @InjectRepository(AdhocDirectiveEntity)
+    private readonly adhocDirectiveRepository: Repository<AdhocDirectiveEntity>,
     @InjectRepository(ApprovalTemplateEntity)
     private readonly approvalTemplateRepository: Repository<ApprovalTemplateEntity>,
     @InjectRepository(ApprovalTemplateVersionEntity)
@@ -383,30 +415,8 @@ export class WorkflowEngineService {
           throw new ConflictException(`Task ${task.id} is not pending`);
         }
 
-        const taskCandidates = await taskCandidateRepository.find({
-          where: { taskId: task.id },
-        });
-        const actorCandidate = taskCandidates.find(
-          (candidate) => candidate.memberId === input.decidedByMemberId,
-        );
-        const isDirectAssignee =
-          task.assigneeMemberId === input.decidedByMemberId;
-
-        if (!isDirectAssignee && !actorCandidate) {
-          throw new ConflictException(
-            `Task ${task.id} is assigned to another member`,
-          );
-        }
-
-        if (
-          actorCandidate &&
-          actorCandidate.status !== TaskCandidateStatusEnum.PENDING &&
-          actorCandidate.status !== TaskCandidateStatusEnum.CLAIMED
-        ) {
-          throw new ConflictException(
-            `Task ${task.id} was already decided by this member`,
-          );
-        }
+        const { actorCandidate, taskCandidates } =
+          await this.readTaskActorContext(manager, task, input.decidedByMemberId);
 
         if (
           input.action !== TaskDecisionActionEnum.APPROVED &&
@@ -597,6 +607,20 @@ export class WorkflowEngineService {
           input.action === TaskDecisionActionEnum.APPROVED &&
           shouldCompleteTask
         ) {
+          // Ad-hoc gate: the token may only advance once every task bound to
+          // this token+node (the original task plus any ad-hoc countersign /
+          // pre-approval tasks) has reached a terminal state. Nodes without
+          // ad-hoc tasks keep the original single-task behaviour.
+          if (
+            await this.hasOpenTasksForTokenNode(
+              manager,
+              claimedTask.tokenId,
+              claimedTask.nodeId,
+            )
+          ) {
+            return decision;
+          }
+
           const token = await tokenRepository.findOne({
             where: { id: claimedTask.tokenId },
           });
@@ -619,6 +643,12 @@ export class WorkflowEngineService {
             status: WorkflowTokenStatusEnum.ACTIVE,
           });
 
+          await this.dispatchAdhocStageNotifications(
+            manager,
+            instance,
+            claimedTask.nodeId,
+            'APPROVED',
+          );
           await this.advanceTokenToOutgoingNodes(
             manager,
             instance,
@@ -646,6 +676,18 @@ export class WorkflowEngineService {
             decidedAt,
           );
 
+          return decision;
+        }
+
+        if (
+          await this.handleAdhocPreApprovalRejection(
+            manager,
+            instance,
+            completedTask,
+            decidedAt,
+            decisionComment,
+          )
+        ) {
           return decision;
         }
 
@@ -709,6 +751,13 @@ export class WorkflowEngineService {
           completedAt: cancelledAt,
           state: ApprovalInstanceStateEnum.CANCELLED,
         });
+
+        await this.dispatchAdhocCompletionNotifications(
+          manager,
+          cancelledInstance,
+          ApprovalInstanceStateEnum.CANCELLED,
+        );
+        await this.cancelPendingAdhocDirectives(manager, instance.id, null);
 
         await manager.getRepository(ActivityLogEntity).save(
           manager.getRepository(ActivityLogEntity).create({
@@ -813,6 +862,953 @@ export class WorkflowEngineService {
 
         return runtimeInstance;
       },
+    );
+  }
+
+  async requestAdhocCountersign({
+    comment,
+    requestedByMemberId,
+    target,
+    taskId,
+  }: {
+    readonly comment?: string | null;
+    readonly requestedByMemberId: string;
+    readonly target: AdhocTargetInput;
+    readonly taskId: string;
+  }): Promise<AdhocDirectiveEntity> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<AdhocDirectiveEntity> => {
+        const { instance, node, task } = await this.loadAdhocOperationContext(
+          manager,
+          taskId,
+          requestedByMemberId,
+          { requireAllowAddSigner: true },
+        );
+        const targetValue = buildAdhocTargetValue(target);
+
+        // Rejects WEBHOOK targets — countersigners must be members.
+        buildAdhocApproverResolver(targetValue);
+
+        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+        const directive = await directiveRepository.save(
+          directiveRepository.create({
+            channels: null,
+            comment: comment?.trim() || null,
+            consumedAt: null,
+            createdByMemberId: requestedByMemberId,
+            instanceId: instance.id,
+            onReject: null,
+            originNodeId: task.nodeId,
+            originTaskId: task.id,
+            status: AdhocDirectiveStatusEnum.PENDING,
+            targetKind: targetValue.kind,
+            targetValue: { ...targetValue },
+            type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+          }),
+        );
+
+        await this.recordAdhocDirectiveActivity(
+          manager,
+          directive,
+          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+          requestedByMemberId,
+          { nodeLabel: node.data.label },
+        );
+
+        return directive;
+      },
+    );
+  }
+
+  async requestAdhocPreApproval({
+    comment,
+    onReject,
+    requestedByMemberId,
+    target,
+    taskId,
+  }: {
+    readonly comment?: string | null;
+    readonly onReject: AdhocPreApprovalRejectBehaviorEnum;
+    readonly requestedByMemberId: string;
+    readonly target: AdhocTargetInput;
+    readonly taskId: string;
+  }): Promise<TaskEntity> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<TaskEntity> => {
+        const { instance, node, task } = await this.loadAdhocOperationContext(
+          manager,
+          taskId,
+          requestedByMemberId,
+          { requireAllowAddSigner: true },
+        );
+        const targetValue = buildAdhocTargetValue(target);
+
+        // Rejects WEBHOOK targets — pre-approvers must be members.
+        buildAdhocApproverResolver(targetValue);
+
+        const now = new Date();
+        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+        const directive = await directiveRepository.save(
+          directiveRepository.create({
+            channels: null,
+            comment: comment?.trim() || null,
+            consumedAt: now,
+            createdByMemberId: requestedByMemberId,
+            instanceId: instance.id,
+            onReject,
+            originNodeId: task.nodeId,
+            originTaskId: task.id,
+            status: AdhocDirectiveStatusEnum.CONSUMED,
+            targetKind: targetValue.kind,
+            targetValue: { ...targetValue },
+            type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          }),
+        );
+        const adhocTask = await this.createAdhocTaskForDirective(
+          manager,
+          instance,
+          task.tokenId,
+          node,
+          directive,
+          now,
+        );
+
+        await this.recordAdhocDirectiveActivity(
+          manager,
+          directive,
+          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+          requestedByMemberId,
+          { adhocTaskId: adhocTask.id, nodeLabel: node.data.label, onReject },
+        );
+
+        return adhocTask;
+      },
+    );
+  }
+
+  async configureAdhocNotification({
+    channels,
+    requestedByMemberId,
+    target,
+    taskId,
+    type,
+  }: {
+    readonly channels?: readonly NotificationChannelEnum[] | null;
+    readonly requestedByMemberId: string;
+    readonly target: AdhocTargetInput;
+    readonly taskId: string;
+    readonly type:
+      | AdhocDirectiveTypeEnum.COMPLETION_NOTIFY
+      | AdhocDirectiveTypeEnum.STAGE_NOTIFY;
+  }): Promise<AdhocDirectiveEntity> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<AdhocDirectiveEntity> => {
+        const { instance, node, task } = await this.loadAdhocOperationContext(
+          manager,
+          taskId,
+          requestedByMemberId,
+          { requireAllowAddSigner: false },
+        );
+        const targetValue = buildAdhocTargetValue(target);
+        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+        const directive = await directiveRepository.save(
+          directiveRepository.create({
+            channels: channels?.length ? [...channels] : null,
+            comment: null,
+            consumedAt: null,
+            createdByMemberId: requestedByMemberId,
+            instanceId: instance.id,
+            onReject: null,
+            originNodeId: task.nodeId,
+            originTaskId: task.id,
+            status: AdhocDirectiveStatusEnum.PENDING,
+            targetKind: targetValue.kind,
+            targetValue: { ...targetValue },
+            type,
+          }),
+        );
+
+        await this.recordAdhocDirectiveActivity(
+          manager,
+          directive,
+          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+          requestedByMemberId,
+          { nodeLabel: node.data.label },
+        );
+
+        return directive;
+      },
+    );
+  }
+
+  async cancelAdhocDirective({
+    cancelledByMemberId,
+    directiveId,
+  }: {
+    readonly cancelledByMemberId: string;
+    readonly directiveId: string;
+  }): Promise<AdhocDirectiveEntity> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<AdhocDirectiveEntity> => {
+        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+        const directive = await directiveRepository.findOne({
+          where: { id: directiveId },
+        });
+
+        if (!directive) {
+          throw new NotFoundException(
+            `Ad-hoc directive ${directiveId} was not found`,
+          );
+        }
+
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          directive.instanceId,
+        ]);
+
+        if (directive.createdByMemberId !== cancelledByMemberId) {
+          throw new ConflictException(
+            `Ad-hoc directive ${directive.id} can only be cancelled by its creator`,
+          );
+        }
+
+        if (directive.status !== AdhocDirectiveStatusEnum.PENDING) {
+          throw new ConflictException(
+            `Ad-hoc directive ${directive.id} is not pending`,
+          );
+        }
+
+        const cancelledDirective = await directiveRepository.save({
+          ...directive,
+          status: AdhocDirectiveStatusEnum.CANCELLED,
+        });
+
+        await this.recordAdhocDirectiveActivity(
+          manager,
+          cancelledDirective,
+          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+          cancelledByMemberId,
+        );
+
+        return cancelledDirective;
+      },
+    );
+  }
+
+  async listAdhocDirectives(
+    instanceId: string,
+    scope?: WorkflowReadScope,
+  ): Promise<readonly AdhocDirectiveEntity[]> {
+    await this.getApprovalInstance(instanceId, scope);
+
+    return this.adhocDirectiveRepository.find({
+      order: { createdAt: 'ASC' },
+      where: { instanceId },
+    });
+  }
+
+  private async readTaskActorContext(
+    manager: EntityManager,
+    task: TaskEntity,
+    actingMemberId: string,
+  ): Promise<{
+    readonly actorCandidate: TaskCandidateEntity | null;
+    readonly taskCandidates: readonly TaskCandidateEntity[];
+  }> {
+    const taskCandidates = await manager
+      .getRepository(TaskCandidateEntity)
+      .find({ where: { taskId: task.id } });
+    const actorCandidate =
+      taskCandidates.find(
+        (candidate) => candidate.memberId === actingMemberId,
+      ) ?? null;
+    const isDirectAssignee = task.assigneeMemberId === actingMemberId;
+
+    if (!isDirectAssignee && !actorCandidate) {
+      throw new ConflictException(
+        `Task ${task.id} is assigned to another member`,
+      );
+    }
+
+    if (
+      actorCandidate &&
+      actorCandidate.status !== TaskCandidateStatusEnum.PENDING &&
+      actorCandidate.status !== TaskCandidateStatusEnum.CLAIMED
+    ) {
+      throw new ConflictException(
+        `Task ${task.id} was already decided by this member`,
+      );
+    }
+
+    return { actorCandidate, taskCandidates };
+  }
+
+  private async loadAdhocOperationContext(
+    manager: EntityManager,
+    taskId: string,
+    actingMemberId: string,
+    options: { readonly requireAllowAddSigner: boolean },
+  ): Promise<AdhocOperationContext> {
+    const task = await manager
+      .getRepository(TaskEntity)
+      .findOne({ where: { id: taskId } });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} was not found`);
+    }
+
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      task.instanceId,
+    ]);
+
+    if (
+      task.status !== TaskStatusEnum.PENDING &&
+      task.status !== TaskStatusEnum.IN_PROGRESS
+    ) {
+      throw new ConflictException(`Task ${task.id} is not pending`);
+    }
+
+    await this.readTaskActorContext(manager, task, actingMemberId);
+
+    const instance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .findOne({ where: { id: task.instanceId } });
+
+    if (!instance) {
+      throw new NotFoundException(
+        `Approval instance ${task.instanceId} was not found`,
+      );
+    }
+
+    if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
+      throw new ConflictException(
+        `Approval instance ${instance.id} is not running`,
+      );
+    }
+
+    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+
+    if (node.type !== 'userTask') {
+      throw new ConflictException(
+        `Task ${task.id} is not bound to a user task node`,
+      );
+    }
+
+    if (options.requireAllowAddSigner && !node.data.allowAddSigner) {
+      throw new ForbiddenException(
+        `簽核節點「${node.data.label}」does not allow ad-hoc signers`,
+      );
+    }
+
+    return { instance, node, task };
+  }
+
+  private async recordAdhocDirectiveActivity(
+    manager: EntityManager,
+    directive: AdhocDirectiveEntity,
+    eventType: ActivityLogEventTypeEnum,
+    actorMemberId: string | null,
+    extraPayload: Readonly<Record<string, unknown>> = {},
+  ): Promise<void> {
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId,
+        eventType,
+        instanceId: directive.instanceId,
+        nodeId: directive.originNodeId,
+        payload: {
+          ...extraPayload,
+          directiveId: directive.id,
+          directiveStatus: directive.status,
+          directiveType: directive.type,
+          targetKind: directive.targetKind,
+        },
+        taskId: directive.originTaskId,
+      }),
+    );
+  }
+
+  private async createAdhocTaskForDirective(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    tokenId: string,
+    node: UserTaskNode,
+    directive: AdhocDirectiveEntity,
+    now: Date,
+  ): Promise<TaskEntity> {
+    const taskRepository = manager.getRepository(TaskEntity);
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const label =
+      directive.type === AdhocDirectiveTypeEnum.COUNTERSIGN
+        ? '臨時會簽'
+        : '臨時加簽';
+    const resolvedCandidates = await this.resolveApproverResolver(
+      manager,
+      instance,
+      buildAdhocApproverResolver(readAdhocTargetValue(directive)),
+      `${label}「${node.data.label}」`,
+    );
+    const candidates = await this.applyDelegationToResolvedCandidates(
+      instance,
+      node.id,
+      resolvedCandidates,
+    );
+
+    if (candidates.length === 0) {
+      throw new ConflictException(
+        `${label}「${node.data.label}」 did not resolve to any member id`,
+      );
+    }
+
+    const primaryCandidate = candidates[0];
+    const task = await taskRepository.save(
+      taskRepository.create({
+        adhocDirectiveId: directive.id,
+        adhocOriginTaskId: directive.originTaskId,
+        adhocType: directive.type,
+        assigneeMemberId:
+          candidates.length === 1 ? primaryCandidate.memberId : null,
+        assignmentType:
+          candidates.length === 1
+            ? TaskAssignmentTypeEnum.DIRECT_MEMBER
+            : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        completedAt: null,
+        createdAt: now,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+        delegationChain:
+          candidates.length === 1 ? primaryCandidate.delegationChain : [],
+        instanceId: instance.id,
+        isAdhoc: true,
+        nodeId: node.id,
+        openedAt: null,
+        originalAssigneeMemberId:
+          candidates.length === 1 ? primaryCandidate.originalMemberId : null,
+        slaDueAt: null,
+        status: TaskStatusEnum.PENDING,
+        tokenId,
+      }),
+    );
+    const savedCandidates = await taskCandidateRepository.save(
+      candidates.map((candidate) =>
+        taskCandidateRepository.create({
+          claimedAt: null,
+          createdAt: now,
+          decidedAt: null,
+          delegationChain: candidate.delegationChain,
+          memberId: candidate.memberId,
+          originalMemberId: candidate.originalMemberId,
+          sourceType: candidate.sourceType,
+          status: TaskCandidateStatusEnum.PENDING,
+          taskId: task.id,
+        }),
+      ),
+    );
+    task.candidateMemberIds = savedCandidates.map(
+      (candidate) => candidate.memberId,
+    );
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: directive.createdByMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        instanceId: instance.id,
+        nodeId: node.id,
+        payload: {
+          adhocDirectiveId: directive.id,
+          adhocType: directive.type,
+          assigneeMemberId: task.assigneeMemberId,
+          assignmentType: task.assignmentType,
+          candidateMemberIds: savedCandidates.map(
+            (candidate) => candidate.memberId,
+          ),
+          originTaskId: directive.originTaskId,
+          tokenId,
+        },
+        taskId: task.id,
+      }),
+    );
+    await savedCandidates.reduce<Promise<void>>(
+      async (previous, candidate): Promise<void> => {
+        await previous;
+        await this.notificationService.createTaskAssignedNotification({
+          instance,
+          manager,
+          node,
+          task: Object.assign(new TaskEntity(), task, {
+            assigneeMemberId: candidate.memberId,
+            delegationChain: candidate.delegationChain,
+            originalAssigneeMemberId: candidate.originalMemberId,
+          }),
+        });
+      },
+      Promise.resolve(),
+    );
+
+    return task;
+  }
+
+  private async spawnCountersignTasksForNode(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    token: WorkflowTokenEntity,
+    node: UserTaskNode,
+    now: Date,
+  ): Promise<void> {
+    const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+    const directives = await directiveRepository.find({
+      order: { createdAt: 'ASC' },
+      where: {
+        instanceId: instance.id,
+        status: AdhocDirectiveStatusEnum.PENDING,
+        type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+      },
+    });
+
+    if (directives.length === 0) {
+      return;
+    }
+
+    await directives.reduce<Promise<void>>(
+      async (previous, directive): Promise<void> => {
+        await previous;
+
+        try {
+          await this.createAdhocTaskForDirective(
+            manager,
+            instance,
+            token.id,
+            node,
+            directive,
+            now,
+          );
+          await directiveRepository.save({
+            ...directive,
+            consumedAt: now,
+            status: AdhocDirectiveStatusEnum.CONSUMED,
+          });
+        } catch (error: unknown) {
+          // A countersign target that no longer resolves must not block the
+          // main flow — cancel the directive and record the failure.
+          await directiveRepository.save({
+            ...directive,
+            status: AdhocDirectiveStatusEnum.CANCELLED,
+          });
+          await this.recordAdhocDirectiveActivity(
+            manager,
+            directive,
+            ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+            null,
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Countersign target resolution failed',
+            },
+          );
+        }
+      },
+      Promise.resolve(),
+    );
+  }
+
+  private async hasOpenTasksForTokenNode(
+    manager: EntityManager,
+    tokenId: string,
+    nodeId: string,
+  ): Promise<boolean> {
+    const tasks = await manager.getRepository(TaskEntity).find({
+      where: { nodeId, tokenId },
+    });
+
+    return tasks.some(
+      (task) =>
+        task.tokenId === tokenId &&
+        task.nodeId === nodeId &&
+        (task.status === TaskStatusEnum.PENDING ||
+          task.status === TaskStatusEnum.IN_PROGRESS),
+    );
+  }
+
+  private async handleAdhocPreApprovalRejection(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    task: TaskEntity,
+    decidedAt: Date,
+    decisionComment: string | null,
+  ): Promise<boolean> {
+    if (
+      !task.isAdhoc ||
+      task.adhocType !== AdhocDirectiveTypeEnum.PRE_APPROVAL ||
+      !task.adhocDirectiveId
+    ) {
+      return false;
+    }
+
+    const directive = await manager
+      .getRepository(AdhocDirectiveEntity)
+      .findOne({ where: { id: task.adhocDirectiveId } });
+
+    if (
+      directive?.onReject !==
+      AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN
+    ) {
+      return false;
+    }
+
+    const taskRepository = manager.getRepository(TaskEntity);
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const originTask = task.adhocOriginTaskId
+      ? await taskRepository.findOne({ where: { id: task.adhocOriginTaskId } })
+      : null;
+    const originTaskIsOpen =
+      originTask?.status === TaskStatusEnum.PENDING ||
+      originTask?.status === TaskStatusEnum.IN_PROGRESS;
+
+    // Safety: when there is nobody to hand the decision back to (origin task
+    // missing, or already closed without a resolvable assignee), fall back to
+    // the default rejection path instead of leaving the token stuck WAITING
+    // with no open task.
+    if (!originTask || (!originTaskIsOpen && !originTask.assigneeMemberId)) {
+      return false;
+    }
+
+    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+
+    if (!originTaskIsOpen && originTask.assigneeMemberId) {
+      // The origin approver already decided — reopen a fresh decision task so
+      // the stage can be re-decided after the rejected pre-approval.
+      const reopenedTask = await taskRepository.save(
+        taskRepository.create({
+          assigneeMemberId: originTask.assigneeMemberId,
+          assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+          completedAt: null,
+          createdAt: decidedAt,
+          decisionPolicySnapshot: { type: 'SINGLE' },
+          delegationChain: originTask.delegationChain,
+          instanceId: instance.id,
+          nodeId: originTask.nodeId,
+          openedAt: null,
+          originalAssigneeMemberId: originTask.originalAssigneeMemberId,
+          slaDueAt: null,
+          status: TaskStatusEnum.PENDING,
+          tokenId: originTask.tokenId,
+        }),
+      );
+
+      await taskCandidateRepository.save(
+        taskCandidateRepository.create({
+          claimedAt: null,
+          createdAt: decidedAt,
+          decidedAt: null,
+          delegationChain: originTask.delegationChain,
+          memberId: originTask.assigneeMemberId,
+          originalMemberId:
+            originTask.originalAssigneeMemberId ?? originTask.assigneeMemberId,
+          sourceType: 'DIRECT',
+          status: TaskCandidateStatusEnum.PENDING,
+          taskId: reopenedTask.id,
+        }),
+      );
+      await activityRepository.save(
+        activityRepository.create({
+          actorMemberId: task.assigneeMemberId,
+          eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+          instanceId: instance.id,
+          nodeId: originTask.nodeId,
+          payload: {
+            adhocDirectiveId: directive.id,
+            assigneeMemberId: originTask.assigneeMemberId,
+            reopenedFromTaskId: originTask.id,
+            rejectedAdhocTaskId: task.id,
+            tokenId: originTask.tokenId,
+          },
+          taskId: reopenedTask.id,
+        }),
+      );
+
+      if (node.type === 'userTask') {
+        await this.notificationService.createTaskAssignedNotification({
+          instance,
+          manager,
+          node,
+          task: reopenedTask,
+        });
+      }
+    }
+
+    const recipientMemberIds = await this.readOpenTaskRecipientMemberIds(
+      manager,
+      originTask,
+    );
+
+    if (recipientMemberIds.length > 0) {
+      await this.notificationService.createAdhocWorkflowNotifications({
+        channels: null,
+        instance,
+        manager,
+        message: `案件「${instance.title}」的臨時加簽已被拒絕${
+          decisionComment ? `：${decisionComment}` : '。'
+        }`,
+        payload: {
+          adhocTaskId: task.id,
+          directiveId: directive.id,
+          nodeId: task.nodeId,
+          originTaskId: originTask.id,
+          type: 'PRE_APPROVAL_RETURNED',
+        },
+        recipientMemberIds,
+      });
+    }
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: task.assigneeMemberId,
+        eventType: ActivityLogEventTypeEnum.ADHOC_PRE_APPROVAL_RETURNED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          comment: decisionComment,
+          directiveId: directive.id,
+          originTaskId: originTask.id,
+          rejectedAdhocTaskId: task.id,
+        },
+        taskId: task.id,
+      }),
+    );
+
+    return true;
+  }
+
+  private async readOpenTaskRecipientMemberIds(
+    manager: EntityManager,
+    task: TaskEntity,
+  ): Promise<readonly string[]> {
+    if (task.assigneeMemberId) {
+      return [task.assigneeMemberId];
+    }
+
+    const candidates = await manager
+      .getRepository(TaskCandidateEntity)
+      .find({ where: { taskId: task.id } });
+
+    return uniqueTexts(
+      candidates
+        .filter(
+          (candidate) =>
+            candidate.status === TaskCandidateStatusEnum.PENDING ||
+            candidate.status === TaskCandidateStatusEnum.CLAIMED,
+        )
+        .map((candidate) => candidate.memberId),
+    );
+  }
+
+  private async dispatchAdhocStageNotifications(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeId: string,
+    outcome: AdhocStageOutcome,
+  ): Promise<void> {
+    const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+    const directives = await directiveRepository.find({
+      order: { createdAt: 'ASC' },
+      where: {
+        instanceId: instance.id,
+        originNodeId: nodeId,
+        status: AdhocDirectiveStatusEnum.PENDING,
+        type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+      },
+    });
+
+    if (directives.length === 0) {
+      return;
+    }
+
+    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, nodeId);
+    const nodeLabel = node.data.label;
+    const outcomeLabel = readAdhocStageOutcomeLabel(outcome);
+    const consumedAt = new Date();
+
+    await directives.reduce<Promise<void>>(
+      async (previous, directive): Promise<void> => {
+        await previous;
+        await this.dispatchAdhocDirectiveNotification(
+          manager,
+          instance,
+          directive,
+          `案件「${instance.title}」的階段「${nodeLabel}」已${outcomeLabel}。`,
+          {
+            nodeId,
+            nodeLabel,
+            outcome,
+            type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+          },
+        );
+        await directiveRepository.save({
+          ...directive,
+          consumedAt,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+        });
+      },
+      Promise.resolve(),
+    );
+  }
+
+  private async dispatchAdhocCompletionNotifications(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    finalState: ApprovalInstanceStateEnum,
+  ): Promise<void> {
+    const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+    const directives = await directiveRepository.find({
+      order: { createdAt: 'ASC' },
+      where: {
+        instanceId: instance.id,
+        status: AdhocDirectiveStatusEnum.PENDING,
+        type: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+      },
+    });
+
+    if (directives.length === 0) {
+      return;
+    }
+
+    const finalStateLabel = readInstanceFinalStateLabel(finalState);
+    const consumedAt = new Date();
+
+    await directives.reduce<Promise<void>>(
+      async (previous, directive): Promise<void> => {
+        await previous;
+        await this.dispatchAdhocDirectiveNotification(
+          manager,
+          instance,
+          directive,
+          `案件「${instance.title}」已結案（${finalStateLabel}）。`,
+          {
+            finalState,
+            type: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+          },
+        );
+        await directiveRepository.save({
+          ...directive,
+          consumedAt,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+        });
+      },
+      Promise.resolve(),
+    );
+  }
+
+  private async dispatchAdhocDirectiveNotification(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    directive: AdhocDirectiveEntity,
+    message: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const targetValue = readAdhocTargetValue(directive);
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+
+    if (targetValue.kind === AdhocTargetKindEnum.WEBHOOK) {
+      const result = await executeAdhocWebhookDispatch(
+        this.serviceTaskDispatcher,
+        targetValue,
+        {
+          ...payload,
+          instanceId: instance.id,
+          instanceTitle: instance.title,
+          message,
+          triggeredAt: new Date().toISOString(),
+        },
+      );
+
+      await activityRepository.save(
+        activityRepository.create({
+          actorMemberId: null,
+          eventType: result.ok
+            ? ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED
+            : ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+          instanceId: instance.id,
+          nodeId: directive.originNodeId,
+          payload: {
+            action: 'ADHOC_WEBHOOK',
+            directiveId: directive.id,
+            error: result.error,
+            ok: result.ok,
+            status: result.status,
+            url: targetValue.webhookUrl,
+          },
+          taskId: null,
+        }),
+      );
+
+      return;
+    }
+
+    try {
+      const recipients = await this.resolveApproverResolver(
+        manager,
+        instance,
+        buildAdhocApproverResolver(targetValue),
+        '臨時通知對象',
+      );
+
+      await this.notificationService.createAdhocWorkflowNotifications({
+        channels: directive.channels,
+        instance,
+        manager,
+        message,
+        payload: { ...payload, directiveId: directive.id },
+        recipientMemberIds: recipients.map((recipient) => recipient.memberId),
+      });
+    } catch (error: unknown) {
+      // Notification target resolution must never block the workflow
+      // transition that triggered it — record the failure instead.
+      await activityRepository.save(
+        activityRepository.create({
+          actorMemberId: null,
+          eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+          instanceId: instance.id,
+          nodeId: directive.originNodeId,
+          payload: {
+            action: 'ADHOC_NOTIFY',
+            directiveId: directive.id,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Ad-hoc notification dispatch failed',
+          },
+          taskId: null,
+        }),
+      );
+    }
+  }
+
+  private async cancelPendingAdhocDirectives(
+    manager: EntityManager,
+    instanceId: string,
+    types: readonly AdhocDirectiveTypeEnum[] | null,
+  ): Promise<void> {
+    const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+    const directives = await directiveRepository.find({
+      where: {
+        instanceId,
+        status: AdhocDirectiveStatusEnum.PENDING,
+        ...(types ? { type: In([...types]) } : {}),
+      },
+    });
+
+    if (directives.length === 0) {
+      return;
+    }
+
+    await directiveRepository.save(
+      directives.map((directive) => ({
+        ...directive,
+        status: AdhocDirectiveStatusEnum.CANCELLED,
+      })),
     );
   }
 
@@ -1638,9 +2634,20 @@ export class WorkflowEngineService {
       where: { taskId: In(taskIds) },
     });
 
-    return decisions.some(
-      (decision) => decision.decidedByMemberId === memberId,
-    );
+    if (
+      decisions.some((decision) => decision.decidedByMemberId === memberId)
+    ) {
+      return true;
+    }
+
+    // Members who received any notification for this instance (e.g. ad-hoc
+    // stage / completion notify recipients, CC'd service-task recipients) may
+    // open the instance they were notified about.
+    const notification = await this.notificationRepository.findOne({
+      where: { instanceId: instance.id, recipientMemberId: memberId },
+    });
+
+    return Boolean(notification);
   }
 
   private async processActiveToken(
@@ -1763,6 +2770,12 @@ export class WorkflowEngineService {
       instance: completedInstance,
       manager,
     });
+    await this.dispatchAdhocCompletionNotifications(
+      manager,
+      completedInstance,
+      ApprovalInstanceStateEnum.APPROVED,
+    );
+    await this.cancelPendingAdhocDirectives(manager, instance.id, null);
   }
 
   private async isNodeEntryReady(
@@ -2175,6 +3188,13 @@ export class WorkflowEngineService {
           manager,
         });
       }
+
+      await this.dispatchAdhocCompletionNotifications(
+        manager,
+        completedInstance,
+        instanceState,
+      );
+      await this.cancelPendingAdhocDirectives(manager, instance.id, null);
     }
     await activityRepository.save(
       activityRepository.create({
@@ -2204,6 +3224,7 @@ export class WorkflowEngineService {
     const activityRepository = manager.getRepository(ActivityLogEntity);
     const existingTask = await taskRepository.findOne({
       where: {
+        isAdhoc: false,
         nodeId: node.id,
         tokenId: token.id,
       },
@@ -2307,6 +3328,10 @@ export class WorkflowEngineService {
       },
       Promise.resolve(),
     );
+
+    // Pending ad-hoc countersign directives attach to the next user task
+    // created after they were requested — spawn their parallel tasks now.
+    await this.spawnCountersignTasksForNode(manager, instance, token, node, now);
   }
 
   private async markTaskCandidateDecision({
@@ -2519,12 +3544,32 @@ export class WorkflowEngineService {
       node.data.approverResolver,
       `簽核節點「${node.data.label}」`,
     );
+    const uniqueCandidates = await this.applyDelegationToResolvedCandidates(
+      instance,
+      node.id,
+      resolvedCandidates,
+    );
+
+    if (uniqueCandidates.length === 0) {
+      throw new ConflictException(
+        `簽核節點「${node.data.label}」 did not resolve to any member id`,
+      );
+    }
+
+    return uniqueCandidates;
+  }
+
+  private async applyDelegationToResolvedCandidates(
+    instance: ApprovalInstanceEntity,
+    nodeId: string,
+    resolvedCandidates: readonly ResolvedApproverCandidate[],
+  ): Promise<readonly RuntimeTaskCandidate[]> {
     const context = {
       formData: instance.formData,
       initiatorMemberId: instance.initiatorMemberId,
       initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
       instanceId: instance.id,
-      nodeId: node.id,
+      nodeId,
       state: instance.state,
       templateId: instance.templateId,
       templateVersionId: instance.templateVersionId,
@@ -2548,15 +3593,8 @@ export class WorkflowEngineService {
         },
       ),
     );
-    const uniqueCandidates = uniqueRuntimeCandidates(delegatedCandidates);
 
-    if (uniqueCandidates.length === 0) {
-      throw new ConflictException(
-        `簽核節點「${node.data.label}」 did not resolve to any member id`,
-      );
-    }
-
-    return uniqueCandidates;
+    return uniqueRuntimeCandidates(delegatedCandidates);
   }
 
   private async resolveApproverResolver(
@@ -3167,34 +4205,42 @@ export class WorkflowEngineService {
     task: TaskEntity,
     rejectedAt: Date,
   ): Promise<void> {
-    const tokenRepository = manager.getRepository(WorkflowTokenEntity);
     const instanceRepository = manager.getRepository(ApprovalInstanceEntity);
-    const activeTokens = await tokenRepository.find({
-      where: { instanceId: instance.id },
+
+    // Dispatch pending ad-hoc notifications for the rejecting node before the
+    // remaining directives are cancelled by the terminal cleanup below.
+    await this.dispatchAdhocStageNotifications(
+      manager,
+      instance,
+      task.nodeId,
+      'REJECTED',
+    );
+
+    // Consume open tokens and cancel any still-open tasks (parallel branches,
+    // ad-hoc countersign / pre-approval tasks) so nothing actionable lingers
+    // on a rejected instance.
+    await this.consumeOpenRuntimeState(
+      manager,
+      instance,
+      rejectedAt,
+      TaskStatusEnum.CANCELLED,
+    );
+    await this.notificationService.supersedeInstanceTaskNotifications({
+      instanceId: instance.id,
+      manager,
     });
-    const consumedTokens = activeTokens
-      .filter(
-        (token) =>
-          token.status === WorkflowTokenStatusEnum.ACTIVE ||
-          token.status === WorkflowTokenStatusEnum.WAITING,
-      )
-      .map(
-        (token): WorkflowTokenEntity => ({
-          ...token,
-          consumedAt: rejectedAt,
-          status: WorkflowTokenStatusEnum.CONSUMED,
-        }),
-      );
 
-    if (consumedTokens.length) {
-      await tokenRepository.save(consumedTokens);
-    }
-
-    await instanceRepository.save({
+    const rejectedInstance = await instanceRepository.save({
       ...instance,
       completedAt: rejectedAt,
       state: ApprovalInstanceStateEnum.REJECTED,
     });
+    await this.dispatchAdhocCompletionNotifications(
+      manager,
+      rejectedInstance,
+      ApprovalInstanceStateEnum.REJECTED,
+    );
+    await this.cancelPendingAdhocDirectives(manager, instance.id, null);
     await manager.getRepository(ActivityLogEntity).save(
       manager.getRepository(ActivityLogEntity).create({
         actorMemberId: task.assigneeMemberId,
@@ -3229,6 +4275,19 @@ export class WorkflowEngineService {
     const instanceRepository = manager.getRepository(ApprovalInstanceEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
 
+    // The returning node's stage has ended (outcome: RETURNED) — dispatch its
+    // pending ad-hoc stage notifications, then drop flow-affecting ad-hoc
+    // directives so they cannot replay after the return/resubmit cycle.
+    await this.dispatchAdhocStageNotifications(
+      manager,
+      instance,
+      task.nodeId,
+      'RETURNED',
+    );
+    await this.cancelPendingAdhocDirectives(manager, instance.id, [
+      AdhocDirectiveTypeEnum.COUNTERSIGN,
+      AdhocDirectiveTypeEnum.PRE_APPROVAL,
+    ]);
     await this.consumeOpenRuntimeState(
       manager,
       instance,
@@ -4257,6 +5316,218 @@ async function executeWebhookServiceAction(
       status: null,
     };
   }
+}
+
+async function executeAdhocWebhookDispatch(
+  serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher,
+  target: AdhocTargetValue,
+  payload: unknown,
+): Promise<BPMWorkflowWebhookDispatchResult> {
+  if (!target.webhookUrl) {
+    return { error: 'Webhook URL is missing', ok: false, status: null };
+  }
+
+  try {
+    return await serviceTaskDispatcher.dispatchWebhook({
+      headers: target.webhookHeaders,
+      payload,
+      url: target.webhookUrl,
+    });
+  } catch (error: unknown) {
+    return {
+      error: error instanceof Error ? error.message : 'Unknown webhook error',
+      ok: false,
+      status: null,
+    };
+  }
+}
+
+function buildAdhocTargetValue(input: AdhocTargetInput): AdhocTargetValue {
+  if (input.kind === AdhocTargetKindEnum.MEMBER) {
+    const memberIds = uniqueTexts([...(input.memberIds ?? [])]);
+
+    if (memberIds.length === 0) {
+      throw new BadRequestException(
+        'memberIds is required for a MEMBER ad-hoc target',
+      );
+    }
+
+    return { kind: input.kind, memberIds };
+  }
+
+  if (input.kind === AdhocTargetKindEnum.POSITION) {
+    const positionId = input.positionId?.trim();
+
+    if (!positionId) {
+      throw new BadRequestException(
+        'positionId is required for a POSITION ad-hoc target',
+      );
+    }
+
+    return { kind: input.kind, positionId };
+  }
+
+  if (input.kind === AdhocTargetKindEnum.ORG_UNIT_MEMBER) {
+    const orgUnitId = input.orgUnitId?.trim();
+
+    if (!orgUnitId) {
+      throw new BadRequestException(
+        'orgUnitId is required for an ORG_UNIT_MEMBER ad-hoc target',
+      );
+    }
+
+    return {
+      includeDescendants: Boolean(input.includeDescendants),
+      kind: input.kind,
+      orgUnitId,
+    };
+  }
+
+  const webhookUrl = input.webhookUrl?.trim();
+
+  if (!webhookUrl) {
+    throw new BadRequestException(
+      'webhookUrl is required for a WEBHOOK ad-hoc target',
+    );
+  }
+
+  return {
+    kind: input.kind,
+    webhookHeaders: input.webhookHeadersJson
+      ? parseAdhocWebhookHeaders(input.webhookHeadersJson)
+      : undefined,
+    webhookUrl,
+  };
+}
+
+function parseAdhocWebhookHeaders(
+  json: string,
+): Readonly<Record<string, string>> {
+  try {
+    const parsed: unknown = JSON.parse(json);
+
+    if (!isRecord(parsed)) {
+      throw new BadRequestException(
+        'webhookHeadersJson must be a JSON object of string values',
+      );
+    }
+
+    return Object.entries(parsed).reduce<Readonly<Record<string, string>>>(
+      (accumulator, [key, value]) => ({
+        ...accumulator,
+        ...(typeof value === 'string' ? { [key]: value } : {}),
+      }),
+      {},
+    );
+  } catch (error: unknown) {
+    if (error instanceof BadRequestException) {
+      throw error;
+    }
+
+    throw new BadRequestException('webhookHeadersJson is not valid JSON');
+  }
+}
+
+function readAdhocTargetValue(
+  directive: AdhocDirectiveEntity,
+): AdhocTargetValue {
+  const value = directive.targetValue;
+  const kind = directive.targetKind;
+
+  if (kind === AdhocTargetKindEnum.MEMBER) {
+    return {
+      kind,
+      memberIds: Array.isArray(value.memberIds)
+        ? value.memberIds.filter(
+            (memberId): memberId is string => typeof memberId === 'string',
+          )
+        : [],
+    };
+  }
+
+  if (kind === AdhocTargetKindEnum.POSITION) {
+    return {
+      kind,
+      positionId:
+        typeof value.positionId === 'string' ? value.positionId : '',
+    };
+  }
+
+  if (kind === AdhocTargetKindEnum.ORG_UNIT_MEMBER) {
+    return {
+      includeDescendants: Boolean(value.includeDescendants),
+      kind,
+      orgUnitId: typeof value.orgUnitId === 'string' ? value.orgUnitId : '',
+    };
+  }
+
+  return {
+    kind,
+    webhookHeaders: isRecord(value.webhookHeaders)
+      ? Object.entries(value.webhookHeaders).reduce<
+          Readonly<Record<string, string>>
+        >(
+          (accumulator, [key, headerValue]) => ({
+            ...accumulator,
+            ...(typeof headerValue === 'string'
+              ? { [key]: headerValue }
+              : {}),
+          }),
+          {},
+        )
+      : undefined,
+    webhookUrl: typeof value.webhookUrl === 'string' ? value.webhookUrl : '',
+  };
+}
+
+function buildAdhocApproverResolver(
+  target: AdhocTargetValue,
+): ApproverResolver {
+  if (target.kind === AdhocTargetKindEnum.MEMBER) {
+    return { memberIds: target.memberIds ?? [], type: 'DIRECT' };
+  }
+
+  if (target.kind === AdhocTargetKindEnum.POSITION) {
+    return { positionId: target.positionId ?? '', type: 'POSITION' };
+  }
+
+  if (target.kind === AdhocTargetKindEnum.ORG_UNIT_MEMBER) {
+    return {
+      includeDescendants: target.includeDescendants,
+      orgUnitId: target.orgUnitId ?? '',
+      type: 'ORG_UNIT_MEMBER',
+    };
+  }
+
+  throw new BadRequestException(
+    'WEBHOOK ad-hoc targets cannot be used as approvers',
+  );
+}
+
+function readAdhocStageOutcomeLabel(outcome: AdhocStageOutcome): string {
+  if (outcome === 'APPROVED') {
+    return '通過';
+  }
+
+  if (outcome === 'REJECTED') {
+    return '拒絕';
+  }
+
+  return '退回';
+}
+
+function readInstanceFinalStateLabel(
+  finalState: ApprovalInstanceStateEnum,
+): string {
+  if (finalState === ApprovalInstanceStateEnum.APPROVED) {
+    return '核准';
+  }
+
+  if (finalState === ApprovalInstanceStateEnum.REJECTED) {
+    return '拒絕';
+  }
+
+  return '取消';
 }
 
 function readManagerMemberIdFromInitiatorSnapshot(

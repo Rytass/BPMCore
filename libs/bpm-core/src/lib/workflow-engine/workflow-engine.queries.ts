@@ -6,6 +6,7 @@ import {
   BPMAuthContext,
 } from '../bpm-auth';
 import { ActivityLogEntity } from './activity-log.entity';
+import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { ApprovalInstancePageInfoObject } from './approval-instance-page-info.object';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
@@ -212,6 +213,17 @@ export class WorkflowEngineQueries {
   ): Promise<readonly TaskCandidateEntity[]> {
     return this.workflowEngineService.listTaskCandidates(
       taskId,
+      currentAuthContext,
+    );
+  }
+
+  @Query(() => [AdhocDirectiveEntity])
+  async adhocDirectives(
+    @Args('instanceId', { type: () => String }) instanceId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
+  ): Promise<readonly AdhocDirectiveEntity[]> {
+    return this.workflowEngineService.listAdhocDirectives(
+      instanceId,
       currentAuthContext,
     );
   }

@@ -16,6 +16,7 @@ import { WorkflowQueryIndexes0000000013000 } from './0000000013000-workflow-quer
 import { NotificationResolution0000000014000 } from './0000000014000-notification-resolution';
 import { BackfillStaleNotificationResolution0000000015000 } from './0000000015000-backfill-stale-notification-resolution';
 import { ArchiveParallelFormDrafts0000000016000 } from './0000000016000-archive-parallel-form-drafts';
+import { AdhocDirectives0000000017000 } from './0000000017000-adhoc-directives';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -35,6 +36,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   NotificationResolution0000000014000,
   BackfillStaleNotificationResolution0000000015000,
   ArchiveParallelFormDrafts0000000016000,
+  AdhocDirectives0000000017000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -54,3 +56,4 @@ export * from './0000000013000-workflow-query-indexes';
 export * from './0000000014000-notification-resolution';
 export * from './0000000015000-backfill-stale-notification-resolution';
 export * from './0000000016000-archive-parallel-form-drafts';
+export * from './0000000017000-adhoc-directives';

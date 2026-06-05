@@ -330,6 +330,64 @@ export class NotificationService {
     );
   }
 
+  /**
+   * Deliver an ad-hoc directive notification (STAGE_NOTIFY /
+   * COMPLETION_NOTIFY) to resolved member recipients. Runs inside the
+   * caller's transaction `manager` so it commits atomically with the
+   * workflow state change that triggered it.
+   */
+  async createAdhocWorkflowNotifications({
+    channels,
+    instance,
+    manager,
+    message,
+    payload,
+    recipientMemberIds,
+  }: {
+    readonly channels: readonly NotificationChannelEnum[] | null;
+    readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
+    readonly message: string;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly recipientMemberIds: readonly string[];
+  }): Promise<readonly NotificationEntity[]> {
+    const normalizedChannels = channels?.length
+      ? channels
+      : [NotificationChannelEnum.IN_APP];
+    const uniqueRecipientMemberIds = uniqueStrings(recipientMemberIds);
+
+    return uniqueRecipientMemberIds.reduce<
+      Promise<readonly NotificationEntity[]>
+    >(
+      async (
+        previousPromise,
+        recipientMemberId,
+      ): Promise<readonly NotificationEntity[]> => {
+        const previous = await previousPromise;
+        const created = await this.createNotifications(
+          {
+            channels: normalizedChannels,
+            instanceId: instance.id,
+            payload: {
+              ...payload,
+              instanceId: instance.id,
+              instanceTitle: instance.title,
+              message,
+              recipientMemberId,
+            },
+            recipientMemberId,
+            taskId: null,
+            type: NotificationTypeEnum.WORKFLOW_NOTIFICATION,
+          },
+          manager,
+        );
+
+        return [...previous, ...created];
+      },
+      Promise.resolve([]),
+    );
+  }
+
   async createInstanceCompletedNotification({
     instance,
     manager,
