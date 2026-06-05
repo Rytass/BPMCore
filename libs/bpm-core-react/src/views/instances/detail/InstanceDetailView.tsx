@@ -32,6 +32,8 @@ import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import {
   CheckedIcon,
   DangerousOutlineIcon,
+  NotificationUnreadIcon,
+  PlusIcon,
   RefreshCcwIcon,
   ShareIcon,
   UserIcon,
@@ -47,12 +49,14 @@ import {
 } from '@rytass/bpm-core-client/form';
 import {
   ActivityLogRecord,
+  AdhocDirectiveRecord,
   AttachmentRecord,
   ApprovalInstanceRecord,
   MemberProfileRecord,
   SignatureRecord,
   SignatureVerificationRecord,
   cancelApprovalInstance,
+  listAdhocDirectives,
   listAttachments,
   readApprovalInstance,
   readAttachmentDownloadUrl,
@@ -254,6 +258,9 @@ export function InstanceDetailView({
   const [previewAttachment, setPreviewAttachment] =
     useState<AttachmentRecord | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [adhocDirectives, setAdhocDirectives] = useState<
+    readonly AdhocDirectiveRecord[]
+  >([]);
 
   const trimmedCancelComment = cancelComment.trim();
 
@@ -291,6 +298,9 @@ export function InstanceDetailView({
   const canReturnCurrentTask =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.allowReturn;
+  const canAddSignerCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowAddSigner;
   const canCancelInstance = Boolean(
     instance &&
       instance.initiatorMemberId === currentMemberId &&
@@ -363,17 +373,20 @@ export function InstanceDetailView({
         nextMemberProfiles,
         nextAttachments,
         nextSignatures,
+        nextAdhocDirectives,
       ] = await Promise.all([
         readTaskDecisionsForTasks(nextRecord.tasks),
         readMemberProfilesForTimeline(nextRecord),
         listAttachments(nextRecord.instance.id),
         readInstanceSignatures(nextRecord.instance.id),
+        listAdhocDirectives(nextRecord.instance.id),
       ]);
       setTaskDecisions(nextTaskDecisions);
       setMemberProfiles(nextMemberProfiles);
       setAttachments(nextAttachments);
       setSignatures(nextSignatures.signatures);
       setSignatureVerification(nextSignatures.verification);
+      setAdhocDirectives(nextAdhocDirectives);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -541,6 +554,43 @@ export function InstanceDetailView({
           ) : null}
           {currentTask ? (
             <>
+              {canAddSignerCurrentTask ? (
+                <>
+                  <Button
+                    disabled={combinedDeciding}
+                    icon={PlusIcon}
+                    iconType="leading"
+                    onClick={(): void =>
+                      tasksSectionRef.current?.openAdhocModal('COUNTERSIGN')
+                    }
+                    variant="base-secondary"
+                  >
+                    會簽
+                  </Button>
+                  <Button
+                    disabled={combinedDeciding}
+                    icon={PlusIcon}
+                    iconType="leading"
+                    onClick={(): void =>
+                      tasksSectionRef.current?.openAdhocModal('PRE_APPROVAL')
+                    }
+                    variant="base-secondary"
+                  >
+                    加簽
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                disabled={combinedDeciding}
+                icon={NotificationUnreadIcon}
+                iconType="leading"
+                onClick={(): void =>
+                  tasksSectionRef.current?.openAdhocModal('STAGE_NOTIFY')
+                }
+                variant="base-secondary"
+              >
+                通知設定
+              </Button>
               {canReturnCurrentTask ? (
                 <Button
                   disabled={combinedDeciding}
@@ -622,6 +672,7 @@ export function InstanceDetailView({
         {showTasks ? (
           <Section>
             <InstanceTasksSection
+              adhocDirectives={adhocDirectives}
               currentMemberId={currentMemberId}
               instance={instance}
               memberProfilesById={memberProfilesById}

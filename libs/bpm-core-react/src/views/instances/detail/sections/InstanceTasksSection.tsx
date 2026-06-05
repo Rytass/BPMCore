@@ -11,6 +11,8 @@ import {
 } from 'react';
 import {
   AutoComplete,
+  Button,
+  Input,
   Modal,
   Select,
   Table,
@@ -19,10 +21,17 @@ import {
 } from '@mezzanine-ui/react';
 import type { TableColumn } from '@mezzanine-ui/core/table';
 import {
+  AdhocDirectiveRecord,
+  AdhocPreApprovalRejectBehavior,
   ApprovalInstanceRecord,
   MemberProfileRecord,
   TaskRecord,
+  cancelAdhocDirective,
+  configureAdhocCompletionNotification,
+  configureAdhocStageNotification,
   decideTask,
+  requestAdhocCountersign,
+  requestAdhocPreApproval,
   searchMembers,
 } from '@rytass/bpm-core-client/workflow';
 import { formatDateTime } from '../../../../lib/format-date-time';
@@ -71,6 +80,12 @@ function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
  * The container uses these to wire PageHeader action buttons to the
  * section's internal modal state without lifting state up.
  */
+export type AdhocActionMode =
+  | 'COMPLETION_NOTIFY'
+  | 'COUNTERSIGN'
+  | 'PRE_APPROVAL'
+  | 'STAGE_NOTIFY';
+
 export interface InstanceTasksSectionHandle {
   /** Whether a task action (decision) is currently in flight. */
   readonly deciding: boolean;
@@ -78,12 +93,16 @@ export interface InstanceTasksSectionHandle {
   readonly hasCurrentTask: boolean;
   /** Whether the current task's node allows a return action. */
   readonly canReturnCurrentTask: boolean;
+  /** Whether the current task's node allows ad-hoc countersign/pre-approval. */
+  readonly canAddSignerCurrentTask: boolean;
   /** Opens the reject-reason modal. */
   openRejectModal(): void;
   /** Opens the return modal. */
   openReturnModal(): void;
   /** Opens the transfer modal. */
   openTransferModal(): void;
+  /** Opens the ad-hoc action modal in the given mode. */
+  openAdhocModal(mode: AdhocActionMode): void;
   /** Submits an APPROVED decision immediately (no modal needed). */
   handleApprove(): void;
 }
@@ -91,6 +110,8 @@ export interface InstanceTasksSectionHandle {
 export interface InstanceTasksSectionProps {
   /** All tasks for this instance. */
   readonly tasks: readonly TaskRecord[];
+  /** Ad-hoc directives recorded on this instance. */
+  readonly adhocDirectives: readonly AdhocDirectiveRecord[];
   /** The loaded approval instance (used to read workflowSnapshot node labels). */
   readonly instance: ApprovalInstanceRecord | null;
   /** Member profiles indexed by memberId, for displaying assignee labels. */
@@ -104,6 +125,36 @@ export interface InstanceTasksSectionProps {
   readonly onChanged: () => void | Promise<void>;
 }
 
+const ADHOC_MODE_LABELS: Readonly<Record<AdhocActionMode, string>> = {
+  COMPLETION_NOTIFY: '結案通知',
+  COUNTERSIGN: '臨時會簽',
+  PRE_APPROVAL: '臨時加簽',
+  STAGE_NOTIFY: '階段完成通知',
+};
+
+const ADHOC_MODE_SUPPORTING_TEXT: Readonly<Record<AdhocActionMode, string>> = {
+  COMPLETION_NOTIFY: '本張單到達結案狀態（核准 / 拒絕 / 取消）後，通知指定對象。',
+  COUNTERSIGN: '指定對象會併入下一層簽核，下一層需所有人都完成才會繼續。',
+  PRE_APPROVAL: '指定對象需先完成加簽，本階段才會往下一層繼續。',
+  STAGE_NOTIFY: '本階段完成後（不論通過與否）通知指定對象。',
+};
+
+const ADHOC_ON_REJECT_OPTIONS: readonly {
+  readonly id: AdhocPreApprovalRejectBehavior;
+  readonly name: string;
+}[] = [
+  { id: 'REJECT_INSTANCE', name: '加簽拒絕時整單駁回' },
+  { id: 'RETURN_TO_ORIGIN', name: '加簽拒絕時退回給我重新處理' },
+];
+
+const ADHOC_NOTIFY_TARGET_OPTIONS: readonly {
+  readonly id: 'MEMBER' | 'WEBHOOK';
+  readonly name: string;
+}[] = [
+  { id: 'MEMBER', name: '指定成員' },
+  { id: 'WEBHOOK', name: 'Webhook' },
+];
+
 /**
  * Renders the tasks section of the approval instance detail page.
  * Contains the task table plus all decision action modals
@@ -115,6 +166,7 @@ export const InstanceTasksSection = forwardRef<
   InstanceTasksSectionProps
 >(function InstanceTasksSection(
   {
+    adhocDirectives,
     currentMemberId,
     instance,
     memberProfilesById,
@@ -144,6 +196,23 @@ export const InstanceTasksSection = forwardRef<
     readonly MemberOption[]
   >([]);
   const [transferModalOpen, setTransferModalOpen] = useState(false);
+
+  // Ad-hoc modal (countersign / pre-approval / stage & completion notify)
+  const [adhocComment, setAdhocComment] = useState('');
+  const [adhocMember, setAdhocMember] = useState<MemberOption | null>(null);
+  const [adhocMemberLoading, setAdhocMemberLoading] = useState(false);
+  const [adhocMemberOptions, setAdhocMemberOptions] = useState<
+    readonly MemberOption[]
+  >([]);
+  const [adhocModalOpen, setAdhocModalOpen] = useState(false);
+  const [adhocMode, setAdhocMode] = useState<AdhocActionMode>('COUNTERSIGN');
+  const [adhocOnReject, setAdhocOnReject] =
+    useState<AdhocPreApprovalRejectBehavior>('REJECT_INSTANCE');
+  const [adhocSubmitting, setAdhocSubmitting] = useState(false);
+  const [adhocTargetKind, setAdhocTargetKind] = useState<'MEMBER' | 'WEBHOOK'>(
+    'MEMBER',
+  );
+  const [adhocWebhookUrl, setAdhocWebhookUrl] = useState('');
 
   const trimmedRejectReason = rejectReason.trim();
   const trimmedReturnComment = returnComment.trim();
@@ -181,6 +250,16 @@ export const InstanceTasksSection = forwardRef<
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.allowReturn;
 
+  const canAddSignerCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowAddSigner;
+
+  const pendingAdhocDirectives = useMemo(
+    (): readonly AdhocDirectiveRecord[] =>
+      adhocDirectives.filter((directive) => directive.status === 'PENDING'),
+    [adhocDirectives],
+  );
+
   const selectedReturnTargetOption =
     returnTargetOptions.find((option) => option.id === returnTargetNodeId) ??
     returnTargetOptions[0] ??
@@ -192,10 +271,16 @@ export const InstanceTasksSection = forwardRef<
         ...task,
         assigneeLabel: readTaskAssigneeLabel(task, memberProfilesById),
         key: task.id,
-        nodeLabel: readNodeDisplayLabel(
+        nodeLabel: `${readNodeDisplayLabel(
           task.nodeId,
           instance?.workflowSnapshot ?? null,
-        ),
+        )}${
+          task.isAdhoc
+            ? task.adhocType === 'COUNTERSIGN'
+              ? '（臨時會簽）'
+              : '（臨時加簽）'
+            : ''
+        }`,
         statusLabel: readTaskStatusLabel(task.status),
       })),
     [instance, memberProfilesById, tasks],
@@ -382,23 +467,159 @@ export const InstanceTasksSection = forwardRef<
     });
   }
 
+  function resetAdhocModalState(): void {
+    setAdhocComment('');
+    setAdhocMember(null);
+    setAdhocOnReject('REJECT_INSTANCE');
+    setAdhocTargetKind('MEMBER');
+    setAdhocWebhookUrl('');
+  }
+
+  function openAdhocModal(mode: AdhocActionMode): void {
+    setAdhocMode(mode);
+    resetAdhocModalState();
+    setAdhocModalOpen(true);
+    void handleSearchAdhocMembers('');
+  }
+
+  function closeAdhocModal(): void {
+    if (adhocSubmitting) {
+      return;
+    }
+
+    setAdhocModalOpen(false);
+    resetAdhocModalState();
+  }
+
+  async function handleSearchAdhocMembers(searchText: string): Promise<void> {
+    setAdhocMemberLoading(true);
+
+    try {
+      setAdhocMemberOptions(
+        (await searchMembers(searchText)).map(readMemberOption),
+      );
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setAdhocMemberLoading(false);
+    }
+  }
+
+  async function handleAdhocConfirm(): Promise<void> {
+    if (!currentTask) {
+      return;
+    }
+
+    const isNotifyMode =
+      adhocMode === 'STAGE_NOTIFY' || adhocMode === 'COMPLETION_NOTIFY';
+    const useWebhookTarget = isNotifyMode && adhocTargetKind === 'WEBHOOK';
+    const trimmedWebhookUrl = adhocWebhookUrl.trim();
+    const selectedMember = adhocMember;
+
+    if (useWebhookTarget && !trimmedWebhookUrl) {
+      setError('請輸入 Webhook URL');
+
+      return;
+    }
+
+    if (!useWebhookTarget && !selectedMember) {
+      setError('請選擇對象成員');
+
+      return;
+    }
+
+    const target =
+      useWebhookTarget || !selectedMember
+        ? { kind: 'WEBHOOK' as const, webhookUrl: trimmedWebhookUrl }
+        : { kind: 'MEMBER' as const, memberIds: [selectedMember.id] };
+    const trimmedAdhocComment = adhocComment.trim() || null;
+
+    setAdhocSubmitting(true);
+    setError(null);
+
+    try {
+      if (adhocMode === 'COUNTERSIGN') {
+        await requestAdhocCountersign({
+          comment: trimmedAdhocComment,
+          target,
+          taskId: currentTask.id,
+        });
+      } else if (adhocMode === 'PRE_APPROVAL') {
+        await requestAdhocPreApproval({
+          comment: trimmedAdhocComment,
+          onReject: adhocOnReject,
+          target,
+          taskId: currentTask.id,
+        });
+      } else if (adhocMode === 'STAGE_NOTIFY') {
+        await configureAdhocStageNotification({
+          target,
+          taskId: currentTask.id,
+        });
+      } else {
+        await configureAdhocCompletionNotification({
+          target,
+          taskId: currentTask.id,
+        });
+      }
+
+      setAdhocModalOpen(false);
+      resetAdhocModalState();
+      await onChanged();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setAdhocSubmitting(false);
+    }
+  }
+
+  async function handleCancelAdhocDirective(directiveId: string): Promise<void> {
+    setAdhocSubmitting(true);
+    setError(null);
+
+    try {
+      await cancelAdhocDirective(directiveId);
+      await onChanged();
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+    } finally {
+      setAdhocSubmitting(false);
+    }
+  }
+
   // Expose imperative handle so the container's PageHeader buttons can
   // trigger actions without lifting all modal state up.
   useImperativeHandle(
     ref,
     (): InstanceTasksSectionHandle => ({
+      canAddSignerCurrentTask,
       canReturnCurrentTask,
       deciding,
       handleApprove: (): void => {
         void handleDecision({ action: 'APPROVED', comment: null });
       },
       hasCurrentTask: currentTask !== null,
+      openAdhocModal,
       openRejectModal: openRejectReasonModal,
       openReturnModal,
       openTransferModal,
     }),
-    [canReturnCurrentTask, currentTask, deciding],
+    [canAddSignerCurrentTask, canReturnCurrentTask, currentTask, deciding],
   );
+
+  const isAdhocNotifyMode =
+    adhocMode === 'STAGE_NOTIFY' || adhocMode === 'COMPLETION_NOTIFY';
+  const adhocConfirmDisabled =
+    isAdhocNotifyMode && adhocTargetKind === 'WEBHOOK'
+      ? !adhocWebhookUrl.trim()
+      : !adhocMember;
+  const selectedAdhocOnRejectOption =
+    ADHOC_ON_REJECT_OPTIONS.find((option) => option.id === adhocOnReject) ??
+    ADHOC_ON_REJECT_OPTIONS[0];
+  const selectedAdhocNotifyTargetOption =
+    ADHOC_NOTIFY_TARGET_OPTIONS.find(
+      (option) => option.id === adhocTargetKind,
+    ) ?? ADHOC_NOTIFY_TARGET_OPTIONS[0];
 
   return (
     <>
@@ -411,6 +632,42 @@ export const InstanceTasksSection = forwardRef<
         </Typography>
       ) : null}
       <Table columns={taskColumns} dataSource={taskRows} fullWidth />
+
+      {pendingAdhocDirectives.length > 0 ? (
+        <div style={MODAL_FORM_STYLE}>
+          <Typography component="h3" variant="body-highlight">
+            待生效的臨時設定
+          </Typography>
+          {pendingAdhocDirectives.map((directive) => (
+            <div
+              key={directive.id}
+              style={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: 12,
+                justifyContent: 'space-between',
+              }}
+            >
+              <Typography component="span" variant="body">
+                {ADHOC_MODE_LABELS[directive.type]} ·{' '}
+                {readAdhocDirectiveTargetLabel(directive, memberProfilesById)}
+              </Typography>
+              {directive.createdByMemberId === currentMemberId ? (
+                <Button
+                  disabled={adhocSubmitting}
+                  onClick={(): void =>
+                    void handleCancelAdhocDirective(directive.id)
+                  }
+                  size="minor"
+                  variant="destructive-secondary"
+                >
+                  撤回
+                </Button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {/* Reject modal */}
       <Modal
@@ -575,6 +832,191 @@ export const InstanceTasksSection = forwardRef<
           </BPMFormField>
         </div>
       </Modal>
+
+      {/* Ad-hoc countersign / pre-approval / notify modal */}
+      <Modal
+        cancelText="取消"
+        confirmButtonProps={{
+          disabled: adhocConfirmDisabled,
+        }}
+        confirmText="送出"
+        loading={adhocSubmitting}
+        modalType="standard"
+        onCancel={closeAdhocModal}
+        onClose={closeAdhocModal}
+        onConfirm={(): void => void handleAdhocConfirm()}
+        open={adhocModalOpen}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText={ADHOC_MODE_SUPPORTING_TEXT[adhocMode]}
+        title={ADHOC_MODE_LABELS[adhocMode]}
+      >
+        <div style={MODAL_FORM_STYLE}>
+          {isAdhocNotifyMode ? (
+            <BPMFormField label="通知時機" name="adhocNotifyMode" required>
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  setAdhocMode(
+                    option?.id === 'COMPLETION_NOTIFY'
+                      ? 'COMPLETION_NOTIFY'
+                      : 'STAGE_NOTIFY',
+                  )
+                }
+                options={[
+                  { id: 'STAGE_NOTIFY', name: ADHOC_MODE_LABELS.STAGE_NOTIFY },
+                  {
+                    id: 'COMPLETION_NOTIFY',
+                    name: ADHOC_MODE_LABELS.COMPLETION_NOTIFY,
+                  },
+                ]}
+                value={{
+                  id: adhocMode,
+                  name: ADHOC_MODE_LABELS[adhocMode],
+                }}
+              />
+            </BPMFormField>
+          ) : null}
+          {isAdhocNotifyMode ? (
+            <BPMFormField label="通知對象類型" name="adhocTargetKind" required>
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  setAdhocTargetKind(
+                    option?.id === 'WEBHOOK' ? 'WEBHOOK' : 'MEMBER',
+                  )
+                }
+                options={[...ADHOC_NOTIFY_TARGET_OPTIONS]}
+                value={selectedAdhocNotifyTargetOption}
+              />
+            </BPMFormField>
+          ) : null}
+          {isAdhocNotifyMode && adhocTargetKind === 'WEBHOOK' ? (
+            <BPMFormField label="Webhook URL" name="adhocWebhookUrl" required>
+              <Input
+                fullWidth
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  setAdhocWebhookUrl(event.target.value)
+                }
+                placeholder="https://example.com/webhook"
+                value={adhocWebhookUrl}
+              />
+            </BPMFormField>
+          ) : (
+            <BPMFormField
+              label={isAdhocNotifyMode ? '通知對象' : '簽核對象'}
+              name="adhocMemberId"
+              required
+            >
+              <AutoComplete
+                asyncData
+                disabledOptionsFilter
+                emptyText="沒有符合的成員"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'adhoc-member-search',
+                  spellCheck: false,
+                }}
+                loading={adhocMemberLoading}
+                loadingText="搜尋成員中..."
+                mode="single"
+                onChange={(option): void =>
+                  setAdhocMember(readMemberOptionFromValue(option))
+                }
+                onSearch={handleSearchAdhocMembers}
+                onSearchTextChange={(searchText): void =>
+                  setAdhocMember(
+                    readUniqueMemberOption(searchText, adhocMemberOptions),
+                  )
+                }
+                onVisibilityChange={(open): void => {
+                  if (open) {
+                    void handleSearchAdhocMembers('');
+                  }
+                }}
+                options={[...adhocMemberOptions]}
+                placeholder="搜尋姓名或信箱"
+                searchDebounceTime={300}
+                value={adhocMember}
+              />
+            </BPMFormField>
+          )}
+          {adhocMode === 'PRE_APPROVAL' ? (
+            <BPMFormField label="拒簽處理方式" name="adhocOnReject" required>
+              <Select
+                clearable={false}
+                fullWidth
+                onChange={(option): void =>
+                  setAdhocOnReject(
+                    option?.id === 'RETURN_TO_ORIGIN'
+                      ? 'RETURN_TO_ORIGIN'
+                      : 'REJECT_INSTANCE',
+                  )
+                }
+                options={[...ADHOC_ON_REJECT_OPTIONS]}
+                value={selectedAdhocOnRejectOption}
+              />
+            </BPMFormField>
+          ) : null}
+          {!isAdhocNotifyMode ? (
+            <BPMFormField label="說明" name="adhocComment">
+              <Textarea
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                  setAdhocComment(event.target.value)
+                }
+                placeholder="可補充原因"
+                ref={applyFullWidthTextareaHost}
+                resize="vertical"
+                rows={3}
+                style={REJECT_REASON_TEXTAREA_STYLE}
+                value={adhocComment}
+              />
+            </BPMFormField>
+          ) : null}
+        </div>
+      </Modal>
     </>
   );
 });
+
+function readAdhocDirectiveTargetLabel(
+  directive: AdhocDirectiveRecord,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): string {
+  try {
+    const value = JSON.parse(directive.targetValueJson) as {
+      readonly memberIds?: readonly string[];
+      readonly orgUnitId?: string;
+      readonly positionId?: string;
+      readonly webhookUrl?: string;
+    };
+
+    if (value.memberIds?.length) {
+      return value.memberIds
+        .map(
+          (memberId) => memberProfilesById.get(memberId)?.name ?? memberId,
+        )
+        .join('、');
+    }
+
+    if (value.webhookUrl) {
+      return value.webhookUrl;
+    }
+
+    if (value.positionId) {
+      return `職位 ${value.positionId}`;
+    }
+
+    if (value.orgUnitId) {
+      return `部門 ${value.orgUnitId}`;
+    }
+  } catch {
+    // Fall through to the kind label below.
+  }
+
+  return directive.targetKind;
+}
