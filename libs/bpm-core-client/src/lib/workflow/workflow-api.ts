@@ -1894,7 +1894,9 @@ export async function listAdhocDirectives(
     { instanceId },
   );
 
-  return data.adhocDirectives;
+  // Tolerate hosts (and test mocks) whose GraphQL layer does not answer the
+  // adhocDirectives query yet.
+  return data.adhocDirectives ?? [];
 }
 
 export function readApprovalInstanceCaseTitle(
