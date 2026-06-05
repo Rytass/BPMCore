@@ -29,6 +29,13 @@ import { ApprovalTemplateVersionEntity } from '../template/approval-template-ver
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
 import { ActivityLogEntity } from './activity-log.entity';
+import { AdhocDirectiveEntity } from './adhoc-directive.entity';
+import {
+  AdhocDirectiveStatusEnum,
+  AdhocDirectiveTypeEnum,
+  AdhocPreApprovalRejectBehaviorEnum,
+  AdhocTargetKindEnum,
+} from './adhoc.enums';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
@@ -1387,6 +1394,496 @@ describe('WorkflowEngineService', () => {
       ),
     ).rejects.toThrow('Approval instance instance-1 was not found');
   });
+
+  it('rejects ad-hoc countersign requests when the node disallows added signers', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.requestAdhocCountersign({
+        requestedByMemberId: 'member-finance',
+        target: {
+          kind: AdhocTargetKindEnum.MEMBER,
+          memberIds: ['member-d'],
+        },
+        taskId: 'task-1',
+      }),
+    ).rejects.toThrow('does not allow ad-hoc signers');
+  });
+
+  it('creates a blocking ad-hoc pre-approval task on the current node', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const adhocTask = await fixture.service.requestAdhocPreApproval({
+      comment: '請先確認預算',
+      onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+      requestedByMemberId: 'member-finance',
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-d'],
+      },
+      taskId: 'task-1',
+    });
+
+    expect(adhocTask).toMatchObject({
+      adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+      assigneeMemberId: 'member-d',
+      isAdhoc: true,
+      nodeId: 'task_finance',
+      status: TaskStatusEnum.PENDING,
+      tokenId: 'token-1',
+    });
+    expect(fixture.savedAdhocDirectives).toContainEqual(
+      expect.objectContaining({
+        onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+        type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+      }),
+    );
+    expect(
+      fixture.notificationService.createTaskAssignedNotification,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: expect.objectContaining({ assigneeMemberId: 'member-d' }),
+      }),
+    );
+  });
+
+  it('holds the token until every ad-hoc task on the node is approved', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    // The origin task completed but the ad-hoc pre-approval is still open —
+    // the token must not advance and the instance must stay running.
+    expect(fixture.savedProcessToken).toBeNull();
+    expect(fixture.savedInstance).toBeNull();
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(fixture.savedProcessToken).toMatchObject({
+      currentNodeId: 'end',
+      status: WorkflowTokenStatusEnum.CONSUMED,
+    });
+    expect(fixture.savedInstance).toMatchObject({
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
+  it('spawns a parallel countersign task when the next user task is created', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'start',
+        status: WorkflowTokenStatusEnum.ACTIVE,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-seed-1',
+          originNodeId: 'task_origin',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    const mainTask = fixture.savedTasks.find(
+      (task) => !task.isAdhoc && task.nodeId === 'task_finance',
+    );
+    const countersignTask = fixture.savedTasks.find(
+      (task) =>
+        task.isAdhoc && task.adhocType === AdhocDirectiveTypeEnum.COUNTERSIGN,
+    );
+
+    expect(mainTask).toMatchObject({
+      assigneeMemberId: 'member-finance',
+      status: TaskStatusEnum.PENDING,
+    });
+    expect(countersignTask).toMatchObject({
+      adhocDirectiveId: 'directive-seed-1',
+      assigneeMemberId: 'member-d',
+      nodeId: 'task_finance',
+      status: TaskStatusEnum.PENDING,
+    });
+    expect(fixture.savedAdhocDirectives).toContainEqual(
+      expect.objectContaining({
+        id: 'directive-seed-1',
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+      }),
+    );
+  });
+
+  it('returns a rejected ad-hoc pre-approval to the origin approver without rejecting the instance', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const decision = await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(decision).toMatchObject({
+      action: TaskDecisionActionEnum.REJECTED,
+      taskId: 'task-90',
+    });
+    // RETURN_TO_ORIGIN must not reject the instance.
+    expect(fixture.savedInstance).toBeNull();
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientMemberIds: ['member-finance'],
+      }),
+    );
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.ADHOC_PRE_APPROVAL_RETURNED,
+      }),
+    );
+  });
+
+  it('rejects the whole instance when an ad-hoc pre-approval is rejected with REJECT_INSTANCE', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '不同意',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(fixture.savedInstance).toMatchObject({
+      state: ApprovalInstanceStateEnum.REJECTED,
+    });
+  });
+
+  it('dispatches an ad-hoc stage notification when the stage is approved', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-stage-1',
+          originNodeId: 'task_finance',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetValue: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-x'],
+          },
+          type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ outcome: 'APPROVED' }),
+        recipientMemberIds: ['member-x'],
+      }),
+    );
+    expect(fixture.savedAdhocDirectives).toContainEqual(
+      expect.objectContaining({
+        id: 'directive-stage-1',
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+      }),
+    );
+  });
+
+  it('dispatches ad-hoc completion notifications on reject and cancels pending flow directives', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-completion-1',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetValue: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-x'],
+          },
+          type: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+        }),
+        createAdhocDirective({
+          id: 'directive-countersign-1',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '資料不足',
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          finalState: ApprovalInstanceStateEnum.REJECTED,
+        }),
+        recipientMemberIds: ['member-x'],
+      }),
+    );
+    expect(fixture.savedAdhocDirectives).toContainEqual(
+      expect.objectContaining({
+        id: 'directive-completion-1',
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+      }),
+    );
+    expect(fixture.savedAdhocDirectives).toContainEqual(
+      expect.objectContaining({
+        id: 'directive-countersign-1',
+        status: AdhocDirectiveStatusEnum.CANCELLED,
+      }),
+    );
+  });
+
+  it('records ad-hoc webhook notification failures without blocking the decision', async (): Promise<void> => {
+    const failingDispatcher: BPMWorkflowServiceTaskDispatcher = {
+      dispatchWebhook: jest.fn(() =>
+        Promise.reject(new Error('webhook unreachable')),
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-webhook-1',
+          originNodeId: 'task_finance',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetKind: AdhocTargetKindEnum.WEBHOOK,
+          targetValue: {
+            kind: AdhocTargetKindEnum.WEBHOOK,
+            webhookUrl: 'https://example.com/hook',
+          },
+          type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      serviceTaskDispatcher: failingDispatcher,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(fixture.savedInstance).toMatchObject({
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+        payload: expect.objectContaining({
+          action: 'ADHOC_WEBHOOK',
+          directiveId: 'directive-webhook-1',
+        }),
+      }),
+    );
+  });
 });
 
 interface ServiceFixture {
@@ -1396,6 +1893,7 @@ interface ServiceFixture {
   >;
   readonly notificationService: Pick<
     NotificationService,
+    | 'createAdhocWorkflowNotifications'
     | 'createInstanceCompletedNotification'
     | 'createServiceTaskNotifications'
     | 'createTaskAssignedNotification'
@@ -1419,6 +1917,7 @@ interface ServiceFixture {
   readonly savedDecision: TaskDecisionEntity | null;
   readonly savedActivityLogs: readonly ActivityLogEntity[];
   readonly savedInstance: ApprovalInstanceEntity | null;
+  readonly savedAdhocDirectives: readonly AdhocDirectiveEntity[];
   readonly savedProcessLog: ActivityLogEntity | null;
   readonly savedProcessToken: WorkflowTokenEntity | null;
   readonly savedSingleActivityLogs: readonly ActivityLogEntity[];
@@ -1444,6 +1943,7 @@ interface ApprovalInstanceQueryBuilderMock {
 }
 
 function createServiceFixture({
+  additionalProcessTasks = [],
   currentVersionId,
   delegationResolution,
   decisionTask,
@@ -1452,6 +1952,7 @@ function createServiceFixture({
   formVersionStatus,
   instanceState,
   latestReturnActivity,
+  processAdhocDirectives = [],
   processFormData,
   processFormDefinitionSnapshot,
   processManagerResolutions = [],
@@ -1462,6 +1963,7 @@ function createServiceFixture({
   serviceTaskDispatcher,
   templateVersionStatus,
 }: {
+  readonly additionalProcessTasks?: readonly TaskEntity[];
   readonly currentVersionId: string | null;
   readonly delegationResolution?: DelegationResolution;
   readonly decisionTask?: TaskEntity;
@@ -1470,6 +1972,7 @@ function createServiceFixture({
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
+  readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
@@ -1492,7 +1995,10 @@ function createServiceFixture({
           }),
       ]
     : [];
-  let processTasks: readonly TaskEntity[] = decisionTask ? [decisionTask] : [];
+  let processTasks: readonly TaskEntity[] = [
+    ...(decisionTask ? [decisionTask] : []),
+    ...additionalProcessTasks,
+  ];
   let savedProcessToken: WorkflowTokenEntity | null = null;
   let savedDecision: TaskDecisionEntity | null = null;
   let savedInstance: ApprovalInstanceEntity | null = null;
@@ -1541,6 +2047,84 @@ function createServiceFixture({
     find: notificationFind,
   });
   const activityLogRepository = createRepository<ActivityLogEntity>({});
+  let processAdhocDirectiveRows: readonly AdhocDirectiveEntity[] = [
+    ...processAdhocDirectives,
+  ];
+  let directiveSequence = 0;
+  const adhocDirectiveRepository = createRepository<AdhocDirectiveEntity>({
+    find: jest.fn(() => Promise.resolve(processAdhocDirectiveRows)),
+  });
+  const transactionalAdhocDirectiveRepository =
+    createRepository<AdhocDirectiveEntity>({
+      create: jest.fn(
+        (entity: Partial<AdhocDirectiveEntity>): AdhocDirectiveEntity =>
+          Object.assign(new AdhocDirectiveEntity(), entity),
+      ),
+      find: jest.fn(
+        (
+          options?: Readonly<{
+            where?: Readonly<Record<string, unknown>>;
+          }>,
+        ): Promise<readonly AdhocDirectiveEntity[]> =>
+          Promise.resolve(
+            processAdhocDirectiveRows.filter((directive) =>
+              Object.entries(options?.where ?? {}).every(
+                ([key, value]) =>
+                  // FindOperator values (e.g. In([...])) are treated as
+                  // match-all to keep the mock simple.
+                  typeof value === 'object' ||
+                  directive[key as keyof AdhocDirectiveEntity] === value,
+              ),
+            ),
+          ),
+      ),
+      findOne: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<{ id?: string }> }>,
+        ): Promise<AdhocDirectiveEntity | null> =>
+          Promise.resolve(
+            processAdhocDirectiveRows.find(
+              (directive) => directive.id === options?.where?.id,
+            ) ?? null,
+          ),
+      ),
+      save: jest.fn(
+        (
+          entityOrEntities: AdhocDirectiveEntity | AdhocDirectiveEntity[],
+        ): Promise<AdhocDirectiveEntity | AdhocDirectiveEntity[]> => {
+          const entities = Array.isArray(entityOrEntities)
+            ? entityOrEntities
+            : [entityOrEntities];
+          const entitiesWithIds = entities.map((entity) => {
+            if (entity.id) {
+              return entity;
+            }
+
+            directiveSequence += 1;
+
+            return Object.assign(new AdhocDirectiveEntity(), entity, {
+              id: `directive-${directiveSequence}`,
+            });
+          });
+          const entityIds = new Set(
+            entitiesWithIds.map((entity) => entity.id),
+          );
+
+          processAdhocDirectiveRows = [
+            ...processAdhocDirectiveRows.filter(
+              (directive) => !entityIds.has(directive.id),
+            ),
+            ...entitiesWithIds,
+          ];
+
+          return Promise.resolve(
+            Array.isArray(entityOrEntities)
+              ? entitiesWithIds
+              : (entitiesWithIds[0] ?? entityOrEntities),
+          );
+        },
+      ),
+    });
   const delegationService = {
     resolveAssignee: jest.fn(
       (assigneeMemberId: string): Promise<DelegationResolution> =>
@@ -1553,6 +2137,7 @@ function createServiceFixture({
     ),
   };
   const notificationService = {
+    createAdhocWorkflowNotifications: jest.fn(() => Promise.resolve([])),
     createInstanceCompletedNotification: jest.fn(() => Promise.resolve([])),
     createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
@@ -1687,6 +2272,10 @@ function createServiceFixture({
     create: jest.fn(
       (entity: Partial<TaskEntity>): TaskEntity =>
         Object.assign(new TaskEntity(), {
+          adhocDirectiveId: entity.adhocDirectiveId ?? null,
+          adhocOriginTaskId: entity.adhocOriginTaskId ?? null,
+          adhocType: entity.adhocType ?? null,
+          isAdhoc: entity.isAdhoc ?? false,
           assigneeMemberId: entity.assigneeMemberId ?? 'member-finance',
           assignmentType:
             entity.assignmentType ?? TaskAssignmentTypeEnum.DIRECT_MEMBER,
@@ -1915,6 +2504,10 @@ function createServiceFixture({
         return transactionalOrgUnitRepository;
       }
 
+      if (target === AdhocDirectiveEntity) {
+        return transactionalAdhocDirectiveRepository;
+      }
+
       return createRepository<ObjectLiteral>({});
     }),
     query: managerQuery,
@@ -1944,6 +2537,9 @@ function createServiceFixture({
     rootInstanceFind,
     rootInstanceQueryBuilder,
     rootTaskFind,
+    get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
+      return processAdhocDirectiveRows;
+    },
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;
     },
@@ -1979,6 +2575,7 @@ function createServiceFixture({
       taskDecisionRepository,
       notificationRepository,
       activityLogRepository,
+      adhocDirectiveRepository,
       templateRepository,
       templateVersionRepository,
       formVersionRepository,
@@ -2239,12 +2836,16 @@ function createWorkflowToken(
 
 function createTask(value: Partial<TaskEntity>): TaskEntity {
   return Object.assign(new TaskEntity(), {
+    adhocDirectiveId: value.adhocDirectiveId ?? null,
+    adhocOriginTaskId: value.adhocOriginTaskId ?? null,
+    adhocType: value.adhocType ?? null,
     assigneeMemberId: value.assigneeMemberId ?? 'member-finance',
     completedAt: value.completedAt ?? null,
     createdAt: value.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
     delegationChain: value.delegationChain ?? [],
     id: value.id ?? 'task-1',
     instanceId: value.instanceId ?? 'instance-1',
+    isAdhoc: value.isAdhoc ?? false,
     nodeId: value.nodeId ?? 'task_finance',
     openedAt: value.openedAt ?? null,
     originalAssigneeMemberId:
@@ -2252,6 +2853,30 @@ function createTask(value: Partial<TaskEntity>): TaskEntity {
     slaDueAt: value.slaDueAt ?? null,
     status: value.status ?? TaskStatusEnum.PENDING,
     tokenId: value.tokenId ?? 'token-1',
+  });
+}
+
+function createAdhocDirective(
+  value: Partial<AdhocDirectiveEntity>,
+): AdhocDirectiveEntity {
+  return Object.assign(new AdhocDirectiveEntity(), {
+    channels: value.channels ?? null,
+    comment: value.comment ?? null,
+    consumedAt: value.consumedAt ?? null,
+    createdAt: value.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
+    createdByMemberId: value.createdByMemberId ?? 'member-finance',
+    id: value.id ?? 'directive-seed-1',
+    instanceId: value.instanceId ?? 'instance-1',
+    onReject: value.onReject ?? null,
+    originNodeId: value.originNodeId ?? 'task_finance',
+    originTaskId: value.originTaskId ?? 'task-1',
+    status: value.status ?? AdhocDirectiveStatusEnum.PENDING,
+    targetKind: value.targetKind ?? AdhocTargetKindEnum.MEMBER,
+    targetValue: value.targetValue ?? {
+      kind: AdhocTargetKindEnum.MEMBER,
+      memberIds: ['member-d'],
+    },
+    type: value.type ?? AdhocDirectiveTypeEnum.COUNTERSIGN,
   });
 }
 
@@ -2309,12 +2934,14 @@ function createOrgUnit(value: Partial<OrgUnitEntity>): OrgUnitEntity {
 }
 
 function createLinearUserTaskWorkflow({
+  allowAddSigner = false,
   approverResolver = {
     memberIds: ['member-finance'],
     type: 'DIRECT',
   },
   slaDuration = null,
 }: {
+  readonly allowAddSigner?: boolean;
   readonly approverResolver?: ApproverResolver;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -2345,7 +2972,7 @@ function createLinearUserTaskWorkflow({
       },
       {
         data: {
-          allowAddSigner: false,
+          allowAddSigner,
           allowReject: true,
           allowTransfer: false,
           approverResolver,
