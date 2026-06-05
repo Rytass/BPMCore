@@ -554,12 +554,16 @@ export function InstanceDetailView({
           ) : null}
           {currentTask ? (
             <>
+              {/* Stable keys keep these action buttons mounted while the
+                  conditional ad-hoc buttons appear, so in-flight clicks are
+                  not lost to re-created DOM nodes. */}
               {canAddSignerCurrentTask ? (
                 <>
                   <Button
                     disabled={combinedDeciding}
                     icon={PlusIcon}
                     iconType="leading"
+                    key="adhoc-countersign"
                     onClick={(): void =>
                       tasksSectionRef.current?.openAdhocModal('COUNTERSIGN')
                     }
@@ -571,6 +575,7 @@ export function InstanceDetailView({
                     disabled={combinedDeciding}
                     icon={PlusIcon}
                     iconType="leading"
+                    key="adhoc-pre-approval"
                     onClick={(): void =>
                       tasksSectionRef.current?.openAdhocModal('PRE_APPROVAL')
                     }
@@ -584,6 +589,7 @@ export function InstanceDetailView({
                 disabled={combinedDeciding}
                 icon={NotificationUnreadIcon}
                 iconType="leading"
+                key="adhoc-notify"
                 onClick={(): void =>
                   tasksSectionRef.current?.openAdhocModal('STAGE_NOTIFY')
                 }
@@ -596,6 +602,7 @@ export function InstanceDetailView({
                   disabled={combinedDeciding}
                   icon={RefreshCcwIcon}
                   iconType="leading"
+                  key="task-return"
                   onClick={(): void => tasksSectionRef.current?.openReturnModal()}
                   variant="base-secondary"
                 >
@@ -606,6 +613,7 @@ export function InstanceDetailView({
                 disabled={combinedDeciding}
                 icon={UserIcon}
                 iconType="leading"
+                key="task-transfer"
                 onClick={(): void => tasksSectionRef.current?.openTransferModal()}
                 variant="base-secondary"
               >
@@ -615,6 +623,7 @@ export function InstanceDetailView({
                 disabled={combinedDeciding}
                 icon={DangerousOutlineIcon}
                 iconType="leading"
+                key="task-reject"
                 onClick={(): void => tasksSectionRef.current?.openRejectModal()}
                 variant="destructive-secondary"
               >
@@ -624,6 +633,7 @@ export function InstanceDetailView({
                 disabled={combinedDeciding}
                 icon={CheckedIcon}
                 iconType="leading"
+                key="task-approve"
                 onClick={(): void => tasksSectionRef.current?.handleApprove()}
                 variant="base-primary"
               >
