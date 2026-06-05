@@ -2200,7 +2200,7 @@ function createWorkflowDefinition({
     },
     ...approvalNodes.map((node) => ({
       data: {
-        allowAddSigner: false,
+        allowAddSigner: true,
         allowReject: true,
         allowTransfer: true,
         approverResolver: node.resolver,
