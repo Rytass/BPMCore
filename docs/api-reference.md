@@ -343,7 +343,8 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Group | Names |
 |---|---|
 | Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord`, `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
-| Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord`, `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
+| Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
+| Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
@@ -369,6 +370,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `listAttachments(instanceId)` | Attachment list |
 | `readAttachmentDownloadUrl / PreviewUrl({ ... })` | Signed download/preview URLs |
 | `readInstanceSignatures(id)` | Signature/verification records |
+| `listAdhocDirectives(instanceId)` | Ad-hoc directives recorded on one instance |
 
 ### Mutations
 
@@ -379,6 +381,11 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `cancelApprovalInstance({ ... })` | Cancel an instance |
 | `resubmitApprovalInstance({ ... })` | Re-submit after return |
 | `uploadAttachment({ ... })` | Multipart upload |
+| `requestAdhocCountersign({ taskId, target, comment? })` | Ad-hoc countersign — parallel task joins the next user task |
+| `requestAdhocPreApproval({ taskId, target, onReject, comment? })` | Ad-hoc pre-approval — blocks the current stage until approved |
+| `configureAdhocStageNotification({ taskId, target, channels? })` | Notify targets when the current stage ends (any outcome) |
+| `configureAdhocCompletionNotification({ taskId, target, channels? })` | Notify targets when the instance reaches a terminal state |
+| `cancelAdhocDirective(directiveId)` | Withdraw a still-pending ad-hoc directive |
 
 ### Member helpers (in workflow subpath)
 
@@ -496,13 +503,15 @@ Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity`, `TaskEntity`, `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity` |
-| DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput` |
+| Entities | `ApprovalInstanceEntity`, `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
-| Engine | `WorkflowEngineService`, `WorkflowConditionEvaluator` |
+| Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Tokens | `WorkflowEngineTokens`, `WORKFLOW_SERVICE_TASK_DISPATCHER` |
-| Enums | `WorkflowEngineEnums` |
+| Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
 | Module | `WorkflowEngineModule` |
+
+GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
 
 ## `@rytass/bpm-core-nestjs-module/condition`
 
@@ -559,7 +568,7 @@ Workflow execution engine — the heaviest module.
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-17 ordered migrations:
+18 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001`
 2. `IdentityOrganizationFoundation0000000001000`
@@ -578,6 +587,7 @@ Workflow execution engine — the heaviest module.
 15. `NotificationResolution0000000014000`
 16. `BackfillStaleNotificationResolution0000000015000`
 17. `ArchiveParallelFormDrafts0000000016000`
+18. `AdhocDirectives0000000017000`
 
 ---
 
@@ -685,7 +695,7 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
-| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
+| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
 | `views/instances/new` | `InstanceNewView` | medium |
 | `views/templates/compose` | `TemplateComposeWizardView`, `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
