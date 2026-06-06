@@ -41,6 +41,7 @@ import {
   TaskRow,
   canMemberActOnTask,
   readErrorMessage,
+  readMemberDisplayText,
   readMemberOption,
   readMemberOptionFromValue,
   readNodeDisplayLabel,
@@ -65,6 +66,14 @@ const MODAL_FORM_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
   width: '100%',
+};
+
+const SECTION_TABLE_STYLE: CSSProperties = {
+  marginTop: 12,
+};
+
+const SECTION_SUBHEADING_STYLE: CSSProperties = {
+  marginTop: 24,
 };
 
 function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
@@ -154,6 +163,16 @@ const ADHOC_NOTIFY_TARGET_OPTIONS: readonly {
   { id: 'MEMBER', name: '指定成員' },
   { id: 'WEBHOOK', name: 'Webhook' },
 ];
+
+type AdhocDirectiveRow = Readonly<
+  Record<string, unknown> &
+    AdhocDirectiveRecord & {
+      createdByLabel: string;
+      key: string;
+      targetLabel: string;
+      typeLabel: string;
+    }
+>;
 
 /**
  * Renders the tasks section of the approval instance detail page.
@@ -317,6 +336,86 @@ export const InstanceTasksSection = forwardRef<
       },
     ],
     [],
+  );
+
+  const adhocDirectiveRows = useMemo(
+    (): AdhocDirectiveRow[] =>
+      pendingAdhocDirectives.map((directive) => ({
+        ...directive,
+        createdByLabel: readMemberDisplayText(
+          directive.createdByMemberId,
+          memberProfilesById,
+        ),
+        key: directive.id,
+        targetLabel: readAdhocDirectiveTargetLabel(
+          directive,
+          memberProfilesById,
+        ),
+        typeLabel: ADHOC_MODE_LABELS[directive.type],
+      })),
+    [memberProfilesById, pendingAdhocDirectives],
+  );
+
+  const adhocDirectiveColumns = useMemo(
+    (): TableColumn<AdhocDirectiveRow>[] => [
+      {
+        dataIndex: 'typeLabel',
+        key: 'typeLabel',
+        title: '類型',
+        width: 180,
+      },
+      {
+        key: 'targetLabel',
+        render: (record: AdhocDirectiveRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {record.targetLabel}
+          </Typography>
+        ),
+        title: '對象',
+        width: 220,
+      },
+      {
+        key: 'createdByLabel',
+        render: (record: AdhocDirectiveRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {record.createdByLabel}
+          </Typography>
+        ),
+        title: '設定者',
+        width: 180,
+      },
+      {
+        key: 'createdAt',
+        render: (record: AdhocDirectiveRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {formatDateTime(record.createdAt)}
+          </Typography>
+        ),
+        title: '建立時間',
+        width: 220,
+      },
+      {
+        key: 'actions',
+        render: (record: AdhocDirectiveRow): ReactElement =>
+          record.createdByMemberId === currentMemberId ? (
+            <Button
+              disabled={adhocSubmitting}
+              onClick={(): void =>
+                void handleCancelAdhocDirective(record.id)
+              }
+              size="minor"
+              variant="destructive-secondary"
+            >
+              撤回
+            </Button>
+          ) : (
+            <></>
+          ),
+        title: '操作',
+        width: 100,
+      },
+    ],
+    [adhocSubmitting, currentMemberId],
   );
 
   async function handleDecision({
@@ -631,42 +730,23 @@ export const InstanceTasksSection = forwardRef<
           {error}
         </Typography>
       ) : null}
-      <Table columns={taskColumns} dataSource={taskRows} fullWidth />
+      <div style={SECTION_TABLE_STYLE}>
+        <Table columns={taskColumns} dataSource={taskRows} fullWidth />
+      </div>
 
       {pendingAdhocDirectives.length > 0 ? (
-        <div style={MODAL_FORM_STYLE}>
-          <Typography component="h3" variant="body-highlight">
+        <>
+          <Typography component="h3" style={SECTION_SUBHEADING_STYLE} variant="h3">
             待生效的臨時設定
           </Typography>
-          {pendingAdhocDirectives.map((directive) => (
-            <div
-              key={directive.id}
-              style={{
-                alignItems: 'center',
-                display: 'flex',
-                gap: 12,
-                justifyContent: 'space-between',
-              }}
-            >
-              <Typography component="span" variant="body">
-                {ADHOC_MODE_LABELS[directive.type]} ·{' '}
-                {readAdhocDirectiveTargetLabel(directive, memberProfilesById)}
-              </Typography>
-              {directive.createdByMemberId === currentMemberId ? (
-                <Button
-                  disabled={adhocSubmitting}
-                  onClick={(): void =>
-                    void handleCancelAdhocDirective(directive.id)
-                  }
-                  size="minor"
-                  variant="destructive-secondary"
-                >
-                  撤回
-                </Button>
-              ) : null}
-            </div>
-          ))}
-        </div>
+          <div style={SECTION_TABLE_STYLE}>
+            <Table
+              columns={adhocDirectiveColumns}
+              dataSource={adhocDirectiveRows}
+              fullWidth
+            />
+          </div>
+        </>
       ) : null}
 
       {/* Reject modal */}
@@ -998,7 +1078,7 @@ function readAdhocDirectiveTargetLabel(
     if (value.memberIds?.length) {
       return value.memberIds
         .map(
-          (memberId) => memberProfilesById.get(memberId)?.name ?? memberId,
+          (memberId) => readMemberDisplayText(memberId, memberProfilesById),
         )
         .join('、');
     }

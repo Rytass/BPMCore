@@ -368,18 +368,22 @@ export function InstanceDetailView({
       setInstance(nextRecord.instance);
       setTasks(nextRecord.tasks);
       setWorkflowTokens(nextRecord.workflowTokens);
+      const nextAdhocDirectives = await listAdhocDirectives(
+        nextRecord.instance.id,
+      );
       const [
         nextTaskDecisions,
         nextMemberProfiles,
         nextAttachments,
         nextSignatures,
-        nextAdhocDirectives,
       ] = await Promise.all([
         readTaskDecisionsForTasks(nextRecord.tasks),
-        readMemberProfilesForTimeline(nextRecord),
+        readMemberProfilesForTimeline({
+          ...nextRecord,
+          adhocDirectives: nextAdhocDirectives,
+        }),
         listAttachments(nextRecord.instance.id),
         readInstanceSignatures(nextRecord.instance.id),
-        listAdhocDirectives(nextRecord.instance.id),
       ]);
       setTaskDecisions(nextTaskDecisions);
       setMemberProfiles(nextMemberProfiles);

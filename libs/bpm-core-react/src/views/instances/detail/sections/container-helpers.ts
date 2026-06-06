@@ -5,6 +5,7 @@
 
 import {
   ActivityLogRecord,
+  AdhocDirectiveRecord,
   MemberProfileRecord,
   TaskDecisionRecord,
   TaskRecord,
@@ -26,9 +27,11 @@ export {
 
 export async function readMemberProfilesForTimeline({
   activityLogs,
+  adhocDirectives = [],
   tasks,
 }: {
   readonly activityLogs: readonly ActivityLogRecord[];
+  readonly adhocDirectives?: readonly AdhocDirectiveRecord[];
   readonly tasks: readonly TaskRecord[];
 }): Promise<readonly MemberProfileRecord[]> {
   const memberIds = [
@@ -44,12 +47,32 @@ export async function readMemberProfilesForTimeline({
             step.to,
           ]),
         ),
+        ...adhocDirectives.flatMap((directive) => [
+          directive.createdByMemberId,
+          ...readAdhocDirectiveTargetMemberIds(directive.targetValueJson),
+        ]),
       ].filter(isPresentText),
     ),
   ];
 
   try {
     return await resolveMemberProfiles(memberIds);
+  } catch {
+    return [];
+  }
+}
+
+function readAdhocDirectiveTargetMemberIds(
+  targetValueJson: string,
+): readonly string[] {
+  try {
+    const value = JSON.parse(targetValueJson) as {
+      readonly memberIds?: readonly unknown[];
+    };
+
+    return (value.memberIds ?? []).filter(
+      (memberId): memberId is string => typeof memberId === 'string',
+    );
   } catch {
     return [];
   }
