@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.0 — 2026-06-06
+
+### Added
+
+- **Ad-hoc directives** — stage approvers can attach instance-scoped
+  directives that never modify the workflow template:
+  - `COUNTERSIGN` (臨時會簽): a parallel ad-hoc task joins the next user
+    task; the token only advances once every task on that stage is
+    approved.
+  - `PRE_APPROVAL` (臨時加簽): a blocking ad-hoc task on the current stage
+    with configurable rejection behavior (`REJECT_INSTANCE` /
+    `RETURN_TO_ORIGIN`).
+  - `STAGE_NOTIFY` / `COMPLETION_NOTIFY`: notify members, positions, org
+    units, or webhooks when the stage ends (any outcome) or the instance
+    reaches a terminal state.
+- GraphQL surface: mutations `requestAdhocCountersign`,
+  `requestAdhocPreApproval`, `configureAdhocStageNotification`,
+  `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query
+  `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by
+  the node's `allowAddSigner` flag.
+- `AdhocDirectiveEntity` (`task_adhoc_directives`) plus ad-hoc columns on
+  `tasks`, created by migration `AdhocDirectives0000000017000` (included
+  in `BPM_CORE_MIGRATIONS`). Run migrations before serving traffic.
+- Notification recipients of ad-hoc directives gain read access to the
+  instance they were notified about.
+- `NotificationService.createAdhocWorkflowNotifications` for ad-hoc
+  directive delivery.
+
+### Changed
+
+- `rejectInstance` now consumes open runtime state (open tokens and tasks,
+  including parallel branches and ad-hoc tasks) and supersedes lingering
+  actionable notifications, matching the cancel path.
+
 ## 0.2.0 — 2026-06-04
 
 ### Breaking

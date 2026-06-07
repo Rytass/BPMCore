@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.3.0 — 2026-06-06
+
+### Added
+
+- Ad-hoc directive workflow API (instance-scoped, never alters the
+  template): `requestAdhocCountersign`, `requestAdhocPreApproval`,
+  `configureAdhocStageNotification`, `configureAdhocCompletionNotification`,
+  `cancelAdhocDirective`, and `listAdhocDirectives`, plus the
+  `AdhocDirectiveRecord` / `AdhocTargetOptions` types and related enums.
+  See the README "Ad-hoc Directives" section.
+- `TaskRecord` now carries `isAdhoc`, `adhocType`, `adhocOriginTaskId`, and
+  `adhocDirectiveId` across every task query.
+
+### Fixed
+
+- `listAdhocDirectives` tolerates hosts (and test mocks) whose GraphQL layer
+  does not answer the `adhocDirectives` query yet by returning an empty list.
+
 ## 0.2.0 — 2026-06-04
 
 ### Breaking

@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.6.0 — 2026-06-06
+
+### Added
+
+- Ad-hoc directive UI on the instance detail page: 會簽 / 加簽 buttons
+  (shown when the node sets `allowAddSigner`), a 通知設定 button for
+  stage-end and completion notifications (member or webhook targets), task
+  rows tagged 「（臨時會簽）」/「（臨時加簽）」, and a 「待生效的臨時設定」
+  table where the creator can withdraw pending directives.
+
+### Changed
+
+- **`InstanceTasksSection` requires the new `adhocDirectives` prop.** Hosts
+  rendering the section standalone must fetch it with
+  `listAdhocDirectives` from `@rytass/bpm-core-client/workflow`;
+  `InstanceDetailView` wires it automatically.
+- Peer dependencies now require `@rytass/bpm-core-client` ^0.3.0 and
+  `@rytass/bpm-core-shared` ^0.3.0.
+
+### Fixed
+
+- Header action buttons keep stable identities across re-renders, so
+  approve / reject clicks are no longer lost while instance data loads.
+
 ## 0.5.0 — 2026-06-04
 
 Covers all changes since 0.4.1, including the undocumented internal
