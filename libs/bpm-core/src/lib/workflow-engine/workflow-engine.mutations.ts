@@ -91,7 +91,13 @@ export class WorkflowEngineMutations {
     );
   }
 
-  @Mutation(() => AdhocDirectiveEntity)
+  @Mutation(() => AdhocDirectiveEntity, {
+    description:
+      'Ad-hoc countersign: the target joins the NEXT stage as a parallel '
+      + 'task; the flow only advances once every task on that stage is '
+      + 'approved. Requires allowAddSigner on the node. Instance-scoped — '
+      + 'never alters the template.',
+  })
   async requestAdhocCountersign(
     @Args('taskId', { type: () => ID }) taskId: string,
     @Args('target') target: AdhocTargetInput,
@@ -107,7 +113,13 @@ export class WorkflowEngineMutations {
     });
   }
 
-  @Mutation(() => TaskEntity)
+  @Mutation(() => TaskEntity, {
+    description:
+      'Ad-hoc pre-approval: spawns a blocking task for the target on the '
+      + 'CURRENT stage; the flow stays until the pre-approver approves. '
+      + 'onReject chooses REJECT_INSTANCE or RETURN_TO_ORIGIN. Requires '
+      + 'allowAddSigner on the node. Instance-scoped.',
+  })
   async requestAdhocPreApproval(
     @Args('taskId', { type: () => ID }) taskId: string,
     @Args('target') target: AdhocTargetInput,
@@ -126,7 +138,11 @@ export class WorkflowEngineMutations {
     });
   }
 
-  @Mutation(() => AdhocDirectiveEntity)
+  @Mutation(() => AdhocDirectiveEntity, {
+    description:
+      'Notify the target once the CURRENT stage ends, regardless of '
+      + 'outcome (approved / rejected / returned). Instance-scoped.',
+  })
   async configureAdhocStageNotification(
     @Args('taskId', { type: () => ID }) taskId: string,
     @Args('input') input: AdhocNotificationInput,
@@ -141,7 +157,11 @@ export class WorkflowEngineMutations {
     });
   }
 
-  @Mutation(() => AdhocDirectiveEntity)
+  @Mutation(() => AdhocDirectiveEntity, {
+    description:
+      'Notify the target once the instance reaches a terminal state '
+      + '(APPROVED / REJECTED / CANCELLED). Instance-scoped.',
+  })
   async configureAdhocCompletionNotification(
     @Args('taskId', { type: () => ID }) taskId: string,
     @Args('input') input: AdhocNotificationInput,
@@ -156,7 +176,11 @@ export class WorkflowEngineMutations {
     });
   }
 
-  @Mutation(() => AdhocDirectiveEntity)
+  @Mutation(() => AdhocDirectiveEntity, {
+    description:
+      'Withdraw a still-pending ad-hoc directive. Only the creator may '
+      + 'withdraw it.',
+  })
   async cancelAdhocDirective(
     @Args('directiveId', { type: () => ID }) directiveId: string,
     @BPMCurrentMemberId() currentMemberId: string,

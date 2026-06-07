@@ -137,6 +137,27 @@ function MyLoginPage() {
 
 For SPA / Remix / Tanstack Router hosts, supply a `RouterAdapter` that bridges your router primitives.
 
+### Ad-hoc directives on the instance detail page
+
+The instance detail view ships UI for the four instance-scoped ad-hoc
+directives (they never modify the workflow template). When the signed-in
+member is the current task's approver, the page header shows:
+
+- **會簽** / **加簽** — ad-hoc countersign (joins the next stage in
+  parallel) and pre-approval (blocks the current stage until the added
+  signer approves, with a rejection-behavior choice). Both buttons only
+  appear when the template node sets `allowAddSigner: true`.
+- **通知設定** — stage-end and instance-completion notifications to
+  members or a webhook URL.
+
+Ad-hoc tasks appear in the tasks table tagged 「（臨時會簽）」/「（臨時加簽）」,
+and still-pending directives are listed under 「待生效的臨時設定」 where the
+creator can withdraw them. No extra wiring is required — the feature works
+wherever `InstanceDetailView` (or the `pages/instances/detail` shim) is
+mounted, provided the backend module is up to date. The standalone
+`InstanceTasksSection` component requires the `adhocDirectives` prop
+(fetch with `listAdhocDirectives` from `@rytass/bpm-core-client/workflow`).
+
 ### Mounting BPM under a non-root URL prefix
 
 If your host already owns the `/` namespace (Shuttle, an existing

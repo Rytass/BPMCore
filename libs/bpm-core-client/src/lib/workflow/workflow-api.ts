@@ -50,6 +50,16 @@ export type AdhocPreApprovalRejectBehavior =
   | 'REJECT_INSTANCE'
   | 'RETURN_TO_ORIGIN';
 
+/**
+ * Polymorphic target of an ad-hoc directive. Set exactly the fields matching
+ * `kind`:
+ *
+ * - `MEMBER` → `memberIds`
+ * - `POSITION` → `positionId`
+ * - `ORG_UNIT_MEMBER` → `orgUnitId` (+ optional `includeDescendants`)
+ * - `WEBHOOK` → `webhookUrl` (+ optional `webhookHeaders`); only valid for
+ *   the notification directives, never as countersign / pre-approval signers.
+ */
 export interface AdhocTargetOptions {
   readonly includeDescendants?: boolean;
   readonly kind: AdhocTargetKind;
@@ -60,6 +70,13 @@ export interface AdhocTargetOptions {
   readonly webhookUrl?: string;
 }
 
+/**
+ * An instance-scoped ad-hoc directive recorded by a stage approver. Directives
+ * never modify the workflow template — they only affect the single approval
+ * instance they were created on. `status` lifecycle: `PENDING` (waiting for
+ * its trigger) → `CONSUMED` (effect applied / notification sent) or
+ * `CANCELLED` (withdrawn, or dropped by a return / reject / cancel).
+ */
 export interface AdhocDirectiveRecord {
   readonly channels: readonly NotificationChannel[] | null;
   readonly comment: string | null;
@@ -1762,6 +1779,19 @@ function buildAdhocTargetInput(
   };
 }
 
+/**
+ * Ad-hoc countersign (臨時會簽): asks the given target to co-sign the NEXT
+ * stage of this instance. When the next user task is created, a parallel
+ * ad-hoc task is spawned for the target, and the flow only advances past
+ * that stage once BOTH the original task and every countersign task are
+ * approved. A countersigner's rejection rejects the whole instance.
+ *
+ * Only the current task's assignee/candidate may call this, and only on
+ * nodes whose template sets `allowAddSigner: true`. Returns the recorded
+ * directive (`PENDING` until the next user task consumes it; withdrawable
+ * via {@link cancelAdhocDirective} while pending). Never alters the
+ * workflow template.
+ */
 export async function requestAdhocCountersign({
   comment = null,
   target,
@@ -1783,6 +1813,19 @@ export async function requestAdhocCountersign({
   return data.requestAdhocCountersign;
 }
 
+/**
+ * Ad-hoc pre-approval (臨時加簽): immediately spawns a blocking ad-hoc task
+ * for the given target on the CURRENT stage. Even after the original
+ * approver approves, the flow stays on this stage until the pre-approver
+ * also approves. `onReject` decides what happens when the pre-approver
+ * rejects: `REJECT_INSTANCE` rejects the whole instance;
+ * `RETURN_TO_ORIGIN` hands the decision back to the original approver
+ * (re-opening their task if they had already approved).
+ *
+ * Only the current task's assignee/candidate may call this, and only on
+ * nodes whose template sets `allowAddSigner: true`. Returns the spawned
+ * ad-hoc task. Never alters the workflow template.
+ */
 export async function requestAdhocPreApproval({
   comment = null,
   onReject,
@@ -1811,6 +1854,17 @@ export async function requestAdhocPreApproval({
   return data.requestAdhocPreApproval;
 }
 
+/**
+ * Ad-hoc stage notification (臨時階段通知): notifies the target once the
+ * CURRENT stage ends — regardless of outcome (approved, rejected, or
+ * returned). Targets may be members, a position, an org unit, or a webhook
+ * URL. `channels` defaults to in-app notification.
+ *
+ * Available to the current task's assignee/candidate on any user-task node
+ * (no `allowAddSigner` requirement). Returns the recorded directive
+ * (withdrawable via {@link cancelAdhocDirective} while pending). Never
+ * alters the workflow template.
+ */
 export async function configureAdhocStageNotification({
   channels = null,
   target,
@@ -1839,6 +1893,17 @@ export async function configureAdhocStageNotification({
   return data.configureAdhocStageNotification;
 }
 
+/**
+ * Ad-hoc completion notification (臨時完成通知): notifies the target once
+ * the WHOLE instance reaches a terminal state (`APPROVED`, `REJECTED`, or
+ * `CANCELLED`). Targets may be members, a position, an org unit, or a
+ * webhook URL. `channels` defaults to in-app notification.
+ *
+ * Available to the current task's assignee/candidate on any user-task node
+ * (no `allowAddSigner` requirement). Returns the recorded directive
+ * (withdrawable via {@link cancelAdhocDirective} while pending). Never
+ * alters the workflow template.
+ */
 export async function configureAdhocCompletionNotification({
   channels = null,
   target,
@@ -1867,6 +1932,12 @@ export async function configureAdhocCompletionNotification({
   return data.configureAdhocCompletionNotification;
 }
 
+/**
+ * Withdraws a still-`PENDING` ad-hoc directive (countersign / stage-notify /
+ * completion-notify) before it takes effect. Only the directive's creator
+ * may withdraw it; pre-approval directives are consumed immediately on
+ * creation and therefore cannot be withdrawn.
+ */
 export async function cancelAdhocDirective(
   directiveId: string,
 ): Promise<AdhocDirectiveRecord> {
@@ -1882,6 +1953,11 @@ export async function cancelAdhocDirective(
   return data.cancelAdhocDirective;
 }
 
+/**
+ * Lists every ad-hoc directive recorded on one approval instance, ordered by
+ * creation time. Use the `status` field to find directives that are still
+ * pending (withdrawable) versus already consumed or cancelled.
+ */
 export async function listAdhocDirectives(
   instanceId: string,
 ): Promise<readonly AdhocDirectiveRecord[]> {
