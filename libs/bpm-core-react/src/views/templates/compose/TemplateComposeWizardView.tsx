@@ -18,13 +18,29 @@ import { ComposeReviewStep } from './steps/ComposeReviewStep';
 import { ComposeWorkflowStep } from './steps/ComposeWorkflowStep';
 import { useTemplateComposeWizard } from './use-template-compose-wizard';
 
+export interface TemplateComposeWizardViewProps {
+  /**
+   * Show the workflow designer AI assistant inside Step 1 (流程設計). Opt-in,
+   * default hidden — the server page maps `BPM_AI_ASSISTANT_ENABLED` to it.
+   */
+  readonly showAiAssistant?: boolean;
+  /**
+   * Whether the LLM backend is configured (host has an API key). When `false`
+   * the AI button shows disabled as a placeholder. Default `false`.
+   */
+  readonly aiAssistantAvailable?: boolean;
+}
+
 /**
  * Unified "form + flow" template creation wizard. Walks the user through
  * Step 0 表單設計 → Step 1 流程設計 → Step 2 檢視並發佈, then commits both
  * sides atomically through `composeApprovalTemplateWithForm`. Coexists with
  * the separate `/forms` and `/templates` entry points.
  */
-export function TemplateComposeWizardView(): ReactElement {
+export function TemplateComposeWizardView({
+  aiAssistantAvailable = false,
+  showAiAssistant = false,
+}: TemplateComposeWizardViewProps = {}): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const wizard = useTemplateComposeWizard();
@@ -77,10 +93,12 @@ export function TemplateComposeWizardView(): ReactElement {
 
           {wizard.currentStep === 1 ? (
             <ComposeWorkflowStep
+              aiAssistantAvailable={aiAssistantAvailable}
               formSchema={wizard.formSchema}
               initiatorPolicyCel={wizard.initiatorPolicyCel}
               onInitiatorPolicyChange={wizard.setInitiatorPolicyCel}
               onWorkflowChange={wizard.setWorkflowDefinition}
+              showAiAssistant={showAiAssistant}
               workflowDefinition={wizard.workflowDefinition}
             />
           ) : null}

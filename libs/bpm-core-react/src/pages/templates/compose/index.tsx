@@ -15,7 +15,17 @@ export const metadata: Metadata = {
  * ```ts
  * export { default, metadata } from '@rytass/bpm-core-react/pages/templates/compose';
  * ```
+ *
+ * The Step 1 (流程設計) embedded designer offers the same opt-in AI assistant
+ * as the standalone designer page. `BPM_AI_ASSISTANT_ENABLED` shows the button;
+ * `OPENAI_API_KEY` decides whether it's usable (else a disabled placeholder).
+ * Both are server-only env on the Next.js host.
  */
 export default function TemplateComposePage(): ReactElement {
-  return <TemplateComposeWizardView />;
+  return (
+    <TemplateComposeWizardView
+      aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
+      showAiAssistant={process.env.BPM_AI_ASSISTANT_ENABLED === 'true'}
+    />
+  );
 }

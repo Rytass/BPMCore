@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.3.0`, `libs/bpm-core-client@0.3.0`, `libs/bpm-core@0.3.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.6.0`.
+Last verified against: `libs/shared@0.3.0`, `libs/bpm-core-client@0.3.0`, `libs/bpm-core@0.3.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.7.0`.
 
 ---
 
@@ -697,7 +697,7 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 |---|---|---|
 | `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
 | `views/instances/new` | `InstanceNewView` | medium |
-| `views/templates/compose` | `TemplateComposeWizardView`, `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
+| `views/templates/compose` | `TemplateComposeWizardView`, `TemplateComposeWizardViewProps` (opt-in `showAiAssistant` / `aiAssistantAvailable` surface the Step 1 embedded-designer AI assistant), `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
@@ -728,7 +728,7 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
 | `pages/instances/new` | `/instances/new` | Yes | reads `?templateId=` |
 | `pages/templates` | `/templates` | No | — |
 | `pages/templates/categories` | `/templates/categories` | No | — |
-| `pages/templates/compose` | `/templates/compose` | No | — |
+| `pages/templates/compose` | `/templates/compose` | No | reads `BPM_AI_ASSISTANT_ENABLED` / `OPENAI_API_KEY` → Step 1 designer AI assistant |
 | `pages/templates/designer` | `/templates/[id]/designer` | Yes | `params.id` → `templateId` |
 | `pages/templates/versions` | `/templates/[id]/versions` | Yes | `params.id` → `templateId` |
 | `pages/settings/notifications` | `/settings/notifications` | No | — |

@@ -572,8 +572,10 @@ export interface TemplateDesignerViewProps {
    * When `true`, the component operates in embedded / wizard mode:
    * - No `readTemplateDesigner` call (no templateId needed).
    * - Only org data is loaded for approver pickers.
-   * - PageHeader / ContentHeader, form-version binding, dry-run, and the AI
-   *   drawer are hidden.
+   * - PageHeader / ContentHeader, form-version binding, and dry-run are hidden.
+   * - The AI assistant, when `showAiAssistant` is set, is offered through a
+   *   button in the side "流程工具" panel (the PageHeader button it normally
+   *   lives in is hidden here), and drives the same embedded canvas.
    * - Mutations flow out via `onWorkflowChange` / `onInitiatorPolicyChange`
    *   rather than save-draft / publish actions.
    * Default `false`.
@@ -1714,6 +1716,27 @@ export function TemplateDesignerView({
                   <Typography component="h2" variant="h3">
                     流程工具
                   </Typography>
+                  {embedded && showAiAssistant ? (
+                    <div style={TOOL_GROUP_STYLE}>
+                      <Typography color="text-neutral" variant="caption">
+                        AI 協助
+                      </Typography>
+                      <div style={BUTTON_ROW_STYLE}>
+                        <Button
+                          disabled={!aiAssistantAvailable}
+                          onClick={(): void =>
+                            setChatOpen((current) => !current)
+                          }
+                          size="sub"
+                          variant={chatOpen ? 'base-primary' : 'base-secondary'}
+                        >
+                          {aiAssistantAvailable
+                            ? 'AI 助理'
+                            : 'AI 助理（未設定）'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div style={TOOL_GROUP_STYLE}>
                     <Typography color="text-neutral" variant="caption">
                       動作節點
@@ -1768,7 +1791,7 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {!embedded && showDryRun ? renderDryRunModal() : null}
-        {!embedded && showAiAssistant && aiAssistantAvailable ? (
+        {showAiAssistant && aiAssistantAvailable ? (
           <WorkflowChatDrawer
             controller={controller}
             onClose={(): void => setChatOpen(false)}
