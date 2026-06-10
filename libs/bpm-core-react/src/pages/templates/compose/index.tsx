@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactElement } from 'react';
+import { connection } from 'next/server';
 import { TemplateComposeWizardView } from '../../../views/templates/compose';
 
 export const metadata: Metadata = {
@@ -20,8 +21,17 @@ export const metadata: Metadata = {
  * as the standalone designer page. `BPM_AI_ASSISTANT_ENABLED` shows the button;
  * `OPENAI_API_KEY` decides whether it's usable (else a disabled placeholder).
  * Both are server-only env on the Next.js host.
+ *
+ * `await connection()` opts this route out of static prerendering so those env
+ * vars are read at request time. They are NOT set during `next build` (only
+ * injected into the runtime container), so without this the flags would bake to
+ * `false` on a production build — unlike the `[id]` designer page, which is
+ * already dynamic by virtue of its route params. Survives the host's one-line
+ * re-export, so npm consumers don't need their own route-segment config.
  */
-export default function TemplateComposePage(): ReactElement {
+export default async function TemplateComposePage(): Promise<ReactElement> {
+  await connection();
+
   return (
     <TemplateComposeWizardView
       aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
