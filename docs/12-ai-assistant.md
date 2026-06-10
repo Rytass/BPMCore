@@ -4,6 +4,10 @@
 描述一個簽核流程，助理直接在 React Flow 畫布上把流程畫出來、改好。它驅動的是與
 UI 按鈕**同一套** workflow toolset，所以「助理能做的 = 使用者在頁面上能做的」。
 
+同一個助理也出現在**建立模板精靈**（`/templates/compose`）的第 2 步「流程設計」——
+該步驟內嵌的是 embedded 模式的 designer，AI 入口改放在右側「流程工具」面板的
+「AI 協助」按鈕（精靈沒有頂部工具列）。opt-in 條件與 standalone designer 完全相同。
+
 - **可選功能，預設隱藏**（lib 層）。各部署自行 opt-in。
 - 沒有 LLM 金鑰時：按鈕顯示為 **disabled 的 placeholder**（「AI 助理（未設定）」），不是壞掉的功能。
 
@@ -77,6 +81,8 @@ client 執行工具」的分工：
 
 designer 的 page shim（`pages/templates/designer`）會自動把上述 env 換成這兩個 prop：
 `showAiAssistant = BPM_AI_ASSISTANT_ENABLED === 'true'`、`aiAssistantAvailable = Boolean(OPENAI_API_KEY)`。
+建立模板精靈的 page shim（`pages/templates/compose`）以同樣方式把 env 傳給
+`TemplateComposeWizardView`，再往下傳到第 2 步的 embedded designer。
 
 ## 本地開發
 
