@@ -18,6 +18,7 @@
 | 10  | [BPM 嵌入式模組與 Auth 設計](./10-bpm-embedding-auth.md) | NestJS 宿主整合、Auth contract 與 API host 邊界   |
 | 11  | [Consumer Quickstart](./11-consumer-quickstart.md)       | 從零接入三個 npm package 的最短路徑               |
 | 12  | [流程設計器 AI 助理](./12-ai-assistant.md)               | LLM 聊天助理的使用、架構、環境變數與部署設定      |
+| 13  | [Ad-hoc 臨時指令](./13-adhoc-directives.md)              | 臨時會簽/加簽/階段通知/結案通知的流程與介接方式   |
 | ★   | [Public API Reference](./api-reference.md)               | 4 個 lib 套件所有 export 的完整清冊（必維護）     |
 
 ## Stack
