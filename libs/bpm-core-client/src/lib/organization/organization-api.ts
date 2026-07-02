@@ -226,7 +226,7 @@ export async function readOrganizationDashboard({
         searchText: $orgUnitSearchText
         type: $orgUnitType
       )
-      orgUnits {
+      orgUnits(all: true) {
         code
         createdAt
         deletedAt
