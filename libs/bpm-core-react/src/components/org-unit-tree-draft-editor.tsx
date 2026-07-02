@@ -140,6 +140,10 @@ const ORG_TREE_LARGE_NODE_COUNT = 60;
 // initial load of a large tree; nodes at or below this depth start collapsed so
 // only the root plus this many org levels show, and the user drills down.
 const ORG_TREE_INITIAL_EXPAND_DEPTH = 3;
+// A single expanded level wider than this puts too many nodes side by side for
+// the readable opening zoom (each level row costs ~276px per node), so the
+// initial expansion also stops before any level that would exceed this count.
+const ORG_TREE_INITIAL_EXPAND_LAYER_LIMIT = 12;
 
 const ORG_UNIT_TYPE_LABELS: Readonly<Record<Uppercase<OrgUnitType>, string>> = {
   COMPANY: '公司',
@@ -179,8 +183,10 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   );
   const [flowNodes, setFlowNodes] = useState<readonly OrgUnitTreeNode[]>([]);
   const flowInstanceRef = useRef<OrgUnitTreeFlowInstance | null>(null);
+  const pendingFocusNodeIdRef = useRef<string | null>(null);
 
   const handleToggleCollapse = useCallback((nodeId: string): void => {
+    pendingFocusNodeIdRef.current = nodeId;
     setCollapsedIds((current) => {
       const next = new Set(current);
 
@@ -291,10 +297,21 @@ export const OrgUnitTreeDraftEditor = forwardRef<
       return;
     }
 
-    instance.setCenter(rootCenter.x, rootCenter.y, {
-      duration: 0,
-      zoom: ORG_TREE_READABLE_ZOOM,
-    });
+    // Anchor on the root at a readable zoom. The synthetic root is horizontally
+    // centered over the layout, and the vertical anchor keeps the top ranks in
+    // view (or vertically centers the graph when it is shorter than the
+    // viewport) instead of centering on the root's own row only.
+    const halfViewportHeight =
+      ORG_TREE_VIEWPORT_REF_HEIGHT / (2 * ORG_TREE_READABLE_ZOOM);
+
+    instance.setCenter(
+      rootCenter.x,
+      Math.min(bounds.height / 2, halfViewportHeight),
+      {
+        duration: 0,
+        zoom: ORG_TREE_READABLE_ZOOM,
+      },
+    );
   }, []);
 
   const handleFlowInit = useCallback(
@@ -349,6 +366,34 @@ export const OrgUnitTreeDraftEditor = forwardRef<
 
     return (): void => window.cancelAnimationFrame(frame);
   }, [applyInitialViewport, orgUnits]);
+
+  // A collapse/expand re-runs the dagre layout and every node shifts, so
+  // re-center on the node the user toggled (keeping their zoom) — otherwise the
+  // toggled subtree can land entirely off-screen and the click looks dead.
+  useEffect((): void => {
+    const focusNodeId = pendingFocusNodeIdRef.current;
+
+    if (!focusNodeId) {
+      return;
+    }
+
+    pendingFocusNodeIdRef.current = null;
+
+    const instance = flowInstanceRef.current;
+    const focusNode = flowElements.nodes.find(
+      (node) => node.id === focusNodeId,
+    );
+
+    if (!instance || !focusNode) {
+      return;
+    }
+
+    instance.setCenter(
+      focusNode.position.x + (focusNode.width ?? ORG_TREE_NODE_WIDTH) / 2,
+      focusNode.position.y + (focusNode.height ?? ORG_TREE_NODE_HEIGHT) / 2,
+      { duration: 200, zoom: instance.getZoom() },
+    );
+  }, [flowElements.nodes]);
 
   const assignDraftParent = useCallback(
     (orgUnitId: string, parentId: string | null): void => {
@@ -579,7 +624,10 @@ function OrgUnitTreeNodeCard({
           上層：{data.parentLabel}
         </Typography>
       )}
-      <div className={`${styles.orgTreeNodeActions} nodrag`}>
+      {/* `nopan` keeps the pane's d3-zoom from capturing pointerdown on the
+          buttons: without it a real mouse click with ≥1px of jitter becomes a
+          pan gesture and d3 suppresses the click before it reaches onClick. */}
+      <div className={`${styles.orgTreeNodeActions} nodrag nopan`}>
         {data.childCount > 0 ? (
           <Button
             onClick={(event): void => {
@@ -687,23 +735,47 @@ function createDefaultCollapsedOrgUnitIds(
   }
 
   const childrenMap = buildOrgUnitChildrenMap(orgUnits, parentDraft);
+
+  // Expand level by level from the root, stopping at the depth limit or before
+  // any level that would put more than the layer limit nodes side by side —
+  // depth alone still lets a wide-but-shallow tree open thousands of px across.
+  const expanded = new Set<string>();
+  let frontier: readonly string[] = [ORG_TREE_ROOT_ID];
+  let depth = 0;
+
+  while (frontier.length > 0 && depth < ORG_TREE_INITIAL_EXPAND_DEPTH) {
+    const nextLayer = frontier.flatMap(
+      (nodeId) => childrenMap.get(nodeId) ?? [],
+    );
+
+    if (nextLayer.length > ORG_TREE_INITIAL_EXPAND_LAYER_LIMIT) {
+      break;
+    }
+
+    frontier.forEach((nodeId): void => {
+      expanded.add(nodeId);
+    });
+    frontier = nextLayer;
+    depth += 1;
+  }
+
   const collapsed = new Set<string>();
 
-  const visit = (nodeId: string, depth: number): void => {
+  const visit = (nodeId: string): void => {
     const children = childrenMap.get(nodeId) ?? [];
 
     if (children.length === 0) {
       return;
     }
 
-    if (depth >= ORG_TREE_INITIAL_EXPAND_DEPTH) {
+    if (!expanded.has(nodeId)) {
       collapsed.add(nodeId);
     }
 
-    children.forEach((childId): void => visit(childId, depth + 1));
+    children.forEach(visit);
   };
 
-  visit(ORG_TREE_ROOT_ID, 0);
+  visit(ORG_TREE_ROOT_ID);
 
   return collapsed;
 }
@@ -764,12 +836,16 @@ function createOrgUnitTreeFlowElements({
   const rootGraphNode = graph.node(ORG_TREE_ROOT_ID) as
     | Readonly<{ x: number; y: number }>
     | undefined;
+  // Dagre's alignment pass can shove the synthetic root to the far edge of an
+  // asymmetric layout (measured x=3326 on a 4030px-wide real tree), which both
+  // looks broken and puts a root-anchored viewport over empty margin, so the
+  // root is re-centered over the whole layout width.
   const rootCenter = {
-    x: rootGraphNode?.x ?? 0,
+    x: bounds.width > 0 ? bounds.width / 2 : (rootGraphNode?.x ?? 0),
     y: rootGraphNode?.y ?? 0,
   };
 
-  const rootNode = createOrgUnitTreeNode({
+  const positionedRootNode = createOrgUnitTreeNode({
     data: {
       changed: false,
       childCount: readChildCount(ORG_TREE_ROOT_ID),
@@ -793,6 +869,13 @@ function createOrgUnitTreeFlowElements({
     selected: selectedOrgUnitId === null,
     width: ORG_TREE_ROOT_WIDTH,
   });
+  const rootNode: OrgUnitTreeNode = {
+    ...positionedRootNode,
+    position: {
+      x: rootCenter.x - ORG_TREE_ROOT_WIDTH / 2,
+      y: rootCenter.y - ORG_TREE_ROOT_HEIGHT / 2,
+    },
+  };
   const orgNodes = visibleOrgUnits.map((orgUnit): OrgUnitTreeNode => {
     const parentId = parentDraft.get(orgUnit.id) ?? null;
     const parentLabel = readOrgUnitName(parentId, orgUnitsById);
