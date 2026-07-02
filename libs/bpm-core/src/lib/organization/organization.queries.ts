@@ -26,6 +26,8 @@ export class OrganizationQueries {
 
   @Query(() => [OrgUnitEntity])
   async orgUnits(
+    @Args('all', { nullable: true, type: () => Boolean })
+    all?: boolean | null,
     @Args('page', { nullable: true, type: () => Int }) page?: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize?: number | null,
@@ -37,6 +39,7 @@ export class OrganizationQueries {
     type?: OrgUnitTypeEnum | null,
   ): Promise<readonly OrgUnitEntity[]> {
     return this.organizationService.listOrgUnits({
+      all,
       page,
       pageSize,
       parentId,

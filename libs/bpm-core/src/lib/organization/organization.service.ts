@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -46,6 +47,17 @@ import { OrganizationSummaryObject } from './organization-summary.object';
 
 const ROOT_PATH_PREFIX = 'org';
 const BUSINESS_TIME_ZONE = 'Asia/Taipei';
+
+/**
+ * Upper bound for a single paginated page. Callers that need the complete list
+ * (org tree, id->name mapping, dropdowns) must instead opt in explicitly via
+ * `all: true` (or, historically, by omitting `pageSize`), which bypasses this
+ * cap. A `pageSize` larger than this is clamped and logged rather than silently
+ * truncated.
+ */
+const MAX_PAGE_SIZE = 100;
+
+const paginationLogger = new Logger('OrganizationPagination');
 
 @Injectable()
 export class OrganizationService {
@@ -275,12 +287,14 @@ export class OrganizationService {
   }
 
   async listOrgUnits({
+    all,
     page,
     pageSize,
     parentId,
     searchText,
     type,
   }: {
+    readonly all?: boolean | null;
     readonly page?: number | null;
     readonly pageSize?: number | null;
     readonly parentId?: string | null;
@@ -288,7 +302,7 @@ export class OrganizationService {
     readonly type?: OrgUnitTypeEnum | null;
   } = {}): Promise<readonly OrgUnitEntity[]> {
     return this.orgUnitRepository.find({
-      ...createPaginationFindOptions({ page, pageSize }),
+      ...createPaginationFindOptions({ all, page, pageSize }),
       order: { path: 'ASC' },
       where: createOrgUnitWhere({ parentId, searchText, type }),
     });
@@ -1090,12 +1104,18 @@ function createManagerResolutionWhere({
 }
 
 function createPaginationFindOptions({
+  all,
   page,
   pageSize,
 }: {
+  readonly all?: boolean | null;
   readonly page?: number | null;
   readonly pageSize?: number | null;
 }): { readonly skip?: number; readonly take?: number } {
+  if (all) {
+    return {};
+  }
+
   const normalizedPageSize = normalizePageSize(pageSize);
 
   if (!normalizedPageSize) {
@@ -1121,7 +1141,16 @@ function normalizePageSize(pageSize?: number | null): number | null {
     return null;
   }
 
-  return Math.min(100, Math.max(1, Math.floor(pageSize)));
+  const flooredPageSize = Math.max(1, Math.floor(pageSize));
+
+  if (flooredPageSize > MAX_PAGE_SIZE) {
+    paginationLogger.warn(
+      `Requested pageSize ${flooredPageSize} exceeds the maximum of ${MAX_PAGE_SIZE} and was clamped. ` +
+        `To fetch the complete list, pass all: true (or omit pageSize) instead of an oversized pageSize.`,
+    );
+  }
+
+  return Math.min(MAX_PAGE_SIZE, flooredPageSize);
 }
 
 function collectOrgUnitTreeDraftIds(
