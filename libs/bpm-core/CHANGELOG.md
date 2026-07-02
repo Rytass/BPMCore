@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.4.0 — 2026-07-02
+
+### Added
+
+- `all` option on `listOrgUnits` and the `orgUnits` GraphQL query that bypasses
+  pagination and returns the complete list, giving org tree / full-scan
+  consumers an explicit entry instead of relying on the implicit
+  "omit `pageSize` = return everything" behavior.
+
+### Changed
+
+- Oversized `pageSize` values are now clamped against a named `MAX_PAGE_SIZE`
+  constant and a warning is logged, so requests above the cap are clamped
+  loudly rather than silently truncated. Existing pagination behavior is
+  otherwise unchanged.
+- Peer dependency `@rytass/bpm-core-shared` now requires ^0.4.0.
+
 ## 0.3.0 — 2026-06-06
 
 ### Added

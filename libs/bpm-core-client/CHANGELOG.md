@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.4.0 — 2026-07-02
+
+### Fixed
+
+- `readOrganizationDashboard` now requests the full org unit list with
+  `orgUnits(all: true)` so id->name mapping, dropdowns, and the org tree keep
+  working for organizations with more than 100 units, instead of depending on
+  the implicit unpaginated behavior.
+
+### Changed
+
+- Peer dependency `@rytass/bpm-core-shared` now requires ^0.4.0.
+
 ## 0.3.0 — 2026-06-06
 
 ### Added

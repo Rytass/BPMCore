@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-nestjs-module",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Embeddable NestJS BPM approval workflow module: workflow engine, approval templates, forms, organization/member contracts, attachments, signatures, notifications, delegation, and TypeORM migrations.",
   "keywords": [
     "bpm",
@@ -141,7 +141,7 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/graphql": "^13.4.0",
     "@nestjs/typeorm": "^11.0.1",
-    "@rytass/bpm-core-shared": "^0.3.0",
+    "@rytass/bpm-core-shared": "^0.4.0",
     "@rytass/secret-adapter-vault-nestjs": "^0.4.5 || ^0.5.0",
     "express": "^4.0.0 || ^5.0.0",
     "graphql": "^16.0.0",

@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.1 — 2026-07-02
+
+### Fixed
+
+- Large organization trees now fit inside the tree editor: `minZoom` is derived
+  from the dagre layout bounds instead of a fixed `0.25`, so `fitView` can
+  shrink very wide/deep trees enough to reveal the whole graph rather than
+  clipping it off-screen. The MiniMap is hidden above 80 nodes, where it
+  degrades into an unreadable black block.
+
+### Changed
+
+- Peer dependencies now require `@rytass/bpm-core-client` ^0.4.0 and
+  `@rytass/bpm-core-shared` ^0.4.0.
+
+## 0.7.0 — 2026-06-10
+
+### Added
+
+- Workflow AI assistant surfaced in the template compose wizard.
+
 ## 0.6.0 — 2026-06-06
 
 ### Added
