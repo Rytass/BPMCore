@@ -88,6 +88,22 @@ const ORG_TREE_ROOT_WIDTH = 232;
 const ORG_TREE_ROOT_HEIGHT = 86;
 const ORG_TREE_DROP_DISTANCE = 320;
 
+// Zoom bounds for the ReactFlow canvas. `minZoom` is computed per layout so
+// that fitView can shrink a very wide/tall tree enough to reveal the whole
+// graph; a fixed minZoom (e.g. 0.25) leaves huge trees clipped off-screen.
+const ORG_TREE_MAX_ZOOM = 1.4;
+const ORG_TREE_BASE_MIN_ZOOM = 0.25;
+// Absolute lowest zoom; keeps even an extremely wide tree (tens of thousands of
+// px across) fully fittable while never reaching 0.
+const ORG_TREE_MIN_ZOOM_FLOOR = 0.005;
+// Reference viewport side (px) the fit-all zoom should still work in; minZoom is
+// derived as reference / longest-graph-side, clamped between the floor and base.
+// A small reference keeps fitView from being clamped on narrow viewports.
+const ORG_TREE_MIN_ZOOM_REFERENCE = 250;
+// Above this node count the MiniMap turns into an unreadable black block and
+// adds render cost, so it is hidden for large trees.
+const ORG_TREE_MINIMAP_MAX_NODES = 80;
+
 const ORG_UNIT_TYPE_LABELS: Readonly<Record<Uppercase<OrgUnitType>, string>> = {
   COMPANY: '公司',
   DEPARTMENT: '部門',
@@ -135,6 +151,7 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   );
   const flowElements = useMemo(
     (): Readonly<{
+      bounds: Readonly<{ height: number; width: number }>;
       edges: readonly OrgUnitTreeEdge[];
       nodes: readonly OrgUnitTreeNode[];
     }> =>
@@ -171,6 +188,25 @@ export const OrgUnitTreeDraftEditor = forwardRef<
     ],
   );
   const hasDraftChanges = draftChanges.length > 0;
+  const minZoom = useMemo((): number => {
+    const largestSide = Math.max(
+      flowElements.bounds.width,
+      flowElements.bounds.height,
+    );
+
+    if (largestSide <= 0) {
+      return ORG_TREE_BASE_MIN_ZOOM;
+    }
+
+    return Math.min(
+      ORG_TREE_BASE_MIN_ZOOM,
+      Math.max(
+        ORG_TREE_MIN_ZOOM_FLOOR,
+        ORG_TREE_MIN_ZOOM_REFERENCE / largestSide,
+      ),
+    );
+  }, [flowElements.bounds.height, flowElements.bounds.width]);
+  const showMiniMap = orgUnits.length <= ORG_TREE_MINIMAP_MAX_NODES;
 
   useImperativeHandle(
     ref,
@@ -319,15 +355,15 @@ export const OrgUnitTreeDraftEditor = forwardRef<
           connectionMode={ConnectionMode.Strict}
           edges={[...flowElements.edges]}
           fitView
-          fitViewOptions={{ padding: 0.18 }}
+          fitViewOptions={{ minZoom, padding: 0.18 }}
           isValidConnection={(connection): boolean =>
             isOrgTreeConnectionValid(
               { source: connection.source, target: connection.target },
               parentDraft,
             )
           }
-          maxZoom={1.4}
-          minZoom={0.25}
+          maxZoom={ORG_TREE_MAX_ZOOM}
+          minZoom={minZoom}
           nodeTypes={orgUnitTreeNodeTypes}
           nodes={[...flowNodes]}
           nodesConnectable={isEditing}
@@ -353,7 +389,7 @@ export const OrgUnitTreeDraftEditor = forwardRef<
         >
           <Background />
           <Controls />
-          <MiniMap pannable zoomable />
+          {showMiniMap ? <MiniMap pannable zoomable /> : null}
         </ReactFlow>
       </div>
     </div>
@@ -484,6 +520,7 @@ function createOrgUnitTreeFlowElements({
   readonly parentDraft: OrgUnitParentDraftMap;
   readonly selectedOrgUnitId: string | null;
 }): Readonly<{
+  bounds: Readonly<{ height: number; width: number }>;
   edges: readonly OrgUnitTreeEdge[];
   nodes: readonly OrgUnitTreeNode[];
 }> {
@@ -505,6 +542,12 @@ function createOrgUnitTreeFlowElements({
     graph.setEdge(parentId ?? ORG_TREE_ROOT_ID, orgUnit.id);
   });
   dagre.layout(graph);
+
+  const graphLabel = graph.graph();
+  const bounds = {
+    height: graphLabel.height ?? 0,
+    width: graphLabel.width ?? 0,
+  };
 
   const rootNode = createOrgUnitTreeNode({
     data: {
@@ -573,6 +616,7 @@ function createOrgUnitTreeFlowElements({
   });
 
   return {
+    bounds,
     edges,
     nodes: [rootNode, ...orgNodes],
   };
