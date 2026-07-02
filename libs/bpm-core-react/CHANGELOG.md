@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.2 — 2026-07-02
+
+### Fixed
+
+- The organization tree editor now stays readable and interactive for large,
+  very wide trees. Instead of `fitView` shrinking a ~19:1 tree to an unreadable
+  line (which also made manual Zoom In feel stuck), large trees open at a
+  readable zoom anchored on the root node while small trees still fit to view.
+
+### Added
+
+- Collapsible subtrees in the organization tree editor: every node with
+  children shows a 收合 / 展開 toggle, and large trees start expanded to only
+  the first few levels so they open readable and the user drills down. The
+  MiniMap stays hidden for large trees.
+
 ## 0.7.1 — 2026-07-02
 
 ### Fixed
