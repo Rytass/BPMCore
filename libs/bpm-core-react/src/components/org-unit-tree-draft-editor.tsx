@@ -7,6 +7,7 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -24,6 +25,7 @@ import {
   OnNodesChange,
   Position,
   ReactFlow,
+  ReactFlowInstance,
   applyNodeChanges,
 } from '@xyflow/react';
 import * as dagre from 'dagre';
@@ -42,13 +44,16 @@ import styles from './org-unit-tree-draft-editor.module.scss';
 
 type OrgUnitTreeFlowData = Readonly<{
   changed: boolean;
+  childCount: number;
   code: string;
+  collapsed: boolean;
   deleted: boolean;
   isEditing: boolean;
   isSyntheticRoot: boolean;
   name: string;
   onCreateChild: (parentId: string | null) => void;
   onEdit: (orgUnitId: string) => void;
+  onToggleCollapse: (nodeId: string) => void;
   orgUnitId: string | null;
   parentLabel: string;
   path: string;
@@ -57,6 +62,17 @@ type OrgUnitTreeFlowData = Readonly<{
 
 type OrgUnitTreeNode = Node<OrgUnitTreeFlowData, 'orgUnit'>;
 type OrgUnitTreeEdge = Edge<Record<string, never>>;
+type OrgUnitTreeFlowInstance = ReactFlowInstance<
+  OrgUnitTreeNode,
+  OrgUnitTreeEdge
+>;
+
+type OrgUnitTreeFlowElements = Readonly<{
+  bounds: Readonly<{ height: number; width: number }>;
+  edges: readonly OrgUnitTreeEdge[];
+  nodes: readonly OrgUnitTreeNode[];
+  rootCenter: Readonly<{ x: number; y: number }>;
+}>;
 
 export type OrgUnitTreeDraftEditorHandle = Readonly<{
   cancelEditing: () => void;
@@ -104,6 +120,27 @@ const ORG_TREE_MIN_ZOOM_REFERENCE = 250;
 // adds render cost, so it is hidden for large trees.
 const ORG_TREE_MINIMAP_MAX_NODES = 80;
 
+// Initial viewport strategy. A very wide/deep tree fitted to the whole graph
+// collapses into an unreadable thin line at ~0.05 zoom, so instead of fitView
+// we open large trees at a readable zoom anchored on the root node and let the
+// user pan/zoom. Small trees still open with fitView.
+const ORG_TREE_READABLE_ZOOM = 0.85;
+// If fitView would land at or above this zoom the tree is small enough to open
+// fully; below it we switch to the readable-anchored-on-root strategy.
+const ORG_TREE_FIT_READABLE_MIN_ZOOM = 0.7;
+// Reference viewport used to estimate the fitView zoom before the canvas is
+// measured (the real canvas is ~1000-1400 x 520-720).
+const ORG_TREE_VIEWPORT_REF_WIDTH = 1200;
+const ORG_TREE_VIEWPORT_REF_HEIGHT = 600;
+// Above this visible-node count a freshly loaded large tree starts collapsed to
+// `ORG_TREE_INITIAL_EXPAND_DEPTH` levels so it opens readable instead of
+// exploding into hundreds of side-by-side nodes.
+const ORG_TREE_LARGE_NODE_COUNT = 60;
+// Depth (synthetic root = 0, top-level org units = 1) kept expanded on the
+// initial load of a large tree; nodes at or below this depth start collapsed so
+// only the root plus this many org levels show, and the user drills down.
+const ORG_TREE_INITIAL_EXPAND_DEPTH = 3;
+
 const ORG_UNIT_TYPE_LABELS: Readonly<Record<Uppercase<OrgUnitType>, string>> = {
   COMPANY: '公司',
   DEPARTMENT: '部門',
@@ -137,7 +174,25 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   const [parentDraft, setParentDraft] = useState<OrgUnitParentDraftMap>(() =>
     createOrgUnitParentDraftMap(orgUnits),
   );
+  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(() =>
+    createDefaultCollapsedOrgUnitIds(orgUnits, createOrgUnitParentDraftMap(orgUnits)),
+  );
   const [flowNodes, setFlowNodes] = useState<readonly OrgUnitTreeNode[]>([]);
+  const flowInstanceRef = useRef<OrgUnitTreeFlowInstance | null>(null);
+
+  const handleToggleCollapse = useCallback((nodeId: string): void => {
+    setCollapsedIds((current) => {
+      const next = new Set(current);
+
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+
+      return next;
+    });
+  }, []);
 
   const orgUnitsById = useMemo(
     (): ReadonlyMap<string, OrgUnitRecord> =>
@@ -150,12 +205,9 @@ export const OrgUnitTreeDraftEditor = forwardRef<
     [orgUnits, parentDraft],
   );
   const flowElements = useMemo(
-    (): Readonly<{
-      bounds: Readonly<{ height: number; width: number }>;
-      edges: readonly OrgUnitTreeEdge[];
-      nodes: readonly OrgUnitTreeNode[];
-    }> =>
+    (): OrgUnitTreeFlowElements =>
       createOrgUnitTreeFlowElements({
+        collapsedIds,
         isEditing,
         onCreateChild: (parentId): void => {
           if (parentId) {
@@ -171,12 +223,15 @@ export const OrgUnitTreeDraftEditor = forwardRef<
             onEditOrgUnit(orgUnit);
           }
         },
+        onToggleCollapse: handleToggleCollapse,
         orgUnits,
         orgUnitsById,
         parentDraft,
         selectedOrgUnitId,
       }),
     [
+      collapsedIds,
+      handleToggleCollapse,
       isEditing,
       onCreateChild,
       onCreateRoot,
@@ -187,6 +242,8 @@ export const OrgUnitTreeDraftEditor = forwardRef<
       selectedOrgUnitId,
     ],
   );
+  const flowElementsRef = useRef(flowElements);
+  flowElementsRef.current = flowElements;
   const hasDraftChanges = draftChanges.length > 0;
   const minZoom = useMemo((): number => {
     const largestSide = Math.max(
@@ -208,6 +265,46 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   }, [flowElements.bounds.height, flowElements.bounds.width]);
   const showMiniMap = orgUnits.length <= ORG_TREE_MINIMAP_MAX_NODES;
 
+  const applyInitialViewport = useCallback((): void => {
+    const instance = flowInstanceRef.current;
+
+    if (!instance) {
+      return;
+    }
+
+    const { bounds, rootCenter } = flowElementsRef.current;
+    const widthZoom =
+      bounds.width > 0
+        ? ORG_TREE_VIEWPORT_REF_WIDTH / bounds.width
+        : Number.POSITIVE_INFINITY;
+    const heightZoom =
+      bounds.height > 0
+        ? ORG_TREE_VIEWPORT_REF_HEIGHT / bounds.height
+        : Number.POSITIVE_INFINITY;
+    const estimatedFitZoom = Math.min(widthZoom, heightZoom);
+
+    if (
+      !Number.isFinite(estimatedFitZoom) ||
+      estimatedFitZoom >= ORG_TREE_FIT_READABLE_MIN_ZOOM
+    ) {
+      instance.fitView({ padding: 0.18 });
+      return;
+    }
+
+    instance.setCenter(rootCenter.x, rootCenter.y, {
+      duration: 0,
+      zoom: ORG_TREE_READABLE_ZOOM,
+    });
+  }, []);
+
+  const handleFlowInit = useCallback(
+    (instance: OrgUnitTreeFlowInstance): void => {
+      flowInstanceRef.current = instance;
+      applyInitialViewport();
+    },
+    [applyInitialViewport],
+  );
+
   useImperativeHandle(
     ref,
     (): OrgUnitTreeDraftEditorHandle => ({
@@ -222,7 +319,12 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   }, [hasDraftChanges, isEditing, onStateChange]);
 
   useEffect((): void => {
-    setParentDraft(createOrgUnitParentDraftMap(orgUnits));
+    const nextParentDraft = createOrgUnitParentDraftMap(orgUnits);
+
+    setParentDraft(nextParentDraft);
+    setCollapsedIds(
+      createDefaultCollapsedOrgUnitIds(orgUnits, nextParentDraft),
+    );
     setSelectedOrgUnitId(null);
     setDraftMessage(null);
     setIsEditing(false);
@@ -231,6 +333,22 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   useEffect((): void => {
     setFlowNodes(flowElements.nodes);
   }, [flowElements.nodes]);
+
+  // Apply the opening viewport once per dataset load: fitView for small trees,
+  // but a readable zoom anchored on the root node for large/very-wide trees so
+  // they do not collapse into an unreadable line. Runs on dataset changes only
+  // (not on collapse/selection) so the user's own pan/zoom is preserved.
+  useEffect((): (() => void) => {
+    if (typeof window === 'undefined') {
+      return (): void => undefined;
+    }
+
+    const frame = window.requestAnimationFrame((): void => {
+      applyInitialViewport();
+    });
+
+    return (): void => window.cancelAnimationFrame(frame);
+  }, [applyInitialViewport, orgUnits]);
 
   const assignDraftParent = useCallback(
     (orgUnitId: string, parentId: string | null): void => {
@@ -354,7 +472,6 @@ export const OrgUnitTreeDraftEditor = forwardRef<
         <ReactFlow
           connectionMode={ConnectionMode.Strict}
           edges={[...flowElements.edges]}
-          fitView
           fitViewOptions={{ minZoom, padding: 0.18 }}
           isValidConnection={(connection): boolean =>
             isOrgTreeConnectionValid(
@@ -369,6 +486,7 @@ export const OrgUnitTreeDraftEditor = forwardRef<
           nodesConnectable={isEditing}
           nodesDraggable={isEditing}
           onConnect={handleConnect}
+          onInit={handleFlowInit}
           onNodeClick={(_, node): void => {
             setSelectedOrgUnitId(node.id === ORG_TREE_ROOT_ID ? null : node.id);
           }}
@@ -461,7 +579,21 @@ function OrgUnitTreeNodeCard({
           上層：{data.parentLabel}
         </Typography>
       )}
-      <div className={styles.orgTreeNodeActions}>
+      <div className={`${styles.orgTreeNodeActions} nodrag`}>
+        {data.childCount > 0 ? (
+          <Button
+            onClick={(event): void => {
+              event.stopPropagation();
+              data.onToggleCollapse(data.orgUnitId ?? ORG_TREE_ROOT_ID);
+            }}
+            size="sub"
+            variant="base-secondary"
+          >
+            {data.collapsed
+              ? `展開 (${data.childCount})`
+              : `收合 (${data.childCount})`}
+          </Button>
+        ) : null}
         {data.isSyntheticRoot ? (
           <Button
             icon={PlusIcon}
@@ -503,27 +635,108 @@ function OrgUnitTreeNodeCard({
   );
 }
 
+function buildOrgUnitChildrenMap(
+  orgUnits: readonly OrgUnitRecord[],
+  parentDraft: OrgUnitParentDraftMap,
+): ReadonlyMap<string, readonly string[]> {
+  const childrenMap = new Map<string, readonly string[]>();
+
+  orgUnits.forEach((orgUnit): void => {
+    const parentKey = parentDraft.get(orgUnit.id) ?? ORG_TREE_ROOT_ID;
+
+    childrenMap.set(parentKey, [
+      ...(childrenMap.get(parentKey) ?? []),
+      orgUnit.id,
+    ]);
+  });
+
+  return childrenMap;
+}
+
+function collectVisibleOrgUnitIds({
+  childrenMap,
+  collapsedIds,
+}: {
+  readonly childrenMap: ReadonlyMap<string, readonly string[]>;
+  readonly collapsedIds: ReadonlySet<string>;
+}): ReadonlySet<string> {
+  const visible = new Set<string>();
+
+  const visit = (nodeId: string): void => {
+    if (collapsedIds.has(nodeId)) {
+      return;
+    }
+
+    (childrenMap.get(nodeId) ?? []).forEach((childId): void => {
+      visible.add(childId);
+      visit(childId);
+    });
+  };
+
+  visit(ORG_TREE_ROOT_ID);
+
+  return visible;
+}
+
+function createDefaultCollapsedOrgUnitIds(
+  orgUnits: readonly OrgUnitRecord[],
+  parentDraft: OrgUnitParentDraftMap,
+): ReadonlySet<string> {
+  if (orgUnits.length <= ORG_TREE_LARGE_NODE_COUNT) {
+    return new Set<string>();
+  }
+
+  const childrenMap = buildOrgUnitChildrenMap(orgUnits, parentDraft);
+  const collapsed = new Set<string>();
+
+  const visit = (nodeId: string, depth: number): void => {
+    const children = childrenMap.get(nodeId) ?? [];
+
+    if (children.length === 0) {
+      return;
+    }
+
+    if (depth >= ORG_TREE_INITIAL_EXPAND_DEPTH) {
+      collapsed.add(nodeId);
+    }
+
+    children.forEach((childId): void => visit(childId, depth + 1));
+  };
+
+  visit(ORG_TREE_ROOT_ID, 0);
+
+  return collapsed;
+}
+
 function createOrgUnitTreeFlowElements({
+  collapsedIds,
   isEditing,
   onCreateChild,
   onEditOrgUnit,
+  onToggleCollapse,
   orgUnits,
   orgUnitsById,
   parentDraft,
   selectedOrgUnitId,
 }: {
+  readonly collapsedIds: ReadonlySet<string>;
   readonly isEditing: boolean;
   readonly onCreateChild: (parentId: string | null) => void;
   readonly onEditOrgUnit: (orgUnitId: string) => void;
+  readonly onToggleCollapse: (nodeId: string) => void;
   readonly orgUnits: readonly OrgUnitRecord[];
   readonly orgUnitsById: ReadonlyMap<string, OrgUnitRecord>;
   readonly parentDraft: OrgUnitParentDraftMap;
   readonly selectedOrgUnitId: string | null;
-}): Readonly<{
-  bounds: Readonly<{ height: number; width: number }>;
-  edges: readonly OrgUnitTreeEdge[];
-  nodes: readonly OrgUnitTreeNode[];
-}> {
+}): OrgUnitTreeFlowElements {
+  const childrenMap = buildOrgUnitChildrenMap(orgUnits, parentDraft);
+  const visibleIds = collectVisibleOrgUnitIds({ childrenMap, collapsedIds });
+  const visibleOrgUnits = orgUnits.filter((orgUnit) =>
+    visibleIds.has(orgUnit.id),
+  );
+  const readChildCount = (nodeId: string): number =>
+    childrenMap.get(nodeId)?.length ?? 0;
+
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ marginx: 36, marginy: 36, nodesep: 44, rankdir: 'TB' });
@@ -531,13 +744,13 @@ function createOrgUnitTreeFlowElements({
     height: ORG_TREE_ROOT_HEIGHT,
     width: ORG_TREE_ROOT_WIDTH,
   });
-  orgUnits.forEach((orgUnit): void => {
+  visibleOrgUnits.forEach((orgUnit): void => {
     graph.setNode(orgUnit.id, {
       height: ORG_TREE_NODE_HEIGHT,
       width: ORG_TREE_NODE_WIDTH,
     });
   });
-  orgUnits.forEach((orgUnit): void => {
+  visibleOrgUnits.forEach((orgUnit): void => {
     const parentId = parentDraft.get(orgUnit.id) ?? null;
     graph.setEdge(parentId ?? ORG_TREE_ROOT_ID, orgUnit.id);
   });
@@ -548,17 +761,27 @@ function createOrgUnitTreeFlowElements({
     height: graphLabel.height ?? 0,
     width: graphLabel.width ?? 0,
   };
+  const rootGraphNode = graph.node(ORG_TREE_ROOT_ID) as
+    | Readonly<{ x: number; y: number }>
+    | undefined;
+  const rootCenter = {
+    x: rootGraphNode?.x ?? 0,
+    y: rootGraphNode?.y ?? 0,
+  };
 
   const rootNode = createOrgUnitTreeNode({
     data: {
       changed: false,
+      childCount: readChildCount(ORG_TREE_ROOT_ID),
       code: ORG_TREE_ROOT_ID,
+      collapsed: collapsedIds.has(ORG_TREE_ROOT_ID),
       deleted: false,
       isEditing,
       isSyntheticRoot: true,
       name: '組織根節點',
       onCreateChild,
       onEdit: onEditOrgUnit,
+      onToggleCollapse,
       orgUnitId: null,
       parentLabel: '',
       path: '',
@@ -570,20 +793,23 @@ function createOrgUnitTreeFlowElements({
     selected: selectedOrgUnitId === null,
     width: ORG_TREE_ROOT_WIDTH,
   });
-  const orgNodes = orgUnits.map((orgUnit): OrgUnitTreeNode => {
+  const orgNodes = visibleOrgUnits.map((orgUnit): OrgUnitTreeNode => {
     const parentId = parentDraft.get(orgUnit.id) ?? null;
     const parentLabel = readOrgUnitName(parentId, orgUnitsById);
 
     return createOrgUnitTreeNode({
       data: {
         changed: parentId !== orgUnit.parentId,
+        childCount: readChildCount(orgUnit.id),
         code: orgUnit.code,
+        collapsed: collapsedIds.has(orgUnit.id),
         deleted: Boolean(orgUnit.deletedAt),
         isEditing,
         isSyntheticRoot: false,
         name: orgUnit.name,
         onCreateChild,
         onEdit: onEditOrgUnit,
+        onToggleCollapse,
         orgUnitId: orgUnit.id,
         parentLabel,
         path: orgUnit.path,
@@ -596,7 +822,7 @@ function createOrgUnitTreeFlowElements({
       width: ORG_TREE_NODE_WIDTH,
     });
   });
-  const edges = orgUnits.map((orgUnit): OrgUnitTreeEdge => {
+  const edges = visibleOrgUnits.map((orgUnit): OrgUnitTreeEdge => {
     const parentId = parentDraft.get(orgUnit.id) ?? null;
     const changed = parentId !== orgUnit.parentId;
 
@@ -619,6 +845,7 @@ function createOrgUnitTreeFlowElements({
     bounds,
     edges,
     nodes: [rootNode, ...orgNodes],
+    rootCenter,
   };
 }
 
