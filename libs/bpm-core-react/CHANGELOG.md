@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.3 — 2026-07-02
+
+### Fixed
+
+- The organization tree editor's readable opening viewport now actually shows
+  the tree: dagre can place the synthetic root at the far edge of an asymmetric
+  layout, so anchoring on the root's own coordinates opened onto empty margin
+  with every other node off-screen. The root is now re-centered over the layout
+  width and the opening viewport anchors on the layout's horizontal center and
+  top ranks.
+- The 收合 / 展開 (and 編輯 / 新增) buttons on tree node cards now respond to
+  real mouse clicks. The node action row was only marked `nodrag`, so a click
+  with ≥1px of pointer jitter was captured by the canvas pan gesture and the
+  click was suppressed before reaching the button; the row is now also `nopan`.
+- The initial expansion of a large organization tree now also stops before any
+  level that would render more than 12 sibling nodes side by side — depth alone
+  still let a wide level open thousands of pixels across.
+- Collapsing or expanding a subtree re-centers the viewport on the toggled node
+  (at the user's current zoom), so the layout shift from the re-run dagre
+  layout no longer leaves the change off-screen.
+
 ## 0.7.2 — 2026-07-02
 
 ### Fixed
