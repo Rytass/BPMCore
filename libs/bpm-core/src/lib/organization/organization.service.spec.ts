@@ -221,6 +221,81 @@ describe('OrganizationService', () => {
     );
   });
 
+  it('fetches every org unit without pagination when all is true', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    );
+    const orgUnitRepository = {
+      find,
+    } as unknown as Repository<OrgUnitEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await service.listOrgUnits({ all: true, page: 3, pageSize: 5 });
+
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { path: 'ASC' } }),
+    );
+    expect(find).toHaveBeenCalledWith(
+      expect.not.objectContaining({ skip: expect.anything() }),
+    );
+    expect(find).toHaveBeenCalledWith(
+      expect.not.objectContaining({ take: expect.anything() }),
+    );
+  });
+
+  it('returns the full org unit list when pageSize is omitted', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    );
+    const orgUnitRepository = {
+      find,
+    } as unknown as Repository<OrgUnitEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await service.listOrgUnits({});
+
+    expect(find).toHaveBeenCalledWith(
+      expect.not.objectContaining({ skip: expect.anything() }),
+    );
+    expect(find).toHaveBeenCalledWith(
+      expect.not.objectContaining({ take: expect.anything() }),
+    );
+  });
+
+  it('clamps an oversized pageSize to the maximum page size', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    );
+    const orgUnitRepository = {
+      find,
+    } as unknown as Repository<OrgUnitEntity>;
+    const service = new OrganizationService(
+      {} as DataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await service.listOrgUnits({ page: 1, pageSize: 5000 });
+
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 100 }),
+    );
+  });
+
   it('commits org unit tree draft moves and recalculates descendant paths in one transaction', async (): Promise<void> => {
     const orgUnits = [
       createOrgUnitFixture({
