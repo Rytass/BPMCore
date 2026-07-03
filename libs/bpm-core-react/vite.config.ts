@@ -119,7 +119,11 @@ export default defineConfig({
         if (id === 'ai' || id.startsWith('@ai-sdk/')) return true;
         if (id.startsWith('@rytass/bpm-core-')) return true;
         if (id.startsWith('@mezzanine-ui/')) return true;
-        if (id.startsWith('@xyflow/')) return true;
+        // Keep the xyflow JS external but bundle its stylesheet
+        // (`@xyflow/react/dist/style.css`) into the extracted css chunks —
+        // xyflow v12 does no runtime style injection, so consumers that don't
+        // import the stylesheet themselves get an unpositioned, broken graph.
+        if (id.startsWith('@xyflow/')) return !/\.css(\?|$)/.test(id);
         if (id.startsWith('@codemirror/')) return true;
         if (id.startsWith('@uiw/')) return true;
         if (id.startsWith('@hello-pangea/')) return true;

@@ -18,6 +18,9 @@ import {
   type Node as FlowNode,
   type NodeProps,
 } from '@xyflow/react';
+// xyflow v12 ships no runtime style injection — the stylesheet must be bundled
+// or every ReactFlow surface renders unpositioned. See org-unit-tree-draft-editor.
+import '@xyflow/react/dist/style.css';
 import * as dagre from 'dagre';
 import {
   Button,

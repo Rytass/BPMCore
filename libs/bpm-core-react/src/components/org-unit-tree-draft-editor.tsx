@@ -28,6 +28,10 @@ import {
   ReactFlowInstance,
   applyNodeChanges,
 } from '@xyflow/react';
+// xyflow v12 ships no runtime style injection — without this stylesheet every
+// `.react-flow__node` computes `position: static` and the graph collapses into
+// a document-flow stack. Bundled into the extracted css so hosts need nothing.
+import '@xyflow/react/dist/style.css';
 import * as dagre from 'dagre';
 import { Button, Typography } from '@mezzanine-ui/react';
 import { EditIcon, PlusIcon } from '@mezzanine-ui/icons';
