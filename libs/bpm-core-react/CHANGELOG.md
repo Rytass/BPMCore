@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.5 — 2026-07-03
+
+### Changed
+
+- The organization tree now opens fully expanded — collapsing is a per-user
+  action, never a default. The depth / layer-width initial-collapse heuristics
+  from 0.7.3 are removed, and a 全部展開 / 全部收合 shortcut panel (top-right
+  of the canvas) folds the tree down to the root plus top-level org units or
+  restores it in one click.
+
+### Fixed
+
+- Tree node cards no longer sit on the next rank's connection lines. The card
+  scss is `min-height` and the action buttons wrap to a second row, so real
+  card heights exceed the size declared to dagre; the layout now re-runs with
+  the rendered dimensions ReactFlow reports (and no longer pins the node
+  wrapper to an inline height, which had clamped those measurements), plus the
+  rank separation is raised from dagre's default 50 to 96 so a readable edge
+  corridor survives even before the measured relayout lands.
+
 ## 0.7.4 — 2026-07-03
 
 ### Fixed
