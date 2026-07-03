@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.4 — 2026-07-03
+
+### Fixed
+
+- The `@xyflow/react` base stylesheet is now bundled into the package css.
+  xyflow v12 does no runtime style injection, so any host that did not import
+  `@xyflow/react/dist/style.css` itself rendered every ReactFlow surface
+  (organization tree, workflow designer, instance detail) as an unpositioned
+  document-flow stack — nodes piled up and clipped, Controls flattened into a
+  horizontal strip. The stylesheet now ships as `dist/style.css`, imported
+  automatically by the orgs / designer / instance-detail chunks, so consumers
+  need zero configuration. Hosts that already import the xyflow stylesheet are
+  unaffected (the rules are identical and loading them twice is harmless).
+
 ## 0.7.3 — 2026-07-02
 
 ### Fixed
