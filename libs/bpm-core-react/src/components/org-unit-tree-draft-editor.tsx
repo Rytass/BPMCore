@@ -23,6 +23,7 @@ import {
   NodeTypes,
   OnNodeDrag,
   OnNodesChange,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowInstance,
@@ -136,18 +137,12 @@ const ORG_TREE_FIT_READABLE_MIN_ZOOM = 0.7;
 // measured (the real canvas is ~1000-1400 x 520-720).
 const ORG_TREE_VIEWPORT_REF_WIDTH = 1200;
 const ORG_TREE_VIEWPORT_REF_HEIGHT = 600;
-// Above this visible-node count a freshly loaded large tree starts collapsed to
-// `ORG_TREE_INITIAL_EXPAND_DEPTH` levels so it opens readable instead of
-// exploding into hundreds of side-by-side nodes.
-const ORG_TREE_LARGE_NODE_COUNT = 60;
-// Depth (synthetic root = 0, top-level org units = 1) kept expanded on the
-// initial load of a large tree; nodes at or below this depth start collapsed so
-// only the root plus this many org levels show, and the user drills down.
-const ORG_TREE_INITIAL_EXPAND_DEPTH = 3;
-// A single expanded level wider than this puts too many nodes side by side for
-// the readable opening zoom (each level row costs ~276px per node), so the
-// initial expansion also stops before any level that would exceed this count.
-const ORG_TREE_INITIAL_EXPAND_LAYER_LIMIT = 12;
+// Vertical distance between ranks. The dagre default (50) leaves no edge
+// corridor once a card grows past its declared height (the card scss is
+// min-height and the action buttons wrap to a second row), so cards sat on the
+// next rank's connection lines. 96 keeps a readable corridor even before the
+// measured-size relayout below has run.
+const ORG_TREE_RANK_SEPARATION = 96;
 
 const ORG_UNIT_TYPE_LABELS: Readonly<Record<Uppercase<OrgUnitType>, string>> = {
   COMPANY: '公司',
@@ -182,9 +177,17 @@ export const OrgUnitTreeDraftEditor = forwardRef<
   const [parentDraft, setParentDraft] = useState<OrgUnitParentDraftMap>(() =>
     createOrgUnitParentDraftMap(orgUnits),
   );
-  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(() =>
-    createDefaultCollapsedOrgUnitIds(orgUnits, createOrgUnitParentDraftMap(orgUnits)),
+  // Trees open fully expanded — collapsing is a per-user action via the node
+  // toggles or the collapse-all shortcut, never a default.
+  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
   );
+  // Real rendered card heights reported by ReactFlow. Cards are min-height in
+  // the scss and grow when the action buttons wrap (or in editing mode), so
+  // the layout re-runs with these measurements to keep ranks from overlapping.
+  const [measuredHeights, setMeasuredHeights] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map<string, number>());
   const [flowNodes, setFlowNodes] = useState<readonly OrgUnitTreeNode[]>([]);
   const flowInstanceRef = useRef<OrgUnitTreeFlowInstance | null>(null);
   const pendingFocusNodeIdRef = useRef<string | null>(null);
@@ -204,6 +207,25 @@ export const OrgUnitTreeDraftEditor = forwardRef<
     });
   }, []);
 
+  const handleExpandAll = useCallback((): void => {
+    pendingFocusNodeIdRef.current = ORG_TREE_ROOT_ID;
+    setCollapsedIds(new Set<string>());
+  }, []);
+
+  const handleCollapseAll = useCallback((): void => {
+    pendingFocusNodeIdRef.current = ORG_TREE_ROOT_ID;
+    setCollapsedIds(() => {
+      // Collapse every node that has children except the synthetic root, so
+      // the tree folds down to the root plus the top-level org units. Uses the
+      // current draft hierarchy so editing-mode reparents are respected.
+      const childrenMap = buildOrgUnitChildrenMap(orgUnits, parentDraft);
+
+      return new Set(
+        [...childrenMap.keys()].filter((id) => id !== ORG_TREE_ROOT_ID),
+      );
+    });
+  }, [orgUnits, parentDraft]);
+
   const orgUnitsById = useMemo(
     (): ReadonlyMap<string, OrgUnitRecord> =>
       new Map(orgUnits.map((orgUnit) => [orgUnit.id, orgUnit])),
@@ -219,6 +241,7 @@ export const OrgUnitTreeDraftEditor = forwardRef<
       createOrgUnitTreeFlowElements({
         collapsedIds,
         isEditing,
+        measuredHeights,
         onCreateChild: (parentId): void => {
           if (parentId) {
             onCreateChild(parentId);
@@ -243,6 +266,7 @@ export const OrgUnitTreeDraftEditor = forwardRef<
       collapsedIds,
       handleToggleCollapse,
       isEditing,
+      measuredHeights,
       onCreateChild,
       onCreateRoot,
       onEditOrgUnit,
@@ -343,9 +367,8 @@ export const OrgUnitTreeDraftEditor = forwardRef<
     const nextParentDraft = createOrgUnitParentDraftMap(orgUnits);
 
     setParentDraft(nextParentDraft);
-    setCollapsedIds(
-      createDefaultCollapsedOrgUnitIds(orgUnits, nextParentDraft),
-    );
+    setCollapsedIds(new Set<string>());
+    setMeasuredHeights(new Map<string, number>());
     setSelectedOrgUnitId(null);
     setDraftMessage(null);
     setIsEditing(false);
@@ -394,7 +417,8 @@ export const OrgUnitTreeDraftEditor = forwardRef<
 
     instance.setCenter(
       focusNode.position.x + (focusNode.width ?? ORG_TREE_NODE_WIDTH) / 2,
-      focusNode.position.y + (focusNode.height ?? ORG_TREE_NODE_HEIGHT) / 2,
+      focusNode.position.y +
+        (focusNode.initialHeight ?? ORG_TREE_NODE_HEIGHT) / 2,
       { duration: 200, zoom: instance.getZoom() },
     );
   }, [flowElements.nodes]);
@@ -437,6 +461,36 @@ export const OrgUnitTreeDraftEditor = forwardRef<
 
   const handleNodeChanges = useCallback<OnNodesChange<OrgUnitTreeNode>>(
     (changes): void => {
+      // Collect the real rendered card heights so the dagre layout can re-run
+      // with them. The update is guarded to actual differences, otherwise the
+      // dimension events fired after every relayout would loop forever.
+      const dimensionChanges = changes.filter(
+        (change) => change.type === 'dimensions' && change.dimensions,
+      );
+
+      if (dimensionChanges.length > 0) {
+        setMeasuredHeights((current) => {
+          const next = new Map(current);
+          const changed = dimensionChanges.reduce((didChange, change) => {
+            if (change.type !== 'dimensions' || !change.dimensions) {
+              return didChange;
+            }
+
+            const height = Math.ceil(change.dimensions.height);
+
+            if (Math.abs((next.get(change.id) ?? 0) - height) <= 1) {
+              return didChange;
+            }
+
+            next.set(change.id, height);
+
+            return true;
+          }, false);
+
+          return changed ? next : current;
+        });
+      }
+
       if (!isEditing) {
         return;
       }
@@ -556,6 +610,28 @@ export const OrgUnitTreeDraftEditor = forwardRef<
         >
           <Background />
           <Controls />
+          {/* `nopan` for the same reason as the node action row: without it a
+              real mouse click with slight jitter becomes a pan gesture and the
+              click never reaches the buttons. */}
+          <Panel
+            className={`${styles.orgTreePanel} nopan nodrag`}
+            position="top-right"
+          >
+            <Button
+              onClick={handleExpandAll}
+              size="sub"
+              variant="base-secondary"
+            >
+              全部展開
+            </Button>
+            <Button
+              onClick={handleCollapseAll}
+              size="sub"
+              variant="base-secondary"
+            >
+              全部收合
+            </Button>
+          </Panel>
           {showMiniMap ? <MiniMap pannable zoomable /> : null}
         </ReactFlow>
       </div>
@@ -730,63 +806,10 @@ function collectVisibleOrgUnitIds({
   return visible;
 }
 
-function createDefaultCollapsedOrgUnitIds(
-  orgUnits: readonly OrgUnitRecord[],
-  parentDraft: OrgUnitParentDraftMap,
-): ReadonlySet<string> {
-  if (orgUnits.length <= ORG_TREE_LARGE_NODE_COUNT) {
-    return new Set<string>();
-  }
-
-  const childrenMap = buildOrgUnitChildrenMap(orgUnits, parentDraft);
-
-  // Expand level by level from the root, stopping at the depth limit or before
-  // any level that would put more than the layer limit nodes side by side —
-  // depth alone still lets a wide-but-shallow tree open thousands of px across.
-  const expanded = new Set<string>();
-  let frontier: readonly string[] = [ORG_TREE_ROOT_ID];
-  let depth = 0;
-
-  while (frontier.length > 0 && depth < ORG_TREE_INITIAL_EXPAND_DEPTH) {
-    const nextLayer = frontier.flatMap(
-      (nodeId) => childrenMap.get(nodeId) ?? [],
-    );
-
-    if (nextLayer.length > ORG_TREE_INITIAL_EXPAND_LAYER_LIMIT) {
-      break;
-    }
-
-    frontier.forEach((nodeId): void => {
-      expanded.add(nodeId);
-    });
-    frontier = nextLayer;
-    depth += 1;
-  }
-
-  const collapsed = new Set<string>();
-
-  const visit = (nodeId: string): void => {
-    const children = childrenMap.get(nodeId) ?? [];
-
-    if (children.length === 0) {
-      return;
-    }
-
-    if (!expanded.has(nodeId)) {
-      collapsed.add(nodeId);
-    }
-
-    children.forEach(visit);
-  };
-
-  visit(ORG_TREE_ROOT_ID);
-
-  return collapsed;
-}
-
 function createOrgUnitTreeFlowElements({
   collapsedIds,
   isEditing,
+  measuredHeights,
   onCreateChild,
   onEditOrgUnit,
   onToggleCollapse,
@@ -797,6 +820,7 @@ function createOrgUnitTreeFlowElements({
 }: {
   readonly collapsedIds: ReadonlySet<string>;
   readonly isEditing: boolean;
+  readonly measuredHeights: ReadonlyMap<string, number>;
   readonly onCreateChild: (parentId: string | null) => void;
   readonly onEditOrgUnit: (orgUnitId: string) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
@@ -812,17 +836,28 @@ function createOrgUnitTreeFlowElements({
   );
   const readChildCount = (nodeId: string): number =>
     childrenMap.get(nodeId)?.length ?? 0;
+  // Cards are min-height in the scss and grow with wrapped action buttons, so
+  // the declared constants only cover the first paint; once ReactFlow reports
+  // real dimensions the layout uses those.
+  const readLayoutHeight = (nodeId: string, declaredHeight: number): number =>
+    Math.max(declaredHeight, measuredHeights.get(nodeId) ?? 0);
 
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ marginx: 36, marginy: 36, nodesep: 44, rankdir: 'TB' });
+  graph.setGraph({
+    marginx: 36,
+    marginy: 36,
+    nodesep: 44,
+    rankdir: 'TB',
+    ranksep: ORG_TREE_RANK_SEPARATION,
+  });
   graph.setNode(ORG_TREE_ROOT_ID, {
-    height: ORG_TREE_ROOT_HEIGHT,
+    height: readLayoutHeight(ORG_TREE_ROOT_ID, ORG_TREE_ROOT_HEIGHT),
     width: ORG_TREE_ROOT_WIDTH,
   });
   visibleOrgUnits.forEach((orgUnit): void => {
     graph.setNode(orgUnit.id, {
-      height: ORG_TREE_NODE_HEIGHT,
+      height: readLayoutHeight(orgUnit.id, ORG_TREE_NODE_HEIGHT),
       width: ORG_TREE_NODE_WIDTH,
     });
   });
@@ -868,7 +903,7 @@ function createOrgUnitTreeFlowElements({
       typeLabel: '',
     },
     graph,
-    height: ORG_TREE_ROOT_HEIGHT,
+    height: readLayoutHeight(ORG_TREE_ROOT_ID, ORG_TREE_ROOT_HEIGHT),
     id: ORG_TREE_ROOT_ID,
     selected: selectedOrgUnitId === null,
     width: ORG_TREE_ROOT_WIDTH,
@@ -877,7 +912,9 @@ function createOrgUnitTreeFlowElements({
     ...positionedRootNode,
     position: {
       x: rootCenter.x - ORG_TREE_ROOT_WIDTH / 2,
-      y: rootCenter.y - ORG_TREE_ROOT_HEIGHT / 2,
+      y:
+        rootCenter.y -
+        readLayoutHeight(ORG_TREE_ROOT_ID, ORG_TREE_ROOT_HEIGHT) / 2,
     },
   };
   const orgNodes = visibleOrgUnits.map((orgUnit): OrgUnitTreeNode => {
@@ -903,7 +940,7 @@ function createOrgUnitTreeFlowElements({
         typeLabel: readOrgUnitTypeLabel(orgUnit.type),
       },
       graph,
-      height: ORG_TREE_NODE_HEIGHT,
+      height: readLayoutHeight(orgUnit.id, ORG_TREE_NODE_HEIGHT),
       id: orgUnit.id,
       selected: selectedOrgUnitId === orgUnit.id,
       width: ORG_TREE_NODE_WIDTH,
@@ -955,9 +992,12 @@ function createOrgUnitTreeNode({
     | Readonly<{ x: number; y: number }>
     | undefined;
 
+  // No explicit `height`: in xyflow v12 it becomes an inline style that would
+  // clamp the wrapper to the declared value, so the card could never grow with
+  // its content and the measured dimensions would always echo the declaration.
+  // `initialHeight` only seeds the pre-measure pass.
   return {
     data,
-    height,
     id,
     initialHeight: height,
     initialWidth: width,
@@ -1065,7 +1105,10 @@ function readNodeCenter(
 ): Readonly<{ x: number; y: number }> {
   return {
     x: node.position.x + (node.width ?? ORG_TREE_NODE_WIDTH) / 2,
-    y: node.position.y + (node.height ?? ORG_TREE_NODE_HEIGHT) / 2,
+    y:
+      node.position.y +
+      (node.measured?.height ?? node.initialHeight ?? ORG_TREE_NODE_HEIGHT) /
+        2,
   };
 }
 

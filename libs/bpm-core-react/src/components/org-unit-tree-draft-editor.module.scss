@@ -35,6 +35,11 @@
   background: #f7f9fc;
 }
 
+.orgTreePanel {
+  display: flex;
+  gap: 6px;
+}
+
 .orgTreeNode {
   display: grid;
   gap: 6px;
