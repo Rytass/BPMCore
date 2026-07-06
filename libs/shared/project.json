@@ -44,6 +44,11 @@
     "prepublish-check": {
       "executor": "nx:noop",
       "dependsOn": ["typecheck", "lint", "build", "pkg-quality"]
+    },
+    "nx-release-publish": {
+      "options": {
+        "packageRoot": "dist/libs/shared"
+      }
     }
   }
 }

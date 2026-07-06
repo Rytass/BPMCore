@@ -53,6 +53,11 @@
     "prepublish-check": {
       "executor": "nx:noop",
       "dependsOn": ["typecheck", "lint", "test", "build", "pkg-quality"]
+    },
+    "nx-release-publish": {
+      "options": {
+        "packageRoot": "dist/libs/bpm-core"
+      }
     }
   }
 }
