@@ -157,6 +157,15 @@ export class IdentityService {
   }
 
   async countMembers(searchText: string): Promise<number> {
+    if (this.memberResolver.searchPaged) {
+      const page = await this.memberResolver.searchPaged(searchText, {
+        page: DEFAULT_MEMBER_PAGE,
+        pageSize: 1,
+      });
+
+      return page.total;
+    }
+
     const members = await this.searchAllMembers(searchText);
 
     return members.length;
@@ -166,13 +175,81 @@ export class IdentityService {
     searchText: string,
     options: SearchMembersOptions = {},
   ): Promise<readonly MemberMetadata[]> {
+    const wantsPagination =
+      options.page !== undefined || options.pageSize !== undefined;
+
+    if (wantsPagination && this.memberResolver.searchPaged) {
+      const page = await this.memberResolver.searchPaged(searchText, {
+        page: normalizePage(options.page),
+        pageSize: normalizePageSize(options.pageSize),
+      });
+
+      await this.cacheMemberMetadata(page.items);
+
+      return page.items;
+    }
+
     const members = await this.searchAllMembers(searchText);
 
-    if (options.page === undefined && options.pageSize === undefined) {
+    if (!wantsPagination) {
       return members;
     }
 
     return paginateMembers(members, options);
+  }
+
+  /**
+   * Backfills the per-id `member_metadata_cache` rows for members
+   * returned by a paged search, reusing the same row entities and TTL as
+   * `resolveMany`. Unlike `resolveMany` (which only rewrites rows it had
+   * to re-fetch), every returned member is refreshed here since a paged
+   * search always carries authoritative host data. The page query itself
+   * is never row-cached; only the individual member metadata is.
+   */
+  private async cacheMemberMetadata(
+    members: readonly MemberMetadata[],
+  ): Promise<void> {
+    if (members.length === 0) {
+      return;
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(
+      now.getTime() + this.identityOptions.memberMetadataCacheTtlMs,
+    );
+    const memberIds = members.map((member) => member.memberId);
+    const existingRows = await this.cacheRepository.find({
+      where: { memberId: In([...memberIds]) },
+    });
+    const existingRowByMemberId = new Map(
+      existingRows.map((row): readonly [string, MemberMetadataCacheEntity] => [
+        row.memberId,
+        row,
+      ]),
+    );
+    const seenMemberIds = new Set<string>();
+    const entitiesToSave: MemberMetadataCacheEntity[] = [];
+
+    for (const metadata of members) {
+      if (seenMemberIds.has(metadata.memberId)) {
+        continue;
+      }
+
+      seenMemberIds.add(metadata.memberId);
+
+      const cacheEntity =
+        existingRowByMemberId.get(metadata.memberId) ??
+        new MemberMetadataCacheEntity();
+
+      cacheEntity.memberId = metadata.memberId;
+      cacheEntity.metadata = metadata;
+      cacheEntity.fetchedAt = now;
+      cacheEntity.expiresAt = expiresAt;
+
+      entitiesToSave.push(cacheEntity);
+    }
+
+    await this.cacheRepository.save(entitiesToSave);
   }
 
   private async searchAllMembers(

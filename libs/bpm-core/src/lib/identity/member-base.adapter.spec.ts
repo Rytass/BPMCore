@@ -64,6 +64,51 @@ describe('member-base adapter', () => {
       },
     ]);
   });
+
+  it('leaves searchPaged undefined when the directory does not implement searchMembersPaged', (): void => {
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>({
+      resolveMember: (): Promise<TestMemberBaseMember | null> =>
+        Promise.resolve(null),
+    });
+
+    expect(resolver.searchPaged).toBeUndefined();
+  });
+
+  it('delegates searchPaged to the directory and maps items to member metadata', async (): Promise<void> => {
+    const members = [
+      createMember('member-001'),
+      createMember('member-002'),
+      createMember('member-003'),
+    ];
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>({
+      resolveMember: (memberId): Promise<TestMemberBaseMember | null> =>
+        Promise.resolve(
+          members.find((member) => member.id === memberId) ?? null,
+        ),
+      searchMembersPaged: (_searchText, options) => {
+        const offset = (options.page - 1) * options.pageSize;
+
+        return Promise.resolve({
+          items: members.slice(offset, offset + options.pageSize),
+          total: members.length,
+        });
+      },
+    });
+
+    await expect(
+      resolver.searchPaged?.('', { page: 2, pageSize: 2 }),
+    ).resolves.toEqual({
+      items: [
+        {
+          customFields: {},
+          email: 'member-003@example.com',
+          memberId: 'member-003',
+          name: 'Member member-003',
+        },
+      ],
+      total: 3,
+    });
+  });
 });
 
 function createMember(id: string): TestMemberBaseMember {

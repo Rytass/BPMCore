@@ -1,7 +1,11 @@
 import { InjectionToken, Provider } from '@nestjs/common';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { BPMAuthContext } from '../bpm-auth';
-import { BPMMemberResolver } from './member-resolver.interface';
+import {
+  BPMMemberResolver,
+  BPMMemberSearchPage,
+  BPMMemberSearchPageOptions,
+} from './member-resolver.interface';
 
 /**
  * Structural contract a host identity backend should implement (or a thin
@@ -18,6 +22,31 @@ export interface BPMMemberBaseDirectory<TMember> {
     memberIds: readonly string[],
   ) => Promise<readonly TMember[]>;
   readonly searchMembers?: (searchText: string) => Promise<readonly TMember[]>;
+  /**
+   * Optional paged directory search. Implement this (in addition to, or
+   * instead of, `searchMembers`) to let BPM page through a directory
+   * larger than `searchMembers`' member-picker cap and report an
+   * accurate total on the admin members list. `page` is 1-based and
+   * already normalized/clamped by BPM. Return the requested slice as
+   * `items` and the full match count as `total`. When omitted, the
+   * adapter's `searchPaged` stays `undefined` and BPM falls back to the
+   * `searchMembers`-and-slice path.
+   */
+  readonly searchMembersPaged?: (
+    searchText: string,
+    options: BPMMemberSearchPageOptions,
+  ) => Promise<BPMMemberBaseSearchPage<TMember>>;
+}
+
+/**
+ * Host-shaped page returned by
+ * {@link BPMMemberBaseDirectory.searchMembersPaged}. The adapter maps
+ * each `TMember` in `items` through the field readers into
+ * {@link MemberMetadata} and forwards `total` unchanged.
+ */
+export interface BPMMemberBaseSearchPage<TMember> {
+  readonly items: readonly TMember[];
+  readonly total: number;
 }
 
 /**
@@ -52,10 +81,39 @@ export interface BPMMemberBaseResolverProviderOptions<TMember> {
 export class BPMMemberBaseResolverAdapter<TMember>
   implements BPMMemberResolver
 {
+  /**
+   * Present only when the wrapped directory implements
+   * `searchMembersPaged`. Left `undefined` otherwise so `IdentityService`
+   * capability detection falls back to the `search`-and-slice path,
+   * preserving pre-0.5.0 behavior.
+   */
+  readonly searchPaged?: (
+    searchText: string,
+    options: BPMMemberSearchPageOptions,
+  ) => Promise<BPMMemberSearchPage>;
+
   constructor(
     private readonly directory: BPMMemberBaseDirectory<TMember>,
     private readonly options: BPMMemberBaseAdapterOptions<TMember> = {},
-  ) {}
+  ) {
+    const searchMembersPaged = directory.searchMembersPaged;
+
+    if (searchMembersPaged) {
+      this.searchPaged = async (
+        searchText: string,
+        pageOptions: BPMMemberSearchPageOptions,
+      ): Promise<BPMMemberSearchPage> => {
+        const page = await searchMembersPaged(searchText, pageOptions);
+
+        return {
+          items: page.items.map((member): MemberMetadata =>
+            readMemberMetadataFromMemberBaseMember(member, this.options),
+          ),
+          total: page.total,
+        };
+      };
+    }
+  }
 
   async resolve(memberId: string): Promise<MemberMetadata> {
     const member = await this.directory.resolveMember(memberId);

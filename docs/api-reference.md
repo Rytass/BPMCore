@@ -438,10 +438,14 @@ Auth contract layer — lib does not own auth; host plugs in.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPM_MEMBER_RESOLVER` | injection token | Host MUST provide a resolver |
-| `MemberResolver` | interface | Resolver contract |
+| `BPM_MEMBER_RESOLVER`, `MEMBER_RESOLVER` (deprecated alias) | injection token | Host MUST provide a resolver |
+| `BPMMemberResolver`, `MemberResolver` (deprecated alias) | interface | Resolver contract — `resolve`/`resolveMany`/`search?`/`searchPaged?` |
+| `BPMMemberSearchPage`, `BPMMemberSearchPageOptions` | interface | Paged-search result (`items` + `total`) and 1-based page request for `searchPaged?` |
 | `IdentityOptions` | interface | Identity module options |
-| `MemberBaseAdapter` | class | Default adapter reading from `BPMAuthContext` |
+| `BPMMemberBaseDirectory`, `BPMMemberBaseSearchPage` | interface | Host directory contract (incl. optional `searchMembersPaged`) and its host-shaped page |
+| `BPMMemberBaseAdapterOptions`, `BPMMemberBaseResolverProviderOptions` | interface | Field readers + provider options for the member-base adapter |
+| `BPMMemberBaseResolverAdapter` | class | Adapts a `BPMMemberBaseDirectory` into a `BPMMemberResolver` (exposes `searchPaged` only when the directory implements `searchMembersPaged`) |
+| `createBPMMemberBaseResolverProvider`, `createBPMAuthContextFromMemberBaseMember`, `readMemberMetadataFromMemberBaseMember` | function | Provider factory, auth-context projector, and metadata reader |
 
 ## `@rytass/bpm-core-nestjs-module/organization`
 
