@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.5.0 — 2026-07-06
+
+### Added
+
+- Optional `searchPaged(searchText, { page, pageSize })` on `BPMMemberResolver`
+  (returning `{ items, total }`) and the matching optional `searchMembersPaged`
+  on `BPMMemberBaseDirectory`. When a host implements it, BPM delegates
+  pagination and total counting to the host's source (e.g. DB `LIMIT/OFFSET` +
+  `COUNT`) instead of pulling everything through the ~50-cap member-picker
+  `search` and paginating in memory. New exported types `BPMMemberSearchPage`,
+  `BPMMemberSearchPageOptions`, and `BPMMemberBaseSearchPage`.
+
+### Changed
+
+- `searchMembers` and `memberCount` (via `IdentityService`) now detect the new
+  `searchPaged` capability: present → real paged delegation with an accurate
+  total and per-id `member_metadata_cache` backfill of the returned page;
+  absent → the pre-0.5.0 `search`-and-slice-in-memory path, unchanged. The
+  `search?` contract is clarified as member-picker-only (~50 matches, not
+  paginated).
+- Peer dependency `@rytass/bpm-core-shared` now requires ^0.5.0.
+
+> Behavior note: hosts that have **not** implemented `searchMembersPaged` still
+> see the admin members list (`admin/users`) capped by whatever their `search()`
+> returns (~50 rows) with a matching total. Implement `searchMembersPaged` to
+> page a larger directory and report the true total.
+
 ## 0.4.0 — 2026-07-02
 
 ### Added

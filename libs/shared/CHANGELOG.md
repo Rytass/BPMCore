@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.5.0 — 2026-07-06
+
+No source changes. Version aligned with `@rytass/bpm-core-client` and
+`@rytass/bpm-core-nestjs-module` 0.5.0 (fixed release group). The new
+`BPMMemberSearchPage` paged-search types added in that release live in
+`@rytass/bpm-core-nestjs-module`, not here.
+
 ## 0.4.0 — 2026-07-02
 
 No source changes. Version aligned with `@rytass/bpm-core-client` and
