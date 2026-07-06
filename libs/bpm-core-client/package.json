@@ -1,6 +1,6 @@
 {
   "name": "@rytass/bpm-core-client",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Framework-agnostic TypeScript client for the Rytass BPM approval workflow GraphQL surface: fetch-based GraphQL transport, REST auth client, pre-baked typed operations for organization, member, form, template, and workflow.",
   "keywords": [
     "bpm",

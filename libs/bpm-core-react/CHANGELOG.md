@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.7.6 — 2026-07-06
+
+### Changed
+
+- Widened peer dependency ranges to `^0.4.0 || ^0.5.0` for
+  `@rytass/bpm-core-client` and `@rytass/bpm-core-shared` so downstream apps can
+  install the 0.5.x core packages (member directory paged search) without a peer
+  conflict. No component or source changes.
+
 ## 0.7.5 — 2026-07-03
 
 ### Changed

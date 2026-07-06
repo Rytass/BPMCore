@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.5.0`, `libs/bpm-core-client@0.5.0`, `libs/bpm-core@0.5.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.7.5`.
+Last verified against: `libs/shared@0.5.1`, `libs/bpm-core-client@0.5.1`, `libs/bpm-core@0.5.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.7.6`.
 
 ---
 

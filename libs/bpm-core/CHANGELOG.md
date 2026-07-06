@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.5.1 — 2026-07-06
+
+### Fixed
+
+- **Broken 0.5.0 tarball.** 0.5.0 was published from the project source root, so
+  the npm tarball shipped only TypeScript sources (`src/*.ts`, tsconfig, jest
+  config) with no compiled `.js`/`.d.ts`, while `main`/`exports` point at
+  `./src/index.js` — downstream installs failed with webpack
+  `Module not found` and NestJS `require` errors. 0.5.1 is republished from the
+  build output (`dist/libs/bpm-core`), which contains the compiled `.js` +
+  `.d.ts` and a `generatePackageJson` manifest.
+
+### Changed
+
+- Configured the `nx-release-publish` target with
+  `packageRoot: dist/libs/bpm-core` so `nx release publish` always publishes the
+  build artifacts instead of the source root, preventing a recurrence. No API or
+  runtime source changes from 0.5.0.
+
 ## 0.5.0 — 2026-07-06
 
 ### Added

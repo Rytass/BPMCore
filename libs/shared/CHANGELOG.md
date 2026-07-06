@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.5.1 — 2026-07-06
+
+### Fixed
+
+- **Broken 0.5.0 tarball.** 0.5.0 was published from the project source root, so
+  the npm tarball shipped only TypeScript sources with no compiled `.js`/`.d.ts`
+  while `main`/`exports` point at `./src/index.js`. 0.5.1 is republished from the
+  build output (`dist/libs/shared`). Configured `nx-release-publish` with
+  `packageRoot: dist/libs/shared`. No source changes.
+
 ## 0.5.0 — 2026-07-06
 
 No source changes. Version aligned with `@rytass/bpm-core-client` and
