@@ -6,6 +6,7 @@
   "scripts": {
     "build": "nx run-many -t build",
     "dev": "node --experimental-strip-types scripts/dev-supervisor.mts",
+    "dev:ctl": "node --experimental-strip-types scripts/dev-ctl.mts",
     "dev:tmux": "sh scripts/dev-tmux.sh",
     "dev:clean": "node --experimental-strip-types scripts/dev-clean.mts",
     "api": "PORT=17603 nx serve api --tui=false",
