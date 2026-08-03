@@ -3960,7 +3960,11 @@ export class WorkflowEngineService {
       .filter((resolution) => isDateRangeActive(resolution, date))
       .sort(compareManagerResolution);
 
-    return uniqueTexts(active.map((resolution) => resolution.managerMemberId));
+    return uniqueTexts(
+      readTopPriorityResolutions(active).map(
+        (resolution) => resolution.managerMemberId,
+      ),
+    );
   }
 
   private async resolveOrgUnitMemberCandidates(
@@ -5568,6 +5572,33 @@ function isDateRangeActive(
   return (
     value.effectiveFrom <= date &&
     (!value.effectiveTo || value.effectiveTo >= date)
+  );
+}
+
+/**
+ * Manager resolutions are sorted by priority and then by scope specificity, so
+ * every entry below the winning tier is a lower-precedence fallback that must
+ * not join the approver list — a company-wide catch-all rule would otherwise be
+ * appended to every member's direct manager. The organization module already
+ * resolves managers this way (`OrganizationService.resolveManagerMemberId`
+ * returns `active[0]`); this keeps the workflow engine consistent with it.
+ *
+ * Ties on the winning tier are preserved so a step can still be shared by
+ * several managers of equal precedence.
+ */
+function readTopPriorityResolutions(
+  resolutions: readonly ManagerResolutionEntity[],
+): readonly ManagerResolutionEntity[] {
+  const [top] = resolutions;
+
+  if (!top) {
+    return [];
+  }
+
+  return resolutions.filter(
+    (resolution) =>
+      resolution.priority === top.priority &&
+      resolution.scopeType === top.scopeType,
   );
 }
 
