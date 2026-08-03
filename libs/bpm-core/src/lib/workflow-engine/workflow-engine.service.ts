@@ -5548,7 +5548,10 @@ function readManagerMemberIdFromInitiatorSnapshot(
 
   const customFields = initiatorMetadataSnapshot.customFields;
 
-  if (isRecord(customFields)) {
+  // An empty `customFields` object must not swallow the top-level fallback:
+  // callers commonly send `{ customFields: {}, managerMemberId: '...' }`, and
+  // returning early there resolves no approver at all.
+  if (isRecord(customFields) && customFields.managerMemberId !== undefined) {
     return customFields.managerMemberId;
   }
 

@@ -1143,6 +1143,80 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('falls back to the top-level manager id when custom fields carry none', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: JSON.stringify({
+        customFields: {},
+        managerMemberId: 'member-manager',
+        memberId: 'member-001',
+      }),
+      workflowDefinitionJson: JSON.stringify(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      ),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          assigneeMemberId: 'member-manager',
+          nodeId: 'task_finance',
+        }),
+      ]),
+    );
+  });
+
+  it('prefers the manager id carried by custom fields', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: JSON.stringify({
+        customFields: { managerMemberId: 'member-custom' },
+        managerMemberId: 'member-manager',
+        memberId: 'member-001',
+      }),
+      workflowDefinitionJson: JSON.stringify(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      ),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          assigneeMemberId: 'member-custom',
+          nodeId: 'task_finance',
+        }),
+      ]),
+    );
+  });
+
   it('reports dry run matches for pure CEL edge expressions', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
