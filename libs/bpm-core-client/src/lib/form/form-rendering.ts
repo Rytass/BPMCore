@@ -548,8 +548,20 @@ function isComparableConditionField(field: FormFieldDefinition): boolean {
 
 const DATE_VALUE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const DATE_TIME_VALUE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/u;
+const ZONE_SUFFIX_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/u;
 
 function parseDatePickerValue(value: string): Date | null {
+  // Calendar adapters hand back zoned ISO strings (`CalendarMethodsMoment`
+  // returns `moment(...).toISOString()`, i.e. UTC). Splitting those on `T`
+  // would read the UTC calendar date and rebuild it as a local date, shifting
+  // the result by a day for every user east of UTC. Let the runtime resolve
+  // the offset instead, and keep the manual parse for zone-less input.
+  if (ZONE_SUFFIX_PATTERN.test(value)) {
+    const zonedDate = new Date(value);
+
+    return Number.isNaN(zonedDate.getTime()) ? null : zonedDate;
+  }
+
   if (DATE_TIME_VALUE_PATTERN.test(value)) {
     const [datePart = '', timePart = '00:00'] = value.split('T');
     const [year = 0, month = 1, day = 1] = datePart.split('-').map(Number);
