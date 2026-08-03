@@ -3667,6 +3667,7 @@ export class WorkflowEngineService {
         resolver.orgUnitId,
         resolver.fallback,
         label,
+        resolver.preferClosestOrgUnit === true,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -3678,6 +3679,7 @@ export class WorkflowEngineService {
       resolver.levelsUp,
       resolver.fallback,
       label,
+      resolver.preferClosestOrgUnit === true,
     ).then((memberIds) =>
       memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
     );
@@ -3723,6 +3725,7 @@ export class WorkflowEngineService {
     levelsUp: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const normalizedLevelsUp = Math.max(Math.trunc(levelsUp), 1);
     const resolvedManagerMemberIds =
@@ -3730,6 +3733,7 @@ export class WorkflowEngineService {
         manager,
         instance.initiatorMemberId,
         normalizedLevelsUp,
+        preferClosestOrgUnit,
       );
 
     if (resolvedManagerMemberIds.length) {
@@ -3780,12 +3784,14 @@ export class WorkflowEngineService {
     manager: EntityManager,
     memberId: string,
     levelsUp: number,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     return this.resolveManagerMemberIdsAtLevel(
       manager,
       memberId,
       toDateOnlyString(new Date()),
       levelsUp,
+      preferClosestOrgUnit,
     );
   }
 
@@ -3794,11 +3800,13 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     remainingLevels: number,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const directManagerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       memberId,
       date,
+      preferClosestOrgUnit,
     );
 
     if (remainingLevels <= 1 || directManagerMemberIds.length === 0) {
@@ -3812,6 +3820,7 @@ export class WorkflowEngineService {
           managerMemberId,
           date,
           remainingLevels - 1,
+          preferClosestOrgUnit,
         ),
       ),
     );
@@ -3823,6 +3832,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     memberId: string,
     date: string,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -3836,14 +3846,14 @@ export class WorkflowEngineService {
     const positionIds = activeMemberships
       .map((membership) => membership.positionId)
       .filter((positionId): positionId is string => Boolean(positionId));
-    const orgUnitIds = await this.readOrgUnitAndAncestorIds(
+    const orgUnits = await this.readOrgUnitAndAncestors(
       manager,
       directOrgUnitIds,
     );
     const candidatePairs = [
       { scopeId: memberId, scopeType: ManagerResolutionScopeTypeEnum.MEMBER },
-      ...orgUnitIds.map((scopeId) => ({
-        scopeId,
+      ...orgUnits.map((orgUnit) => ({
+        scopeId: orgUnit.id,
         scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
       })),
       ...positionIds.map((scopeId) => ({
@@ -3856,6 +3866,8 @@ export class WorkflowEngineService {
       manager,
       candidatePairs,
       date,
+      readOrgUnitDepthMap(orgUnits),
+      preferClosestOrgUnit,
     );
   }
 
@@ -3865,18 +3877,19 @@ export class WorkflowEngineService {
     orgUnitId: string,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
-    const orgUnitIds = await this.readOrgUnitAndAncestorIds(manager, [
-      orgUnitId,
-    ]);
+    const orgUnits = await this.readOrgUnitAndAncestors(manager, [orgUnitId]);
     const managerMemberIds = await this.resolveManagerResolutionCandidates(
       manager,
-      orgUnitIds.map((scopeId) => ({
-        scopeId,
+      orgUnits.map((orgUnit) => ({
+        scopeId: orgUnit.id,
         scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
       })),
       date,
+      readOrgUnitDepthMap(orgUnits),
+      preferClosestOrgUnit,
     );
 
     if (!managerMemberIds.length) {
@@ -3893,10 +3906,10 @@ export class WorkflowEngineService {
     return managerMemberIds;
   }
 
-  private async readOrgUnitAndAncestorIds(
+  private async readOrgUnitAndAncestors(
     manager: EntityManager,
     orgUnitIds: readonly string[],
-  ): Promise<readonly string[]> {
+  ): Promise<readonly OrgUnitEntity[]> {
     if (!orgUnitIds.length) {
       return [];
     }
@@ -3920,7 +3933,7 @@ export class WorkflowEngineService {
       ),
     );
 
-    return [...byId.keys()];
+    return [...byId.values()];
   }
 
   private async resolveManagerResolutionCandidates(
@@ -3930,6 +3943,8 @@ export class WorkflowEngineService {
       readonly scopeType: ManagerResolutionScopeTypeEnum;
     }[],
     date: string,
+    orgUnitDepths: ReadonlyMap<string, number>,
+    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -3949,6 +3964,7 @@ export class WorkflowEngineService {
           ]),
         },
       });
+    const depthLookup = preferClosestOrgUnit ? orgUnitDepths : undefined;
     const active = resolutions
       .filter((resolution) =>
         candidatePairs.some(
@@ -3958,10 +3974,12 @@ export class WorkflowEngineService {
         ),
       )
       .filter((resolution) => isDateRangeActive(resolution, date))
-      .sort(compareManagerResolution);
+      .sort((left, right) =>
+        compareManagerResolution(left, right, depthLookup),
+      );
 
     return uniqueTexts(
-      readTopPriorityResolutions(active).map(
+      readTopPriorityResolutions(active, depthLookup).map(
         (resolution) => resolution.managerMemberId,
       ),
     );
@@ -5585,9 +5603,16 @@ function isDateRangeActive(
  *
  * Ties on the winning tier are preserved so a step can still be shared by
  * several managers of equal precedence.
+ *
+ * When `orgUnitDepths` is provided and the winning scope is ORG_UNIT, only the
+ * deepest org units on the winning tier are kept so that ancestor-level
+ * catch-all rules do not dilute the approver list. This is opt-in via the
+ * resolver's `preferClosestOrgUnit` flag because org-tree depth does not always
+ * reflect authority (e.g. project offices attached to executive roles).
  */
 function readTopPriorityResolutions(
   resolutions: readonly ManagerResolutionEntity[],
+  orgUnitDepths?: ReadonlyMap<string, number>,
 ): readonly ManagerResolutionEntity[] {
   const [top] = resolutions;
 
@@ -5595,16 +5620,35 @@ function readTopPriorityResolutions(
     return [];
   }
 
-  return resolutions.filter(
+  const sameTier = resolutions.filter(
     (resolution) =>
       resolution.priority === top.priority &&
       resolution.scopeType === top.scopeType,
   );
+
+  if (
+    orgUnitDepths &&
+    top.scopeType === ManagerResolutionScopeTypeEnum.ORG_UNIT
+  ) {
+    const maxDepth = Math.max(
+      ...sameTier.map(
+        (resolution) => orgUnitDepths.get(resolution.scopeId) ?? 0,
+      ),
+    );
+
+    return sameTier.filter(
+      (resolution) =>
+        (orgUnitDepths.get(resolution.scopeId) ?? 0) === maxDepth,
+    );
+  }
+
+  return sameTier;
 }
 
 function compareManagerResolution(
   left: ManagerResolutionEntity,
   right: ManagerResolutionEntity,
+  orgUnitDepths?: ReadonlyMap<string, number>,
 ): number {
   const priorityDiff = right.priority - left.priority;
 
@@ -5612,10 +5656,35 @@ function compareManagerResolution(
     return priorityDiff;
   }
 
-  return (
+  const scopeRankDiff =
     readManagerResolutionScopeRank(right.scopeType) -
-      readManagerResolutionScopeRank(left.scopeType) ||
-    right.effectiveFrom.localeCompare(left.effectiveFrom)
+    readManagerResolutionScopeRank(left.scopeType);
+
+  if (scopeRankDiff !== 0) {
+    return scopeRankDiff;
+  }
+
+  if (orgUnitDepths) {
+    const depthDiff =
+      (orgUnitDepths.get(right.scopeId) ?? 0) -
+      (orgUnitDepths.get(left.scopeId) ?? 0);
+
+    if (depthDiff !== 0) {
+      return depthDiff;
+    }
+  }
+
+  return right.effectiveFrom.localeCompare(left.effectiveFrom);
+}
+
+function readOrgUnitDepthMap(
+  orgUnits: readonly OrgUnitEntity[],
+): ReadonlyMap<string, number> {
+  return new Map(
+    orgUnits.map((orgUnit) => [
+      orgUnit.id,
+      orgUnit.path.split('.').length,
+    ]),
   );
 }
 
