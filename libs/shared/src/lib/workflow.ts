@@ -82,11 +82,13 @@ export type ApproverResolver =
       readonly baseFromInitiator: boolean;
       readonly fallback?: ApproverResolverFallback;
       readonly levelsUp: number;
+      readonly preferClosestOrgUnit?: boolean;
       readonly type: 'ORG_MANAGER';
     }
   | {
       readonly fallback?: ApproverResolverFallback;
       readonly orgUnitId: string;
+      readonly preferClosestOrgUnit?: boolean;
       readonly type: 'ORG_UNIT_MANAGER';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }

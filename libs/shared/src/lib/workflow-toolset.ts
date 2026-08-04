@@ -989,13 +989,18 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       return {
         baseFromInitiator: value['baseFromInitiator'] !== false,
         levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'ORG_MANAGER',
       };
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
 
       return orgUnitId
-        ? { orgUnitId, type: 'ORG_UNIT_MANAGER' }
+        ? {
+            orgUnitId,
+            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+            type: 'ORG_UNIT_MANAGER',
+          }
         : DEFAULT_MANAGER_RESOLVER;
     }
     case 'DYNAMIC_FORM': {

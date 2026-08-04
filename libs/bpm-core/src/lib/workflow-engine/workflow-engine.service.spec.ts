@@ -488,6 +488,265 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  it('ignores lower-priority manager rules inherited from ancestor org units', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          priority: 10,
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-finance',
+          managerMemberId: 'member-manager',
+          priority: 100,
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance',
+        }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks[0]).toMatchObject({
+      assigneeMemberId: 'member-manager',
+    });
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+    ).toEqual(['member-manager']);
+  });
+
+  it('keeps every manager rule that ties on the winning tier', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-finance-a',
+          managerMemberId: 'member-manager-a',
+          priority: 100,
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-finance-b',
+          managerMemberId: 'member-manager-b',
+          priority: 100,
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          priority: 10,
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance',
+        }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId).sort(),
+    ).toEqual(['member-manager-a', 'member-manager-b']);
+  });
+
+  it('keeps both org-unit tiers when preferClosestOrgUnit is not set', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-finance',
+          managerMemberId: 'member-manager',
+          priority: 100,
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          priority: 100,
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance',
+        }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId).sort(),
+    ).toEqual(['member-ceo', 'member-manager']);
+  });
+
+  it('keeps only the deepest org unit when preferClosestOrgUnit is enabled', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-finance',
+          managerMemberId: 'member-manager',
+          priority: 100,
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          priority: 100,
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance',
+        }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          preferClosestOrgUnit: true,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+    ).toEqual(['member-manager']);
+  });
+
+  it('keeps sibling org units at the same depth when preferClosestOrgUnit is enabled', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-finance-a',
+          managerMemberId: 'member-manager-a',
+          priority: 100,
+          scopeId: 'org-finance-a',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-finance-b',
+          managerMemberId: 'member-manager-b',
+          priority: 100,
+          scopeId: 'org-finance-b',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          priority: 100,
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance-a',
+        }),
+        createMembership({
+          memberId: 'member-001',
+          orgUnitId: 'org-finance-b',
+        }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance-a', path: 'org.finance_a' }),
+        createOrgUnit({ id: 'org-finance-b', path: 'org.finance_b' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          preferClosestOrgUnit: true,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId).sort(),
+    ).toEqual(['member-manager-a', 'member-manager-b']);
+  });
+
   it('stops with a clear error when the initiator manager cannot be resolved', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -1995,6 +2254,7 @@ interface ServiceFixture {
   readonly savedProcessLog: ActivityLogEntity | null;
   readonly savedProcessToken: WorkflowTokenEntity | null;
   readonly savedSingleActivityLogs: readonly ActivityLogEntity[];
+  readonly savedTaskCandidates: readonly TaskCandidateEntity[];
   readonly savedTasks: readonly TaskEntity[];
   readonly savedWorkflowTokens: readonly WorkflowTokenEntity[];
   readonly savedToken: WorkflowTokenEntity | null;
@@ -2080,6 +2340,7 @@ function createServiceFixture({
   let savedActivityLogs: readonly ActivityLogEntity[] = [];
   let savedSingleActivityLogs: readonly ActivityLogEntity[] = [];
   let savedTasks: readonly TaskEntity[] = [];
+  let savedTaskCandidates: readonly TaskCandidateEntity[] = [];
   const template = createTemplate(currentVersionId);
   const templateVersion = createTemplateVersion(templateVersionStatus);
   const formVersion = createFormVersion(formVersionStatus, formSchema);
@@ -2454,8 +2715,16 @@ function createServiceFixture({
       save: jest.fn(
         (
           entityOrEntities: TaskCandidateEntity | TaskCandidateEntity[],
-        ): Promise<TaskCandidateEntity | TaskCandidateEntity[]> =>
-          Promise.resolve(entityOrEntities),
+        ): Promise<TaskCandidateEntity | TaskCandidateEntity[]> => {
+          savedTaskCandidates = [
+            ...savedTaskCandidates,
+            ...(Array.isArray(entityOrEntities)
+              ? entityOrEntities
+              : [entityOrEntities]),
+          ];
+
+          return Promise.resolve(entityOrEntities);
+        },
       ),
     });
   const transactionalTaskDecisionRepository =
@@ -2631,6 +2900,9 @@ function createServiceFixture({
     },
     get savedSingleActivityLogs(): readonly ActivityLogEntity[] {
       return savedSingleActivityLogs;
+    },
+    get savedTaskCandidates(): readonly TaskCandidateEntity[] {
+      return savedTaskCandidates;
     },
     get savedTasks(): readonly TaskEntity[] {
       return savedTasks;
