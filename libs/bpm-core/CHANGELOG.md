@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.6.0 — 2026-08-04
+
+### Added
+
+- **Opt-in org-unit depth filtering for manager resolution.** The
+  `ORG_MANAGER` and `ORG_UNIT_MANAGER` approver resolvers now accept an
+  optional `preferClosestOrgUnit: boolean` flag. When enabled, the engine
+  keeps only the deepest org-unit-level manager rules on the winning
+  priority tier — ancestor catch-all rules (e.g. a company-wide fallback)
+  no longer join the approver list. Sibling org units at the same depth
+  are still preserved so multi-manager steps continue to work. Depth is
+  derived from the org unit `path` ltree (segment count).
+
+### Fixed
+
+- **Manager resolution priority now respected.**
+  `resolveManagerResolutionCandidates` previously returned every active
+  resolution regardless of priority. Now it keeps only the top-priority
+  tier (matching `OrganizationService.resolveManagerMemberId` which
+  already picks `active[0]`), so a low-priority company-wide catch-all
+  rule no longer appends its manager to every member's approver list.
+- **Top-level `managerMemberId` fallback restored when `customFields` is
+  an empty object.** `readManagerMemberIdFromInitiatorSnapshot` previously
+  short-circuited to `undefined` as soon as `customFields` was any object
+  (including `{}`), preventing the top-level `managerMemberId` fallback
+  from ever executing. Now it only takes the `customFields` branch when
+  `customFields.managerMemberId` is actually present.
+
+### Changed
+
+- Peer dependency `@rytass/bpm-core-shared` now requires ^0.6.0.
+- `readOrgUnitAndAncestorIds` refactored to `readOrgUnitAndAncestors`
+  (returns full `OrgUnitEntity[]` instead of just IDs) so callers can
+  compute depth maps without duplicate DB queries.
+
 ## 0.5.1 — 2026-07-06
 
 ### Fixed

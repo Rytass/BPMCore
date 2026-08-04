@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.6.0 — 2026-08-04
+
+### Added
+
+- **`preferClosestOrgUnit` optional flag** on the `ORG_MANAGER` and
+  `ORG_UNIT_MANAGER` variants of `ApproverResolver`. When enabled, the
+  workflow engine resolves only the deepest org-unit-level manager rules
+  on the winning priority tier, so ancestor-level catch-all rules do not
+  dilute the approver list. Defaults to `false` (unchanged behavior).
+  `parseApproverResolver` in `workflow-toolset.ts` parses the new field.
+
+### Why a minor
+
+New optional type field — backward compatible, additive.
+
 ## 0.5.1 — 2026-07-06
 
 ### Fixed

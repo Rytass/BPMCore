@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.6.0 — 2026-08-04
+
+### Fixed
+
+- **Date picker timezone drift.** `parseDatePickerValue` now detects
+  timezone-qualified ISO strings (`Z` or `±HH:MM` suffix) and delegates
+  to the runtime's offset-aware `new Date()` instead of splitting on `T`
+  and rebuilding from UTC calendar parts as local time. Users east of UTC
+  (e.g. `Asia/Taipei`) who pick the 20th on the calendar no longer get
+  the 19th stored. Zone-less inputs (`'2026-08-20'`,
+  `'2026-08-20T09:30'`) are still treated as local time, preserving the
+  existing manual-parsing path.
+
+### Changed
+
+- Peer dependency `@rytass/bpm-core-shared` now requires ^0.6.0.
+
 ## 0.5.1 — 2026-07-06
 
 ### Fixed
