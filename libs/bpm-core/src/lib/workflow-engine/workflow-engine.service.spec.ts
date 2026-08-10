@@ -1,6 +1,7 @@
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
+  ReturnBehavior,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
 import { ObjectLiteral } from 'typeorm';
@@ -1007,6 +1008,105 @@ describe('WorkflowEngineService', () => {
         taskId: 'task-1',
       }),
     ).rejects.toThrow('Reject decision comment is required');
+  });
+
+  it('requires a return comment when the node opts into requireComment', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        returnBehavior: {
+          allowReturn: true,
+          allowedTargets: 'INITIATOR',
+          requireComment: true,
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.RETURNED,
+        comment: '   ',
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      }),
+    ).rejects.toThrow(
+      'Return decision comment is required by workflow node task_finance',
+    );
+  });
+
+  it('accepts a return with a comment when requireComment is on', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        returnBehavior: {
+          allowReturn: true,
+          allowedTargets: 'INITIATOR',
+          requireComment: true,
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const decision = await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.RETURNED,
+      comment: '請補上發票影本',
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(decision.action).toBe(TaskDecisionActionEnum.RETURNED);
+    expect(decision.comment).toBe('請補上發票影本');
+  });
+
+  it('still allows an empty return comment when requireComment is not set', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const decision = await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.RETURNED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(decision.action).toBe(TaskDecisionActionEnum.RETURNED);
+    expect(decision.comment).toBeNull();
   });
 
   it('rejects a task with a rejection comment', async (): Promise<void> => {
@@ -3288,10 +3388,15 @@ function createLinearUserTaskWorkflow({
     memberIds: ['member-finance'],
     type: 'DIRECT',
   },
+  returnBehavior = {
+    allowReturn: false,
+    allowedTargets: 'PREVIOUS',
+  },
   slaDuration = null,
 }: {
   readonly allowAddSigner?: boolean;
   readonly approverResolver?: ApproverResolver;
+  readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
   return {
@@ -3327,10 +3432,7 @@ function createLinearUserTaskWorkflow({
           approverResolver,
           decisionPolicy: { type: 'SINGLE' },
           label: '財務簽核',
-          returnBehavior: {
-            allowReturn: false,
-            allowedTargets: 'PREVIOUS',
-          },
+          returnBehavior,
           ...(slaDuration
             ? {
                 sla: {

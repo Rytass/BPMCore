@@ -477,6 +477,19 @@ export class WorkflowEngineService {
                 input.returnToNodeId,
               )
             : null;
+
+        // Read from the instance snapshot, not the live template: templates
+        // that turn `requireComment` on later must not retroactively block
+        // in-flight instances started against the previous version.
+        if (
+          input.action === TaskDecisionActionEnum.RETURNED &&
+          !decisionComment &&
+          isReturnCommentRequired(instance.workflowSnapshot, task.nodeId)
+        ) {
+          throw new BadRequestException(
+            `Return decision comment is required by workflow node ${task.nodeId}`,
+          );
+        }
         const decidedAt = new Date();
         const claimedTask = await taskRepository.save({
           ...task,
@@ -4989,6 +5002,18 @@ function readDefaultReturnTargetNodeId(
   }
 
   return previousNodeId;
+}
+
+function isReturnCommentRequired(
+  workflow: WorkflowDefinition,
+  nodeId: string,
+): boolean {
+  const node = readWorkflowNodeOrThrow(workflow, nodeId);
+
+  return (
+    node.type === 'userTask' &&
+    node.data.returnBehavior.requireComment === true
+  );
 }
 
 function readReturnResubmitStrategy(
