@@ -136,6 +136,49 @@ async function readBPMAuthContextFromRequest(
 }
 ```
 
+### 2b. 工作日 SLA 行事曆（選用）
+
+節點 SLA 設 `calendar: 'BUSINESS_DAY'` 時，期限的「日」只會跨工作日。工作日由 host 決定
+—— BPMCore **不內建任何國別假日資料**。不注入時退回內建的週一～週五行事曆
+（時區以 `notificationSlaBusinessCalendarTimeZone` 設定，預設 `UTC`）。
+
+需要國定假日與補班日時，實作 `BPMBusinessCalendar` 並註冊：
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import {
+  BPM_BUSINESS_CALENDAR,
+  BPMBusinessCalendar,
+} from '@rytass/bpm-core-nestjs-module';
+
+@Injectable()
+export class HostBusinessCalendar implements BPMBusinessCalendar {
+  // BPM converts each instant to a local date in this zone before asking.
+  readonly timeZone = 'Asia/Taipei';
+
+  constructor(private readonly calendarRepository: HostCalendarRepository) {}
+
+  // `localDate` is 'YYYY-MM-DD'. Return true for make-up working Saturdays and
+  // false for public holidays — both directions matter.
+  async isBusinessDay(localDate: string): Promise<boolean> {
+    return this.calendarRepository.isWorkingDay(localDate);
+  }
+}
+```
+
+```typescript
+BPMRootModule.forRoot({
+  // ...
+  businessCalendarProvider: {
+    provide: BPM_BUSINESS_CALENDAR,
+    useClass: HostBusinessCalendar,
+  },
+});
+```
+
+`forRootAsync` 用同一個 key；此 provider 於 module wiring 時決定，需要祕密或 repository 時
+在 provider 內用 `useFactory` / `inject`。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts

@@ -811,6 +811,7 @@ BPMRootModule.forRootAsync({
 | `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                            |
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                      |
 | `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks. |
+| `businessCalendarProvider`                       | Monday–Friday calendar         | Host provider for `BPM_BUSINESS_CALENDAR`, used by `BUSINESS_DAY` SLAs. BPMCore ships no holiday data. |
 | `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below). |
 | `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
@@ -835,6 +836,7 @@ BPMRootModule.forRootAsync({
 | `notificationDeliveryRetryBaseDelayMs`           | `60000`                        | Base retry delay multiplied by attempt count.                  |
 | `notificationSlaSchedulerEnabled`                | `false`                        | Runs automatic SLA scan loop in this process.                  |
 | `notificationSlaScanIntervalMs`                  | `60000`                        | SLA scheduler interval.                                        |
+| `notificationSlaBusinessCalendarTimeZone`        | `UTC`                          | IANA zone for the built-in weekday calendar. Ignored when `businessCalendarProvider` is set. |
 | `notificationSlaTimeoutRemindEnabled`            | `true`                         | Enables SLA timeout `REMIND`.                                  |
 | `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                            |
 | `notificationSlaTimeoutEscalateEnabled`          | `false`                        | Enables SLA timeout `ESCALATE`.                                |

@@ -492,6 +492,10 @@ async function handleReturn(task, targetNodeId) {
 - `RESTART`：預設策略，發起人重新送出後從 Start 重跑。
 - `FROM_RETURN_POINT`：發起人重新送出後，直接回到原本執行退回的簽核節點。
 
+節點另可設定 `returnBehavior.requireComment: true`，此時退回決議必須帶非空意見，
+否則引擎回 `BadRequestException`。判斷讀的是 **instance 的 workflow snapshot**，
+因此模板事後才打開此開關，不會影響已在途的案件。省略此欄位等同 `false`。
+
 ### 5.4 轉派
 
 ```typescript
@@ -524,10 +528,22 @@ async function handleTransfer(task, transferToMemberId) {
 Task 建立時：
 
 ```typescript
-sla_due_at = task.created_at + node.sla.duration;
+sla_due_at = await slaScheduleService.resolveTaskSlaDueAt({ node, now });
 ```
 
-可選用「工作時間」（排除週末/假日）— MVP 用日曆時間。
+`node.sla.calendar` 決定期限怎麼推進：
+
+| 模式                      | 語意                                                                 |
+| ------------------------- | -------------------------------------------------------------------- |
+| `CALENDAR`（省略時預設）   | `now + duration`，純日曆時間，與 0.7.0 之前完全相同                   |
+| `BUSINESS_DAY`            | duration 的**日**部分只跨工作日；時/分部分之後以日曆時間相加          |
+
+工作日由 host 注入的 `BPMBusinessCalendar` 決定（`timeZone` + `isBusinessDay(localDate)`），
+BPMCore 不內建任何國別假日資料；未注入時退回內建的週一～週五行事曆。演算法從建立時刻的
+本地日期往後逐日走，每遇到一個工作日扣一天，扣完為止，**起算當日不計**——因此「1 個工作日」
+永遠落在下一個工作日的同一時刻，不論案件是週一還是週六送出。
+
+由於 `BUSINESS_DAY` 只影響日部分，把它與時/分混用（例 `P1DT4H`）時模板 linter 會發 warning。
 
 ### 6.2 SLA 掃描器
 
@@ -551,11 +567,12 @@ async function scanSlaBreaches() {
         break;
 
       case 'ESCALATE':
-        // 升級給上級主管
+        // 升級給上級主管；delegation chain 已有 SLA_ESCALATION 步驟就跳過
+        if (hasSlaEscalationStep(task)) break;
         const escalateTo = await managerResolution.findManager(
-          task.assignee_member_id, 1
+          task.assignee_member_id, node.sla.escalateLevelsUp ?? 1
         );
-        await handleTransfer(task, escalateTo);
+        await handleTransfer(task, escalateTo, 'SLA_ESCALATION');
         break;
 
       case 'TERMINATE_INSTANCE':
@@ -571,6 +588,18 @@ async function scanSlaBreaches() {
 ### 6.3 SLA 預警（非逾時）
 
 模板可設定 `sla.warningAt: '50%'`（時限的 50% 時就提醒）。掃描器另一個條件分支處理。
+預警時間點是 `created_at` 與 `sla_due_at` 之間的線性比例；工作日模式下這個比例是
+「跨越區間的日曆時間比例」，不是工作時數比例。
+
+### 6.4 升級的冪等性
+
+`ESCALATE` 透過轉派完成，而轉派會建立**新的 task**（沿用已逾期的 `sla_due_at`）。
+因為 SLA 通知的去重鍵是 `(taskId, type, recipient)`，新 task 對新簽核人一定沒有既有通知，
+若不設防就會每次掃描再升一層、一路升到組織頂端。
+
+引擎因此在升級時於 delegation chain 寫入 `reason: 'SLA_ESCALATION'`，掃描器在執行
+`ESCALATE` 前檢查該標記，有就跳過。標記隨 chain 傳給新 task，所以之後的手動轉派也不會
+重新觸發；而退回重送產生的是新 token、新 task、空 chain，**可以**再次升級。
 
 ---
 

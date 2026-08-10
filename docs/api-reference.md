@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.6.0`, `libs/bpm-core-client@0.6.0`, `libs/bpm-core@0.6.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.7.7`.
+Last verified against: `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`.
 
 ---
 
@@ -170,9 +170,10 @@ Form-schema definitions.
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP |
 | `ApproverResolverFallback` | type | Fallback when primary resolver fails |
 | `DecisionPolicy` | type | ANY / MAJORITY / ALL |
-| `ReturnBehavior` | interface | Return-handling settings |
+| `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
-| `SlaConfig` | interface | SLA timer config |
+| `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
+| `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
 | `FieldPermission` | interface | Per-node read/write permission |
 | `NotificationOverride` | interface | Node-level notification overrides |
 | `NotificationChannel` | type | `'IN_APP' \| 'EMAIL' \| 'WEBHOOK'` |
@@ -195,6 +196,10 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `WORKFLOW_INPUT_HANDLE_ID` / `WORKFLOW_OUTPUT_HANDLE_ID` | const | ReactFlow handle ids |
 | `WORKFLOW_NODE_TYPE_LABELS` | const | zh-TW node type labels |
 | `CONDITION_OPERATOR_OPTIONS` / `CONDITION_OPERATORS_REQUIRING_VALUE` | const | Condition operator catalog |
+| `SlaDurationUnit` / `SlaDurationParts` / `SlaOption` | type/interface | Single-unit SLA duration authoring shapes |
+| `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
+| `DEFAULT_SLA_CONFIG` | const | SLA applied when a node's timer is switched on |
+| `composeSlaDuration` / `readSlaDurationParts` / `isSlaCalendarModeApplicable` | function | ISO duration ⇄ value+unit, and whether `BUSINESS_DAY` applies |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
 | `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
@@ -215,7 +220,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/…) |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
@@ -235,7 +240,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries) |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment` and `set_user_task_sla` |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |
@@ -417,6 +422,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, plus flattened notification/attachment/signature/identity options |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
 | `BPM_CORE_MIGRATIONS` | const | 17-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
@@ -533,6 +539,20 @@ GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`
 | Enums | `DelegationEnums` |
 | Service | `DelegationService` |
 | Module | `DelegationModule` |
+
+## `@rytass/bpm-core-nestjs-module/calendar`
+
+Business-day SLA scheduling. BPMCore ships **no** national holiday data — hosts that need real working-day semantics register their own calendar.
+
+| Category | Names |
+|---|---|
+| Service | `BPMSlaScheduleService` (`resolveTaskSlaDueAt({ node, now })`) |
+| Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
+| Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
+| Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
+| Module | `CalendarModule` (global; wired by `BPMRootModule`) |
+
+`SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 
 ## `@rytass/bpm-core-nestjs-module/notification`
 
