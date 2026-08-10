@@ -6,6 +6,8 @@ import {
 import {
   ApproverResolver,
   ServiceAction,
+  SlaCalendarMode,
+  SlaConfig,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
@@ -59,6 +61,90 @@ export const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
   { id: 'IS_FILLED', name: '已填寫' },
   { id: 'IS_EMPTY', name: '未填寫' },
 ];
+
+// ── SLA option catalogs & duration helpers ─────────────────────────────────
+
+/**
+ * The two duration shapes the designer and the LLM toolset are allowed to
+ * author. Restricting authoring to a single unit keeps mixed ISO durations
+ * such as `P1DT4H` out of templates, where `BUSINESS_DAY` semantics would be
+ * ambiguous (the day part is business-day counted, a trailing time part is
+ * not).
+ */
+export type SlaDurationUnit = 'DAY' | 'HOUR';
+
+export interface SlaDurationParts {
+  readonly unit: SlaDurationUnit;
+  readonly value: number;
+}
+
+export interface SlaOption<T extends string> {
+  readonly id: T;
+  readonly name: string;
+}
+
+export const SLA_DURATION_UNIT_OPTIONS: readonly SlaOption<SlaDurationUnit>[] =
+  [
+    { id: 'DAY', name: '日' },
+    { id: 'HOUR', name: '小時' },
+  ];
+
+export const SLA_CALENDAR_MODE_OPTIONS: readonly SlaOption<SlaCalendarMode>[] =
+  [
+    { id: 'CALENDAR', name: '日曆日' },
+    { id: 'BUSINESS_DAY', name: '工作日' },
+  ];
+
+export const SLA_TIMEOUT_ACTION_OPTIONS: readonly SlaOption<
+  SlaConfig['onTimeout']
+>[] = [
+  { id: 'REMIND', name: '提醒' },
+  { id: 'AUTO_APPROVE', name: '自動核准' },
+  { id: 'ESCALATE', name: '升級主管' },
+  { id: 'TERMINATE_INSTANCE', name: '終止案件' },
+];
+
+export const DEFAULT_SLA_CONFIG: SlaConfig = {
+  calendar: 'CALENDAR',
+  duration: 'P2D',
+  onTimeout: 'REMIND',
+};
+
+/** Builds the ISO 8601 duration for a single-unit SLA. */
+export function composeSlaDuration(parts: SlaDurationParts): string {
+  const value = Math.max(Math.trunc(parts.value), 1);
+
+  return parts.unit === 'DAY' ? `P${value}D` : `PT${value}H`;
+}
+
+/**
+ * Reads a single-unit ISO duration back into editable parts. Returns `null`
+ * for durations the designer cannot represent (mixed or sub-hour values), so
+ * callers can fall back to a read-only presentation instead of silently
+ * rewriting a hand-authored template.
+ */
+export function readSlaDurationParts(
+  duration: string,
+): SlaDurationParts | null {
+  const dayMatch = /^P(\d+)D$/u.exec(duration.trim());
+
+  if (dayMatch) {
+    return { unit: 'DAY', value: Number(dayMatch[1]) };
+  }
+
+  const hourMatch = /^PT(\d+)H$/u.exec(duration.trim());
+
+  return hourMatch ? { unit: 'HOUR', value: Number(hourMatch[1]) } : null;
+}
+
+/**
+ * `BUSINESS_DAY` only changes how the day component is advanced, so it is
+ * meaningless for hour-based durations. The designer hides the selector in
+ * that case and this predicate is the single source of that rule.
+ */
+export function isSlaCalendarModeApplicable(duration: string): boolean {
+  return readSlaDurationParts(duration)?.unit === 'DAY';
+}
 
 export const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperator[] =
   [
@@ -232,6 +318,7 @@ export function createWorkflowNode(
         returnBehavior: {
           allowReturn: true,
           allowedTargets: 'INITIATOR',
+          requireComment: false,
           resubmitStrategy: 'RESTART',
         },
         triggerMode: 'AND',

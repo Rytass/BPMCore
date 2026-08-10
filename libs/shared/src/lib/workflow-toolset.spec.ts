@@ -228,3 +228,154 @@ describe('readWorkflowSnapshot', () => {
     expect(snapshot.nodes).toHaveLength(2);
   });
 });
+
+describe('SLA and return-comment tools', () => {
+  async function stateWithUserTask(): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    return result.result.state;
+  }
+
+  function readUserTaskData(
+    state: WorkflowDesignerState,
+  ): Record<string, unknown> {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node.data as unknown as Record<string, unknown>;
+  }
+
+  async function runTool(
+    state: WorkflowDesignerState,
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      name,
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  it('exposes both new mutation tools', () => {
+    const names = WORKFLOW_TOOLSET.map((tool) => tool.name);
+
+    expect(names).toContain('set_user_task_return_require_comment');
+    expect(names).toContain('set_user_task_sla');
+  });
+
+  it('turns on the return comment requirement', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const next = await runTool(state, 'set_user_task_return_require_comment', {
+      nodeId,
+      requireComment: true,
+    });
+
+    expect(readUserTaskData(next)['returnBehavior']).toEqual(
+      expect.objectContaining({ requireComment: true }),
+    );
+  });
+
+  it('composes a business-day SLA from a value and unit', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const next = await runTool(state, 'set_user_task_sla', {
+      calendar: 'BUSINESS_DAY',
+      durationUnit: 'DAY',
+      durationValue: 3,
+      nodeId,
+      onTimeout: 'ESCALATE',
+      warningAt: 0.75,
+    });
+
+    expect(readUserTaskData(next)['sla']).toEqual({
+      calendar: 'BUSINESS_DAY',
+      duration: 'P3D',
+      escalateLevelsUp: 1,
+      onTimeout: 'ESCALATE',
+      warningAt: 0.75,
+    });
+  });
+
+  it('forces CALENDAR mode for an hour-based SLA', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const next = await runTool(state, 'set_user_task_sla', {
+      calendar: 'BUSINESS_DAY',
+      durationUnit: 'HOUR',
+      durationValue: 4,
+      nodeId,
+      onTimeout: 'REMIND',
+    });
+
+    expect(readUserTaskData(next)['sla']).toEqual({
+      calendar: 'CALENDAR',
+      duration: 'PT4H',
+      onTimeout: 'REMIND',
+    });
+  });
+
+  it('removes the SLA when disabled', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const withSla = await runTool(state, 'set_user_task_sla', {
+      durationUnit: 'DAY',
+      durationValue: 2,
+      nodeId,
+      onTimeout: 'REMIND',
+    });
+    const withoutSla = await runTool(withSla, 'set_user_task_sla', {
+      enabled: false,
+      nodeId,
+    });
+
+    expect('sla' in readUserTaskData(withoutSla)).toBe(false);
+  });
+
+  it('rejects a warningAt outside the open unit interval', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const result = await executeWorkflowTool(
+      state,
+      'set_user_task_sla',
+      { durationValue: 2, nodeId, warningAt: 1 },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(false);
+  });
+});

@@ -116,12 +116,31 @@ export type DecisionPolicy =
 export interface ReturnBehavior {
   readonly allowReturn: boolean;
   readonly allowedTargets: 'PREVIOUS' | 'INITIATOR' | 'ANY';
+  /**
+   * Requires a non-empty comment on every return decision made at this node.
+   *
+   * Omitted or `false` keeps the pre-0.7.0 behaviour where returning without a
+   * comment is accepted. The engine validates this against the workflow
+   * snapshot stored on the instance, so in-flight instances started before the
+   * template opted in keep their original behaviour.
+   */
+  readonly requireComment?: boolean;
   readonly resubmitStrategy?: ReturnResubmitStrategy;
 }
 
 export type ReturnResubmitStrategy = 'FROM_RETURN_POINT' | 'RESTART';
 
 export interface SlaConfig {
+  /**
+   * Selects how {@link SlaConfig.duration} is advanced.
+   *
+   * `CALENDAR` (the default when omitted) adds the duration as elapsed wall
+   * time. `BUSINESS_DAY` advances the `D` component across business days only,
+   * skipping whatever the host-provided `BPMBusinessCalendar` reports as
+   * non-business dates; any `T` component (hours/minutes/seconds) is then added
+   * as plain elapsed time on top of the resolved business day.
+   */
+  readonly calendar?: SlaCalendarMode;
   readonly duration: string;
   readonly escalateLevelsUp?: number;
   readonly onTimeout:
@@ -131,6 +150,8 @@ export interface SlaConfig {
     | 'TERMINATE_INSTANCE';
   readonly warningAt?: number;
 }
+
+export type SlaCalendarMode = 'CALENDAR' | 'BUSINESS_DAY';
 
 export interface FieldPermission {
   readonly editable: boolean;

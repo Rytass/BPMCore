@@ -3,6 +3,8 @@ import {
   ApproverResolver,
   ReturnResubmitStrategy,
   ServiceAction,
+  SlaCalendarMode,
+  SlaConfig,
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
   WorkflowNode,
@@ -11,6 +13,7 @@ import {
 import {
   CONDITION_OPERATOR_OPTIONS,
   WORKFLOW_NODE_TYPE_LABELS,
+  composeSlaDuration,
   isExclusiveGatewaySourceEdge,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
@@ -64,6 +67,17 @@ const RESUBMIT_STRATEGY_ENUM: readonly ReturnResubmitStrategy[] = [
 ];
 const CONDITION_OPERATOR_ENUM: readonly WorkflowEdgeConditionOperator[] =
   CONDITION_OPERATOR_OPTIONS.map((option) => option.id);
+const SLA_CALENDAR_MODE_ENUM: readonly SlaCalendarMode[] = [
+  'CALENDAR',
+  'BUSINESS_DAY',
+];
+const SLA_TIMEOUT_ACTION_ENUM: readonly SlaConfig['onTimeout'][] = [
+  'REMIND',
+  'AUTO_APPROVE',
+  'ESCALATE',
+  'TERMINATE_INSTANCE',
+];
+const SLA_DURATION_UNIT_ENUM = ['DAY', 'HOUR'] as const;
 
 const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
   description:
@@ -189,6 +203,40 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
         resubmitStrategy: { enum: [...RESUBMIT_STRATEGY_ENUM], type: 'string' },
       },
       ['nodeId', 'resubmitStrategy'],
+    ),
+    kind: 'mutation',
+  },
+  {
+    name: 'set_user_task_return_require_comment',
+    description:
+      '設定簽核節點退回時是否必須填寫意見。true=退回一定要填意見，未填會被引擎擋下；false=可留空。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        requireComment: { type: 'boolean' },
+      },
+      ['nodeId', 'requireComment'],
+    ),
+    kind: 'mutation',
+  },
+  {
+    name: 'set_user_task_sla',
+    description:
+      '設定簽核節點的時效與逾時處理。enabled=false 會移除整組時效設定。期限以「數量 + 單位」表示（DAY 日 / HOUR 小時），不接受 ISO duration 字串。' +
+      'calendar=BUSINESS_DAY 時「日」會跳過非工作日（由 host 注入的行事曆決定，含國定假日與補班日），僅在 durationUnit=DAY 時有意義。' +
+      'onTimeout=ESCALATE 時可用 escalateLevelsUp 指定往上幾層主管。warningAt 為 0~1 之間的預警比例。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        enabled: { type: 'boolean' },
+        durationValue: { type: 'number' },
+        durationUnit: { enum: [...SLA_DURATION_UNIT_ENUM], type: 'string' },
+        calendar: { enum: [...SLA_CALENDAR_MODE_ENUM], type: 'string' },
+        onTimeout: { enum: [...SLA_TIMEOUT_ACTION_ENUM], type: 'string' },
+        escalateLevelsUp: { type: 'number' },
+        warningAt: { type: 'number' },
+      },
+      ['nodeId'],
     ),
     kind: 'mutation',
   },
@@ -669,6 +717,18 @@ function buildPrimitiveCommand(
         ),
         type: 'setUserTaskReturnResubmitStrategy',
       };
+    case 'set_user_task_return_require_comment':
+      return {
+        nodeId: readString(input, 'nodeId'),
+        requireComment: readBoolean(input, 'requireComment'),
+        type: 'setUserTaskReturnRequireComment',
+      };
+    case 'set_user_task_sla':
+      return {
+        nodeId: readString(input, 'nodeId'),
+        sla: parseSlaConfig(input),
+        type: 'setUserTaskSla',
+      };
     case 'set_service_action':
       return {
         action: parseServiceAction(input['action']),
@@ -751,7 +811,9 @@ function readNodeTypeCatalog(): unknown {
     nodeTypes: [
       {
         dataShape:
-          'label, approverResolver, decisionPolicy, returnBehavior, allowReject, allowTransfer, allowAddSigner, triggerMode, sla?, notification?',
+          'label, approverResolver, decisionPolicy, returnBehavior(allowReturn, allowedTargets, requireComment?, resubmitStrategy?), ' +
+          'allowReject, allowTransfer, allowAddSigner, triggerMode, ' +
+          'sla?(duration, calendar?, onTimeout, escalateLevelsUp?, warningAt?), notification?',
         label: WORKFLOW_NODE_TYPE_LABELS.userTask,
         type: 'userTask',
       },
@@ -1023,6 +1085,59 @@ function parseApproverResolver(value: unknown): ApproverResolver {
 }
 
 /** Coerce an LLM-supplied service action, **never throwing** (defaults to NOTIFY). */
+/**
+ * Builds an {@link SlaConfig} from the flat tool input. Authoring goes through
+ * `durationValue` + `durationUnit` rather than a raw ISO duration so the
+ * assistant cannot emit mixed durations such as `P1DT4H`, matching what the
+ * designer form can produce.
+ */
+function parseSlaConfig(
+  input: Readonly<Record<string, unknown>>,
+): SlaConfig | null {
+  if (input['enabled'] === false) {
+    return null;
+  }
+
+  const unit = input['durationUnit'] === undefined
+    ? 'DAY'
+    : readEnum(input, 'durationUnit', SLA_DURATION_UNIT_ENUM);
+  const duration = composeSlaDuration({
+    unit,
+    value: readPositiveInteger(input['durationValue'], 2),
+  });
+  const onTimeout = input['onTimeout'] === undefined
+    ? 'REMIND'
+    : readEnum(input, 'onTimeout', SLA_TIMEOUT_ACTION_ENUM);
+  const calendar = input['calendar'] === undefined
+    ? 'CALENDAR'
+    : readEnum(input, 'calendar', SLA_CALENDAR_MODE_ENUM);
+  const warningAt = readSlaWarningAt(input['warningAt']);
+
+  return {
+    // A business-day calendar only advances the day component, so recording it
+    // on an hour-based SLA would be misleading. Normalize it away here.
+    calendar: unit === 'DAY' ? calendar : 'CALENDAR',
+    duration,
+    onTimeout,
+    ...(onTimeout === 'ESCALATE'
+      ? { escalateLevelsUp: readPositiveInteger(input['escalateLevelsUp'], 1) }
+      : {}),
+    ...(warningAt === null ? {} : { warningAt }),
+  };
+}
+
+function readSlaWarningAt(value: unknown): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== 'number' || !(value > 0) || !(value < 1)) {
+    throw new Error('參數 warningAt 必須為 0 與 1 之間的小數。');
+  }
+
+  return value;
+}
+
 function parseServiceAction(value: unknown): ServiceAction {
   if (!isRecord(value)) {
     return DEFAULT_NOTIFY_ACTION;

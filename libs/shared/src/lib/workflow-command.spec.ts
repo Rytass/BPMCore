@@ -276,3 +276,76 @@ describe('readWorkflowDefinitionIssue — exclusive gateway default path', () =>
     expect(issue).toBeNull();
   });
 });
+
+describe('user task return and SLA commands', () => {
+  function stateWithUserTask(): WorkflowDesignerState {
+    const added = applyWorkflowCommand(
+      initialState(),
+      { nodeType: 'userTask', type: 'addNode' },
+      deterministicEdgeIds(),
+    );
+
+    return added.state;
+  }
+
+  function readUserTaskNode(
+    state: WorkflowDesignerState,
+  ): Extract<WorkflowDefinition['nodes'][number], { type: 'userTask' }> {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node;
+  }
+
+  it('defaults a new user task to not requiring a return comment', () => {
+    expect(
+      readUserTaskNode(stateWithUserTask()).data.returnBehavior.requireComment,
+    ).toBe(false);
+  });
+
+  it('turns the return comment requirement on without touching other return settings', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const result = applyWorkflowCommand(state, {
+      nodeId,
+      requireComment: true,
+      type: 'setUserTaskReturnRequireComment',
+    });
+
+    expect(readUserTaskNode(result.state).data.returnBehavior).toEqual({
+      allowReturn: true,
+      allowedTargets: 'INITIATOR',
+      requireComment: true,
+      resubmitStrategy: 'RESTART',
+    });
+  });
+
+  it('sets and clears the node SLA, dropping the key when removed', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const withSla = applyWorkflowCommand(state, {
+      nodeId,
+      sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'REMIND' },
+      type: 'setUserTaskSla',
+    });
+
+    expect(readUserTaskNode(withSla.state).data.sla).toEqual({
+      calendar: 'BUSINESS_DAY',
+      duration: 'P2D',
+      onTimeout: 'REMIND',
+    });
+
+    const withoutSla = applyWorkflowCommand(withSla.state, {
+      nodeId,
+      sla: null,
+      type: 'setUserTaskSla',
+    });
+
+    expect('sla' in readUserTaskNode(withoutSla.state).data).toBe(false);
+  });
+});

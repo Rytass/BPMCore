@@ -3,6 +3,7 @@ import {
   ApproverResolver,
   ReturnResubmitStrategy,
   ServiceAction,
+  SlaConfig,
   WorkflowDefinition,
   WorkflowEdgeConditionOperator,
   WorkflowNodeTriggerMode,
@@ -83,6 +84,17 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskReturnResubmitStrategy';
       readonly nodeId: string;
       readonly resubmitStrategy: ReturnResubmitStrategy;
+    }
+  | {
+      readonly type: 'setUserTaskReturnRequireComment';
+      readonly nodeId: string;
+      readonly requireComment: boolean;
+    }
+  | {
+      /** Replaces the node SLA outright; `null` removes the SLA entirely. */
+      readonly type: 'setUserTaskSla';
+      readonly nodeId: string;
+      readonly sla: SlaConfig | null;
     }
   | {
       readonly type: 'setUserTaskOptions';
@@ -231,6 +243,10 @@ export function applyWorkflowCommand(
       return applySetUserTaskApprover(state, command);
     case 'setUserTaskReturnResubmitStrategy':
       return applySetUserTaskReturnResubmitStrategy(state, command);
+    case 'setUserTaskReturnRequireComment':
+      return applySetUserTaskReturnRequireComment(state, command);
+    case 'setUserTaskSla':
+      return applySetUserTaskSla(state, command);
     case 'setUserTaskOptions':
       return applySetUserTaskOptions(state, command);
     case 'setServiceAction':
@@ -516,6 +532,67 @@ function applySetUserTaskReturnResubmitStrategy(
             },
           }
         : node,
+    'userTask',
+  );
+}
+
+/** Returns a copy of `value` without `key`, leaving the input untouched. */
+function omitKey<TValue extends object, TKey extends keyof TValue & string>(
+  value: TValue,
+  key: TKey,
+): Omit<TValue, TKey> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([entryKey]) => entryKey !== key),
+  ) as Omit<TValue, TKey>;
+}
+
+function applySetUserTaskReturnRequireComment(
+  state: WorkflowDesignerState,
+  command: Extract<
+    WorkflowCommand,
+    { type: 'setUserTaskReturnRequireComment' }
+  >,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) =>
+      node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              returnBehavior: {
+                ...node.data.returnBehavior,
+                requireComment: command.requireComment,
+              },
+            },
+          }
+        : node,
+    'userTask',
+  );
+}
+
+function applySetUserTaskSla(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskSla' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      if (!command.sla) {
+        // Drop the key entirely rather than storing `undefined`, so the saved
+        // definition JSON stays clean for templates that never used an SLA.
+        return { ...node, data: omitKey(node.data, 'sla') };
+      }
+
+      return { ...node, data: { ...node.data, sla: command.sla } };
+    },
     'userTask',
   );
 }
