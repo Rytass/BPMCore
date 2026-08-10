@@ -1,3 +1,14 @@
+## 0.7.0 (2026-08-10)
+
+### 🚀 Features
+
+- **shared:** add business-day SLA and required return comment contracts ([584acd7](https://github.com/Rytass/BPMCore/commit/584acd7))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5 (1M context)
+
 # Changelog
 
 All notable changes to `@rytass/bpm-core-shared` are documented in this file.

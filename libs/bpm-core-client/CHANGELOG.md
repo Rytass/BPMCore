@@ -1,3 +1,7 @@
+## 0.7.0 (2026-08-10)
+
+This was a version bump only for bpm-core-client to align it with other projects, there were no code changes.
+
 # Changelog
 
 All notable changes to `@rytass/bpm-core-client` are documented in this file.
