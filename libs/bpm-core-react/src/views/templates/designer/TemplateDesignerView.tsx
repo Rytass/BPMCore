@@ -78,6 +78,8 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   ServiceAction,
+  SlaCalendarMode,
+  SlaConfig,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
@@ -86,6 +88,16 @@ import {
   WorkflowNodeTriggerMode,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
+import {
+  DEFAULT_SLA_CONFIG,
+  SLA_CALENDAR_MODE_OPTIONS,
+  SLA_DURATION_UNIT_OPTIONS,
+  SLA_TIMEOUT_ACTION_OPTIONS,
+  SlaDurationParts,
+  SlaDurationUnit,
+  composeSlaDuration,
+  readSlaDurationParts,
+} from '@rytass/bpm-core-shared/workflow-graph';
 import { readFormBuilder } from '@rytass/bpm-core-client/form';
 import {
   OrgUnitOption,
@@ -475,6 +487,16 @@ const RETURN_RESUBMIT_STRATEGY_OPTIONS: readonly ReturnResubmitStrategyOption[] 
     { id: 'RESTART', name: '重新送出後從開始重跑' },
     { id: 'FROM_RETURN_POINT', name: '重新送出後回到退回節點' },
   ];
+const SLA_WARNING_AT_OPTIONS: readonly {
+  readonly id: string;
+  readonly name: string;
+  readonly value: number | null;
+}[] = [
+  { id: 'NONE', name: '不提醒', value: null },
+  { id: '0.5', name: '過半時提醒', value: 0.5 },
+  { id: '0.75', name: '剩四分之一時提醒', value: 0.75 },
+  { id: '0.9', name: '剩十分之一時提醒', value: 0.9 },
+];
 const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'DIRECT', name: '指定會員' },
   { id: 'ORG_MANAGER', name: '發起人主管' },
@@ -1449,6 +1471,30 @@ export function TemplateDesignerView({
     });
   }
 
+  function updateUserTaskReturnRequireComment(requireComment: boolean): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      requireComment,
+      type: 'setUserTaskReturnRequireComment',
+    });
+  }
+
+  function updateUserTaskSla(sla: SlaConfig | null): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      sla,
+      type: 'setUserTaskSla',
+    });
+  }
+
   function updateServiceAction(action: ServiceAction): void {
     if (!selectedNode || selectedNode.type !== 'serviceTask') {
       return;
@@ -2189,6 +2235,16 @@ export function TemplateDesignerView({
         : null;
     const resubmitStrategy =
       node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
+    const sla = node.data.sla ?? null;
+    // A hand-authored or AI-authored template may carry a mixed duration such
+    // as `P1DT4H`, which this form cannot represent. Keep it visible and
+    // read-only rather than silently rewriting it.
+    const slaDurationParts = sla ? readSlaDurationParts(sla.duration) : null;
+    const slaDurationUnit = slaDurationParts?.unit ?? 'DAY';
+    const slaWarningAtOption = readSlaWarningAtOption(sla?.warningAt ?? null);
+    const slaEscalateLevel = readManagerLevelOption(
+      sla?.escalateLevelsUp ?? 1,
+    );
 
     return (
       <>
@@ -2383,6 +2439,10 @@ export function TemplateDesignerView({
                 >
                   <Toggle
                     checked={Boolean(fallback.allowInitiatorSelfApproval)}
+                    inputProps={{
+                      id: 'allowInitiatorSelfApproval',
+                      name: 'allowInitiatorSelfApproval',
+                    }}
                     onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                       updateUserTaskResolver(
                         updateApproverResolverFallback(resolver, {
@@ -2403,6 +2463,10 @@ export function TemplateDesignerView({
           <BPMFormField label="包含下層" name="includeDescendants">
             <Toggle
               checked={Boolean(resolver.includeDescendants)}
+              inputProps={{
+                id: 'includeDescendants',
+                name: 'includeDescendants',
+              }}
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                 updateUserTaskResolver({
                   ...resolver,
@@ -2481,6 +2545,176 @@ export function TemplateDesignerView({
                 RETURN_RESUBMIT_STRATEGY_OPTIONS,
                 resubmitStrategy,
               )}
+            />
+          </BPMFormField>
+        ) : null}
+        {node.data.returnBehavior.allowReturn ? (
+          <BPMFormField
+            hintText="開啟後，簽核者按下退回時必須填寫意見，未填寫會被擋下。"
+            label="退回時意見必填"
+            name="returnRequireComment"
+          >
+            <Toggle
+              checked={node.data.returnBehavior.requireComment === true}
+              // FormField renders `<label htmlFor={name}>`, so the control needs
+              // the matching id for the label to be clickable.
+              inputProps={{
+                id: 'returnRequireComment',
+                name: 'returnRequireComment',
+              }}
+              onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                updateUserTaskReturnRequireComment(event.target.checked)
+              }
+            />
+          </BPMFormField>
+        ) : null}
+        <BPMFormField
+          hintText="開啟後可設定簽核期限，逾時將依下方設定處理。"
+          label="啟用時效"
+          name="slaEnabled"
+        >
+          <Toggle
+            checked={Boolean(sla)}
+            inputProps={{ id: 'slaEnabled', name: 'slaEnabled' }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskSla(
+                event.target.checked ? DEFAULT_SLA_CONFIG : null,
+              )
+            }
+          />
+        </BPMFormField>
+        {sla && !slaDurationParts ? (
+          <BPMFormField
+            hintText="此期限混用了日與時，無法在表單中編輯。請改以單一單位設定，或透過 API 維護。"
+            label="時效期限"
+            name="slaDurationRaw"
+          >
+            <Input disabled value={sla.duration} variant="base" />
+          </BPMFormField>
+        ) : null}
+        {sla && slaDurationParts ? (
+          <>
+            <BPMFormField label="時效期限" name="slaDurationValue" required>
+              <Input
+                id="slaDurationValue"
+                inputProps={{ min: 1 }}
+                inputType="number"
+                name="slaDurationValue"
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateUserTaskSla(
+                    withSlaDuration(sla, {
+                      unit: slaDurationUnit,
+                      value: Number(event.target.value),
+                    }),
+                  )
+                }
+                value={String(slaDurationParts.value)}
+                variant="base"
+              />
+            </BPMFormField>
+            <BPMFormField label="期限單位" name="slaDurationUnit" required>
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskSla(
+                    withSlaDuration(sla, {
+                      unit: readSlaDurationUnit(option?.id ?? null),
+                      value: slaDurationParts.value,
+                    }),
+                  )
+                }
+                options={[...SLA_DURATION_UNIT_OPTIONS]}
+                value={readSelectOption(
+                  SLA_DURATION_UNIT_OPTIONS,
+                  slaDurationUnit,
+                )}
+              />
+            </BPMFormField>
+          </>
+        ) : null}
+        {sla && slaDurationUnit === 'DAY' ? (
+          <BPMFormField
+            hintText="工作日會跳過週末與行事曆上的假日，補班日仍計為工作日；行事曆由系統管理者設定。"
+            label="計算方式"
+            name="slaCalendar"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskSla({
+                  ...sla,
+                  calendar: readSlaCalendarMode(option?.id ?? null),
+                })
+              }
+              options={[...SLA_CALENDAR_MODE_OPTIONS]}
+              value={readSelectOption(
+                SLA_CALENDAR_MODE_OPTIONS,
+                sla.calendar ?? 'CALENDAR',
+              )}
+            />
+          </BPMFormField>
+        ) : null}
+        {sla ? (
+          <BPMFormField label="逾時處理" name="slaOnTimeout" required>
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskSla(
+                  withSlaTimeoutAction(
+                    sla,
+                    readSlaTimeoutAction(option?.id ?? null),
+                  ),
+                )
+              }
+              options={[...SLA_TIMEOUT_ACTION_OPTIONS]}
+              value={readSelectOption(
+                SLA_TIMEOUT_ACTION_OPTIONS,
+                sla.onTimeout,
+              )}
+            />
+          </BPMFormField>
+        ) : null}
+        {sla?.onTimeout === 'ESCALATE' ? (
+          <BPMFormField
+            hintText="逾時後改派給簽核者的上層主管，只會升級一次。"
+            label="升級層級"
+            name="slaEscalateLevelsUp"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskSla({
+                  ...sla,
+                  escalateLevelsUp: readManagerLevelOptionById(
+                    option?.id ?? null,
+                  ).value,
+                })
+              }
+              options={[...MANAGER_LEVEL_OPTIONS]}
+              value={slaEscalateLevel}
+            />
+          </BPMFormField>
+        ) : null}
+        {sla ? (
+          <BPMFormField
+            hintText="在期限到達前先送出一次提醒。"
+            label="預警提醒"
+            name="slaWarningAt"
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskSla(
+                  withSlaWarningAt(
+                    sla,
+                    readSlaWarningAtOptionById(option?.id ?? null).value,
+                  ),
+                )
+              }
+              options={[...SLA_WARNING_AT_OPTIONS]}
+              value={slaWarningAtOption}
             />
           </BPMFormField>
         ) : null}
@@ -3261,6 +3495,84 @@ function readReturnResubmitStrategy(
   value: string | null,
 ): ReturnResubmitStrategy {
   return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
+}
+
+function readSlaDurationUnit(value: string | null): SlaDurationUnit {
+  return value === 'HOUR' ? 'HOUR' : 'DAY';
+}
+
+function readSlaCalendarMode(value: string | null): SlaCalendarMode {
+  return value === 'BUSINESS_DAY' ? 'BUSINESS_DAY' : 'CALENDAR';
+}
+
+function readSlaTimeoutAction(value: string | null): SlaConfig['onTimeout'] {
+  return (
+    SLA_TIMEOUT_ACTION_OPTIONS.find((option) => option.id === value)?.id ??
+    'REMIND'
+  );
+}
+
+function readSlaWarningAtOption(
+  value: number | null,
+): (typeof SLA_WARNING_AT_OPTIONS)[number] {
+  return (
+    SLA_WARNING_AT_OPTIONS.find((option) => option.value === value) ??
+    SLA_WARNING_AT_OPTIONS[0]
+  );
+}
+
+function readSlaWarningAtOptionById(
+  id: string | null,
+): (typeof SLA_WARNING_AT_OPTIONS)[number] {
+  return (
+    SLA_WARNING_AT_OPTIONS.find((option) => option.id === id) ??
+    SLA_WARNING_AT_OPTIONS[0]
+  );
+}
+
+/**
+ * Rewrites the SLA duration, dropping `BUSINESS_DAY` when the unit is no
+ * longer days — a business calendar only advances whole days, so keeping the
+ * mode on an hour-based SLA would claim a behaviour the engine does not apply.
+ */
+function withSlaDuration(sla: SlaConfig, parts: SlaDurationParts): SlaConfig {
+  const value = Number.isFinite(parts.value) ? Math.trunc(parts.value) : 1;
+  const duration = composeSlaDuration({ unit: parts.unit, value });
+
+  return {
+    ...sla,
+    calendar: parts.unit === 'DAY' ? (sla.calendar ?? 'CALENDAR') : 'CALENDAR',
+    duration,
+  };
+}
+
+/** Keeps `escalateLevelsUp` only while the timeout action is `ESCALATE`. */
+function withSlaTimeoutAction(
+  sla: SlaConfig,
+  onTimeout: SlaConfig['onTimeout'],
+): SlaConfig {
+  return onTimeout === 'ESCALATE'
+    ? { ...sla, escalateLevelsUp: sla.escalateLevelsUp ?? 1, onTimeout }
+    : { ...omitSlaKey(sla, 'escalateLevelsUp'), onTimeout };
+}
+
+function withSlaWarningAt(sla: SlaConfig, warningAt: number | null): SlaConfig {
+  return warningAt === null
+    ? omitSlaKey(sla, 'warningAt')
+    : { ...sla, warningAt };
+}
+
+/**
+ * Drops an optional SLA key rather than storing `undefined`, keeping the saved
+ * workflow definition JSON free of dead settings.
+ */
+function omitSlaKey(
+  sla: SlaConfig,
+  key: 'escalateLevelsUp' | 'warningAt',
+): SlaConfig {
+  return Object.fromEntries(
+    Object.entries(sla).filter(([entryKey]) => entryKey !== key),
+  ) as SlaConfig;
 }
 
 function readApproverResolverMode(value: string): ApproverResolverMode {

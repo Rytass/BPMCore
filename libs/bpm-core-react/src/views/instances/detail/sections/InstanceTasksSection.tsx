@@ -269,6 +269,12 @@ export const InstanceTasksSection = forwardRef<
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.allowReturn;
 
+  // Mirrors the engine rule so the approver is stopped in the modal instead of
+  // by a server error after submitting.
+  const returnCommentRequired =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.returnBehavior.requireComment === true;
+
   const canAddSignerCurrentTask =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.allowAddSigner;
@@ -869,7 +875,9 @@ export const InstanceTasksSection = forwardRef<
       <Modal
         cancelText="取消"
         confirmButtonProps={{
-          disabled: !selectedReturnTargetOption,
+          disabled:
+            !selectedReturnTargetOption ||
+            (returnCommentRequired && !trimmedReturnComment),
         }}
         confirmText="送出退回"
         loading={deciding}
@@ -897,12 +905,23 @@ export const InstanceTasksSection = forwardRef<
               value={selectedReturnTargetOption}
             />
           </BPMFormField>
-          <BPMFormField label="退回說明" name="returnComment">
+          <BPMFormField
+            hintText={
+              returnCommentRequired ? '此關卡設定退回時必須填寫意見。' : undefined
+            }
+            label="退回說明"
+            name="returnComment"
+            required={returnCommentRequired}
+          >
             <Textarea
               onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
                 setReturnComment(event.target.value)
               }
-              placeholder="可補充需要修改的內容"
+              placeholder={
+                returnCommentRequired
+                  ? '請說明退回原因'
+                  : '可補充需要修改的內容'
+              }
               ref={applyFullWidthTextareaHost}
               resize="vertical"
               rows={4}
