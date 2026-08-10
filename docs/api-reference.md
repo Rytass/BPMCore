@@ -24,6 +24,30 @@ Bump the "Last verified against" line at the top to the current version of each 
 
 ## Publish Procedure (DO NOT SKIP)
 
+### Versioning and changelogs — always `nx release`, never a manual bump
+
+**Do not hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
+`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the
+`v{version}` git tag and the GitHub release for the three core packages
+(`shared`, `bpm-core`, `bpm-core-client`, released as a fixed version set). A
+manual bump silently skips the changelog, so consumers get a release whose
+`CHANGELOG.md` still ends at the previous version.
+
+```bash
+# Determines the bump from Conventional Commits since the last v* tag,
+# writes CHANGELOGs, commits and tags. Add --dry-run first to review.
+npx nx release --skip-publish
+```
+
+`@rytass/bpm-core-react` is deliberately **not** in `release.projects` — it
+versions on its own cadence (it tracks React/Mezzanine, not the core contract).
+Bump its `version` and write its `CHANGELOG.md` entry by hand, matching the
+Keep a Changelog style already in that file.
+
+Once the version commit and tag exist, run the publish flows below.
+
+### Two publish flows
+
 The four packages have **two different publish flows** because they use different builders. Mixing them up has already caused a broken 0.1.3 release that had to be deprecated.
 
 ### Backend packages — publish from `dist/libs/<pkg>`
@@ -517,6 +541,7 @@ Workflow execution engine — the heaviest module.
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
 | Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
+| Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
 | Tokens | `WorkflowEngineTokens`, `WORKFLOW_SERVICE_TASK_DISPATCHER` |
 | Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
 | Module | `WorkflowEngineModule` |
@@ -550,7 +575,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
 | Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
 | Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
-| Module | `CalendarModule` (global; wired by `BPMRootModule`) |
+| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`) |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 
@@ -562,6 +587,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
+| Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
 
 ## `@rytass/bpm-core-nestjs-module/attachment`

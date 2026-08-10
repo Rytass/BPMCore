@@ -97,15 +97,22 @@ Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 - 節點名稱。
 - 簽核者來源與 resolver 詳細設定。
 - resolver fallback。
-- `returnBehavior.resubmitStrategy`。
+- `returnBehavior.resubmitStrategy`、`returnBehavior.requireComment`。
+- `sla`（期限、單位、`calendar` 計算方式、`onTimeout`、`escalateLevelsUp`、
+  `warningAt`）。
 - 多 incoming edge 時的 `triggerMode`。
 
 Designer 目前固定新建節點的 `decisionPolicy` 為 `{ type: 'SINGLE' }`。多人簽核
 建議用多個 User Task 節點與拓樸表達，而不是把多人藏在單一節點策略中。
 
 目前 designer 尚未提供 UI 編輯 `description`、`entryCondition`、
-`allowAddSigner`、`allowTransfer`、`allowReject`、`sla`、`fieldPermissions`、
+`allowAddSigner`、`allowTransfer`、`allowReject`、`fieldPermissions`、
 `notification`。這些欄位仍保留在 shared schema 供後續實作與相容資料使用。
+
+`sla` 的期限以「數量 + 單位（日／小時）」輸入而非直接寫 ISO duration，因此
+designer 不會產生 `P1DT4H` 這種日與時混用的值——`BUSINESS_DAY` 只對「日」的部分
+跳過非工作日，混用時語意會不直觀。「計算方式」選項僅在單位為「日」時出現；改為
+「小時」時會自動正規化回 `CALENDAR`。
 
 ### Approver Resolver
 

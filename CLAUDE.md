@@ -27,6 +27,29 @@ Use this file as the quick architecture source before changing the project.
 
 Before adding new exports, check the file first — likely something close already exists. When you finish editing libs, re-grep your changes against the doc to confirm coverage. CI does not enforce this yet; humans and agents are the enforcement.
 
+## Releasing
+
+**Never hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
+`nx.json`) owns versions, per-package `CHANGELOG.md`, the `v{version}` tag and
+the GitHub release for the three core packages (`shared`, `bpm-core`,
+`bpm-core-client` — a fixed version set driven by Conventional Commits):
+
+```bash
+npx nx release --dry-run       # review first
+npx nx release --skip-publish  # version + changelog + commit + tag
+```
+
+A manual bump skips the changelog generation, so a release ships with a
+`CHANGELOG.md` that still ends at the previous version. That has happened; do
+not repeat it.
+
+`@rytass/bpm-core-react` is intentionally outside `release.projects` (it tracks
+React/Mezzanine, not the core contract) — bump its version and write its
+changelog entry by hand.
+
+Full publish commands, and why the backend and frontend packages publish from
+different directories, are in `docs/api-reference.md` → "Publish Procedure".
+
 ## Auth Model
 
 BPMCore does not own login, token issuance, or a user table. The host app must provide:
