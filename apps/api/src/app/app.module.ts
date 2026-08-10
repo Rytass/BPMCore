@@ -6,6 +6,7 @@ import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { BPMRootModule } from '@rytass/bpm-core-nestjs-module';
 import { buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
+import { BPM_BUSINESS_CALENDAR } from '@rytass/bpm-core-nestjs-module';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -14,6 +15,7 @@ import { ApiAuthModule } from './api-auth.module';
 import { ApiSimulationSeedService } from './api-simulation-seed.service';
 import { ApiMemberResolver } from './api-member.resolver';
 import { ApiSessionService } from './api-session.service';
+import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 
 @Module({
   imports: [
@@ -51,6 +53,10 @@ import { ApiSessionService } from './api-session.service';
         process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
       attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
       authContextFactory: buildApiBPMAuthContextFromExecutionContext,
+      businessCalendarProvider: {
+        provide: BPM_BUSINESS_CALENDAR,
+        useClass: ApiTaiwanBusinessCalendar,
+      },
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
         useExisting: ApiMemberResolver,
@@ -58,6 +64,8 @@ import { ApiSessionService } from './api-session.service';
     }),
   ],
   controllers: [AppController],
+  // `businessCalendarProvider` uses `useClass`, so BPM instantiates the
+  // calendar inside its own module context; it needs no provider entry here.
   providers: [AppService, ApiSimulationSeedService],
 })
 export class AppModule {}

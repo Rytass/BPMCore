@@ -2212,9 +2212,11 @@ function createWorkflowDefinition({
           resubmitStrategy: 'FROM_RETURN_POINT',
         },
         sla: {
+          // `warningAt` is a 0–1 fraction of the SLA window, not a percentage.
+          calendar: 'BUSINESS_DAY',
           duration: 'P2D',
           onTimeout: 'REMIND',
-          warningAt: 75,
+          warningAt: 0.75,
         },
       },
       id: node.id,
