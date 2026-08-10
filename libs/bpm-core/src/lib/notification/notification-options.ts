@@ -151,6 +151,16 @@ export interface BPMRootNotificationOptions {
   readonly notificationSlaScanIntervalMs?: number;
 
   /**
+   * IANA time zone used by BPM's built-in Monday–Friday business calendar when
+   * the host registers no `businessCalendarProvider`.
+   *
+   * Only affects nodes whose SLA opts into `BUSINESS_DAY`. Defaults to `UTC`.
+   * Hosts that inject their own `BPMBusinessCalendar` declare the time zone on
+   * the calendar itself and this option is ignored.
+   */
+  readonly notificationSlaBusinessCalendarTimeZone?: string;
+
+  /**
    * Enables the SLA timeout `REMIND` action.
    *
    * Defaults to `true`. When disabled, overdue tasks with `REMIND` timeout
@@ -232,6 +242,7 @@ export interface BPMResolvedNotificationOptions {
   readonly deliveryRetryBaseDelayMs: number;
   readonly deliveryScanIntervalMs: number;
   readonly deliverySchedulerEnabled: boolean;
+  readonly slaBusinessCalendarTimeZone: string;
   readonly slaScanIntervalMs: number;
   readonly slaSchedulerEnabled: boolean;
   readonly slaTimeoutAutoApproveEnabled: boolean;
@@ -266,6 +277,7 @@ export const DEFAULT_BPM_NOTIFICATION_OPTIONS: BPMResolvedNotificationOptions =
     deliveryRetryBaseDelayMs: 60_000,
     deliveryScanIntervalMs: 30_000,
     deliverySchedulerEnabled: false,
+    slaBusinessCalendarTimeZone: 'UTC',
     slaScanIntervalMs: 60_000,
     slaSchedulerEnabled: false,
     slaTimeoutAutoApproveEnabled: false,
@@ -348,6 +360,9 @@ export function resolveBPMNotificationOptions(
     defaultInAppPreferenceEnabled:
       options.notificationDefaultInAppPreferenceEnabled ??
       DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultInAppPreferenceEnabled,
+    slaBusinessCalendarTimeZone: normalizeTimeZone(
+      options.notificationSlaBusinessCalendarTimeZone,
+    ),
     slaScanIntervalMs: normalizeInterval(
       options.notificationSlaScanIntervalMs,
       DEFAULT_BPM_NOTIFICATION_OPTIONS.slaScanIntervalMs,
@@ -396,6 +411,26 @@ function normalizePort(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
     ? value
     : null;
+}
+
+/**
+ * Rejects unknown IANA zones at wiring time rather than letting every SLA
+ * calculation throw later inside `Intl.DateTimeFormat`.
+ */
+function normalizeTimeZone(value: string | undefined): string {
+  const trimmedValue = value?.trim() ?? '';
+
+  if (!trimmedValue) {
+    return DEFAULT_BPM_NOTIFICATION_OPTIONS.slaBusinessCalendarTimeZone;
+  }
+
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: trimmedValue });
+
+    return trimmedValue;
+  } catch {
+    return DEFAULT_BPM_NOTIFICATION_OPTIONS.slaBusinessCalendarTimeZone;
+  }
 }
 
 function normalizeInterval(

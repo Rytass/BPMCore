@@ -6,6 +6,8 @@ import {
 import { ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
+import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
+import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
 import { ConditionService } from '../condition/condition.service';
 import {
   DelegationResolution,
@@ -2930,6 +2932,7 @@ function createServiceFixture({
       delegationService as unknown as DelegationService,
       notificationService as unknown as NotificationService,
       signatureService as unknown as SignatureService,
+      new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
     ),
     notificationService,

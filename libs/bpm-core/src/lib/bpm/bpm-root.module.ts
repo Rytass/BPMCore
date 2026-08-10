@@ -14,6 +14,8 @@ import {
   BPMAuthModuleAsyncOptions,
   BPMAuthModuleOptions,
 } from '../bpm-auth/bpm-auth.options';
+import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
+import { CalendarModule } from '../calendar/calendar.module';
 import { DelegationModule } from '../delegation/delegation.module';
 import { FormModule } from '../form/form.module';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
@@ -57,6 +59,17 @@ export interface BPMRootModuleOptions
    * operations that require authentication will not receive a host session.
    */
   readonly authContextFactory?: BPMAuthModuleOptions['contextFactory'];
+
+  /**
+   * Host-provided business calendar used by workflow nodes whose SLA opts into
+   * `BUSINESS_DAY`.
+   *
+   * BPMCore ships no national holiday data. When omitted, BPM falls back to a
+   * Monday–Friday calendar (see `notificationSlaBusinessCalendarTimeZone`);
+   * hosts that need national holidays or make-up working days register their
+   * own `BPM_BUSINESS_CALENDAR` provider here.
+   */
+  readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
 
   /**
    * Host-provided member resolver provider.
@@ -115,6 +128,14 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    * use a Nest provider with `useFactory` / `inject` here.
    */
   readonly attachmentStorageProvider?: Provider<AttachmentStorage>;
+
+  /**
+   * Host-provided business calendar for `BUSINESS_DAY` SLAs.
+   *
+   * This provider is static at module wiring time. If secrets or a repository
+   * are required, use a Nest provider with `useFactory` / `inject` here.
+   */
+  readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
 
   /**
    * Providers injected into `useFactory`.
@@ -229,6 +250,7 @@ export class BPMRootModule {
     return {
       exports: [
         NotificationOptionsModule,
+        CalendarModule,
         BPMAuthModule,
         IdentityModule,
         OrganizationModule,
@@ -245,6 +267,9 @@ export class BPMRootModule {
           imports: options.imports,
           inject: options.inject,
           useFactory: options.useFactory,
+        }),
+        CalendarModule.forRoot({
+          businessCalendarProvider: options.businessCalendarProvider,
         }),
         BPMAuthModule.forRootAsync(authOptions),
         IdentityModule.forRootAsync({
@@ -286,6 +311,9 @@ function createBPMFeatureModules(
 ): BPMModuleImport[] {
   return [
     NotificationOptionsModule.forRoot(options),
+    CalendarModule.forRoot({
+      businessCalendarProvider: options.businessCalendarProvider,
+    }),
     BPMAuthModule.forRoot(createBPMAuthModuleOptions(options)),
     IdentityModule.forRoot({
       ...options,

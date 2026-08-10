@@ -38,10 +38,8 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
-import {
-  calculateTaskSlaDueAt,
-  NotificationService,
-} from '../notification/notification.service';
+import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
+import { NotificationService } from '../notification/notification.service';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationChannelEnum,
@@ -214,6 +212,7 @@ export class WorkflowEngineService {
     private readonly delegationService: DelegationService,
     private readonly notificationService: NotificationService,
     private readonly signatureService: SignatureService,
+    private readonly slaScheduleService: BPMSlaScheduleService,
     @Optional()
     @Inject(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)
     private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = new DefaultWorkflowServiceTaskDispatcher(),
@@ -3246,6 +3245,10 @@ export class WorkflowEngineService {
     );
     const primaryCandidate = candidates[0];
     const now = new Date();
+    const slaDueAt = await this.slaScheduleService.resolveTaskSlaDueAt({
+      node,
+      now,
+    });
     const task = await taskRepository.save(
       taskRepository.create({
         assigneeMemberId:
@@ -3264,7 +3267,7 @@ export class WorkflowEngineService {
         openedAt: null,
         originalAssigneeMemberId:
           candidates.length === 1 ? primaryCandidate.originalMemberId : null,
-        slaDueAt: calculateTaskSlaDueAt({ node, now }),
+        slaDueAt,
         status: TaskStatusEnum.PENDING,
         tokenId: token.id,
       }),

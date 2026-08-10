@@ -1,6 +1,7 @@
 export * from './lib/attachment';
 export * from './lib/bpm';
 export * from './lib/bpm-auth';
+export * from './lib/calendar';
 export * from './lib/common';
 export * from './lib/condition';
 export * from './lib/database';

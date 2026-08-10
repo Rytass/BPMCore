@@ -90,4 +90,26 @@ describe('resolveBPMNotificationOptions', () => {
     expect(options.deliveryMaxAttempts).toBe(4);
     expect(options.deliveryRetryBaseDelayMs).toBe(1000);
   });
+
+  it('defaults the business calendar time zone to UTC', (): void => {
+    expect(resolveBPMNotificationOptions({}).slaBusinessCalendarTimeZone).toBe(
+      'UTC',
+    );
+  });
+
+  it('accepts a valid IANA business calendar time zone', (): void => {
+    expect(
+      resolveBPMNotificationOptions({
+        notificationSlaBusinessCalendarTimeZone: 'Asia/Taipei',
+      }).slaBusinessCalendarTimeZone,
+    ).toBe('Asia/Taipei');
+  });
+
+  it('falls back to UTC for an unknown time zone instead of throwing later', (): void => {
+    expect(
+      resolveBPMNotificationOptions({
+        notificationSlaBusinessCalendarTimeZone: 'Mars/Olympus',
+      }).slaBusinessCalendarTimeZone,
+    ).toBe('UTC');
+  });
 });

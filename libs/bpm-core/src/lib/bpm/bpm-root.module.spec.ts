@@ -6,6 +6,11 @@ import {
 } from '../identity/member-resolver.interface';
 import { ATTACHMENT_STORAGE, AttachmentStorage } from '../attachment';
 import {
+  BPM_BUSINESS_CALENDAR,
+  BPMBusinessCalendar,
+  defaultBusinessCalendarProvider,
+} from '../calendar';
+import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowWebhookDispatchInput,
   BPMWorkflowWebhookDispatchResult,
@@ -132,6 +137,82 @@ describe('BPMRootModule', () => {
           importedModule.providers?.includes(
             workflowServiceTaskDispatcherProvider,
           ),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a host business calendar provider to the calendar module in forRoot', (): void => {
+    const businessCalendarProvider: Provider<BPMBusinessCalendar> = {
+      provide: BPM_BUSINESS_CALENDAR,
+      useValue: {
+        isBusinessDay: (): boolean => true,
+        timeZone: 'Asia/Taipei',
+      },
+    };
+
+    const module = BPMRootModule.forRoot({
+      businessCalendarProvider,
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+    });
+
+    expect(
+      (module.imports ?? []).some(
+        (importedModule) =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'providers' in importedModule &&
+          importedModule.providers?.includes(businessCalendarProvider),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a host business calendar provider to the calendar module in forRootAsync', (): void => {
+    const businessCalendarProvider: Provider<BPMBusinessCalendar> = {
+      provide: BPM_BUSINESS_CALENDAR,
+      useValue: {
+        isBusinessDay: (): boolean => true,
+        timeZone: 'Asia/Taipei',
+      },
+    };
+
+    const module = BPMRootModule.forRootAsync({
+      businessCalendarProvider,
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+      useFactory: (): Record<string, never> => ({}),
+    });
+
+    expect(
+      (module.imports ?? []).some(
+        (importedModule) =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'providers' in importedModule &&
+          importedModule.providers?.includes(businessCalendarProvider),
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back to the built-in weekday calendar when the host provides none', (): void => {
+    const module = BPMRootModule.forRoot({
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+    });
+
+    expect(
+      (module.imports ?? []).some(
+        (importedModule) =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'providers' in importedModule &&
+          importedModule.providers?.includes(defaultBusinessCalendarProvider),
       ),
     ).toBe(true);
   });

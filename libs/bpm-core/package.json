@@ -42,6 +42,9 @@
       "bpm-auth": [
         "./src/lib/bpm-auth/index.d.ts"
       ],
+      "calendar": [
+        "./src/lib/calendar/index.d.ts"
+      ],
       "condition": [
         "./src/lib/condition/index.d.ts"
       ],
@@ -90,6 +93,10 @@
     "./bpm-auth": {
       "types": "./src/lib/bpm-auth/index.d.ts",
       "default": "./src/lib/bpm-auth/index.js"
+    },
+    "./calendar": {
+      "types": "./src/lib/calendar/index.d.ts",
+      "default": "./src/lib/calendar/index.js"
     },
     "./database": {
       "types": "./src/lib/database/index.d.ts",
