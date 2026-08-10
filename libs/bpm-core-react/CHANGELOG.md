@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
+## 0.8.0 — 2026-08-10
+
+### Added
+
+- **SLA and return-comment controls in the template designer.** The node panel
+  had no SLA fields at all, so a working-day deadline could only be set through
+  the API. It now exposes the timer the way the approver resolver already
+  works — a master toggle that progressively reveals the duration, its unit,
+  the calendar mode, the timeout action, the escalation level and the warning
+  threshold — plus a `returnBehavior.requireComment` toggle.
+
+  The deadline is entered as a number and a unit rather than a raw ISO
+  duration, so the form cannot produce a mixed `P1DT4H`; the calendar selector
+  only appears for day-based durations, since a business calendar advances
+  whole days only.
+
+- **Required return comments in the instance view.** The return dialog marks
+  the comment required and keeps the submit button disabled until it is filled,
+  so approvers see the node's rule before the server rejects the decision.
+
+### Fixed
+
+- **Designer toggles were not label-clickable.** `FormField` renders
+  `<label htmlFor={name}>`, but the toggles carried no matching `id`, so those
+  labels pointed at nothing. All node-panel toggles now set `id` and `name`.
+
+### Changed
+
+- Widened peer dependency ranges to `^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0` for
+  `@rytass/bpm-core-client` and `@rytass/bpm-core-shared`. The new designer
+  controls read `SlaConfig.calendar` and `ReturnBehavior.requireComment`, which
+  only exist from 0.7.0 — on older core packages the extra fields are simply
+  absent and the panel falls back to its previous behaviour.
+
+### Why a minor
+
+New optional UI controls over additive contract fields; no component API or
+existing behaviour changed.
+
 ## 0.7.7 — 2026-08-04
 
 ### Changed
