@@ -2,7 +2,11 @@ import {
   EMPTY_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
 } from './workflow-definition.validator';
-import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  ReturnBehavior,
+  SlaConfig,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow';
 
 describe('workflow definition validator', () => {
   it('accepts a linear start user task end workflow', (): void => {
@@ -592,4 +596,139 @@ describe('workflow definition validator', () => {
       'workflow.edges.edge_notify_end.source cannot be a NOTIFY serviceTask',
     );
   });
+
+  it('rejects an invalid SLA calendar mode, timeout action and duration', (): void => {
+    const workflow = createUserTaskWorkflow({
+      sla: {
+        calendar: 'WORKING_DAY' as never,
+        duration: '2 days',
+        onTimeout: 'PING' as never,
+      },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toEqual(
+      expect.arrayContaining([
+        'workflow.nodes.task_manager.sla.duration is not a valid ISO duration',
+        'workflow.nodes.task_manager.sla.onTimeout is invalid',
+        'workflow.nodes.task_manager.sla.calendar is invalid',
+      ]),
+    );
+  });
+
+  it('only warns about an out-of-range warningAt so existing templates stay publishable', (): void => {
+    // Percentages stored as `75` instead of `0.75` exist in the wild; the SLA
+    // scanner ignores them, so publication must not start failing.
+    const workflow = createUserTaskWorkflow({
+      sla: { duration: 'P2D', onTimeout: 'REMIND', warningAt: 75 },
+    });
+
+    expect(lintWorkflowDefinition(workflow)).toEqual({
+      errors: [],
+      valid: true,
+      warnings: [
+        'workflow.nodes.task_manager.sla.warningAt must be between 0 and 1; the warning notification is skipped',
+      ],
+    });
+  });
+
+  it('rejects a non-boolean requireComment', (): void => {
+    const workflow = createUserTaskWorkflow({
+      returnBehavior: {
+        allowReturn: true,
+        allowedTargets: 'INITIATOR',
+        requireComment: 'yes' as never,
+      },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.task_manager.returnBehavior.requireComment must be a boolean',
+    );
+  });
+
+  it('accepts a business-day SLA without warnings', (): void => {
+    const workflow = createUserTaskWorkflow({
+      sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'REMIND' },
+    });
+
+    expect(lintWorkflowDefinition(workflow)).toEqual({
+      errors: [],
+      valid: true,
+      warnings: [],
+    });
+  });
+
+  it('warns when a business-day SLA mixes in an hour component', (): void => {
+    const workflow = createUserTaskWorkflow({
+      sla: { calendar: 'BUSINESS_DAY', duration: 'P1DT4H', onTimeout: 'REMIND' },
+    });
+
+    expect(lintWorkflowDefinition(workflow)).toEqual({
+      errors: [],
+      valid: true,
+      warnings: [
+        'workflow.nodes.task_manager.sla mixes BUSINESS_DAY with an hour/minute component; only the day part skips non-business days',
+      ],
+    });
+  });
 });
+
+function createUserTaskWorkflow({
+  returnBehavior = { allowReturn: true, allowedTargets: 'INITIATOR' },
+  sla,
+}: {
+  readonly returnBehavior?: ReturnBehavior;
+  readonly sla?: SlaConfig;
+}): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_task',
+        source: 'start',
+        target: 'task_manager',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_task_end',
+        source: 'task_manager',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: true,
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '主管簽核',
+          returnBehavior,
+          ...(sla ? { sla } : {}),
+        },
+        id: 'task_manager',
+        position: { x: 300, y: 160 },
+        type: 'userTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}

@@ -1,10 +1,25 @@
 import {
   ApproverResolver,
   ServiceAction,
+  SlaCalendarMode,
+  SlaConfig,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
+import { parseIsoDurationParts } from '../common/iso-duration';
+
+const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
+  'REMIND',
+  'AUTO_APPROVE',
+  'ESCALATE',
+  'TERMINATE_INSTANCE',
+];
+
+const SLA_CALENDAR_MODES: readonly SlaCalendarMode[] = [
+  'CALENDAR',
+  'BUSINESS_DAY',
+];
 
 export interface WorkflowDefinitionLintResult {
   readonly errors: readonly string[];
@@ -86,7 +101,7 @@ export function lintWorkflowDefinition(
   return {
     errors,
     valid: errors.length === 0,
-    warnings: [],
+    warnings: lintSlaWarnings(nodes),
   };
 }
 
@@ -205,6 +220,82 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
           ? []
           : [
               `workflow.nodes.${node.id}.returnBehavior.resubmitStrategy is invalid`,
+            ]),
+        ...(data.returnBehavior?.requireComment === undefined ||
+        typeof data.returnBehavior.requireComment === 'boolean'
+          ? []
+          : [
+              `workflow.nodes.${node.id}.returnBehavior.requireComment must be a boolean`,
+            ]),
+        ...lintSlaConfig(data.sla, node.id),
+      ];
+    });
+}
+
+function lintSlaConfig(
+  sla: SlaConfig | undefined,
+  nodeId: string,
+): readonly string[] {
+  if (!sla) {
+    return [];
+  }
+
+  return [
+    ...(parseIsoDurationParts(sla.duration ?? '')
+      ? []
+      : [`workflow.nodes.${nodeId}.sla.duration is not a valid ISO duration`]),
+    ...(SLA_TIMEOUT_ACTIONS.includes(sla.onTimeout)
+      ? []
+      : [`workflow.nodes.${nodeId}.sla.onTimeout is invalid`]),
+    ...(sla.calendar === undefined || SLA_CALENDAR_MODES.includes(sla.calendar)
+      ? []
+      : [`workflow.nodes.${nodeId}.sla.calendar is invalid`]),
+  ];
+}
+
+function isSlaWarningAtUsable(sla: SlaConfig): boolean {
+  return (
+    sla.warningAt === undefined ||
+    (typeof sla.warningAt === 'number' &&
+      sla.warningAt > 0 &&
+      sla.warningAt < 1)
+  );
+}
+
+/**
+ * `BUSINESS_DAY` only advances the duration's day component; any hour/minute
+ * part is added as plain elapsed time afterwards and can therefore land outside
+ * working hours. That is legal but rarely intended, so it surfaces as a
+ * warning rather than blocking publication.
+ */
+function lintSlaWarnings(nodes: readonly WorkflowNode[]): readonly string[] {
+  return nodes
+    .filter((node) => node.type === 'userTask')
+    .flatMap((node) => {
+      const sla = node.data.sla;
+
+      if (!sla) {
+        return [];
+      }
+
+      const parts = parseIsoDurationParts(sla.duration ?? '');
+      const mixesBusinessDayWithTime =
+        sla.calendar === 'BUSINESS_DAY' && Boolean(parts) && parts?.timeMs !== 0;
+
+      return [
+        ...(mixesBusinessDayWithTime
+          ? [
+              `workflow.nodes.${node.id}.sla mixes BUSINESS_DAY with an hour/minute component; only the day part skips non-business days`,
+            ]
+          : []),
+        // Deliberately a warning, not an error: the SLA scanner has always
+        // ignored an out-of-range warningAt, so promoting it to an error would
+        // block republishing templates that already carry one (for example a
+        // percentage stored as `75` instead of `0.75`).
+        ...(isSlaWarningAtUsable(sla)
+          ? []
+          : [
+              `workflow.nodes.${node.id}.sla.warningAt must be between 0 and 1; the warning notification is skipped`,
             ]),
       ];
     });
