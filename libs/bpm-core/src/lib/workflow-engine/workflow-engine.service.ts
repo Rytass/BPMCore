@@ -116,6 +116,24 @@ interface DryRunPathInput extends DryRunSimulationInput {
   readonly visitedNodeIds: ReadonlySet<string>;
 }
 
+/**
+ * Delegation-chain reason recorded for an approver-initiated transfer, as
+ * opposed to {@link SLA_ESCALATION_DELEGATION_REASON}.
+ */
+export const MANUAL_TRANSFER_DELEGATION_REASON = 'MANUAL_TRANSFER';
+
+/**
+ * Engine-internal decision knobs that are deliberately kept out of
+ * {@link DecideTaskInput} so they never reach the GraphQL schema.
+ */
+export interface DecideTaskOptions {
+  /**
+   * Reason stamped on the delegation-chain step when the decision is a
+   * transfer. Defaults to {@link MANUAL_TRANSFER_DELEGATION_REASON}.
+   */
+  readonly transferReason?: string;
+}
+
 interface ReturnedInstanceContext {
   readonly resubmitStrategy: ReturnResubmitStrategy;
   readonly returnedFromNodeId: string;
@@ -382,7 +400,10 @@ export class WorkflowEngineService {
     );
   }
 
-  async decideTask(input: DecideTaskInput): Promise<TaskDecisionEntity> {
+  async decideTask(
+    input: DecideTaskInput,
+    options: DecideTaskOptions = {},
+  ): Promise<TaskDecisionEntity> {
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<TaskDecisionEntity> => {
         const taskRepository = manager.getRepository(TaskEntity);
@@ -545,6 +566,7 @@ export class WorkflowEngineService {
             decisionComment,
             decidedAt,
             claimedCandidate,
+            options.transferReason ?? MANUAL_TRANSFER_DELEGATION_REASON,
           );
 
           await this.notificationService.resolveTaskNotifications({
@@ -3434,6 +3456,7 @@ export class WorkflowEngineService {
     decisionComment: string | null,
     decidedAt: Date,
     actorCandidate: TaskCandidateEntity | null,
+    transferReason: string,
   ): Promise<void> {
     if (!transferToMemberId) {
       throw new BadRequestException('Transfer target member is required');
@@ -3452,7 +3475,7 @@ export class WorkflowEngineService {
       ...readDelegationSteps(task.delegationChain),
       {
         from: transferringMemberId,
-        reason: 'MANUAL_TRANSFER',
+        reason: transferReason,
         ruleId: null,
         to: transferToMemberId,
       },

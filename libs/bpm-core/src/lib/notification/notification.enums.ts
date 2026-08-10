@@ -62,3 +62,17 @@ registerEnumType(NotificationResolutionEnum, {
 registerEnumType(NotificationTypeEnum, {
   name: 'NotificationType',
 });
+
+/**
+ * Delegation-chain reason stamped on the transfer that an SLA `ESCALATE`
+ * timeout performs.
+ *
+ * Escalation transfers the task to a new `TaskEntity` that inherits the
+ * delegation chain, so this marker is what makes the timeout action idempotent:
+ * without it every SLA scan would find the (still overdue) escalated task,
+ * see no prior notification for its new assignee, and escalate again — walking
+ * the whole management chain one level per scan. A task created for a fresh
+ * token (for example after a return and resubmit) starts with an empty chain
+ * and can escalate again, which is the intended behaviour.
+ */
+export const SLA_ESCALATION_DELEGATION_REASON = 'SLA_ESCALATION';

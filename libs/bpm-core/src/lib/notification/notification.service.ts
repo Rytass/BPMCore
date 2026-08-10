@@ -44,6 +44,7 @@ import {
   NotificationResolutionEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
+  SLA_ESCALATION_DELEGATION_REASON,
 } from './notification.enums';
 
 const ACTIONABLE_NOTIFICATION_TYPES: readonly NotificationTypeEnum[] = [
@@ -844,6 +845,17 @@ export class NotificationService {
     }
 
     if (timeoutAction === 'ESCALATE') {
+      // Escalation moves the work onto a new task that keeps the (already
+      // elapsed) due date, so without this guard the next scan would escalate
+      // it again, one management level per scan.
+      if (hasSlaEscalationStep(task)) {
+        this.logger.log(
+          `SLA escalation already applied for task ${task.id}; skipping.`,
+        );
+
+        return;
+      }
+
       const actorMemberId = await this.resolveTaskActorMemberId(task);
       const targetMemberId = await this.resolveEscalationTargetMemberId({
         actorMemberId,
@@ -856,13 +868,16 @@ export class NotificationService {
         return;
       }
 
-      await workflowEngine.decideTask({
-        action: TaskDecisionActionEnum.TRANSFERRED,
-        comment: 'SLA timeout escalated this task.',
-        decidedByMemberId: actorMemberId,
-        taskId: task.id,
-        transferToMemberId: targetMemberId,
-      });
+      await workflowEngine.decideTask(
+        {
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: 'SLA timeout escalated this task.',
+          decidedByMemberId: actorMemberId,
+          taskId: task.id,
+          transferToMemberId: targetMemberId,
+        },
+        { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+      );
 
       return;
     }
@@ -936,6 +951,14 @@ export class NotificationService {
   }
 }
 
+/**
+ * Adds a node's SLA duration to `now` as plain elapsed time.
+ *
+ * @deprecated Since 0.7.0 the engine schedules through
+ * `BPMSlaScheduleService.resolveTaskSlaDueAt`, which additionally honours
+ * `SlaConfig.calendar: 'BUSINESS_DAY'`. This function is kept for hosts that
+ * called it directly and always behaves as `CALENDAR` mode.
+ */
 export function calculateTaskSlaDueAt({
   node,
   now,
@@ -1040,6 +1063,12 @@ function isChannelEnabled(
   }
 
   return options.webhookEnabled;
+}
+
+function hasSlaEscalationStep(task: TaskEntity): boolean {
+  return task.delegationChain.some(
+    (step) => step['reason'] === SLA_ESCALATION_DELEGATION_REASON,
+  );
 }
 
 function isSlaTimeoutActionEnabled(

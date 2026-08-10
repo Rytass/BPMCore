@@ -17,7 +17,10 @@ import {
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { NotificationEntity } from '../notification/notification.entity';
-import { NotificationResolutionEnum } from '../notification/notification.enums';
+import {
+  NotificationResolutionEnum,
+  SLA_ESCALATION_DELEGATION_REASON,
+} from '../notification/notification.enums';
 import { NotificationService } from '../notification/notification.service';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
@@ -1107,6 +1110,89 @@ describe('WorkflowEngineService', () => {
 
     expect(decision.action).toBe(TaskDecisionActionEnum.RETURNED);
     expect(decision.comment).toBeNull();
+  });
+
+  it('stamps a manual transfer reason on the delegation chain', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-manager',
+    });
+
+    const transferredTask = fixture.savedTasks.find(
+      (task) => task.assigneeMemberId === 'member-manager',
+    );
+
+    expect(transferredTask?.delegationChain).toEqual([
+      {
+        from: 'member-finance',
+        reason: 'MANUAL_TRANSFER',
+        ruleId: null,
+        to: 'member-manager',
+      },
+    ]);
+  });
+
+  it('stamps the SLA escalation reason when the timeout hook drives the transfer', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask(
+      {
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+        transferToMemberId: 'member-manager',
+      },
+      { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+    );
+
+    const transferredTask = fixture.savedTasks.find(
+      (task) => task.assigneeMemberId === 'member-manager',
+    );
+
+    expect(transferredTask?.delegationChain).toEqual([
+      {
+        from: 'member-finance',
+        reason: 'SLA_ESCALATION',
+        ruleId: null,
+        to: 'member-manager',
+      },
+    ]);
   });
 
   it('rejects a task with a rejection comment', async (): Promise<void> => {

@@ -1,5 +1,8 @@
 import { validateSync } from 'class-validator';
-import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  SlaConfig,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow';
 import { ModuleRef } from '@nestjs/core';
 import { ObjectLiteral, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
@@ -8,8 +11,10 @@ import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import {
   TaskCandidateStatusEnum,
+  TaskDecisionActionEnum,
   TaskStatusEnum,
 } from '../workflow-engine/workflow-engine.enums';
+import { OrganizationService } from '../organization/organization.service';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
@@ -19,6 +24,7 @@ import {
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
+import { SLA_ESCALATION_DELEGATION_REASON } from './notification.enums';
 import { NotificationService } from './notification.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { DEFAULT_BPM_NOTIFICATION_OPTIONS } from './notification-options';
@@ -295,7 +301,123 @@ describe('NotificationService', () => {
       ]),
     );
   });
+  it('escalates an overdue task once and stamps the escalation reason', async (): Promise<void> => {
+    const fixture = createEscalationFixture({ delegationChain: [] });
+
+    await expect(
+      fixture.service.runSlaScan(new Date('2026-05-10T09:01:00.000Z')),
+    ).resolves.toEqual({ overdueCount: 1, warningCount: 0 });
+    expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+    expect(fixture.decideTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+        transferToMemberId: 'member-manager',
+      }),
+      { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+    );
+  });
+
+  it('does not escalate again once the delegation chain records an escalation', async (): Promise<void> => {
+    // The escalated task inherits the chain and keeps the elapsed due date, so
+    // without the marker every later scan would escalate one level further.
+    const fixture = createEscalationFixture({
+      delegationChain: [
+        {
+          from: 'member-a',
+          reason: SLA_ESCALATION_DELEGATION_REASON,
+          ruleId: null,
+          to: 'member-manager',
+        },
+      ],
+    });
+
+    await expect(
+      fixture.service.runSlaScan(new Date('2026-05-10T09:01:00.000Z')),
+    ).resolves.toEqual({ overdueCount: 1, warningCount: 0 });
+    expect(fixture.decideTask).not.toHaveBeenCalled();
+  });
+
+  it('still escalates a task whose chain only holds a manual transfer', async (): Promise<void> => {
+    const fixture = createEscalationFixture({
+      delegationChain: [
+        {
+          from: 'member-a',
+          reason: 'MANUAL_TRANSFER',
+          ruleId: null,
+          to: 'member-b',
+        },
+      ],
+    });
+
+    await fixture.service.runSlaScan(new Date('2026-05-10T09:01:00.000Z'));
+
+    expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+  });
 });
+
+function createEscalationFixture({
+  delegationChain,
+}: {
+  readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
+}): {
+  readonly decideTask: jest.Mock;
+  readonly service: NotificationService;
+} {
+  const decideTask = jest.fn(
+    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  );
+  const task = Object.assign(new TaskEntity(), {
+    assigneeMemberId: 'member-a',
+    createdAt: new Date('2026-05-10T08:00:00.000Z'),
+    delegationChain,
+    id: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+    instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+    nodeId: 'task_review',
+    slaDueAt: new Date('2026-05-10T09:00:00.000Z'),
+    status: TaskStatusEnum.PENDING,
+  });
+  const service = new NotificationService(
+    {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      findOne: (): Promise<NotificationEntity | null> => Promise.resolve(null),
+      save: (entity: NotificationEntity): Promise<NotificationEntity> =>
+        Promise.resolve(entity),
+    } as unknown as Repository<NotificationEntity>,
+    {
+      findOne: (): Promise<NotificationPreferenceEntity | null> =>
+        Promise.resolve(null),
+    } as unknown as Repository<NotificationPreferenceEntity>,
+    {
+      find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+    } as unknown as Repository<TaskEntity>,
+    createRepository<TaskCandidateEntity>(),
+    {
+      findOne: (): Promise<ApprovalInstanceEntity> =>
+        Promise.resolve(createApprovalInstance('ESCALATE')),
+    } as unknown as Repository<ApprovalInstanceEntity>,
+    {
+      create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
+        Object.assign(new ActivityLogEntity(), entity),
+      save: (entity: ActivityLogEntity): Promise<ActivityLogEntity> =>
+        Promise.resolve(entity),
+    } as unknown as Repository<ActivityLogEntity>,
+    createDeliveryService(),
+    {
+      get: (token: unknown): unknown =>
+        token === OrganizationService
+          ? {
+              resolveManagerMemberId: (): Promise<string> =>
+                Promise.resolve('member-manager'),
+            }
+          : { decideTask },
+    } as unknown as ModuleRef,
+    { ...DEFAULT_BPM_NOTIFICATION_OPTIONS, slaTimeoutEscalateEnabled: true },
+  );
+
+  return { decideTask, service };
+}
 
 function createNotification(id: string): NotificationEntity {
   return Object.assign(new NotificationEntity(), {
@@ -335,15 +457,19 @@ function createTaskCandidate(
   });
 }
 
-function createApprovalInstance(): ApprovalInstanceEntity {
+function createApprovalInstance(
+  onTimeout: SlaConfig['onTimeout'] = 'REMIND',
+): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
     id: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
     title: '採購申請',
-    workflowSnapshot: createSlaWorkflow(),
+    workflowSnapshot: createSlaWorkflow(onTimeout),
   });
 }
 
-function createSlaWorkflow(): WorkflowDefinition {
+function createSlaWorkflow(
+  onTimeout: SlaConfig['onTimeout'] = 'REMIND',
+): WorkflowDefinition {
   return {
     edges: [],
     meta: { schemaVersion: 1 },
@@ -365,7 +491,8 @@ function createSlaWorkflow(): WorkflowDefinition {
           },
           sla: {
             duration: 'PT1H',
-            onTimeout: 'REMIND',
+            escalateLevelsUp: 1,
+            onTimeout,
             warningAt: 0.5,
           },
         },
