@@ -149,6 +149,58 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(page.getByText('2026-05-06 16:00:00')).toBeVisible();
   });
 
+
+  test('blocks a return without a comment when the node requires one', async ({
+    page,
+  }): Promise<void> => {
+    await mockWorkflowGraphQl(page, {
+      managerReturnBehavior: {
+        allowReturn: true,
+        allowedTargets: 'INITIATOR',
+        requireComment: true,
+      },
+    });
+
+    await page.goto(`/instances/new?templateId=${TEMPLATE_ID}`);
+
+    await page.getByPlaceholder('請輸入文字').fill('家庭照顧請假');
+    await Promise.all([
+      page.waitForURL(`**/instances/${INSTANCE_ID}`, { timeout: 30_000 }),
+      page.getByRole('button', { name: '送出' }).click(),
+    ]);
+
+    await page.getByRole('button', { name: '退回', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '退回簽核' })).toBeVisible();
+    await expect(page.getByText('此關卡設定退回時必須填寫意見。')).toBeVisible();
+    await expect(page.getByRole('button', { name: '送出退回' })).toBeDisabled();
+
+    await page.getByPlaceholder('請說明退回原因').fill('請補附證明文件');
+    await expect(page.getByRole('button', { name: '送出退回' })).toBeEnabled();
+  });
+
+  test('allows an empty return comment when the node does not require one', async ({
+    page,
+  }): Promise<void> => {
+    await mockWorkflowGraphQl(page, {
+      managerReturnBehavior: {
+        allowReturn: true,
+        allowedTargets: 'INITIATOR',
+      },
+    });
+
+    await page.goto(`/instances/new?templateId=${TEMPLATE_ID}`);
+
+    await page.getByPlaceholder('請輸入文字').fill('家庭照顧請假');
+    await Promise.all([
+      page.waitForURL(`**/instances/${INSTANCE_ID}`, { timeout: 30_000 }),
+      page.getByRole('button', { name: '送出' }).click(),
+    ]);
+
+    await page.getByRole('button', { name: '退回', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '退回簽核' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '送出退回' })).toBeEnabled();
+  });
+
   test('hides decision buttons when the task belongs to another member', async ({
     page,
   }): Promise<void> => {
@@ -207,6 +259,7 @@ test.describe('M2 W5 linear workflow', () => {
 });
 
 interface MockWorkflowGraphQlOptions {
+  readonly managerReturnBehavior?: Readonly<Record<string, unknown>>;
   readonly taskAssigneeMemberId?: string;
   readonly withPdfAttachment?: boolean;
 }
@@ -221,6 +274,10 @@ async function mockWorkflowGraphQl(
   let formDataJson = '{}';
   let rejectionComment: string | null = null;
   const taskAssigneeMemberId = options.taskAssigneeMemberId ?? 'member-001';
+  const managerReturnBehavior = options.managerReturnBehavior ?? {
+    allowReturn: false,
+    allowedTargets: 'PREVIOUS',
+  };
 
   await page.route(
     '**/api/attachments/attachment-pdf/download**',
@@ -295,6 +352,7 @@ async function mockWorkflowGraphQl(
       await fulfillGraphQl(route, {
         activityLogs: readActivityLogs(instanceState),
         approvalInstance: readInstance({
+          managerReturnBehavior,
           formDataJson,
           instanceCreated,
           state: instanceState,
@@ -441,10 +499,12 @@ async function readResolvedCssColor(
 function readInstance({
   formDataJson,
   instanceCreated,
+  managerReturnBehavior = { allowReturn: false, allowedTargets: 'PREVIOUS' },
   state,
 }: {
   readonly formDataJson: string;
   readonly instanceCreated: boolean;
+  readonly managerReturnBehavior?: Readonly<Record<string, unknown>>;
   readonly state: 'APPROVED' | 'REJECTED' | 'RUNNING';
 }): Readonly<Record<string, unknown>> {
   if (!instanceCreated) {
@@ -528,7 +588,7 @@ function readInstance({
             approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
             decisionPolicy: { type: 'SINGLE' },
             label: '主管簽核',
-            returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
+            returnBehavior: managerReturnBehavior,
             triggerMode: 'AND',
           },
           id: 'task_manager',

@@ -170,7 +170,9 @@ test.describe('M1 W3 template designer', () => {
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
-    await page.getByRole('checkbox').check();
+    // Target the toggle by name: the panel now also carries the return-comment
+    // and SLA toggles, so a bare checkbox role is ambiguous.
+    await page.locator('input[name="allowInitiatorSelfApproval"]').check();
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await expect.poll((): boolean => savedResolver !== null).toBe(true);
 
@@ -182,6 +184,93 @@ test.describe('M1 W3 template designer', () => {
       },
       levelsUp: 1,
       type: 'ORG_MANAGER',
+    });
+  });
+
+  test('configures the return comment requirement and a business-day SLA', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    // Return settings: the toggle only exists while returning is allowed.
+    await expect(page.getByText('退回時意見必填')).toBeVisible();
+    await page.locator('label[for="returnRequireComment"]').click();
+
+    // SLA settings reveal progressively, matching the approver-resolver panel.
+    await expect(page.getByText('啟用時效')).toBeVisible();
+    await expect(page.getByText('逾時處理')).toHaveCount(0);
+    await page.locator('label[for="slaEnabled"]').click();
+    await expect(page.getByText('時效期限')).toBeVisible();
+    await expect(page.getByText('計算方式')).toBeVisible();
+
+    await page.locator('input[name="slaDurationValue"]').fill('3');
+    await page.getByRole('combobox', { name: '日曆日' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '工作日' }).click();
+
+    // `exact` matters: the warning selector's value is 「不提醒」, which the
+    // non-exact accessible-name match would also hit.
+    await page.getByRole('combobox', { exact: true, name: '提醒' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '升級主管' })
+      .click();
+    await expect(page.getByText('升級層級')).toBeVisible();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      returnBehavior: expect.objectContaining({ requireComment: true }),
+      sla: {
+        calendar: 'BUSINESS_DAY',
+        duration: 'P3D',
+        escalateLevelsUp: 1,
+        onTimeout: 'ESCALATE',
+      },
+    });
+  });
+
+  test('hides the business-day選項 for an hour-based SLA', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+    await page.locator('label[for="slaEnabled"]').click();
+
+    await page.getByRole('combobox', { name: '日', exact: true }).click();
+    await page.locator('[role="option"]').filter({ hasText: '小時' }).click();
+
+    // A business calendar only advances whole days, so the selector goes away.
+    await expect(page.getByText('計算方式')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      sla: { calendar: 'CALENDAR', duration: 'PT2H', onTimeout: 'REMIND' },
     });
   });
 
@@ -746,6 +835,27 @@ function readPosition({
     name,
     updatedAt: UPDATED_AT,
   };
+}
+
+function readFirstUserTaskData(
+  workflowDefinitionJson: string,
+): Readonly<Record<string, unknown>> {
+  const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
+
+  if (!isRecord(parsedValue) || !Array.isArray(parsedValue.nodes)) {
+    throw new Error('Workflow definition nodes are invalid');
+  }
+
+  const userTask = parsedValue.nodes.find(
+    (node): node is Readonly<Record<string, unknown>> =>
+      isRecord(node) && node.type === 'userTask',
+  );
+
+  if (!isRecord(userTask) || !isRecord(userTask.data)) {
+    throw new Error('Workflow definition must contain a user task');
+  }
+
+  return userTask.data;
 }
 
 function readFirstUserTaskResolver(
