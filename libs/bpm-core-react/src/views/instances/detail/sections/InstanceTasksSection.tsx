@@ -197,6 +197,12 @@ export const InstanceTasksSection = forwardRef<
   const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Approve modal — the comment is optional here, unlike the reject reason.
+  // Approving used to submit straight from the header button, so the decision
+  // comment could never be filled in even though the API has always taken one.
+  const [approveComment, setApproveComment] = useState('');
+  const [approveModalOpen, setApproveModalOpen] = useState(false);
+
   // Reject modal
   const [rejectReason, setRejectReason] = useState('');
   const [rejectReasonError, setRejectReasonError] = useState<string | null>(null);
@@ -468,6 +474,28 @@ export const InstanceTasksSection = forwardRef<
     }
   }
 
+  function openApproveModal(): void {
+    setApproveComment('');
+    setApproveModalOpen(true);
+  }
+
+  function closeApproveModal(): void {
+    if (deciding) {
+      return;
+    }
+
+    setApproveModalOpen(false);
+    setApproveComment('');
+  }
+
+  async function handleApproveConfirm(): Promise<void> {
+    const comment = approveComment.trim();
+
+    await handleDecision({ action: 'APPROVED', comment: comment || null });
+    setApproveModalOpen(false);
+    setApproveComment('');
+  }
+
   function openRejectReasonModal(): void {
     setRejectReason('');
     setRejectReasonError(null);
@@ -700,9 +728,7 @@ export const InstanceTasksSection = forwardRef<
       canAddSignerCurrentTask,
       canReturnCurrentTask,
       deciding,
-      handleApprove: (): void => {
-        void handleDecision({ action: 'APPROVED', comment: null });
-      },
+      handleApprove: openApproveModal,
       hasCurrentTask: currentTask !== null,
       openAdhocModal,
       openRejectModal: openRejectReasonModal,
@@ -754,6 +780,40 @@ export const InstanceTasksSection = forwardRef<
           </div>
         </>
       ) : null}
+
+      {/* Approve modal — comment is optional, so the confirm button stays enabled */}
+      <Modal
+        cancelText="取消"
+        confirmText="送出同意"
+        loading={deciding}
+        modalType="standard"
+        onCancel={closeApproveModal}
+        onClose={closeApproveModal}
+        onConfirm={(): void => void handleApproveConfirm()}
+        open={approveModalOpen}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText="可以留下同意的說明，內容會記錄在簽核歷程；不填也可以直接送出。"
+        title="簽核意見"
+      >
+        <div style={REJECT_REASON_FORM_STYLE}>
+          <BPMFormField label="簽核意見" name="approveComment">
+            <Textarea
+              autoFocus
+              onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                setApproveComment(event.target.value)
+              }
+              placeholder="選填，例如補充核准的條件或提醒事項"
+              ref={applyFullWidthTextareaHost}
+              resize="vertical"
+              rows={4}
+              style={REJECT_REASON_TEXTAREA_STYLE}
+              value={approveComment}
+            />
+          </BPMFormField>
+        </div>
+      </Modal>
 
       {/* Reject modal */}
       <Modal

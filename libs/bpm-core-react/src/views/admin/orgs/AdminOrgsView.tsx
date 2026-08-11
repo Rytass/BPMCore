@@ -2175,10 +2175,11 @@ function ManagerResolutionModal({
           </Typography>
         ) : null}
         <OrgModalTextField
+          hintText="數字越大越優先，同一位成員命中多條規則時只會採用最高的那一層。建議：指定到人 200、部門主管 100、全公司通用的墊底規則 10。"
           label="優先序"
           name="managerPriority"
           onChange={setPriority}
-          placeholder="例如 10"
+          placeholder="例如 100"
           value={priority}
         />
         <DateField
@@ -2201,12 +2202,14 @@ function ManagerResolutionModal({
 }
 
 function OrgModalTextField({
+  hintText,
   label,
   name,
   onChange,
   placeholder,
   value,
 }: {
+  readonly hintText?: string;
   readonly label: string;
   readonly name: string;
   readonly onChange: (value: string) => void;
@@ -2214,7 +2217,7 @@ function OrgModalTextField({
   readonly value: string;
 }): ReactElement {
   return (
-    <BPMFormField label={label} name={name}>
+    <BPMFormField hintText={hintText} label={label} name={name}>
       <Input
         fullWidth
         name={name}
