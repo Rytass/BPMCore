@@ -212,6 +212,14 @@ type ManagerLevelOption = Readonly<{
   name: string;
   value: number;
 }>;
+type DecisionPolicyOption = Readonly<{
+  id: DecisionPolicy['type'];
+  name: string;
+}>;
+type QuorumThresholdTypeOption = Readonly<{
+  id: 'COUNT' | 'PERCENTAGE';
+  name: string;
+}>;
 type ApproverFallbackMode = 'DIRECT' | 'NONE';
 type ApproverFallbackModeOption = Readonly<{
   id: ApproverFallbackMode;
@@ -506,6 +514,22 @@ const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
   { id: 'POSITION', name: '指定職位' },
 ];
+// `SEQUENTIAL` is intentionally absent: the engine treats it exactly like
+// `PARALLEL_ALL` (`workflow-engine.service.ts` resolves both to
+// `completedCount >= totalCount`), so offering it would promise a queued
+// hand-off that does not exist. Templates that already carry it stay readable
+// through `readDecisionPolicyOption`.
+const DECISION_POLICY_OPTIONS: readonly DecisionPolicyOption[] = [
+  { id: 'SINGLE', name: '單人簽核' },
+  { id: 'PARALLEL_ANY', name: '任一人同意' },
+  { id: 'PARALLEL_ALL', name: '全部同意' },
+  { id: 'QUORUM', name: '達到指定門檻' },
+];
+const QUORUM_THRESHOLD_TYPE_OPTIONS: readonly QuorumThresholdTypeOption[] = [
+  { id: 'COUNT', name: '人數' },
+  { id: 'PERCENTAGE', name: '百分比' },
+];
+const DEFAULT_QUORUM_THRESHOLD = 2;
 const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
   { id: '1', name: '直屬主管', value: 1 },
   { id: '2', name: '第二層主管', value: 2 },
@@ -1498,6 +1522,18 @@ export function TemplateDesignerView({
     });
   }
 
+  function updateUserTaskDecisionPolicy(decisionPolicy: DecisionPolicy): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      decisionPolicy,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskDecisionPolicy',
+    });
+  }
+
   function updateUserTaskOptions(
     options: Readonly<{
       allowAddSigner?: boolean;
@@ -2268,6 +2304,12 @@ export function TemplateDesignerView({
     const slaEscalateLevel = readManagerLevelOption(
       sla?.escalateLevelsUp ?? 1,
     );
+    // The schema types `decisionPolicy` as required, but templates authored
+    // before the field existed carry no such key at runtime, so every read goes
+    // through helpers that tolerate `undefined` — same stance as
+    // `readDecisionPolicyHint`.
+    const decisionPolicyType = readDecisionPolicyType(node.data.decisionPolicy);
+    const quorum = readQuorumParts(node.data.decisionPolicy);
 
     return (
       <>
@@ -2572,6 +2614,81 @@ export function TemplateDesignerView({
               value={selectedPosition}
             />
           </BPMFormField>
+        ) : null}
+        <BPMFormField
+          hintText="決定這一關要幾位簽核者同意才會通過，只解析出一位簽核者時各選項的結果相同。"
+          label="決策方式"
+          name="decisionPolicy"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void =>
+              updateUserTaskDecisionPolicy(
+                readDecisionPolicyFromOptionId(
+                  option?.id ?? null,
+                  node.data.decisionPolicy,
+                ),
+              )
+            }
+            options={[...DECISION_POLICY_OPTIONS]}
+            value={readDecisionPolicyOption(decisionPolicyType)}
+          />
+        </BPMFormField>
+        {decisionPolicyType === 'QUORUM' ? (
+          <>
+            <BPMFormField
+              label="門檻計算方式"
+              name="quorumThresholdType"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskDecisionPolicy({
+                    threshold: quorum.threshold,
+                    thresholdType: readQuorumThresholdType(option?.id ?? null),
+                    type: 'QUORUM',
+                  })
+                }
+                options={[...QUORUM_THRESHOLD_TYPE_OPTIONS]}
+                value={readSelectOption(
+                  QUORUM_THRESHOLD_TYPE_OPTIONS,
+                  quorum.thresholdType,
+                )}
+              />
+            </BPMFormField>
+            <BPMFormField
+              hintText={
+                quorum.thresholdType === 'PERCENTAGE'
+                  ? '達到簽核者總數的這個百分比即通過，換算人數時無條件進位。'
+                  : '達到這個同意人數即通過，填寫超過實際簽核者人數時以人數為準。'
+              }
+              label={
+                quorum.thresholdType === 'PERCENTAGE'
+                  ? '門檻百分比'
+                  : '門檻人數'
+              }
+              name="quorumThreshold"
+              required
+            >
+              <Input
+                id="quorumThreshold"
+                inputProps={{ min: 1 }}
+                inputType="number"
+                name="quorumThreshold"
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateUserTaskDecisionPolicy({
+                    threshold: Number(event.target.value),
+                    thresholdType: quorum.thresholdType,
+                    type: 'QUORUM',
+                  })
+                }
+                value={String(quorum.threshold)}
+                variant="base"
+              />
+            </BPMFormField>
+          </>
         ) : null}
         {node.data.returnBehavior.allowReturn ? (
           <BPMFormField
@@ -3640,6 +3757,63 @@ function readDecisionPolicyHint(policy: DecisionPolicy | undefined): string {
     policy.thresholdType === 'PERCENTAGE' ? '%' : ' 位簽核者';
 
   return `可指定多位；需達到 ${policy.threshold}${thresholdUnit} 才會通過。`;
+}
+
+function readDecisionPolicyType(
+  policy: DecisionPolicy | undefined,
+): DecisionPolicy['type'] {
+  return policy?.type ?? 'SINGLE';
+}
+
+function readDecisionPolicyOption(
+  type: DecisionPolicy['type'],
+): DecisionPolicyOption {
+  const option = DECISION_POLICY_OPTIONS.find((item) => item.id === type);
+
+  if (option) {
+    return option;
+  }
+
+  // `SEQUENTIAL` is not offered in the dropdown, but templates authored through
+  // the API or the AI assistant may already carry it. Render the stored value
+  // instead of leaving the trigger blank.
+  return { id: type, name: '依序簽核（既有設定）' };
+}
+
+function readDecisionPolicyFromOptionId(
+  id: string | null,
+  current: DecisionPolicy | undefined,
+): DecisionPolicy {
+  if (id === 'QUORUM') {
+    // Re-picking the option the node already uses must not discard the
+    // threshold the user typed.
+    return current?.type === 'QUORUM'
+      ? current
+      : {
+          threshold: DEFAULT_QUORUM_THRESHOLD,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        };
+  }
+
+  if (id === 'PARALLEL_ALL' || id === 'PARALLEL_ANY' || id === 'SEQUENTIAL') {
+    return { type: id };
+  }
+
+  return { type: 'SINGLE' };
+}
+
+function readQuorumParts(policy: DecisionPolicy | undefined): Readonly<{
+  threshold: number;
+  thresholdType: 'COUNT' | 'PERCENTAGE';
+}> {
+  return policy?.type === 'QUORUM'
+    ? { threshold: policy.threshold, thresholdType: policy.thresholdType }
+    : { threshold: DEFAULT_QUORUM_THRESHOLD, thresholdType: 'COUNT' };
+}
+
+function readQuorumThresholdType(value: string | null): 'COUNT' | 'PERCENTAGE' {
+  return value === 'PERCENTAGE' ? 'PERCENTAGE' : 'COUNT';
 }
 
 function readSlaDurationUnit(value: string | null): SlaDurationUnit {
