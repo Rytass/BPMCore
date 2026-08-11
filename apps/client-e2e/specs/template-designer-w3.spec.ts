@@ -465,7 +465,15 @@ test.describe('M1 W3 template designer', () => {
     // leave this node permanently unable to complete.
     await thresholdInput.fill('');
     await page.getByRole('button', { name: '儲存草稿' }).click();
-    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    // Poll on the *value* this save is expected to produce, not on mere
+    // non-nullness. Waiting for `savedData !== null` alone resolves as soon
+    // as any save has landed, including a stale one, so under load the
+    // assertion below can read a leftover value from a save that hasn't
+    // actually happened yet.
+    await expect
+      .poll((): number | undefined => readSavedQuorumThreshold(savedData))
+      .toBe(1);
 
     expect(savedData).toMatchObject({
       decisionPolicy: { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
@@ -490,7 +498,10 @@ test.describe('M1 W3 template designer', () => {
     // A fractional threshold is truncated rather than committed as typed.
     await thresholdInput.fill('2.5');
     await page.getByRole('button', { name: '儲存草稿' }).click();
-    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    await expect
+      .poll((): number | undefined => readSavedQuorumThreshold(savedData))
+      .toBe(2);
 
     expect(savedData).toMatchObject({
       decisionPolicy: { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
@@ -1342,6 +1353,26 @@ function readFirstUserTaskResolver(
   }
 
   return userTask.data.approverResolver;
+}
+
+/**
+ * Reads the QUORUM threshold back out of a captured `onDraftUpdate` payload,
+ * or `undefined` if it isn't there yet (still `null`) or isn't a QUORUM
+ * policy. Used to `expect.poll` on the *value* a save is expected to produce
+ * rather than on mere non-nullness — a test that only waits for `savedData
+ * !== null` can resolve against an earlier save's callback that lands late,
+ * which reads as the previous value rather than waiting for the next one.
+ */
+function readSavedQuorumThreshold(
+  savedData: Readonly<Record<string, unknown>> | null,
+): number | undefined {
+  if (!isRecord(savedData) || !isRecord(savedData.decisionPolicy)) {
+    return undefined;
+  }
+
+  const threshold = savedData.decisionPolicy.threshold;
+
+  return typeof threshold === 'number' ? threshold : undefined;
 }
 
 function workflowDefinitionHasLinearTask(
