@@ -71,8 +71,8 @@
 
 **Frontend**
 
-- [x] `/forms` 列表頁
-- [x] `/forms/[id]/builder` 表單設計器
+- [x] `/templates/compose` 表單 + 流程建立 wizard（取代 standalone `/forms` 入口）
+- [x] Wizard 內嵌表單設計器（`FormBuilderView`）
   - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file / textarea）
   - 屬性面板（標籤、必填、預設值）
   - 條件邏輯（顯示/必填/唯讀，先用簡單表達式輸入框）

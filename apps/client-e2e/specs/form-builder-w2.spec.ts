@@ -30,6 +30,18 @@ test.describe('M1 W2 form builder', () => {
     await expect(page.getByText('文字 1')).toBeVisible();
   });
 
+  test('does not expose a standalone form builder route', async ({
+    page,
+  }): Promise<void> => {
+    const formResponse = await page.goto('/forms');
+    const builderResponse = await page.goto('/forms/legacy-template/builder');
+
+    expect([formResponse?.status(), builderResponse?.status()]).toEqual([
+      404,
+      404,
+    ]);
+  });
+
   test('previews a controlled form field and keeps its value when returning to design', async ({
     page,
   }): Promise<void> => {

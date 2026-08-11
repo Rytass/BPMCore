@@ -92,10 +92,9 @@ reporting/        Inbox / Notifications 已實作；Sent / CC / Search / Dashboa
 /inbox                                我的待簽
 /notifications                        通知中心
 /templates                            模板列表（IT）
+  /templates/compose                  表單 + 流程建立 wizard
   /templates/[id]/designer            流程設計器（React Flow）
   /templates/[id]/versions            版本管理
-/forms                                表單列表（IT）
-  /forms/[id]/builder                 表單設計器
 /instances/new?templateId=xxx         發起新簽核
 /instances/[id]                       簽核操作頁
 /admin/orgs                           組織管理
