@@ -12,7 +12,16 @@ interface UpdateTemplateDraftInput {
   readonly workflowDefinitionJson: string;
 }
 
+interface MockMember {
+  readonly email: string;
+  readonly memberId: string;
+  readonly name: string;
+}
+
 interface MockTemplateGraphQlOptions {
+  // Opt-in so that adding directory entries for one spec cannot change the
+  // option ordering the keyboard-driven specs depend on.
+  readonly extraMembers?: readonly MockMember[];
   readonly initialWorkflowDefinitionJson?: string;
   readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
 }
@@ -201,6 +210,51 @@ test.describe('M1 W3 template designer', () => {
       levelsUp: 1,
       type: 'ORG_MANAGER',
     });
+  });
+
+  test('narrows the approver picker to the latest search result', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      extraMembers: [
+        {
+          email: 'wang.engineer@example.internal',
+          memberId: 'member-201',
+          name: '王工程師',
+        },
+      ],
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    // Focus rather than click: the approver picker is multi-select and already
+    // carries the default approver's tag, which intercepts pointer events over
+    // the input.
+    await approverSearch.focus();
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '王工程師' }),
+    ).toBeVisible();
+
+    await approverSearch.fill('chen');
+
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '陳財務主管' }),
+    ).toBeVisible();
+    // The previous response must not linger beside the new one.
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '王工程師' }),
+    ).toHaveCount(0);
+    // The approver already on the node stays offered even though the search
+    // result does not contain it, otherwise its chip would lose the label.
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '林總經理' }),
+    ).toBeVisible();
   });
 
   test('configures the return comment requirement and a business-day SLA', async ({
@@ -622,6 +676,7 @@ async function mockTemplateGraphQl(
             memberId: 'member-101',
             name: '陳財務主管',
           },
+          ...(options.extraMembers ?? []),
         ].filter((member) => memberMatchesSearchText(member, searchText)),
       });
       return;
