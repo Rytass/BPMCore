@@ -23,6 +23,10 @@ interface MockTemplateGraphQlOptions {
   // option ordering the keyboard-driven specs depend on.
   readonly extraMembers?: readonly MockMember[];
   readonly initialWorkflowDefinitionJson?: string;
+  // Lets a spec hold a `MemberOptions` response open until it deliberately
+  // releases it, so response ordering between two in-flight searches can be
+  // controlled deterministically instead of racing real network timing.
+  readonly memberSearchGate?: (searchText: string) => Promise<void>;
   readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
 }
 
@@ -212,6 +216,46 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
+  test('does not offer a phantom row in the manager-fallback picker', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page);
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await page.getByRole('combobox', { name: '指定會員' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '發起人主管' })
+      .click();
+
+    await page.getByRole('combobox', { name: '停止流程並提示' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '固定改派' })
+      .click();
+
+    const fallbackMemberSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    // Focus rather than fill: opening the picker before typing anything is
+    // exactly the moment `fallback.memberId` is still ''.
+    await fallbackMemberSearch.focus();
+
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '陳財務主管' }),
+    ).toBeVisible();
+    // Nothing has been picked yet, so the picker must not offer a fake
+    // "未知會員" row built from the empty memberId as if it were a real
+    // person that could be selected.
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '未知會員' }),
+    ).toHaveCount(0);
+  });
+
   test('narrows the approver picker to the latest search result', async ({
     page,
   }): Promise<void> => {
@@ -254,6 +298,87 @@ test.describe('M1 W3 template designer', () => {
     // result does not contain it, otherwise its chip would lose the label.
     await expect(
       page.locator('[role="option"]').filter({ hasText: '林總經理' }),
+    ).toBeVisible();
+  });
+
+  test('discards a stale search response that resolves after a newer one', async ({
+    page,
+  }): Promise<void> => {
+    const pendingSearches = new Map<string, () => void>();
+    const requestedSearchTexts: string[] = [];
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      extraMembers: [
+        // Matches the broad 'ch' search but not the narrower 'chen' search,
+        // so it is the tell for whether a stale 'ch' response overwrote the
+        // already-landed 'chen' results.
+        {
+          email: 'chris.ops@example.internal',
+          memberId: 'member-301',
+          name: '資訊部克里斯',
+        },
+      ],
+      memberSearchGate: (searchText): Promise<void> =>
+        new Promise<void>((resolve) => {
+          requestedSearchTexts.push(searchText);
+          pendingSearches.set(searchText, resolve);
+        }),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    await approverSearch.focus();
+    await expect.poll((): boolean => requestedSearchTexts.includes('')).toBe(
+      true,
+    );
+    await resolveMemberSearch(page, pendingSearches, '');
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '陳財務主管' }),
+    ).toBeVisible();
+
+    await approverSearch.fill('ch');
+    await expect
+      .poll((): boolean => requestedSearchTexts.includes('ch'))
+      .toBe(true);
+
+    await approverSearch.fill('chen');
+    await expect
+      .poll((): boolean => requestedSearchTexts.includes('chen'))
+      .toBe(true);
+
+    // Both 'ch' and 'chen' requests are now in flight. Resolve the
+    // later-issued, narrower 'chen' request first — a broad prefix is
+    // systematically slower than a narrow one in production, which is
+    // exactly the scenario this branch exists to guard against.
+    await resolveMemberSearch(page, pendingSearches, 'chen');
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '陳財務主管' }),
+    ).toBeVisible();
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '資訊部克里斯' }),
+    ).toHaveCount(0);
+
+    // The stale 'ch' request resolves after. Its response must not
+    // overwrite the results already shown for the newer 'chen' search.
+    // `resolveMemberSearch` waits for the response to actually land before
+    // returning, and the extra settle time below gives React a chance to
+    // commit whatever state update that response triggers (a bug would
+    // apply, not deny, that update — this is not open-ended network
+    // polling, it bounds a same-tick render commit after a response we
+    // already know has landed).
+    await resolveMemberSearch(page, pendingSearches, 'ch');
+    await page.waitForTimeout(200);
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '資訊部克里斯' }),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '陳財務主管' }),
     ).toBeVisible();
   });
 
@@ -669,6 +794,9 @@ async function mockTemplateGraphQl(
 
     if (query.includes('query MemberOptions')) {
       const searchText = readOptionalString(payload.variables?.searchText);
+
+      await options.memberSearchGate?.(searchText);
+
       await fulfillGraphQl(route, {
         searchMembers: [
           {
@@ -1084,6 +1212,40 @@ function isWorkflowEdgeRecord(
     typeof value.source === 'string' &&
     typeof value.target === 'string'
   );
+}
+
+// Resolves a gated `MemberOptions` request and waits for its response to
+// actually reach the page, so the caller can rely on the request/response
+// cycle having genuinely completed rather than racing an assertion against
+// whenever React happens to re-render.
+async function resolveMemberSearch(
+  page: Page,
+  pendingSearches: Map<string, () => void>,
+  searchText: string,
+): Promise<void> {
+  const resolve = pendingSearches.get(searchText);
+
+  if (!resolve) {
+    throw new Error(`No pending MemberOptions request for "${searchText}"`);
+  }
+
+  const responsePromise = page.waitForResponse((response): boolean => {
+    if (!response.url().includes('/graphql')) {
+      return false;
+    }
+
+    const body = response.request().postDataJSON() as
+      | { query?: string; variables?: { searchText?: string } }
+      | null;
+
+    return (
+      Boolean(body?.query?.includes('query MemberOptions')) &&
+      readOptionalString(body?.variables?.searchText) === searchText
+    );
+  });
+
+  resolve();
+  await responsePromise;
 }
 
 function readGraphQlPayload(route: Route): GraphQlPayload {
