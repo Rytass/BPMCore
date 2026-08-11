@@ -1477,11 +1477,29 @@ export function TemplateDesignerView({
       return;
     }
 
+    const nodeId = selectedNode.id;
+    const decisionPolicy = selectedNode.data.decisionPolicy;
+
     controller.dispatch({
       approverResolver,
-      nodeId: selectedNode.id,
+      nodeId,
       type: 'setUserTaskApprover',
     });
+
+    // `applySetUserTaskApprover` (libs/shared/workflow-command.ts) hard-resets
+    // decisionPolicy to SINGLE on every approver change — a documented
+    // upstream contract (see the `set_user_task_approver` tool description)
+    // that other callers depend on, so it stays as-is. Now that the policy is
+    // author-visible on this branch, silently reverting it to SINGLE here
+    // would read as data loss; re-apply whatever non-default policy the node
+    // already had.
+    if (decisionPolicy && decisionPolicy.type !== 'SINGLE') {
+      controller.dispatch({
+        decisionPolicy,
+        nodeId,
+        type: 'setUserTaskDecisionPolicy',
+      });
+    }
   }
 
   function updateUserTaskReturnResubmitStrategy(
@@ -2616,7 +2634,7 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         <BPMFormField
-          hintText="決定這一關要幾位簽核者同意才會通過，只解析出一位簽核者時各選項的結果相同。"
+          hintText="決定這一關要幾位簽核者同意才會通過；單人簽核與任一人同意的效果完全相同，皆為其中一人同意即通過。"
           label="決策方式"
           name="decisionPolicy"
           required
@@ -2662,7 +2680,7 @@ export function TemplateDesignerView({
               hintText={
                 quorum.thresholdType === 'PERCENTAGE'
                   ? '達到簽核者總數的這個百分比即通過，換算人數時無條件進位。'
-                  : '達到這個同意人數即通過，填寫超過實際簽核者人數時以人數為準。'
+                  : '達到這個同意人數即通過；門檻超過實際簽核者人數時，這一關將永遠無法通過，請勿設定超過實際簽核者人數。'
               }
               label={
                 quorum.thresholdType === 'PERCENTAGE'
@@ -2679,7 +2697,9 @@ export function TemplateDesignerView({
                 name="quorumThreshold"
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                   updateUserTaskDecisionPolicy({
-                    threshold: Number(event.target.value),
+                    threshold: withQuorumThreshold(
+                      Number(event.target.value),
+                    ),
                     thresholdType: quorum.thresholdType,
                     type: 'QUORUM',
                   })
@@ -3583,11 +3603,20 @@ function normalizeUserTaskPolicies(
     const allowAddSigner = node.data.allowAddSigner ?? false;
     const allowReject = node.data.allowReject ?? true;
     const allowTransfer = node.data.allowTransfer ?? true;
+    // The schema types `decisionPolicy` as required, but templates authored
+    // before the field existed carry no such key at runtime (see
+    // `readDecisionPolicyType`). Only the read side tolerated that until now,
+    // so the field stayed permanently blank-but-required in the publish
+    // validator (`decisionPolicy is required`). Write the same default here,
+    // and only when it is actually missing — an already-set policy (whatever
+    // its value) must not be touched.
+    const decisionPolicyIsMissing = !node.data.decisionPolicy;
 
     if (
       node.data.allowAddSigner === allowAddSigner &&
       node.data.allowReject === allowReject &&
-      node.data.allowTransfer === allowTransfer
+      node.data.allowTransfer === allowTransfer &&
+      !decisionPolicyIsMissing
     ) {
       return node;
     }
@@ -3599,6 +3628,7 @@ function normalizeUserTaskPolicies(
         allowAddSigner,
         allowReject,
         allowTransfer,
+        decisionPolicy: node.data.decisionPolicy ?? { type: 'SINGLE' },
       },
     };
   });
@@ -3774,10 +3804,21 @@ function readDecisionPolicyOption(
     return option;
   }
 
-  // `SEQUENTIAL` is not offered in the dropdown, but templates authored through
-  // the API or the AI assistant may already carry it. Render the stored value
-  // instead of leaving the trigger blank.
-  return { id: type, name: '依序簽核（既有設定）' };
+  // `SEQUENTIAL` is not offered in the dropdown, but templates authored
+  // through the API may already carry it — the AI assistant cannot produce
+  // it: its toolset (`workflow-toolset.ts`) has no decision-policy tool at
+  // all. The engine treats `SEQUENTIAL` exactly like `PARALLEL_ALL`
+  // (simultaneous notification, everyone must agree), so label it that way
+  // instead of implying a queued hand-off that does not exist.
+  if (type === 'SEQUENTIAL') {
+    return { id: type, name: '全部同意（既有設定）' };
+  }
+
+  // Any other stored value falls outside `DecisionPolicy['type']`'s own
+  // union — it can only have come from an untyped source (API payload, an
+  // older schema) this form was never told about. Echo it verbatim instead
+  // of mislabelling it as a specific known policy.
+  return { id: type, name: `未知決策方式（${type}）` };
 }
 
 function readDecisionPolicyFromOptionId(
@@ -3863,6 +3904,19 @@ function withSlaDuration(sla: SlaConfig, parts: SlaDurationParts): SlaConfig {
     calendar: parts.unit === 'DAY' ? (sla.calendar ?? 'CALENDAR') : 'CALENDAR',
     duration,
   };
+}
+
+/**
+ * Sanitises the quorum threshold input the same way {@link withSlaDuration} /
+ * `composeSlaDuration` sanitise the SLA duration value: reject non-finite
+ * input, drop any fractional part, and floor at 1. Nothing downstream rejects
+ * `threshold: 0` or a fractional threshold — an emptied field reads as
+ * `Number('') === 0`, and the publish lint only checks `decisionPolicy?.type`
+ * while the engine merely clamps with `Math.max(threshold, 1)` rather than
+ * validating.
+ */
+function withQuorumThreshold(value: number): number {
+  return Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
 }
 
 /** Keeps `escalateLevelsUp` only while the timeout action is `ESCALATE`. */

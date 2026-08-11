@@ -337,6 +337,38 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
+  test('writes a default decision policy for a legacy template even without touching the field', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // Same policyless fixture as the read-side fallback test above, but
+      // this time the field is never touched: only loading + saving.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy(null),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+
+    // Saving without ever opening the 決策方式 field must still persist a
+    // concrete value. Before this normalisation ran on load, the field
+    // rendered 單人簽核 (a read-side-only fallback) but the saved JSON kept
+    // no `decisionPolicy` key at all, so the publish validator's
+    // `decisionPolicy is required` check failed with no visible cause.
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { type: 'SINGLE' },
+    });
+  });
+
   test('reveals quorum threshold controls and saves the threshold', async ({
     page,
   }): Promise<void> => {
@@ -391,6 +423,74 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
+  test('sanitises the quorum threshold input', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({
+          threshold: 2,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    const thresholdInput = page.locator('input[name="quorumThreshold"]');
+
+    // Wait for the panel to settle on the fixture's value before editing —
+    // acting immediately after the node click can race the panel's mount.
+    await expect(thresholdInput).toHaveValue('2');
+
+    // Clearing the field must not commit `threshold: 0` — the engine only
+    // floors with `Math.max(threshold, 1)`, never rejects it, so `0` would
+    // leave this node permanently unable to complete.
+    await thresholdInput.fill('');
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+
+    savedData = null;
+
+    // Reload before the next edit (same pattern as the multi-save resolver
+    // test below): `commitDesigner` refreshes the whole designer from the
+    // server after saving, so continuing to type into the same mounted
+    // input races that refresh instead of exercising the sanitiser cleanly.
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    // Wait for the reloaded panel to settle on the just-saved value (1)
+    // before typing the next edit.
+    await expect(thresholdInput).toHaveValue('1');
+
+    // A fractional threshold is truncated rather than committed as typed.
+    await thresholdInput.fill('2.5');
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+  });
+
   test('keeps a stored sequential policy readable', async ({
     page,
   }): Promise<void> => {
@@ -409,9 +509,65 @@ test.describe('M1 W3 template designer', () => {
       .filter({ hasText: '簽核節點' })
       .click();
 
+    // `SEQUENTIAL` behaves exactly like `PARALLEL_ALL` in the engine, so the
+    // fallback label reads that way rather than implying a queued hand-off.
     await expect(
-      page.getByRole('combobox', { name: '依序簽核（既有設定）' }),
+      page.getByRole('combobox', { name: '全部同意（既有設定）' }),
     ).toBeVisible();
+  });
+
+  test('preserves a non-default decision policy across an approver edit', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'PARALLEL_ALL' }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    await expect(page.getByRole('combobox', { name: '全部同意' })).toBeVisible();
+
+    // `applySetUserTaskApprover` (libs/shared) hard-resets decisionPolicy to
+    // SINGLE on every approver change as a documented upstream contract. The
+    // designer's approver update path must re-apply the policy the node
+    // already had so editing the approver does not silently discard it.
+    const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    await approverSearch.fill('chen');
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' }),
+    ).toBeVisible();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' })
+      .click();
+
+    await expect(page.getByRole('combobox', { name: '全部同意' })).toBeVisible();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      approverResolver: {
+        memberIds: ['member-001', 'member-002', 'member-101'],
+        type: 'DIRECT',
+      },
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+    });
   });
 
   test('hides the business-day選項 for an hour-based SLA', async ({
