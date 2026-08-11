@@ -34,12 +34,22 @@ test.describe('M1 W3 template designer', () => {
 
     await page.goto('/templates');
     await page.getByRole('button', { name: '建立模板' }).click();
-    await page.getByPlaceholder('例如：費用申請流程').fill('E2E 簽核模板');
+    await expect(
+      page.getByRole('heading', { name: '建立模板（表單 + 流程）' }),
+    ).toBeVisible();
+    await page.getByPlaceholder('例如：請款簽核').fill('E2E 簽核模板');
+    await page.getByRole('button', { name: /^文字$/u }).click();
+    await page.getByRole('button', { name: '下一步' }).click();
+    await expect(page.getByRole('heading', { name: '流程工具' })).toBeVisible();
+    await page.getByRole('button', { name: '下一步' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'E2E 簽核模板' }),
+    ).toBeVisible();
     await Promise.all([
       page.waitForURL(`**/templates/${TEMPLATE_ID}/designer`, {
         timeout: 30_000,
       }),
-      page.getByRole('button', { exact: true, name: '建立' }).click(),
+      page.getByRole('button', { exact: true, name: '發佈' }).click(),
     ]);
 
     await expect(page.getByText('E2E 簽核模板')).toBeVisible();
@@ -69,7 +79,7 @@ test.describe('M1 W3 template designer', () => {
     ).toBeVisible();
 
     await page.getByRole('button', { name: '儲存草稿' }).click();
-    await page.getByRole('button', { name: '發布版本' }).click();
+    await page.getByRole('button', { name: '發布草稿' }).click();
     await expect(page.getByText(/已發布版本/u)).toBeVisible();
 
     await page.goto(`/templates/${TEMPLATE_ID}/versions`);
@@ -446,6 +456,35 @@ async function mockTemplateGraphQl(
     if (query.includes('mutation CreateApprovalTemplate')) {
       await fulfillGraphQl(route, {
         createApprovalTemplate: { id: TEMPLATE_ID },
+      });
+      return;
+    }
+
+    if (query.includes('mutation ComposeApprovalTemplateWithForm')) {
+      await fulfillGraphQl(route, {
+        composeApprovalTemplateWithForm: {
+          formDefinition: {
+            currentVersionId: FORM_VERSION_ID,
+            id: FORM_ID,
+          },
+          formDefinitionVersion: {
+            id: FORM_VERSION_ID,
+            status: 'PUBLISHED',
+            version: 1,
+          },
+          published: true,
+          template: {
+            currentVersionId: null,
+            id: TEMPLATE_ID,
+          },
+          templateVersion: readTemplateVersion({
+            formDefinitionVersionId: FORM_VERSION_ID,
+            initiatorPolicyCel: null,
+            publishedAt: null,
+            status: 'DRAFT',
+            workflowDefinitionJson,
+          }),
+        },
       });
       return;
     }

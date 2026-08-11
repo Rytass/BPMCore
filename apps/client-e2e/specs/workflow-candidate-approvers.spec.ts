@@ -30,6 +30,8 @@ test.describe('candidate approver tasks', () => {
     await expect(page.getByRole('button', { name: '同意' })).toBeVisible();
 
     await page.getByRole('button', { name: '同意' }).click();
+    await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+    await page.getByRole('button', { name: '送出同意' }).click();
 
     await expect(page.getByText(/已同意/)).toBeVisible();
     await expect(page.getByRole('button', { name: '同意' })).toHaveCount(0);

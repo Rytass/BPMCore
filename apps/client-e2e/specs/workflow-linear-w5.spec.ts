@@ -47,6 +47,11 @@ test.describe('M2 W5 linear workflow', () => {
     ]);
 
     await page.getByRole('button', { name: '同意' }).click();
+    await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+    await page
+      .getByPlaceholder('選填，例如補充核准的條件或提醒事項')
+      .fill('核准，請依核定條件執行');
+    await page.getByRole('button', { name: '送出同意' }).click();
 
     await expect(page.getByText('已同意', { exact: true })).toBeVisible();
     await expect(page.locator('body')).not.toContainText('APPROVED');
@@ -56,6 +61,9 @@ test.describe('M2 W5 linear workflow', () => {
       page.getByText('簽章鏈已驗證，共 1 筆。', { exact: true }),
     ).toBeVisible();
     await expect(page.getByText(/簽章：已驗證/)).toBeVisible();
+    await expect(
+      page.getByText('同意說明：核准，請依核定條件執行'),
+    ).toBeVisible();
     await expect(page.getByText('此案件沒有附件。')).toBeVisible();
     await page.getByTestId('member-tooltip-member-001').hover();
     await expect(
@@ -73,7 +81,7 @@ test.describe('M2 W5 linear workflow', () => {
     await expect(page.getByText('請假原因：家庭照顧請假')).toBeVisible();
     await expect(page.getByText('task_manager')).toBeVisible();
     await expect(
-      page.getByRole('table').getByText('-', { exact: true }),
+      page.getByRole('table').getByText('核准，請依核定條件執行', { exact: true }),
     ).toBeVisible();
     await expect(page.getByText('2026-05-06 16:00:00')).toBeVisible();
     const approvedDecision = page
@@ -147,6 +155,36 @@ test.describe('M2 W5 linear workflow', () => {
       page.getByRole('table').getByText('資料不足，請補件', { exact: true }),
     ).toBeVisible();
     await expect(page.getByText('2026-05-06 16:00:00')).toBeVisible();
+  });
+
+  test('keeps the approval modal open and shows the API error when approval fails', async ({
+    page,
+  }): Promise<void> => {
+    await mockWorkflowGraphQl(page, {
+      decideTaskError: '此任務已被其他人處理，請重新整理後再試。',
+    });
+
+    await page.goto(`/instances/new?templateId=${TEMPLATE_ID}`);
+    await page.getByPlaceholder('請輸入文字').fill('家庭照顧請假');
+    await Promise.all([
+      page.waitForURL(`**/instances/${INSTANCE_ID}`, { timeout: 30_000 }),
+      page.getByRole('button', { name: '送出' }).click(),
+    ]);
+
+    await page.getByRole('button', { name: '同意' }).click();
+    await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+    const commentInput = page.getByPlaceholder(
+      '選填，例如補充核准的條件或提醒事項',
+    );
+    await commentInput.fill('保留這段簽核意見');
+    await page.getByRole('button', { name: '送出同意' }).click();
+
+    await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText(
+      '此任務已被其他人處理，請重新整理後再試。',
+    );
+    await expect(commentInput).toHaveValue('保留這段簽核意見');
+    await expect(page.getByRole('button', { name: '同意' })).toBeVisible();
   });
 
 
@@ -259,6 +297,7 @@ test.describe('M2 W5 linear workflow', () => {
 });
 
 interface MockWorkflowGraphQlOptions {
+  readonly decideTaskError?: string;
   readonly managerReturnBehavior?: Readonly<Record<string, unknown>>;
   readonly taskAssigneeMemberId?: string;
   readonly withPdfAttachment?: boolean;
@@ -272,7 +311,7 @@ async function mockWorkflowGraphQl(
   let instanceState: 'APPROVED' | 'REJECTED' | 'RUNNING' = 'RUNNING';
   let taskStatus: 'COMPLETED' | 'PENDING' = 'PENDING';
   let formDataJson = '{}';
-  let rejectionComment: string | null = null;
+  let decisionComment: string | null = null;
   const taskAssigneeMemberId = options.taskAssigneeMemberId ?? 'member-001';
   const managerReturnBehavior = options.managerReturnBehavior ?? {
     allowReturn: false,
@@ -280,11 +319,15 @@ async function mockWorkflowGraphQl(
   };
 
   await page.route(
-    '**/api/attachments/attachment-pdf/download**',
+    '**/attachments/attachment-pdf/download**',
     async (route: Route): Promise<void> => {
       await route.fulfill({
         body: createPreviewPdfBuffer('BPM PDF Preview'),
         contentType: 'application/pdf',
+        headers: {
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-origin': 'http://localhost:17602',
+        },
         status: 200,
       });
     },
@@ -350,7 +393,7 @@ async function mockWorkflowGraphQl(
 
     if (query.includes('query ApprovalInstance')) {
       await fulfillGraphQl(route, {
-        activityLogs: readActivityLogs(instanceState),
+        activityLogs: readActivityLogs(instanceState, decisionComment),
         approvalInstance: readInstance({
           managerReturnBehavior,
           formDataJson,
@@ -387,7 +430,7 @@ async function mockWorkflowGraphQl(
       await fulfillGraphQl(route, {
         taskDecisions:
           taskStatus === 'COMPLETED'
-            ? [readTaskDecision(instanceState, rejectionComment)]
+            ? [readTaskDecision(instanceState, decisionComment)]
             : [],
       });
       return;
@@ -403,7 +446,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentPreviewUrl')) {
       await fulfillGraphQl(route, {
         attachmentPreviewUrl:
-          '/attachments/attachment-pdf/download?token=e2e-preview-token',
+          'http://localhost:17603/attachments/attachment-pdf/download?token=e2e-preview-token',
       });
       return;
     }
@@ -411,7 +454,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentDownloadUrl')) {
       await fulfillGraphQl(route, {
         attachmentDownloadUrl:
-          '/attachments/attachment-pdf/download?token=e2e-download-token',
+          'http://localhost:17603/attachments/attachment-pdf/download?token=e2e-download-token',
       });
       return;
     }
@@ -431,12 +474,22 @@ async function mockWorkflowGraphQl(
     }
 
     if (query.includes('mutation DecideTask')) {
+      const decideTaskError = options.decideTaskError;
+      if (decideTaskError) {
+        await route.fulfill({
+          contentType: 'application/json',
+          json: { errors: [{ message: decideTaskError }] },
+          status: 200,
+        });
+        return;
+      }
+
       const decisionInput = payload.variables?.input;
       const action = readDecisionAction(decisionInput);
       const comment = readDecisionComment(decisionInput);
       instanceState = action === 'REJECTED' ? 'REJECTED' : 'APPROVED';
       taskStatus = 'COMPLETED';
-      rejectionComment = action === 'REJECTED' ? comment : null;
+      decisionComment = comment;
       await fulfillGraphQl(route, {
         decideTask: {
           action,
@@ -623,13 +676,13 @@ function readTasks(
 
 function readTaskDecision(
   state: 'APPROVED' | 'REJECTED' | 'RUNNING',
-  rejectionComment: string | null,
+  decisionComment: string | null,
 ): Readonly<Record<string, unknown>> {
   const action = state === 'REJECTED' ? 'REJECTED' : 'APPROVED';
 
   return {
     action,
-    comment: action === 'REJECTED' ? rejectionComment : null,
+    comment: decisionComment,
     decidedAt: UPDATED_AT,
     decidedByMemberId: 'member-001',
     id: 'decision-1',
@@ -697,6 +750,7 @@ function readWorkflowTokens(
 
 function readActivityLogs(
   state: 'APPROVED' | 'REJECTED' | 'RUNNING',
+  decisionComment: string | null,
 ): readonly Readonly<Record<string, unknown>>[] {
   return [
     {
@@ -707,7 +761,7 @@ function readActivityLogs(
       nodeId: 'task_manager',
       payloadJson: JSON.stringify({
         action: state === 'REJECTED' ? 'REJECTED' : 'APPROVED',
-        comment: null,
+        comment: decisionComment,
         signatureId: state === 'RUNNING' ? null : 'signature-1',
       }),
       taskId: TASK_ID,

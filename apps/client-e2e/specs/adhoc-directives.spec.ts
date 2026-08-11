@@ -346,6 +346,8 @@ async function clickApprove(
     timeout: 20_000,
   });
   await page.getByRole('button', { name: '同意' }).click();
+  await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+  await page.getByRole('button', { name: '送出同意' }).click();
 
   // Wait for the UI to confirm the approval was processed:
   // The 同意 button should disappear once the task decision is committed.
@@ -482,6 +484,10 @@ test.describe('Ad-hoc directives: PRE_APPROVAL, COUNTERSIGN, STAGE_NOTIFY, COMPL
       approverPage.getByRole('button', { name: '同意' }),
     ).toBeVisible({ timeout: 10_000 });
     await approverPage.getByRole('button', { name: '同意' }).click();
+    await expect(
+      approverPage.getByRole('heading', { name: '簽核意見' }),
+    ).toBeVisible();
+    await approverPage.getByRole('button', { name: '送出同意' }).click();
     await approverPage.waitForTimeout(3_000);
 
     // Poll GraphQL: instance still RUNNING

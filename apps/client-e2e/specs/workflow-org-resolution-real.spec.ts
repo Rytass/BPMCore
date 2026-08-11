@@ -178,7 +178,7 @@ test.describe('workflow organization resolver real execution', () => {
     );
     const formVersionId = await createPublishedFormVersion(adminPage, runId);
     const executionScenarios = readExecutionScenarios(organizationFixture);
-    const failureScenarios = readFailureScenarios(organizationFixture);
+    const failureScenarios = readFailureScenarios();
     const publishedExecutionTemplates = await Promise.all(
       executionScenarios.map((scenario) =>
         createPublishedTemplate(adminPage, {
@@ -255,8 +255,8 @@ function readExecutionScenarios(
     }),
     createSingleApprovalScenario({
       amount: 100,
-      approverMemberId: 'member-101',
-      approverName: '陳財務經理',
+      approverMemberId: 'member-001',
+      approverName: '林總經理',
       initiatorMemberId: 'member-102',
       initiatorName: '吳採購專員',
       resolver: {
@@ -338,9 +338,7 @@ function readExecutionScenarios(
   ];
 }
 
-function readFailureScenarios(
-  _fixture: OrganizationFixture,
-): readonly WorkflowFailureScenario[] {
+function readFailureScenarios(): readonly WorkflowFailureScenario[] {
   return [];
 }
 
@@ -512,18 +510,23 @@ async function completeStep(
     await approverPage.getByRole('button', { name: '送出退回' }).click();
   } else {
     await approverPage.getByRole('button', { name: '同意' }).click();
+    await expect(
+      approverPage.getByRole('heading', { name: '簽核意見' }),
+    ).toBeVisible();
+    await approverPage.getByRole('button', { name: '送出同意' }).click();
   }
+
+  await expect(
+    approverPage
+      .getByText(readDecisionLabel(step.action), { exact: true })
+      .last(),
+  ).toBeVisible();
 
   await verifyInstance(approverPage, {
     expectation: step.expectation,
     instanceId,
   });
 
-  await approverPage.goto('/inbox');
-  await approverPage.getByRole('button', { name: '歷史簽核記錄' }).click();
-  await expect(
-    approverPage.getByRole('row').filter({ hasText: caseTitle }).first(),
-  ).toBeVisible();
   await approverPage.context().close();
 }
 
@@ -1792,6 +1795,13 @@ function readInstanceIdFromUrl(url: string): string {
   }
 
   return instanceId;
+}
+
+function readDecisionLabel(action: ApprovalStep['action']): string {
+  if (action === 'APPROVED') return '已同意';
+  if (action === 'REJECTED') return '已拒絕';
+
+  return '已退回';
 }
 
 function isInstanceDetailUrl(url: URL): boolean {

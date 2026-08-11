@@ -6,7 +6,6 @@ const API_URL = process.env.E2E_API_URL ?? 'http://localhost:17603';
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:17602';
 
 const SEEDED_INSTANCE_IDS = {
-  ACCESS_RETURNED: '60000000-0000-4000-8000-000000000005',
   EXPENSE_RUNNING: '60000000-0000-4000-8000-000000000001',
 } as const;
 
@@ -155,6 +154,13 @@ interface NotificationData {
   readonly unreadNotificationCount: number;
 }
 
+type NotificationSummary = NotificationData['notifications'][number];
+
+interface NotificationPageData {
+  readonly notificationCount: number;
+  readonly notifications: readonly NotificationSummary[];
+}
+
 interface AttachmentAccessData {
   readonly attachmentDownloadUrl: string;
   readonly attachmentPreviewUrl: string;
@@ -167,6 +173,11 @@ interface AttachmentAccessData {
 
 interface SubmitTemplateOptions {
   readonly amount?: number;
+  readonly title: string;
+}
+
+interface ReturnedInstanceFixture {
+  readonly id: string;
   readonly title: string;
 }
 
@@ -197,9 +208,7 @@ test.describe('BPM skill matrix real browser e2e coverage', () => {
         .first(),
     ).toBeVisible();
 
-    const healthResponse = await request.get(
-      'http://localhost:17603/health',
-    );
+    const healthResponse = await request.get('http://localhost:17603/health');
     await expect(healthResponse).toBeOK();
     await expect(healthResponse.json()).resolves.toEqual({
       service: 'api',
@@ -224,7 +233,7 @@ test.describe('BPM skill matrix real browser e2e coverage', () => {
     await verifyResponsiveRoutes(browser);
 
     await unauthenticatedPage.getByLabel('登出').click();
-    await unauthenticatedPage.waitForURL(/\/login$/);
+    await unauthenticatedPage.waitForURL(/\/login(?:\?.*)?$/);
 
     const loggedOutMeResponse = await unauthenticatedPage
       .context()
@@ -480,6 +489,7 @@ async function verifySeedCompleteness(page: Page): Promise<void> {
 async function verifyAdminAndWorkspaceRoutes(page: Page): Promise<void> {
   await page.goto('/admin/orgs');
   await expect(page.getByRole('heading', { name: '組織管理' })).toBeVisible();
+  await page.getByPlaceholder('搜尋組織名稱或代碼').fill('財務管理部');
   await expect(page.getByText('財務管理部').first()).toBeVisible();
 
   await page.goto('/admin/users');
@@ -505,9 +515,11 @@ async function verifyAdminAndWorkspaceRoutes(page: Page): Promise<void> {
     }),
   );
 
-  await page.goto('/forms');
-  await expect(page.getByRole('heading', { name: '表單設計' })).toBeVisible();
-  await expect(page.getByText('供應商請款單')).toBeVisible();
+  await page.goto('/templates/compose');
+  await expect(
+    page.getByRole('heading', { name: '建立模板（表單 + 流程）' }),
+  ).toBeVisible();
+  await expect(page.getByText('表單設計')).toBeVisible();
 
   await page.goto('/templates/categories');
   await expect(
@@ -517,9 +529,32 @@ async function verifyAdminAndWorkspaceRoutes(page: Page): Promise<void> {
 
   await page.goto('/templates');
   await expect(page.getByRole('heading', { name: '簽核模板' })).toBeVisible();
+  const templateSearchResponse = page.waitForResponse((response): boolean => {
+    const payload = response.request().postDataJSON() as unknown;
+
+    if (!isRecord(payload) || typeof payload.query !== 'string') {
+      return false;
+    }
+
+    return (
+      payload.query.includes('query ApprovalTemplatesPage') &&
+      isRecord(payload.variables) &&
+      payload.variables.searchText === '供應商請款'
+    );
+  });
   await page
     .getByPlaceholder('關鍵字：搜尋模板名稱、分類或描述')
     .fill('供應商請款');
+  const templateSearchResult = await templateSearchResponse;
+  const templateSearchPayload = (await templateSearchResult.json()) as unknown;
+  const templateSearchData = isRecord(templateSearchPayload)
+    ? readRecord(templateSearchPayload.data)
+    : {};
+  expect(templateSearchData.approvalTemplates).toContainEqual(
+    expect.objectContaining({
+      name: '供應商請款簽核',
+    }),
+  );
   await expect(page.getByText('供應商請款簽核')).toBeVisible();
 
   await page.goto(
@@ -532,15 +567,47 @@ async function verifyAdminAndWorkspaceRoutes(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
   await page.goto('/search');
   await expect(page.getByRole('heading', { name: '案件搜尋' })).toBeVisible();
-  await expect(page.getByText('台中精密刀具股份有限公司')).toBeVisible();
+  await page
+    .getByPlaceholder('關鍵字：搜尋案件、發起人、模板或狀態')
+    .fill('供應商請款');
+  await expect(page.getByRole('table')).toBeVisible();
+  await expect(page.getByRole('row').nth(1)).toBeVisible();
   await page.goto('/cc');
   await expect(page.getByRole('heading', { name: '抄送給我' })).toBeVisible();
-  await page.goto('/notifications');
-  await expect(page.getByRole('heading', { name: '通知中心' })).toBeVisible();
+  await page.goto('/settings/notifications');
+  await expect(page.getByRole('heading', { name: '通知設定' })).toBeVisible();
+
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: /^通知中心/ }).click();
   await expect(page.getByText('SLA 已逾期：鋁合金胚料採購')).toBeVisible();
   await page.goto('/admin/delegations');
   await expect(page.getByRole('heading', { name: '代理設定' })).toBeVisible();
-  await expect(page.getByText('陳財務經理')).toBeVisible();
+  await expect(page.getByRole('table')).toBeVisible();
+  const seededDelegationData = await requestGraphQl<DelegationRuleData>(
+    page,
+    `query MatrixSeededAdminDelegation {
+      delegationRules(
+        principalMemberId: "member-101"
+        includeInactive: true
+        page: 1
+        pageSize: 20
+      ) {
+        agentMemberId
+        id
+        principalMemberId
+        scopeType
+        status
+      }
+    }`,
+  );
+  expect(seededDelegationData.delegationRules).toContainEqual(
+    expect.objectContaining({
+      agentMemberId: 'member-103',
+      principalMemberId: 'member-101',
+      scopeType: 'TEMPLATE_LIST',
+      status: 'ACTIVE',
+    }),
+  );
 }
 
 async function verifyAttachmentSignatureAndReadability(
@@ -834,6 +901,100 @@ async function submitTemplate(
   return instanceId;
 }
 
+async function createReturnedInstance(
+  browser: Browser,
+  runId: string,
+): Promise<ReturnedInstanceFixture> {
+  const adminPage = await createAuthenticatedPage(browser, 'member-001');
+  const formVersionId = await createPublishedFormVersion(
+    adminPage,
+    `returned-${runId}`,
+  );
+  const templateId = await createPublishedTemplate(adminPage, {
+    formVersionId,
+    runId: `returned-${runId}`,
+    title: '可退回案件',
+    workflowDefinition: createReturnableWorkflow(),
+  });
+  await adminPage.context().close();
+
+  const title = `系統權限：MES 工單編輯權限 ${runId}`;
+  const instanceId = await submitTemplate(browser, 'member-303', {
+    templateId,
+    title,
+  });
+
+  await approveCandidateTask(browser, {
+    instanceId,
+    memberId: 'member-101',
+    title,
+  });
+
+  const returnPage = await createAuthenticatedPage(browser, 'member-201');
+  await expect
+    .poll(
+      async (): Promise<boolean> => {
+        try {
+          const data = await requestGraphQl<ApprovalInstanceData>(
+            returnPage,
+            `query MatrixReturnableInstanceReady($id: String!) {
+              approvalInstance(id: $id) {
+                formDataJson
+                id
+                state
+                title
+              }
+            }`,
+            { id: instanceId },
+          );
+
+          return data.approvalInstance.title.includes(title);
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  await returnPage.goto(`/instances/${instanceId}`);
+  await expect(returnPage.getByText(title)).toBeVisible();
+  await expect(returnPage.getByRole('button', { name: '退回' })).toBeVisible();
+  await returnPage.getByRole('button', { name: '退回' }).click();
+  await expect(
+    returnPage.getByRole('heading', { name: '退回簽核' }),
+  ).toBeVisible();
+  await returnPage
+    .getByPlaceholder('可補充需要修改的內容')
+    .fill('Matrix E2E 退回後重新送出驗證');
+  await returnPage.getByRole('button', { name: '送出退回' }).click();
+
+  await expect
+    .poll(
+      async (): Promise<string> => {
+        const data = await requestGraphQl<ApprovalInstanceData>(
+          returnPage,
+          `query MatrixReturnedInstance($id: String!) {
+            approvalInstance(id: $id) {
+              formDataJson
+              id
+              state
+              title
+            }
+          }`,
+          { id: instanceId },
+        );
+
+        return data.approvalInstance.state;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe('RETURNED');
+
+  await returnPage.context().close();
+
+  return { id: instanceId, title };
+}
+
 async function approveCandidateTask(
   browser: Browser,
   {
@@ -859,6 +1020,8 @@ async function approveCandidateTask(
       .click(),
   ]);
   await page.getByRole('button', { name: '同意' }).click();
+  await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
+  await page.getByRole('button', { name: '送出同意' }).click();
   await expect(page.getByText(title)).toBeVisible();
   await page.context().close();
 }
@@ -972,13 +1135,17 @@ async function readInstanceVerification(
 async function verifyReturnedSeedResubmitWarning(
   browser: Browser,
 ): Promise<void> {
+  const returnedInstance = await createReturnedInstance(
+    browser,
+    `warning-${Date.now()}`,
+  );
   const page = await createAuthenticatedPage(browser, 'member-303');
 
-  await page.goto(`/instances/${SEEDED_INSTANCE_IDS.ACCESS_RETURNED}`);
+  await page.goto(`/instances/${returnedInstance.id}`);
   await expect(
-    page.getByRole('heading', { name: '系統權限：MES 工單編輯權限' }),
+    page.getByRole('heading', { name: returnedInstance.title }),
   ).toBeVisible();
-  await expect(page.getByText('退回')).toBeVisible();
+  await expect(page.getByText('已退回', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '重新送出' })).toBeVisible();
   await page.context().close();
 }
@@ -1067,24 +1234,116 @@ async function verifyTemplateCategoryCrud(
   await page.context().close();
 }
 
+async function readNotificationPages(
+  page: Page,
+  recipientMemberId: string,
+  targetNotificationId: string,
+  pageNumber = 1,
+  collected: readonly NotificationSummary[] = [],
+): Promise<readonly NotificationSummary[]> {
+  const pageSize = 100;
+  const pageData = await requestGraphQl<NotificationPageData>(
+    page,
+    `query MatrixNotificationPage(
+      $recipientMemberId: String!
+      $page: Int!
+      $pageSize: Int!
+    ) {
+      notifications(
+        recipientMemberId: $recipientMemberId
+        includeRead: true
+        page: $page
+        pageSize: $pageSize
+      ) {
+        id
+        status
+        title
+      }
+      notificationCount(
+        recipientMemberId: $recipientMemberId
+        includeRead: true
+      )
+    }`,
+    { page: pageNumber, pageSize, recipientMemberId },
+  );
+  const nextNotifications = [...collected, ...pageData.notifications];
+  const isTargetLoaded = nextNotifications.some(
+    (notification): boolean => notification.id === targetNotificationId,
+  );
+  const isLastPage =
+    pageData.notifications.length < pageSize ||
+    pageNumber * pageSize >= pageData.notificationCount;
+
+  if (isTargetLoaded || isLastPage) {
+    return nextNotifications;
+  }
+
+  return readNotificationPages(
+    page,
+    recipientMemberId,
+    targetNotificationId,
+    pageNumber + 1,
+    nextNotifications,
+  );
+}
+
 async function verifyNotificationReadAndPreference(
   browser: Browser,
 ): Promise<void> {
   const page = await createAuthenticatedPage(browser, 'member-101');
 
-  await page.goto('/notifications');
-  await expect(page.getByRole('heading', { name: '通知中心' })).toBeVisible();
-  await page
-    .getByRole('row')
-    .filter({ hasText: '待簽核：供應商請款' })
-    .getByRole('button', { name: '標為已讀' })
-    .click();
+  const seededNotificationId = '70000000-0000-4000-8000-000000000001';
+  const initialNotifications = await readNotificationPages(
+    page,
+    'member-101',
+    seededNotificationId,
+  );
+  const seededNotification = initialNotifications.find(
+    (notification): boolean => notification.id === seededNotificationId,
+  );
+
+  expect(seededNotification).toEqual(
+    expect.objectContaining({
+      id: seededNotificationId,
+      title: '待簽核：供應商請款',
+    }),
+  );
+
+  if (seededNotification?.status !== 'READ') {
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: /^通知中心/ }).click();
+    const notificationCard = page
+      .getByRole('button')
+      .filter({
+        has: page.getByText('待簽核：供應商請款', { exact: true }),
+      })
+      .first();
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (await notificationCard.isVisible()) {
+        break;
+      }
+
+      const loadMoreButton = page.getByRole('button', { name: '載入更多' });
+      if (
+        (await loadMoreButton.count()) === 0 ||
+        !(await loadMoreButton.first().isEnabled())
+      ) {
+        break;
+      }
+
+      await loadMoreButton.first().click();
+    }
+
+    await expect(notificationCard).toBeVisible();
+    await notificationCard.locator('button').click();
+    await page.getByRole('button', { name: '標為已讀' }).click();
+  }
+
+  await page.goto('/settings/notifications');
   await expect(
-    page
-      .getByRole('row')
-      .filter({ hasText: '待簽核：供應商請款' })
-      .getByText('已讀'),
-  ).toBeVisible();
+    page.locator('input[name="emailDigestMode"][value="DAILY"]'),
+  ).toBeEnabled();
   await page
     .locator('input[name="emailDigestMode"][value="DAILY"]')
     .check({ force: true });
@@ -1105,7 +1364,7 @@ async function verifyNotificationReadAndPreference(
         recipientMemberId: "member-101"
         includeRead: true
         page: 1
-        pageSize: 20
+        pageSize: 100
       ) {
         id
         status
@@ -1121,8 +1380,14 @@ async function verifyNotificationReadAndPreference(
     }`,
   );
 
-  expect(notificationData.notifications).toContainEqual(
+  const finalNotifications = await readNotificationPages(
+    page,
+    'member-101',
+    seededNotificationId,
+  );
+  expect(finalNotifications).toContainEqual(
     expect.objectContaining({
+      id: seededNotificationId,
       status: 'READ',
       title: '待簽核：供應商請款',
     }),
@@ -1144,6 +1409,7 @@ async function verifyDelegationCreateAndRevoke(
 
   await page.goto('/delegations');
   await expect(page.getByRole('heading', { name: '我的代理' })).toBeVisible();
+  await revokeExistingActiveDelegations(page);
   await page.getByRole('button', { name: '建立代理' }).click();
   await page.getByPlaceholder('搜尋姓名或信箱').fill('member-103');
   await page
@@ -1157,9 +1423,12 @@ async function verifyDelegationCreateAndRevoke(
     .getByRole('dialog')
     .getByRole('button', { name: '建立代理' })
     .click();
-  await expect(
-    page.getByRole('row').filter({ hasText: '李成本會計' }),
-  ).toBeVisible();
+  const activeDelegationRow = page
+    .getByRole('row')
+    .filter({ hasText: '李成本會計' })
+    .filter({ hasText: '啟用中' })
+    .first();
+  await expect(activeDelegationRow).toBeVisible();
 
   const activeRuleData = await requestGraphQl<DelegationRuleData>(
     page,
@@ -1191,10 +1460,17 @@ async function verifyDelegationCreateAndRevoke(
   await page
     .getByRole('row')
     .filter({ hasText: '李成本會計' })
+    .filter({ hasText: '啟用中' })
+    .first()
     .getByRole('button', { name: '撤銷' })
     .click();
   await expect(
-    page.getByRole('row').filter({ hasText: '李成本會計' }).getByText('已撤銷'),
+    page
+      .getByRole('row')
+      .filter({ hasText: '李成本會計' })
+      .filter({ hasText: '已撤銷' })
+      .first()
+      .getByText('已撤銷'),
   ).toBeVisible();
 
   const revokedRuleData = await requestGraphQl<DelegationRuleData>(
@@ -1226,20 +1502,51 @@ async function verifyDelegationCreateAndRevoke(
   await page.context().close();
 }
 
+async function revokeExistingActiveDelegations(page: Page): Promise<void> {
+  const activeRuleData = await requestGraphQl<DelegationRuleData>(
+    page,
+    `query MatrixExistingActiveDelegations {
+      delegationRules(
+        principalMemberId: "member-102"
+        agentMemberId: "member-103"
+        includeInactive: true
+        status: ACTIVE
+      ) {
+        agentMemberId
+        id
+        principalMemberId
+        scopeType
+        status
+      }
+    }`,
+  );
+
+  for (const rule of activeRuleData.delegationRules) {
+    const row = page.locator(`tr[data-row-key="${rule.id}"]`);
+    await expect(row).toBeVisible();
+    await row.getByRole('button', { name: '撤銷' }).click();
+    await expect(row.getByText('已撤銷')).toBeVisible();
+  }
+}
+
 async function verifyReturnedSeedResubmit(browser: Browser): Promise<void> {
+  const returnedInstance = await createReturnedInstance(
+    browser,
+    `resubmit-${Date.now()}`,
+  );
   const page = await createAuthenticatedPage(browser, 'member-303');
 
-  await page.goto(`/instances/${SEEDED_INSTANCE_IDS.ACCESS_RETURNED}`);
+  await page.goto(`/instances/${returnedInstance.id}`);
   await expect(
-    page.getByRole('heading', { name: '系統權限：MES 工單編輯權限' }),
+    page.getByRole('heading', { name: returnedInstance.title }),
   ).toBeVisible();
-  await expect(page.getByText('退回')).toBeVisible();
+  await expect(page.getByText('已退回', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '重新送出' }).click();
   await expect(page.getByText('進行中')).toBeVisible();
 
   const instanceData = await readInstanceVerification(
     page,
-    SEEDED_INSTANCE_IDS.ACCESS_RETURNED,
+    returnedInstance.id,
   );
 
   expect(instanceData.approvalInstance.state).toBe('RUNNING');
@@ -1296,6 +1603,58 @@ function createSingleApprovalWorkflow(
         },
         320,
         160,
+      ),
+      endNode(),
+    ],
+  };
+}
+
+function createReturnableWorkflow(): Readonly<Record<string, unknown>> {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_first',
+        source: 'start',
+        target: 'task_first',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_first_second',
+        source: 'task_first',
+        target: 'task_second',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_second_end',
+        source: 'task_second',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      startNode(),
+      userTaskNode(
+        'task_first',
+        '第一關簽核',
+        { memberIds: ['member-101'], type: 'DIRECT' },
+        320,
+        160,
+      ),
+      userTaskNode(
+        'task_second',
+        '第二關簽核',
+        { memberIds: ['member-201'], type: 'DIRECT' },
+        520,
+        160,
+        {
+          allowReturn: true,
+          allowedTargets: 'INITIATOR',
+          resubmitStrategy: 'RESTART',
+        },
       ),
       endNode(),
     ],
@@ -1430,6 +1789,11 @@ function userTaskNode(
   resolver: Readonly<Record<string, unknown>>,
   x: number,
   y: number,
+  returnBehavior: Readonly<Record<string, unknown>> = {
+    allowReturn: true,
+    allowedTargets: 'PREVIOUS',
+    resubmitStrategy: 'RESTART',
+  },
 ): Readonly<Record<string, unknown>> {
   return {
     data: {
@@ -1439,11 +1803,7 @@ function userTaskNode(
       approverResolver: resolver,
       decisionPolicy: { type: 'SINGLE' },
       label,
-      returnBehavior: {
-        allowReturn: true,
-        allowedTargets: 'PREVIOUS',
-        resubmitStrategy: 'RESTART',
-      },
+      returnBehavior,
       triggerMode: 'AND',
     },
     id,
@@ -1489,4 +1849,12 @@ function isInstanceDetailUrl(url: URL): boolean {
     Boolean(parts[1]) &&
     parts[1] !== 'new'
   );
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readRecord(value: unknown): Readonly<Record<string, unknown>> {
+  return isRecord(value) ? value : {};
 }

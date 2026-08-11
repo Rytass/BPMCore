@@ -28,14 +28,10 @@ test.describe('W9 notifications and SLA', () => {
     await page.getByRole('button', { name: /^通知中心/ }).click();
     await expect(page.getByText('新的待簽任務')).toBeVisible();
     await expect(page.getByText('SLA 即將到期')).toBeVisible();
-    await expect(
-      page.getByRole('button', { name: '標為已讀' }),
-    ).toHaveCount(1);
+    await expect(page.getByRole('button', { name: '標為已讀' })).toHaveCount(1);
 
     await page.getByRole('button', { name: '標為已讀' }).click();
-    await expect(
-      page.getByRole('button', { name: '標為已讀' }),
-    ).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '標為已讀' })).toHaveCount(0);
     await expect(
       page.getByRole('button', { name: '通知中心，1 則未讀' }),
     ).toHaveCount(0);
@@ -50,10 +46,7 @@ test.describe('W9 notifications and SLA', () => {
     await page.getByRole('button', { name: /^通知中心/ }).click();
     await expect(page.getByText('新的待簽任務')).toBeVisible();
 
-    await page
-      .getByRole('button', { name: '查看案件' })
-      .first()
-      .click();
+    await page.getByText('新的待簽任務', { exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/instances/${INSTANCE_ID}$`));
   });
 
