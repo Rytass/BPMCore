@@ -307,7 +307,13 @@ test.describe('M1 W3 template designer', () => {
     });
 
     await page.goto(`/templates/${TEMPLATE_ID}/designer`);
-    await page.getByRole('button', { name: '簽核節點' }).click();
+    // Select the node the fixture already carries. The toolbar button of the
+    // same name creates a new node instead, and it only renders once the
+    // initiator scope is set.
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
 
     // The trigger must fall back to a readable label instead of rendering
     // blank, and the quorum inputs stay hidden until they apply.
@@ -347,7 +353,10 @@ test.describe('M1 W3 template designer', () => {
     });
 
     await page.goto(`/templates/${TEMPLATE_ID}/designer`);
-    await page.getByRole('button', { name: '簽核節點' }).click();
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
 
     await page.getByRole('combobox', { name: '單人簽核' }).click();
     await page
@@ -395,7 +404,10 @@ test.describe('M1 W3 template designer', () => {
     });
 
     await page.goto(`/templates/${TEMPLATE_ID}/designer`);
-    await page.getByRole('button', { name: '簽核節點' }).click();
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
 
     await expect(
       page.getByRole('combobox', { name: '依序簽核（既有設定）' }),
@@ -920,9 +932,20 @@ function readWorkflowDefinitionWithDecisionPolicy(
   decisionPolicy: Readonly<Record<string, unknown>> | null,
 ): Readonly<Record<string, unknown>> {
   return {
+    // `WorkflowEdge.data` is required by the schema, and `readEdgeSnapshot`
+    // dereferences it without a guard, so omitting it crashes the designer at
+    // runtime rather than failing a type check.
+    // The node id has to keep the `userTask_` prefix that `createWorkflowNode`
+    // produces: the draft mock rejects any graph without a start → userTask_ →
+    // end path.
     edges: [
-      { id: 'edge-start-task', source: 'start', target: 'task_review' },
-      { id: 'edge-task-end', source: 'task_review', target: 'end' },
+      {
+        data: {},
+        id: 'edge-start-task',
+        source: 'start',
+        target: 'userTask_1',
+      },
+      { data: {}, id: 'edge-task-end', source: 'userTask_1', target: 'end' },
     ],
     meta: { schemaVersion: 1 },
     nodes: [
@@ -948,7 +971,7 @@ function readWorkflowDefinitionWithDecisionPolicy(
           returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
           triggerMode: 'AND',
         },
-        id: 'task_review',
+        id: 'userTask_1',
         position: { x: 320, y: 160 },
         type: 'userTask',
       },
