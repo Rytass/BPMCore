@@ -270,6 +270,7 @@ export class BPMRootModule {
         }),
         CalendarModule.forRoot({
           businessCalendarProvider: options.businessCalendarProvider,
+          imports: options.imports,
         }),
         BPMAuthModule.forRootAsync(authOptions),
         IdentityModule.forRootAsync({
@@ -313,6 +314,7 @@ function createBPMFeatureModules(
     NotificationOptionsModule.forRoot(options),
     CalendarModule.forRoot({
       businessCalendarProvider: options.businessCalendarProvider,
+      imports: options.imports,
     }),
     BPMAuthModule.forRoot(createBPMAuthModuleOptions(options)),
     IdentityModule.forRoot({

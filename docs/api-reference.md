@@ -575,7 +575,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
 | Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
 | Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
-| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`) |
+| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`). Options now extend `Pick<ModuleMetadata, 'imports'>`, and `BPMRootModule` threads its own `imports` through, so a `useClass` / `useFactory` `businessCalendarProvider` can depend on host repositories or config services without a host-side `@Global()` module |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 

@@ -168,7 +168,9 @@ export class HostBusinessCalendar implements BPMBusinessCalendar {
 
 ```typescript
 BPMRootModule.forRoot({
-  // ...
+  // 匯出 HostCalendarRepository 的 module 要放進 imports，
+  // 否則 useClass / useFactory 解析不到相依。
+  imports: [HostCalendarModule],
   businessCalendarProvider: {
     provide: BPM_BUSINESS_CALENDAR,
     useClass: HostBusinessCalendar,
@@ -178,6 +180,9 @@ BPMRootModule.forRoot({
 
 `forRootAsync` 用同一個 key；此 provider 於 module wiring 時決定，需要祕密或 repository 時
 在 provider 內用 `useFactory` / `inject`。
+
+`BPMRootModule` 的 `imports` 會一併傳進 `CalendarModule`，所以 calendar provider 的相依
+不需要靠 host 端的 `@Global()` module 才解析得到。
 
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
