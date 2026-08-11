@@ -9,11 +9,13 @@ export interface ApprovalTemplateRecord {
   readonly currentVersionId: string | null;
   readonly description: string | null;
   readonly id: string;
+  readonly isActive: boolean;
   readonly name: string;
   readonly updatedAt: string;
 }
 
 export type ApprovalTemplateListStatus = 'DRAFT' | 'PUBLISHED';
+export type ApprovalTemplateActivationStatus = 'ACTIVE' | 'ALL' | 'INACTIVE';
 export type ApprovalTemplateCategoryStatus = 'ACTIVE' | 'ALL' | 'INACTIVE';
 
 export interface ApprovalTemplateCategoryRecord {
@@ -129,6 +131,20 @@ interface CreateApprovalTemplateMutationData {
   readonly createApprovalTemplate: Pick<ApprovalTemplateRecord, 'id'>;
 }
 
+interface ActivateApprovalTemplateMutationData {
+  readonly activateApprovalTemplate: Pick<
+    ApprovalTemplateRecord,
+    'id' | 'isActive'
+  >;
+}
+
+interface DeactivateApprovalTemplateMutationData {
+  readonly deactivateApprovalTemplate: Pick<
+    ApprovalTemplateRecord,
+    'id' | 'isActive'
+  >;
+}
+
 interface CreateApprovalTemplateCategoryMutationData {
   readonly createApprovalTemplateCategory: ApprovalTemplateCategoryRecord;
 }
@@ -229,6 +245,7 @@ export async function listApprovalTemplates(): Promise<
         currentVersionId
         description
         id
+        isActive
         name
         updatedAt
       }
@@ -239,12 +256,14 @@ export async function listApprovalTemplates(): Promise<
 }
 
 export async function listApprovalTemplatesPage({
+  activationStatus,
   page,
   pageSize,
   searchText,
   status,
   categoryId,
 }: {
+  readonly activationStatus?: ApprovalTemplateActivationStatus | null;
   readonly categoryId?: string | null;
   readonly page: number;
   readonly pageSize: number;
@@ -253,6 +272,7 @@ export async function listApprovalTemplatesPage({
 }): Promise<ApprovalTemplatesPage> {
   const data = await requestGraphQl<ApprovalTemplatesPageQueryData>(
     `query ApprovalTemplatesPage(
+      $activationStatus: ApprovalTemplateActivationStatus
       $page: Int
       $pageSize: Int
       $searchText: String
@@ -260,6 +280,7 @@ export async function listApprovalTemplatesPage({
       $categoryId: String
     ) {
       approvalTemplates(
+        activationStatus: $activationStatus
         categoryId: $categoryId
         page: $page
         pageSize: $pageSize
@@ -276,16 +297,19 @@ export async function listApprovalTemplatesPage({
         currentVersionId
         description
         id
+        isActive
         name
         updatedAt
       }
       approvalTemplateCount(
+        activationStatus: $activationStatus
         categoryId: $categoryId
         searchText: $searchText
         status: $status
       )
     }`,
     {
+      activationStatus: activationStatus ?? null,
       categoryId: categoryId ?? null,
       page,
       pageSize,
@@ -372,6 +396,34 @@ export async function createApprovalTemplate({
   );
 
   return data.createApprovalTemplate.id;
+}
+
+export async function activateApprovalTemplate(id: string): Promise<boolean> {
+  const data = await requestGraphQl<ActivateApprovalTemplateMutationData>(
+    `mutation ActivateApprovalTemplate($id: String!) {
+      activateApprovalTemplate(id: $id) {
+        id
+        isActive
+      }
+    }`,
+    { id },
+  );
+
+  return data.activateApprovalTemplate.isActive;
+}
+
+export async function deactivateApprovalTemplate(id: string): Promise<boolean> {
+  const data = await requestGraphQl<DeactivateApprovalTemplateMutationData>(
+    `mutation DeactivateApprovalTemplate($id: String!) {
+      deactivateApprovalTemplate(id: $id) {
+        id
+        isActive
+      }
+    }`,
+    { id },
+  );
+
+  return data.deactivateApprovalTemplate.isActive;
 }
 
 export async function createApprovalTemplateCategory({
@@ -463,6 +515,7 @@ export async function readTemplateDesigner(
         currentVersionId
         description
         id
+        isActive
         name
         updatedAt
       }

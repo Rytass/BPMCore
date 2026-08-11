@@ -362,7 +362,8 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Records | `ApprovalTemplateRecord`, `ApprovalTemplateCategoryRecord`, `ApprovalTemplateVersionRecord`, `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `PublishedFormVersionOption`, `MemberProfileRecord`, `WorkflowDryRunStepRecord`, `WorkflowDryRunResultRecord`, `TemplateDesignerRecord`, `ApprovalTemplatesPage`, `ApprovalTemplateCategoriesPage`, `ComposeApprovalTemplateWithFormResult` |
 | Types | `ApprovalTemplateListStatus`, `ApprovalTemplateCategoryStatus` |
 | Queries | `listApprovalTemplates()`, `listApprovalTemplatesPage()`, `listApprovalTemplateCategoriesPage()`, `readTemplateDesigner()`, `searchPublishedFormVersionOptions()`, `resolveMemberOptions()`, `searchMemberOptions()` |
-| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()` |
+| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
+| Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
 
 ## `@rytass/bpm-core-client/workflow`
@@ -531,6 +532,27 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
 
+**Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
+`NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a
+template out of service without deleting it or archiving its published version.
+`TemplateService` adds `activateApprovalTemplate(id)` /
+`deactivateApprovalTemplate(id)`, mirroring the existing category pair, and
+`listApprovalTemplates` accepts `activationStatus` typed as the new
+`ApprovalTemplateActivationStatusEnum` (`ACTIVE` / `ALL` / `INACTIVE`, shaped
+like `ApprovalTemplateCategoryStatusEnum`). This is deliberately **not**
+`ApprovalTemplateListStatusEnum` — `DRAFT` / `PUBLISHED` is derived from version
+state, an orthogonal dimension. Omitting `activationStatus` means `ALL`, so
+existing callers are unaffected and admin screens still see deactivated
+templates in order to reactivate them.
+>
+> A deactivated template rejects `submitApprovalInstance` **and**
+> `resubmitApprovalInstance` with `ConflictException('Approval template is
+> deactivated')`. The guard runs right after the template is loaded, ahead of
+> form-data validation, so callers get the lifecycle reason rather than a
+> misleading field error. `launchableApprovalTemplates` filters deactivated
+> templates out. Instances already in flight are unaffected — they run from
+> `workflowSnapshot`.
+
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
 Workflow execution engine — the heaviest module.
@@ -656,6 +678,7 @@ argument on the `notifications` / `notificationCount` queries.
 17. `ArchiveParallelFormDrafts0000000016000`
 18. `AdhocDirectives0000000017000`
 19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
+20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
 
 ---
 

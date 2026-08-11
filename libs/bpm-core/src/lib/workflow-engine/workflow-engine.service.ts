@@ -242,6 +242,10 @@ export class WorkflowEngineService {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
     const template = await this.getTemplateOrThrow(input.templateId);
 
+    if (!template.isActive) {
+      throw new ConflictException('Approval template is deactivated');
+    }
+
     if (!template.currentVersionId) {
       throw new ConflictException(
         'Approval template does not have a published version',
@@ -875,6 +879,12 @@ export class WorkflowEngineService {
           throw new ConflictException(
             `Approval instance ${instance.id} is not returned`,
           );
+        }
+
+        const template = await this.getTemplateOrThrow(instance.templateId);
+
+        if (!template.isActive) {
+          throw new ConflictException('Approval template is deactivated');
         }
 
         validateSubmittedFormData(
@@ -2413,6 +2423,7 @@ export class WorkflowEngineService {
   ): Promise<readonly ApprovalTemplateEntity[]> {
     const templates = await this.approvalTemplateRepository.find({
       order: { updatedAt: 'DESC' },
+      where: { isActive: true },
     });
     const currentVersionIds = templates
       .map((template) => template.currentVersionId)
