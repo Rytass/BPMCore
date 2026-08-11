@@ -82,6 +82,14 @@ export class NotificationEntity {
   @Field(() => Date, { nullable: true })
   readAt!: Date | null;
 
+  /**
+   * When the recipient archived this notification. Archiving hides it from the
+   * default list without deleting the record, so statistics and audits keep it.
+   */
+  @Column('timestamptz', { name: 'archived_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  archivedAt!: Date | null;
+
   @Column('integer', { name: 'attempt_count', default: 0 })
   @Field(() => Number)
   attemptCount!: number;

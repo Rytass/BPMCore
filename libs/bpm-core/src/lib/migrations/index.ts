@@ -17,6 +17,7 @@ import { NotificationResolution0000000014000 } from './0000000014000-notificatio
 import { BackfillStaleNotificationResolution0000000015000 } from './0000000015000-backfill-stale-notification-resolution';
 import { ArchiveParallelFormDrafts0000000016000 } from './0000000016000-archive-parallel-form-drafts';
 import { AdhocDirectives0000000017000 } from './0000000017000-adhoc-directives';
+import { NotificationArchive0000000018000 } from './0000000018000-notification-archive';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -37,6 +38,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   BackfillStaleNotificationResolution0000000015000,
   ArchiveParallelFormDrafts0000000016000,
   AdhocDirectives0000000017000,
+  NotificationArchive0000000018000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -57,3 +59,4 @@ export * from './0000000014000-notification-resolution';
 export * from './0000000015000-backfill-stale-notification-resolution';
 export * from './0000000016000-archive-parallel-form-drafts';
 export * from './0000000017000-adhoc-directives';
+export * from './0000000018000-notification-archive';

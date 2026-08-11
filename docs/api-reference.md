@@ -426,7 +426,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 ### Notification
 
-`listNotifications({ ... })`, `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
+`listNotifications({ ... })` (accepts `includeArchived`), `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
 ### Pure helpers
 
@@ -584,11 +584,28 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Category | Names |
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
+| Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
+
+**Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
+from *read* and from *deleted* — the row survives for statistics and audit.
+`NotificationService` adds `archiveNotifications({ ids, memberId })` /
+`unarchiveNotifications({ ids, memberId })` (both scoped to
+`recipientMemberId`, so one member cannot archive another's notifications, and
+both idempotent — re-archiving an archived row affects 0 rows).
+`listNotifications` / `countNotifications` take `includeArchived?: boolean`,
+defaulting to `false`, so existing callers are unaffected.
+`countUnreadNotifications` **excludes** archived rows: otherwise the bell keeps
+its badge after archiving and the action would be pointless. Archived and read
+are independent dimensions — the archive filter is `archivedAt IS NULL`, not a
+`status` value. GraphQL exposes `archiveNotifications(ids)` /
+`unarchiveNotifications(ids)` mutations (member taken from
+`@BPMCurrentMemberId()`, never a client argument) and an `includeArchived`
+argument on the `notifications` / `notificationCount` queries.
 
 ## `@rytass/bpm-core-nestjs-module/attachment`
 
@@ -638,6 +655,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 16. `BackfillStaleNotificationResolution0000000015000`
 17. `ArchiveParallelFormDrafts0000000016000`
 18. `AdhocDirectives0000000017000`
+19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
 
 ---
 

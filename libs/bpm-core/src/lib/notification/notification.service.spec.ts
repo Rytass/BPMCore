@@ -5,7 +5,14 @@ import {
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
 import { ModuleRef } from '@nestjs/core';
-import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
+import {
+  EntityManager,
+  In,
+  IsNull,
+  Not,
+  ObjectLiteral,
+  Repository,
+} from 'typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
@@ -29,6 +36,11 @@ import { SLA_ESCALATION_DELEGATION_REASON } from './notification.enums';
 import { NotificationService } from './notification.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { DEFAULT_BPM_NOTIFICATION_OPTIONS } from './notification-options';
+
+/** Shape of the `find` / `count` options the service passes to the repository. */
+interface FindArgs {
+  readonly where: Record<string, unknown>;
+}
 
 describe('NotificationService', () => {
   it('validates quiet hours as time-only values', (): void => {
@@ -186,6 +198,199 @@ describe('NotificationService', () => {
 
     await expect(
       service.markAllNotificationsRead({ recipientMemberId: '   ' }),
+    ).resolves.toBe(0);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('hides archived notifications from the default list and count', async (): Promise<void> => {
+    const find = jest.fn<Promise<readonly NotificationEntity[]>, [FindArgs]>(
+      () => Promise.resolve([]),
+    );
+    const count = jest.fn<Promise<number>, [FindArgs]>(() =>
+      Promise.resolve(0),
+    );
+    const service = new NotificationService(
+      {
+        count,
+        find,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await service.listNotifications({ recipientMemberId: 'member-001' });
+    await service.countNotifications({ recipientMemberId: 'member-001' });
+
+    expect(find.mock.calls[0][0].where).toMatchObject({
+      archivedAt: IsNull(),
+      status: Not(NotificationStatusEnum.READ),
+    });
+    expect(count.mock.calls[0][0].where).toMatchObject({
+      archivedAt: IsNull(),
+    });
+  });
+
+  it('drops the archived filter when includeArchived is requested', async (): Promise<void> => {
+    const find = jest.fn<Promise<readonly NotificationEntity[]>, [FindArgs]>(
+      () => Promise.resolve([]),
+    );
+    const count = jest.fn<Promise<number>, [FindArgs]>(() =>
+      Promise.resolve(0),
+    );
+    const service = new NotificationService(
+      {
+        count,
+        find,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await service.listNotifications({
+      includeArchived: true,
+      includeRead: true,
+      recipientMemberId: 'member-001',
+    });
+    await service.countNotifications({
+      includeArchived: true,
+      includeRead: true,
+      recipientMemberId: 'member-001',
+    });
+
+    expect(find.mock.calls[0][0].where).not.toHaveProperty('archivedAt');
+    expect(find.mock.calls[0][0].where).not.toHaveProperty('status');
+    expect(count.mock.calls[0][0].where).not.toHaveProperty('archivedAt');
+  });
+
+  it('excludes archived notifications from the unread badge count', async (): Promise<void> => {
+    const count = jest.fn<Promise<number>, [FindArgs]>(() =>
+      Promise.resolve(2),
+    );
+    const service = new NotificationService(
+      {
+        count,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await expect(service.countUnreadNotifications('member-001')).resolves.toBe(
+      2,
+    );
+    expect(count.mock.calls[0][0].where).toMatchObject({
+      archivedAt: IsNull(),
+      channel: NotificationChannelEnum.IN_APP,
+      recipientMemberId: 'member-001',
+      status: Not(NotificationStatusEnum.READ),
+    });
+  });
+
+  it('archives only the requesting member own notifications', async (): Promise<void> => {
+    const update = jest.fn<
+      Promise<{ readonly affected: number }>,
+      [Record<string, unknown>, Record<string, unknown>]
+    >(() => Promise.resolve({ affected: 2 }));
+    const service = new NotificationService(
+      {
+        update,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    const affected = await service.archiveNotifications({
+      ids: ['notification-1', 'notification-2', 'notification-1'],
+      memberId: ' member-001 ',
+    });
+
+    expect(affected).toBe(2);
+    const [criteria, patch] = update.mock.calls[0];
+
+    expect(criteria).toMatchObject({
+      archivedAt: IsNull(),
+      id: In(['notification-1', 'notification-2']),
+      recipientMemberId: 'member-001',
+    });
+    expect(patch.archivedAt).toBeInstanceOf(Date);
+  });
+
+  it('clears the archive stamp when unarchiving', async (): Promise<void> => {
+    const update = jest.fn<
+      Promise<{ readonly affected: number }>,
+      [Record<string, unknown>, Record<string, unknown>]
+    >(() => Promise.resolve({ affected: 1 }));
+    const service = new NotificationService(
+      {
+        update,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.unarchiveNotifications({
+        ids: ['notification-1'],
+        memberId: 'member-001',
+      }),
+    ).resolves.toBe(1);
+
+    const [criteria, patch] = update.mock.calls[0];
+
+    expect(criteria).toMatchObject({
+      archivedAt: Not(IsNull()),
+      recipientMemberId: 'member-001',
+    });
+    expect(patch).toEqual({ archivedAt: null });
+  });
+
+  it('returns zero affected when archiving without usable ids', async (): Promise<void> => {
+    const update = jest.fn();
+    const service = new NotificationService(
+      {
+        update,
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.archiveNotifications({ ids: ['  '], memberId: 'member-001' }),
+    ).resolves.toBe(0);
+    await expect(
+      service.unarchiveNotifications({
+        ids: ['notification-1'],
+        memberId: '   ',
+      }),
     ).resolves.toBe(0);
     expect(update).not.toHaveBeenCalled();
   });
@@ -550,6 +755,7 @@ function createEscalationFixture({
 
 function createNotification(id: string): NotificationEntity {
   return Object.assign(new NotificationEntity(), {
+    archivedAt: null,
     body: '待簽通知',
     channel: NotificationChannelEnum.IN_APP,
     createdAt: new Date('2026-05-10T00:00:00.000Z'),
