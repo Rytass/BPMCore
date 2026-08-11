@@ -31,6 +31,9 @@ test.describe('M1 W3 template designer', () => {
   test('creates, designs, publishes, and reviews a template version', async ({
     page,
   }): Promise<void> => {
+    // The approval-node property panel is long enough that a select opened near
+    // its foot renders its options below the fold of the default viewport.
+    await page.setViewportSize({ height: 1800, width: 1440 });
     await mockTemplateGraphQl(page);
 
     await page.goto('/templates');
@@ -208,7 +211,10 @@ test.describe('M1 W3 template designer', () => {
   }): Promise<void> => {
     let savedData: Readonly<Record<string, unknown>> | null = null;
 
-    await page.setViewportSize({ height: 1200, width: 1440 });
+    // Taller than the other specs: this one opens the timeout-action select,
+    // which sits far enough down the panel that 1200 leaves its options below
+    // the fold.
+    await page.setViewportSize({ height: 1800, width: 1440 });
     await mockTemplateGraphQl(page, {
       onDraftUpdate: (input): void => {
         savedData = readFirstUserTaskData(input.workflowDefinitionJson);
