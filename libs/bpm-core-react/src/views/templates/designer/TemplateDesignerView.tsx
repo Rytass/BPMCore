@@ -827,6 +827,12 @@ export function TemplateDesignerView({
   const [memberSearchResults, setMemberSearchResults] = useState<
     readonly MemberSelectOption[]
   >([]);
+  // Guards `memberSearchResults` against out-of-order responses: typing
+  // narrows a search text while a broader, slower request for an earlier
+  // text is still in flight, and that stale response must not overwrite a
+  // response for a more recent search. `memberOptions` accumulation is
+  // order-insensitive (it only ever adds), so it does not need this guard.
+  const memberSearchSequenceRef = useRef(0);
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
   const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
@@ -1191,11 +1197,18 @@ export function TemplateDesignerView({
     setMemberLoading(true);
     setError(null);
 
+    const searchSequence = ++memberSearchSequenceRef.current;
+
     try {
       const options = await searchMemberOptions(searchText);
       const nextOptions = readMemberSelectOptions(options);
 
-      setMemberSearchResults(nextOptions);
+      // Only the freshest request may write the pickers' visible results; a
+      // slower, superseded request's response is dropped here.
+      if (searchSequence === memberSearchSequenceRef.current) {
+        setMemberSearchResults(nextOptions);
+      }
+
       setMemberOptions((currentOptions) =>
         mergeMemberOptions(currentOptions, nextOptions),
       );
@@ -2262,8 +2275,12 @@ export function TemplateDesignerView({
       resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER'
         ? (resolver.fallback ?? { type: 'NONE' as const })
         : { type: 'NONE' as const };
+    // An empty `memberId` means no one has been picked yet (the just-switched
+    // default). `readMemberSelectOption` never returns null, so without this
+    // guard it would resolve to the "未知會員" sentinel and offer that
+    // sentinel as a selectable, phantom row.
     const fallbackMember =
-      fallback.type === 'DIRECT'
+      fallback.type === 'DIRECT' && fallback.memberId
         ? readMemberSelectOption(memberOptions, fallback.memberId)
         : null;
     const resubmitStrategy =
@@ -2325,6 +2342,10 @@ export function TemplateDesignerView({
               onSearch={handleSearchMembers}
               onVisibilityChange={(open): void => {
                 if (open) {
+                  // Clear synchronously so the window between opening and the
+                  // fetch landing never shows a different node's stale
+                  // results.
+                  setMemberSearchResults([]);
                   void handleSearchMembers('');
                 }
               }}
@@ -2482,13 +2503,23 @@ export function TemplateDesignerView({
                     onSearch={handleSearchMembers}
                     onVisibilityChange={(open): void => {
                       if (open) {
+                        // Clear synchronously so the window between opening
+                        // and the fetch landing never shows a different
+                        // node's stale results.
+                        setMemberSearchResults([]);
                         void handleSearchMembers('');
                       }
                     }}
                     options={[
+                      // The search results come first so that a genuine hit
+                      // for the fallback member's id wins the dedupe inside
+                      // `mergeMemberOptions` — the fallback member is only
+                      // ever pre-fetched via search, never by id (see
+                      // `readWorkflowDirectMemberIds`), so its own entry can
+                      // still be a "未知會員" sentinel.
                       ...mergeMemberOptions(
-                        fallbackMember ? [fallbackMember] : [],
                         memberSearchResults,
+                        fallbackMember ? [fallbackMember] : [],
                       ),
                     ]}
                     placeholder="搜尋姓名或信箱"
@@ -2854,6 +2885,9 @@ export function TemplateDesignerView({
           onSearch={handleSearchMembers}
           onVisibilityChange={(open): void => {
             if (open) {
+              // Clear synchronously so the window between opening and the
+              // fetch landing never shows a different node's stale results.
+              setMemberSearchResults([]);
               void handleSearchMembers('');
             }
           }}
