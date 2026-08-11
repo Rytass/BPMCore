@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-11, PR #6 remediation): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds no public exports.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds public exports: `NotificationEntity` / `NotificationPreferenceEntity` and the notification archive API (bpm-core), `ApprovalTemplateActivationStatusEnum` plus template activate/deactivate (bpm-core), the matching client functions and `ApprovalTemplateActivationStatus` type (bpm-core-client), and `imports` on `CalendarModuleOptions` (bpm-core). Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -783,6 +783,17 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/root` | `RootView` (placeholder, returns null) |
 
 ### Heavy views (must stay isolated, fat dependencies)
+
+The packages below are declared as **optional** `peerDependencies` in
+`libs/bpm-core-react/package.json` (`peerDependenciesMeta`). A host only has to
+install the ones matching the heavy views it actually mounts; hosts that mount
+none are not warned about missing peers. The version ranges pin what the
+monorepo builds against, so upgrading `@rytass/bpm-core-react` now signals when
+a peer needs bumping too.
+
+Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
+`@codemirror/view`, `@uiw/react-codemirror`, `@hello-pangea/dnd`, `pdfjs-dist`,
+`react-pdf`, `next`.
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|

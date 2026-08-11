@@ -296,10 +296,34 @@
     "react-pdf": "^10.4.1"
   },
   "peerDependenciesMeta": {
+    "@codemirror/lang-json": {
+      "optional": true
+    },
+    "@codemirror/view": {
+      "optional": true
+    },
+    "@hello-pangea/dnd": {
+      "optional": true
+    },
     "@mezzanine-ui/icons": {
       "optional": false
     },
+    "@uiw/react-codemirror": {
+      "optional": true
+    },
+    "@xyflow/react": {
+      "optional": true
+    },
+    "dagre": {
+      "optional": true
+    },
     "next": {
+      "optional": true
+    },
+    "pdfjs-dist": {
+      "optional": true
+    },
+    "react-pdf": {
       "optional": true
     }
   },
