@@ -13,6 +13,7 @@ interface UpdateTemplateDraftInput {
 }
 
 interface MockTemplateGraphQlOptions {
+  readonly initialWorkflowDefinitionJson?: string;
   readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
 }
 
@@ -63,6 +64,11 @@ test.describe('M1 W3 template designer', () => {
       page
         .locator('.react-flow__node')
         .filter({ hasText: '林總經理 (lin.ceo@example.internal)' }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        '可指定多位；多位時所有人都會收到待辦，任一人同意即可通過。',
+      ),
     ).toBeVisible();
     await expect(page.locator('.react-flow__edge')).toHaveCount(2);
     await expect(page.getByText('重送策略')).toBeVisible();
@@ -252,6 +258,37 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
+  test('normalizes legacy approval policy defaults before saving', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readLegacyWorkflowDefinition(),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await expect(page.locator('input[name="allowReject"]')).toBeChecked();
+    await expect(page.locator('input[name="allowTransfer"]')).toBeChecked();
+    await expect(page.locator('input[name="allowAddSigner"]')).not.toBeChecked();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      allowAddSigner: false,
+      allowReject: true,
+      allowTransfer: true,
+    });
+  });
+
   test('hides the business-day選項 for an hour-based SLA', async ({
     page,
   }): Promise<void> => {
@@ -429,7 +466,9 @@ async function mockTemplateGraphQl(
   let templateCurrentVersionId: string | null = null;
   let templateStatus: 'DRAFT' | 'PUBLISHED' = 'DRAFT';
   let templatePublishedAt: string | null = null;
-  let workflowDefinitionJson = JSON.stringify(readEmptyWorkflowDefinition());
+  let workflowDefinitionJson =
+    options.initialWorkflowDefinitionJson ??
+    JSON.stringify(readEmptyWorkflowDefinition());
   let formDefinitionVersionId: string | null = null;
   let templateInitiatorPolicyCel: string | null = null;
 
@@ -714,6 +753,45 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
         id: 'start',
         position: { x: 80, y: 160 },
         type: 'startEvent',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+        id: 'end',
+        position: { x: 560, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function readLegacyWorkflowDefinition(): Readonly<Record<string, unknown>> {
+  return {
+    edges: [
+      { id: 'edge-start-task', source: 'start', target: 'task_review' },
+      { id: 'edge-task-end', source: 'task_review', target: 'end' },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '簽核節點',
+          returnBehavior: {
+            allowReturn: true,
+            allowedTargets: 'INITIATOR',
+          },
+          triggerMode: 'AND',
+        },
+        id: 'task_review',
+        position: { x: 320, y: 160 },
+        type: 'userTask',
       },
       {
         data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },

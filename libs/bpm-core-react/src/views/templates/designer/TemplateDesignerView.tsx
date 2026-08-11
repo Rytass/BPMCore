@@ -77,6 +77,7 @@ import {
 import {
   ApproverResolver,
   ApproverResolverFallback,
+  DecisionPolicy,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -721,7 +722,7 @@ export function TemplateDesignerView({
     initialState: {
       definition:
         embedded && initialWorkflowDefinition != null
-          ? initialWorkflowDefinition
+          ? normalizeDesignerWorkflowDefinition(initialWorkflowDefinition)
           : readFallbackWorkflowDefinition(),
       editingEdgeId: null,
       formDefinitionVersionId: null,
@@ -1117,7 +1118,9 @@ export function TemplateDesignerView({
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
       const nextWorkflowDefinition =
-        sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition();
+        normalizeDesignerWorkflowDefinition(
+          sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition(),
+        );
       const nextFormDefinitionVersionId =
         sourceVersion?.formDefinitionVersionId ??
         nextRecord.formVersions[0]?.id ??
@@ -2285,7 +2288,7 @@ export function TemplateDesignerView({
         </BPMFormField>
         {resolver.type === 'DIRECT' ? (
           <BPMFormField
-            hintText="可指定多位；多位時所有人都會收到待辦，並依「決策方式」決定要幾人簽核才通過。"
+            hintText={readDecisionPolicyHint(node.data.decisionPolicy)}
             label="簽核者"
             name="memberId"
             required
@@ -3445,9 +3448,49 @@ function applyWorkflowNodeTriggerMode(
 function normalizeDesignerWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinition {
+  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(definition);
+
   return normalizeSingleIncomingTriggerModes(
-    removeAsyncNotifyOutgoingEdges(definition),
+    normalizeUserTaskPolicies(withoutAsyncNotifyEdges),
   );
+}
+
+function normalizeUserTaskPolicies(
+  definition: WorkflowDefinition,
+): WorkflowDefinition {
+  const nodes = definition.nodes.map((node) => {
+    if (node.type !== 'userTask') {
+      return node;
+    }
+
+    const allowAddSigner = node.data.allowAddSigner ?? false;
+    const allowReject = node.data.allowReject ?? true;
+    const allowTransfer = node.data.allowTransfer ?? true;
+
+    if (
+      node.data.allowAddSigner === allowAddSigner &&
+      node.data.allowReject === allowReject &&
+      node.data.allowTransfer === allowTransfer
+    ) {
+      return node;
+    }
+
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        allowAddSigner,
+        allowReject,
+        allowTransfer,
+      },
+    };
+  });
+
+  const hasNodeChanges = nodes.some(
+    (node, index) => node !== definition.nodes[index],
+  );
+
+  return hasNodeChanges ? { ...definition, nodes } : definition;
 }
 
 function removeAsyncNotifyOutgoingEdges(
@@ -3578,6 +3621,25 @@ function readReturnResubmitStrategy(
   value: string | null,
 ): ReturnResubmitStrategy {
   return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
+}
+
+function readDecisionPolicyHint(policy: DecisionPolicy | undefined): string {
+  if (!policy || policy.type === 'SINGLE' || policy.type === 'PARALLEL_ANY') {
+    return '可指定多位；多位時所有人都會收到待辦，任一人同意即可通過。';
+  }
+
+  if (policy.type === 'PARALLEL_ALL') {
+    return '可指定多位；多位時所有人都會收到待辦，全部同意後才會通過。';
+  }
+
+  if (policy.type === 'SEQUENTIAL') {
+    return '可指定多位；所有人會同時收到待辦，需全部同意後才會通過。';
+  }
+
+  const thresholdUnit =
+    policy.thresholdType === 'PERCENTAGE' ? '%' : ' 位簽核者';
+
+  return `可指定多位；需達到 ${policy.threshold}${thresholdUnit} 才會通過。`;
 }
 
 function readSlaDurationUnit(value: string | null): SlaDurationUnit {
