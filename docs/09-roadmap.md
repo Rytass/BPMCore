@@ -305,6 +305,21 @@
 
 ---
 
+## 已核准的後續規劃
+
+- [ ] 表單 Select／AutoComplete／Radio／Checkbox 支援宿主註冊的版本化 DataSource。
+- [ ] 完成 server-side resolve、label snapshot、退回編輯與重新送出一致性。
+- [ ] 完成 Designer Catalog／Preview、parameter bindings、發布 lint 與真實 wrapper-host e2e。
+
+權威架構與執行順序分別見：
+
+- [14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
+- [15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
+
+以上項目目前為 **Planned**，不得因只有 schema、mock 或 unit test 就標記完成。
+
+---
+
 ## 不在 MVP 範圍（後期）
 
 | 功能                                      | 預估時程                    |
