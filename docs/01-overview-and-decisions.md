@@ -46,6 +46,11 @@
 | 10  | 流程設計器        | **React Flow**                               | 使用體驗優先                                                       |
 | 11  | 規模              | **單機 Postgres + cron**                     | 內部使用，不需橫向擴展                                             |
 | 12  | Inclusive Gateway | **不採用**                                   | 用 Parallel + Exclusive 組合替代，避免 OR Join 複雜度              |
+| 13  | 表單動態選項      | **宿主註冊的版本化 DataSource Registry**     | 不在 schema 保存 secret/URL；送出時驗證並保存 label snapshot       |
+
+表單動態選項的完整決策與交付 gate 見
+[14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)及
+[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)。
 
 ## BPMN 子集
 
@@ -87,10 +92,9 @@ reporting/        Inbox / Notifications 已實作；Sent / CC / Search / Dashboa
 /inbox                                我的待簽
 /notifications                        通知中心
 /templates                            模板列表（IT）
+  /templates/compose                  表單 + 流程建立 wizard
   /templates/[id]/designer            流程設計器（React Flow）
   /templates/[id]/versions            版本管理
-/forms                                表單列表（IT）
-  /forms/[id]/builder                 表單設計器
 /instances/new?templateId=xxx         發起新簽核
 /instances/[id]                       簽核操作頁
 /admin/orgs                           組織管理

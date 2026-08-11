@@ -490,6 +490,36 @@ export class WorkflowEngineService {
           );
         }
 
+        const taskNode = readWorkflowNodeOrThrow(
+          instance.workflowSnapshot,
+          task.nodeId,
+        );
+
+        if (taskNode.type !== 'userTask') {
+          throw new ConflictException(
+            `Task ${task.id} is not bound to a user task node`,
+          );
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.REJECTED &&
+          taskNode.data.allowReject === false
+        ) {
+          throw new ForbiddenException(
+            `Workflow node ${task.nodeId} does not allow rejection`,
+          );
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          taskNode.data.allowTransfer === false
+        ) {
+          throw new ForbiddenException(
+            `Workflow node ${task.nodeId} does not allow transfer`,
+          );
+        }
+
         const returnToNodeId =
           input.action === TaskDecisionActionEnum.RETURNED
             ? readReturnTargetNodeId(

@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against: `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`.
+Last verified against (2026-08-11, PR #6 remediation): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds no public exports.
 
 ---
 
@@ -193,7 +193,7 @@ Form-schema definitions.
 | `UserTaskNodeData` | interface | userTask-specific data |
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP |
 | `ApproverResolverFallback` | type | Fallback when primary resolver fails |
-| `DecisionPolicy` | type | ANY / MAJORITY / ALL |
+| `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
 | `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
@@ -758,7 +758,7 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 
 ## Pages (Next.js Server Component shims)
 
-20 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
+19 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
 
 ```ts
 export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';

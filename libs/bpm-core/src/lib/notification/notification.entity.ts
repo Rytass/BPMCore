@@ -116,6 +116,14 @@ export class NotificationEntity {
   }
 
   /**
+   * Resolved task policy for clients rendering historical notifications.
+   * New notifications also carry this value in `payload`; the nullable field
+   * lets the service distinguish an old notification with no task context.
+   */
+  @Field(() => Boolean, { nullable: true })
+  allowReject: boolean | null = null;
+
+  /**
    * Whether the recipient can still act on this notification (i.e. it is an
    * unresolved task-assignment). Drives the inline 同意/拒絕 actions on the
    * client so they are never offered for an already-decided task.

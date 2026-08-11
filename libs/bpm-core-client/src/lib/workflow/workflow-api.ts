@@ -231,6 +231,7 @@ export interface NotificationRecord {
    */
   readonly actionable: boolean;
   readonly attemptCount: number;
+  readonly allowReject: boolean | null;
   readonly body: string;
   readonly channel: NotificationChannel;
   readonly createdAt: string;
@@ -1432,6 +1433,7 @@ export async function listNotifications({
         recipientMemberId: $recipientMemberId
       ) {
         actionable
+        allowReject
         attemptCount
         body
         channel

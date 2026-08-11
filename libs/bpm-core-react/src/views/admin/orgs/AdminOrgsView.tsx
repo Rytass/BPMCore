@@ -88,6 +88,8 @@ const INITIAL_ORG_TREE_EDITOR_STATE: OrgUnitTreeDraftEditorState = {
   isEditing: false,
 };
 
+const DEFAULT_MANAGER_PRIORITY = 100;
+
 type OrgUnitRow = Readonly<
   Record<string, unknown> &
     OrgUnitRecord & {
@@ -656,264 +658,264 @@ export function AdminOrgsView(): ReactElement {
 
   return (
     <>
-        <PageHeader>
-          <ContentHeader
-            description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"
-            title="組織管理"
-          />
-        </PageHeader>
+      <PageHeader>
+        <ContentHeader
+          description="維護組織樹、職位、會員歸屬與簽核主管解析規則。"
+          title="組織管理"
+        />
+      </PageHeader>
 
-        <SectionGroup>
-          <Section
-            tab={
-              <Tab
-                activeKey={activeTab}
-                onChange={(key): void => setActiveTab(readAdminOrgTab(key))}
-              >
-                <TabItem key="ORG_UNITS">組織樹</TabItem>
-                <TabItem key="POSITIONS">職位</TabItem>
-                <TabItem key="MEMBERSHIPS">會員歸屬</TabItem>
-                <TabItem key="MANAGERS">簽核主管</TabItem>
-              </Tab>
-            }
-          >
-            {error ? (
-              <Typography color="text-error" variant="body">
-                {error}
-              </Typography>
-            ) : null}
-            {activeTab === 'ORG_UNITS' ? (
-              <OrgUnitPanel
-                actions={orgActions}
-                loading={loading}
-                onCreate={(): void =>
-                  setOrgModal({ parentId: null, record: null, type: 'CREATE' })
-                }
-                onCreateChild={(parentId): void =>
-                  setOrgModal({ parentId, record: null, type: 'CREATE' })
-                }
-                onEditOrgUnit={(record): void =>
-                  setOrgModal({ record, type: 'EDIT' })
-                }
-                onPageChange={setOrgUnitPage}
-                onSaveDraft={saveOrgUnitTreeDraft}
-                onPageSizeChange={(pageSize): void => {
-                  setOrgUnitPage(1);
-                  setOrgUnitPageSize(pageSize);
-                }}
-                onSearchTextChange={updateOrgUnitSearchText}
-                onTypeFilterChange={updateOrgUnitTypeFilter}
-                orgUnits={orgUnits}
-                page={orgUnitPage}
-                pageSize={orgUnitPageSize}
-                rows={orgRows}
-                searchText={orgUnitSearchText}
-                saving={saving}
-                total={orgUnitTotalCount}
-                typeFilter={orgUnitTypeFilter}
-                viewMode={orgUnitViewMode}
-                onViewModeChange={setOrgUnitViewMode}
-              />
-            ) : null}
-            {activeTab === 'POSITIONS' ? (
-              <PositionPanel
-                actions={positionActions}
-                loading={loading}
-                onCreate={(): void =>
-                  setPositionModal({ record: null, type: 'CREATE' })
-                }
-                onPageChange={setPositionPage}
-                onPageSizeChange={(pageSize): void => {
-                  setPositionPage(1);
-                  setPositionPageSize(pageSize);
-                }}
-                onSearchTextChange={updatePositionSearchText}
-                page={positionPage}
-                pageSize={positionPageSize}
-                rows={positionRows}
-                searchText={positionSearchText}
-                total={positionTotalCount}
-              />
-            ) : null}
-            {activeTab === 'MEMBERSHIPS' ? (
-              <MembershipPanel
-                actions={membershipActions}
-                loading={loading}
-                onCreate={(): void =>
-                  setMembershipModal({ record: null, type: 'CREATE' })
-                }
-                onActiveFilterChange={updateMembershipActiveFilter}
-                onOrgUnitFilterChange={updateMembershipOrgUnitFilter}
-                onPageChange={setMembershipPage}
-                onPageSizeChange={(pageSize): void => {
-                  setMembershipPage(1);
-                  setMembershipPageSize(pageSize);
-                }}
-                onPositionFilterChange={updateMembershipPositionFilter}
-                orgUnitFilter={membershipOrgUnitFilter}
-                orgUnits={orgUnits}
-                page={membershipPage}
-                pageSize={membershipPageSize}
-                positionFilter={membershipPositionFilter}
-                positions={positions}
-                rows={membershipRows}
-                statusFilter={membershipActiveFilter}
-                total={membershipTotalCount}
-              />
-            ) : null}
-            {activeTab === 'MANAGERS' ? (
-              <ManagerPanel
-                actions={managerActions}
-                loading={loading}
-                onCreate={(): void =>
-                  setManagerModal({ record: null, type: 'CREATE' })
-                }
-                onActiveFilterChange={updateManagerActiveFilter}
-                onPageChange={setManagerPage}
-                onPageSizeChange={(pageSize): void => {
-                  setManagerPage(1);
-                  setManagerPageSize(pageSize);
-                }}
-                onScopeTypeFilterChange={updateManagerScopeTypeFilter}
-                page={managerPage}
-                pageSize={managerPageSize}
-                rows={managerRows}
-                scopeTypeFilter={managerScopeTypeFilter}
-                statusFilter={managerActiveFilter}
-                total={managerTotalCount}
-              />
-            ) : null}
-          </Section>
-        </SectionGroup>
-
-        <OrgUnitModal
-          modal={orgModal}
-          onClose={(): void => setOrgModal(null)}
-          onSubmit={(input): Promise<void> =>
-            runMutation(async (): Promise<void> => {
-              if (orgModal?.type === 'EDIT' && orgModal.record) {
-                await updateOrgUnit({
-                  ...input,
-                  id: orgModal.record.id,
-                  metadataJson: null,
-                });
-              } else {
-                await createOrgUnit({
-                  code: input.code ?? '',
-                  metadataJson: '{}',
-                  name: input.name ?? '',
-                  parentId: input.parentId,
-                  type: input.type ?? 'DEPARTMENT',
-                });
-              }
-              setOrgModal(null);
-            })
+      <SectionGroup>
+        <Section
+          tab={
+            <Tab
+              activeKey={activeTab}
+              onChange={(key): void => setActiveTab(readAdminOrgTab(key))}
+            >
+              <TabItem key="ORG_UNITS">組織樹</TabItem>
+              <TabItem key="POSITIONS">職位</TabItem>
+              <TabItem key="MEMBERSHIPS">會員歸屬</TabItem>
+              <TabItem key="MANAGERS">簽核主管</TabItem>
+            </Tab>
           }
-          orgUnits={orgUnits}
-          saving={saving}
-        />
-        <PositionModal
-          modal={positionModal}
-          onClose={(): void => setPositionModal(null)}
-          onSubmit={(input): Promise<void> =>
-            runMutation(async (): Promise<void> => {
-              if (positionModal?.type === 'EDIT' && positionModal.record) {
-                await updatePosition({
-                  ...input,
-                  id: positionModal.record.id,
-                  metadataJson: null,
-                });
-              } else {
-                await createPosition({
-                  code: input.code ?? '',
-                  level: input.level ?? 0,
-                  metadataJson: '{}',
-                  name: input.name ?? '',
-                });
-              }
-              setPositionModal(null);
-            })
-          }
-          saving={saving}
-        />
-        <MembershipModal
-          membersById={membersById}
-          modal={membershipModal}
-          onClose={(): void => setMembershipModal(null)}
-          onSubmit={(input): Promise<void> =>
-            runMutation(async (): Promise<void> => {
-              if (membershipModal?.type === 'EDIT' && membershipModal.record) {
-                await updateMembership({
-                  ...input,
-                  id: membershipModal.record.id,
-                });
-              } else {
-                await createMembership({
-                  effectiveFrom: input.effectiveFrom ?? today(),
-                  effectiveTo: input.effectiveTo,
-                  isPrimary: input.isPrimary ?? false,
-                  memberId: input.memberId ?? '',
-                  orgUnitId: input.orgUnitId ?? '',
-                  positionId: input.positionId,
-                });
-              }
-              setMembershipModal(null);
-            })
-          }
-          orgUnits={orgUnits}
-          positions={positions}
-          saving={saving}
-        />
-        <ManagerResolutionModal
-          membersById={membersById}
-          modal={managerModal}
-          onClose={(): void => setManagerModal(null)}
-          onSubmit={(input): Promise<void> =>
-            runMutation(async (): Promise<void> => {
-              if (managerModal?.type === 'EDIT' && managerModal.record) {
-                await updateManagerResolution({
-                  ...input,
-                  id: managerModal.record.id,
-                });
-              } else {
-                await createManagerResolution({
-                  effectiveFrom: input.effectiveFrom ?? today(),
-                  effectiveTo: input.effectiveTo,
-                  managerMemberId: input.managerMemberId ?? '',
-                  priority: input.priority ?? 0,
-                  scopeId: input.scopeId ?? '',
-                  scopeType: input.scopeType ?? 'MEMBER',
-                });
-              }
-              setManagerModal(null);
-            })
-          }
-          orgUnits={orgUnits}
-          positions={positions}
-          saving={saving}
-        />
-        <Modal
-          cancelText="取消"
-          confirmButtonProps={{ variant: 'destructive-primary' }}
-          confirmText={visibleDeleteConfirmation?.confirmText ?? ''}
-          loading={saving}
-          modalStatusType="error"
-          modalType="standard"
-          onCancel={closeDeleteConfirmation}
-          onClose={closeDeleteConfirmation}
-          onConfirm={(): void => void handleConfirmDelete()}
-          open={Boolean(deleteConfirmation)}
-          showModalFooter
-          showModalHeader
-          size="regular"
-          supportingText="此操作會立即套用，請確認後再繼續。"
-          title={visibleDeleteConfirmation?.title ?? ''}
         >
-          <Typography color="text-neutral" variant="body">
-            {visibleDeleteConfirmation?.description ?? ''}
-          </Typography>
-        </Modal>
-      </>
+          {error ? (
+            <Typography color="text-error" variant="body">
+              {error}
+            </Typography>
+          ) : null}
+          {activeTab === 'ORG_UNITS' ? (
+            <OrgUnitPanel
+              actions={orgActions}
+              loading={loading}
+              onCreate={(): void =>
+                setOrgModal({ parentId: null, record: null, type: 'CREATE' })
+              }
+              onCreateChild={(parentId): void =>
+                setOrgModal({ parentId, record: null, type: 'CREATE' })
+              }
+              onEditOrgUnit={(record): void =>
+                setOrgModal({ record, type: 'EDIT' })
+              }
+              onPageChange={setOrgUnitPage}
+              onSaveDraft={saveOrgUnitTreeDraft}
+              onPageSizeChange={(pageSize): void => {
+                setOrgUnitPage(1);
+                setOrgUnitPageSize(pageSize);
+              }}
+              onSearchTextChange={updateOrgUnitSearchText}
+              onTypeFilterChange={updateOrgUnitTypeFilter}
+              orgUnits={orgUnits}
+              page={orgUnitPage}
+              pageSize={orgUnitPageSize}
+              rows={orgRows}
+              searchText={orgUnitSearchText}
+              saving={saving}
+              total={orgUnitTotalCount}
+              typeFilter={orgUnitTypeFilter}
+              viewMode={orgUnitViewMode}
+              onViewModeChange={setOrgUnitViewMode}
+            />
+          ) : null}
+          {activeTab === 'POSITIONS' ? (
+            <PositionPanel
+              actions={positionActions}
+              loading={loading}
+              onCreate={(): void =>
+                setPositionModal({ record: null, type: 'CREATE' })
+              }
+              onPageChange={setPositionPage}
+              onPageSizeChange={(pageSize): void => {
+                setPositionPage(1);
+                setPositionPageSize(pageSize);
+              }}
+              onSearchTextChange={updatePositionSearchText}
+              page={positionPage}
+              pageSize={positionPageSize}
+              rows={positionRows}
+              searchText={positionSearchText}
+              total={positionTotalCount}
+            />
+          ) : null}
+          {activeTab === 'MEMBERSHIPS' ? (
+            <MembershipPanel
+              actions={membershipActions}
+              loading={loading}
+              onCreate={(): void =>
+                setMembershipModal({ record: null, type: 'CREATE' })
+              }
+              onActiveFilterChange={updateMembershipActiveFilter}
+              onOrgUnitFilterChange={updateMembershipOrgUnitFilter}
+              onPageChange={setMembershipPage}
+              onPageSizeChange={(pageSize): void => {
+                setMembershipPage(1);
+                setMembershipPageSize(pageSize);
+              }}
+              onPositionFilterChange={updateMembershipPositionFilter}
+              orgUnitFilter={membershipOrgUnitFilter}
+              orgUnits={orgUnits}
+              page={membershipPage}
+              pageSize={membershipPageSize}
+              positionFilter={membershipPositionFilter}
+              positions={positions}
+              rows={membershipRows}
+              statusFilter={membershipActiveFilter}
+              total={membershipTotalCount}
+            />
+          ) : null}
+          {activeTab === 'MANAGERS' ? (
+            <ManagerPanel
+              actions={managerActions}
+              loading={loading}
+              onCreate={(): void =>
+                setManagerModal({ record: null, type: 'CREATE' })
+              }
+              onActiveFilterChange={updateManagerActiveFilter}
+              onPageChange={setManagerPage}
+              onPageSizeChange={(pageSize): void => {
+                setManagerPage(1);
+                setManagerPageSize(pageSize);
+              }}
+              onScopeTypeFilterChange={updateManagerScopeTypeFilter}
+              page={managerPage}
+              pageSize={managerPageSize}
+              rows={managerRows}
+              scopeTypeFilter={managerScopeTypeFilter}
+              statusFilter={managerActiveFilter}
+              total={managerTotalCount}
+            />
+          ) : null}
+        </Section>
+      </SectionGroup>
+
+      <OrgUnitModal
+        modal={orgModal}
+        onClose={(): void => setOrgModal(null)}
+        onSubmit={(input): Promise<void> =>
+          runMutation(async (): Promise<void> => {
+            if (orgModal?.type === 'EDIT' && orgModal.record) {
+              await updateOrgUnit({
+                ...input,
+                id: orgModal.record.id,
+                metadataJson: null,
+              });
+            } else {
+              await createOrgUnit({
+                code: input.code ?? '',
+                metadataJson: '{}',
+                name: input.name ?? '',
+                parentId: input.parentId,
+                type: input.type ?? 'DEPARTMENT',
+              });
+            }
+            setOrgModal(null);
+          })
+        }
+        orgUnits={orgUnits}
+        saving={saving}
+      />
+      <PositionModal
+        modal={positionModal}
+        onClose={(): void => setPositionModal(null)}
+        onSubmit={(input): Promise<void> =>
+          runMutation(async (): Promise<void> => {
+            if (positionModal?.type === 'EDIT' && positionModal.record) {
+              await updatePosition({
+                ...input,
+                id: positionModal.record.id,
+                metadataJson: null,
+              });
+            } else {
+              await createPosition({
+                code: input.code ?? '',
+                level: input.level ?? 0,
+                metadataJson: '{}',
+                name: input.name ?? '',
+              });
+            }
+            setPositionModal(null);
+          })
+        }
+        saving={saving}
+      />
+      <MembershipModal
+        membersById={membersById}
+        modal={membershipModal}
+        onClose={(): void => setMembershipModal(null)}
+        onSubmit={(input): Promise<void> =>
+          runMutation(async (): Promise<void> => {
+            if (membershipModal?.type === 'EDIT' && membershipModal.record) {
+              await updateMembership({
+                ...input,
+                id: membershipModal.record.id,
+              });
+            } else {
+              await createMembership({
+                effectiveFrom: input.effectiveFrom ?? today(),
+                effectiveTo: input.effectiveTo,
+                isPrimary: input.isPrimary ?? false,
+                memberId: input.memberId ?? '',
+                orgUnitId: input.orgUnitId ?? '',
+                positionId: input.positionId,
+              });
+            }
+            setMembershipModal(null);
+          })
+        }
+        orgUnits={orgUnits}
+        positions={positions}
+        saving={saving}
+      />
+      <ManagerResolutionModal
+        membersById={membersById}
+        modal={managerModal}
+        onClose={(): void => setManagerModal(null)}
+        onSubmit={(input): Promise<void> =>
+          runMutation(async (): Promise<void> => {
+            if (managerModal?.type === 'EDIT' && managerModal.record) {
+              await updateManagerResolution({
+                ...input,
+                id: managerModal.record.id,
+              });
+            } else {
+              await createManagerResolution({
+                effectiveFrom: input.effectiveFrom ?? today(),
+                effectiveTo: input.effectiveTo,
+                managerMemberId: input.managerMemberId ?? '',
+                priority: input.priority ?? DEFAULT_MANAGER_PRIORITY,
+                scopeId: input.scopeId ?? '',
+                scopeType: input.scopeType ?? 'MEMBER',
+              });
+            }
+            setManagerModal(null);
+          })
+        }
+        orgUnits={orgUnits}
+        positions={positions}
+        saving={saving}
+      />
+      <Modal
+        cancelText="取消"
+        confirmButtonProps={{ variant: 'destructive-primary' }}
+        confirmText={visibleDeleteConfirmation?.confirmText ?? ''}
+        loading={saving}
+        modalStatusType="error"
+        modalType="standard"
+        onCancel={closeDeleteConfirmation}
+        onClose={closeDeleteConfirmation}
+        onConfirm={(): void => void handleConfirmDelete()}
+        open={Boolean(deleteConfirmation)}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText="此操作會立即套用，請確認後再繼續。"
+        title={visibleDeleteConfirmation?.title ?? ''}
+      >
+        <Typography color="text-neutral" variant="body">
+          {visibleDeleteConfirmation?.description ?? ''}
+        </Typography>
+      </Modal>
+    </>
   );
 }
 
@@ -2022,7 +2024,7 @@ function ManagerResolutionModal({
   const [effectiveFrom, setEffectiveFrom] = useState(today());
   const [effectiveTo, setEffectiveTo] = useState('');
   const [manager, setManager] = useState<MemberOption | null>(null);
-  const [priority, setPriority] = useState('0');
+  const [priority, setPriority] = useState(String(DEFAULT_MANAGER_PRIORITY));
   const [scopeMember, setScopeMember] = useState<MemberOption | null>(null);
   const [scopeOrgUnit, setScopeOrgUnit] = useState<OrgUnitOption | null>(null);
   const [scopePosition, setScopePosition] = useState<PositionOption | null>(
@@ -2048,7 +2050,7 @@ function ManagerResolutionModal({
         readMemberOption,
       ),
     );
-    setPriority(String(record?.priority ?? 0));
+    setPriority(String(record?.priority ?? DEFAULT_MANAGER_PRIORITY));
     setScopeMember(
       nextScopeType.id === 'MEMBER'
         ? readNullableOption(
@@ -2175,10 +2177,11 @@ function ManagerResolutionModal({
           </Typography>
         ) : null}
         <OrgModalTextField
+          hintText="數字越大越優先，同一位成員命中多條規則時只會採用最高的那一層。建議：指定到人 200、部門主管 100、全公司通用的墊底規則 10。"
           label="優先序"
           name="managerPriority"
           onChange={setPriority}
-          placeholder="例如 10"
+          placeholder="例如 100"
           value={priority}
         />
         <DateField
@@ -2201,12 +2204,14 @@ function ManagerResolutionModal({
 }
 
 function OrgModalTextField({
+  hintText,
   label,
   name,
   onChange,
   placeholder,
   value,
 }: {
+  readonly hintText?: string;
   readonly label: string;
   readonly name: string;
   readonly onChange: (value: string) => void;
@@ -2214,7 +2219,7 @@ function OrgModalTextField({
   readonly value: string;
 }): ReactElement {
   return (
-    <BPMFormField label={label} name={name}>
+    <BPMFormField hintText={hintText} label={label} name={name}>
       <Input
         fullWidth
         name={name}

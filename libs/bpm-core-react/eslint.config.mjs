@@ -8,6 +8,7 @@ export default [
       '@nx/dependency-checks': [
         'error',
         {
+          ignoredDependencies: ['react-dom'],
           ignoredFiles: [
             '{projectRoot}/eslint.config.{js,cjs,mjs,ts,cts,mts}',
             '{projectRoot}/vite.config.ts',

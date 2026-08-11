@@ -1,7 +1,7 @@
 'use client';
 
 import type { ChangeEvent, ReactElement } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Filter,
   FilterArea,
@@ -18,7 +18,10 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import { resolveMembers, type MemberProfileRecord } from '@rytass/bpm-core-client';
+import {
+  resolveMembers,
+  type MemberProfileRecord,
+} from '@rytass/bpm-core-client';
 import {
   listApprovalInstancesPage,
   readApprovalInstanceCaseTitle,
@@ -96,8 +99,11 @@ export function ApprovalInstanceListPage({
   const [stateFilter, setStateFilter] = useState<StateFilterOption>(
     readStateFilterOption(defaultState),
   );
+  const refreshRequestIdRef = useRef(0);
 
   const refreshInstances = useCallback(async (): Promise<void> => {
+    const requestId = refreshRequestIdRef.current + 1;
+    refreshRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
 
@@ -111,12 +117,20 @@ export function ApprovalInstanceListPage({
         view,
       });
 
+      if (requestId !== refreshRequestIdRef.current) {
+        return;
+      }
+
       setRows(result.instances.map(readApprovalInstanceRow));
       setInstanceTotalCount(result.totalCount);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      if (requestId === refreshRequestIdRef.current) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [instancePage, instancePageSize, searchText, stateFilter, view]);
 

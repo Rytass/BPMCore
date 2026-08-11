@@ -71,8 +71,8 @@
 
 **Frontend**
 
-- [x] `/forms` 列表頁
-- [x] `/forms/[id]/builder` 表單設計器
+- [x] `/templates/compose` 表單 + 流程建立 wizard（取代 standalone `/forms` 入口）
+- [x] Wizard 內嵌表單設計器（`FormBuilderView`）
   - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file / textarea）
   - 屬性面板（標籤、必填、預設值）
   - 條件邏輯（顯示/必填/唯讀，先用簡單表達式輸入框）
@@ -302,6 +302,21 @@
 - [ ] 試運行 2–3 個真實流程（請假、採購、合約）
 - [ ] 修正 bug、收斂體驗
 - [ ] 寫使用者文件（IT 設計者、一般使用者）
+
+---
+
+## 已核准的後續規劃
+
+- [ ] 表單 Select／AutoComplete／Radio／Checkbox 支援宿主註冊的版本化 DataSource。
+- [ ] 完成 server-side resolve、label snapshot、退回編輯與重新送出一致性。
+- [ ] 完成 Designer Catalog／Preview、parameter bindings、發布 lint 與真實 wrapper-host e2e。
+
+權威架構與執行順序分別見：
+
+- [14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
+- [15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
+
+以上項目目前為 **Planned**，不得因只有 schema、mock 或 unit test 就標記完成。
 
 ---
 

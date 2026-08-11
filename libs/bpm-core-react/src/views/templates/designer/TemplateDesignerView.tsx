@@ -77,6 +77,7 @@ import {
 import {
   ApproverResolver,
   ApproverResolverFallback,
+  DecisionPolicy,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -721,7 +722,7 @@ export function TemplateDesignerView({
     initialState: {
       definition:
         embedded && initialWorkflowDefinition != null
-          ? initialWorkflowDefinition
+          ? normalizeDesignerWorkflowDefinition(initialWorkflowDefinition)
           : readFallbackWorkflowDefinition(),
       editingEdgeId: null,
       formDefinitionVersionId: null,
@@ -1117,7 +1118,9 @@ export function TemplateDesignerView({
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
       const nextWorkflowDefinition =
-        sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition();
+        normalizeDesignerWorkflowDefinition(
+          sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition(),
+        );
       const nextFormDefinitionVersionId =
         sourceVersion?.formDefinitionVersionId ??
         nextRecord.formVersions[0]?.id ??
@@ -1492,6 +1495,24 @@ export function TemplateDesignerView({
       nodeId: selectedNode.id,
       sla,
       type: 'setUserTaskSla',
+    });
+  }
+
+  function updateUserTaskOptions(
+    options: Readonly<{
+      allowAddSigner?: boolean;
+      allowReject?: boolean;
+      allowTransfer?: boolean;
+    }>,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      ...options,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskOptions',
     });
   }
 
@@ -2197,10 +2218,12 @@ export function TemplateDesignerView({
   ): ReactElement {
     const resolver = node.data.approverResolver;
     const resolverMode = readApproverResolverMode(resolver.type);
-    const selectedMember =
+    const selectedMembers =
       resolver.type === 'DIRECT'
-        ? readPrimaryMemberOption(resolver.memberIds, memberOptions)
-        : null;
+        ? resolver.memberIds.map((memberId) =>
+            readMemberSelectOption(memberOptions, memberId),
+          )
+        : [];
     const selectedOrgUnit =
       resolver.type === 'ORG_UNIT_MANAGER' ||
       resolver.type === 'ORG_UNIT_MEMBER' ||
@@ -2264,7 +2287,12 @@ export function TemplateDesignerView({
           />
         </BPMFormField>
         {resolver.type === 'DIRECT' ? (
-          <BPMFormField label="簽核者" name="memberId" required>
+          <BPMFormField
+            hintText={readDecisionPolicyHint(node.data.decisionPolicy)}
+            label="簽核者"
+            name="memberId"
+            required
+          >
             <AutoComplete
               asyncData
               disabledOptionsFilter
@@ -2277,10 +2305,10 @@ export function TemplateDesignerView({
               }}
               loading={memberLoading}
               loadingText="搜尋成員中..."
-              mode="single"
-              onChange={(option): void =>
+              mode="multiple"
+              onChange={(options): void =>
                 updateUserTaskResolver({
-                  memberIds: option?.id ? [option.id] : [],
+                  memberIds: options.map((option) => option.id),
                   type: 'DIRECT',
                 })
               }
@@ -2293,7 +2321,7 @@ export function TemplateDesignerView({
               options={[...memberOptions]}
               placeholder="搜尋姓名或信箱"
               searchDebounceTime={300}
-              value={selectedMember}
+              value={selectedMembers}
             />
           </BPMFormField>
         ) : null}
@@ -2365,6 +2393,25 @@ export function TemplateDesignerView({
         {resolver.type === 'ORG_MANAGER' ||
         resolver.type === 'ORG_UNIT_MANAGER' ? (
           <>
+            <BPMFormField
+              hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
+              label="只取最近一層主管"
+              name="preferClosestOrgUnit"
+            >
+              <Toggle
+                checked={Boolean(resolver.preferClosestOrgUnit)}
+                inputProps={{
+                  id: 'preferClosestOrgUnit',
+                  name: 'preferClosestOrgUnit',
+                }}
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateUserTaskResolver({
+                    ...resolver,
+                    preferClosestOrgUnit: event.target.checked,
+                  })
+                }
+              />
+            </BPMFormField>
             <BPMFormField
               hintText="預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。"
               label="無主管時"
@@ -2718,6 +2765,45 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
+        <BPMFormField
+          hintText="關閉後，簽核者在此關卡看不到「拒絕」按鈕。"
+          label="允許拒絕"
+          name="allowReject"
+        >
+          <Toggle
+            checked={node.data.allowReject}
+            inputProps={{ id: 'allowReject', name: 'allowReject' }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskOptions({ allowReject: event.target.checked })
+            }
+          />
+        </BPMFormField>
+        <BPMFormField
+          hintText="關閉後，簽核者無法把此關卡的任務轉派給其他人。"
+          label="允許轉派"
+          name="allowTransfer"
+        >
+          <Toggle
+            checked={node.data.allowTransfer}
+            inputProps={{ id: 'allowTransfer', name: 'allowTransfer' }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskOptions({ allowTransfer: event.target.checked })
+            }
+          />
+        </BPMFormField>
+        <BPMFormField
+          hintText="開啟後，簽核者可在此關卡臨時加入其他簽核人；會簽為平行處理，加簽則需等加入者簽完才往下。"
+          label="允許加簽"
+          name="allowAddSigner"
+        >
+          <Toggle
+            checked={node.data.allowAddSigner}
+            inputProps={{ id: 'allowAddSigner', name: 'allowAddSigner' }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskOptions({ allowAddSigner: event.target.checked })
+            }
+          />
+        </BPMFormField>
       </>
     );
   }
@@ -3362,9 +3448,49 @@ function applyWorkflowNodeTriggerMode(
 function normalizeDesignerWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinition {
+  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(definition);
+
   return normalizeSingleIncomingTriggerModes(
-    removeAsyncNotifyOutgoingEdges(definition),
+    normalizeUserTaskPolicies(withoutAsyncNotifyEdges),
   );
+}
+
+function normalizeUserTaskPolicies(
+  definition: WorkflowDefinition,
+): WorkflowDefinition {
+  const nodes = definition.nodes.map((node) => {
+    if (node.type !== 'userTask') {
+      return node;
+    }
+
+    const allowAddSigner = node.data.allowAddSigner ?? false;
+    const allowReject = node.data.allowReject ?? true;
+    const allowTransfer = node.data.allowTransfer ?? true;
+
+    if (
+      node.data.allowAddSigner === allowAddSigner &&
+      node.data.allowReject === allowReject &&
+      node.data.allowTransfer === allowTransfer
+    ) {
+      return node;
+    }
+
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        allowAddSigner,
+        allowReject,
+        allowTransfer,
+      },
+    };
+  });
+
+  const hasNodeChanges = nodes.some(
+    (node, index) => node !== definition.nodes[index],
+  );
+
+  return hasNodeChanges ? { ...definition, nodes } : definition;
 }
 
 function removeAsyncNotifyOutgoingEdges(
@@ -3495,6 +3621,25 @@ function readReturnResubmitStrategy(
   value: string | null,
 ): ReturnResubmitStrategy {
   return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
+}
+
+function readDecisionPolicyHint(policy: DecisionPolicy | undefined): string {
+  if (!policy || policy.type === 'SINGLE' || policy.type === 'PARALLEL_ANY') {
+    return '可指定多位；多位時所有人都會收到待辦，任一人同意即可通過。';
+  }
+
+  if (policy.type === 'PARALLEL_ALL') {
+    return '可指定多位；多位時所有人都會收到待辦，全部同意後才會通過。';
+  }
+
+  if (policy.type === 'SEQUENTIAL') {
+    return '可指定多位；所有人會同時收到待辦，需全部同意後才會通過。';
+  }
+
+  const thresholdUnit =
+    policy.thresholdType === 'PERCENTAGE' ? '%' : ' 位簽核者';
+
+  return `可指定多位；需達到 ${policy.threshold}${thresholdUnit} 才會通過。`;
 }
 
 function readSlaDurationUnit(value: string | null): SlaDurationUnit {
@@ -4038,15 +4183,6 @@ function readMemberSelectOption(
     options.find((option) => option.memberId === memberId) ??
     readFallbackMemberSelectOption(memberId)
   );
-}
-
-function readPrimaryMemberOption(
-  memberIds: readonly string[],
-  memberOptions: readonly MemberSelectOption[],
-): MemberSelectOption | null {
-  const memberId = memberIds[0];
-
-  return memberId ? readMemberSelectOption(memberOptions, memberId) : null;
 }
 
 function readSelectedOrgUnitOption(

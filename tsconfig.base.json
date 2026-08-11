@@ -227,12 +227,6 @@
       "@rytass/bpm-core-react/pages/templates/versions": [
         "./libs/bpm-core-react/src/pages/templates/versions/index.tsx"
       ],
-      "@rytass/bpm-core-react/pages/forms": [
-        "./libs/bpm-core-react/src/pages/forms/index.tsx"
-      ],
-      "@rytass/bpm-core-react/pages/forms/builder": [
-        "./libs/bpm-core-react/src/pages/forms/builder/index.tsx"
-      ],
       "@rytass/bpm-core-react/pages/settings/notifications": [
         "./libs/bpm-core-react/src/pages/settings/notifications/index.tsx"
       ],

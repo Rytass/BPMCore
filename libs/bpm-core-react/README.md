@@ -190,11 +190,10 @@ function createPrefixedRoutes(prefix: string): BPMRoutes {
       ? `${trim}/instances/new?templateId=${encodeURIComponent(templateId)}`
       : `${trim}/instances/new`,
     templates:             () => `${trim}/templates`,
+    templateCompose:       () => `${trim}/templates/compose`,
     templateDesigner:   (id) => `${trim}/templates/${id}/designer`,
     templateVersions:   (id) => `${trim}/templates/${id}/versions`,
     templateCategories:    () => `${trim}/templates/categories`,
-    forms:                 () => `${trim}/forms`,
-    formBuilder:        (id) => `${trim}/forms/${id}/builder`,
     notificationSettings:  () => `${trim}/settings/notifications`,
     adminOrgs:             () => `${trim}/admin/orgs`,
     adminUsers:            () => `${trim}/admin/users`,

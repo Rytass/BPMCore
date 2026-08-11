@@ -1048,6 +1048,65 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('blocks rejection when the workflow node disables it', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowReject: false,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.REJECTED,
+        comment: '不符合條件',
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      }),
+    ).rejects.toThrow('Workflow node task_finance does not allow rejection');
+  });
+
+  it('blocks transfer when the workflow node disables it', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowTransfer: false,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+        transferToMemberId: 'member-manager',
+      }),
+    ).rejects.toThrow('Workflow node task_finance does not allow transfer');
+  });
+
   it('accepts a return with a comment when requireComment is on', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -1166,7 +1225,9 @@ describe('WorkflowEngineService', () => {
         status: WorkflowTokenStatusEnum.WAITING,
       }),
       formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
-      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowTransfer: false,
+      }),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
 
@@ -3470,6 +3531,8 @@ function createOrgUnit(value: Partial<OrgUnitEntity>): OrgUnitEntity {
 
 function createLinearUserTaskWorkflow({
   allowAddSigner = false,
+  allowReject = true,
+  allowTransfer = true,
   approverResolver = {
     memberIds: ['member-finance'],
     type: 'DIRECT',
@@ -3481,6 +3544,8 @@ function createLinearUserTaskWorkflow({
   slaDuration = null,
 }: {
   readonly allowAddSigner?: boolean;
+  readonly allowReject?: boolean;
+  readonly allowTransfer?: boolean;
   readonly approverResolver?: ApproverResolver;
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
@@ -3513,8 +3578,8 @@ function createLinearUserTaskWorkflow({
       {
         data: {
           allowAddSigner,
-          allowReject: true,
-          allowTransfer: false,
+          allowReject,
+          allowTransfer,
           approverResolver,
           decisionPolicy: { type: 'SINGLE' },
           label: '財務簽核',
@@ -3849,7 +3914,7 @@ function createUserTaskNode(
     data: {
       allowAddSigner: false,
       allowReject: true,
-      allowTransfer: false,
+      allowTransfer: true,
       approverResolver: {
         memberIds: [memberId],
         type: 'DIRECT',

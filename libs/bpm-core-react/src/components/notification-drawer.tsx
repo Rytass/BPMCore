@@ -15,6 +15,7 @@ import Drawer from '@mezzanine-ui/react/Drawer';
 import Modal from '@mezzanine-ui/react/Modal';
 import NotificationCenter from '@mezzanine-ui/react/NotificationCenter';
 import Textarea from '@mezzanine-ui/react/Textarea';
+import { Typography } from '@mezzanine-ui/react';
 import type { NotificationSeverity } from '@mezzanine-ui/core/notification-center';
 import type { DropdownOption } from '@mezzanine-ui/core/dropdown/dropdown';
 import {
@@ -31,6 +32,7 @@ import { useNotificationDrawer } from '../lib/notification-drawer-provider';
 import { useNotificationUnread } from '../lib/notification-unread-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
 import { useBPMRoutes } from '../lib/routes-config';
+import { BPMFormField } from './bpm-form-field';
 
 type FilterValue = 'all' | 'read' | 'unread';
 
@@ -65,11 +67,13 @@ type NotificationAction = 'approve' | 'reject' | 'view' | 'read';
 function buildNotificationOptions(
   record: NotificationRecord,
 ): readonly DropdownOption[] {
+  const canReject = readNotificationAllowReject(record) !== false;
+
   return [
     ...(record.actionable
       ? ([
           { id: 'approve', name: '同意' },
-          { id: 'reject', name: '拒絕' },
+          ...(canReject ? [{ id: 'reject', name: '拒絕' }] : []),
         ] satisfies DropdownOption[])
       : []),
     ...(record.instanceId
@@ -133,17 +137,22 @@ export function NotificationDrawer(): ReactElement | null {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterValue>('all');
+  const [approveTarget, setApproveTarget] = useState<NotificationRecord | null>(
+    null,
+  );
+  const [approveComment, setApproveComment] = useState('');
   const [rejectTarget, setRejectTarget] = useState<NotificationRecord | null>(
     null,
   );
   const [rejectReason, setRejectReason] = useState('');
   const [deciding, setDeciding] = useState(false);
 
+  const trimmedApproveComment = approveComment.trim();
   const trimmedRejectReason = rejectReason.trim();
 
   const loadPage = useCallback(
-    async (nextPage: number, append: boolean): Promise<void> => {
-      if (!currentMemberId) return;
+    async (nextPage: number, append: boolean): Promise<boolean> => {
+      if (!currentMemberId) return false;
       setLoading(true);
       setError(null);
       try {
@@ -159,8 +168,10 @@ export function NotificationDrawer(): ReactElement | null {
         setTotalCount(result.totalCount);
         setPage(nextPage);
         await refreshUnreadCount();
+        return true;
       } catch (e: unknown) {
         setError(readErrorMessage(e));
+        return false;
       } finally {
         setLoading(false);
       }
@@ -235,29 +246,48 @@ export function NotificationDrawer(): ReactElement | null {
     [close, currentMemberId, refreshUnreadCount, router, routes],
   );
 
-  const handleApprove = useCallback(
-    async (record: NotificationRecord): Promise<void> => {
-      if (!record.taskId || !currentMemberId || deciding) return;
-      setDeciding(true);
-      setError(null);
-      setNotice(null);
-      try {
-        await decideTask({
-          action: 'APPROVED',
-          comment: null,
-          decidedByMemberId: currentMemberId,
-          taskId: record.taskId,
-        });
-        setNotice(`已同意「${record.title}」。`);
-        await loadPage(1, false);
-      } catch (e: unknown) {
-        setError(readErrorMessage(e));
-      } finally {
-        setDeciding(false);
-      }
-    },
-    [currentMemberId, deciding, loadPage],
-  );
+  const openApproveModal = useCallback((record: NotificationRecord): void => {
+    setError(null);
+    setApproveTarget(record);
+    setApproveComment('');
+  }, []);
+
+  const closeApproveModal = useCallback((): void => {
+    if (deciding) return;
+    setApproveTarget(null);
+    setApproveComment('');
+  }, [deciding]);
+
+  const handleApproveConfirm = useCallback(async (): Promise<void> => {
+    const target = approveTarget;
+    if (!target?.taskId || !currentMemberId || deciding) return;
+    setDeciding(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await decideTask({
+        action: 'APPROVED',
+        comment: trimmedApproveComment || null,
+        decidedByMemberId: currentMemberId,
+        taskId: target.taskId,
+      });
+      const refreshed = await loadPage(1, false);
+      if (!refreshed) return;
+      setApproveTarget(null);
+      setApproveComment('');
+      setNotice(`已同意「${target.title}」。`);
+    } catch (e: unknown) {
+      setError(readErrorMessage(e));
+    } finally {
+      setDeciding(false);
+    }
+  }, [
+    approveTarget,
+    currentMemberId,
+    deciding,
+    loadPage,
+    trimmedApproveComment,
+  ]);
 
   const openRejectModal = useCallback((record: NotificationRecord): void => {
     setRejectTarget(record);
@@ -297,12 +327,12 @@ export function NotificationDrawer(): ReactElement | null {
   const handleBadgeSelect = useCallback(
     (record: NotificationRecord, option: DropdownOption): void => {
       const action = option.id as NotificationAction;
-      if (action === 'approve') void handleApprove(record);
+      if (action === 'approve') openApproveModal(record);
       else if (action === 'reject') openRejectModal(record);
       else if (action === 'view') void handleOpenInstance(record);
       else if (action === 'read') void handleMarkRead(record.id);
     },
-    [handleApprove, handleMarkRead, handleOpenInstance, openRejectModal],
+    [handleMarkRead, handleOpenInstance, openApproveModal, openRejectModal],
   );
 
   const handleCardActivate = useCallback(
@@ -342,22 +372,22 @@ export function NotificationDrawer(): ReactElement | null {
 
   const groupedRows = useMemo(
     (): ReadonlyArray<readonly [TimeGroup, readonly NotificationRecord[]]> => {
-      const now = new Date();
-      const buckets = TIME_GROUP_ORDER.reduce<
-        Record<TimeGroup, NotificationRecord[]>
-      >(
-        (accumulator, group) => {
-          accumulator[group] = [];
-          return accumulator;
-        },
-        { earlier: [], past7Days: [], today: [], yesterday: [] },
-      );
-      filteredRows.forEach((row): void => {
-        buckets[resolveTimeGroup(row.createdAt, now)].push(row);
-      });
-      return TIME_GROUP_ORDER.map(
-        (group) => [group, buckets[group]] as const,
-      ).filter(([, items]) => items.length > 0);
+    const now = new Date();
+    const buckets = TIME_GROUP_ORDER.reduce<
+      Record<TimeGroup, NotificationRecord[]>
+    >(
+      (accumulator, group) => {
+        accumulator[group] = [];
+        return accumulator;
+      },
+      { earlier: [], past7Days: [], today: [], yesterday: [] },
+    );
+    filteredRows.forEach((row): void => {
+      buckets[resolveTimeGroup(row.createdAt, now)].push(row);
+    });
+    return TIME_GROUP_ORDER.map(
+      (group) => [group, buckets[group]] as const,
+    ).filter(([, items]) => items.length > 0);
     },
     [filteredRows],
   );
@@ -368,116 +398,150 @@ export function NotificationDrawer(): ReactElement | null {
 
   return (
     <>
-    <Drawer
-      bottomGhostActionDisabled={bulkLoading || loading}
-      bottomGhostActionLoading={bulkLoading}
-      bottomGhostActionText="全部標為已讀"
-      bottomOnGhostActionClick={(): void => {
-        void handleMarkAllRead();
-      }}
-      bottomOnPrimaryActionClick={(): void => {
-        handleLoadMore();
-      }}
-      bottomPrimaryActionDisabled={!hasMore || loading}
-      bottomPrimaryActionLoading={loading && hasMore}
-      bottomPrimaryActionText={hasMore ? '載入更多' : '已顯示全部'}
-      contentKey={`${filter}:${rows.length}`}
-      filterAreaAllRadioLabel="全部"
-      filterAreaOnRadioChange={handleFilterChange}
-      filterAreaReadRadioLabel="已讀"
-      filterAreaShow
-      filterAreaUnreadRadioLabel="未讀"
-      filterAreaValue={filter}
-      headerTitle="通知中心"
-      isBottomDisplay
-      isHeaderDisplay
-      onClose={close}
-      open={isOpen}
-      size="medium"
-    >
-      <div role="list">
-        {error ? (
-          <p
-            role="alert"
-            style={{
-              color: 'var(--mzn-color-text-error, #d92d20)',
-              padding: '12px 16px',
-            }}
-          >
-            {error}
-          </p>
-        ) : null}
-        {notice ? (
-          <p
-            role="status"
-            style={{
-              color: 'var(--mzn-color-text-success, #079455)',
-              padding: '12px 16px',
-            }}
-          >
-            {notice}
-          </p>
-        ) : null}
-        {groupedRows.length === 0 ? (
-          <p
-            style={{
-              color: 'var(--mzn-color-text-secondary, #6b7280)',
-              padding: '24px 16px',
-              textAlign: 'center',
-            }}
-          >
-            {loading ? '載入中…' : '目前沒有通知'}
-          </p>
-        ) : null}
-        {groupedRows.map(([group, items]) => (
-          <Fragment key={group}>
-            {items.map((record, itemIndex) => {
-              const openable = record.instanceId !== null;
+      <Drawer
+        bottomGhostActionDisabled={bulkLoading || loading}
+        bottomGhostActionLoading={bulkLoading}
+        bottomGhostActionText="全部標為已讀"
+        bottomOnGhostActionClick={(): void => {
+          void handleMarkAllRead();
+        }}
+        bottomOnPrimaryActionClick={(): void => {
+          handleLoadMore();
+        }}
+        bottomPrimaryActionDisabled={!hasMore || loading}
+        bottomPrimaryActionLoading={loading && hasMore}
+        bottomPrimaryActionText={hasMore ? '載入更多' : '已顯示全部'}
+        contentKey={`${filter}:${rows.length}`}
+        filterAreaAllRadioLabel="全部"
+        filterAreaOnRadioChange={handleFilterChange}
+        filterAreaReadRadioLabel="已讀"
+        filterAreaShow
+        filterAreaUnreadRadioLabel="未讀"
+        filterAreaValue={filter}
+        headerTitle="通知中心"
+        isBottomDisplay
+        isHeaderDisplay
+        onClose={close}
+        open={isOpen}
+        size="medium"
+      >
+        <div role="list">
+          {error ? (
+            <p
+              role="alert"
+              style={{
+                color: 'var(--mzn-color-text-error, #d92d20)',
+                padding: '12px 16px',
+              }}
+            >
+              {error}
+            </p>
+          ) : null}
+          {notice ? (
+            <p
+              role="status"
+              style={{
+                color: 'var(--mzn-color-text-success, #079455)',
+                padding: '12px 16px',
+              }}
+            >
+              {notice}
+            </p>
+          ) : null}
+          {groupedRows.length === 0 ? (
+            <p
+              style={{
+                color: 'var(--mzn-color-text-secondary, #6b7280)',
+                padding: '24px 16px',
+                textAlign: 'center',
+              }}
+            >
+              {loading ? '載入中…' : '目前沒有通知'}
+            </p>
+          ) : null}
+          {groupedRows.map(([group, items]) => (
+            <Fragment key={group}>
+              {items.map((record, itemIndex) => {
+                const openable = record.instanceId !== null;
 
-              return (
-                <div
-                  key={record.id}
-                  onClick={
-                    openable
-                      ? (event: ReactMouseEvent<HTMLDivElement>): void => {
-                          handleCardActivate(record, event.target);
-                        }
-                      : undefined
-                  }
-                  onKeyDown={
-                    openable
-                      ? (event: ReactKeyboardEvent<HTMLDivElement>): void => {
-                          handleCardKeyDown(record, event);
-                        }
-                      : undefined
-                  }
-                  role={openable ? 'button' : undefined}
-                  style={openable ? { cursor: 'pointer' } : undefined}
-                  tabIndex={openable ? 0 : undefined}
-                >
-                  <NotificationCenter
-                    description={record.body}
-                    onBadgeSelect={(option: DropdownOption): void => {
-                      handleBadgeSelect(record, option);
-                    }}
-                    options={[...buildNotificationOptions(record)]}
-                    prependTips={
-                      itemIndex === 0 ? TIME_GROUP_LABEL[group] : undefined
+                return (
+                  <div
+                    key={record.id}
+                    onClick={
+                      openable
+                        ? (event: ReactMouseEvent<HTMLDivElement>): void => {
+                            handleCardActivate(record, event.target);
+                          }
+                        : undefined
                     }
-                    reference={record.id}
-                    severity={resolveSeverity(record)}
-                    showBadge={record.status !== 'READ'}
-                    timeStamp={record.createdAt}
-                    title={resolveDisplayTitle(record)}
-                    type="drawer"
-                  />
-                </div>
-              );
-            })}
-          </Fragment>
-        ))}
-      </div>
-    </Drawer>
+                    onKeyDown={
+                      openable
+                        ? (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+                            handleCardKeyDown(record, event);
+                          }
+                        : undefined
+                    }
+                    role={openable ? 'button' : undefined}
+                    style={openable ? { cursor: 'pointer' } : undefined}
+                    tabIndex={openable ? 0 : undefined}
+                  >
+                    <NotificationCenter
+                      description={record.body}
+                      onBadgeSelect={(option: DropdownOption): void => {
+                        handleBadgeSelect(record, option);
+                      }}
+                      options={[...buildNotificationOptions(record)]}
+                      prependTips={
+                        itemIndex === 0 ? TIME_GROUP_LABEL[group] : undefined
+                      }
+                      reference={record.id}
+                      severity={resolveSeverity(record)}
+                      showBadge={record.status !== 'READ'}
+                      timeStamp={record.createdAt}
+                      title={resolveDisplayTitle(record)}
+                      type="drawer"
+                    />
+                  </div>
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
+      </Drawer>
+      <Modal
+        cancelText="取消"
+        confirmText="送出同意"
+        loading={deciding}
+        modalType="standard"
+        onCancel={closeApproveModal}
+        onClose={closeApproveModal}
+        onConfirm={(): void => {
+          void handleApproveConfirm();
+        }}
+        open={approveTarget !== null}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText="可以留下同意說明，內容會記錄在簽核歷程；不填也可以直接送出。"
+        title="簽核意見"
+      >
+        {error ? (
+          <Typography color="text-error" role="alert" variant="body">
+            {error}
+          </Typography>
+        ) : null}
+        <BPMFormField label="簽核意見" name="notificationApproveComment">
+          <Textarea
+            autoFocus
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>): void => {
+              setApproveComment(event.target.value);
+            }}
+            placeholder="選填，例如補充核准條件或提醒事項"
+            rows={4}
+            value={approveComment}
+          />
+        </BPMFormField>
+      </Modal>
       <Modal
         cancelText="取消"
         confirmButtonProps={{
@@ -543,4 +607,24 @@ function resolveTimeGroup(value: string, now: Date): TimeGroup {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '發生未知錯誤';
+}
+
+function readNotificationAllowReject(
+  record: NotificationRecord,
+): boolean | null {
+  try {
+    const payload: unknown = JSON.parse(record.payloadJson);
+
+    if (isRecord(payload) && typeof payload.allowReject === 'boolean') {
+      return payload.allowReject;
+    }
+
+    return record.allowReject;
+  } catch {
+    return record.allowReject;
+  }
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

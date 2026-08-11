@@ -17,13 +17,13 @@
 
 import { useMemo, type ReactElement, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
+import type { CalendarLocale } from '@mezzanine-ui/react/moment';
+import { Providers as BPMProviders } from '../lib/providers';
 import {
-  Providers as BPMProviders,
   RouterAdapterProvider,
   defaultBrowserSearchParams,
   type RouterAdapter,
-} from '@rytass/bpm-core-react';
-import type { CalendarLocale } from '@mezzanine-ui/react/moment';
+} from '../lib/router-adapter';
 
 export interface BPMNextProvidersProps {
   readonly children: ReactNode;
