@@ -360,15 +360,20 @@ async function applyDelegation(
 ```typescript
 async function createTasksForNode(node, token) {
   const candidates = await resolveApprovers(node.approverResolver, ctx);
-  const assignee = candidates[0];
+  assert(candidates.length > 0, 'User Task must resolve one approver');
 
-  assert(assignee, 'User Task must resolve one primary approver');
-
-  await createTask({ token, assignee });
+  await createTask({
+    candidates,
+    decisionPolicy: node.decisionPolicy,
+    token,
+  });
 }
 ```
 
-設計器語意是「一個 User Task 代表一位主要簽核責任人」。多人簽核不放在同一個節點內用 `DecisionPolicy` 表示，而是拆成多個 User Task 節點與連線。
+一個 User Task 可以由 direct resolver 指定多位候選簽核者；runtime 會將候選者與
+`decisionPolicy` 一起寫入 task snapshot。`SINGLE`／`PARALLEL_ANY` 任一人同意
+即可完成，`PARALLEL_ALL`／`SEQUENTIAL` 需全部同意，`QUORUM` 則依門檻完成。
+目前 `SEQUENTIAL` 仍會同時建立所有候選人的待辦，因此不代表依序解鎖。
 
 例如：
 
