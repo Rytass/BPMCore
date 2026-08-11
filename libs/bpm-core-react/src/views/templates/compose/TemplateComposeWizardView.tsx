@@ -34,8 +34,9 @@ export interface TemplateComposeWizardViewProps {
 /**
  * Unified "form + flow" template creation wizard. Walks the user through
  * Step 0 表單設計 → Step 1 流程設計 → Step 2 檢視並發佈, then commits both
- * sides atomically through `composeApprovalTemplateWithForm`. Coexists with
- * the separate `/forms` and `/templates` entry points.
+ * sides atomically through `composeApprovalTemplateWithForm`. This is the
+ * template entry point; the form builder is intentionally controlled here
+ * instead of exposed as a standalone `/forms` page.
  */
 export function TemplateComposeWizardView({
   aiAssistantAvailable = false,

@@ -7,6 +7,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -108,7 +109,6 @@ const SCOPE_OPTIONS: readonly ScopeOption[] = [
   { id: 'TEMPLATE_LIST', name: '指定模板' },
 ];
 
-
 export function DelegationsView(): ReactElement {
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
@@ -139,8 +139,12 @@ export function DelegationsView(): ReactElement {
   const [templateOptions, setTemplateOptions] = useState<
     readonly TemplateOption[]
   >([]);
+  const refreshRequestIdRef = useRef(0);
 
   const refreshRules = useCallback(async (): Promise<void> => {
+    const requestId = refreshRequestIdRef.current + 1;
+    refreshRequestIdRef.current = requestId;
+
     if (!currentMemberId) {
       setLoading(false);
       return;
@@ -162,13 +166,19 @@ export function DelegationsView(): ReactElement {
         searchMembers(''),
       ]);
 
-      setRules(rulePageResult.rules);
-      setRuleTotalCount(rulePageResult.totalCount);
-      setMemberOptions(members.map(readMemberOption));
+      if (requestId === refreshRequestIdRef.current) {
+        setRules(rulePageResult.rules);
+        setRuleTotalCount(rulePageResult.totalCount);
+        setMemberOptions(members.map(readMemberOption));
+      }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      if (requestId === refreshRequestIdRef.current) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [currentMemberId, rulePage, rulePageSize, ruleStatus, scopeFilterType]);
 
@@ -396,205 +406,205 @@ export function DelegationsView(): ReactElement {
 
   return (
     <>
-        <PageHeader>
-          <ContentHeader
-            description="設定自己的簽核代理，讓指定期間內的新待簽任務自動交由代理人處理。"
-            title="我的代理"
-          >
-            <Button
-              icon={PlusIcon}
-              iconType="leading"
-              onClick={openCreateModal}
-              variant="base-primary"
-            >
-              建立代理
-            </Button>
-          </ContentHeader>
-        </PageHeader>
-
-        <SectionGroup>
-          <Section
-            filterArea={
-              <FilterArea className={styles.delegationFilterArea} size="sub">
-                <FilterLine>
-                  <Filter span={2}>
-                    <FormField
-                      fullWidth
-                      layout={FormFieldLayout.VERTICAL}
-                      name="scopeFilterType"
-                    >
-                      <Select
-                        clearable={false}
-                        fullWidth
-                        onChange={(option): void => {
-                          setScopeFilterType(readScopeFilterOption(option));
-                          setRulePage(1);
-                        }}
-                        options={[...SCOPE_FILTER_OPTIONS]}
-                        placeholder="代理範圍"
-                        size="sub"
-                        value={scopeFilterType}
-                      />
-                    </FormField>
-                  </Filter>
-                </FilterLine>
-              </FilterArea>
-            }
-            tab={
-              <Tab
-                activeKey={ruleStatus}
-                onChange={(activeKey): void => {
-                  setRuleStatus(readDelegationStatusTabKey(activeKey));
-                  setRulePage(1);
-                }}
-              >
-                {DELEGATION_STATUS_TABS.map((statusTab) => (
-                  <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
-                ))}
-              </Tab>
-            }
-          >
-            {error ? (
-              <Typography color="text-error" variant="body">
-                {error}
-              </Typography>
-            ) : null}
-            <Table
-              actions={tableActions}
-              columns={columns}
-              dataSource={rows}
-              fullWidth
-              loading={loading}
-              pagination={{
-                current: rulePage,
-                onChange: (page): void => {
-                  setRulePage(page);
-                },
-                onChangePageSize: (pageSize): void => {
-                  setRulePage(1);
-                  setRulePageSize(pageSize);
-                },
-                pageSize: rulePageSize,
-                pageSizeLabel: '每頁筆數',
-                pageSizeOptions: DELEGATION_PAGE_SIZE_OPTIONS,
-                renderResultSummary: (from, to, total): string =>
-                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
-                showPageSizeOptions: true,
-                total: ruleTotalCount,
-              }}
-            />
-          </Section>
-        </SectionGroup>
-
-        <Modal
-          cancelText="取消"
-          confirmButtonProps={{
-            disabled: !agentMember,
-          }}
-          confirmText="建立代理"
-          loading={saving}
-          modalType="standard"
-          onCancel={closeCreateModal}
-          onClose={closeCreateModal}
-          onConfirm={(): void => void handleCreate()}
-          open={modalOpen}
-          showModalFooter
-          showModalHeader
-          size="regular"
-          supportingText="代理生效後，後續建立的待簽任務會依範圍自動指派給代理人。"
-          title="建立個人代理"
+      <PageHeader>
+        <ContentHeader
+          description="設定自己的簽核代理，讓指定期間內的新待簽任務自動交由代理人處理。"
+          title="我的代理"
         >
-          <div className={styles.delegationModalFields}>
-            <MemberAutoCompleteField
-              label="代理人"
-              loading={memberLoading}
-              name="agentMemberId"
-              onChange={setAgentMember}
-              onSearch={handleSearchMembers}
-              options={memberOptions}
-              value={agentMember}
-            />
-            <BPMFormField label="代理範圍" name="scopeType" required>
-              <Select
-                clearable={false}
-                fullWidth
-                onChange={(option): void =>
-                  setScopeType(readScopeOptionFromValue(option))
-                }
-                options={[...SCOPE_OPTIONS]}
-                placeholder="選擇代理範圍"
-                value={selectedScopeType}
-              />
-            </BPMFormField>
-            {selectedScopeType.id === 'TEMPLATE_LIST' ? (
-              <BPMFormField label="簽核模板" name="scopeTemplateIds" required>
-                <AutoComplete
-                  asyncData
-                  disabledOptionsFilter
-                  emptyText="沒有符合的模板"
-                  inputProps={{
-                    autoCapitalize: 'none',
-                    autoCorrect: 'off',
-                    name: 'scopeTemplateIds',
-                    spellCheck: false,
-                  }}
-                  loading={templateLoading}
-                  loadingText="搜尋模板中..."
-                  mode="multiple"
-                  onChange={(nextTemplates): void => {
-                    const selectedTemplates =
-                      readTemplateOptionsFromValue(nextTemplates);
+          <Button
+            icon={PlusIcon}
+            iconType="leading"
+            onClick={openCreateModal}
+            variant="base-primary"
+          >
+            建立代理
+          </Button>
+        </ContentHeader>
+      </PageHeader>
 
-                    setScopeTemplates(selectedTemplates);
-                    setTemplateOptions((currentOptions) =>
-                      mergeTemplateOptions(selectedTemplates, currentOptions),
-                    );
-                  }}
-                  onSearch={handleSearchTemplates}
-                  onVisibilityChange={(open): void => {
-                    if (open) {
-                      void handleSearchTemplates('');
-                    }
-                  }}
-                  options={[...templateOptions]}
-                  overflowStrategy="wrap"
-                  placeholder="搜尋並選取簽核模板"
-                  searchDebounceTime={300}
-                  value={[...scopeTemplates]}
-                />
-              </BPMFormField>
-            ) : null}
-            <BPMFormField label="起始時間" name="startAt">
-              <DateTimePicker
-                formatDate="YYYY-MM-DD"
-                formatTime="HH:mm"
-                fullWidth
-                hideSecond
-                onChange={(nextValue): void =>
-                  setStartAt(formatDelegationDateTimePickerValue(nextValue))
-                }
-                placeholderLeft="留空立即生效"
-                placeholderRight="選擇時間"
-                value={readDelegationDateTimePickerValue(startAt)}
+      <SectionGroup>
+        <Section
+          filterArea={
+            <FilterArea className={styles.delegationFilterArea} size="sub">
+              <FilterLine>
+                <Filter span={2}>
+                  <FormField
+                    fullWidth
+                    layout={FormFieldLayout.VERTICAL}
+                    name="scopeFilterType"
+                  >
+                    <Select
+                      clearable={false}
+                      fullWidth
+                      onChange={(option): void => {
+                        setScopeFilterType(readScopeFilterOption(option));
+                        setRulePage(1);
+                      }}
+                      options={[...SCOPE_FILTER_OPTIONS]}
+                      placeholder="代理範圍"
+                      size="sub"
+                      value={scopeFilterType}
+                    />
+                  </FormField>
+                </Filter>
+              </FilterLine>
+            </FilterArea>
+          }
+          tab={
+            <Tab
+              activeKey={ruleStatus}
+              onChange={(activeKey): void => {
+                setRuleStatus(readDelegationStatusTabKey(activeKey));
+                setRulePage(1);
+              }}
+            >
+              {DELEGATION_STATUS_TABS.map((statusTab) => (
+                <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
+              ))}
+            </Tab>
+          }
+        >
+          {error ? (
+            <Typography color="text-error" variant="body">
+              {error}
+            </Typography>
+          ) : null}
+          <Table
+            actions={tableActions}
+            columns={columns}
+            dataSource={rows}
+            fullWidth
+            loading={loading}
+            pagination={{
+              current: rulePage,
+              onChange: (page): void => {
+                setRulePage(page);
+              },
+              onChangePageSize: (pageSize): void => {
+                setRulePage(1);
+                setRulePageSize(pageSize);
+              },
+              pageSize: rulePageSize,
+              pageSizeLabel: '每頁筆數',
+              pageSizeOptions: DELEGATION_PAGE_SIZE_OPTIONS,
+              renderResultSummary: (from, to, total): string =>
+                `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+              showPageSizeOptions: true,
+              total: ruleTotalCount,
+            }}
+          />
+        </Section>
+      </SectionGroup>
+
+      <Modal
+        cancelText="取消"
+        confirmButtonProps={{
+          disabled: !agentMember,
+        }}
+        confirmText="建立代理"
+        loading={saving}
+        modalType="standard"
+        onCancel={closeCreateModal}
+        onClose={closeCreateModal}
+        onConfirm={(): void => void handleCreate()}
+        open={modalOpen}
+        showModalFooter
+        showModalHeader
+        size="regular"
+        supportingText="代理生效後，後續建立的待簽任務會依範圍自動指派給代理人。"
+        title="建立個人代理"
+      >
+        <div className={styles.delegationModalFields}>
+          <MemberAutoCompleteField
+            label="代理人"
+            loading={memberLoading}
+            name="agentMemberId"
+            onChange={setAgentMember}
+            onSearch={handleSearchMembers}
+            options={memberOptions}
+            value={agentMember}
+          />
+          <BPMFormField label="代理範圍" name="scopeType" required>
+            <Select
+              clearable={false}
+              fullWidth
+              onChange={(option): void =>
+                setScopeType(readScopeOptionFromValue(option))
+              }
+              options={[...SCOPE_OPTIONS]}
+              placeholder="選擇代理範圍"
+              value={selectedScopeType}
+            />
+          </BPMFormField>
+          {selectedScopeType.id === 'TEMPLATE_LIST' ? (
+            <BPMFormField label="簽核模板" name="scopeTemplateIds" required>
+              <AutoComplete
+                asyncData
+                disabledOptionsFilter
+                emptyText="沒有符合的模板"
+                inputProps={{
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  name: 'scopeTemplateIds',
+                  spellCheck: false,
+                }}
+                loading={templateLoading}
+                loadingText="搜尋模板中..."
+                mode="multiple"
+                onChange={(nextTemplates): void => {
+                  const selectedTemplates =
+                    readTemplateOptionsFromValue(nextTemplates);
+
+                  setScopeTemplates(selectedTemplates);
+                  setTemplateOptions((currentOptions) =>
+                    mergeTemplateOptions(selectedTemplates, currentOptions),
+                  );
+                }}
+                onSearch={handleSearchTemplates}
+                onVisibilityChange={(open): void => {
+                  if (open) {
+                    void handleSearchTemplates('');
+                  }
+                }}
+                options={[...templateOptions]}
+                overflowStrategy="wrap"
+                placeholder="搜尋並選取簽核模板"
+                searchDebounceTime={300}
+                value={[...scopeTemplates]}
               />
             </BPMFormField>
-            <BPMFormField label="結束時間" name="endAt">
-              <DateTimePicker
-                formatDate="YYYY-MM-DD"
-                formatTime="HH:mm"
-                fullWidth
-                hideSecond
-                onChange={(nextValue): void =>
-                  setEndAt(formatDelegationDateTimePickerValue(nextValue))
-                }
-                placeholderLeft="可留空"
-                placeholderRight="選擇時間"
-                value={readDelegationDateTimePickerValue(endAt)}
-              />
-            </BPMFormField>
-          </div>
-        </Modal>
-      </>
+          ) : null}
+          <BPMFormField label="起始時間" name="startAt">
+            <DateTimePicker
+              formatDate="YYYY-MM-DD"
+              formatTime="HH:mm"
+              fullWidth
+              hideSecond
+              onChange={(nextValue): void =>
+                setStartAt(formatDelegationDateTimePickerValue(nextValue))
+              }
+              placeholderLeft="留空立即生效"
+              placeholderRight="選擇時間"
+              value={readDelegationDateTimePickerValue(startAt)}
+            />
+          </BPMFormField>
+          <BPMFormField label="結束時間" name="endAt">
+            <DateTimePicker
+              formatDate="YYYY-MM-DD"
+              formatTime="HH:mm"
+              fullWidth
+              hideSecond
+              onChange={(nextValue): void =>
+                setEndAt(formatDelegationDateTimePickerValue(nextValue))
+              }
+              placeholderLeft="可留空"
+              placeholderRight="選擇時間"
+              value={readDelegationDateTimePickerValue(endAt)}
+            />
+          </BPMFormField>
+        </div>
+      </Modal>
+    </>
   );
 }
 

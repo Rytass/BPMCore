@@ -1,7 +1,7 @@
 'use client';
 
 import type { ChangeEvent, Key, ReactElement } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -65,7 +65,6 @@ type TemplateRow = Readonly<
     }
 >;
 
-
 export function TemplatesView(): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
@@ -89,17 +88,33 @@ export function TemplatesView(): ReactElement {
   const [templateStatus, setTemplateStatus] =
     useState<TemplateStatusTabKey>('ALL');
   const [templateTotalCount, setTemplateTotalCount] = useState(0);
+  const refreshRequestIdRef = useRef(0);
 
   const refreshTemplates = useCallback(async (): Promise<void> => {
+    const requestId = refreshRequestIdRef.current + 1;
+    refreshRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
+    setLaunchableTemplateIds(new Set());
+
+    void listLaunchableTemplates()
+      .then((nextLaunchableTemplates): void => {
+        if (requestId !== refreshRequestIdRef.current) {
+          return;
+        }
+
+        setLaunchableTemplateIds(
+          new Set(nextLaunchableTemplates.map((template) => template.id)),
+        );
+      })
+      .catch((): void => {
+        if (requestId === refreshRequestIdRef.current) {
+          setLaunchableTemplateIds(new Set());
+        }
+      });
 
     try {
-      const [
-        templatePageResult,
-        nextLaunchableTemplates,
-        activeCategoryPageResult,
-      ] = await Promise.all([
+      const [templatePageResult, activeCategoryPageResult] = await Promise.all([
         listApprovalTemplatesPage({
           categoryId: categoryFilter.categoryId,
           page: templatePage,
@@ -107,7 +122,6 @@ export function TemplatesView(): ReactElement {
           searchText: templateSearchText,
           status: templateStatus === 'ALL' ? null : templateStatus,
         }),
-        listLaunchableTemplates(),
         listApprovalTemplateCategoriesPage({
           page: 1,
           pageSize: TEMPLATE_CATEGORY_PAGE_SIZE,
@@ -116,18 +130,23 @@ export function TemplatesView(): ReactElement {
         }),
       ]);
 
+      if (requestId !== refreshRequestIdRef.current) {
+        return;
+      }
+
       setCategoryOptions([
         ...activeCategoryPageResult.categories.map(readCategoryOption),
       ]);
       setTemplates(templatePageResult.templates);
       setTemplateTotalCount(templatePageResult.totalCount);
-      setLaunchableTemplateIds(
-        new Set(nextLaunchableTemplates.map((template) => template.id)),
-      );
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      if (requestId === refreshRequestIdRef.current) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [
     categoryFilter,
@@ -187,8 +206,7 @@ export function TemplatesView(): ReactElement {
           disabled: (template): boolean =>
             !launchableTemplateIds.has(template.id),
           name: '發起',
-          onClick: (): void =>
-            router.push(routes.caseNew(record.id)),
+          onClick: (): void => router.push(routes.caseNew(record.id)),
           variant: 'base-primary',
         },
         {
@@ -209,125 +227,125 @@ export function TemplatesView(): ReactElement {
   return (
     <>
       <>
-          <PageHeader>
-            <ContentHeader
-              description="建立流程模板、維護草稿與發布版本。"
-              title="簽核模板"
+        <PageHeader>
+          <ContentHeader
+            description="建立流程模板、維護草稿與發布版本。"
+            title="簽核模板"
+          >
+            <Button
+              icon={PlusIcon}
+              iconType="leading"
+              onClick={(): void => router.push(routes.templateCompose())}
+              variant="base-primary"
             >
-              <Button
-                icon={PlusIcon}
-                iconType="leading"
-                onClick={(): void => router.push(routes.templateCompose())}
-                variant="base-primary"
-              >
-                建立模板
-              </Button>
-            </ContentHeader>
-          </PageHeader>
+              建立模板
+            </Button>
+          </ContentHeader>
+        </PageHeader>
 
-          <SectionGroup>
-            <Section
-              filterArea={
-                <FilterArea className={styles.templateFilterArea} size="sub">
-                  <FilterLine>
-                    <Filter span={3}>
-                      <FormField
+        <SectionGroup>
+          <Section
+            filterArea={
+              <FilterArea className={styles.templateFilterArea} size="sub">
+                <FilterLine>
+                  <Filter span={3}>
+                    <FormField
+                      fullWidth
+                      layout={FormFieldLayout.VERTICAL}
+                      name="templateSearchText"
+                    >
+                      <Input
                         fullWidth
-                        layout={FormFieldLayout.VERTICAL}
-                        name="templateSearchText"
-                      >
-                        <Input
-                          fullWidth
-                          onChange={(
-                            event: ChangeEvent<HTMLInputElement>,
-                          ): void => {
-                            setTemplateSearchText(event.target.value);
-                            setTemplatePage(1);
-                          }}
-                          placeholder="關鍵字：搜尋模板名稱、分類或描述"
-                          size="sub"
-                          value={templateSearchText}
-                          variant="base"
-                        />
-                      </FormField>
-                    </Filter>
-                    <Filter span={2}>
-                      <FormField
+                        onChange={(
+                          event: ChangeEvent<HTMLInputElement>,
+                        ): void => {
+                          setTemplateSearchText(event.target.value);
+                          setTemplatePage(1);
+                        }}
+                        placeholder="關鍵字：搜尋模板名稱、分類或描述"
+                        size="sub"
+                        value={templateSearchText}
+                        variant="base"
+                      />
+                    </FormField>
+                  </Filter>
+                  <Filter span={2}>
+                    <FormField
+                      fullWidth
+                      layout={FormFieldLayout.VERTICAL}
+                      name="templateCategoryFilter"
+                    >
+                      <Select
+                        clearable={false}
                         fullWidth
-                        layout={FormFieldLayout.VERTICAL}
-                        name="templateCategoryFilter"
-                      >
-                        <Select
-                          clearable={false}
-                          fullWidth
-                          onChange={(option): void => {
-                            setCategoryFilter(
-                              readCategoryFilterOption(option, categoryOptions),
-                            );
-                            setTemplatePage(1);
-                          }}
-                          options={[
-                            UNCATEGORIZED_TEMPLATE_FILTER_OPTION,
-                            ...categoryOptions,
-                          ]}
-                          placeholder="分類"
-                          renderValue={(value): string =>
-                            `分類：${readTemplateCategoryFilterLabel(value)}`
-                          }
-                          size="sub"
-                          value={categoryFilter}
-                        />
-                      </FormField>
-                    </Filter>
-                  </FilterLine>
-                </FilterArea>
-              }
-              tab={
-                <Tab
-                  activeKey={templateStatus}
-                  onChange={(activeKey): void => {
-                    setTemplateStatus(readTemplateStatusTabKey(activeKey));
-                    setTemplatePage(1);
-                  }}
-                >
-                  {TEMPLATE_STATUS_TABS.map((statusTab) => (
-                    <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
-                  ))}
-                </Tab>
-              }
-            >
-              {error ? (
-                <Typography color="text-error" variant="body">
-                  {error}
-                </Typography>
-              ) : null}
-              <Table
-                actions={tableActions}
-                columns={columns}
-                dataSource={rows}
-                fullWidth
-                loading={loading}
-                pagination={{
-                  current: templatePage,
-                  onChange: (page): void => {
-                    setTemplatePage(page);
-                  },
-                  onChangePageSize: (pageSize): void => {
-                    setTemplatePage(1);
-                    setTemplatePageSize(pageSize);
-                  },
-                  pageSize: templatePageSize,
-                  pageSizeLabel: '每頁筆數',
-                  pageSizeOptions: TEMPLATE_PAGE_SIZE_OPTIONS,
-                  renderResultSummary: (from, to, total): string =>
-                    `顯示 ${from}-${to} 筆，共 ${total} 筆`,
-                  showPageSizeOptions: true,
-                  total: templateTotalCount,
+                        onChange={(option): void => {
+                          setCategoryFilter(
+                            readCategoryFilterOption(option, categoryOptions),
+                          );
+                          setTemplatePage(1);
+                        }}
+                        options={[
+                          UNCATEGORIZED_TEMPLATE_FILTER_OPTION,
+                          ...categoryOptions,
+                        ]}
+                        placeholder="分類"
+                        renderValue={(value): string =>
+                          `分類：${readTemplateCategoryFilterLabel(value)}`
+                        }
+                        size="sub"
+                        value={categoryFilter}
+                      />
+                    </FormField>
+                  </Filter>
+                </FilterLine>
+              </FilterArea>
+            }
+            tab={
+              <Tab
+                activeKey={templateStatus}
+                onChange={(activeKey): void => {
+                  setTemplateStatus(readTemplateStatusTabKey(activeKey));
+                  setTemplatePage(1);
                 }}
-              />
-            </Section>
-          </SectionGroup>
-        </>
+              >
+                {TEMPLATE_STATUS_TABS.map((statusTab) => (
+                  <TabItem key={statusTab.key}>{statusTab.label}</TabItem>
+                ))}
+              </Tab>
+            }
+          >
+            {error ? (
+              <Typography color="text-error" variant="body">
+                {error}
+              </Typography>
+            ) : null}
+            <Table
+              actions={tableActions}
+              columns={columns}
+              dataSource={rows}
+              fullWidth
+              loading={loading}
+              pagination={{
+                current: templatePage,
+                onChange: (page): void => {
+                  setTemplatePage(page);
+                },
+                onChangePageSize: (pageSize): void => {
+                  setTemplatePage(1);
+                  setTemplatePageSize(pageSize);
+                },
+                pageSize: templatePageSize,
+                pageSizeLabel: '每頁筆數',
+                pageSizeOptions: TEMPLATE_PAGE_SIZE_OPTIONS,
+                renderResultSummary: (from, to, total): string =>
+                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+                showPageSizeOptions: true,
+                total: templateTotalCount,
+              }}
+            />
+          </Section>
+        </SectionGroup>
+      </>
     </>
   );
 }
