@@ -67,11 +67,13 @@ type NotificationAction = 'approve' | 'reject' | 'view' | 'read';
 function buildNotificationOptions(
   record: NotificationRecord,
 ): readonly DropdownOption[] {
+  const canReject = readNotificationAllowReject(record) !== false;
+
   return [
     ...(record.actionable
       ? ([
           { id: 'approve', name: '同意' },
-          { id: 'reject', name: '拒絕' },
+          ...(canReject ? [{ id: 'reject', name: '拒絕' }] : []),
         ] satisfies DropdownOption[])
       : []),
     ...(record.instanceId
@@ -605,4 +607,24 @@ function resolveTimeGroup(value: string, now: Date): TimeGroup {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '發生未知錯誤';
+}
+
+function readNotificationAllowReject(
+  record: NotificationRecord,
+): boolean | null {
+  try {
+    const payload: unknown = JSON.parse(record.payloadJson);
+
+    if (isRecord(payload) && typeof payload.allowReject === 'boolean') {
+      return payload.allowReject;
+    }
+
+    return record.allowReject;
+  } catch {
+    return record.allowReject;
+  }
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

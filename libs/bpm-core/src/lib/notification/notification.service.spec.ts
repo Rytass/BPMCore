@@ -1,10 +1,11 @@
 import { validateSync } from 'class-validator';
 import {
   SlaConfig,
+  UserTaskNode,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
 import { ModuleRef } from '@nestjs/core';
-import { ObjectLiteral, Repository } from 'typeorm';
+import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
@@ -216,6 +217,134 @@ describe('NotificationService', () => {
       inAppEnabled: false,
       memberId: 'member-001',
     });
+  });
+
+  it('stores the task rejection policy in assigned notification payloads', async (): Promise<void> => {
+    const savedNotifications: NotificationEntity[] = [];
+    const notificationRepository = {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      save: (
+        entityOrEntities: NotificationEntity | NotificationEntity[],
+      ): Promise<NotificationEntity | NotificationEntity[]> => {
+        const entities = Array.isArray(entityOrEntities)
+          ? entityOrEntities
+          : [entityOrEntities];
+
+        savedNotifications.push(...entities);
+
+        return Promise.resolve(entityOrEntities);
+      },
+    } as unknown as Repository<NotificationEntity>;
+    const service = new NotificationService(
+      notificationRepository,
+      {
+        findOne: (): Promise<NotificationPreferenceEntity | null> =>
+          Promise.resolve(null),
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+    const baseInstance = createApprovalInstance();
+    const sourceNode = baseInstance.workflowSnapshot.nodes.find(
+      (node): node is UserTaskNode => node.type === 'userTask',
+    );
+
+    if (!sourceNode) {
+      throw new Error('Notification test fixture must contain a user task');
+    }
+
+    const disabledNode: UserTaskNode = {
+      ...sourceNode,
+      data: { ...sourceNode.data, allowReject: false },
+    };
+    const instance = Object.assign(new ApprovalInstanceEntity(), {
+      ...baseInstance,
+      workflowSnapshot: {
+        ...baseInstance.workflowSnapshot,
+        nodes: baseInstance.workflowSnapshot.nodes.map((node) =>
+          node.id === disabledNode.id ? disabledNode : node,
+        ),
+      },
+    });
+    const task = Object.assign(new TaskEntity(), {
+      assigneeMemberId: 'member-a',
+      id: 'task-assigned-policy',
+      instanceId: instance.id,
+      nodeId: disabledNode.id,
+      originalAssigneeMemberId: 'member-a',
+    });
+
+    await service.createTaskAssignedNotification({
+      instance,
+      manager: undefined as unknown as EntityManager,
+      node: disabledNode,
+      task,
+    });
+
+    expect(savedNotifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          allowReject: false,
+          payload: expect.objectContaining({ allowReject: false }),
+        }),
+      ]),
+    );
+  });
+
+  it('derives the rejection policy for legacy task notifications', async (): Promise<void> => {
+    const notification = createNotification('notification-legacy-policy');
+    const instance = createApprovalInstance();
+    const sourceNode = instance.workflowSnapshot.nodes.find(
+      (node): node is UserTaskNode => node.type === 'userTask',
+    );
+
+    if (!sourceNode) {
+      throw new Error('Legacy notification fixture must contain a user task');
+    }
+
+    const task = Object.assign(new TaskEntity(), {
+      id: notification.taskId,
+      instanceId: instance.id,
+      nodeId: sourceNode.id,
+    });
+    instance.workflowSnapshot = {
+      ...instance.workflowSnapshot,
+      nodes: instance.workflowSnapshot.nodes.map((node) =>
+        node.id === sourceNode.id
+          ? { ...sourceNode, data: { ...sourceNode.data, allowReject: false } }
+          : node,
+      ),
+    };
+    const service = new NotificationService(
+      {
+        find: (): Promise<readonly NotificationEntity[]> =>
+          Promise.resolve([notification]),
+      } as unknown as Repository<NotificationEntity>,
+      createRepository<NotificationPreferenceEntity>(),
+      {
+        find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+      } as unknown as Repository<TaskEntity>,
+      createRepository<TaskCandidateEntity>(),
+      {
+        find: (): Promise<readonly ApprovalInstanceEntity[]> =>
+          Promise.resolve([instance]),
+      } as unknown as Repository<ApprovalInstanceEntity>,
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    const [listedNotification] = await service.listNotifications({
+      includeRead: true,
+      recipientMemberId: notification.recipientMemberId,
+    });
+
+    expect(listedNotification?.allowReject).toBe(false);
   });
 
   it('creates SLA notifications for candidate group task members', async (): Promise<void> => {
@@ -535,5 +664,7 @@ function createNotificationRepository(
 function createRepository<
   TEntity extends ObjectLiteral,
 >(): Repository<TEntity> {
-  return {} as Repository<TEntity>;
+  return {
+    find: (): Promise<readonly TEntity[]> => Promise.resolve([]),
+  } as unknown as Repository<TEntity>;
 }

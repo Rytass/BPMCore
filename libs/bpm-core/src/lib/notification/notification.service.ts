@@ -111,7 +111,7 @@ export class NotificationService {
   }): Promise<readonly NotificationEntity[]> {
     const normalizedPageSize = normalizePageSize(pageSize);
 
-    return this.notificationRepository.find({
+    const notifications = await this.notificationRepository.find({
       order: { createdAt: 'DESC' },
       skip: (normalizePage(page) - 1) * normalizedPageSize,
       take: normalizedPageSize,
@@ -120,6 +120,69 @@ export class NotificationService {
         recipientMemberId,
         ...(includeRead ? {} : { status: Not(NotificationStatusEnum.READ) }),
       },
+    });
+
+    return this.attachLegacyTaskPolicies(notifications);
+  }
+
+  private async attachLegacyTaskPolicies(
+    notifications: readonly NotificationEntity[],
+  ): Promise<readonly NotificationEntity[]> {
+    const legacyNotifications = notifications.filter(
+      (notification) =>
+        notification.actionable &&
+        notification.taskId !== null &&
+        typeof notification.payload?.allowReject !== 'boolean',
+    );
+
+    if (legacyNotifications.length === 0) {
+      return notifications;
+    }
+
+    const tasks = await this.taskRepository.find({
+      where: {
+        id: In(
+          legacyNotifications.flatMap((notification) =>
+            notification.taskId === null ? [] : [notification.taskId],
+          ),
+        ),
+      },
+    });
+
+    if (tasks.length === 0) {
+      return notifications;
+    }
+
+    const instances = await this.approvalInstanceRepository.find({
+      where: {
+        id: In([...new Set(tasks.map((task) => task.instanceId))]),
+      },
+    });
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    const instancesById = new Map(
+      instances.map((instance) => [instance.id, instance]),
+    );
+
+    return notifications.map((notification) => {
+      if (notification.taskId === null) {
+        return notification;
+      }
+
+      const task = tasksById.get(notification.taskId);
+      if (!task) {
+        return notification;
+      }
+
+      const instance = instancesById.get(task.instanceId);
+      const node = instance ? readUserTaskNode(instance, task.nodeId) : null;
+
+      if (!node) {
+        return notification;
+      }
+
+      return Object.assign(new NotificationEntity(), notification, {
+        allowReject: node.data.allowReject !== false,
+      });
     });
   }
 
@@ -258,6 +321,7 @@ export class NotificationService {
         instanceId: instance.id,
         payload: {
           assigneeMemberId: task.assigneeMemberId,
+          allowReject: node.data.allowReject !== false,
           instanceId: instance.id,
           instanceTitle: instance.title,
           nodeId: node.id,
@@ -1110,6 +1174,10 @@ function createNotificationEntity({
   const isInApp = channel === NotificationChannelEnum.IN_APP;
 
   return repository.create({
+    allowReject:
+      typeof input.payload.allowReject === 'boolean'
+        ? input.payload.allowReject
+        : null,
     attemptCount: 0,
     body: renderedTemplate.body,
     channel,

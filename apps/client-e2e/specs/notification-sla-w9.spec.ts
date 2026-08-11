@@ -50,6 +50,25 @@ test.describe('W9 notifications and SLA', () => {
     await expect(page).toHaveURL(new RegExp(`/instances/${INSTANCE_ID}$`));
   });
 
+  test('hides reject from a notification when the task policy disallows it', async ({
+    page,
+  }): Promise<void> => {
+    await mockNotificationGraphQl(page);
+
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: /^通知中心/ }).click();
+
+    const taskNotification = page
+      .locator('.mzn-notification-center')
+      .filter({ hasText: '新的待簽任務' });
+    await taskNotification
+      .locator('button.mzn-notification-center__dot-icon-button')
+      .click();
+
+    await expect(page.getByRole('option', { name: '同意' })).toBeVisible();
+    await expect(page.getByRole('option', { name: '拒絕' })).toHaveCount(0);
+  });
+
   test('loads additional notifications via the load more action', async ({
     page,
   }): Promise<void> => {
@@ -238,6 +257,7 @@ function readManyNotifications(
     const ordinal = index + 1;
 
     return {
+      allowReject: true,
       body: `第 ${ordinal} 筆通知內容`,
       channel: 'IN_APP',
       createdAt: CREATED_AT,
@@ -260,12 +280,13 @@ function readNotifications(
 ): readonly Readonly<Record<string, unknown>>[] {
   return [
     {
+      allowReject: false,
       body: '案件 W9 SLA 測試 的 財務簽核 已指派給你。',
       channel: 'IN_APP',
       createdAt: CREATED_AT,
       id: 'notification-task',
       instanceId: INSTANCE_ID,
-      payloadJson: '{}',
+      payloadJson: JSON.stringify({ allowReject: false }),
       readAt: read ? CREATED_AT : null,
       recipientMemberId: 'member-001',
       sentAt: CREATED_AT,
@@ -275,6 +296,7 @@ function readNotifications(
       type: 'TASK_ASSIGNED',
     },
     {
+      allowReject: null,
       body: '財務簽核 將於 2026-05-09T10:00:00.000Z 到期，請儘快處理。',
       channel: 'IN_APP',
       createdAt: CREATED_AT,
