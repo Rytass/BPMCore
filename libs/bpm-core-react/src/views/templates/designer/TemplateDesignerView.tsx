@@ -820,6 +820,13 @@ export function TemplateDesignerView({
   const [memberOptions, setMemberOptions] = useState<
     readonly MemberSelectOption[]
   >([]);
+  // `memberOptions` accumulates every member the designer has ever seen,
+  // because it doubles as the id → display-name lookup for nodes elsewhere on
+  // the canvas. The pickers must not offer that accumulation as search
+  // results, so the latest response is tracked on its own.
+  const [memberSearchResults, setMemberSearchResults] = useState<
+    readonly MemberSelectOption[]
+  >([]);
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
   const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
@@ -1186,8 +1193,11 @@ export function TemplateDesignerView({
 
     try {
       const options = await searchMemberOptions(searchText);
+      const nextOptions = readMemberSelectOptions(options);
+
+      setMemberSearchResults(nextOptions);
       setMemberOptions((currentOptions) =>
-        mergeMemberOptions(currentOptions, readMemberSelectOptions(options)),
+        mergeMemberOptions(currentOptions, nextOptions),
       );
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -2318,7 +2328,9 @@ export function TemplateDesignerView({
                   void handleSearchMembers('');
                 }
               }}
-              options={[...memberOptions]}
+              options={[
+                ...mergeMemberOptions(selectedMembers, memberSearchResults),
+              ]}
               placeholder="搜尋姓名或信箱"
               searchDebounceTime={300}
               value={selectedMembers}
@@ -2473,7 +2485,12 @@ export function TemplateDesignerView({
                         void handleSearchMembers('');
                       }
                     }}
-                    options={[...memberOptions]}
+                    options={[
+                      ...mergeMemberOptions(
+                        fallbackMember ? [fallbackMember] : [],
+                        memberSearchResults,
+                      ),
+                    ]}
                     placeholder="搜尋姓名或信箱"
                     searchDebounceTime={300}
                     value={fallbackMember}
@@ -2840,7 +2857,9 @@ export function TemplateDesignerView({
               void handleSearchMembers('');
             }
           }}
-          options={[...memberOptions]}
+          options={[
+            ...mergeMemberOptions(selectedMembers, memberSearchResults),
+          ]}
           overflowStrategy="wrap"
           placeholder="搜尋姓名或信箱"
           searchDebounceTime={300}
