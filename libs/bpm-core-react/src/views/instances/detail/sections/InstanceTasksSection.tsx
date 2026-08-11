@@ -102,6 +102,10 @@ export interface InstanceTasksSectionHandle {
   readonly hasCurrentTask: boolean;
   /** Whether the current task's node allows a return action. */
   readonly canReturnCurrentTask: boolean;
+  /** Whether the current task's node allows a reject action. */
+  readonly canRejectCurrentTask: boolean;
+  /** Whether the current task's node allows a transfer action. */
+  readonly canTransferCurrentTask: boolean;
   /** Whether the current task's node allows ad-hoc countersign/pre-approval. */
   readonly canAddSignerCurrentTask: boolean;
   /** Opens the reject-reason modal. */
@@ -112,7 +116,7 @@ export interface InstanceTasksSectionHandle {
   openTransferModal(): void;
   /** Opens the ad-hoc action modal in the given mode. */
   openAdhocModal(mode: AdhocActionMode): void;
-  /** Submits an APPROVED decision immediately (no modal needed). */
+  /** Opens the approve-comment modal. */
   handleApprove(): void;
 }
 
@@ -274,6 +278,16 @@ export const InstanceTasksSection = forwardRef<
   const canReturnCurrentTask =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.allowReturn;
+
+  // Older workflow snapshots may not carry these fields. Preserve their
+  // historical behaviour and only disable an action when it is explicitly
+  // set to false.
+  const canRejectCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowReject !== false;
+  const canTransferCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowTransfer !== false;
 
   // Mirrors the engine rule so the approver is stopped in the modal instead of
   // by a server error after submitting.
@@ -440,9 +454,17 @@ export const InstanceTasksSection = forwardRef<
     comment: string | null;
     returnToNodeId?: string | null;
     transferToMemberId?: string | null;
-  }>): Promise<void> {
+  }>): Promise<boolean> {
     if (!currentMemberId || !currentTask) {
-      return;
+      return false;
+    }
+
+    if (action === 'REJECTED' && !canRejectCurrentTask) {
+      return false;
+    }
+
+    if (action === 'TRANSFERRED' && !canTransferCurrentTask) {
+      return false;
     }
 
     setDeciding(true);
@@ -466,15 +488,30 @@ export const InstanceTasksSection = forwardRef<
       setTransferMember(null);
       setReturnTargetNodeId(null);
       setRejectReasonError(null);
+    } catch (requestError: unknown) {
+      setError(readErrorMessage(requestError));
+      setDeciding(false);
+
+      return false;
+    }
+
+    try {
       await onChanged();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
       setDeciding(false);
     }
+
+    return true;
   }
 
   function openApproveModal(): void {
+    if (!currentMemberId || !currentTask) {
+      return;
+    }
+
+    setError(null);
     setApproveComment('');
     setApproveModalOpen(true);
   }
@@ -489,14 +526,28 @@ export const InstanceTasksSection = forwardRef<
   }
 
   async function handleApproveConfirm(): Promise<void> {
-    const comment = approveComment.trim();
+    if (deciding) {
+      return;
+    }
 
-    await handleDecision({ action: 'APPROVED', comment: comment || null });
+    const succeeded = await handleDecision({
+      action: 'APPROVED',
+      comment: approveComment.trim() || null,
+    });
+
+    if (!succeeded) {
+      return;
+    }
+
     setApproveModalOpen(false);
     setApproveComment('');
   }
 
   function openRejectReasonModal(): void {
+    if (!canRejectCurrentTask) {
+      return;
+    }
+
     setRejectReason('');
     setRejectReasonError(null);
     setRejectReasonModalOpen(true);
@@ -529,6 +580,10 @@ export const InstanceTasksSection = forwardRef<
   }
 
   function openTransferModal(): void {
+    if (!canTransferCurrentTask) {
+      return;
+    }
+
     setTransferComment('');
     setTransferMember(null);
     setTransferModalOpen(true);
@@ -566,6 +621,10 @@ export const InstanceTasksSection = forwardRef<
   }
 
   async function handleRejectConfirm(): Promise<void> {
+    if (!canRejectCurrentTask) {
+      return;
+    }
+
     if (!trimmedRejectReason) {
       setRejectReasonError('請輸入拒絕原因');
 
@@ -579,6 +638,10 @@ export const InstanceTasksSection = forwardRef<
   }
 
   async function handleTransferConfirm(): Promise<void> {
+    if (!canTransferCurrentTask) {
+      return;
+    }
+
     if (!transferMember) {
       setError('請選擇轉派對象');
 
@@ -726,7 +789,9 @@ export const InstanceTasksSection = forwardRef<
     ref,
     (): InstanceTasksSectionHandle => ({
       canAddSignerCurrentTask,
+      canRejectCurrentTask,
       canReturnCurrentTask,
+      canTransferCurrentTask,
       deciding,
       handleApprove: openApproveModal,
       hasCurrentTask: currentTask !== null,
@@ -735,7 +800,15 @@ export const InstanceTasksSection = forwardRef<
       openReturnModal,
       openTransferModal,
     }),
-    [canAddSignerCurrentTask, canReturnCurrentTask, currentTask, deciding],
+    [
+      canAddSignerCurrentTask,
+      canRejectCurrentTask,
+      canReturnCurrentTask,
+      canTransferCurrentTask,
+      currentMemberId,
+      currentTask,
+      deciding,
+    ],
   );
 
   const isAdhocNotifyMode =
@@ -797,6 +870,11 @@ export const InstanceTasksSection = forwardRef<
         supportingText="可以留下同意的說明，內容會記錄在簽核歷程；不填也可以直接送出。"
         title="簽核意見"
       >
+        {error ? (
+          <Typography color="text-error" role="alert" variant="body">
+            {error}
+          </Typography>
+        ) : null}
         <div style={REJECT_REASON_FORM_STYLE}>
           <BPMFormField label="簽核意見" name="approveComment">
             <Textarea

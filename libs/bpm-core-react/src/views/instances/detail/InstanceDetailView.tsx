@@ -301,6 +301,12 @@ export function InstanceDetailView({
   const canReturnCurrentTask =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.allowReturn;
+  const canRejectCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowReject !== false;
+  const canTransferCurrentTask =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.allowTransfer !== false;
   const canAddSignerCurrentTask =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.allowAddSigner;
@@ -616,26 +622,32 @@ export function InstanceDetailView({
                   退回
                 </Button>
               ) : null}
-              <Button
-                disabled={combinedDeciding}
-                icon={UserIcon}
-                iconType="leading"
-                key="task-transfer"
-                onClick={(): void => tasksSectionRef.current?.openTransferModal()}
-                variant="base-secondary"
-              >
-                轉派
-              </Button>
-              <Button
-                disabled={combinedDeciding}
-                icon={DangerousOutlineIcon}
-                iconType="leading"
-                key="task-reject"
-                onClick={(): void => tasksSectionRef.current?.openRejectModal()}
-                variant="destructive-secondary"
-              >
-                拒絕
-              </Button>
+              {canTransferCurrentTask ? (
+                <Button
+                  disabled={combinedDeciding}
+                  icon={UserIcon}
+                  iconType="leading"
+                  key="task-transfer"
+                  onClick={(): void =>
+                    tasksSectionRef.current?.openTransferModal()
+                  }
+                  variant="base-secondary"
+                >
+                  轉派
+                </Button>
+              ) : null}
+              {canRejectCurrentTask ? (
+                <Button
+                  disabled={combinedDeciding}
+                  icon={DangerousOutlineIcon}
+                  iconType="leading"
+                  key="task-reject"
+                  onClick={(): void => tasksSectionRef.current?.openRejectModal()}
+                  variant="destructive-secondary"
+                >
+                  拒絕
+                </Button>
+              ) : null}
               <Button
                 disabled={combinedDeciding}
                 icon={CheckedIcon}

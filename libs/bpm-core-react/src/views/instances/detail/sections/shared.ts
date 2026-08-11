@@ -562,17 +562,21 @@ function readActivityDetail(
       ? [decisionLabel, `拒絕原因：${comment}`]
           .filter(isPresentText)
           .join(' · ')
-      : action === 'TRANSFERRED'
-        ? [
-            decisionLabel,
-            `轉派給：${readMemberDisplayText(
-              transferToMemberId,
-              memberProfilesById,
-            )}`,
-          ]
+      : action === 'APPROVED' && comment
+        ? [decisionLabel, `同意說明：${comment}`]
             .filter(isPresentText)
             .join(' · ')
-        : decisionLabel;
+        : action === 'TRANSFERRED'
+          ? [
+              decisionLabel,
+              `轉派給：${readMemberDisplayText(
+                transferToMemberId,
+                memberProfilesById,
+              )}`,
+            ]
+              .filter(isPresentText)
+              .join(' · ')
+          : decisionLabel;
   }
 
   if (activityLog.eventType === 'TOKEN_ADVANCED') {
@@ -652,6 +656,9 @@ export function readActivityDetailParts(
     readTextDescriptionPart(decisionLabel),
     action === 'REJECTED'
       ? readDangerTextDescriptionPart(`拒絕原因：${comment ?? '-'}`)
+      : null,
+    action === 'APPROVED' && comment
+      ? readTextDescriptionPart(`同意說明：${comment}`)
       : null,
     action === 'RETURNED'
       ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
