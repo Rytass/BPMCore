@@ -767,8 +767,8 @@ function readEmptyWorkflowDefinition(): Readonly<Record<string, unknown>> {
 function readLegacyWorkflowDefinition(): Readonly<Record<string, unknown>> {
   return {
     edges: [
-      { id: 'edge-start-task', source: 'start', target: 'task_review' },
-      { id: 'edge-task-end', source: 'task_review', target: 'end' },
+      { data: {}, id: 'edge-start-task', source: 'start', target: 'userTask_1' },
+      { data: {}, id: 'edge-task-end', source: 'userTask_1', target: 'end' },
     ],
     meta: { schemaVersion: 1 },
     nodes: [
@@ -789,7 +789,7 @@ function readLegacyWorkflowDefinition(): Readonly<Record<string, unknown>> {
           },
           triggerMode: 'AND',
         },
-        id: 'task_review',
+        id: 'userTask_1',
         position: { x: 320, y: 160 },
         type: 'userTask',
       },
