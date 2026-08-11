@@ -289,6 +289,119 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
+  test('defaults a policyless approval node to single approval', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // Templates authored before `decisionPolicy` existed carry no such key,
+      // even though the schema types it as required.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy(null),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    // The trigger must fall back to a readable label instead of rendering
+    // blank, and the quorum inputs stay hidden until they apply.
+    await expect(page.getByText('決策方式')).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: '單人簽核' }),
+    ).toBeVisible();
+    await expect(page.getByText('門檻計算方式')).toHaveCount(0);
+
+    await page.getByRole('combobox', { name: '單人簽核' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '全部同意' })
+      .click();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+    });
+  });
+
+  test('reveals quorum threshold controls and saves the threshold', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SINGLE' }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await page.getByRole('combobox', { name: '單人簽核' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '達到指定門檻' })
+      .click();
+
+    // Threshold controls reveal progressively, matching the SLA panel.
+    await expect(page.getByText('門檻計算方式')).toBeVisible();
+    await expect(page.getByText('門檻人數')).toBeVisible();
+
+    await page.locator('input[name="quorumThreshold"]').fill('3');
+
+    // Switching to a percentage relabels the same field rather than adding one.
+    await page.getByRole('combobox', { name: '人數' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '百分比' })
+      .click();
+    await expect(page.getByText('門檻百分比')).toBeVisible();
+    await expect(page.getByText('門檻人數')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: {
+        threshold: 3,
+        thresholdType: 'PERCENTAGE',
+        type: 'QUORUM',
+      },
+    });
+  });
+
+  test('keeps a stored sequential policy readable', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // `SEQUENTIAL` is not offered in the dropdown because the engine treats
+      // it exactly like `PARALLEL_ALL`, but API-authored templates may use it.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SEQUENTIAL' }),
+      ),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await expect(
+      page.getByRole('combobox', { name: '依序簽核（既有設定）' }),
+    ).toBeVisible();
+  });
+
   test('hides the business-day選項 for an hour-based SLA', async ({
     page,
   }): Promise<void> => {
@@ -787,6 +900,52 @@ function readLegacyWorkflowDefinition(): Readonly<Record<string, unknown>> {
             allowReturn: true,
             allowedTargets: 'INITIATOR',
           },
+          triggerMode: 'AND',
+        },
+        id: 'task_review',
+        position: { x: 320, y: 160 },
+        type: 'userTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+        id: 'end',
+        position: { x: 560, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function readWorkflowDefinitionWithDecisionPolicy(
+  decisionPolicy: Readonly<Record<string, unknown>> | null,
+): Readonly<Record<string, unknown>> {
+  return {
+    edges: [
+      { id: 'edge-start-task', source: 'start', target: 'task_review' },
+      { id: 'edge-task-end', source: 'task_review', target: 'end' },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: true,
+          approverResolver: {
+            memberIds: ['member-001', 'member-002'],
+            type: 'DIRECT',
+          },
+          // A `null` argument omits the key entirely, reproducing templates
+          // written before `decisionPolicy` existed.
+          ...(decisionPolicy === null ? {} : { decisionPolicy }),
+          label: '簽核節點',
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
           triggerMode: 'AND',
         },
         id: 'task_review',
