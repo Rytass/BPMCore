@@ -27,53 +27,72 @@ Bump the "Last verified against" line at the top to the current version of each 
 ### Versioning and changelogs — always `nx release`, never a manual bump
 
 **Do not hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
-`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the
-`v{version}` git tag and the GitHub release for the three core packages
-(`shared`, `bpm-core`, `bpm-core-client`, released as a fixed version set). A
-manual bump silently skips the changelog, so consumers get a release whose
-`CHANGELOG.md` still ends at the previous version.
+`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the git
+tags and the GitHub releases for **all four** published packages. A manual bump
+silently skips the changelog, so consumers get a release whose `CHANGELOG.md`
+still ends at the previous version.
 
 ```bash
-# Determines the bump from Conventional Commits since the last v* tag,
+# Determines each group's bump from Conventional Commits since its last tag,
 # writes CHANGELOGs, commits and tags. Add --dry-run first to review.
 npx nx release --skip-publish
 ```
 
-`@rytass/bpm-core-react` is deliberately **not** in `release.projects` — it
-versions on its own cadence (it tracks React/Mezzanine, not the core contract).
-Bump its `version` and write its `CHANGELOG.md` entry by hand, matching the
-Keep a Changelog style already in that file.
+Two release groups keep the two version lines independent:
 
-Once the version commit and tag exist, run the publish flows below.
+| Group   | Packages                                | Tag pattern                | Relationship |
+| ------- | --------------------------------------- | -------------------------- | ------------ |
+| `core`  | `shared`, `bpm-core`, `bpm-core-client` | `v{version}`               | fixed        |
+| `react` | `bpm-core-react`                        | `bpm-core-react@{version}` | own cadence  |
 
-### Two publish flows
+`bpm-core-react` tracks React/Mezzanine rather than the core contract, so it
+versions separately — but it is no longer bumped by hand. Each group runs its own
+`prepublish-check` (typecheck + lint + test + build + publint) before versioning.
 
-The four packages have **two different publish flows** because they use different builders. Mixing them up has already caused a broken 0.1.3 release that had to be deprecated.
+Because there is more than one group, nx cannot write a single workspace
+`CHANGELOG.md` (it warns and skips it), so `release.changelog.workspaceChangelog`
+is `false` and every package gets its own changelog and its own GitHub release.
 
-### Backend packages — publish from `dist/libs/<pkg>`
+`release.conventionalCommits.useCommitScope` is **`false` on purpose**. With
+nx's default (`true`), only commits whose scope matches a *project* name count
+toward the bump and everything else is forced to `patch` — and this repo scopes
+commits by domain (`feat(template)`, `fix(calendar)`), which made a three-feature
+release resolve to `patch`. Do not remove it.
 
-`@rytass/bpm-core-shared`, `@rytass/bpm-core-client`, `@rytass/bpm-core-nestjs-module` use `@nx/js:tsc` with `generatePackageJson: true`. The `dist/libs/<pkg>/package.json` is the one that gets published — it has `main: "./src/index.js"` pointing at compiled artifacts. The source `libs/<pkg>/package.json` is for the monorepo dev experience and points at `.ts` files that npm consumers do not see.
-
-```bash
-# Always:
-npx nx run-many -t build -p shared,bpm-core-client,bpm-core
-node tools/publish/finalize-dist-package.mjs \
-  dist/libs/shared dist/libs/bpm-core-client dist/libs/bpm-core
-for pkg in shared bpm-core-client bpm-core; do
-  cd dist/libs/$pkg && npm publish --access public
-done
-```
-
-**Never** `cd libs/<pkg> && npm publish` for these — the published tarball will contain only `.ts` files and fail with `main: "./src/index.js"` not found.
-
-### Frontend package — publish from `libs/bpm-core-react/`
-
-`@rytass/bpm-core-react` uses Vite library mode, which emits to `libs/bpm-core-react/dist/`. Its `package.json` already has `files: ["dist", "README.md", "LICENSE", "CHANGELOG.md"]` and `main: "./dist/index.cjs"` pointing at the in-tree dist. Publish from the lib directory itself:
+### Publishing — one command for all four
 
 ```bash
-npx nx build bpm-core-react
-cd libs/bpm-core-react && npm publish --access public
+npx nx release publish        # add --dry-run first
 ```
+
+Each project declares its own `nx-release-publish.packageRoot`, so this publishes
+every package from the correct directory. The two builders still emit to
+different places, and that difference is now expressed in config rather than in
+two hand-run procedures — mixing them up by hand has already caused a broken
+0.1.3 release that had to be deprecated.
+
+| Package                            | Builder            | `packageRoot`            |
+| ---------------------------------- | ------------------ | ------------------------ |
+| `@rytass/bpm-core-shared`          | `@nx/js:tsc`       | `dist/libs/shared`       |
+| `@rytass/bpm-core-nestjs-module`   | `@nx/js:tsc`       | `dist/libs/bpm-core`     |
+| `@rytass/bpm-core-client`          | `@nx/js:tsc`       | `dist/libs/bpm-core-client` |
+| `@rytass/bpm-core-react`           | Vite library mode  | `libs/bpm-core-react`    |
+
+The three `@nx/js:tsc` packages publish from `dist/libs/<pkg>` because
+`generatePackageJson: true` writes the consumer-facing manifest there, with
+`main` pointing at compiled `.js`. **Never** `cd libs/<pkg> && npm publish` for
+those three — the source manifest points `main` at `./src/index.js` but the
+directory ships only `.ts`, so the tarball is non-functional. `bpm-core-react` is
+the opposite: Vite emits into `libs/bpm-core-react/dist/` and its in-tree
+manifest already has `files` and `main` pointing there, so the lib directory *is*
+the package root.
+
+> `finalize-dist-package.mjs` (wired as the `finalize-dist` target on all three
+> `@nx/js:tsc` packages, ahead of `pkg-quality` so publint lints the finalized
+> manifest) injects `"type": "commonjs"` into the dist manifest. As of nx 22.7.1
+> it reports `already has type:commonjs` on a clean build for all three —
+> `generatePackageJson` now emits the field itself. The step is idempotent and
+> kept as a safety net, but it is a candidate for removal.
 
 ### Consumer setup gotchas
 

@@ -30,22 +30,49 @@ Before adding new exports, check the file first — likely something close alrea
 ## Releasing
 
 **Never hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
-`nx.json`) owns versions, per-package `CHANGELOG.md`, the `v{version}` tag and
-the GitHub release for the three core packages (`shared`, `bpm-core`,
-`bpm-core-client` — a fixed version set driven by Conventional Commits):
+`nx.json`) owns versions, per-package `CHANGELOG.md`, git tags and GitHub
+releases for **all four** published packages:
 
 ```bash
 npx nx release --dry-run       # review first
 npx nx release --skip-publish  # version + changelog + commit + tag
+npx nx release publish         # publishes every package from the right dir
 ```
 
 A manual bump skips the changelog generation, so a release ships with a
 `CHANGELOG.md` that still ends at the previous version. That has happened; do
 not repeat it.
 
-`@rytass/bpm-core-react` is intentionally outside `release.projects` (it tracks
-React/Mezzanine, not the core contract) — bump its version and write its
-changelog entry by hand.
+Two release groups, so the two version lines stay independent:
+
+| Group  | Packages                              | Tag pattern              |
+| ------ | ------------------------------------- | ------------------------ |
+| `core` | `shared`, `bpm-core`, `bpm-core-client` | `v{version}`             |
+| `react`| `bpm-core-react`                      | `bpm-core-react@{version}` |
+
+`core` is a fixed version set (the three move together). `react` versions on its
+own cadence because it tracks React/Mezzanine, not the core contract. Each group
+runs its own `prepublish-check` before versioning.
+
+Because there are multiple groups, nx cannot write a single workspace
+`CHANGELOG.md` — per-package changelogs are the only ones, and each package gets
+its own GitHub release.
+
+**`useCommitScope: false` is required — do not remove it.** nx defaults to
+`true`, which only counts a commit toward the bump when its scope matches a
+*project* name; everything else is treated as an indirect change and forced down
+to `patch` regardless of type. This repo scopes commits by domain
+(`feat(template)`, `fix(calendar)`), so with the default a release containing
+three features resolved to `patch` — verified against
+`nx/dist/src/command-line/release/utils/semver.js`. With it set to `false`, every
+commit touching the project's files counts, and the same set correctly resolved
+to `minor`.
+
+Still read the resolved version in the dry run, and override when needed:
+
+```bash
+npx nx release minor --skip-publish   # or patch / major / an exact version
+```
 
 Full publish commands, and why the backend and frontend packages publish from
 different directories, are in `docs/api-reference.md` → "Publish Procedure".

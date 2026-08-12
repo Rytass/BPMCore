@@ -55,3 +55,6 @@ Thumbs.db
 .next
 out
 *.tsbuildinfo
+
+# Package tarballs produced by publint / npm pack
+*.tgz

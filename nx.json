@@ -5,7 +5,10 @@
     "enabled": false
   },
   "namedInputs": {
-    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
     "production": [
       "default",
       "!{projectRoot}/.eslintrc.json",
@@ -65,16 +68,48 @@
   "targetDefaults": {
     "@nx/js:tsc": {
       "cache": true,
-      "dependsOn": ["^build"],
-      "inputs": ["production", "^production"]
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "production",
+        "^production"
+      ]
     }
   },
   "release": {
-    "projects": ["shared", "bpm-core", "bpm-core-client"],
-    "projectsRelationship": "fixed",
-    "releaseTagPattern": "v{version}",
+    "groups": {
+      "core": {
+        "projects": [
+          "shared",
+          "bpm-core",
+          "bpm-core-client"
+        ],
+        "projectsRelationship": "fixed",
+        "releaseTag": {
+          "pattern": "v{version}"
+        },
+        "version": {
+          "groupPreVersionCommand": "pnpm nx run-many -t prepublish-check -p shared,bpm-core,bpm-core-client --parallel 1"
+        }
+      },
+      "react": {
+        "projects": [
+          "bpm-core-react"
+        ],
+        "projectsRelationship": "fixed",
+        "releaseTag": {
+          "pattern": "bpm-core-react@{version}"
+        },
+        "version": {
+          "groupPreVersionCommand": "pnpm nx run-many -t prepublish-check -p bpm-core-react --parallel 1"
+        }
+      }
+    },
+    "conventionalCommits": {
+      "useCommitScope": false
+    },
     "version": {
-      "preVersionCommand": "pnpm nx run-many -t prepublish-check -p shared,bpm-core,bpm-core-client --parallel 1",
       "conventionalCommits": true,
       "fallbackCurrentVersionResolver": "disk",
       "generatorOptions": {
@@ -84,12 +119,10 @@
       }
     },
     "changelog": {
-      "workspaceChangelog": {
-        "file": "CHANGELOG.md",
-        "createRelease": "github"
-      },
+      "workspaceChangelog": false,
       "projectChangelogs": {
         "file": "{projectRoot}/CHANGELOG.md",
+        "createRelease": "github",
         "renderOptions": {
           "authors": true,
           "commitReferences": true,
@@ -99,9 +132,8 @@
     },
     "git": {
       "commit": true,
-      "commitMessage": "chore(release): publish v{version}",
-      "tag": true,
-      "tagMessage": "v{version}"
+      "commitMessage": "chore(release): publish {projectName} {version}",
+      "tag": true
     }
   }
 }
