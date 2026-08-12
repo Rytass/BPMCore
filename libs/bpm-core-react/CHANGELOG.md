@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removal before updating the schema. DataSource schema lint is available from
   the editor.
 
+### Fixed
+
+- The template designer now restores missing legacy edge data before rendering,
+  so older workflow JSON without an edge `data` object remains editable.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 

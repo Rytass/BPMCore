@@ -3449,11 +3449,27 @@ function applyWorkflowNodeTriggerMode(
 function normalizeDesignerWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinition {
-  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(definition);
+  const withEdgeData = normalizeDesignerEdgeData(definition);
+  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(withEdgeData);
 
   return normalizeSingleIncomingTriggerModes(
     normalizeUserTaskPolicies(withoutAsyncNotifyEdges),
   );
+}
+
+function normalizeDesignerEdgeData(
+  definition: WorkflowDefinition,
+): WorkflowDefinition {
+  const edges = definition.edges.map((edge): WorkflowEdge => {
+    const data = edge.data ?? {};
+
+    return edge.data === data ? edge : { ...edge, data };
+  });
+  const hasEdgeChanges = edges.some(
+    (edge, index) => edge !== definition.edges[index],
+  );
+
+  return hasEdgeChanges ? { ...definition, edges } : definition;
 }
 
 function normalizeUserTaskPolicies(
