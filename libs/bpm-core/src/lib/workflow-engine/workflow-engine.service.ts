@@ -39,10 +39,8 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
-import {
-  BPM_FORM_DATA_SOURCE_VALUE_RESOLVER,
-  BPMFormDataSourceValueResolver,
-} from '../form-data-source';
+import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
+import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationEntity } from '../notification/notification.entity';
@@ -1055,7 +1053,17 @@ export class WorkflowEngineService {
         );
         await this.processRunningInstance(manager, runtimeInstance);
 
-        return runtimeInstance;
+        const refreshedInstance = await instanceRepository.findOne({
+          where: { id: instance.id },
+        });
+
+        if (!refreshedInstance) {
+          throw new NotFoundException(
+            `Approval instance ${instance.id} was not found after resubmit`,
+          );
+        }
+
+        return refreshedInstance;
       },
     );
   }

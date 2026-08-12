@@ -163,7 +163,7 @@ describe('WorkflowEngineService', () => {
     });
     const authContext = createAuthContext('member-001');
 
-    await fixture.service.resubmitApprovalInstance(
+    const resubmittedInstance = await fixture.service.resubmitApprovalInstance(
       {
         formDataJson: '{"costCenter":"CC-002","plant":"HKG"}',
         initiatorMemberId: 'member-001',
@@ -184,6 +184,12 @@ describe('WorkflowEngineService', () => {
       formDataOptionSnapshot: snapshots,
       state: ApprovalInstanceStateEnum.APPROVED,
     });
+    expect(resubmittedInstance.formDataJson).toBe(
+      '{"costCenter":"CC-002","plant":"HKG"}',
+    );
+    expect(resubmittedInstance.formDataOptionSnapshotJson).toBe(
+      JSON.stringify(snapshots),
+    );
   });
 
   it('rejects a resubmit when the instance changes while options resolve', async (): Promise<void> => {
@@ -2936,19 +2942,20 @@ function createServiceFixture({
       ),
       findOne: jest.fn(() =>
         Promise.resolve(
-          createApprovalInstance({
-            formData: processFormData,
-            formDefinitionSnapshot: processFormDefinitionSnapshot,
-            state: instanceState,
-            updatedAt: transactionalInstanceUpdatedAt,
-            workflowSnapshot: processWorkflowSnapshot,
-          }),
+          savedInstance ??
+            createApprovalInstance({
+              formData: processFormData,
+              formDefinitionSnapshot: processFormDefinitionSnapshot,
+              state: instanceState,
+              updatedAt: transactionalInstanceUpdatedAt,
+              workflowSnapshot: processWorkflowSnapshot,
+            }),
         ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
-        savedInstance = entity;
+        savedInstance = Object.assign(createApprovalInstance(), entity);
 
-        return Promise.resolve(entity);
+        return Promise.resolve(savedInstance);
       }),
     });
   const transactionalTokenRepository = createRepository<WorkflowTokenEntity>({

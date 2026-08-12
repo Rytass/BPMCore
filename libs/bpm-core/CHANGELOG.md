@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added server-side dynamic option resolution for submit/resubmit, persisted
   option-label snapshots, optimistic revision protection around resubmit, and
   the reversible `form_data_option_snapshot` migration.
+- Resubmit mutations now return the refreshed persisted instance after dynamic
+  option resolution and workflow processing, keeping GraphQL JSON accessors in
+  sync with the committed form data and option snapshot.
+- GraphQL DataSource input DTOs now carry explicit validation metadata so hosts
+  using `ValidationPipe({ forbidUnknownValues: true })` can call preview/runtime
+  option queries without bypassing input validation.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

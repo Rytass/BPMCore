@@ -1,4 +1,5 @@
 import { Args, Field, InputType, Int, ObjectType, Query, Resolver } from '@nestjs/graphql';
+import { IsOptional, IsString } from 'class-validator';
 import {
   BPMAuthContext,
   BPMAuthenticated,
@@ -98,42 +99,63 @@ export class FormDataSourceOptionsResultObject {
 @InputType('BPMPreviewFormFieldOptionsInput')
 export class PreviewFormFieldOptionsInput {
   @Field()
+  @IsString()
   schemaJson!: string;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   uiSchemaJson!: string | null;
 
   @Field()
+  @IsString()
   fieldKey!: string;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   formDataJson!: string | null;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   searchText!: string | null;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   cursor!: string | null;
 }
 
 @InputType('BPMRuntimeFormFieldOptionsInput')
 export class RuntimeFormFieldOptionsInput {
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   templateId!: string | null;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   instanceId!: string | null;
 
   @Field()
+  @IsString()
   fieldKey!: string;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   formDataJson!: string | null;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   searchText!: string | null;
 
   @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   cursor!: string | null;
 }
 

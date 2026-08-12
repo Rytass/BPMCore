@@ -505,7 +505,11 @@ export class FormDataSourceService {
       );
     }
 
-    if (descriptor.supportsSearch && searchText.length < descriptor.minimumSearchLength) {
+    if (
+      descriptor.supportsSearch &&
+      searchText.length > 0 &&
+      searchText.length < descriptor.minimumSearchLength
+    ) {
       throw new BPMFormDataSourceException(
         BPM_FORM_DATA_SOURCE_ERROR_CODES.SEARCH_TOO_SHORT,
       );

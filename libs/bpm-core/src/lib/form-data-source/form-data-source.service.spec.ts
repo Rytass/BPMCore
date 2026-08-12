@@ -91,6 +91,34 @@ describe('FormDataSourceService', () => {
     expect(search).not.toHaveBeenCalled();
   });
 
+  it('allows an empty initial page when a non-empty search has a minimum length', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [{ label: 'Cost center', value: 'CC-001' }] }),
+    );
+    const service = createService(
+      createSource({ search }, { minimumSearchLength: 2 }),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TW01' }),
+          schemaJson: JSON.stringify(createSchema()),
+          searchText: '',
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        options: [{ label: 'Cost center', value: 'CC-001' }],
+      }),
+    );
+    expect(search).toHaveBeenCalled();
+  });
+
   it('resolves all requested values and restores the client order', async (): Promise<void> => {
     const resolve = jest.fn(() =>
       Promise.resolve([
@@ -300,6 +328,7 @@ function createService(
 
 function createSource(
   overrides: Partial<BPMFormDataSource> = {},
+  descriptorOverrides: Partial<BPMFormDataSourceDescriptor> = {},
 ): BPMFormDataSource {
   const descriptor: BPMFormDataSourceDescriptor = {
     key: 'demo.cost-centers',
@@ -320,6 +349,7 @@ function createSource(
     supportedControls: ['select', 'autocomplete'],
     supportsSearch: true,
     version: 1,
+    ...descriptorOverrides,
   };
 
   return {
