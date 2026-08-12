@@ -27,53 +27,72 @@ Bump the "Last verified against" line at the top to the current version of each 
 ### Versioning and changelogs — always `nx release`, never a manual bump
 
 **Do not hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
-`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the
-`v{version}` git tag and the GitHub release for the three core packages
-(`shared`, `bpm-core`, `bpm-core-client`, released as a fixed version set). A
-manual bump silently skips the changelog, so consumers get a release whose
-`CHANGELOG.md` still ends at the previous version.
+`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the git
+tags and the GitHub releases for **all four** published packages. A manual bump
+silently skips the changelog, so consumers get a release whose `CHANGELOG.md`
+still ends at the previous version.
 
 ```bash
-# Determines the bump from Conventional Commits since the last v* tag,
+# Determines each group's bump from Conventional Commits since its last tag,
 # writes CHANGELOGs, commits and tags. Add --dry-run first to review.
 npx nx release --skip-publish
 ```
 
-`@rytass/bpm-core-react` is deliberately **not** in `release.projects` — it
-versions on its own cadence (it tracks React/Mezzanine, not the core contract).
-Bump its `version` and write its `CHANGELOG.md` entry by hand, matching the
-Keep a Changelog style already in that file.
+All four packages form **one fixed version set**: a shared version number, a
+`v{version}` tag, one workspace `CHANGELOG.md`, one GitHub release, and a
+per-package `CHANGELOG.md` each. `prepublish-check` (typecheck + lint + test +
+build + publint) runs for all four before versioning.
 
-Once the version commit and tag exist, run the publish flows below.
+The trade-off of a fixed set is that any change bumps every package, so
+`bpm-core-react` gets a new version even for a backend-only change. That is
+deliberate: versioning it on its own cadence is what let it drift to 0.8.0 while
+the core packages sat at 0.7.0.
 
-### Two publish flows
+Inter-package `peerDependencies` ranges are rewritten automatically, because
+`version.preserveMatchingDependencyRanges` is `false`. Do not hand-maintain the
+`@rytass/bpm-core-*` ranges. Aligning the set at 0.9.0 also collapsed
+`bpm-core-react`'s accumulated `^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0` into a
+single `^0.9.0`.
 
-The four packages have **two different publish flows** because they use different builders. Mixing them up has already caused a broken 0.1.3 release that had to be deprecated.
+`release.conventionalCommits.useCommitScope` is **`false` on purpose**. With
+nx's default (`true`), only commits whose scope matches a *project* name count
+toward the bump and everything else is forced to `patch` — and this repo scopes
+commits by domain (`feat(template)`, `fix(calendar)`), which made a three-feature
+release resolve to `patch`. Do not remove it.
 
-### Backend packages — publish from `dist/libs/<pkg>`
-
-`@rytass/bpm-core-shared`, `@rytass/bpm-core-client`, `@rytass/bpm-core-nestjs-module` use `@nx/js:tsc` with `generatePackageJson: true`. The `dist/libs/<pkg>/package.json` is the one that gets published — it has `main: "./src/index.js"` pointing at compiled artifacts. The source `libs/<pkg>/package.json` is for the monorepo dev experience and points at `.ts` files that npm consumers do not see.
-
-```bash
-# Always:
-npx nx run-many -t build -p shared,bpm-core-client,bpm-core
-node tools/publish/finalize-dist-package.mjs \
-  dist/libs/shared dist/libs/bpm-core-client dist/libs/bpm-core
-for pkg in shared bpm-core-client bpm-core; do
-  cd dist/libs/$pkg && npm publish --access public
-done
-```
-
-**Never** `cd libs/<pkg> && npm publish` for these — the published tarball will contain only `.ts` files and fail with `main: "./src/index.js"` not found.
-
-### Frontend package — publish from `libs/bpm-core-react/`
-
-`@rytass/bpm-core-react` uses Vite library mode, which emits to `libs/bpm-core-react/dist/`. Its `package.json` already has `files: ["dist", "README.md", "LICENSE", "CHANGELOG.md"]` and `main: "./dist/index.cjs"` pointing at the in-tree dist. Publish from the lib directory itself:
+### Publishing — one command for all four
 
 ```bash
-npx nx build bpm-core-react
-cd libs/bpm-core-react && npm publish --access public
+npx nx release publish        # add --dry-run first
 ```
+
+Each project declares its own `nx-release-publish.packageRoot`, so this publishes
+every package from the correct directory. The two builders still emit to
+different places, and that difference is now expressed in config rather than in
+two hand-run procedures — mixing them up by hand has already caused a broken
+0.1.3 release that had to be deprecated.
+
+| Package                            | Builder            | `packageRoot`            |
+| ---------------------------------- | ------------------ | ------------------------ |
+| `@rytass/bpm-core-shared`          | `@nx/js:tsc`       | `dist/libs/shared`       |
+| `@rytass/bpm-core-nestjs-module`   | `@nx/js:tsc`       | `dist/libs/bpm-core`     |
+| `@rytass/bpm-core-client`          | `@nx/js:tsc`       | `dist/libs/bpm-core-client` |
+| `@rytass/bpm-core-react`           | Vite library mode  | `libs/bpm-core-react`    |
+
+The three `@nx/js:tsc` packages publish from `dist/libs/<pkg>` because
+`generatePackageJson: true` writes the consumer-facing manifest there, with
+`main` pointing at compiled `.js`. **Never** `cd libs/<pkg> && npm publish` for
+those three — the source manifest points `main` at `./src/index.js` but the
+directory ships only `.ts`, so the tarball is non-functional. `bpm-core-react` is
+the opposite: Vite emits into `libs/bpm-core-react/dist/` and its in-tree
+manifest already has `files` and `main` pointing there, so the lib directory *is*
+the package root.
+
+There is no post-build manifest fixup step. `tools/publish/finalize-dist-package.mjs`
+used to inject `"type": "commonjs"` into the dist manifest; as of nx 22.7.1
+`generatePackageJson` emits that field itself, verified by clean-rebuilding all
+three packages, so the script and its `finalize-dist` targets were removed.
+`pkg-quality` (publint) now depends directly on `build`.
 
 ### Consumer setup gotchas
 

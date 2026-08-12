@@ -30,22 +30,57 @@ Before adding new exports, check the file first — likely something close alrea
 ## Releasing
 
 **Never hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
-`nx.json`) owns versions, per-package `CHANGELOG.md`, the `v{version}` tag and
-the GitHub release for the three core packages (`shared`, `bpm-core`,
-`bpm-core-client` — a fixed version set driven by Conventional Commits):
+`nx.json`) owns versions, per-package `CHANGELOG.md`, git tags and GitHub
+releases for **all four** published packages:
 
 ```bash
 npx nx release --dry-run       # review first
 npx nx release --skip-publish  # version + changelog + commit + tag
+npx nx release publish         # publishes every package from the right dir
 ```
 
 A manual bump skips the changelog generation, so a release ships with a
 `CHANGELOG.md` that still ends at the previous version. That has happened; do
 not repeat it.
 
-`@rytass/bpm-core-react` is intentionally outside `release.projects` (it tracks
-React/Mezzanine, not the core contract) — bump its version and write its
-changelog entry by hand.
+**All four packages are one fixed version set** — `shared`, `bpm-core`,
+`bpm-core-client` and `bpm-core-react` share a version number, a `v{version}`
+tag, one workspace `CHANGELOG.md` and one GitHub release, plus a per-package
+`CHANGELOG.md` each. `prepublish-check` runs for all four before versioning.
+
+The cost of a fixed set: a change to any package bumps all four, so
+`bpm-core-react` ships a new version even when only backend code moved. That is
+the accepted trade for one number to reason about — `bpm-core-react` used to
+version on its own cadence and drifted to 0.8.0 while the core sat at 0.7.0.
+
+Inter-package ranges are maintained automatically
+(`preserveMatchingDependencyRanges: false`). Do not hand-edit the
+`@rytass/bpm-core-*` entries in each package's `peerDependencies`; `nx release`
+rewrites them to the new version. The historical accumulation in
+`bpm-core-react` (`^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0`) was collapsed to a
+single current range when the versions were aligned at 0.9.0 — do not
+reintroduce that pattern by hand.
+
+**`useCommitScope: false` is required — do not remove it.** nx defaults to
+`true`, which only counts a commit toward the bump when its scope matches a
+*project* name; everything else is treated as an indirect change and forced down
+to `patch` regardless of type. This repo scopes commits by domain
+(`feat(template)`, `fix(calendar)`), so with the default a release containing
+three features resolved to `patch` — verified against
+`nx/dist/src/command-line/release/utils/semver.js`. With it set to `false`, every
+commit touching the project's files counts, and the same set correctly resolved
+to `minor`.
+
+Still read the resolved version in the dry run, and override when needed:
+
+```bash
+npx nx release minor --skip-publish   # or patch / major / an exact version
+```
+
+The 0.9.0 release had to be given explicitly (`npx nx release 0.9.0`) because
+aligning the version set meant clearing `bpm-core-react`'s already-published
+0.8.0; the core packages skip 0.8.0 entirely. From the `v0.9.0` tag onward the
+bump resolves automatically again.
 
 Full publish commands, and why the backend and frontend packages publish from
 different directories, are in `docs/api-reference.md` → "Publish Procedure".
