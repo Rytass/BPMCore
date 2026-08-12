@@ -41,22 +41,10 @@
         "command": "tsc --noEmit -p libs/bpm-core/tsconfig.lib.json"
       }
     },
-    "finalize-dist": {
-      "executor": "nx:run-commands",
-      "outputs": [
-        "{workspaceRoot}/dist/libs/bpm-core"
-      ],
-      "dependsOn": [
-        "build"
-      ],
-      "options": {
-        "command": "node tools/publish/finalize-dist-package.mjs dist/libs/bpm-core"
-      }
-    },
     "pkg-quality": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "finalize-dist"
+        "build"
       ],
       "options": {
         "commands": [

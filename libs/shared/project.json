@@ -30,22 +30,10 @@
         "command": "tsc --noEmit -p libs/shared/tsconfig.lib.json"
       }
     },
-    "finalize-dist": {
-      "executor": "nx:run-commands",
-      "outputs": [
-        "{workspaceRoot}/dist/libs/shared"
-      ],
-      "dependsOn": [
-        "build"
-      ],
-      "options": {
-        "command": "node tools/publish/finalize-dist-package.mjs dist/libs/shared"
-      }
-    },
     "pkg-quality": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "finalize-dist"
+        "build"
       ],
       "options": {
         "commands": [

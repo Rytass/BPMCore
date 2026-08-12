@@ -87,12 +87,11 @@ the opposite: Vite emits into `libs/bpm-core-react/dist/` and its in-tree
 manifest already has `files` and `main` pointing there, so the lib directory *is*
 the package root.
 
-> `finalize-dist-package.mjs` (wired as the `finalize-dist` target on all three
-> `@nx/js:tsc` packages, ahead of `pkg-quality` so publint lints the finalized
-> manifest) injects `"type": "commonjs"` into the dist manifest. As of nx 22.7.1
-> it reports `already has type:commonjs` on a clean build for all three —
-> `generatePackageJson` now emits the field itself. The step is idempotent and
-> kept as a safety net, but it is a candidate for removal.
+There is no post-build manifest fixup step. `tools/publish/finalize-dist-package.mjs`
+used to inject `"type": "commonjs"` into the dist manifest; as of nx 22.7.1
+`generatePackageJson` emits that field itself, verified by clean-rebuilding all
+three packages, so the script and its `finalize-dist` targets were removed.
+`pkg-quality` (publint) now depends directly on `build`.
 
 ### Consumer setup gotchas
 
