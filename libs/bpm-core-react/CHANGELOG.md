@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Form builder and renderer schemas now recognize the `autocomplete` option
   field while retaining Mezzanine controls and primitive form values.
+- FormRenderer now supports host-bounded preview/runtime DataSource contexts,
+  snapshot hydration, async Mezzanine Select/AutoComplete controls, complete
+  list Radio/Checkbox controls, paging/search state, retry feedback, and
+  submission blocking for unresolved dynamic values.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

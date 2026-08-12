@@ -78,7 +78,12 @@ export function ComposeReviewStep({
       <div style={STACK_STYLE}>
         <Typography variant="h3">表單預覽</Typography>
         {fieldCount > 0 ? (
-          <FormRenderer readonly schema={formSchema} uiSchema={formUiSchema} />
+          <FormRenderer
+            dataSourceContext={{ kind: 'preview' }}
+            readonly
+            schema={formSchema}
+            uiSchema={formUiSchema}
+          />
         ) : (
           <Empty title="尚未設計表單欄位" />
         )}

@@ -10,9 +10,13 @@ import {
   useState,
 } from 'react';
 import {
+  AutoComplete,
+  Button,
+  CheckboxGroup,
   DatePicker,
   DateTimePicker,
   Input,
+  RadioGroup,
   Select,
   Textarea,
   Toggle,
@@ -21,11 +25,15 @@ import {
 } from '@mezzanine-ui/react';
 import type { UploadFile } from '@mezzanine-ui/react/Upload';
 import {
+  FormDataSourceOptionFieldDefinition,
+  FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
+  isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
   buildFormRendererValues,
@@ -38,20 +46,37 @@ import {
   parseOptionalNumberInput,
   readDatePickerValue,
   readFieldOptionAsSelectOption,
+  readSelectedFormDataSourceOptions,
   readSelectOption,
   readVisibleFormRendererFields,
 } from '@rytass/bpm-core-client/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
+import {
+  FormDataSourceFieldState,
+  FormRendererDataSourceContext,
+  readFormDataSourceFieldStatusMessage,
+  useFormDataSourceField,
+} from './form-data-source-field';
 
 export interface FormRendererProps {
+  readonly dataSourceContext?: FormRendererDataSourceContext;
+  readonly dataSourceInitialValues?: FormRendererValues;
   readonly emptyText?: string;
   readonly errors?: Readonly<Record<string, string>>;
   readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
+  readonly onDataSourceStateChange?: (
+    fieldKey: string,
+    state: Pick<
+      FormDataSourceFieldState,
+      'hasValue' | 'invalidValues' | 'status'
+    >,
+  ) => void;
   readonly onUploadAttachment?: (
     field: FormFieldDefinition,
     file: File,
   ) => Promise<{ readonly id: string }>;
+  readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
   readonly singleColumn?: boolean;
@@ -91,11 +116,15 @@ function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
 }
 
 export function FormRenderer({
+  dataSourceContext,
+  dataSourceInitialValues,
   emptyText = '尚未建立欄位。',
   errors = {},
   maxWidth,
   onChange,
+  onDataSourceStateChange,
   onUploadAttachment,
+  optionSnapshots,
   readonly = false,
   schema,
   singleColumn = false,
@@ -167,13 +196,18 @@ export function FormRenderer({
     >
       {visibleFields.map((field) => (
         <FormRendererField
+          dataSourceContext={dataSourceContext}
+          dataSourceInitialValues={dataSourceInitialValues}
           field={field}
           error={errors[field.fieldKey] ?? null}
           fields={schema.fields}
           key={field.fieldKey}
           onChange={updateValue}
+          onDataSourceStateChange={onDataSourceStateChange}
           onUploadAttachment={onUploadAttachment}
+          optionSnapshots={optionSnapshots}
           readonly={readonly}
+          schema={schema}
           style={{
             ...FORM_RENDERER_FIELD_STYLE,
             gridColumn: `span ${
@@ -182,6 +216,7 @@ export function FormRenderer({
           }}
           value={values[field.fieldKey]}
           values={values}
+          uiSchema={uiSchema}
         />
       ))}
     </div>
@@ -189,16 +224,24 @@ export function FormRenderer({
 }
 
 function FormRendererField({
+  dataSourceContext,
+  dataSourceInitialValues,
   error,
   field,
   fields,
   onChange,
+  onDataSourceStateChange,
   onUploadAttachment,
+  optionSnapshots,
   readonly,
+  schema,
   style,
   value,
   values,
+  uiSchema,
 }: {
+  readonly dataSourceContext?: FormRendererDataSourceContext;
+  readonly dataSourceInitialValues?: FormRendererValues;
   readonly error: string | null;
   readonly field: FormFieldDefinition;
   readonly fields: readonly FormFieldDefinition[];
@@ -206,20 +249,65 @@ function FormRendererField({
     fieldKey: string,
     value: FormFieldValue | undefined,
   ) => void;
+  readonly onDataSourceStateChange?: (
+    fieldKey: string,
+    state: Pick<
+      FormDataSourceFieldState,
+      'hasValue' | 'invalidValues' | 'status'
+    >,
+  ) => void;
   readonly onUploadAttachment?:
     | ((
         field: FormFieldDefinition,
         file: File,
       ) => Promise<{ readonly id: string }>)
     | undefined;
+  readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly: boolean;
+  readonly schema: FormDefinitionSchema;
   readonly style: CSSProperties;
+  readonly uiSchema: FormUiSchema;
   readonly value: FormFieldValue | undefined;
   readonly values: FormRendererValues;
 }): ReactElement {
   const required = isFormRendererFieldRequired(field, fields, values);
   const fieldReadonly =
     readonly || isFormRendererFieldReadonly(field, fields, values);
+  const dataSourceState = useFormDataSourceField({
+    context: dataSourceContext,
+    field,
+    formData: values,
+    initialFormData: dataSourceInitialValues,
+    initialValue: dataSourceInitialValues?.[field.fieldKey],
+    optionSnapshots,
+    readonly: fieldReadonly,
+    schema,
+    uiSchema,
+  });
+  const dataSourceStatusMessage = readFormDataSourceFieldStatusMessage(
+    dataSourceState,
+  );
+  const dataSourceStateSignature = JSON.stringify({
+    hasValue: dataSourceState.hasValue,
+    invalidValues: dataSourceState.invalidValues,
+    status: dataSourceState.status,
+  });
+
+  useEffect((): void => {
+    if (!isFormDataSourceFieldDefinition(field)) {
+      return;
+    }
+
+    onDataSourceStateChange?.(field.fieldKey, {
+      hasValue: dataSourceState.hasValue,
+      invalidValues: dataSourceState.invalidValues,
+      status: dataSourceState.status,
+    });
+  }, [
+    dataSourceStateSignature,
+    field.fieldKey,
+    onDataSourceStateChange,
+  ]);
 
   return (
     <div data-form-field-key={field.fieldKey} style={style}>
@@ -234,6 +322,8 @@ function FormRendererField({
           fieldReadonly,
           onChange,
           onUploadAttachment,
+          dataSourceContext,
+          dataSourceState,
         )}
       </BPMFormField>
       {error ? (
@@ -241,9 +331,40 @@ function FormRendererField({
           {error}
         </Typography>
       ) : null}
+      {dataSourceStatusMessage ? (
+        <div style={DATA_SOURCE_FEEDBACK_STYLE}>
+          <Typography
+            color={
+              dataSourceState.status === 'INVALID' ||
+              dataSourceState.status === 'UNAVAILABLE'
+                ? 'text-error'
+                : 'text-neutral'
+            }
+            variant="caption"
+          >
+            {dataSourceStatusMessage}
+          </Typography>
+          {dataSourceState.status === 'UNAVAILABLE' ? (
+            <Button
+              onClick={dataSourceState.retry}
+              size="sub"
+              type="button"
+              variant="base-ghost"
+            >
+              重試
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
+
+const DATA_SOURCE_FEEDBACK_STYLE: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+};
 
 function renderControl(
   field: FormFieldDefinition,
@@ -256,6 +377,8 @@ function renderControl(
         file: File,
       ) => Promise<{ readonly id: string }>)
     | undefined,
+  dataSourceContext: FormRendererDataSourceContext | undefined,
+  dataSourceState: FormDataSourceFieldState,
 ): ReactElement {
   if (field.type === 'textarea') {
     return (
@@ -283,6 +406,17 @@ function renderControl(
           onChange(field.fieldKey, event.target.checked)
         }
       />
+    );
+  }
+
+  if (isFormDataSourceFieldDefinition(field)) {
+    return renderDynamicOptionControl(
+      field,
+      value,
+      readonly,
+      onChange,
+      dataSourceContext,
+      dataSourceState,
     );
   }
 
@@ -428,6 +562,167 @@ function renderControl(
       {...(readonly ? { readonly: true as const } : {})}
       value={readStringValue(value)}
       variant="base"
+    />
+  );
+}
+
+function renderDynamicOptionControl(
+  field: FormDataSourceOptionFieldDefinition,
+  value: FormFieldValue | undefined,
+  readonly: boolean,
+  onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
+  dataSourceContext: FormRendererDataSourceContext | undefined,
+  dataSourceState: FormDataSourceFieldState,
+): ReactElement {
+  const options = dataSourceState.options.map(readFieldOptionAsSelectOption);
+  const selectedOptions = readSelectedFormDataSourceOptions(
+    value,
+    dataSourceState.options,
+  ).map(readFieldOptionAsSelectOption);
+  const loading = dataSourceState.status === 'LOADING';
+  const waitingForDependencies =
+    dataSourceState.status === 'WAITING_FOR_DEPENDENCIES';
+  const interactiveSearch = Boolean(dataSourceContext) && !readonly;
+  const optionControlDisabled = readonly || waitingForDependencies;
+
+  if (field.type === 'autocomplete') {
+    if (readFormFieldSelectionMode(field) === 'multiple') {
+      return (
+        <AutoComplete
+          asyncData={interactiveSearch}
+          clearSearchText
+          disabled={optionControlDisabled}
+          disabledOptionsFilter={interactiveSearch}
+          globalPortal
+          loading={loading}
+          mode="multiple"
+          onChange={(nextOptions): void =>
+            onChange(
+              field.fieldKey,
+              nextOptions.length
+                ? nextOptions.map((option) => option.id)
+                : undefined,
+            )
+          }
+          onReachBottom={
+            dataSourceState.hasNextPage
+              ? dataSourceState.onReachBottom
+              : undefined
+          }
+          onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+          options={options}
+          placeholder={field.placeholder ?? '請輸入或選擇'}
+          readOnly={readonly}
+          searchDebounceTime={300}
+          value={selectedOptions}
+        />
+      );
+    }
+
+    return (
+      <AutoComplete
+        asyncData={interactiveSearch}
+        clearSearchText
+        disabled={optionControlDisabled}
+        disabledOptionsFilter={interactiveSearch}
+        globalPortal
+        loading={loading}
+        mode="single"
+        onChange={(nextOption): void =>
+          onChange(field.fieldKey, nextOption?.id ?? undefined)
+        }
+        onReachBottom={
+          dataSourceState.hasNextPage
+            ? dataSourceState.onReachBottom
+            : undefined
+        }
+        onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+        options={options}
+        placeholder={field.placeholder ?? '請輸入或選擇'}
+        readOnly={readonly}
+        searchDebounceTime={300}
+        value={selectedOptions[0] ?? null}
+      />
+    );
+  }
+
+  if (field.type === 'radio') {
+    return (
+      <RadioGroup
+        disabled={optionControlDisabled}
+        name={field.fieldKey}
+        onChange={(event): void =>
+          onChange(field.fieldKey, event.target.value || undefined)
+        }
+        options={options}
+        value={readStringValue(value)}
+      />
+    );
+  }
+
+  if (field.type === 'checkbox') {
+    return (
+      <CheckboxGroup
+        disabled={optionControlDisabled}
+        name={field.fieldKey}
+        onChange={(event): void =>
+          onChange(
+            field.fieldKey,
+            event.target.values.length ? event.target.values : undefined,
+          )
+        }
+        options={options.map((option) => ({
+          label: option.name,
+          value: option.id,
+        }))}
+        value={[...readStringArrayValue(value)]}
+      />
+    );
+  }
+
+  if (readFormFieldSelectionMode(field) === 'multiple') {
+    return (
+      <Select
+        disabled={optionControlDisabled}
+        loading={loading}
+        mode="multiple"
+        onChange={(nextOptions): void =>
+          onChange(
+            field.fieldKey,
+            nextOptions.length
+              ? nextOptions.map((option) => option.id)
+              : undefined,
+          )
+        }
+        onReachBottom={
+          dataSourceState.hasNextPage
+            ? dataSourceState.onReachBottom
+            : undefined
+        }
+        options={options}
+        placeholder={field.placeholder ?? '請選擇一或多個選項'}
+        readOnly={readonly}
+        value={selectedOptions}
+      />
+    );
+  }
+
+  return (
+    <Select
+      disabled={optionControlDisabled}
+      loading={loading}
+      onChange={(nextOption): void =>
+        onChange(field.fieldKey, nextOption?.id ?? undefined)
+      }
+      onReachBottom={
+        dataSourceState.hasNextPage
+          ? dataSourceState.onReachBottom
+          : undefined
+      }
+      options={options}
+      placeholder={field.placeholder ?? '請選擇'}
+      readOnly={readonly}
+      value={selectedOptions[0] ?? null}
     />
   );
 }

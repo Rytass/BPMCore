@@ -3,6 +3,7 @@
 import {
   CSSProperties,
   ReactElement,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -93,6 +94,10 @@ import {
 } from './sections/InstanceTasksSection';
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
 import { InstanceHistorySection } from './sections/InstanceHistorySection';
+import {
+  isFormDataSourceFieldSubmissionBlocked,
+  type FormDataSourceFieldState,
+} from '../../forms/renderer/form-data-source-field';
 
 const FLOW_NODE_LAYOUT_WIDTH = 184;
 const FLOW_NODE_LAYOUT_HEIGHT = 96;
@@ -258,6 +263,11 @@ export function InstanceDetailView({
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
+  const [resubmitDataSourceStates, setResubmitDataSourceStates] = useState<
+    Readonly<
+      Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
+    >
+  >({});
   const [previewAttachment, setPreviewAttachment] =
     useState<AttachmentRecord | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -276,7 +286,38 @@ export function InstanceDetailView({
 
   useEffect((): void => {
     setResubmitFormData(instance?.formData ?? {});
+    setResubmitDataSourceStates({});
   }, [instance]);
+
+  const handleResubmitDataSourceStateChange = useCallback(
+    (
+      fieldKey: string,
+      state: Pick<
+        FormDataSourceFieldState,
+        'hasValue' | 'invalidValues' | 'status'
+      >,
+    ): void => {
+      setResubmitDataSourceStates((currentStates) => {
+        const currentState = currentStates[fieldKey];
+
+        if (
+          currentState?.hasValue === state.hasValue &&
+          currentState.status === state.status
+        ) {
+          return currentStates;
+        }
+
+        return {
+          ...currentStates,
+          [fieldKey]: {
+            hasValue: state.hasValue,
+            status: state.status,
+          },
+        };
+      });
+    },
+    [],
+  );
 
   // Derived from tasks (needed for PageHeader actions — read from ref for
   // deciding/hasCurrentTask, but we need these synchronously for rendering).
@@ -509,6 +550,17 @@ export function InstanceDetailView({
     setDeciding(true);
     setError(null);
 
+    if (
+      Object.values(resubmitDataSourceStates).some(
+        isFormDataSourceFieldSubmissionBlocked,
+      )
+    ) {
+      setError('請先完成動態選項驗證。');
+      setDeciding(false);
+
+      return;
+    }
+
     try {
       await resubmitApprovalInstance({
         formData: resubmitFormData,
@@ -672,6 +724,7 @@ export function InstanceDetailView({
               error={error}
               instance={instance}
               loading={loading}
+              onDataSourceStateChange={handleResubmitDataSourceStateChange}
               onResubmitFormChange={(values): void => {
                 setResubmitFormData(values);
                 setResubmitFormErrors({});

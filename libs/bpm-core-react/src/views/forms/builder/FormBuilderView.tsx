@@ -1789,6 +1789,7 @@ export function FormBuilderView({
           填寫預覽
         </Typography>
         <FormRenderer
+          dataSourceContext={{ kind: 'preview' }}
           onChange={updatePreviewValues}
           schema={schema}
           uiSchema={uiSchema}

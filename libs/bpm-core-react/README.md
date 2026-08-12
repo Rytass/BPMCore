@@ -8,7 +8,11 @@ Form views understand the additive `autocomplete` and option-source schema
 variants while preserving primitive single-value and multiple-value payloads.
 Dynamic registry queries and server-side validation remain behind the BPM
 client/core runtime boundaries; React controls do not call external sources
-directly.
+directly. Pass a `dataSourceContext` with `kind: 'preview'` for designer
+preview or a published-template/instance `kind: 'runtime'` context for an
+editable form. Read-only instance rendering should omit the runtime context
+and pass `optionSnapshots` so historical labels remain available without a
+network query.
 
 ## Status
 

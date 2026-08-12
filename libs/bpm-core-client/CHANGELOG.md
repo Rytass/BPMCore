@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the host-registered form DataSource GraphQL boundary.
 - Approval instance records now expose parsed and raw dynamic option snapshots
   returned by the server.
+- Added immutable DataSource option merge, selected hydration, unresolved-value,
+  dependency, and value-signature helpers plus the `FormDataSourceFieldStatus`
+  union used by the React renderer.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

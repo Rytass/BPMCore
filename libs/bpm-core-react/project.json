@@ -13,6 +13,16 @@
         "command": "vite build"
       }
     },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": [
+        "{workspaceRoot}/coverage/libs/bpm-core-react"
+      ],
+      "options": {
+        "jestConfig": "libs/bpm-core-react/jest.config.cts",
+        "passWithNoTests": true
+      }
+    },
     "typecheck": {
       "executor": "nx:run-commands",
       "options": {
