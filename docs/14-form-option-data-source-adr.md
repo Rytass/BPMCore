@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-08-11
-- **實作狀態**：Phase 0–6 code 已實作；P6 repository-wide e2e final gate 尚未全綠
+- **實作狀態**：Phase 0–6 與 P6 repository-wide e2e final gate 已完成；完整 suite 43/43 通過
 - **適用範圍**：Form Builder、FormRenderer、案件發起、案件退回編輯與重新送出、BPM 宿主整合
 - **交付規劃**：[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 

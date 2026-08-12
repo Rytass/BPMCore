@@ -1,16 +1,16 @@
 # 15 — 表單選項 DataSource 開發 Phase
 
-- **狀態**：Phase 0–6 code 已實作；P6 full-suite gate 待收斂
+- **狀態**：Phase 0–6 與 P6 full-suite gate 已完成
 - **規劃日期**：2026-08-11
 - **權威決策**：[14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
 - **完成定義**：所有 Phase gate、真實 wrapper-host journey 與文件同步完成
 
-截至 2026-08-12，P0–P5 gates 已完成，P6 的 wrapper registry、deterministic seed、
-GraphQL/DB golden path、package consumer wiring 與真實 Chrome golden path 已完成。新增
-DataSource real spec 單獨通過；repository-wide `pnpm e2e:client` 在 system Chrome、
-單 worker 下為 33 passed / 10 failed，失敗集中在非本次 DataSource 的 ad-hoc／notification／
-skill-matrix／legacy designer／workspace seeded journey；目前不將這些 failure 直接判定為
-既有，故 P6 尚保留為未全綠 gate，不宣稱整體完成。
+截至 2026-08-12，P0–P6 gates 已完成。P6 的 wrapper registry、deterministic seed、
+GraphQL/DB golden path、package consumer wiring 與真實 Chrome golden path 均已驗證；
+`pnpm demo:reset` 成功後，repository-wide `pnpm e2e:client --workers=1` 以 system Chrome
+在 task-owned client/API（17612/17613）跑出 43 passed / 0 failed。最終
+`pnpm typecheck`、`pnpm lint`、`pnpm test` 與 `pnpm build` 亦全部通過；unit suite 為
+48 suites / 342 tests，lint 維持 0 errors 與 2 個既有 warnings。
 
 ## 1. 目標
 
