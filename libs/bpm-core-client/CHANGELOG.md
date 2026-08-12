@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type matching, field/constant bindings, field-key rename propagation, and
   dependent-field discovery.
 
+### Fixed
+
+- Explicit `NEXT_PUBLIC_API_URL` base URLs now resolve to `/graphql` before
+  browser requests, matching the documented API-base configuration contract.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
