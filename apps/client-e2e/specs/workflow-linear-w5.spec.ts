@@ -12,6 +12,10 @@ const FORM_VERSION_ID = 'e2e-form-version';
 const INSTANCE_ID = 'e2e-instance';
 const TASK_ID = 'e2e-task';
 const UPDATED_AT = '2026-05-06T08:00:00.000Z';
+const E2E_API_URL = process.env.E2E_API_URL ?? 'http://localhost:17603';
+const E2E_BASE_ORIGIN = new URL(
+  process.env.E2E_BASE_URL ?? 'http://localhost:17602',
+).origin;
 
 test.describe('M2 W5 linear workflow', () => {
   test.beforeEach(async ({ page }): Promise<void> => {
@@ -180,11 +184,15 @@ test.describe('M2 W5 linear workflow', () => {
     await page.getByRole('button', { name: '送出同意' }).click();
 
     await expect(page.getByRole('heading', { name: '簽核意見' })).toBeVisible();
-    await expect(page.getByRole('alert')).toContainText(
-      '此任務已被其他人處理，請重新整理後再試。',
-    );
+    await expect(
+      page
+        .getByRole('alert')
+        .filter({ hasText: '此任務已被其他人處理，請重新整理後再試。' }),
+    ).toBeVisible();
     await expect(commentInput).toHaveValue('保留這段簽核意見');
-    await expect(page.getByRole('button', { name: '同意' })).toBeVisible();
+    await expect(
+      page.getByRole('button', { exact: true, name: '同意' }),
+    ).toBeVisible();
   });
 
 
@@ -326,7 +334,7 @@ async function mockWorkflowGraphQl(
         contentType: 'application/pdf',
         headers: {
           'access-control-allow-credentials': 'true',
-          'access-control-allow-origin': 'http://localhost:17602',
+          'access-control-allow-origin': E2E_BASE_ORIGIN,
         },
         status: 200,
       });
@@ -446,7 +454,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentPreviewUrl')) {
       await fulfillGraphQl(route, {
         attachmentPreviewUrl:
-          'http://localhost:17603/attachments/attachment-pdf/download?token=e2e-preview-token',
+          `${E2E_API_URL}/attachments/attachment-pdf/download?token=e2e-preview-token`,
       });
       return;
     }
@@ -454,7 +462,7 @@ async function mockWorkflowGraphQl(
     if (query.includes('query AttachmentDownloadUrl')) {
       await fulfillGraphQl(route, {
         attachmentDownloadUrl:
-          'http://localhost:17603/attachments/attachment-pdf/download?token=e2e-download-token',
+          `${E2E_API_URL}/attachments/attachment-pdf/download?token=e2e-download-token`,
       });
       return;
     }
