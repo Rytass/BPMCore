@@ -6,6 +6,11 @@ import {
   createApiTestMemberPasswordHash,
 } from '../src/app/api-simulation-members';
 import { ensureApiTestMemberTable } from '../src/app/api-test-member-schema';
+import {
+  API_FORM_DATA_SOURCE_OPTIONS_TABLE,
+  API_FORM_DATA_SOURCE_OPTION_SEEDS,
+  ensureApiFormDataSourceOptionsTable,
+} from '../src/app/api-form-data-source';
 // Wrapper-app reset script intentionally loads BPM source helpers directly
 // because it runs through ts-node before the package is built.
 // eslint-disable-next-line @nx/enforce-module-boundaries
@@ -63,6 +68,7 @@ const CATEGORY_IDS = {
 const FORM_IDS = {
   ACCESS: '30000000-0000-4000-8000-000000000003',
   DISCOUNT: '30000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS: '30000000-0000-4000-8000-000000000006',
   EXPENSE: '30000000-0000-4000-8000-000000000001',
   LEAVE: '30000000-0000-4000-8000-000000000002',
   PURCHASE: '30000000-0000-4000-8000-000000000005',
@@ -71,6 +77,7 @@ const FORM_IDS = {
 const FORM_VERSION_IDS = {
   ACCESS_V1: '31000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '31000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_V1: '31000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '31000000-0000-4000-8000-000000000006',
   EXPENSE_DRAFT: '31000000-0000-4000-8000-000000000007',
   EXPENSE_V1: '31000000-0000-4000-8000-000000000001',
@@ -81,6 +88,7 @@ const FORM_VERSION_IDS = {
 const TEMPLATE_IDS = {
   ACCESS: '50000000-0000-4000-8000-000000000003',
   DISCOUNT: '50000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS: '50000000-0000-4000-8000-000000000006',
   EXPENSE: '50000000-0000-4000-8000-000000000001',
   LEAVE: '50000000-0000-4000-8000-000000000002',
   PURCHASE: '50000000-0000-4000-8000-000000000005',
@@ -89,6 +97,7 @@ const TEMPLATE_IDS = {
 const TEMPLATE_VERSION_IDS = {
   ACCESS_V1: '51000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '51000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_V1: '51000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '51000000-0000-4000-8000-000000000006',
   EXPENSE_V1: '51000000-0000-4000-8000-000000000001',
   LEAVE_V1: '51000000-0000-4000-8000-000000000002',
@@ -98,6 +107,7 @@ const TEMPLATE_VERSION_IDS = {
 const INSTANCE_IDS = {
   ACCESS_RETURNED: '60000000-0000-4000-8000-000000000005',
   DISCOUNT_REJECTED: '60000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_RETURNED: '60000000-0000-4000-8000-000000000008',
   EXPENSE_APPROVED: '60000000-0000-4000-8000-000000000003',
   EXPENSE_RUNNING: '60000000-0000-4000-8000-000000000001',
   LEAVE_APPROVED: '60000000-0000-4000-8000-000000000006',
@@ -108,6 +118,7 @@ const INSTANCE_IDS = {
 const TOKEN_IDS = {
   ACCESS_RETURNED: '61000000-0000-4000-8000-000000000005',
   DISCOUNT_REJECTED: '61000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_RETURNED: '61000000-0000-4000-8000-000000000008',
   EXPENSE_APPROVED: '61000000-0000-4000-8000-000000000003',
   EXPENSE_RUNNING_FINANCE: '61000000-0000-4000-8000-000000000001',
   LEAVE_APPROVED: '61000000-0000-4000-8000-000000000006',
@@ -118,6 +129,7 @@ const TOKEN_IDS = {
 const TASK_IDS = {
   ACCESS_RETURNED_IT: '62000000-0000-4000-8000-000000000006',
   DISCOUNT_REJECTED_MANAGER: '62000000-0000-4000-8000-000000000005',
+  DYNAMIC_OPTIONS_RETURNED_MANAGER: '62000000-0000-4000-8000-000000000010',
   EXPENSE_APPROVED_FINANCE: '62000000-0000-4000-8000-000000000004',
   EXPENSE_APPROVED_MANAGER: '62000000-0000-4000-8000-000000000003',
   EXPENSE_RUNNING_FINANCE: '62000000-0000-4000-8000-000000000002',
@@ -323,6 +335,120 @@ const PURCHASE_FORM_SCHEMA = {
   schemaVersion: 1,
 } as const;
 
+const DYNAMIC_OPTIONS_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'plant',
+      label: '廠別',
+      options: [
+        { label: '台中廠 TW01', value: 'TW01' },
+        { label: '台北廠 TW02', value: 'TW02' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'costCenterSelectSingle',
+      label: '成本中心 Select 單選',
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'costCenterSelectMultiple',
+      label: '成本中心 Select 複選',
+      mode: 'multiple',
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'costCenterAutocompleteSingle',
+      label: '成本中心 AutoComplete 單選',
+      required: true,
+      type: 'autocomplete',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers-always',
+        version: 1,
+      },
+      fieldKey: 'costCenterAutocompleteMultiple',
+      label: '成本中心 AutoComplete 複選（每次驗證）',
+      mode: 'multiple',
+      required: true,
+      type: 'autocomplete',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers-complete',
+        version: 1,
+      },
+      fieldKey: 'costCenterRadio',
+      label: '成本中心 Radio',
+      required: true,
+      type: 'radio',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers-complete',
+        version: 1,
+      },
+      fieldKey: 'costCenterCheckbox',
+      label: '成本中心 Checkbox',
+      required: true,
+      type: 'checkbox',
+    },
+  ],
+  schemaVersion: 1,
+} as const;
+
 const EXPENSE_FORM_UI_SCHEMA = {
   layout: [
     { fieldKey: 'vendorName', width: 'HALF' },
@@ -373,6 +499,106 @@ const PURCHASE_FORM_UI_SCHEMA = {
   ],
   schemaVersion: 1,
 } as const;
+
+const DYNAMIC_OPTIONS_FORM_UI_SCHEMA = {
+  layout: [
+    { fieldKey: 'plant', width: 'FULL' },
+    { fieldKey: 'costCenterSelectSingle', width: 'HALF' },
+    { fieldKey: 'costCenterSelectMultiple', width: 'HALF' },
+    { fieldKey: 'costCenterAutocompleteSingle', width: 'HALF' },
+    { fieldKey: 'costCenterAutocompleteMultiple', width: 'HALF' },
+    { fieldKey: 'costCenterRadio', width: 'HALF' },
+    { fieldKey: 'costCenterCheckbox', width: 'HALF' },
+  ],
+  schemaVersion: 1,
+} as const;
+
+const DYNAMIC_OPTIONS_RETURNED_FORM_DATA = {
+  costCenterAutocompleteMultiple: ['CC-TW01-004', 'CC-TW01-005'],
+  costCenterAutocompleteSingle: 'CC-TW01-003',
+  costCenterCheckbox: ['CC-TW01-007', 'CC-TW01-008'],
+  costCenterRadio: 'CC-TW01-006',
+  costCenterSelectMultiple: ['CC-TW01-001', 'CC-TW01-002'],
+  costCenterSelectSingle: 'CC-TW01-001',
+  plant: 'TW01',
+} as const;
+
+const DYNAMIC_OPTIONS_RETURNED_SNAPSHOT = {
+  costCenterAutocompleteMultiple: createDynamicOptionSnapshot(
+    'demo.cost-centers-always',
+    1,
+    DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterAutocompleteMultiple,
+  ),
+  costCenterAutocompleteSingle: createDynamicOptionSnapshot(
+    'demo.cost-centers',
+    1,
+    [DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterAutocompleteSingle],
+  ),
+  costCenterCheckbox: createDynamicOptionSnapshot(
+    'demo.cost-centers-complete',
+    1,
+    DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterCheckbox,
+  ),
+  costCenterRadio: createDynamicOptionSnapshot(
+    'demo.cost-centers-complete',
+    1,
+    [DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterRadio],
+  ),
+  costCenterSelectMultiple: createDynamicOptionSnapshot(
+    'demo.cost-centers',
+    1,
+    DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterSelectMultiple,
+  ),
+  costCenterSelectSingle: createDynamicOptionSnapshot(
+    'demo.cost-centers',
+    1,
+    [DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterSelectSingle],
+  ),
+} as const;
+
+function createDynamicOptionSnapshot(
+  dataSourceKey: string,
+  dataSourceVersion: number,
+  values: readonly string[],
+): {
+  readonly bindingHash: string;
+  readonly dataSourceKey: string;
+  readonly dataSourceVersion: number;
+  readonly options: readonly {
+    readonly label: string;
+    readonly value: string;
+  }[];
+  readonly validatedAt: string;
+} {
+  return {
+    bindingHash: createHash('sha256')
+      .update(
+        JSON.stringify({
+          dataSourceKey,
+          dataSourceVersion,
+          values: [['plant', 'TW01']],
+        }),
+      )
+      .digest('hex'),
+    dataSourceKey,
+    dataSourceVersion,
+    options: values.map((value) => ({
+      label: readDynamicOptionLabel(value),
+      value,
+    })),
+    validatedAt: '2026-05-18T04:30:00.000Z',
+  };
+}
+
+function readDynamicOptionLabel(value: string): string {
+  if (value === 'CC-SHARED-001') {
+    return 'TW01 共用成本中心';
+  }
+
+  const [, plant, sequence] = value.split('-');
+
+  return `${plant ?? 'TW01'} 成本中心 ${sequence ?? value}`;
+}
 
 const EXPENSE_WORKFLOW = createWorkflowDefinition({
   approvalNodes: [
@@ -498,6 +724,23 @@ const PURCHASE_WORKFLOW = createWorkflowDefinition({
   ],
 });
 
+const DYNAMIC_OPTIONS_WORKFLOW = createWorkflowDefinition({
+  approvalNodes: [
+    {
+      id: 'manager_review',
+      label: '成本中心申請主管簽核',
+      resolver: {
+        baseFromInitiator: true,
+        fallback: { memberId: 'member-101', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      x: 220,
+      y: 0,
+    },
+  ],
+});
+
 async function main(): Promise<void> {
   const options = await buildDataSourceOptionsFromVaultEnv(process.env);
   const dataSource = new DataSource(options);
@@ -527,8 +770,10 @@ async function resetAndSeed(
       `SET search_path TO ${quoteIdentifier(schema)}, public`,
     );
     await ensureApiTestMemberTable(queryRunner);
+    await ensureApiFormDataSourceOptionsTable(queryRunner);
     await truncateDemoTables(queryRunner);
     await seedApiTestMembers(queryRunner);
+    await seedApiFormDataSourceOptions(queryRunner);
     await seedOrganization(queryRunner);
     await seedForms(queryRunner);
     await seedTemplates(queryRunner);
@@ -565,7 +810,8 @@ async function truncateDemoTables(queryRunner: QueryRunner): Promise<void> {
       positions,
       org_units,
       member_metadata_cache,
-      api_test_members
+      api_test_members,
+      ${API_FORM_DATA_SOURCE_OPTIONS_TABLE}
     RESTART IDENTITY CASCADE
   `);
 }
@@ -596,6 +842,35 @@ async function seedApiTestMembers(queryRunner: QueryRunner): Promise<void> {
         permissions: jsonb(member.permissions),
         roles: jsonb(member.roles),
         updated_at: text(NOW),
+      }),
+    ),
+  );
+}
+
+async function seedApiFormDataSourceOptions(
+  queryRunner: QueryRunner,
+): Promise<void> {
+  await insertRows(
+    queryRunner,
+    API_FORM_DATA_SOURCE_OPTIONS_TABLE,
+    [
+      'data_source_key',
+      'data_source_version',
+      'plant',
+      'value',
+      'label',
+      'is_active',
+      'sort_order',
+    ],
+    API_FORM_DATA_SOURCE_OPTION_SEEDS.map(
+      (seed): SeedRow => ({
+        data_source_key: text(seed.dataSourceKey),
+        data_source_version: numberCell(seed.dataSourceVersion),
+        is_active: bool(seed.isActive),
+        label: text(seed.label),
+        plant: text(seed.plant),
+        sort_order: numberCell(seed.sortOrder),
+        value: text(seed.value),
       }),
     ),
   );
@@ -932,6 +1207,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         '設備、備品、耗材與委外加工請購申請草稿。',
         'member-101',
       ),
+      formDefinitionRow(
+        FORM_IDS.DYNAMIC_OPTIONS,
+        '動態成本中心申請單',
+        '用 plant dependency 驗證 Select、AutoComplete、Radio 與 Checkbox 選項。',
+        'member-101',
+      ),
     ],
   );
 
@@ -1029,6 +1310,17 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         null,
         null,
       ),
+      formVersionRow(
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+        FORM_IDS.DYNAMIC_OPTIONS,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_FORM_UI_SCHEMA,
+        '2026-05-18T03:00:00.000Z',
+        'member-101',
+        null,
+      ),
     ],
   );
 
@@ -1061,6 +1353,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     'form_definitions',
     FORM_IDS.PURCHASE,
     FORM_VERSION_IDS.PURCHASE_DRAFT,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FORM_IDS.DYNAMIC_OPTIONS,
+    FORM_VERSION_IDS.DYNAMIC_OPTIONS_V1,
   );
 }
 
@@ -1166,6 +1464,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         CATEGORY_IDS.PROCUREMENT,
         'member-101',
       ),
+      templateRow(
+        TEMPLATE_IDS.DYNAMIC_OPTIONS,
+        '動態成本中心申請',
+        '用 host-owned DataSource 驗證相依選項與歷史 snapshot。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
     ],
   );
 
@@ -1255,6 +1561,17 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         null,
         null,
       ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+        '2026-05-18T04:00:00.000Z',
+        'member-101',
+        null,
+      ),
     ],
   );
 
@@ -1288,6 +1605,12 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     TEMPLATE_IDS.PURCHASE,
     TEMPLATE_VERSION_IDS.PURCHASE_DRAFT,
   );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.DYNAMIC_OPTIONS,
+    TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+  );
 }
 
 async function seedRuntimeData(queryRunner: QueryRunner): Promise<void> {
@@ -1315,6 +1638,7 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
       'workflow_snapshot',
       'form_definition_snapshot',
       'form_data',
+      'form_data_option_snapshot',
       'state',
       'title',
       'started_at',
@@ -1323,6 +1647,21 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
       'updated_at',
     ],
     [
+      instanceRow(
+        INSTANCE_IDS.DYNAMIC_OPTIONS_RETURNED,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS,
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+        'member-102',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        DYNAMIC_OPTIONS_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_FORM_UI_SCHEMA,
+        DYNAMIC_OPTIONS_RETURNED_FORM_DATA,
+        'RETURNED',
+        '動態成本中心申請：TW01',
+        '2026-05-18T04:30:00.000Z',
+        null,
+        DYNAMIC_OPTIONS_RETURNED_SNAPSHOT,
+      ),
       instanceRow(
         INSTANCE_IDS.EXPENSE_RUNNING,
         TEMPLATE_IDS.EXPENSE,
@@ -1478,6 +1817,14 @@ async function seedTokens(queryRunner: QueryRunner): Promise<void> {
     ],
     [
       tokenRow(
+        TOKEN_IDS.DYNAMIC_OPTIONS_RETURNED,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_RETURNED,
+        'manager_review',
+        'WAITING',
+        '2026-05-18T04:30:00.000Z',
+        null,
+      ),
+      tokenRow(
         TOKEN_IDS.EXPENSE_RUNNING_FINANCE,
         INSTANCE_IDS.EXPENSE_RUNNING,
         'finance_review',
@@ -1556,6 +1903,19 @@ async function seedTasks(queryRunner: QueryRunner): Promise<void> {
       'completed_at',
     ],
     [
+      taskRow(
+        TASK_IDS.DYNAMIC_OPTIONS_RETURNED_MANAGER,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_RETURNED,
+        TOKEN_IDS.DYNAMIC_OPTIONS_RETURNED,
+        'manager_review',
+        'member-101',
+        'member-101',
+        'PENDING',
+        '2026-05-20T04:30:00.000Z',
+        '2026-05-18T04:30:00.000Z',
+        null,
+        null,
+      ),
       taskRow(
         TASK_IDS.EXPENSE_RUNNING_MANAGER,
         INSTANCE_IDS.EXPENSE_RUNNING,
@@ -2355,11 +2715,13 @@ function instanceRow(
   title: string,
   startedAt: string,
   completedAt: string | null,
+  formDataOptionSnapshot: unknown = {},
 ): SeedRow {
   return {
     completed_at: text(completedAt),
     created_at: text(startedAt),
     form_data: jsonb(formData),
+    form_data_option_snapshot: jsonb(formDataOptionSnapshot),
     form_definition_snapshot: jsonb({
       schema: formSchema,
       uiSchema: formUiSchema,

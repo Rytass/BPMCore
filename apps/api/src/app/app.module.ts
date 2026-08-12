@@ -7,6 +7,7 @@ import { BPMRootModule } from '@rytass/bpm-core-nestjs-module';
 import { buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
 import { BPM_BUSINESS_CALENDAR } from '@rytass/bpm-core-nestjs-module';
+import { BPM_FORM_DATA_SOURCE_REGISTRY } from '@rytass/bpm-core-nestjs-module';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -16,6 +17,7 @@ import { ApiSimulationSeedService } from './api-simulation-seed.service';
 import { ApiMemberResolver } from './api-member.resolver';
 import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
+import { ApiFormDataSourceRegistry } from './api-form-data-source';
 
 @Module({
   imports: [
@@ -56,6 +58,10 @@ import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
       businessCalendarProvider: {
         provide: BPM_BUSINESS_CALENDAR,
         useClass: ApiTaiwanBusinessCalendar,
+      },
+      formDataSourceRegistryProvider: {
+        provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+        useClass: ApiFormDataSourceRegistry,
       },
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
