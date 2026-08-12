@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, and structural DataSource publish lint across the shared, client, core, and React consumers. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, and typed client catalog/preview/runtime wrappers. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -365,9 +365,17 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 |---|---|
 | Records | `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `FormBuilderRecord`, `FormSchemaLintResult` |
 | Type | `FormDefinitionListStatus` |
-| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()` |
+| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()` |
 | Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
 | Factory | `createFieldDefinition()` |
+
+### Form DataSource records
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FormDataSourceControl`, `FormDataSourceParameterType`, `FormDataSourceRevalidationPolicy` | type | Client-facing descriptor unions |
+| `FormDataSourceParameterRecord`, `FormDataSourceDescriptorRecord`, `FormDataSourceOptionsResultRecord` | interface | Catalog and option result records |
+| `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` | interface | Preview/runtime query input contracts |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
 
@@ -483,7 +491,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, plus flattened notification/attachment/signature/identity options |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, plus flattened notification/attachment/signature/identity options |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
 | `BPM_CORE_MIGRATIONS` | const | 17-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
@@ -547,6 +555,27 @@ Auth contract layer — lib does not own auth; host plugs in.
 > the first publish the single draft is updated in place; afterwards
 > `publishFormDefinitionContent` publishes a brand-new version directly
 > (content-identical saves are a no-op returning the current version).
+
+## `@rytass/bpm-core-nestjs-module/form-data-source`
+
+Versioned host registry and guarded runtime boundary for dynamic form options.
+
+| Category | Names |
+|---|---|
+| Contract | `BPMFormDataSource`, `BPMFormDataSourceDescriptor`, `BPMFormDataSourceParameter`, `BPMFormDataSourceParameterType`, `BPMFormDataSourceControl`, `BPMFormDataSourceRevalidationPolicy` |
+| Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput`, `BPMFormDataSourcePreviewInput`, `BPMFormDataSourceRuntimeInput` |
+| Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry` |
+| Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
+| Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult` |
+| Errors | `BPM_FORM_DATA_SOURCE_ERROR_CODES`, `BPMFormDataSourceErrorCode`, `BPMFormDataSourceException`, `BPMFormDataSourceForbiddenException` |
+| GraphQL objects | `FormDataSourceParameterObject`, `FormDataSourceDescriptorObject`, `FormFieldOptionObject`, `FormDataSourceOptionsResultObject` |
+| GraphQL inputs | `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` |
+| Resolver | `FormDataSourceQueries` (`formDataSources`, `previewFormFieldOptions`, `formFieldOptions`) |
+
+`formDataSources` and `previewFormFieldOptions` require designer permission.
+`formFieldOptions` requires authentication and derives the referenced source from
+the published template version or returned-instance snapshot; clients cannot
+submit an arbitrary source reference or binding definition.
 
 ## `@rytass/bpm-core-nestjs-module/template`
 

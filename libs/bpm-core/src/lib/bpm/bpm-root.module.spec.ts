@@ -17,6 +17,12 @@ import {
   BPMWorkflowWebhookDispatchResult,
   BPMWorkflowServiceTaskDispatcher,
 } from '../workflow-engine';
+import {
+  BPM_FORM_DATA_SOURCE_REGISTRY,
+  BPMFormDataSourceRegistry,
+  EmptyBPMFormDataSourceRegistry,
+  FormDataSourceModule,
+} from '../form-data-source';
 
 const HOST_INTEGRATION_BUS = Symbol('HOST_INTEGRATION_BUS');
 
@@ -262,4 +268,71 @@ describe('BPMRootModule', () => {
       ),
     ).toBe(true);
   });
+
+  it.each([
+    {
+      label: 'useClass',
+      provider: {
+        provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+        useClass: EmptyBPMFormDataSourceRegistry,
+      } satisfies Provider<BPMFormDataSourceRegistry>,
+    },
+    {
+      label: 'useFactory',
+      provider: {
+        provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+        useFactory: (): BPMFormDataSourceRegistry =>
+          new EmptyBPMFormDataSourceRegistry(),
+      } satisfies Provider<BPMFormDataSourceRegistry>,
+    },
+    {
+      label: 'useExisting',
+      provider: {
+        provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+        useExisting: 'HOST_FORM_DATA_SOURCE_REGISTRY',
+      } satisfies Provider<BPMFormDataSourceRegistry>,
+    },
+  ])(
+    'forRoot forwards a DataSource registry provider using $label',
+    ({ provider }): void => {
+      const module = BPMRootModule.forRoot({
+        formDataSourceRegistryProvider: provider,
+        memberResolverProvider: {
+          provide: BPM_MEMBER_RESOLVER,
+          useExisting: 'HOST_MEMBER_RESOLVER',
+        },
+      });
+
+      expect(findFormDataSourceModule(module)?.providers).toContain(provider);
+    },
+  );
+
+  it('forRootAsync forwards the static DataSource registry provider', (): void => {
+    const provider: Provider<BPMFormDataSourceRegistry> = {
+      provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+      useExisting: 'HOST_FORM_DATA_SOURCE_REGISTRY',
+    };
+    const module = BPMRootModule.forRootAsync({
+      formDataSourceRegistryProvider: provider,
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+      useFactory: (): Record<string, never> => ({}),
+    });
+
+    expect(findFormDataSourceModule(module)?.providers).toContain(provider);
+  });
 });
+
+function findFormDataSourceModule(
+  module: ReturnType<typeof BPMRootModule.forRoot>,
+): DynamicModule | undefined {
+  return (module.imports ?? []).find(
+    (importedModule): importedModule is DynamicModule =>
+      typeof importedModule === 'object' &&
+      importedModule !== null &&
+      'module' in importedModule &&
+      importedModule.module === FormDataSourceModule,
+  );
+}

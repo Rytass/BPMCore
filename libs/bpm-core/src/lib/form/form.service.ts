@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -31,6 +32,7 @@ import {
   lintFormSchemaJson,
   parseAndValidateFormSchemas,
 } from './form-schema.validator';
+import { FormDataSourceService } from '../form-data-source/form-data-source.service';
 
 interface MaxVersionRow {
   readonly maxVersion?: number | string | null;
@@ -49,6 +51,8 @@ export class FormService {
     private readonly formDefinitionRepository: Repository<FormDefinitionEntity>,
     @InjectRepository(FormDefinitionVersionEntity)
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
+    @Optional()
+    private readonly formDataSourceService?: FormDataSourceService,
   ) {}
 
   async createFormDefinition(
@@ -424,9 +428,23 @@ export class FormService {
   lintFormSchema(input: LintFormSchemaInput): FormSchemaLintResultObject {
     const result = lintFormSchemaJson(input.schemaJson, input.uiSchemaJson);
 
+    if (!result.valid || !this.formDataSourceService) {
+      return {
+        errors: result.errors,
+        valid: result.valid,
+      };
+    }
+
+    const parsed = parseAndValidateFormSchemas(
+      input.schemaJson,
+      input.uiSchemaJson,
+    );
+    const environmentErrors =
+      this.formDataSourceService.lintDefinitionSchemaEnvironment(parsed.schema);
+
     return {
-      errors: result.errors,
-      valid: result.valid,
+      errors: [...result.errors, ...environmentErrors],
+      valid: environmentErrors.length === 0,
     };
   }
 
@@ -544,7 +562,17 @@ export class FormService {
     uiSchemaJson: string | null | undefined,
   ): ReturnType<typeof parseAndValidateFormSchemas> {
     try {
-      return parseAndValidateFormSchemas(schemaJson, uiSchemaJson);
+      const schemas = parseAndValidateFormSchemas(schemaJson, uiSchemaJson);
+      const environmentErrors =
+        this.formDataSourceService?.lintDefinitionSchemaEnvironment(
+          schemas.schema,
+        ) ?? [];
+
+      if (environmentErrors.length > 0) {
+        throw new Error(environmentErrors.join('; '));
+      }
+
+      return schemas;
     } catch (error: unknown) {
       throw new BadRequestException(
         error instanceof Error ? error.message : 'Invalid form schema',

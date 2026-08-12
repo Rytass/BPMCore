@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Form helpers now recognize `autocomplete` and distinguish static option
   fields from DataSource-backed option fields without changing primitive form
   values.
+- Added typed catalog, designer preview, and authenticated runtime wrappers
+  for the host-registered form DataSource GraphQL boundary.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

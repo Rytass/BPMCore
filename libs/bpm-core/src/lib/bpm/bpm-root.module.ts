@@ -18,6 +18,11 @@ import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
 import { CalendarModule } from '../calendar/calendar.module';
 import { DelegationModule } from '../delegation/delegation.module';
 import { FormModule } from '../form/form.module';
+import {
+  BPMFormDataSourceRegistry,
+  FormDataSourceModule,
+  FormDataSourceModuleOptions,
+} from '../form-data-source';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { IdentityModule } from '../identity/identity.module';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
@@ -70,6 +75,15 @@ export interface BPMRootModuleOptions
    * own `BPM_BUSINESS_CALENDAR` provider here.
    */
   readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
+
+  /**
+   * Host-provided registry containing versioned form option DataSources.
+   *
+   * The registry is a single provider so a published form reference always
+   * resolves against one coherent catalog. When omitted, BPM exposes an
+   * empty catalog and keeps existing hosts bootstrap-compatible.
+   */
+  readonly formDataSourceRegistryProvider?: Provider<BPMFormDataSourceRegistry>;
 
   /**
    * Host-provided member resolver provider.
@@ -136,6 +150,13 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    * are required, use a Nest provider with `useFactory` / `inject` here.
    */
   readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
+
+  /**
+   * Host-provided versioned form option DataSource registry. This provider is
+   * static at module wiring time; secrets and repositories can be injected
+   * through its Nest `useFactory`, `useClass`, or `useExisting` definition.
+   */
+  readonly formDataSourceRegistryProvider?: Provider<BPMFormDataSourceRegistry>;
 
   /**
    * Providers injected into `useFactory`.
@@ -256,6 +277,7 @@ export class BPMRootModule {
         OrganizationModule,
         AttachmentModule,
         FormModule,
+        FormDataSourceModule,
         TemplateModule,
         DelegationModule,
         NotificationModule,
@@ -288,6 +310,10 @@ export class BPMRootModule {
           useFactory: options.useFactory,
         }),
         FormModule,
+        FormDataSourceModule.forRoot({
+          imports: options.imports,
+          registryProvider: options.formDataSourceRegistryProvider,
+        } satisfies FormDataSourceModuleOptions),
         TemplateModule,
         DelegationModule,
         NotificationModule,
@@ -329,6 +355,10 @@ function createBPMFeatureModules(
       storageProvider: options.attachmentStorageProvider,
     }),
     FormModule,
+    FormDataSourceModule.forRoot({
+      imports: options.imports,
+      registryProvider: options.formDataSourceRegistryProvider,
+    } satisfies FormDataSourceModuleOptions),
     TemplateModule,
     DelegationModule,
     NotificationModule,

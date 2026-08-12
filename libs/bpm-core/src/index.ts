@@ -7,6 +7,7 @@ export * from './lib/condition';
 export * from './lib/database';
 export * from './lib/delegation';
 export * from './lib/form';
+export * from './lib/form-data-source';
 export * from './lib/identity';
 export * from './lib/notification';
 export * from './lib/organization';
