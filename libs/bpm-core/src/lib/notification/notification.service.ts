@@ -99,11 +99,13 @@ export class NotificationService {
   ) {}
 
   async listNotifications({
+    includeArchived = false,
     includeRead = false,
     page = 1,
     pageSize = 10,
     recipientMemberId,
   }: {
+    readonly includeArchived?: boolean;
     readonly includeRead?: boolean;
     readonly page?: number;
     readonly pageSize?: number;
@@ -119,6 +121,7 @@ export class NotificationService {
         channel: NotificationChannelEnum.IN_APP,
         recipientMemberId,
         ...(includeRead ? {} : { status: Not(NotificationStatusEnum.READ) }),
+        ...(includeArchived ? {} : { archivedAt: IsNull() }),
       },
     });
 
@@ -187,9 +190,11 @@ export class NotificationService {
   }
 
   async countNotifications({
+    includeArchived = false,
     includeRead = false,
     recipientMemberId,
   }: {
+    readonly includeArchived?: boolean;
     readonly includeRead?: boolean;
     readonly recipientMemberId: string;
   }): Promise<number> {
@@ -198,13 +203,19 @@ export class NotificationService {
         channel: NotificationChannelEnum.IN_APP,
         recipientMemberId,
         ...(includeRead ? {} : { status: Not(NotificationStatusEnum.READ) }),
+        ...(includeArchived ? {} : { archivedAt: IsNull() }),
       },
     });
   }
 
+  /**
+   * Drives the bell badge. Archived notifications are excluded even when still
+   * unread, otherwise archiving would leave the badge lit forever.
+   */
   async countUnreadNotifications(recipientMemberId: string): Promise<number> {
     return this.notificationRepository.count({
       where: {
+        archivedAt: IsNull(),
         channel: NotificationChannelEnum.IN_APP,
         recipientMemberId,
         status: Not(NotificationStatusEnum.READ),
@@ -267,6 +278,59 @@ export class NotificationService {
         status: NotificationStatusEnum.READ,
       }),
     );
+  }
+
+  /**
+   * Archiving is an independent dimension from read state: it removes the
+   * notification from the member's default list while keeping the row for
+   * statistics and audits.
+   */
+  async archiveNotifications({
+    ids,
+    memberId,
+  }: {
+    readonly ids: readonly string[];
+    readonly memberId: string;
+  }): Promise<number> {
+    return this.updateArchivedAt({ archivedAt: new Date(), ids, memberId });
+  }
+
+  async unarchiveNotifications({
+    ids,
+    memberId,
+  }: {
+    readonly ids: readonly string[];
+    readonly memberId: string;
+  }): Promise<number> {
+    return this.updateArchivedAt({ archivedAt: null, ids, memberId });
+  }
+
+  private async updateArchivedAt({
+    archivedAt,
+    ids,
+    memberId,
+  }: {
+    readonly archivedAt: Date | null;
+    readonly ids: readonly string[];
+    readonly memberId: string;
+  }): Promise<number> {
+    const trimmedMemberId = memberId.trim();
+    const targetIds = [...new Set(ids.filter((id) => id.trim().length > 0))];
+
+    if (!trimmedMemberId || targetIds.length === 0) {
+      return 0;
+    }
+
+    const result = await this.notificationRepository.update(
+      {
+        archivedAt: archivedAt === null ? Not(IsNull()) : IsNull(),
+        id: In(targetIds),
+        recipientMemberId: trimmedMemberId,
+      },
+      { archivedAt },
+    );
+
+    return result.affected ?? 0;
   }
 
   async getPreference(memberId: string): Promise<NotificationPreferenceEntity> {

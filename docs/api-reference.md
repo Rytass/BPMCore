@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-11, PR #6 remediation): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds no public exports.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds public exports: `NotificationEntity` / `NotificationPreferenceEntity` and the notification archive API (bpm-core), `ApprovalTemplateActivationStatusEnum` plus template activate/deactivate (bpm-core), the matching client functions and `ApprovalTemplateActivationStatus` type (bpm-core-client), and `imports` on `CalendarModuleOptions` (bpm-core). Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -362,7 +362,8 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Records | `ApprovalTemplateRecord`, `ApprovalTemplateCategoryRecord`, `ApprovalTemplateVersionRecord`, `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `PublishedFormVersionOption`, `MemberProfileRecord`, `WorkflowDryRunStepRecord`, `WorkflowDryRunResultRecord`, `TemplateDesignerRecord`, `ApprovalTemplatesPage`, `ApprovalTemplateCategoriesPage`, `ComposeApprovalTemplateWithFormResult` |
 | Types | `ApprovalTemplateListStatus`, `ApprovalTemplateCategoryStatus` |
 | Queries | `listApprovalTemplates()`, `listApprovalTemplatesPage()`, `listApprovalTemplateCategoriesPage()`, `readTemplateDesigner()`, `searchPublishedFormVersionOptions()`, `resolveMemberOptions()`, `searchMemberOptions()` |
-| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()` |
+| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
+| Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
 
 ## `@rytass/bpm-core-client/workflow`
@@ -426,7 +427,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 ### Notification
 
-`listNotifications({ ... })`, `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
+`listNotifications({ ... })` (accepts `includeArchived`), `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
 ### Pure helpers
 
@@ -531,6 +532,27 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
 
+**Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
+`NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a
+template out of service without deleting it or archiving its published version.
+`TemplateService` adds `activateApprovalTemplate(id)` /
+`deactivateApprovalTemplate(id)`, mirroring the existing category pair, and
+`listApprovalTemplates` accepts `activationStatus` typed as the new
+`ApprovalTemplateActivationStatusEnum` (`ACTIVE` / `ALL` / `INACTIVE`, shaped
+like `ApprovalTemplateCategoryStatusEnum`). This is deliberately **not**
+`ApprovalTemplateListStatusEnum` — `DRAFT` / `PUBLISHED` is derived from version
+state, an orthogonal dimension. Omitting `activationStatus` means `ALL`, so
+existing callers are unaffected and admin screens still see deactivated
+templates in order to reactivate them.
+>
+> A deactivated template rejects `submitApprovalInstance` **and**
+> `resubmitApprovalInstance` with `ConflictException('Approval template is
+> deactivated')`. The guard runs right after the template is loaded, ahead of
+> form-data validation, so callers get the lifecycle reason rather than a
+> misleading field error. `launchableApprovalTemplates` filters deactivated
+> templates out. Instances already in flight are unaffected — they run from
+> `workflowSnapshot`.
+
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
 Workflow execution engine — the heaviest module.
@@ -575,7 +597,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
 | Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
 | Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
-| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`) |
+| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`). Options now extend `Pick<ModuleMetadata, 'imports'>`, and `BPMRootModule` threads its own `imports` through, so a `useClass` / `useFactory` `businessCalendarProvider` can depend on host repositories or config services without a host-side `@Global()` module |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 
@@ -584,11 +606,28 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Category | Names |
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
+| Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
+
+**Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
+from *read* and from *deleted* — the row survives for statistics and audit.
+`NotificationService` adds `archiveNotifications({ ids, memberId })` /
+`unarchiveNotifications({ ids, memberId })` (both scoped to
+`recipientMemberId`, so one member cannot archive another's notifications, and
+both idempotent — re-archiving an archived row affects 0 rows).
+`listNotifications` / `countNotifications` take `includeArchived?: boolean`,
+defaulting to `false`, so existing callers are unaffected.
+`countUnreadNotifications` **excludes** archived rows: otherwise the bell keeps
+its badge after archiving and the action would be pointless. Archived and read
+are independent dimensions — the archive filter is `archivedAt IS NULL`, not a
+`status` value. GraphQL exposes `archiveNotifications(ids)` /
+`unarchiveNotifications(ids)` mutations (member taken from
+`@BPMCurrentMemberId()`, never a client argument) and an `includeArchived`
+argument on the `notifications` / `notificationCount` queries.
 
 ## `@rytass/bpm-core-nestjs-module/attachment`
 
@@ -638,6 +677,8 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 16. `BackfillStaleNotificationResolution0000000015000`
 17. `ArchiveParallelFormDrafts0000000016000`
 18. `AdhocDirectives0000000017000`
+19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
+20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
 
 ---
 
@@ -742,6 +783,17 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/root` | `RootView` (placeholder, returns null) |
 
 ### Heavy views (must stay isolated, fat dependencies)
+
+The packages below are declared as **optional** `peerDependencies` in
+`libs/bpm-core-react/package.json` (`peerDependenciesMeta`). A host only has to
+install the ones matching the heavy views it actually mounts; hosts that mount
+none are not warned about missing peers. The version ranges pin what the
+monorepo builds against, so upgrading `@rytass/bpm-core-react` now signals when
+a peer needs bumping too.
+
+Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
+`@codemirror/view`, `@uiw/react-codemirror`, `@hello-pangea/dnd`, `pdfjs-dist`,
+`react-pdf`, `next`.
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|

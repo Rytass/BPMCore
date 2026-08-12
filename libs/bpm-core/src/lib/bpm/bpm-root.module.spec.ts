@@ -1,4 +1,4 @@
-import { Module, Provider } from '@nestjs/common';
+import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { BPMRootModule } from './bpm-root.module';
 import {
   BPM_MEMBER_RESOLVER,
@@ -8,6 +8,7 @@ import { ATTACHMENT_STORAGE, AttachmentStorage } from '../attachment';
 import {
   BPM_BUSINESS_CALENDAR,
   BPMBusinessCalendar,
+  CalendarModule,
   defaultBusinessCalendarProvider,
 } from '../calendar';
 import {
@@ -196,6 +197,51 @@ describe('BPMRootModule', () => {
           importedModule.providers?.includes(businessCalendarProvider),
       ),
     ).toBe(true);
+  });
+
+  it('passes host imports to the calendar module so a host calendar can have dependencies', (): void => {
+    const businessCalendarProvider: Provider<BPMBusinessCalendar> = {
+      provide: BPM_BUSINESS_CALENDAR,
+      useValue: {
+        isBusinessDay: (): boolean => true,
+        timeZone: 'Asia/Taipei',
+      },
+    };
+    const findCalendarModule = (
+      module: ReturnType<typeof BPMRootModule.forRoot>,
+    ): DynamicModule | undefined =>
+      (module.imports ?? []).find(
+        (importedModule): importedModule is DynamicModule =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'module' in importedModule &&
+          importedModule.module === CalendarModule,
+      );
+
+    const staticModule = BPMRootModule.forRoot({
+      businessCalendarProvider,
+      imports: [HostProviderModule],
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+    });
+    const asyncModule = BPMRootModule.forRootAsync({
+      businessCalendarProvider,
+      imports: [HostProviderModule],
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+      useFactory: (): Record<string, never> => ({}),
+    });
+
+    expect(findCalendarModule(staticModule)?.imports).toContain(
+      HostProviderModule,
+    );
+    expect(findCalendarModule(asyncModule)?.imports).toContain(
+      HostProviderModule,
+    );
   });
 
   it('falls back to the built-in weekday calendar when the host provides none', (): void => {

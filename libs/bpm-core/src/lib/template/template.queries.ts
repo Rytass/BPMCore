@@ -4,6 +4,7 @@ import { ApprovalTemplateCategoryEntity } from './approval-template-category.ent
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import {
+  ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
   ApprovalTemplateListStatusEnum,
 } from './template.enums';
@@ -29,8 +30,14 @@ export class TemplateQueries {
       type: () => ApprovalTemplateListStatusEnum,
     })
     status?: ApprovalTemplateListStatusEnum | null,
+    @Args('activationStatus', {
+      nullable: true,
+      type: () => ApprovalTemplateActivationStatusEnum,
+    })
+    activationStatus?: ApprovalTemplateActivationStatusEnum | null,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     return this.templateService.listApprovalTemplates({
+      activationStatus: activationStatus ?? undefined,
       page: page ?? undefined,
       pageSize: pageSize ?? undefined,
       categoryId: categoryId ?? undefined,
@@ -50,8 +57,14 @@ export class TemplateQueries {
       type: () => ApprovalTemplateListStatusEnum,
     })
     status?: ApprovalTemplateListStatusEnum | null,
+    @Args('activationStatus', {
+      nullable: true,
+      type: () => ApprovalTemplateActivationStatusEnum,
+    })
+    activationStatus?: ApprovalTemplateActivationStatusEnum | null,
   ): Promise<number> {
     return this.templateService.countApprovalTemplates({
+      activationStatus: activationStatus ?? undefined,
       categoryId: categoryId ?? undefined,
       searchText: searchText ?? undefined,
       status: status ?? undefined,

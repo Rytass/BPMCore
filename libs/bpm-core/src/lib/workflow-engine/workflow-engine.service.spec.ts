@@ -156,6 +156,44 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Approval template does not have a published version');
   });
 
+  it('rejects submit when the template is deactivated', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateIsActive: false,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Approval template is deactivated');
+  });
+
+  it('rejects resubmit when the template is deactivated', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      templateIsActive: false,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Approval template is deactivated');
+  });
+
   it('rejects submit when required form fields are missing', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -2544,6 +2582,7 @@ function createServiceFixture({
   processOrgUnits = [],
   processWorkflowSnapshot,
   serviceTaskDispatcher,
+  templateIsActive = true,
   templateVersionStatus,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
@@ -2564,6 +2603,7 @@ function createServiceFixture({
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
+  readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
 }): ServiceFixture {
   let savedToken: WorkflowTokenEntity | null = null;
@@ -2590,7 +2630,7 @@ function createServiceFixture({
   let savedSingleActivityLogs: readonly ActivityLogEntity[] = [];
   let savedTasks: readonly TaskEntity[] = [];
   let savedTaskCandidates: readonly TaskCandidateEntity[] = [];
-  const template = createTemplate(currentVersionId);
+  const template = createTemplate(currentVersionId, templateIsActive);
   const templateVersion = createTemplateVersion(templateVersionStatus);
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
@@ -3227,6 +3267,7 @@ function createApprovalInstanceQueryBuilderMock(
 
 function createTemplate(
   currentVersionId: string | null,
+  isActive: boolean,
 ): ApprovalTemplateEntity {
   return {
     category: null,
@@ -3236,6 +3277,7 @@ function createTemplate(
     deletedAt: null,
     description: null,
     id: 'template-1',
+    isActive,
     name: '費用申請',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
   };
