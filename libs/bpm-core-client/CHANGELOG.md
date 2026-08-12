@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values.
 - Added typed catalog, designer preview, and authenticated runtime wrappers
   for the host-registered form DataSource GraphQL boundary.
+- Approval instance records now expose parsed and raw dynamic option snapshots
+  returned by the server.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

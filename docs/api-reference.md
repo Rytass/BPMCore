@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, and typed client catalog/preview/runtime wrappers. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, server-side submit/resubmit resolution, persisted option snapshots, and the reversible snapshot migration. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -416,7 +416,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 | Group | Names |
 |---|---|
-| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord`, `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
+| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
 | Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
 | Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
@@ -493,7 +493,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
 | `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, plus flattened notification/attachment/signature/identity options |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 17-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 21-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -563,8 +563,9 @@ Versioned host registry and guarded runtime boundary for dynamic form options.
 | Category | Names |
 |---|---|
 | Contract | `BPMFormDataSource`, `BPMFormDataSourceDescriptor`, `BPMFormDataSourceParameter`, `BPMFormDataSourceParameterType`, `BPMFormDataSourceControl`, `BPMFormDataSourceRevalidationPolicy` |
-| Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput`, `BPMFormDataSourcePreviewInput`, `BPMFormDataSourceRuntimeInput` |
+| Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput`, `BPMFormDataSourceSnapshotResolutionInput` |
 | Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry` |
+| Snapshot resolver | `BPMFormDataSourceValueResolver`, `BPM_FORM_DATA_SOURCE_VALUE_RESOLVER` |
 | Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
 | Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult` |
 | Errors | `BPM_FORM_DATA_SOURCE_ERROR_CODES`, `BPMFormDataSourceErrorCode`, `BPMFormDataSourceException`, `BPMFormDataSourceForbiddenException` |
@@ -624,7 +625,7 @@ Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity`, `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
 | Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
@@ -718,11 +719,11 @@ argument on the `notifications` / `notificationCount` queries.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 17-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 21-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-18 ordered migrations:
+21 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001`
 2. `IdentityOrganizationFoundation0000000001000`
@@ -744,6 +745,7 @@ argument on the `notifications` / `notificationCount` queries.
 18. `AdhocDirectives0000000017000`
 19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
 20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
+21. `FormDataOptionSnapshots0000000020000` (adds `approval_instances.form_data_option_snapshot`, default `{}`)
 
 ---
 

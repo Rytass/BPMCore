@@ -415,6 +415,15 @@ snapshot. Missing registry versions, unsupported controls, incomplete
 bindings, provider failures, and over-limit results return stable DataSource
 error codes.
 
+On submit, the engine resolves every selected DataSource-backed value on the
+server and stores the returned labels, source version, binding hash, and
+validation timestamp in `approval_instances.form_data_option_snapshot`. A
+resubmit resolves outside the database transaction, then rechecks the
+instance revision under the transaction lock before writing form data and its
+snapshot atomically. This keeps historical labels readable even when a host
+later removes a registry version, while changed bindings or an `ALWAYS`
+revalidation policy still require a live provider call.
+
 This requires the wrapper host's auth middleware to honor `Authorization`
 headers (member-base hosts can be configured to do so via
 `authStrategy: 'jwt'` in addition to `cookieMode: true`).

@@ -1,3 +1,4 @@
+import { FormDataSourceValueSnapshots } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { Field, ID, ObjectType } from '@nestjs/graphql';
 import {
@@ -39,6 +40,12 @@ export class ApprovalInstanceEntity {
 
   @Column('jsonb', { name: 'form_data' })
   formData!: Readonly<Record<string, unknown>>;
+
+  @Column('jsonb', {
+    default: () => "'{}'::jsonb",
+    name: 'form_data_option_snapshot',
+  })
+  formDataOptionSnapshot!: FormDataSourceValueSnapshots;
 
   @Column('text')
   @Field(() => ApprovalInstanceStateEnum)
@@ -82,5 +89,10 @@ export class ApprovalInstanceEntity {
   @Field(() => String)
   get formDataJson(): string {
     return JSON.stringify(this.formData);
+  }
+
+  @Field(() => String)
+  get formDataOptionSnapshotJson(): string {
+    return JSON.stringify(this.formDataOptionSnapshot ?? {});
   }
 }

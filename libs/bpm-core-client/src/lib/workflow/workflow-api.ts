@@ -1,5 +1,6 @@
 import {
   FormDefinitionSchema,
+  FormDataSourceValueSnapshots,
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
@@ -99,6 +100,8 @@ export interface ApprovalInstanceRecord {
   readonly completedAt: string | null;
   readonly formData: WorkflowFormData;
   readonly formDataJson: string;
+  readonly formDataOptionSnapshot: FormDataSourceValueSnapshots;
+  readonly formDataOptionSnapshotJson: string;
   readonly formDefinitionSnapshot: FormDefinitionSnapshot;
   readonly formDefinitionSnapshotJson: string;
   readonly id: string;
@@ -552,9 +555,14 @@ interface LaunchFormVersionQueryData {
 
 interface InstanceJsonRecord extends Omit<
   ApprovalInstanceRecord,
-  'formData' | 'formDefinitionSnapshot' | 'workflowSnapshot'
+  | 'formData'
+  | 'formDataOptionSnapshot'
+  | 'formDataOptionSnapshotJson'
+  | 'formDefinitionSnapshot'
+  | 'workflowSnapshot'
 > {
   readonly formDataJson: string;
+  readonly formDataOptionSnapshotJson?: string;
   readonly formDefinitionSnapshotJson: string;
   readonly workflowSnapshotJson: string;
 }
@@ -567,6 +575,7 @@ export async function listApprovalInstances(): Promise<
       approvalInstances {
         completedAt
         formDataJson
+        formDataOptionSnapshotJson
         formDefinitionSnapshotJson
         id
         initiatorMemberId
@@ -619,6 +628,7 @@ export async function listApprovalInstancesPage({
         ) {
           completedAt
           formDataJson
+          formDataOptionSnapshotJson
           formDefinitionSnapshotJson
           id
           initiatorMemberId
@@ -808,6 +818,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
       approvalInstance(id: $id) {
         completedAt
         formDataJson
+        formDataOptionSnapshotJson
         formDefinitionSnapshotJson
         id
         initiatorMemberId
@@ -2060,6 +2071,10 @@ function parseInstanceJson(record: InstanceJsonRecord): ApprovalInstanceRecord {
   return {
     ...record,
     formData: JSON.parse(record.formDataJson) as WorkflowFormData,
+    formDataOptionSnapshotJson: record.formDataOptionSnapshotJson ?? '{}',
+    formDataOptionSnapshot: JSON.parse(
+      record.formDataOptionSnapshotJson ?? '{}',
+    ) as FormDataSourceValueSnapshots,
     formDefinitionSnapshot: JSON.parse(
       record.formDefinitionSnapshotJson,
     ) as FormDefinitionSnapshot,

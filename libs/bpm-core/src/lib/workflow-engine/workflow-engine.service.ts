@@ -1,4 +1,5 @@
 import {
+  FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
   NumberFieldDefinition,
@@ -38,6 +39,10 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import {
+  BPM_FORM_DATA_SOURCE_VALUE_RESOLVER,
+  BPMFormDataSourceValueResolver,
+} from '../form-data-source';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationEntity } from '../notification/notification.entity';
@@ -140,6 +145,11 @@ interface ReturnedInstanceContext {
   readonly returnToNodeId: string;
 }
 
+interface ResubmitFormDataOptionsPreparation {
+  readonly formDataOptionSnapshot: FormDataSourceValueSnapshots;
+  readonly instance: ApprovalInstanceEntity;
+}
+
 interface ResolvedApproverCandidate {
   readonly memberId: string;
   readonly sourceType: ApproverResolver['type'];
@@ -234,10 +244,14 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)
     private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = new DefaultWorkflowServiceTaskDispatcher(),
+    @Optional()
+    @Inject(BPM_FORM_DATA_SOURCE_VALUE_RESOLVER)
+    private readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver,
   ) {}
 
   async submitApprovalInstance(
     input: SubmitApprovalInstanceInput,
+    authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
     const template = await this.getTemplateOrThrow(input.templateId);
@@ -259,6 +273,13 @@ export class WorkflowEngineService {
       templateVersion.formDefinitionVersionId,
     );
     validateSubmittedFormData(formDefinitionVersion.schema, formData);
+    const formDataOptionSnapshot =
+      await this.resolveFormDataOptionSnapshots({
+        authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+        formData,
+        revalidateAll: true,
+        schema: formDefinitionVersion.schema,
+      });
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
@@ -302,6 +323,7 @@ export class WorkflowEngineService {
           instanceRepository.create({
             completedAt: null,
             formData,
+            formDataOptionSnapshot,
             formDefinitionSnapshot: {
               formDefinitionVersionId: formDefinitionVersion.id,
               schema: formDefinitionVersion.schema,
@@ -363,6 +385,84 @@ export class WorkflowEngineService {
         return instance;
       },
     );
+  }
+
+  private async resolveFormDataOptionSnapshots({
+    authContext,
+    formData,
+    previousFormData,
+    previousSnapshots,
+    revalidateAll,
+    schema,
+  }: {
+    readonly authContext: BPMAuthContext;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly previousFormData?: Readonly<Record<string, unknown>>;
+    readonly previousSnapshots?: FormDataSourceValueSnapshots;
+    readonly revalidateAll?: boolean;
+    readonly schema: FormDefinitionSchema;
+  }): Promise<FormDataSourceValueSnapshots> {
+    if (!this.formDataSourceValueResolver) {
+      return previousSnapshots ?? {};
+    }
+
+    return this.formDataSourceValueResolver.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      previousFormData,
+      previousSnapshots,
+      revalidateAll,
+      schema,
+    });
+  }
+
+  private async prepareResubmitFormDataOptions(
+    input: ResubmitApprovalInstanceInput,
+    formData: Readonly<Record<string, unknown>>,
+    authContext: BPMAuthContext,
+  ): Promise<ResubmitFormDataOptionsPreparation> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      where: { id: input.instanceId },
+    });
+
+    if (!instance) {
+      throw new NotFoundException(
+        `Approval instance ${input.instanceId} was not found`,
+      );
+    }
+
+    if (instance.initiatorMemberId !== input.initiatorMemberId) {
+      throw new ConflictException(
+        `Approval instance ${instance.id} can only be resubmitted by its initiator`,
+      );
+    }
+
+    if (instance.state !== ApprovalInstanceStateEnum.RETURNED) {
+      throw new ConflictException(
+        `Approval instance ${instance.id} is not returned`,
+      );
+    }
+
+    const template = await this.getTemplateOrThrow(instance.templateId);
+
+    if (!template.isActive) {
+      throw new ConflictException('Approval template is deactivated');
+    }
+
+    const schema = readFormDefinitionSnapshotSchema(
+      instance.formDefinitionSnapshot,
+    );
+    validateSubmittedFormData(schema, formData);
+    const formDataOptionSnapshot =
+      await this.resolveFormDataOptionSnapshots({
+        authContext,
+        formData,
+        previousFormData: instance.formData,
+        previousSnapshots: instance.formDataOptionSnapshot ?? {},
+        schema,
+      });
+
+    return { formDataOptionSnapshot, instance };
   }
 
   async processInstance(instanceId: string): Promise<void> {
@@ -847,8 +947,16 @@ export class WorkflowEngineService {
 
   async resubmitApprovalInstance(
     input: ResubmitApprovalInstanceInput,
+    authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const preparation = this.formDataSourceValueResolver
+      ? await this.prepareResubmitFormDataOptions(
+          input,
+          formData,
+          authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+        )
+      : null;
 
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
@@ -887,6 +995,15 @@ export class WorkflowEngineService {
           throw new ConflictException('Approval template is deactivated');
         }
 
+        if (
+          preparation &&
+          !isSameApprovalInstanceRevision(preparation.instance, instance)
+        ) {
+          throw new ConflictException(
+            'Approval instance changed while options were resolving; refresh and retry',
+          );
+        }
+
         validateSubmittedFormData(
           readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
           formData,
@@ -896,6 +1013,10 @@ export class WorkflowEngineService {
           ...instance,
           completedAt: null,
           formData,
+          formDataOptionSnapshot:
+            preparation?.formDataOptionSnapshot ??
+            instance.formDataOptionSnapshot ??
+            {},
           state: ApprovalInstanceStateEnum.RUNNING,
           title: input.title?.trim() || instance.title,
         });
@@ -4812,6 +4933,31 @@ function readDefaultInitiatorMetadataSnapshot(
     customFields: {},
     memberId,
   };
+}
+
+function createWorkflowAuthContext(memberId: string): BPMAuthContext {
+  return {
+    memberId,
+    metadata: {},
+    permissions: [],
+    roles: [],
+  };
+}
+
+function isSameApprovalInstanceRevision(
+  left: ApprovalInstanceEntity,
+  right: ApprovalInstanceEntity,
+): boolean {
+  return (
+    readApprovalInstanceRevision(left) === readApprovalInstanceRevision(right) &&
+    JSON.stringify(left.formData) === JSON.stringify(right.formData)
+  );
+}
+
+function readApprovalInstanceRevision(instance: ApprovalInstanceEntity): string {
+  return instance.updatedAt instanceof Date
+    ? instance.updatedAt.toISOString()
+    : String(instance.updatedAt ?? '');
 }
 
 function parseWorkflowDefinition(value: string): WorkflowDefinition {

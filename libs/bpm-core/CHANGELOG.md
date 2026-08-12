@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the host-provided versioned DataSource registry contract, guarded
   GraphQL catalog/preview/runtime queries, provider limits, and stable error
   codes for dynamic form options.
+- Added server-side dynamic option resolution for submit/resubmit, persisted
+  option-label snapshots, optimistic revision protection around resubmit, and
+  the reversible `form_data_option_snapshot` migration.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

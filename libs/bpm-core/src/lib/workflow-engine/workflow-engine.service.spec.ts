@@ -1,4 +1,8 @@
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  FormDataSourceValueSnapshots,
+  FormDefinitionSchema,
+  FormFieldOption,
+} from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
   ReturnBehavior,
@@ -16,6 +20,7 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { BPMFormDataSourceValueResolver } from '../form-data-source';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationResolutionEnum,
@@ -92,6 +97,122 @@ describe('WorkflowEngineService', () => {
       ActivityLogEventTypeEnum.INSTANCE_STARTED,
       ActivityLogEventTypeEnum.TOKEN_CREATED,
     ]);
+  });
+
+  it('resolves dynamic options before saving a submitted instance', async (): Promise<void> => {
+    const snapshots: FormDataSourceValueSnapshots = {
+      costCenter: {
+        bindingHash: 'binding-hash-1',
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+        validatedAt: '2026-08-12T09:00:00.000Z',
+      },
+    };
+    const resolver = createValueResolver(snapshots);
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createDynamicOptionFormSchema(),
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const authContext = createAuthContext('member-001');
+
+    const instance = await fixture.service.submitApprovalInstance(
+      {
+        formDataJson: '{"costCenter":"CC-001","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      },
+      authContext,
+    );
+
+    expect(resolver.resolveFormDataOptionSnapshots).toHaveBeenCalledWith({
+      authContext,
+      formData: { costCenter: 'CC-001', plant: 'TPE' },
+      revalidateAll: true,
+      schema: createDynamicOptionFormSchema(),
+    });
+    expect(instance.formDataOptionSnapshot).toEqual(snapshots);
+  });
+
+  it('resolves dynamic options before resubmitting a returned instance', async (): Promise<void> => {
+    const snapshots: FormDataSourceValueSnapshots = {
+      costCenter: {
+        bindingHash: 'binding-hash-2',
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'Cost center HKG', value: 'CC-002' }],
+        validatedAt: '2026-08-12T09:00:00.000Z',
+      },
+    };
+    const resolver = createValueResolver(snapshots);
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const authContext = createAuthContext('member-001');
+
+    await fixture.service.resubmitApprovalInstance(
+      {
+        formDataJson: '{"costCenter":"CC-002","plant":"HKG"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Updated request',
+      },
+      authContext,
+    );
+
+    expect(resolver.resolveFormDataOptionSnapshots).toHaveBeenCalledWith({
+      authContext,
+      formData: { costCenter: 'CC-002', plant: 'HKG' },
+      previousFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      previousSnapshots: {},
+      schema: formSchema,
+    });
+    expect(fixture.savedInstance).toMatchObject({
+      formDataOptionSnapshot: snapshots,
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
+  it('rejects a resubmit when the instance changes while options resolve', async (): Promise<void> => {
+    const resolver = createValueResolver({});
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      rootInstanceUpdatedAt: new Date('2026-08-12T09:00:00.000Z'),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      transactionalInstanceUpdatedAt: new Date('2026-08-12T09:00:01.000Z'),
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"costCenter":"CC-002","plant":"HKG"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Updated request',
+      }),
+    ).rejects.toThrow(
+      'Approval instance changed while options were resolving; refresh and retry',
+    );
+    expect(fixture.savedInstance).toBeNull();
   });
 
   it('builds initiator metadata from active memberships when submit omits a snapshot', async (): Promise<void> => {
@@ -2569,6 +2690,7 @@ function createServiceFixture({
   delegationResolution,
   decisionTask,
   decisionToken,
+  formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
   instanceState,
@@ -2581,9 +2703,11 @@ function createServiceFixture({
   processNotifications = [],
   processOrgUnits = [],
   processWorkflowSnapshot,
+  rootInstanceUpdatedAt,
   serviceTaskDispatcher,
   templateIsActive = true,
   templateVersionStatus,
+  transactionalInstanceUpdatedAt,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
   readonly currentVersionId: string | null;
@@ -2602,9 +2726,12 @@ function createServiceFixture({
   readonly processNotifications?: readonly NotificationEntity[];
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
+  readonly rootInstanceUpdatedAt?: Date;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
+  readonly transactionalInstanceUpdatedAt?: Date;
+  readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
 }): ServiceFixture {
   let savedToken: WorkflowTokenEntity | null = null;
   let tokenSequence = 1;
@@ -2651,7 +2778,17 @@ function createServiceFixture({
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
-    findOne: jest.fn(() => Promise.resolve(createApprovalInstance())),
+    findOne: jest.fn(() =>
+      Promise.resolve(
+        createApprovalInstance({
+          formData: processFormData,
+          formDefinitionSnapshot: processFormDefinitionSnapshot,
+          state: instanceState,
+          updatedAt: rootInstanceUpdatedAt,
+          workflowSnapshot: processWorkflowSnapshot,
+        }),
+      ),
+    ),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
@@ -2803,6 +2940,7 @@ function createServiceFixture({
             formData: processFormData,
             formDefinitionSnapshot: processFormDefinitionSnapshot,
             state: instanceState,
+            updatedAt: transactionalInstanceUpdatedAt,
             workflowSnapshot: processWorkflowSnapshot,
           }),
         ),
@@ -3221,6 +3359,7 @@ function createServiceFixture({
       signatureService as unknown as SignatureService,
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
+      formDataSourceValueResolver,
     ),
     notificationService,
   };
@@ -3356,6 +3495,49 @@ function createFormVersion(
   };
 }
 
+function createValueResolver(
+  snapshots: FormDataSourceValueSnapshots,
+): BPMFormDataSourceValueResolver {
+  return {
+    resolveFormDataOptionSnapshots: jest.fn(() =>
+      Promise.resolve(snapshots),
+    ),
+    resolveFormFieldOptions: jest.fn(() =>
+      Promise.resolve([] as readonly FormFieldOption[]),
+    ),
+  };
+}
+
+function createDynamicOptionFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'plant',
+        label: 'Plant',
+        required: true,
+        type: 'text',
+      },
+      {
+        dataSource: {
+          bindings: [
+            {
+              from: { fieldKey: 'plant', kind: 'FIELD' },
+              parameter: 'plant',
+            },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
+        fieldKey: 'costCenter',
+        label: 'Cost center',
+        required: true,
+        type: 'select',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
 function createRequiredReasonFormSchema(): FormDefinitionSchema {
   return {
     fields: [
@@ -3398,6 +3580,7 @@ function createApprovalInstance({
   initiatorMemberId,
   state,
   title,
+  updatedAt,
   workflowSnapshot,
 }: {
   readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
@@ -3406,6 +3589,7 @@ function createApprovalInstance({
   readonly initiatorMemberId?: string;
   readonly state?: ApprovalInstanceStateEnum;
   readonly title?: string;
+  readonly updatedAt?: Date;
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
@@ -3426,7 +3610,7 @@ function createApprovalInstance({
     templateId: 'template-1',
     templateVersionId: 'template-version-1',
     title: title ?? '費用申請',
-    updatedAt: new Date('2026-05-04T09:00:00.000Z'),
+    updatedAt: updatedAt ?? new Date('2026-05-04T09:00:00.000Z'),
     workflowSnapshot: workflowSnapshot ?? {
       edges: [],
       meta: { schemaVersion: 1 },

@@ -6,8 +6,10 @@ import { ApprovalTemplateVersionEntity } from '../template/approval-template-ver
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDataSourceQueries } from './form-data-source.queries';
 import { FormDataSourceService } from './form-data-source.service';
+import { FormDataSourceValueResolverService } from './form-data-source-value-resolver.service';
 import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
+  BPM_FORM_DATA_SOURCE_VALUE_RESOLVER,
   BPMFormDataSourceRegistry,
   EmptyBPMFormDataSourceRegistry,
 } from './form-data-source.types';
@@ -27,7 +29,11 @@ export class FormDataSourceModule {
       };
 
     return {
-      exports: [BPM_FORM_DATA_SOURCE_REGISTRY, FormDataSourceService],
+      exports: [
+        BPM_FORM_DATA_SOURCE_REGISTRY,
+        BPM_FORM_DATA_SOURCE_VALUE_RESOLVER,
+        FormDataSourceService,
+      ],
       global: true,
       imports: [
         ...(options.imports ?? []),
@@ -38,7 +44,16 @@ export class FormDataSourceModule {
         ]),
       ],
       module: FormDataSourceModule,
-      providers: [registryProvider, FormDataSourceQueries, FormDataSourceService],
+      providers: [
+        registryProvider,
+        FormDataSourceQueries,
+        FormDataSourceService,
+        FormDataSourceValueResolverService,
+        {
+          provide: BPM_FORM_DATA_SOURCE_VALUE_RESOLVER,
+          useExisting: FormDataSourceValueResolverService,
+        },
+      ],
     };
   }
 }

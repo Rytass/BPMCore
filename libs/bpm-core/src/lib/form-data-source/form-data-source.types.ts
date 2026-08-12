@@ -1,8 +1,10 @@
 import { BPMAuthContext } from '../bpm-auth';
 import {
+  FormDefinitionSchema,
   FormFieldOption,
   FormFieldValue,
   FormOptionFieldDefinition,
+  FormDataSourceValueSnapshots,
 } from '@rytass/bpm-core-shared/form';
 
 export type BPMFormDataSourceControl =
@@ -133,3 +135,25 @@ export interface BPMFormDataSourceResolveFieldInput {
   readonly formData: Readonly<Record<string, unknown>>;
   readonly values: readonly string[];
 }
+
+export interface BPMFormDataSourceSnapshotResolutionInput {
+  readonly authContext: BPMAuthContext;
+  readonly formData: Readonly<Record<string, unknown>>;
+  readonly previousFormData?: Readonly<Record<string, unknown>>;
+  readonly previousSnapshots?: FormDataSourceValueSnapshots;
+  readonly revalidateAll?: boolean;
+  readonly schema: FormDefinitionSchema;
+}
+
+export interface BPMFormDataSourceValueResolver {
+  resolveFormDataOptionSnapshots(
+    input: BPMFormDataSourceSnapshotResolutionInput,
+  ): Promise<FormDataSourceValueSnapshots>;
+  resolveFormFieldOptions(
+    input: BPMFormDataSourceResolveFieldInput,
+  ): Promise<readonly FormFieldOption[]>;
+}
+
+export const BPM_FORM_DATA_SOURCE_VALUE_RESOLVER = Symbol(
+  'BPM_FORM_DATA_SOURCE_VALUE_RESOLVER',
+);
