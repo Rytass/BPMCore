@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot hydration, async Mezzanine Select/AutoComplete controls, complete
   list Radio/Checkbox controls, paging/search state, retry feedback, and
   submission blocking for unresolved dynamic values.
+- FormBuilderView now loads the host DataSource Catalog, filters sources by
+  control capability, edits field/constant bindings, preserves bindings when a
+  field key changes, and confirms source/mode changes or dependent-field
+  removal before updating the schema. DataSource schema lint is available from
+  the editor.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, and the reversible snapshot migration. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, and the visual builder's catalog/binding/confirmation flow. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -387,6 +387,23 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `readMissingFormDataSourceOptionValues()` | function | Find selected values without an authoritative option |
 | `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present |
 | `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
+
+### Form DataSource builder helpers
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FormDataSourceBindingFieldOption` | interface | Type-compatible form-field choice for a parameter binding |
+| `FormDataSourceBindingValueKind` | type | Constant or field binding discriminator |
+| `isFormDataSourceDescriptorCompatible()` | function | Enforce descriptor capability requirements for a control |
+| `readCompatibleFormDataSourceDescriptors()` | function | Filter catalog descriptors for a control |
+| `readFormDataSourceParameterType()` | function | Map a form field to a DataSource parameter type |
+| `readCompatibleFormDataSourceBindingFields()` | function | List type-compatible dependency fields, excluding the target |
+| `readFormDataSourceBinding()` | function | Read one parameter binding from a dynamic field |
+| `upsertFormDataSourceFieldBinding()` | function | Immutably add, replace, or remove one parameter binding |
+| `renameFormDataSourceFieldBindings()` | function | Keep FIELD bindings valid when a form field key changes |
+| `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
+| `readFormDataSourceBindingValue()` | function | Read a constant binding value |
+| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
 
@@ -881,7 +898,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
-| `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
+| `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
 | `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState`, `UseFormDataSourceFieldInput`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()` | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |

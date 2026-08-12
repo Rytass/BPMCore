@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added immutable DataSource option merge, selected hydration, unresolved-value,
   dependency, and value-signature helpers plus the `FormDataSourceFieldStatus`
   union used by the React renderer.
+- Added immutable builder helpers for DataSource capability filtering, parameter
+  type matching, field/constant bindings, field-key rename propagation, and
+  dependent-field discovery.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

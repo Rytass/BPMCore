@@ -26,6 +26,7 @@ import {
   DateTimePicker,
   Icon,
   Input,
+  Modal,
   Section,
   SectionGroup,
   Select,
@@ -55,6 +56,8 @@ import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   BooleanFieldDefinition,
   DateFieldDefinition,
+  FormDataSourceBinding,
+  FormDataSourceOptionFieldDefinition,
   FileUploadFieldDefinition,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -64,8 +67,26 @@ import {
   FormUiSchema,
   NumberFieldDefinition,
   TextFieldDefinition,
+  isFormDataSourceFieldDefinition,
+  isFormOptionFieldDefinition,
+  readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
-import { createFieldDefinition } from '@rytass/bpm-core-client/form';
+import {
+  createFieldDefinition,
+  isFormDataSourceDescriptorCompatible,
+  lintFormSchema,
+  listFormDataSources,
+  readCompatibleFormDataSourceBindingFields,
+  readCompatibleFormDataSourceDescriptors,
+  readFormDataSourceBinding,
+  readFormDataSourceBindingValue,
+  readFormDataSourceBindingValueKind,
+  readFormDataSourceFieldDependencyKeys,
+  renameFormDataSourceFieldBindings,
+  upsertFormDataSourceFieldBinding,
+  type FormDataSourceDescriptorRecord,
+  type FormDataSourceParameterType,
+} from '@rytass/bpm-core-client/form';
 import {
   buildConditionExpression,
   buildFormRendererValues,
@@ -116,6 +137,22 @@ type ConditionRuleConfig = Readonly<{
   supportingText: string;
   target: ConditionRuleTarget;
 }>;
+
+type DataSourceCatalogState = 'loading' | 'ready' | 'unavailable';
+type FormDataSourceConstantValue = string | number | boolean | null;
+
+type PendingBuilderConfirmation =
+  | Readonly<{
+      affectedFieldKeys: readonly string[];
+      kind: 'remove-field';
+      fieldKey: string;
+    }>
+  | Readonly<{
+      fieldKey: string;
+      impact: string;
+      kind: 'replace-field';
+      nextField: FormFieldDefinition;
+    }>;
 
 const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
   {
@@ -400,6 +437,26 @@ const REQUIRED_ASTERISK_STYLE: CSSProperties = {
   verticalAlign: 'super',
 };
 
+const DATA_SOURCE_SETTINGS_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 10,
+  gridColumn: '1 / -1',
+};
+
+const DATA_SOURCE_SUMMARY_STYLE: CSSProperties = {
+  backgroundColor: 'var(--mzn-color-bg-surface-secondary)',
+  borderRadius: 6,
+  display: 'grid',
+  gap: 4,
+  padding: 10,
+};
+
+const DATA_SOURCE_PARAMETER_GRID_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  gridTemplateColumns: 'minmax(180px, 0.7fr) minmax(220px, 1.3fr)',
+};
+
 function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
   if (!element) {
     return;
@@ -417,6 +474,25 @@ const EMPTY_UI_SCHEMA: FormUiSchema = {
   layout: [],
   schemaVersion: 1,
 };
+
+const STATIC_OPTION_SOURCE_ID = '__STATIC_OPTIONS__';
+const CONSTANT_BINDING_ID = '__CONSTANT__';
+const UNBOUND_BINDING_ID = '__UNBOUND__';
+
+const OPTION_SOURCE_KIND_OPTIONS: readonly {
+  readonly id: string;
+  readonly name: string;
+}[] = [
+  { id: STATIC_OPTION_SOURCE_ID, name: '靜態選項' },
+];
+
+const OPTION_MODE_OPTIONS: readonly {
+  readonly id: 'multiple' | 'single';
+  readonly name: string;
+}[] = [
+  { id: 'single', name: '單選' },
+  { id: 'multiple', name: '複選' },
+];
 
 const BOOLEAN_DEFAULT_OPTIONS: readonly {
   readonly id: string;
@@ -493,6 +569,49 @@ export function FormBuilderView({
   >(null);
   const [activeTab, setActiveTab] = useState<BuilderTabKey>('design');
   const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
+  const [dataSourceCatalog, setDataSourceCatalog] = useState<
+    readonly FormDataSourceDescriptorRecord[]
+  >([]);
+  const [dataSourceCatalogError, setDataSourceCatalogError] = useState<
+    string | null
+  >(null);
+  const [dataSourceCatalogState, setDataSourceCatalogState] =
+    useState<DataSourceCatalogState>('loading');
+  const [dataSourceLint, setDataSourceLint] = useState<
+    readonly string[] | null
+  >(null);
+  const [dataSourceLintLoading, setDataSourceLintLoading] = useState(false);
+  const [pendingBuilderConfirmation, setPendingBuilderConfirmation] =
+    useState<PendingBuilderConfirmation | null>(null);
+
+  useEffect((): (() => void) => {
+    let active = true;
+
+    void listFormDataSources()
+      .then((descriptors): void => {
+        if (!active) {
+          return;
+        }
+
+        setDataSourceCatalog(descriptors);
+        setDataSourceCatalogError(null);
+        setDataSourceCatalogState('ready');
+      })
+      .catch((requestError: unknown): void => {
+        if (!active) {
+          return;
+        }
+
+        setDataSourceCatalog([]);
+        void requestError;
+        setDataSourceCatalogError('目前無法載入 DataSource Catalog，請稍後重試。');
+        setDataSourceCatalogState('unavailable');
+      });
+
+    return (): void => {
+      active = false;
+    };
+  }, []);
   useEffect((): void => {
     const hasSelectedField = schema.fields.some(
       (field) => field.fieldKey === selectedFieldKey,
@@ -567,6 +686,27 @@ export function FormBuilderView({
   }
 
   function handleRemoveField(fieldKey: string): void {
+    const affectedFieldKeys = schema.fields.flatMap((field) =>
+      isFormDataSourceFieldDefinition(field) &&
+      readFormDataSourceFieldDependencyKeys(field).includes(fieldKey)
+        ? [field.fieldKey]
+        : [],
+    );
+
+    if (affectedFieldKeys.length > 0) {
+      setPendingBuilderConfirmation({
+        affectedFieldKeys,
+        fieldKey,
+        kind: 'remove-field',
+      });
+
+      return;
+    }
+
+    applyRemoveField(fieldKey);
+  }
+
+  function applyRemoveField(fieldKey: string): void {
     const remainingFields = schema.fields.filter(
       (field) => field.fieldKey !== fieldKey,
     );
@@ -585,6 +725,7 @@ export function FormBuilderView({
         : selectedFieldKey,
     );
     setAdvancedSchemaMessage(null);
+    setDataSourceLint(null);
   }
 
   function handleFieldDragEnd(result: DropResult): void {
@@ -648,13 +789,23 @@ export function FormBuilderView({
     const nextField = updater(selectedField);
     const nextFieldKey = nextField.fieldKey;
 
-    setSchema({
+    const updatedSchema = {
       ...schema,
       fields: schema.fields.map(
         (field): FormFieldDefinition =>
           field.fieldKey === previousFieldKey ? nextField : field,
       ),
-    });
+    };
+    const nextSchema =
+      previousFieldKey === nextFieldKey
+        ? updatedSchema
+        : renameFormDataSourceFieldBindings(
+            updatedSchema,
+            previousFieldKey,
+            nextFieldKey,
+          );
+
+    setSchema(nextSchema);
     setUiSchema({
       ...uiSchema,
       layout: uiSchema.layout.map((item) =>
@@ -665,6 +816,7 @@ export function FormBuilderView({
     });
     setSelectedFieldKey(nextFieldKey);
     setAdvancedSchemaMessage(null);
+    setDataSourceLint(null);
   }
 
   function updateSelectedTextField(
@@ -703,6 +855,159 @@ export function FormBuilderView({
     updateSelectedFieldWith((field) =>
       isSelectFieldDefinition(field) ? { ...field, ...patch } : field,
     );
+  }
+
+  function updateSelectedOptionMode(mode: 'multiple' | 'single'): void {
+    if (
+      !selectedField ||
+      (selectedField.type !== 'select' && selectedField.type !== 'autocomplete')
+    ) {
+      return;
+    }
+
+    const currentMode = readFormFieldSelectionMode(selectedField);
+
+    if (currentMode === mode) {
+      return;
+    }
+
+    const currentDefaultValue = selectedField.defaultValue;
+    const defaultValue =
+      mode === 'multiple'
+        ? typeof currentDefaultValue === 'string'
+          ? [currentDefaultValue]
+          : currentDefaultValue
+        : Array.isArray(currentDefaultValue)
+          ? currentDefaultValue[0]
+          : currentDefaultValue;
+
+    requestDataSourceFieldChange(
+      selectedField,
+      {
+        ...selectedField,
+        defaultValue,
+        mode,
+      },
+      '選擇模式變更可能轉換或捨棄既有預設值。',
+    );
+  }
+
+  function requestDataSourceFieldChange(
+    field: FormOptionFieldDefinition,
+    nextField: FormFieldDefinition,
+    impact = '此變更會替換目前選項來源；既有 options、dynamic reference 或 bindings 可能失效。',
+  ): void {
+    if (JSON.stringify(field) === JSON.stringify(nextField)) {
+      return;
+    }
+
+    setPendingBuilderConfirmation({
+      fieldKey: field.fieldKey,
+      impact,
+      kind: 'replace-field',
+      nextField,
+    });
+  }
+
+  function handleOptionSourceChange(
+    field: FormOptionFieldDefinition,
+    optionId: string | undefined,
+  ): void {
+    if (!optionId) {
+      return;
+    }
+
+    if (optionId === STATIC_OPTION_SOURCE_ID) {
+      if (!isFormDataSourceFieldDefinition(field)) {
+        return;
+      }
+
+      const { dataSource, defaultValue, ...baseField } = field;
+      void dataSource;
+      void defaultValue;
+      requestDataSourceFieldChange(field, {
+        ...baseField,
+        options: [],
+      } as FormFieldDefinition);
+
+      return;
+    }
+
+    const descriptor = dataSourceCatalog.find(
+      (candidate) => readDataSourceDescriptorOptionId(candidate) === optionId,
+    );
+
+    if (!descriptor) {
+      return;
+    }
+
+    if (isFormDataSourceFieldDefinition(field)) {
+      const parameterKeys = new Set(
+        descriptor.parameters.map((parameter) => parameter.key),
+      );
+      const nextBindings = field.dataSource.bindings.filter((binding) =>
+        parameterKeys.has(binding.parameter),
+      );
+
+      requestDataSourceFieldChange(field, {
+        ...field,
+        dataSource: {
+          bindings: nextBindings,
+          key: descriptor.key,
+          version: descriptor.version,
+        },
+      });
+
+      return;
+    }
+
+    const { options, defaultValue, ...baseField } = field;
+    void options;
+    void defaultValue;
+    requestDataSourceFieldChange(field, {
+      ...baseField,
+      dataSource: {
+        bindings: [],
+        key: descriptor.key,
+        version: descriptor.version,
+      },
+    } as FormDataSourceOptionFieldDefinition);
+  }
+
+  function handleConfirmBuilderChange(): void {
+    if (!pendingBuilderConfirmation) {
+      return;
+    }
+
+    if (pendingBuilderConfirmation.kind === 'remove-field') {
+      applyRemoveField(pendingBuilderConfirmation.fieldKey);
+    } else {
+      setSchema({
+        ...schema,
+        fields: schema.fields.map((field) =>
+          field.fieldKey === pendingBuilderConfirmation.fieldKey
+            ? pendingBuilderConfirmation.nextField
+            : field,
+        ),
+      });
+      setAdvancedSchemaMessage(null);
+      setDataSourceLint(null);
+    }
+
+    setPendingBuilderConfirmation(null);
+  }
+
+  async function handleLintDataSourceSchema(): Promise<void> {
+    setDataSourceLintLoading(true);
+
+    try {
+      const result = await lintFormSchema(schema, uiSchema);
+      setDataSourceLint(result.errors);
+    } catch {
+      setDataSourceLint(['目前無法完成 DataSource schema 驗證。']);
+    } finally {
+      setDataSourceLintLoading(false);
+    }
   }
 
   function updateSelectedBooleanField(
@@ -788,7 +1093,39 @@ export function FormBuilderView({
             </Section>
           </SectionGroup>
         </>
-
+      {pendingBuilderConfirmation ? (
+        <Modal
+          cancelText="返回"
+          confirmText="確認變更"
+          modalType="standard"
+          onCancel={(): void => setPendingBuilderConfirmation(null)}
+          onClose={(): void => setPendingBuilderConfirmation(null)}
+          onConfirm={handleConfirmBuilderChange}
+          open
+          showModalFooter
+          showModalHeader
+          title={
+            pendingBuilderConfirmation.kind === 'remove-field'
+              ? '確認移除 dependency 欄位'
+              : '確認替換選項來源'
+          }
+        >
+          {pendingBuilderConfirmation.kind === 'remove-field' ? (
+            <div style={COMPACT_STACK_STYLE}>
+              <Typography variant="body">
+                此欄位仍被下列 DataSource binding 使用；移除後請重新設定這些欄位。
+              </Typography>
+              <Typography color="text-warning" variant="body">
+                {pendingBuilderConfirmation.affectedFieldKeys.join('、')}
+              </Typography>
+            </div>
+          ) : (
+            <Typography variant="body">
+              {pendingBuilderConfirmation.impact}確認後才會寫入 schema。
+            </Typography>
+          )}
+        </Modal>
+      ) : null}
     </>
   );
 
@@ -1003,21 +1340,8 @@ export function FormBuilderView({
       return renderDateFieldSettings(field);
     }
 
-    if (isSelectFieldDefinition(field)) {
-      return renderSelectFieldSettings(field);
-    }
-
-    if (
-      field.type === 'select' ||
-      field.type === 'autocomplete' ||
-      field.type === 'radio' ||
-      field.type === 'checkbox'
-    ) {
-      return (
-        <Typography color="text-neutral" variant="body">
-          動態選項來源設定將在來源註冊後提供。
-        </Typography>
-      );
+    if (isFormOptionFieldDefinition(field)) {
+      return renderOptionFieldSettings(field);
     }
 
     if (field.type === 'boolean') {
@@ -1130,33 +1454,395 @@ export function FormBuilderView({
     );
   }
 
-  function renderSelectFieldSettings(
+  function renderOptionFieldSettings(
+    field: FormOptionFieldDefinition,
+  ): ReactElement {
+    const compatibleDescriptors = readCompatibleFormDataSourceDescriptors(
+      field.type,
+      dataSourceCatalog,
+    );
+    const currentSourceId = isFormDataSourceFieldDefinition(field)
+      ? readDataSourceDescriptorOptionId(field.dataSource)
+      : STATIC_OPTION_SOURCE_ID;
+    const currentDescriptor = isFormDataSourceFieldDefinition(field)
+      ? dataSourceCatalog.find(
+          (descriptor) =>
+            descriptor.key === field.dataSource.key &&
+            descriptor.version === field.dataSource.version,
+        )
+      : null;
+    const currentDescriptorIsCompatible = currentDescriptor
+      ? compatibleDescriptors.some(
+          (descriptor) =>
+            descriptor.key === currentDescriptor.key &&
+            descriptor.version === currentDescriptor.version,
+        )
+      : false;
+    const sourceOptions = [
+      ...OPTION_SOURCE_KIND_OPTIONS,
+      ...compatibleDescriptors.map(readDataSourceDescriptorOption),
+      ...(isFormDataSourceFieldDefinition(field) &&
+      !currentDescriptorIsCompatible
+        ? [
+            {
+              id: currentSourceId,
+              name: `${field.dataSource.key} v${field.dataSource.version}（目前不可用或不支援）`,
+            },
+          ]
+        : []),
+    ];
+    const mode = readFormFieldSelectionMode(field);
+
+    return (
+      <>
+        {field.type === 'select' || field.type === 'autocomplete'
+          ? renderSettingsFormRow(
+              '選擇模式',
+              'fieldSelectionMode',
+              <Select
+                clearable={false}
+                onChange={(option): void => {
+                  if (option?.id === 'single' || option?.id === 'multiple') {
+                    updateSelectedOptionMode(option.id);
+                  }
+                }}
+                options={[...OPTION_MODE_OPTIONS]}
+                value={readSelectOption(OPTION_MODE_OPTIONS, mode)}
+              />,
+            )
+          : renderSettingsFormRow(
+              '選擇模式',
+              'fieldSelectionMode',
+              <Typography color="text-neutral" variant="body">
+                {mode === 'multiple' ? '固定複選' : '固定單選'}
+              </Typography>,
+            )}
+        {renderSettingsFormRow(
+          '選項來源',
+          'fieldOptionSource',
+          <Select
+            clearable={false}
+            disabled={
+              dataSourceCatalogState === 'loading' &&
+              !isFormDataSourceFieldDefinition(field)
+            }
+            onChange={(option): void =>
+              handleOptionSourceChange(field, option?.id)
+            }
+            options={sourceOptions}
+            placeholder="選擇選項來源"
+            value={readSelectOption(sourceOptions, currentSourceId)}
+          />,
+        )}
+        {isFormDataSourceFieldDefinition(field)
+          ? renderDataSourceFieldSettings(field, compatibleDescriptors)
+          : renderStaticOptionFieldSettings(field)}
+      </>
+    );
+  }
+
+  function renderDataSourceFieldSettings(
+    field: FormDataSourceOptionFieldDefinition,
+    compatibleDescriptors: readonly FormDataSourceDescriptorRecord[],
+  ): ReactElement {
+    const descriptor = dataSourceCatalog.find(
+      (candidate) =>
+        candidate.key === field.dataSource.key &&
+        candidate.version === field.dataSource.version,
+    );
+    const unsupportedCurrentSource =
+      descriptor && !isFormDataSourceDescriptorCompatible(descriptor, field.type);
+
+    return (
+      <div style={DATA_SOURCE_SETTINGS_STYLE}>
+        {dataSourceCatalogState === 'loading' ? (
+          <Typography color="text-neutral" variant="body">
+            正在載入可用的 DataSource Catalog…
+          </Typography>
+        ) : null}
+        {dataSourceCatalogError ? (
+          <Typography color="text-error" variant="body">
+            {dataSourceCatalogError}
+          </Typography>
+        ) : null}
+        {!descriptor ? (
+          <Typography color="text-warning" variant="body">
+            目前來源版本未出現在 Catalog；會保留原設定，但在環境 lint 通過前不可發布。
+          </Typography>
+        ) : null}
+        {unsupportedCurrentSource ? (
+          <Typography color="text-error" variant="body">
+            目前來源不支援此控制項或超出 bounded list 限制，請選擇其他版本。
+          </Typography>
+        ) : null}
+        {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
+        {descriptor
+          ? descriptor.parameters.map((parameter) =>
+              renderDataSourceParameterBinding(field, parameter),
+            )
+          : null}
+        {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
+          <Typography color="text-warning" variant="body">
+            沒有符合目前控制項能力的已註冊來源。
+          </Typography>
+        ) : null}
+        <div style={OPTION_ACTIONS_STYLE}>
+          <Button
+            disabled={dataSourceLintLoading}
+            onClick={(): void => void handleLintDataSourceSchema()}
+            size="sub"
+            type="button"
+            variant="base-secondary"
+          >
+            {dataSourceLintLoading ? '驗證中…' : '驗證 DataSource 設定'}
+          </Button>
+        </div>
+        {dataSourceLint ? (
+          <Typography
+            color={dataSourceLint.length > 0 ? 'text-error' : 'text-success'}
+            variant="caption"
+          >
+            {dataSourceLint.length > 0
+              ? dataSourceLint.join('；')
+              : 'DataSource schema 與目前環境均通過驗證。'}
+          </Typography>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderDataSourceDescriptorSummary(
+    descriptor: FormDataSourceDescriptorRecord,
+  ): ReactElement {
+    return (
+      <div style={DATA_SOURCE_SUMMARY_STYLE}>
+        <Typography variant="label-primary">
+          {descriptor.label} · v{descriptor.version}
+        </Typography>
+        {descriptor.description ? (
+          <Typography color="text-neutral" variant="caption">
+            {descriptor.description}
+          </Typography>
+        ) : null}
+        <Typography color="text-neutral" variant="caption">
+          支援：{descriptor.supportedControls.join('、')}；
+          {descriptor.supportsSearch ? '支援搜尋' : '不支援搜尋'}；
+          {descriptor.paginationMode === 'CURSOR' ? '支援分頁' : '完整清單'}；
+          policy：{descriptor.revalidationPolicy}
+        </Typography>
+      </div>
+    );
+  }
+
+  function renderDataSourceParameterBinding(
+    field: FormDataSourceOptionFieldDefinition,
+    parameter: FormDataSourceDescriptorRecord['parameters'][number],
+  ): ReactElement {
+    const binding = readFormDataSourceBinding(field, parameter.key);
+    const bindingId = readDataSourceBindingOptionId(binding);
+    const fieldOptions = readCompatibleFormDataSourceBindingFields(
+      parameter.type,
+      schema.fields,
+      field.fieldKey,
+    );
+    const bindingOptions = [
+      ...(parameter.required
+        ? []
+        : [{ id: UNBOUND_BINDING_ID, name: '未綁定' }]),
+      ...fieldOptions,
+      ...(parameter.type === 'STRING_ARRAY'
+        ? []
+        : [{ id: CONSTANT_BINDING_ID, name: '固定常數' }]),
+    ];
+
+    return (
+      <div key={parameter.key} style={DATA_SOURCE_PARAMETER_GRID_STYLE}>
+        <BPMFormField
+          label={`${parameter.label ?? parameter.key}${parameter.required ? '（必填）' : '（選填）'}`}
+          name={`dataSourceParameter_${parameter.key}`}
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void =>
+              handleDataSourceBindingChange(
+                field,
+                parameter.key,
+                parameter.type,
+                option?.id,
+              )
+            }
+            options={bindingOptions}
+            placeholder="選擇欄位或常數"
+            value={readSelectOption(bindingOptions, bindingId)}
+          />
+        </BPMFormField>
+        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT'
+          ? renderDataSourceConstantEditor(field, parameter.key, parameter.type, binding)
+          : readFormDataSourceBindingValueKind(binding) === 'FIELD'
+            ? (
+                <Typography color="text-neutral" variant="caption">
+                  使用表單欄位「{binding?.from.kind === 'FIELD' ? binding.from.fieldKey : ''}」的目前值。
+                </Typography>
+              )
+            : (
+                <Typography color="text-neutral" variant="caption">
+                  {parameter.required
+                    ? fieldOptions.length > 0
+                      ? '請選擇相容的表單欄位或固定常數。'
+                      : '目前沒有型別相容的表單欄位，請先建立 dependency。'
+                    : '此參數可不綁定。'}
+                </Typography>
+              )}
+      </div>
+    );
+  }
+
+  function renderDataSourceConstantEditor(
+    field: FormDataSourceOptionFieldDefinition,
+    parameterKey: string,
+    parameterType: FormDataSourceParameterType,
+    binding: FormDataSourceBinding | null,
+  ): ReactElement {
+    const value = readFormDataSourceBindingValue(field, parameterKey);
+
+    if (parameterType === 'BOOLEAN') {
+      const options = [
+        { id: 'true', name: '是' },
+        { id: 'false', name: '否' },
+      ];
+
+      return (
+        <Select
+          clearable={false}
+          onChange={(option): void =>
+            updateDataSourceConstant(
+              parameterKey,
+              option?.id === 'true',
+            )
+          }
+          options={options}
+          value={readSelectOption(
+            options,
+            value === true ? 'true' : 'false',
+          )}
+        />
+      );
+    }
+
+    if (parameterType === 'STRING_ARRAY') {
+      return (
+        <Typography color="text-warning" variant="caption">
+          STRING_ARRAY 參數請綁定複選欄位；目前不接受固定常數。
+        </Typography>
+      );
+    }
+
+    return (
+      <Input
+        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+          updateDataSourceConstant(
+            parameterKey,
+            parameterType === 'NUMBER'
+              ? parseOptionalNumberInput(event.target.value) ?? 0
+              : event.target.value,
+          )
+        }
+        placeholder={parameterType === 'NUMBER' ? '輸入數字' : '輸入固定值'}
+        value={readDataSourceConstantInputValue(binding, parameterType)}
+        variant="base"
+      />
+    );
+  }
+
+  function handleDataSourceBindingChange(
+    field: FormDataSourceOptionFieldDefinition,
+    parameterKey: string,
+    parameterType: FormDataSourceParameterType,
+    optionId: string | undefined,
+  ): void {
+    if (!optionId || optionId === UNBOUND_BINDING_ID) {
+      updateSelectedFieldWith((currentField) =>
+        isFormDataSourceFieldDefinition(currentField)
+          ? upsertFormDataSourceFieldBinding(currentField, parameterKey, null)
+          : currentField,
+      );
+
+      return;
+    }
+
+    if (optionId === CONSTANT_BINDING_ID) {
+      updateSelectedFieldWith((currentField) =>
+        isFormDataSourceFieldDefinition(currentField)
+          ? upsertFormDataSourceFieldBinding(
+              currentField,
+              parameterKey,
+              {
+                from: {
+                  kind: 'CONSTANT',
+                  value: readDefaultDataSourceConstant(parameterType),
+                },
+                parameter: parameterKey,
+              },
+            )
+          : currentField,
+      );
+
+      return;
+    }
+
+    updateSelectedFieldWith((currentField) =>
+      isFormDataSourceFieldDefinition(currentField)
+        ? upsertFormDataSourceFieldBinding(currentField, parameterKey, {
+            from: { fieldKey: optionId, kind: 'FIELD' },
+            parameter: parameterKey,
+          })
+        : currentField,
+    );
+  }
+
+  function updateDataSourceConstant(
+    parameterKey: string,
+    value: FormDataSourceConstantValue,
+  ): void {
+    updateSelectedFieldWith((currentField) =>
+      isFormDataSourceFieldDefinition(currentField)
+        ? upsertFormDataSourceFieldBinding(currentField, parameterKey, {
+            from: { kind: 'CONSTANT', value },
+            parameter: parameterKey,
+          })
+        : currentField,
+    );
+  }
+
+  function renderStaticOptionFieldSettings(
     field: FormStaticOptionFieldDefinition,
   ): ReactElement {
+    const mode = readFormFieldSelectionMode(field);
     const defaultValues = Array.isArray(field.defaultValue)
       ? field.defaultValue
       : [];
-    const selectedValues = field.options
-      .filter((option) => defaultValues.includes(option.value))
-      .map(readFieldOptionAsSelectOption);
+    const options = field.options.map(readFieldOptionAsSelectOption);
+    const selectedValues = options.filter((option) =>
+      defaultValues.includes(option.id),
+    );
 
     return (
       <>
         {renderSettingsFormRow(
           '預設值',
           'fieldDefaultValue',
-          field.type === 'checkbox' ? (
+          mode === 'multiple' ? (
             <Select
               clearable
               mode="multiple"
-              onChange={(options): void =>
+              onChange={(nextOptions): void =>
                 updateSelectedSelectField({
-                  defaultValue: options.length
-                    ? options.map((option) => option.id)
+                  defaultValue: nextOptions.length
+                    ? nextOptions.map((option) => option.id)
                     : undefined,
                 })
               }
-              options={field.options.map(readFieldOptionAsSelectOption)}
+              options={options}
               placeholder="選擇一或多個預設選項"
               value={selectedValues}
             />
@@ -1168,14 +1854,11 @@ export function FormBuilderView({
                   defaultValue: option?.id || undefined,
                 })
               }
-              options={field.options.map(readFieldOptionAsSelectOption)}
+              options={options}
               placeholder="選擇預設選項"
               value={
                 typeof field.defaultValue === 'string'
-                  ? readSelectOption(
-                      field.options.map(readFieldOptionAsSelectOption),
-                      field.defaultValue,
-                    )
+                  ? readSelectOption(options, field.defaultValue)
                   : null
               }
             />
@@ -1863,6 +2546,64 @@ function readFieldTypeLabel(type: FieldType): string {
   return (
     FIELD_TYPE_OPTIONS.find((option) => option.type === type)?.label ?? type
   );
+}
+
+function readDataSourceDescriptorOptionId(value: {
+  readonly key: string;
+  readonly version: number;
+}): string {
+  return `${value.key}@${value.version}`;
+}
+
+function readDataSourceDescriptorOption(
+  descriptor: FormDataSourceDescriptorRecord,
+): { readonly id: string; readonly name: string } {
+  return {
+    id: readDataSourceDescriptorOptionId(descriptor),
+    name: `${descriptor.label} · ${descriptor.key} v${descriptor.version}`,
+  };
+}
+
+function readDataSourceBindingOptionId(
+  binding: FormDataSourceBinding | null,
+): string {
+  if (!binding) {
+    return UNBOUND_BINDING_ID;
+  }
+
+  return binding.from.kind === 'FIELD'
+    ? binding.from.fieldKey
+    : CONSTANT_BINDING_ID;
+}
+
+function readDefaultDataSourceConstant(
+  parameterType: FormDataSourceParameterType,
+): FormDataSourceConstantValue {
+  switch (parameterType) {
+    case 'BOOLEAN':
+      return false;
+    case 'NUMBER':
+      return 0;
+    case 'STRING_ARRAY':
+      return '';
+    case 'STRING':
+      return '';
+    default:
+      return '';
+  }
+}
+
+function readDataSourceConstantInputValue(
+  binding: FormDataSourceBinding | null,
+  parameterType: FormDataSourceParameterType,
+): string {
+  const value = binding?.from.kind === 'CONSTANT' ? binding.from.value : '';
+
+  if (parameterType === 'NUMBER') {
+    return typeof value === 'number' ? String(value) : '';
+  }
+
+  return typeof value === 'string' ? value : '';
 }
 
 function hasConditionRules(field: FormFieldDefinition): boolean {
