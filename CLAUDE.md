@@ -43,20 +43,23 @@ A manual bump skips the changelog generation, so a release ships with a
 `CHANGELOG.md` that still ends at the previous version. That has happened; do
 not repeat it.
 
-Two release groups, so the two version lines stay independent:
+**All four packages are one fixed version set** — `shared`, `bpm-core`,
+`bpm-core-client` and `bpm-core-react` share a version number, a `v{version}`
+tag, one workspace `CHANGELOG.md` and one GitHub release, plus a per-package
+`CHANGELOG.md` each. `prepublish-check` runs for all four before versioning.
 
-| Group  | Packages                              | Tag pattern              |
-| ------ | ------------------------------------- | ------------------------ |
-| `core` | `shared`, `bpm-core`, `bpm-core-client` | `v{version}`             |
-| `react`| `bpm-core-react`                      | `bpm-core-react@{version}` |
+The cost of a fixed set: a change to any package bumps all four, so
+`bpm-core-react` ships a new version even when only backend code moved. That is
+the accepted trade for one number to reason about — `bpm-core-react` used to
+version on its own cadence and drifted to 0.8.0 while the core sat at 0.7.0.
 
-`core` is a fixed version set (the three move together). `react` versions on its
-own cadence because it tracks React/Mezzanine, not the core contract. Each group
-runs its own `prepublish-check` before versioning.
-
-Because there are multiple groups, nx cannot write a single workspace
-`CHANGELOG.md` — per-package changelogs are the only ones, and each package gets
-its own GitHub release.
+Inter-package ranges are maintained automatically
+(`preserveMatchingDependencyRanges: false`). Do not hand-edit the
+`@rytass/bpm-core-*` entries in each package's `peerDependencies`; `nx release`
+rewrites them to the new version. The historical accumulation in
+`bpm-core-react` (`^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0`) was collapsed to a
+single current range when the versions were aligned at 0.9.0 — do not
+reintroduce that pattern by hand.
 
 **`useCommitScope: false` is required — do not remove it.** nx defaults to
 `true`, which only counts a commit toward the bump when its scope matches a
@@ -73,6 +76,11 @@ Still read the resolved version in the dry run, and override when needed:
 ```bash
 npx nx release minor --skip-publish   # or patch / major / an exact version
 ```
+
+The 0.9.0 release had to be given explicitly (`npx nx release 0.9.0`) because
+aligning the version set meant clearing `bpm-core-react`'s already-published
+0.8.0; the core packages skip 0.8.0 entirely. From the `v0.9.0` tag onward the
+bump resolves automatically again.
 
 Full publish commands, and why the backend and frontend packages publish from
 different directories, are in `docs/api-reference.md` → "Publish Procedure".

@@ -38,20 +38,21 @@ still ends at the previous version.
 npx nx release --skip-publish
 ```
 
-Two release groups keep the two version lines independent:
+All four packages form **one fixed version set**: a shared version number, a
+`v{version}` tag, one workspace `CHANGELOG.md`, one GitHub release, and a
+per-package `CHANGELOG.md` each. `prepublish-check` (typecheck + lint + test +
+build + publint) runs for all four before versioning.
 
-| Group   | Packages                                | Tag pattern                | Relationship |
-| ------- | --------------------------------------- | -------------------------- | ------------ |
-| `core`  | `shared`, `bpm-core`, `bpm-core-client` | `v{version}`               | fixed        |
-| `react` | `bpm-core-react`                        | `bpm-core-react@{version}` | own cadence  |
+The trade-off of a fixed set is that any change bumps every package, so
+`bpm-core-react` gets a new version even for a backend-only change. That is
+deliberate: versioning it on its own cadence is what let it drift to 0.8.0 while
+the core packages sat at 0.7.0.
 
-`bpm-core-react` tracks React/Mezzanine rather than the core contract, so it
-versions separately — but it is no longer bumped by hand. Each group runs its own
-`prepublish-check` (typecheck + lint + test + build + publint) before versioning.
-
-Because there is more than one group, nx cannot write a single workspace
-`CHANGELOG.md` (it warns and skips it), so `release.changelog.workspaceChangelog`
-is `false` and every package gets its own changelog and its own GitHub release.
+Inter-package `peerDependencies` ranges are rewritten automatically, because
+`version.preserveMatchingDependencyRanges` is `false`. Do not hand-maintain the
+`@rytass/bpm-core-*` ranges. Aligning the set at 0.9.0 also collapsed
+`bpm-core-react`'s accumulated `^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0` into a
+single `^0.9.0`.
 
 `release.conventionalCommits.useCommitScope` is **`false` on purpose**. With
 nx's default (`true`), only commits whose scope matches a *project* name count
