@@ -3,7 +3,8 @@ import {
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
-  SelectFieldDefinition,
+  FormStaticOptionFieldDefinition,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
@@ -2149,7 +2150,7 @@ function readArrayFieldValueLabel(
 }
 
 function readSelectOptionLabel(
-  field: SelectFieldDefinition,
+  field: FormStaticOptionFieldDefinition,
   value: string,
 ): string {
   return (
@@ -2159,10 +2160,6 @@ function readSelectOptionLabel(
 
 function isSelectFieldDefinition(
   field: FormFieldDefinition,
-): field is SelectFieldDefinition {
-  return (
-    field.type === 'select' ||
-    field.type === 'radio' ||
-    field.type === 'checkbox'
-  );
+): field is FormStaticOptionFieldDefinition {
+  return isFormStaticOptionFieldDefinition(field);
 }

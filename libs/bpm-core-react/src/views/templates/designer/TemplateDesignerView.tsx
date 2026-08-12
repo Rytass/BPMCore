@@ -73,6 +73,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormUiSchema,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -4080,12 +4081,12 @@ function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
     return true;
   }
 
-  if (field.type === 'select') {
-    return field.options[0]?.value ?? '';
-  }
-
-  if (field.type === 'checkbox') {
-    return field.options[0] ? [field.options[0].value] : [];
+  if (isFormStaticOptionFieldDefinition(field)) {
+    return field.type === 'checkbox'
+      ? field.options[0]
+        ? [field.options[0].value]
+        : []
+      : field.options[0]?.value ?? '';
   }
 
   if (field.type === 'date') {
@@ -4704,11 +4705,7 @@ function readConditionValueOptions(
     ];
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options.map((option) => ({
       id: option.value,
       name: option.label,

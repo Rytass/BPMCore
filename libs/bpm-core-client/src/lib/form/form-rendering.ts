@@ -6,7 +6,8 @@ import {
   FormFieldValue,
   FormUiSchema,
   NumberFieldDefinition,
-  SelectFieldDefinition,
+  FormStaticOptionFieldDefinition,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 
 export type ConditionOperator =
@@ -217,7 +218,7 @@ export function readDefaultConditionValue(field: FormFieldDefinition): string {
     return 'true';
   }
 
-  if (isSelectFieldDefinition(field)) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options[0]?.value ?? '';
   }
 
@@ -289,12 +290,8 @@ export function isDateFieldDefinition(
 
 export function isSelectFieldDefinition(
   field: FormFieldDefinition,
-): field is SelectFieldDefinition {
-  return (
-    field.type === 'select' ||
-    field.type === 'radio' ||
-    field.type === 'checkbox'
-  );
+): field is FormStaticOptionFieldDefinition {
+  return isFormStaticOptionFieldDefinition(field);
 }
 
 export function readSelectOption<TOption extends { readonly id: string }>(

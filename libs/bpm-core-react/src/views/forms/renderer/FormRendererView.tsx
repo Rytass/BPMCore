@@ -25,6 +25,7 @@ import {
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   buildFormRendererValues,
@@ -285,7 +286,7 @@ function renderControl(
     );
   }
 
-  if (field.type === 'checkbox') {
+  if (isFormStaticOptionFieldDefinition(field) && field.type === 'checkbox') {
     const options = field.options.map(readFieldOptionAsSelectOption);
 
     return (
@@ -294,7 +295,9 @@ function renderControl(
         onChange={(options): void =>
           onChange(
             field.fieldKey,
-            options.length ? options.map((option) => option.id) : undefined,
+            options?.length
+              ? options.map((option) => option.id)
+              : undefined,
           )
         }
         options={options}
@@ -307,7 +310,7 @@ function renderControl(
     );
   }
 
-  if (field.type === 'select' || field.type === 'radio') {
+  if (isFormStaticOptionFieldDefinition(field)) {
     const options = field.options.map(readFieldOptionAsSelectOption);
 
     return (
@@ -462,6 +465,7 @@ function readNumberInputValue(value: FormFieldValue | undefined): string {
 function readInputPlaceholder(type: FormFieldDefinition['type']): string {
   const placeholders: Readonly<Record<FormFieldDefinition['type'], string>> = {
     boolean: '',
+    autocomplete: '請輸入或選擇',
     checkbox: '請選擇一或多個選項',
     date: '請選擇日期',
     datetime: '請選擇日期與時間',

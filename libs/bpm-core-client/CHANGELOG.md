@@ -9,6 +9,14 @@ All notable changes to `@rytass/bpm-core-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Form helpers now recognize `autocomplete` and distinguish static option
+  fields from DataSource-backed option fields without changing primitive form
+  values.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 

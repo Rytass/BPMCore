@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds public exports: `NotificationEntity` / `NotificationPreferenceEntity` and the notification archive API (bpm-core), `ApprovalTemplateActivationStatusEnum` plus template activate/deactivate (bpm-core), the matching client functions and `ApprovalTemplateActivationStatus` type (bpm-core-client), and `imports` on `CalendarModuleOptions` (bpm-core). Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, and structural DataSource publish lint across the shared, client, core, and React consumers. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -160,12 +160,29 @@ Form-schema definitions.
 | `TextFieldDefinition` | type | text / email / textarea |
 | `NumberFieldDefinition` | type | number (min/max/precision) |
 | `DateFieldDefinition` | type | date / datetime |
-| `SelectFieldDefinition` | type | single / multi select |
+| `FormSelectionMode` | type | `single` or `multiple` option selection |
+| `FormDataSourceReference` | interface | Registered source key, version, and bindings |
+| `FormDataSourceBinding` | type | Direct field or primitive constant binding |
+| `FormFieldOptionSource` | type | Static options / DataSource XOR union |
+| `SelectFieldDefinition` | type | Select option field with single / multiple mode |
+| `AutoCompleteFieldDefinition` | type | AutoComplete option field with single / multiple mode |
+| `RadioFieldDefinition` | type | Fixed single-selection option field |
+| `CheckboxFieldDefinition` | type | Fixed multiple-selection option field |
+| `FormOptionFieldDefinition` | type | Union of the four option controls |
 | `FormFieldOption` | interface | Option in a select field |
+| `FormDataSourceValueSnapshot` | type | Persisted dynamic option labels and validation metadata |
+| `FormDataSourceValueSnapshots` | type | Field-keyed dynamic option snapshot map |
+| `FormDataSourceOptionFieldDefinition` | type | Option field narrowed to a DataSource |
+| `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
 | `FormUiSchema` | interface | Layout description for renderer |
 | `FormLayoutItem` | interface | One cell in the layout grid |
+| `isFormOptionFieldDefinition()` | function | Option-control type guard |
+| `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
+| `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `readFormFieldSelectionMode()` | function | Normalized control selection mode |
+| `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization |
 
 ## `@rytass/bpm-core-shared/identity`
 

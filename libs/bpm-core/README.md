@@ -12,6 +12,13 @@ application owns runtime infrastructure such as GraphQL setup, TypeORM
 connection setup, auth/session handling, Vault or secret loading, member
 directory integration, storage adapters, and deployment.
 
+Form Definition parsing accepts the additive static/DataSource option-source
+shape and performs structural publish lint for source XOR, selection mode,
+direct bindings, duplicate parameters, field references, dependency cycles,
+and dynamic default-value prohibition. Registry lookup and server-side option
+resolution are delivered by the subsequent DataSource runtime phases; this
+package never reads transport details or credentials from form JSON.
+
 ## Package Status
 
 Current version: `0.1.10`

@@ -59,9 +59,10 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
+  FormOptionFieldDefinition,
+  FormStaticOptionFieldDefinition,
   FormUiSchema,
   NumberFieldDefinition,
-  SelectFieldDefinition,
   TextFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { createFieldDefinition } from '@rytass/bpm-core-client/form';
@@ -164,6 +165,12 @@ const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
     icon: ListIcon,
     label: '下拉選單',
     type: 'select',
+  },
+  {
+    description: '可搜尋的固定選項',
+    icon: ListIcon,
+    label: '自動完成',
+    type: 'autocomplete',
   },
   {
     description: '固定選項單選',
@@ -689,7 +696,9 @@ export function FormBuilderView({
   }
 
   function updateSelectedSelectField(
-    patch: Partial<Pick<SelectFieldDefinition, 'defaultValue' | 'options'>>,
+    patch: Partial<
+      Pick<FormOptionFieldDefinition, 'defaultValue' | 'options'>
+    >,
   ): void {
     updateSelectedFieldWith((field) =>
       isSelectFieldDefinition(field) ? { ...field, ...patch } : field,
@@ -998,6 +1007,19 @@ export function FormBuilderView({
       return renderSelectFieldSettings(field);
     }
 
+    if (
+      field.type === 'select' ||
+      field.type === 'autocomplete' ||
+      field.type === 'radio' ||
+      field.type === 'checkbox'
+    ) {
+      return (
+        <Typography color="text-neutral" variant="body">
+          動態選項來源設定將在來源註冊後提供。
+        </Typography>
+      );
+    }
+
     if (field.type === 'boolean') {
       return renderBooleanFieldSettings(field);
     }
@@ -1109,7 +1131,7 @@ export function FormBuilderView({
   }
 
   function renderSelectFieldSettings(
-    field: SelectFieldDefinition,
+    field: FormStaticOptionFieldDefinition,
   ): ReactElement {
     const defaultValues = Array.isArray(field.defaultValue)
       ? field.defaultValue
@@ -1546,7 +1568,9 @@ export function FormBuilderView({
     );
   }
 
-  function renderFieldOptionsTable(field: SelectFieldDefinition): ReactElement {
+  function renderFieldOptionsTable(
+    field: FormStaticOptionFieldDefinition,
+  ): ReactElement {
     const optionRows: FieldOptionRow[] = field.options.map((option, index) => ({
       index,
       key: `${field.fieldKey}-${index}`,
@@ -1934,4 +1958,3 @@ function moveItemByIndex<TItem>(
     ...remainingItems.slice(destinationIndex),
   ];
 }
-
