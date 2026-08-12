@@ -424,6 +424,12 @@ snapshot atomically. This keeps historical labels readable even when a host
 later removes a registry version, while changed bindings or an `ALWAYS`
 revalidation policy still require a live provider call.
 
+The repository wrapper host demonstrates the contract with
+`ApiFormDataSourceRegistry` and the seeded `demo.cost-centers@1` family. Its
+database table and reset ownership remain in `apps/api`; an external host should
+replace that provider through `BPMRootModule.forRoot()` and keep its own source
+data and authorization rules outside the BPM package.
+
 This requires the wrapper host's auth middleware to honor `Authorization`
 headers (member-base hosts can be configured to do so via
 `authStrategy: 'jwt'` in addition to `cookieMode: true`).

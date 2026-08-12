@@ -311,6 +311,10 @@
 - [ ] 完成 server-side resolve、label snapshot、退回編輯與重新送出一致性。
 - [ ] 完成 Designer Catalog／Preview、parameter bindings、發布 lint 與真實 wrapper-host e2e。
 
+上述三項已完成 Phase 0–6 的 code、unit、GraphQL/DB 與 focused real-browser
+golden path；repository-wide `pnpm e2e:client` 目前仍有 10 個非 DataSource
+real-journey failures（33/43 通過），因此在 full-suite gate 收斂前保留未勾選狀態。
+
 權威架構與執行順序分別見：
 
 - [14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)

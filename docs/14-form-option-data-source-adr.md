@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-08-11
-- **實作狀態**：Planned，尚未進入程式實作
+- **實作狀態**：Phase 0–6 code 已實作；P6 repository-wide e2e final gate 尚未全綠
 - **適用範圍**：Form Builder、FormRenderer、案件發起、案件退回編輯與重新送出、BPM 宿主整合
 - **交付規劃**：[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 
@@ -246,6 +246,11 @@ resolve 結果。
 
 `approval_instances` 規劃新增 `form_data_option_snapshot jsonb NOT NULL DEFAULT '{}'`。
 只有 DataSource-backed 欄位需要寫入；靜態選項已存在 immutable form schema snapshot。
+
+目前 `apps/api` 已提供 wrapper-owned 的 `demo.cost-centers@1`、
+`demo.cost-centers-complete@1` 與 `demo.cost-centers-always@1` fixture；來源資料表與
+reset/seed ownership 都留在 wrapper host，不進入 `BPM_CORE_MIGRATIONS`。Reusable core
+只消費宿主注入的 registry contract。
 
 規劃中的 snapshot contract：
 
