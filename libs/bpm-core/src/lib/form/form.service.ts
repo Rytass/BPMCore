@@ -7,6 +7,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  FormDefinitionSchema,
+  isFormDataSourceFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
+import {
   EntityManager,
   FindOptionsWhere,
   In,
@@ -33,6 +37,7 @@ import {
   parseAndValidateFormSchemas,
 } from './form-schema.validator';
 import { FormDataSourceService } from '../form-data-source/form-data-source.service';
+import { BPM_FORM_DATA_SOURCE_ERROR_CODES } from '../form-data-source/form-data-source.errors';
 
 interface MaxVersionRow {
   readonly maxVersion?: number | string | null;
@@ -211,7 +216,7 @@ export class FormService {
     publishedByMemberId?: string,
     manager?: EntityManager,
   ): Promise<FormDefinitionVersionEntity> {
-    const schemas = this.parseSchemasOrThrow(
+    const schemas = this.parsePublishableSchemasOrThrow(
       input.schemaJson,
       input.uiSchemaJson,
     );
@@ -306,7 +311,7 @@ export class FormService {
       );
     }
 
-    this.parseSchemasOrThrow(
+    this.parsePublishableSchemasOrThrow(
       JSON.stringify(version.schema),
       JSON.stringify(version.uiSchema),
     );
@@ -379,6 +384,14 @@ export class FormService {
       );
     }
 
+    // A rollback makes an archived version current again, which is a publish as
+    // far as the ADR is concerned: it must not restore a DataSource reference
+    // the host registry can no longer resolve.
+    this.parsePublishableSchemasOrThrow(
+      JSON.stringify(target.schema),
+      JSON.stringify(target.uiSchema),
+    );
+
     return this.formDefinitionRepository.manager.transaction(
       async (manager): Promise<FormDefinitionVersionEntity> => {
         const definitionRepository =
@@ -428,7 +441,7 @@ export class FormService {
   lintFormSchema(input: LintFormSchemaInput): FormSchemaLintResultObject {
     const result = lintFormSchemaJson(input.schemaJson, input.uiSchemaJson);
 
-    if (!result.valid || !this.formDataSourceService) {
+    if (!result.valid) {
       return {
         errors: result.errors,
         valid: result.valid,
@@ -439,13 +452,35 @@ export class FormService {
       input.schemaJson,
       input.uiSchemaJson,
     );
-    const environmentErrors =
-      this.formDataSourceService.lintDefinitionSchemaEnvironment(parsed.schema);
+    const environmentErrors = this.readDataSourceEnvironmentErrors(
+      parsed.schema,
+    );
 
     return {
       errors: [...result.errors, ...environmentErrors],
       valid: environmentErrors.length === 0,
     };
+  }
+
+  /**
+   * Without a host registry nothing can re-resolve a dynamic option value when
+   * the case is submitted, so a schema that references one must not publish.
+   * Accepting it silently would persist values no authority can validate.
+   */
+  private readDataSourceEnvironmentErrors(
+    schema: FormDefinitionSchema,
+  ): readonly string[] {
+    if (this.formDataSourceService) {
+      return this.formDataSourceService.lintDefinitionSchemaEnvironment(schema);
+    }
+
+    return schema.fields.flatMap((field, index) =>
+      isFormDataSourceFieldDefinition(field)
+        ? [
+            `schema.fields[${index}].dataSource ${BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING}`,
+          ]
+        : [],
+    );
   }
 
   private formDefinitions(
@@ -557,27 +592,42 @@ export class FormService {
     return maxVersion + 1;
   }
 
+  /**
+   * Structural parse only. A draft must stay editable when the host registry no
+   * longer offers a referenced DataSource version: the ADR keeps the original
+   * JSON and blocks only the publish of a new version.
+   */
   private parseSchemasOrThrow(
     schemaJson: string | null | undefined,
     uiSchemaJson: string | null | undefined,
   ): ReturnType<typeof parseAndValidateFormSchemas> {
     try {
-      const schemas = parseAndValidateFormSchemas(schemaJson, uiSchemaJson);
-      const environmentErrors =
-        this.formDataSourceService?.lintDefinitionSchemaEnvironment(
-          schemas.schema,
-        ) ?? [];
-
-      if (environmentErrors.length > 0) {
-        throw new Error(environmentErrors.join('; '));
-      }
-
-      return schemas;
+      return parseAndValidateFormSchemas(schemaJson, uiSchemaJson);
     } catch (error: unknown) {
       throw new BadRequestException(
         error instanceof Error ? error.message : 'Invalid form schema',
       );
     }
+  }
+
+  /**
+   * Structural parse plus the host registry check, used only where a new
+   * published version is produced.
+   */
+  private parsePublishableSchemasOrThrow(
+    schemaJson: string | null | undefined,
+    uiSchemaJson: string | null | undefined,
+  ): ReturnType<typeof parseAndValidateFormSchemas> {
+    const schemas = this.parseSchemasOrThrow(schemaJson, uiSchemaJson);
+    const environmentErrors = this.readDataSourceEnvironmentErrors(
+      schemas.schema,
+    );
+
+    if (environmentErrors.length > 0) {
+      throw new BadRequestException(environmentErrors.join('; '));
+    }
+
+    return schemas;
   }
 }
 
