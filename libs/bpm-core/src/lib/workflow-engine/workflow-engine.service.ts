@@ -1,8 +1,11 @@
 import {
+  FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
   NumberFieldDefinition,
+  isFormDataSourceFieldDefinition,
+  readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
   WorkflowDefinition,
@@ -39,6 +42,10 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import {
+  BPM_FORM_DATA_SOURCE_ERROR_CODES,
+  BPMFormDataSourceException,
+} from '../form-data-source/form-data-source.errors';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -98,6 +105,19 @@ import {
   DefaultWorkflowServiceTaskDispatcher,
 } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
+
+/**
+ * `initiatorMemberId` is optional on the GraphQL inputs because the resolver
+ * derives it from the authenticated member, but the engine still requires it:
+ * these aliases keep that obligation on the caller instead of re-checking it.
+ */
+type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
+  readonly initiatorMemberId: string;
+};
+
+type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
+  readonly initiatorMemberId: string;
+};
 
 const MAX_PROCESSING_STEPS = 500;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
@@ -248,7 +268,7 @@ export class WorkflowEngineService {
   ) {}
 
   async submitApprovalInstance(
-    input: SubmitApprovalInstanceInput,
+    input: SubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
@@ -401,6 +421,8 @@ export class WorkflowEngineService {
     readonly schema: FormDefinitionSchema;
   }): Promise<FormDataSourceValueSnapshots> {
     if (!this.formDataSourceValueResolver) {
+      assertNoUnresolvableDynamicValues(schema, formData);
+
       return previousSnapshots ?? {};
     }
 
@@ -415,7 +437,7 @@ export class WorkflowEngineService {
   }
 
   private async prepareResubmitFormDataOptions(
-    input: ResubmitApprovalInstanceInput,
+    input: ResubmitApprovalInstanceCommand,
     formData: Readonly<Record<string, unknown>>,
     authContext: BPMAuthContext,
   ): Promise<ResubmitFormDataOptionsPreparation> {
@@ -944,7 +966,7 @@ export class WorkflowEngineService {
   }
 
   async resubmitApprovalInstance(
-    input: ResubmitApprovalInstanceInput,
+    input: ResubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
@@ -1002,10 +1024,14 @@ export class WorkflowEngineService {
           );
         }
 
-        validateSubmittedFormData(
-          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
-          formData,
+        const resubmitSchema = readFormDefinitionSnapshotSchema(
+          instance.formDefinitionSnapshot,
         );
+        validateSubmittedFormData(resubmitSchema, formData);
+
+        if (!preparation) {
+          assertNoUnresolvableDynamicValues(resubmitSchema, formData);
+        }
 
         const resubmittedInstance = await instanceRepository.save({
           ...instance,
@@ -1013,8 +1039,14 @@ export class WorkflowEngineService {
           formData,
           formDataOptionSnapshot:
             preparation?.formDataOptionSnapshot ??
-            instance.formDataOptionSnapshot ??
-            {},
+            // Without a resolver every remaining dynamic value was rejected
+            // above, so only cleared fields can reach here — drop their
+            // snapshots instead of keeping a label for a value that is gone.
+            readSnapshotForPresentValues(
+              resubmitSchema,
+              formData,
+              instance.formDataOptionSnapshot,
+            ),
           state: ApprovalInstanceStateEnum.RUNNING,
           title: input.title?.trim() || instance.title,
         });
@@ -4361,11 +4393,26 @@ export class WorkflowEngineService {
         action.fieldPath,
         value,
       );
+      // A service task runs inside this transaction, so it cannot call a host
+      // provider to re-resolve the label. Rather than leave the previous
+      // option snapshot describing a value that no longer exists, drop it: the
+      // history view then shows the raw value instead of a wrong label.
+      const staleSnapshotFieldKey = readDataSourceFieldKeyAtPath(
+        instance.formDefinitionSnapshot,
+        action.fieldPath,
+      );
+      const updatedOptionSnapshot = staleSnapshotFieldKey
+        ? readSnapshotWithoutField(
+            instance.formDataOptionSnapshot,
+            staleSnapshotFieldKey,
+          )
+        : instance.formDataOptionSnapshot;
       const updatedInstance = await manager
         .getRepository(ApprovalInstanceEntity)
         .save({
           ...instance,
           formData: updatedFormData,
+          formDataOptionSnapshot: updatedOptionSnapshot,
         });
 
       Object.assign(instance, updatedInstance);
@@ -4377,6 +4424,7 @@ export class WorkflowEngineService {
           nodeId: node.id,
           payload: {
             action: 'SET_FORM_FIELD',
+            clearedOptionSnapshot: staleSnapshotFieldKey ?? null,
             fieldPath: action.fieldPath,
             tokenId: token.id,
           },
@@ -4960,6 +5008,125 @@ function isSameApprovalInstanceRevision(
     readApprovalInstanceRevision(left) === readApprovalInstanceRevision(right) &&
     JSON.stringify(left.formData) === JSON.stringify(right.formData)
   );
+}
+
+/**
+ * Returns the field key a service-task `fieldPath` writes into when that field
+ * is DataSource-backed, else `null`. Only the first path segment can name a
+ * form field; deeper segments address inside its value.
+ */
+/**
+ * Reads defensively: a service task must keep running even when the instance
+ * carries a snapshot this version cannot parse, so an unreadable schema simply
+ * means "no snapshot to invalidate" rather than a failed workflow step.
+ */
+function readDataSourceFieldKeyAtPath(
+  snapshot: Readonly<Record<string, unknown>>,
+  fieldPath: string,
+): string | null {
+  const schema = snapshot?.schema;
+
+  // Deliberately looser than `isFormDefinitionSchema`: one malformed sibling
+  // entry must not stop a valid dynamic field from having its stale snapshot
+  // pruned. Each entry is record-guarded below instead.
+  if (!isRecord(schema) || !Array.isArray(schema.fields)) {
+    return null;
+  }
+
+  // Reuse the writer's normalization so an optional `form.`/`formData.` prefix
+  // resolves to the same field the value is written into.
+  const [fieldKey] = normalizeFormFieldPath(fieldPath);
+
+  if (!fieldKey) {
+    return null;
+  }
+
+  // A corrupt snapshot can hold non-object entries: read them defensively
+  // rather than letting a service task throw.
+  const field = schema.fields.find(
+    (candidate) => isRecord(candidate) && candidate.fieldKey === fieldKey,
+  );
+
+  return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
+}
+
+function readSnapshotWithoutField(
+  snapshots: FormDataSourceValueSnapshots | null | undefined,
+  fieldKey: string,
+): FormDataSourceValueSnapshots {
+  return Object.fromEntries(
+    Object.entries(snapshots ?? {}).filter(([key]) => key !== fieldKey),
+  );
+}
+
+/**
+ * Keeps only the snapshots whose field still carries a value, so clearing a
+ * dynamic option also removes the label recorded for it.
+ */
+function readSnapshotForPresentValues(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+  snapshots: FormDataSourceValueSnapshots | null | undefined,
+): FormDataSourceValueSnapshots {
+  return Object.fromEntries(
+    Object.entries(snapshots ?? {}).filter(([fieldKey]) =>
+      schema.fields.some(
+        (field) =>
+          isRecord(field) &&
+          field.fieldKey === fieldKey &&
+          isFormDataSourceFieldDefinition(field) &&
+          hasPresentDynamicValue(field, formData[fieldKey]),
+      ),
+    ),
+  );
+}
+
+/**
+ * Only a value the field's own selection mode can represent counts as cleared:
+ * an empty array clears a `multiple` field, but on a `single` field it is an
+ * illegal value that must still reach validation rather than silently drop the
+ * option snapshot.
+ */
+function hasPresentDynamicValue(
+  field: FormDataSourceOptionFieldDefinition,
+  value: unknown,
+): boolean {
+  if (typeof value === 'undefined' || value === null) {
+    return false;
+  }
+
+  // Only a shape the field's mode can actually hold counts as cleared: `''`
+  // clears a single field, `[]` clears a multiple one. The other combinations
+  // are illegal values that must still reach validation instead of silently
+  // dropping the option snapshot.
+  return readFormFieldSelectionMode(field) === 'multiple'
+    ? !Array.isArray(value) || value.length > 0
+    : value !== '';
+}
+
+/**
+ * Hosts without a DataSource registry keep working for static forms, but a
+ * dynamic value they cannot re-resolve must never reach the database: nothing
+ * downstream could tell whether the browser made the value up.
+ */
+function assertNoUnresolvableDynamicValues(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+): void {
+  // A malformed snapshot can hold non-object entries; skip them rather than
+  // throwing a TypeError out of a submit or resubmit.
+  const hasDynamicValue = schema.fields.some(
+    (field) =>
+      isRecord(field) &&
+      isFormDataSourceFieldDefinition(field) &&
+      hasPresentDynamicValue(field, formData[field.fieldKey]),
+  );
+
+  if (hasDynamicValue) {
+    throw new BPMFormDataSourceException(
+      BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING,
+    );
+  }
 }
 
 function readApprovalInstanceRevision(instance: ApprovalInstanceEntity): string {
@@ -6028,7 +6195,12 @@ function readFormDefinitionSnapshotSchema(
 
 function isFormDefinitionSchema(value: unknown): value is FormDefinitionSchema {
   return (
-    isRecord(value) && value.schemaVersion === 1 && Array.isArray(value.fields)
+    isRecord(value) &&
+    value.schemaVersion === 1 &&
+    Array.isArray(value.fields) &&
+    // Every reader below dereferences `field.fieldKey`; requiring records here
+    // turns a corrupt snapshot into a controlled 400 instead of a TypeError.
+    value.fields.every((field) => isRecord(field))
   );
 }
 
