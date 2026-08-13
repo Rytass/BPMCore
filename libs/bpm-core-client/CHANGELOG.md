@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added immutable builder helpers for DataSource capability filtering, parameter
   type matching, field/constant bindings, field-key rename propagation, and
   dependent-field discovery.
+- Added `FORM_DATA_SOURCE_ERROR_CODES`, `readFormDataSourceErrorCode()`,
+  `readFormDataSourceErrorMessage()`, and `readFormSchemaLintMessage()` so
+  consumers can turn the backend's stable DataSource codes into display copy
+  instead of showing the raw code. A code this client does not map yet still
+  yields readable copy rather than leaking the code to the screen. Detection is
+  token-bounded, and a publish failure that joins several lint lines has every
+  code mapped, not just the first. Lint lines that quote a host-chosen parameter
+  or descriptor name are left verbatim, so a parameter named like an error code
+  is not rewritten as that error's copy.
 
 ### Fixed
 

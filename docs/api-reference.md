@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-12, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, and legacy workflow edge-data normalization in the designer. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-13, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 ---
 
@@ -388,6 +388,16 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present |
 | `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
 
+### Form DataSource error helpers
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FORM_DATA_SOURCE_ERROR_CODES` | const | Stable DataSource error codes returned by the GraphQL surface |
+| `FormDataSourceErrorCode` | type | Union of the stable DataSource error codes |
+| `readFormDataSourceErrorCode()` | function | Extract the DataSource code from a rejected request, else `null` |
+| `readFormDataSourceErrorMessage()` | function | Map a rejected request to display copy, else `null` |
+| `readFormSchemaLintMessage()` | function | Replace the code inside a publish-lint line, keeping the field path |
+
 ### Form DataSource builder helpers
 
 | Name | Kind | Purpose |
@@ -602,6 +612,13 @@ Versioned host registry and guarded runtime boundary for dynamic form options.
 | Resolver | `FormDataSourceQueries` (`formDataSources`, `previewFormFieldOptions`, `formFieldOptions`) |
 
 `formDataSources` and `previewFormFieldOptions` require designer permission.
+
+`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` marks a submitted value that is no longer
+selectable, and stays distinct from `FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT`
+(a host provider contract breach) so renderers can tell a bad selection apart
+from a broken source. A host without a registered registry keeps working for
+static forms, but publishing or submitting a DataSource-backed field fails with
+`FORM_DATA_SOURCE_MISSING` instead of silently skipping validation.
 `formFieldOptions` requires authentication and derives the referenced source from
 the published template version or returned-instance snapshot; clients cannot
 submit an arbitrary source reference or binding definition.

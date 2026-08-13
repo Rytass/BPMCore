@@ -12,6 +12,14 @@ GraphQL/DB golden path、package consumer wiring 與真實 Chrome golden path �
 `pnpm typecheck`、`pnpm lint`、`pnpm test` 與 `pnpm build` 亦全部通過；unit suite 為
 48 suites / 342 tests，lint 維持 0 errors 與 2 個既有 warnings。
 
+2026-08-13 追加一輪獨立稽核與修正：釐清 `FORM_DATA_SOURCE_MISSING` 與
+`FORM_DATA_SOURCE_VERSION_MISSING` 的使用時機、新增
+`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` 區分「選項失效」與「provider 違約」、
+前端一律以對應訊息取代原始錯誤碼、未註冊 registry 的宿主不得發布或送出動態欄位、
+`initiatorMemberId` 改為 optional（server 仍為權威來源），並讓 DataSource golden path
+spec 預設執行而不再靜默跳過。稽核後 `pnpm e2e:client --workers=1` 在未設定任何
+`E2E_*` 變數下仍為 43 passed / 0 failed、0 skipped。
+
 ## 1. 目標
 
 在不破壞既有靜態表單與 primitive `FormFieldValue` contract 的前提下，交付由宿主後端
@@ -471,3 +479,23 @@ pnpm demo:reset
 ```
 
 服務由使用者啟動為預設；若未找到有效服務，必須先詢問，不自行啟動。
+
+### E2E 執行參數
+
+`pnpm e2e:client` 預設打 `http://localhost:17602`（client）與 `http://localhost:17603`
+（wrapper host API），DataSource golden path 不再需要額外變數即會執行。需要指向其他
+主機時才覆寫：
+
+| 變數                         | 預設值                       | 用途                            |
+|------------------------------|------------------------------|---------------------------------|
+| `E2E_BASE_URL`               | `http://localhost:17602`     | Playwright baseURL（client）    |
+| `E2E_API_URL`                | `http://localhost:17603`     | wrapper host API                |
+| `E2E_DATA_SOURCE_API_URL`    | 同 `E2E_API_URL`             | DataSource golden path 專用覆寫 |
+| `PLAYWRIGHT_EXECUTABLE_PATH` | 無（用 Playwright chromium） | 改用 system Chrome 執行         |
+
+若本機沒有安裝 Playwright chromium，以 system Chrome 執行：
+
+```bash
+PLAYWRIGHT_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  pnpm e2e:client --workers=1
+```

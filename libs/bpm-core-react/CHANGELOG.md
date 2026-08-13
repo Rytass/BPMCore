@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The template designer now restores missing legacy edge data before rendering,
   so older workflow JSON without an edge `data` object remains editable.
+- Dynamic option failures no longer surface raw `FORM_DATA_SOURCE_*` codes.
+  Launch, resubmit, field-level, form builder lint, and template
+  designer/compose publish messages now show mapped copy, so a value that
+  expired reads as "已選取的選項已失效，請重新選擇。" instead of an error code.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
