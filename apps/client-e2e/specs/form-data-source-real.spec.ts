@@ -1,6 +1,14 @@
 import { expect, Page, test } from '@playwright/test';
 
-const FEATURE_API_URL = process.env.E2E_DATA_SOURCE_API_URL ?? '';
+// Defaults to the local wrapper host like the other real-flow specs, so a plain
+// `pnpm e2e:client` exercises the DataSource golden path instead of skipping it.
+const FEATURE_API_URL =
+  process.env.E2E_DATA_SOURCE_API_URL ??
+  process.env.E2E_API_URL ??
+  'http://localhost:17603';
+// The read-only history check opens its own context, so it needs the same
+// baseURL override the Playwright config honours.
+const CLIENT_BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:17602';
 const FEATURE_GRAPHQL_URL = `${FEATURE_API_URL.replace(/\/$/u, '')}/graphql`;
 const TEMPLATE_ID = '50000000-0000-4000-8000-000000000006';
 const RETURNED_INSTANCE_ID = '60000000-0000-4000-8000-000000000008';
@@ -23,11 +31,6 @@ test.describe('Seeded form option DataSource golden path', () => {
     browser,
     page,
   }): Promise<void> => {
-    test.skip(
-      !FEATURE_API_URL,
-      'set E2E_DATA_SOURCE_API_URL to run against the seeded wrapper host',
-    );
-
     await routeFeatureApi(page);
     await authenticateFeatureMember(page, 'member-102');
     await page.goto(`/instances/new?templateId=${TEMPLATE_ID}`);
@@ -134,7 +137,7 @@ test.describe('Seeded form option DataSource golden path', () => {
     );
 
     const historyContext = await browser.newContext({
-      baseURL: 'http://localhost:17602',
+      baseURL: CLIENT_BASE_URL,
     });
     const historyPage = await historyContext.newPage();
     const runtimeOptionRequests: string[] = [];
