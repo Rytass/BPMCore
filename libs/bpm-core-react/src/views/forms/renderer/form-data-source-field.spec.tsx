@@ -130,6 +130,27 @@ describe('useFormDataSourceField', () => {
     ]);
   });
 
+  it('shows mapped copy instead of a raw error code when a query fails', async (): Promise<void> => {
+    const field = createField('select');
+    previewOptionsMock.mockRejectedValue(
+      new Error('FORM_DATA_SOURCE_PROVIDER_FAILURE'),
+    );
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await waitForState(harness, (state) => state.status === 'UNAVAILABLE');
+    expect(harness.current().error).toBe('選項來源目前無法回應，請稍後再試。');
+    expect(readFormDataSourceFieldStatusMessage(harness.current())).not.toContain(
+      'FORM_DATA_SOURCE',
+    );
+  });
+
   it('marks partial multiple values invalid without dropping them', async (): Promise<void> => {
     const field = createField('checkbox');
     previewOptionsMock.mockResolvedValue(createOptionsResult('A'));

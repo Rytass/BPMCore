@@ -100,7 +100,10 @@ import {
   composeSlaDuration,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import {
+  readFormBuilder,
+  readFormSchemaLintMessage,
+} from '@rytass/bpm-core-client/form';
 import {
   OrgUnitOption,
   OrgUnitPicker,
@@ -4789,5 +4792,9 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
 }
 
 function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '發生未知錯誤';
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
+  // readable copy and leave every other message untouched.
+  return error instanceof Error
+    ? readFormSchemaLintMessage(error.message)
+    : '發生未知錯誤';
 }

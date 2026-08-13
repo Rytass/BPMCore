@@ -14,6 +14,7 @@ import {
   FormDataSourceFieldStatus,
   FormRendererValues,
   mergeFormDataSourceOptions,
+  readFormDataSourceErrorMessage,
   readMissingFormDataSourceOptionValues,
   previewFormFieldOptions,
   readFormDataSourceValueSignature,
@@ -272,10 +273,13 @@ export function useFormDataSourceField(
           }
 
           setStatus('UNAVAILABLE');
+          // The backend answers with stable codes rather than prose, so show
+          // the mapped copy instead of a raw `FORM_DATA_SOURCE_*` string.
           setError(
-            requestError instanceof Error
-              ? requestError.message
-              : '選項來源暫時無法使用。',
+            readFormDataSourceErrorMessage(requestError) ??
+              (requestError instanceof Error
+                ? requestError.message
+                : '選項來源暫時無法使用。'),
           );
         });
     },

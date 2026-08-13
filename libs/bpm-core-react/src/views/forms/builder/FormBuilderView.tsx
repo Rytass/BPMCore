@@ -80,6 +80,7 @@ import {
   readCompatibleFormDataSourceDescriptors,
   readFormDataSourceBinding,
   readFormDataSourceBindingValue,
+  readFormSchemaLintMessage,
   readFormDataSourceBindingValueKind,
   readFormDataSourceFieldDependencyKeys,
   renameFormDataSourceFieldBindings,
@@ -1002,7 +1003,9 @@ export function FormBuilderView({
 
     try {
       const result = await lintFormSchema(schema, uiSchema);
-      setDataSourceLint(result.errors);
+      // Lint lines carry stable `FORM_DATA_SOURCE_*` codes; show the designer
+      // readable copy while keeping the field path.
+      setDataSourceLint(result.errors.map(readFormSchemaLintMessage));
     } catch {
       setDataSourceLint(['目前無法完成 DataSource schema 驗證。']);
     } finally {
