@@ -420,7 +420,13 @@ function readDynamicFieldValues(
 ): readonly string[] {
   const mode = readFormFieldSelectionMode(field);
 
-  if (value === null || typeof value === 'undefined' || value === '') {
+  if (value === null || typeof value === 'undefined') {
+    return [];
+  }
+
+  // `''` clears a single field; on a multiple field it is an illegal shape that
+  // must be rejected rather than silently treated as "nothing selected".
+  if (value === '' && mode !== 'multiple') {
     return [];
   }
 
@@ -484,12 +490,18 @@ function validateResolveResult(
   const options = validateOptions(result);
   const requestedValues = new Set(values);
 
-  if (
-    options.length !== values.length ||
-    options.some((option) => !requestedValues.has(option.value))
-  ) {
+  // A value the caller never asked for is a provider contract breach.
+  if (options.some((option) => !requestedValues.has(option.value))) {
     throw new BPMFormDataSourceException(
       BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
+    );
+  }
+
+  // Every requested value resolved to exactly one option, or the submitted
+  // value is simply no longer selectable — that is a user-facing failure.
+  if (options.length !== values.length) {
+    throw new BPMFormDataSourceException(
+      BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
     );
   }
 

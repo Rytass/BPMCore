@@ -207,11 +207,177 @@ describe('FormDataSourceService', () => {
     await requestExpectation;
   });
 
-  it('reports an unavailable source version during environment lint', (): void => {
+  it('reports an unregistered source key during environment lint', (): void => {
     const service = createService(null);
 
     expect(service.lintDefinitionSchemaEnvironment(createSchema())).toEqual([
+      'schema.fields[1].dataSource FORM_DATA_SOURCE_MISSING',
+    ]);
+  });
+
+  it('reports an unavailable source version during environment lint', (): void => {
+    const service = createService(createSource({}, { version: 2 }));
+
+    expect(service.lintDefinitionSchemaEnvironment(createSchema())).toEqual([
       'schema.fields[1].dataSource FORM_DATA_SOURCE_VERSION_MISSING',
+    ]);
+  });
+
+  it('reports the code of the first environment error, not the first enum entry', async (): Promise<void> => {
+    // Field 1 fails on control capability; field 2 references a key the host
+    // never registered. DATA_SOURCE_MISSING is declared earlier in the code
+    // enum, so scanning the enum would report it even though the first actual
+    // error is the unsupported control.
+    const service = createService(
+      createSource(
+        {},
+        {
+          maximumResultCount: 200,
+          returnsCompleteList: false,
+          supportedControls: ['select'],
+        },
+      ),
+    );
+    const schema = createSchema();
+    const [plantField, dynamicField] = schema.fields;
+    const twoErrorSchema: FormDefinitionSchema = {
+      ...schema,
+      fields: [
+        plantField,
+        { ...dynamicField, type: 'radio' },
+        {
+          ...dynamicField,
+          dataSource: {
+            ...(dynamicField as FormDataSourceOptionFieldDefinition).dataSource,
+            key: 'demo.absent',
+          },
+          fieldKey: 'costCenterAbsent',
+        },
+      ] as FormDefinitionSchema['fields'],
+    };
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(twoErrorSchema),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_UNSUPPORTED_CONTROL',
+    });
+  });
+
+  it('does not read a code out of a host-chosen parameter name', async (): Promise<void> => {
+    // The unbound parameter is named exactly like an error code, so the prose
+    // line ends in "FORM_DATA_SOURCE_TIMEOUT". Reporting that as the code would
+    // tell the designer the source timed out instead of that a binding is
+    // missing, which is what the binding shape must yield.
+    const service = createService(
+      createSource(
+        {},
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            {
+              key: 'FORM_DATA_SOURCE_TIMEOUT',
+              required: true,
+              type: 'STRING',
+            },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      // The binding shape decides the code; the parameter's name must not.
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+  });
+
+  it('reports a binding failure as an actionable binding error', async (): Promise<void> => {
+    // The source and control are fine; only the binding is wrong. Falling back
+    // to INVALID_DESCRIPTOR would tell the designer to contact an admin about
+    // something they can fix themselves.
+    const service = createService(
+      createSource(
+        {},
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            { key: 'company', required: true, type: 'STRING' },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+  });
+
+  it('falls back to the descriptor code when no lint line carries one', async (): Promise<void> => {
+    // An invalid descriptor only produces prose ("descriptor.pageSize must be
+    // positive"), so there is no code to extract. This pins the fallback branch
+    // itself, which had no coverage before — it does not discriminate between
+    // the old and new code parsers.
+    const service = createService(createSource({}, { pageSize: 0 }));
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_DESCRIPTOR',
+    });
+  });
+
+  it('reports an unsupported bounded control exactly once', (): void => {
+    const service = createService(
+      createSource(
+        {},
+        {
+          maximumResultCount: 200,
+          returnsCompleteList: false,
+          supportedControls: ['select'],
+        },
+      ),
+    );
+    const schema = createSchema();
+    const radioSchema: FormDefinitionSchema = {
+      ...schema,
+      fields: schema.fields.map((field) =>
+        field.fieldKey === 'costCenter' ? { ...field, type: 'radio' } : field,
+      ) as FormDefinitionSchema['fields'],
+    };
+
+    expect(service.lintDefinitionSchemaEnvironment(radioSchema)).toEqual([
+      'schema.fields[1].dataSource FORM_DATA_SOURCE_UNSUPPORTED_CONTROL',
     ]);
   });
 

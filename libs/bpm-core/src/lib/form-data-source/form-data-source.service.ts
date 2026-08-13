@@ -26,6 +26,7 @@ import { ApprovalInstanceStateEnum } from '../workflow-engine/workflow-engine.en
 import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
+  BPMFormDataSourceErrorCode,
   BPMFormDataSourceException,
   BPMFormDataSourceForbiddenException,
 } from './form-data-source.errors';
@@ -126,9 +127,7 @@ export class FormDataSourceService {
       );
 
       if (!source) {
-        return [
-          `${path} ${BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING}`,
-        ];
+        return [`${path} ${this.readMissingSourceCode(field.dataSource.key)}`];
       }
 
       const descriptorErrors = this.readDescriptorErrors(source.descriptor);
@@ -386,9 +385,18 @@ export class FormDataSourceService {
       return;
     }
 
-    const code = Object.values(BPM_FORM_DATA_SOURCE_ERROR_CODES).find(
-      (candidate) => errors.some((error) => error.includes(candidate)),
-    );
+    // Report the code of the FIRST error that carries one, deciding by line
+    // shape: the emitted `<path>.dataSource <CODE>` form, else a binding line
+    // whose code is implied rather than written (its prose quotes a
+    // designer-chosen name that must never be read as a code), else the
+    // descriptor fallback. Scanning the code list with `includes()` instead
+    // made the answer depend on enum declaration order and would misfire the
+    // day one code becomes a substring of another.
+    const [code] = errors.flatMap((error) => {
+      const candidate = readLintLineErrorCode(error);
+
+      return candidate ? [candidate] : readBindingLintErrorCode(error);
+    });
 
     throw new BPMFormDataSourceException(
       code ?? BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_DESCRIPTOR,
@@ -450,14 +458,8 @@ export class FormDataSourceService {
     const source = this.registry.get(reference.key, reference.version);
 
     if (!source) {
-      const hasKey = this.registry
-        .list()
-        .some((candidate) => candidate.descriptor.key === reference.key);
-
       throw new BPMFormDataSourceException(
-        hasKey
-          ? BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING
-          : BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING,
+        this.readMissingSourceCode(reference.key),
       );
     }
 
@@ -470,6 +472,26 @@ export class FormDataSourceService {
     }
 
     return source;
+  }
+
+  /**
+   * A key the host never registered and a key whose requested version was
+   * dropped are different operational problems, so they keep distinct codes:
+   * the first tells the designer the source is gone, the second that only this
+   * version is.
+   */
+  private readMissingSourceCode(
+    key: string,
+  ):
+    | typeof BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING
+    | typeof BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING {
+    const hasKey = this.registry
+      .list()
+      .some((candidate) => candidate.descriptor?.key === key);
+
+    return hasKey
+      ? BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING
+      : BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING;
   }
 
   private assertControlSupported(
@@ -648,12 +670,18 @@ export class FormDataSourceService {
     const options = this.validateOptions(result);
     const requestedValues = new Set(values);
 
-    if (
-      options.length !== values.length ||
-      options.some((option) => !requestedValues.has(option.value))
-    ) {
+    // A value the caller never asked for is a provider contract breach.
+    if (options.some((option) => !requestedValues.has(option.value))) {
       throw new BPMFormDataSourceException(
         BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
+      );
+    }
+
+    // Every requested value resolved to exactly one option, or the submitted
+    // value is simply no longer selectable — that is a user-facing failure.
+    if (options.length !== values.length) {
+      throw new BPMFormDataSourceException(
+        BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
       );
     }
 
@@ -874,18 +902,17 @@ export class FormDataSourceService {
     path: string,
   ): readonly string[] {
     const control = field.type;
-    const errors = descriptor.supportedControls.includes(control)
+    const declaresControl = descriptor.supportedControls.includes(control);
+    const allowsCompleteList =
+      control !== 'radio' && control !== 'checkbox'
+        ? true
+        : descriptor.returnsCompleteList && descriptor.maximumResultCount <= 50;
+
+    // Both checks fail the same control for the same reason, so report the code
+    // once instead of repeating it in the field-level error list.
+    return declaresControl && allowsCompleteList
       ? []
       : [`${path} ${BPM_FORM_DATA_SOURCE_ERROR_CODES.UNSUPPORTED_CONTROL}`];
-
-    return control === 'radio' || control === 'checkbox'
-      ? descriptor.returnsCompleteList && descriptor.maximumResultCount <= 50
-        ? errors
-        : [
-            ...errors,
-            `${path} ${BPM_FORM_DATA_SOURCE_ERROR_CODES.UNSUPPORTED_CONTROL}`,
-          ]
-      : errors;
   }
 
   private readBindingEnvironmentErrors(
@@ -983,6 +1010,51 @@ function isTimeoutMarker(value: unknown): value is TimeoutMarker {
     (value as Error & { readonly kind?: unknown }).kind ===
       'FORM_DATA_SOURCE_TIMEOUT'
   );
+}
+
+/**
+ * Matches only the code-bearing lint shape `<path>.dataSource <CODE>`. Reading
+ * the trailing token alone would misreport prose such as
+ * `...bindings unknown parameter: FORM_DATA_SOURCE_TIMEOUT`, where the code-like
+ * text is a parameter name — chosen by the host in its descriptor, or by the
+ * designer in a binding — rather than an error code.
+ */
+const LINT_LINE_CODE_PATTERN = /^\S+\.dataSource (FORM_DATA_SOURCE_[A-Z_]+)$/u;
+
+/**
+ * Binding lint lines stay prose because they quote a parameter name chosen by
+ * the host or the designer, so their code is derived from the line shape
+ * instead of being appended
+ * to the text — appending it would put a raw code back on the designer's lint
+ * panel, which the client formatter deliberately never rewrites inside prose.
+ *
+ * Without this the preview would fall back to `INVALID_DESCRIPTOR` ("contact
+ * your administrator") for a binding the designer can fix themselves.
+ */
+const LINT_BINDING_LINE_PATTERN = /^schema\.fields\[\d+\]\.dataSource\.bindings /u;
+
+function readBindingLintErrorCode(
+  error: string,
+): readonly BPMFormDataSourceErrorCode[] {
+  return LINT_BINDING_LINE_PATTERN.test(error)
+    ? [BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING]
+    : [];
+}
+
+function readLintLineErrorCode(
+  error: string,
+): BPMFormDataSourceErrorCode | null {
+  const candidate = LINT_LINE_CODE_PATTERN.exec(error)?.[1];
+
+  return candidate && isFormDataSourceErrorCode(candidate) ? candidate : null;
+}
+
+function isFormDataSourceErrorCode(
+  value: string,
+): value is BPMFormDataSourceErrorCode {
+  return (
+    Object.values(BPM_FORM_DATA_SOURCE_ERROR_CODES) as readonly string[]
+  ).includes(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

@@ -14,6 +14,13 @@ export const BPM_FORM_DATA_SOURCE_ERROR_CODES = {
   SEARCH_TOO_SHORT: 'FORM_DATA_SOURCE_SEARCH_TOO_SHORT',
   TIMEOUT: 'FORM_DATA_SOURCE_TIMEOUT',
   UNSUPPORTED_CONTROL: 'FORM_DATA_SOURCE_UNSUPPORTED_CONTROL',
+  /**
+   * The submitted value is no longer selectable under the current bindings and
+   * authorization context. This is a user-facing validation failure, not a host
+   * provider contract breach: keep it distinct from `INVALID_PROVIDER_RESULT`
+   * so the renderer can show `INVALID` instead of `UNAVAILABLE`.
+   */
+  VALUE_NOT_RESOLVED: 'FORM_DATA_SOURCE_VALUE_NOT_RESOLVED',
   WAITING_FOR_DEPENDENCIES: 'FORM_DATA_SOURCE_WAITING_FOR_DEPENDENCIES',
   RUNTIME_CONTEXT_FORBIDDEN: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
 } as const;

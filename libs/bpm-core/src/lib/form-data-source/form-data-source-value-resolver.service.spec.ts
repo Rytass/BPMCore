@@ -182,6 +182,25 @@ describe('FormDataSourceValueResolverService', () => {
     });
   });
 
+  it('separates an unselectable value from a provider contract breach', async (): Promise<void> => {
+    const service = createService(
+      createSource({
+        resolve: (): Promise<readonly FormFieldOption[]> => Promise.resolve([]),
+      }),
+    );
+
+    await expect(
+      service.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: { costCenter: 'CC-001', plant: 'TPE' },
+        revalidateAll: true,
+        schema: createSchema(),
+      }),
+    ).rejects.toMatchObject({
+      code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+    });
+  });
+
   it('fails initial resolution when the registered source version is unavailable', async (): Promise<void> => {
     const service = createService(null);
 
