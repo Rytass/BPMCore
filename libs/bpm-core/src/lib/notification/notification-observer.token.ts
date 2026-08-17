@@ -1,14 +1,28 @@
 import { InjectionToken } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { NotificationEntity } from './notification.entity';
+import { NotificationTypeEnum } from './notification.enums';
 
 export interface BPMNotificationsCreatedEvent {
   /**
    * Every row written by one `createNotifications` call — a single engine
    * event can produce several (one per enabled channel). Hosts get the batch
    * rather than a call per row so they can push once.
+   *
+   * Note that a batch is always for **one recipient**: several rows mean
+   * several channels, not several people. A node assigned to three approvers
+   * produces three separate events.
    */
   readonly notifications: readonly NotificationEntity[];
+  /**
+   * What happened. Every row in the batch carries this same type; it is lifted
+   * here so a host can route without unpacking a row first.
+   */
+  readonly type: NotificationTypeEnum;
+  /** The approval instance this batch belongs to, when there is one. */
+  readonly instanceId: string | null;
+  /** The task this batch belongs to, for the task-scoped types. */
+  readonly taskId: string | null;
   /**
    * Present when the rows were written inside a caller-supplied transaction,
    * in which case they are **not committed yet**. A host pushing a realtime

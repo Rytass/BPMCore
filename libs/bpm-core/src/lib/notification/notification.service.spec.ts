@@ -597,6 +597,26 @@ describe('NotificationService', () => {
       ).toBe(true);
     });
 
+    it('lifts the routing fields out of the rows', async (): Promise<void> => {
+      // A host routing an SSE push should not have to unpack a row to learn
+      // what happened or which instance it belongs to.
+      const { events, service } = createObserverHarness();
+
+      await assignTask(service);
+
+      const event = events[0];
+
+      expect(event?.type).toBe(NotificationTypeEnum.TASK_ASSIGNED);
+      expect(event?.taskId).toBe('task-observer');
+      expect(event?.instanceId).toBe(event?.notifications[0]?.instanceId);
+      // Every row in a batch shares the type the event reports.
+      expect(
+        event?.notifications.every(
+          (notification) => notification.type === event.type,
+        ),
+      ).toBe(true);
+    });
+
     it('passes the batch in one call rather than one call per row', async (): Promise<void> => {
       const { events, service } = createObserverHarness();
 

@@ -758,9 +758,12 @@ notifications have no delivery step. It exists so a host can drive SSE /
 WebSocket push off the same rows BPM writes, instead of polling the table or
 putting a trigger on it.
 
-The observer receives the whole batch in one call (one engine event can produce
-several rows) plus the `EntityManager` when the rows were written inside a
-caller-supplied transaction — in that case they are **not committed yet**, and a
+The observer receives the whole batch in one call, along with `type`,
+`instanceId` and `taskId` lifted to the event so a host can route without
+unpacking a row. A batch is always for **one recipient** — several rows mean
+several channels, not several people, so a node assigned to three approvers
+produces three events. It also receives the `EntityManager` when the rows were
+written inside a caller-supplied transaction — in that case they are **not committed yet**, and a
 host should defer its push until that transaction commits. The manager is absent
 when BPM owned the write, meaning the rows are already durable. Observer
 failures are logged and swallowed: a host's realtime push must never roll back

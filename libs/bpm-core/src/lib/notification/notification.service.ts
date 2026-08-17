@@ -884,7 +884,7 @@ export class NotificationService {
         ),
     );
 
-    await this.notifyObserver(savedNotifications, manager);
+    await this.notifyObserver(input, savedNotifications, manager);
 
     return savedNotifications;
   }
@@ -899,6 +899,7 @@ export class NotificationService {
    * approval.
    */
   private async notifyObserver(
+    input: CreateNotificationInput,
     notifications: readonly NotificationEntity[],
     manager?: EntityManager,
   ): Promise<void> {
@@ -910,7 +911,10 @@ export class NotificationService {
 
     try {
       await observer.onNotificationsCreated({
+        instanceId: input.instanceId,
         notifications,
+        taskId: input.taskId,
+        type: input.type,
         ...(manager ? { manager } : {}),
       });
     } catch (error: unknown) {
