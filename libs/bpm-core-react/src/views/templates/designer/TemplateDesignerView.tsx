@@ -1545,8 +1545,28 @@ export function TemplateDesignerView({
       return;
     }
 
+    // Every `BPMFormField` that writes a `QUORUM` policy — the threshold
+    // input, and the `quorumThresholdType` switch which carries the existing
+    // `threshold` across unchanged when only the type toggles — funnels
+    // through this one function. Re-sanitising `threshold` here, rather than
+    // trusting each call site to have clamped it against the *new*
+    // `thresholdType`, is what stops a `COUNT` value entered while
+    // unbounded (e.g. 500) from surviving a switch to `PERCENTAGE` and
+    // becoming an unreachable engine threshold; it also means a future
+    // caller of this function does not need to remember to clamp on its own.
+    const sanitisedDecisionPolicy: DecisionPolicy =
+      decisionPolicy.type === 'QUORUM'
+        ? {
+            ...decisionPolicy,
+            threshold: withQuorumThreshold(
+              decisionPolicy.threshold,
+              decisionPolicy.thresholdType,
+            ),
+          }
+        : decisionPolicy;
+
     controller.dispatch({
-      decisionPolicy,
+      decisionPolicy: sanitisedDecisionPolicy,
       nodeId: selectedNode.id,
       type: 'setUserTaskDecisionPolicy',
     });
@@ -2679,7 +2699,7 @@ export function TemplateDesignerView({
             <BPMFormField
               hintText={
                 quorum.thresholdType === 'PERCENTAGE'
-                  ? '達到簽核者總數的這個百分比即通過，換算人數時無條件進位。'
+                  ? '達到簽核者總數的這個百分比即通過，換算人數時無條件進位；超過 100 的輸入會自動夾至 100。'
                   : '達到這個同意人數即通過；門檻超過實際簽核者人數時，這一關將永遠無法通過，請勿設定超過實際簽核者人數。'
               }
               label={
@@ -2692,13 +2712,18 @@ export function TemplateDesignerView({
             >
               <Input
                 id="quorumThreshold"
-                inputProps={{ min: 1 }}
+                inputProps={
+                  quorum.thresholdType === 'PERCENTAGE'
+                    ? { max: 100, min: 1 }
+                    : { min: 1 }
+                }
                 inputType="number"
                 name="quorumThreshold"
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                   updateUserTaskDecisionPolicy({
                     threshold: withQuorumThreshold(
                       Number(event.target.value),
+                      quorum.thresholdType,
                     ),
                     thresholdType: quorum.thresholdType,
                     type: 'QUORUM',
@@ -3914,9 +3939,26 @@ function withSlaDuration(sla: SlaConfig, parts: SlaDurationParts): SlaConfig {
  * `Number('') === 0`, and the publish lint only checks `decisionPolicy?.type`
  * while the engine merely clamps with `Math.max(threshold, 1)` rather than
  * validating.
+ *
+ * `PERCENTAGE` additionally gets an upper bound of 100. The engine computes
+ * `Math.ceil((totalCount * threshold) / 100)` — a `PERCENTAGE` threshold
+ * above 100 always exceeds `totalCount` and the quorum can never complete
+ * (the same deadlock a `COUNT` threshold set higher than the actual number
+ * of approvers produces). Unlike `COUNT`, the ceiling for `PERCENTAGE` is
+ * known at design time regardless of how many approvers the workflow
+ * resolves to, so it can be capped here; `COUNT` has no such bound and stays
+ * unclamped. This only sanitises what the designer writes going forward — it
+ * does not touch a `threshold` already stored from before this cap existed
+ * (see `normalizeUserTaskPolicies`, which never rewrites an existing
+ * `decisionPolicy`).
  */
-function withQuorumThreshold(value: number): number {
-  return Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
+function withQuorumThreshold(
+  value: number,
+  thresholdType: 'COUNT' | 'PERCENTAGE',
+): number {
+  const sanitised = Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
+
+  return thresholdType === 'PERCENTAGE' ? Math.min(sanitised, 100) : sanitised;
 }
 
 /** Keeps `escalateLevelsUp` only while the timeout action is `ESCALATE`. */
