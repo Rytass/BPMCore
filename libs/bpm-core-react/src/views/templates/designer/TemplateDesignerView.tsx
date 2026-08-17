@@ -829,6 +829,16 @@ export function TemplateDesignerView({
       editingEdgeId: resolveSetStateAction(action, current.editingEdgeId),
     }));
   const [error, setError] = useState<string | null>(null);
+  // Kept out of `error` on purpose. `error` is the request-failure banner, and
+  // every request path clears it on entry — `handleSearchMembers` starts with
+  // `setError(null)`, and editing a DIRECT approver list runs a member search
+  // on the very next keystroke. Reporting a dropped decision policy through
+  // `error` meant the notice was wiped before the author could read it, in
+  // exactly the flow that produces it.
+  const [policyNotice, setPolicyNotice] = useState<Readonly<{
+    message: string;
+    nodeId: string;
+  }> | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formVersionLoading, setFormVersionLoading] = useState(false);
@@ -1507,16 +1517,20 @@ export function TemplateDesignerView({
     // the threshold field keeps displaying 3. Losing the policy is visible and
     // recoverable; a deadlocked node published into production is neither, so
     // this drops the policy and says why.
+    setPolicyNotice(null);
+
     if (!decisionPolicy || decisionPolicy.type === 'SINGLE') {
       return;
     }
 
     if (isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
-      setError(
-        `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
+      setPolicyNotice({
+        message:
+          `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
           `不足原本設定的 ${decisionPolicy.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
           '簽核政策已重設為單人簽核，請重新設定。',
-      );
+        nodeId,
+      });
 
       return;
     }
@@ -1570,6 +1584,9 @@ export function TemplateDesignerView({
     if (!selectedNode || selectedNode.type !== 'userTask') {
       return;
     }
+
+    // The author has answered the notice by setting a policy themselves.
+    setPolicyNotice(null);
 
     // Every `BPMFormField` that writes a `QUORUM` policy — the threshold
     // input, and the `quorumThresholdType` switch which carries the existing
@@ -1757,6 +1774,13 @@ export function TemplateDesignerView({
               {error ? (
                 <Typography color="text-error" variant="body">
                   {error}
+                </Typography>
+              ) : null}
+              {/* Scoped to its node so selecting a different one hides a
+                  notice that no longer describes what is on screen. */}
+              {policyNotice && policyNotice.nodeId === selectedNode?.id ? (
+                <Typography color="text-warning" variant="body">
+                  {policyNotice.message}
                 </Typography>
               ) : null}
               {workflowIssue ? (
