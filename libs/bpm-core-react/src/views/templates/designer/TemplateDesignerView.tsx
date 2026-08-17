@@ -839,6 +839,16 @@ export function TemplateDesignerView({
     message: string;
     nodeId: string;
   }> | null>(null);
+  // A notice describes one editing moment on one node, so it must not outlive
+  // that node staying selected. `nodeId` alone is not identity: node ids are
+  // recycled — `readNextWorkflowNodeIndex` hands out the lowest unused index —
+  // so deleting the node the notice was about and adding a fresh one mints the
+  // same id, and the stale notice would reattach to a node it never described.
+  // Every add and delete moves the selection (`applyDeleteNode` resets it to
+  // `start`), so clearing here covers both without each dispatcher remembering.
+  useEffect((): void => {
+    setPolicyNotice(null);
+  }, [selectedNodeId]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formVersionLoading, setFormVersionLoading] = useState(false);
@@ -1139,6 +1149,12 @@ export function TemplateDesignerView({
   async function refreshDesigner(): Promise<void> {
     setLoading(true);
     setError(null);
+    // The notice describes an unsaved edit to the definition being replaced.
+    // This runs after every save and publish, and again whenever `templateId`
+    // changes without the view remounting, so a surviving notice would either
+    // linger past the edit it reported or surface against another template's
+    // node — ids like `userTask_1` are not template-specific.
+    setPolicyNotice(null);
 
     try {
       const [nextRecord, organizationDashboard] = await Promise.all([
@@ -1517,6 +1533,9 @@ export function TemplateDesignerView({
     // the threshold field keeps displaying 3. Losing the policy is visible and
     // recoverable; a deadlocked node published into production is neither, so
     // this drops the policy and says why.
+
+    // Any approver change re-decides the question, so retire the previous
+    // answer before working out the new one.
     setPolicyNotice(null);
 
     if (!decisionPolicy || decisionPolicy.type === 'SINGLE') {
@@ -1776,9 +1795,16 @@ export function TemplateDesignerView({
                   {error}
                 </Typography>
               ) : null}
-              {/* Scoped to its node so selecting a different one hides a
-                  notice that no longer describes what is on screen. */}
-              {policyNotice && policyNotice.nodeId === selectedNode?.id ? (
+              {/* Scoped to its node, and dropped as soon as that node carries
+                  a policy again — the assistant can set one through the
+                  toolset without going through `updateUserTaskDecisionPolicy`,
+                  and a notice saying the policy was reset while the panel
+                  shows a quorum is worse than no notice at all. */}
+              {policyNotice &&
+              policyNotice.nodeId === selectedNode?.id &&
+              selectedNode.type === 'userTask' &&
+              (selectedNode.data.decisionPolicy?.type ?? 'SINGLE') ===
+                'SINGLE' ? (
                 <Typography color="text-warning" variant="body">
                   {policyNotice.message}
                 </Typography>
