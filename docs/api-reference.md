@@ -661,6 +661,16 @@ like `ApprovalTemplateCategoryStatusEnum`). This is deliberately **not**
 state, an orthogonal dimension. Omitting `activationStatus` means `ALL`, so
 existing callers are unaffected and admin screens still see deactivated
 templates in order to reactivate them.
+
+**Template category writes go through the relation.**
+`ApprovalTemplateEntity.categoryId` and `ApprovalTemplateEntity.categoryDetail`
+map to the same `category_id` column, and TypeORM gives the relation precedence
+on persist. `categoryId` is therefore declared `insert: false, update: false` —
+it is a read-only projection, still usable for reading and in `where` clauses.
+Code that persists a category change must assign `categoryDetail`; assigning
+`categoryId` is silently discarded. `TemplateService.createApprovalTemplate` and
+`updateApprovalTemplate` re-read the row before returning, so their result never
+reports a `categoryId` that disagrees with `categoryDetail`.
 >
 > A deactivated template rejects `submitApprovalInstance` **and**
 > `resubmitApprovalInstance` with `ConflictException('Approval template is

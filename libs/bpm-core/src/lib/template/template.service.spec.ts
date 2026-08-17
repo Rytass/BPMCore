@@ -422,11 +422,26 @@ describe('TemplateService', () => {
       ): ApprovalTemplateVersionEntity =>
         Object.assign(new ApprovalTemplateVersionEntity(), value),
     );
+    // `createApprovalTemplate` re-reads the row it just wrote, because
+    // `categoryId` is a read-only projection of the column `categoryDetail`
+    // owns and so is absent from the in-memory entity after `save()`.
+    const templateFindOne = jest.fn(
+      (): Promise<ApprovalTemplateEntity> =>
+        Promise.resolve(
+          Object.assign(new ApprovalTemplateEntity(), {
+            category: '財務',
+            categoryDetail: category,
+            categoryId: category.id,
+            id: 'template-1',
+          }),
+        ),
+    );
     const manager = {
       getRepository: jest.fn((entity: unknown): unknown => {
         if (entity === ApprovalTemplateEntity) {
           return {
             create: templateCreate,
+            findOne: templateFindOne,
             save: templateSave,
           };
         }
@@ -480,12 +495,83 @@ describe('TemplateService', () => {
     expect(categoryFindOne).toHaveBeenCalledWith({
       where: { id: 'category-1' },
     });
+    // The category is assigned through the relation, not the scalar: both map
+    // to `category_id` and TypeORM lets the relation win on persist, so a
+    // scalar-only write is silently dropped.
     expect(templateCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         category: '財務',
-        categoryId: 'category-1',
+        categoryDetail: category,
       }),
     );
+    expect(templateCreate.mock.calls[0]?.[0]).not.toHaveProperty('categoryId');
+  });
+
+  it('moves a template to another category through the relation', async (): Promise<void> => {
+    // Regression: assigning only the `categoryId` scalar updated the legacy
+    // `category` string but left `category_id` on the old category, because
+    // the loaded `categoryDetail` relation overwrote it on save. The template
+    // then reported two different categories depending on which field a
+    // consumer read.
+    const nextCategory = createApprovalTemplateCategory('category-2');
+    const existing = Object.assign(new ApprovalTemplateEntity(), {
+      category: '財務',
+      categoryDetail: createApprovalTemplateCategory('category-1'),
+      categoryId: 'category-1',
+      id: 'template-1',
+    });
+    const saved: ApprovalTemplateEntity[] = [];
+    const templateFindOne = jest.fn(
+      (): Promise<ApprovalTemplateEntity> =>
+        Promise.resolve(
+          saved.length > 0
+            ? Object.assign(new ApprovalTemplateEntity(), {
+                ...saved[0],
+                categoryId: saved[0]?.categoryDetail?.id ?? null,
+              })
+            : existing,
+        ),
+    );
+    const templateRepository = {
+      findOne: templateFindOne,
+      merge: jest.fn(
+        (
+          target: ApprovalTemplateEntity,
+          patch: Partial<ApprovalTemplateEntity>,
+        ): ApprovalTemplateEntity => Object.assign(target, patch),
+      ),
+      save: jest.fn(
+        (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> => {
+          saved.push(value);
+
+          return Promise.resolve(value);
+        },
+      ),
+    } as unknown as Repository<ApprovalTemplateEntity>;
+    const service = new TemplateService(
+      templateRepository,
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateCategoryEntity> =>
+            Promise.resolve(nextCategory),
+        ),
+      } as unknown as Repository<ApprovalTemplateCategoryEntity>,
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    const updated = await service.updateApprovalTemplate({
+      category: null,
+      categoryId: 'category-2',
+      description: null,
+      id: 'template-1',
+      name: null,
+    });
+
+    expect(saved[0]?.categoryDetail).toBe(nextCategory);
+    expect(updated.categoryId).toBe('category-2');
   });
 
   it('rejects publishing a draft with workflow lint errors before mutating template state', async (): Promise<void> => {

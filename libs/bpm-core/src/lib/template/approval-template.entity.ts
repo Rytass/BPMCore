@@ -30,7 +30,25 @@ export class ApprovalTemplateEntity {
   @Field(() => String, { nullable: true })
   category!: string | null;
 
-  @Column('uuid', { name: 'category_id', nullable: true })
+  /**
+   * Read-only projection of the `category_id` column, which
+   * {@link categoryDetail} owns.
+   *
+   * Both properties map to the same column, and TypeORM gives the relation
+   * precedence on persist. While this one was writable, assigning it looked
+   * like it worked and was then silently discarded by the loaded relation —
+   * `updateApprovalTemplate` moved a template between categories, reported
+   * success, and left `categoryId` pointing at the old one while the legacy
+   * `category` string moved. Writes go through `categoryDetail`; this stays
+   * for reading and for `where` clauses.
+   */
+  @Column({
+    insert: false,
+    name: 'category_id',
+    nullable: true,
+    type: 'uuid',
+    update: false,
+  })
   @Field(() => ID, { nullable: true })
   categoryId?: string | null;
 
