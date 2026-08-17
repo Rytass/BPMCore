@@ -504,11 +504,15 @@ export class TemplateService {
       where: { categoryId: id, deletedAt: IsNull() },
     });
 
+    // Deleting a referenced category used to quietly turn into a
+    // *deactivation* and report success, so a caller could not tell that the
+    // operation it asked for had not happened — and that `isActive` had been
+    // flipped as a side effect it never requested. Deactivation is already
+    // reachable on its own through `deactivateApprovalTemplateCategory`, so
+    // refusing here costs no capability.
     if (templateCount > 0) {
-      return this.templateCategoryRepository.save(
-        this.templateCategoryRepository.merge(category, {
-          isActive: false,
-        }),
+      throw new BadRequestException(
+        `Approval template category ${id} is still referenced by ${templateCount} template(s) and cannot be deleted`,
       );
     }
 

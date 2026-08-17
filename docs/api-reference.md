@@ -671,6 +671,16 @@ Code that persists a category change must assign `categoryDetail`; assigning
 `categoryId` is silently discarded. `TemplateService.createApprovalTemplate` and
 `updateApprovalTemplate` re-read the row before returning, so their result never
 reports a `categoryId` that disagrees with `categoryDetail`.
+
+**Deleting a referenced category throws (breaking).**
+`TemplateService.deleteApprovalTemplateCategory(id)` previously degraded into a
+*deactivation* when templates still referenced the category: it returned
+successfully, the category survived, and its `isActive` flag was flipped as a
+side effect the caller never asked for. It now raises `BadRequestException`
+naming the number of referencing templates, and leaves the category untouched.
+Callers that want the old outcome should call
+`deactivateApprovalTemplateCategory(id)`, which has always existed — so no
+capability is lost, only the silent substitution.
 >
 > A deactivated template rejects `submitApprovalInstance` **and**
 > `resubmitApprovalInstance` with `ConflictException('Approval template is
