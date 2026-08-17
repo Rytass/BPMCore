@@ -7,6 +7,10 @@ import {
   WorkflowEdge,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
+import {
+  isDecisionPolicyUnsatisfiable,
+  readDesignTimeApproverCount,
+} from '@rytass/bpm-core-shared/workflow-graph';
 import { parseIsoDurationParts } from '../common/iso-duration';
 
 const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
@@ -211,6 +215,19 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
         ...(data.decisionPolicy?.type
           ? []
           : [`workflow.nodes.${node.id}.decisionPolicy is required`]),
+        // A COUNT quorum above the number of approvers the node can produce
+        // deadlocks the task forever — the engine gates on
+        // `completedCount >= threshold` and an ad-hoc signer opens a separate
+        // task instead of adding a candidate here. Only DIRECT exposes its
+        // count in the definition; everything else is a runtime question.
+        ...(isDecisionPolicyUnsatisfiable(
+          data.decisionPolicy,
+          data.approverResolver,
+        )
+          ? [
+              `workflow.nodes.${node.id}.decisionPolicy.threshold exceeds the ${readDesignTimeApproverCount(data.approverResolver)} approver(s) this node resolves to`,
+            ]
+          : []),
         ...(data.returnBehavior?.allowedTargets
           ? []
           : [`workflow.nodes.${node.id}.returnBehavior is required`]),

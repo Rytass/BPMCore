@@ -3,6 +3,8 @@ import {
   lintWorkflowDefinition,
 } from './workflow-definition.validator';
 import {
+  ApproverResolver,
+  DecisionPolicy,
   ReturnBehavior,
   SlaConfig,
   WorkflowDefinition,
@@ -631,6 +633,55 @@ describe('workflow definition validator', () => {
     });
   });
 
+  it('rejects a COUNT quorum above the direct approvers the node resolves to', (): void => {
+    // The task would gate on 3 approvals against 2 candidates forever, and an
+    // ad-hoc signer opens a separate task rather than adding a candidate here.
+    const workflow = createUserTaskWorkflow({
+      approverResolver: { memberIds: ['m1', 'm2'], type: 'DIRECT' },
+      decisionPolicy: { threshold: 3, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.task_manager.decisionPolicy.threshold exceeds the 2 approver(s) this node resolves to',
+    );
+  });
+
+  it('accepts a COUNT quorum that the direct approvers can satisfy', (): void => {
+    const workflow = createUserTaskWorkflow({
+      approverResolver: { memberIds: ['m1', 'm2', 'm3'], type: 'DIRECT' },
+      decisionPolicy: { threshold: 3, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+
+    expect(lintWorkflowDefinition(workflow)).toEqual({
+      errors: [],
+      valid: true,
+      warnings: [],
+    });
+  });
+
+  it('leaves a COUNT quorum alone when the approver count is a runtime question', (): void => {
+    // ORG_MANAGER may resolve to one manager, several, or none. Rejecting it
+    // at publish time would fail templates that are in fact fine.
+    const workflow = createUserTaskWorkflow({
+      decisionPolicy: { threshold: 9, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
+  });
+
+  it('never rejects a PERCENTAGE quorum, which cannot exceed the total', (): void => {
+    const workflow = createUserTaskWorkflow({
+      approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+      decisionPolicy: {
+        threshold: 100,
+        thresholdType: 'PERCENTAGE',
+        type: 'QUORUM',
+      },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
+  });
+
   it('rejects a non-boolean requireComment', (): void => {
     const workflow = createUserTaskWorkflow({
       returnBehavior: {
@@ -673,9 +724,13 @@ describe('workflow definition validator', () => {
 });
 
 function createUserTaskWorkflow({
+  approverResolver = { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+  decisionPolicy = { type: 'SINGLE' },
   returnBehavior = { allowReturn: true, allowedTargets: 'INITIATOR' },
   sla,
 }: {
+  readonly approverResolver?: ApproverResolver;
+  readonly decisionPolicy?: DecisionPolicy;
   readonly returnBehavior?: ReturnBehavior;
   readonly sla?: SlaConfig;
 }): WorkflowDefinition {
@@ -709,12 +764,8 @@ function createUserTaskWorkflow({
           allowAddSigner: false,
           allowReject: true,
           allowTransfer: true,
-          approverResolver: {
-            baseFromInitiator: true,
-            levelsUp: 1,
-            type: 'ORG_MANAGER',
-          },
-          decisionPolicy: { type: 'SINGLE' },
+          approverResolver,
+          decisionPolicy,
           label: '主管簽核',
           returnBehavior,
           ...(sla ? { sla } : {}),
