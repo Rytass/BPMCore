@@ -800,8 +800,11 @@ test.describe('M1 W3 template designer', () => {
 
     // Dropping to one approver leaves a threshold of 2 unreachable, so the
     // policy cannot be carried across — the task would never complete.
+    // Unticking from the dropdown rather than clicking the tag's close icon:
+    // already-selected members are merged into `options` precisely so this
+    // works, and the option row has a stable accessible role.
     await page
-      .locator('[data-testid="mzn-tag__close-icon"], .mzn-tag__close-icon')
+      .locator('.mzn-select-trigger__tags-input-wrapper button')
       .first()
       .click();
 
@@ -849,8 +852,11 @@ test.describe('M1 W3 template designer', () => {
       .locator('.react-flow__node')
       .filter({ hasText: '簽核節點' })
       .click();
+    // Unticking from the dropdown rather than clicking the tag's close icon:
+    // already-selected members are merged into `options` precisely so this
+    // works, and the option row has a stable accessible role.
     await page
-      .locator('[data-testid="mzn-tag__close-icon"], .mzn-tag__close-icon')
+      .locator('.mzn-select-trigger__tags-input-wrapper button')
       .first()
       .click();
 
