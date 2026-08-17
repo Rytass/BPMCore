@@ -100,6 +100,8 @@ import {
   SlaDurationUnit,
   composeQuorumThreshold,
   composeSlaDuration,
+  isDecisionPolicyUnsatisfiable,
+  readDesignTimeApproverCount,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import {
@@ -1498,13 +1500,32 @@ export function TemplateDesignerView({
     // author-visible on this branch, silently reverting it to SINGLE here
     // would read as data loss; re-apply whatever non-default policy the node
     // already had.
-    if (decisionPolicy && decisionPolicy.type !== 'SINGLE') {
-      controller.dispatch({
-        decisionPolicy,
-        nodeId,
-        type: 'setUserTaskDecisionPolicy',
-      });
+    //
+    // But only when the new approver set can still satisfy it. Re-applying a
+    // `QUORUM` of 3 onto a resolver that yields one approver produces a task
+    // that can never complete, and nothing in the designer would show it —
+    // the threshold field keeps displaying 3. Losing the policy is visible and
+    // recoverable; a deadlocked node published into production is neither, so
+    // this drops the policy and says why.
+    if (!decisionPolicy || decisionPolicy.type === 'SINGLE') {
+      return;
     }
+
+    if (isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
+      setError(
+        `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
+          `不足原本設定的 ${decisionPolicy.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
+          '簽核政策已重設為單人簽核，請重新設定。',
+      );
+
+      return;
+    }
+
+    controller.dispatch({
+      decisionPolicy,
+      nodeId,
+      type: 'setUserTaskDecisionPolicy',
+    });
   }
 
   function updateUserTaskReturnResubmitStrategy(
