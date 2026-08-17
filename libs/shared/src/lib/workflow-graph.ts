@@ -117,6 +117,32 @@ export function composeSlaDuration(parts: SlaDurationParts): string {
   return parts.unit === 'DAY' ? `P${value}D` : `PT${value}H`;
 }
 
+export const DEFAULT_QUORUM_THRESHOLD = 2;
+
+/**
+ * Sanitises a `QUORUM` threshold the same way {@link composeSlaDuration}
+ * sanitises an SLA value: reject non-finite input, drop any fractional part,
+ * and floor at 1. Nothing downstream rejects `threshold: 0` or a fractional
+ * threshold — the publish lint only checks `decisionPolicy?.type` and the
+ * engine merely clamps with `Math.max(threshold, 1)` rather than validating.
+ *
+ * `PERCENTAGE` additionally gets an upper bound of 100. The engine computes
+ * `Math.ceil((totalCount * threshold) / 100)`, so a percentage above 100
+ * always exceeds `totalCount` and the quorum can never complete.
+ *
+ * Lives here rather than in the designer because the LLM toolset writes the
+ * same policy through `set_user_task_decision_policy`; a sanitiser that only
+ * guarded the React form would leave the assistant as a hole straight past it.
+ */
+export function composeQuorumThreshold(
+  value: number,
+  thresholdType: 'COUNT' | 'PERCENTAGE',
+): number {
+  const sanitised = Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
+
+  return thresholdType === 'PERCENTAGE' ? Math.min(sanitised, 100) : sanitised;
+}
+
 /**
  * Reads a single-unit ISO duration back into editable parts. Returns `null`
  * for durations the designer cannot represent (mixed or sub-hour values), so

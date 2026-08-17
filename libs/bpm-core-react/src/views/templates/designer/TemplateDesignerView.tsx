@@ -90,12 +90,14 @@ import {
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  DEFAULT_QUORUM_THRESHOLD,
   DEFAULT_SLA_CONFIG,
   SLA_CALENDAR_MODE_OPTIONS,
   SLA_DURATION_UNIT_OPTIONS,
   SLA_TIMEOUT_ACTION_OPTIONS,
   SlaDurationParts,
   SlaDurationUnit,
+  composeQuorumThreshold,
   composeSlaDuration,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -529,7 +531,6 @@ const QUORUM_THRESHOLD_TYPE_OPTIONS: readonly QuorumThresholdTypeOption[] = [
   { id: 'COUNT', name: '人數' },
   { id: 'PERCENTAGE', name: '百分比' },
 ];
-const DEFAULT_QUORUM_THRESHOLD = 2;
 const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
   { id: '1', name: '直屬主管', value: 1 },
   { id: '2', name: '第二層主管', value: 2 },
@@ -1558,7 +1559,7 @@ export function TemplateDesignerView({
       decisionPolicy.type === 'QUORUM'
         ? {
             ...decisionPolicy,
-            threshold: withQuorumThreshold(
+            threshold: composeQuorumThreshold(
               decisionPolicy.threshold,
               decisionPolicy.thresholdType,
             ),
@@ -2721,7 +2722,7 @@ export function TemplateDesignerView({
                 name="quorumThreshold"
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                   updateUserTaskDecisionPolicy({
-                    threshold: withQuorumThreshold(
+                    threshold: composeQuorumThreshold(
                       Number(event.target.value),
                       quorum.thresholdType,
                     ),
@@ -3882,7 +3883,7 @@ function readDecisionPolicyFromOptionId(
  * into the policy on the next threshold keystroke.
  *
  * Only the *shape* is repaired here — a stored out-of-range value (e.g. a
- * `PERCENTAGE` threshold of 500 written before `withQuorumThreshold` capped
+ * `PERCENTAGE` threshold of 500 written before `composeQuorumThreshold` capped
  * it) is shown as-is, so the panel never displays a number that differs from
  * what is actually stored.
  */
@@ -3953,36 +3954,6 @@ function withSlaDuration(sla: SlaConfig, parts: SlaDurationParts): SlaConfig {
     calendar: parts.unit === 'DAY' ? (sla.calendar ?? 'CALENDAR') : 'CALENDAR',
     duration,
   };
-}
-
-/**
- * Sanitises the quorum threshold input the same way {@link withSlaDuration} /
- * `composeSlaDuration` sanitise the SLA duration value: reject non-finite
- * input, drop any fractional part, and floor at 1. Nothing downstream rejects
- * `threshold: 0` or a fractional threshold — an emptied field reads as
- * `Number('') === 0`, and the publish lint only checks `decisionPolicy?.type`
- * while the engine merely clamps with `Math.max(threshold, 1)` rather than
- * validating.
- *
- * `PERCENTAGE` additionally gets an upper bound of 100. The engine computes
- * `Math.ceil((totalCount * threshold) / 100)` — a `PERCENTAGE` threshold
- * above 100 always exceeds `totalCount` and the quorum can never complete
- * (the same deadlock a `COUNT` threshold set higher than the actual number
- * of approvers produces). Unlike `COUNT`, the ceiling for `PERCENTAGE` is
- * known at design time regardless of how many approvers the workflow
- * resolves to, so it can be capped here; `COUNT` has no such bound and stays
- * unclamped. This only sanitises what the designer writes going forward — it
- * does not touch a `threshold` already stored from before this cap existed
- * (see `normalizeUserTaskPolicies`, which never rewrites an existing
- * `decisionPolicy`).
- */
-function withQuorumThreshold(
-  value: number,
-  thresholdType: 'COUNT' | 'PERCENTAGE',
-): number {
-  const sanitised = Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
-
-  return thresholdType === 'PERCENTAGE' ? Math.min(sanitised, 100) : sanitised;
 }
 
 /** Keeps `escalateLevelsUp` only while the timeout action is `ESCALATE`. */

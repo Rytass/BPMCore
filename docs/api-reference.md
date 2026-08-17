@@ -224,6 +224,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
 | `DEFAULT_SLA_CONFIG` | const | SLA applied when a node's timer is switched on |
 | `composeSlaDuration` / `readSlaDurationParts` / `isSlaCalendarModeApplicable` | function | ISO duration ⇄ value+unit, and whether `BUSINESS_DAY` applies |
+| `DEFAULT_QUORUM_THRESHOLD` | const | Threshold seeded when a `QUORUM` decision policy is first chosen |
+| `composeQuorumThreshold` | function | Sanitises a quorum threshold (integer, min 1, `PERCENTAGE` capped at 100) |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
 | `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
