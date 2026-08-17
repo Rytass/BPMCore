@@ -307,7 +307,7 @@ test.describe('M1 W3 template designer', () => {
   test('discards a stale search response that resolves after a newer one', async ({
     page,
   }): Promise<void> => {
-    const pendingSearches = new Map<string, () => void>();
+    const pendingSearches = new Map<string, readonly (() => void)[]>();
     const requestedSearchTexts: string[] = [];
 
     await page.setViewportSize({ height: 1200, width: 1440 });
@@ -325,7 +325,10 @@ test.describe('M1 W3 template designer', () => {
       memberSearchGate: (searchText): Promise<void> =>
         new Promise<void>((resolve) => {
           requestedSearchTexts.push(searchText);
-          pendingSearches.set(searchText, resolve);
+          pendingSearches.set(searchText, [
+            ...(pendingSearches.get(searchText) ?? []),
+            resolve,
+          ]);
         }),
     });
 
@@ -1607,13 +1610,24 @@ function isWorkflowEdgeRecord(
 // whenever React happens to re-render.
 async function resolveMemberSearch(
   page: Page,
-  pendingSearches: Map<string, () => void>,
+  pendingSearches: Map<string, readonly (() => void)[]>,
   searchText: string,
 ): Promise<void> {
-  const resolve = pendingSearches.get(searchText);
+  // Queued per search text, and consumed here, because the same text can be
+  // in flight more than once: AutoComplete re-issues `onSearch('')` on blur
+  // and on clear. Keying a single resolver per text let the second request
+  // overwrite the first, stranding it forever — the spec would then hang to
+  // the Playwright timeout instead of failing with a readable message.
+  const [resolve, ...rest] = pendingSearches.get(searchText) ?? [];
 
   if (!resolve) {
     throw new Error(`No pending MemberOptions request for "${searchText}"`);
+  }
+
+  if (rest.length > 0) {
+    pendingSearches.set(searchText, rest);
+  } else {
+    pendingSearches.delete(searchText);
   }
 
   const responsePromise = page.waitForResponse((response): boolean => {
