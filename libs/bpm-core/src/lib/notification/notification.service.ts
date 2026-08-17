@@ -56,6 +56,10 @@ import {
   BPMResolvedNotificationOptions,
   DEFAULT_BPM_NOTIFICATION_OPTIONS,
 } from './notification-options';
+import {
+  BPMNotificationObserver,
+  BPM_NOTIFICATION_OBSERVER,
+} from './notification-observer.token';
 import { renderNotificationTemplate } from './notification-template';
 import { UpdateNotificationPreferenceInput } from './dto/notification-preference.input';
 
@@ -880,7 +884,49 @@ export class NotificationService {
         ),
     );
 
+    await this.notifyObserver(savedNotifications, manager);
+
     return savedNotifications;
+  }
+
+  /**
+   * Tells a host-provided observer about rows that were just written, for
+   * every channel — `IN_APP` included, which the delivery path skips because
+   * it has nothing to deliver.
+   *
+   * Errors are logged and dropped: this runs inside whatever transaction the
+   * engine is in, and a host's realtime push must not be able to roll back an
+   * approval.
+   */
+  private async notifyObserver(
+    notifications: readonly NotificationEntity[],
+    manager?: EntityManager,
+  ): Promise<void> {
+    const observer = this.readHostObserver();
+
+    if (!observer) {
+      return;
+    }
+
+    try {
+      await observer.onNotificationsCreated({
+        notifications,
+        ...(manager ? { manager } : {}),
+      });
+    } catch (error: unknown) {
+      this.logger.error(
+        `BPM_NOTIFICATION_OBSERVER failed for ${notifications.length} notification(s)`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  private readHostObserver(): BPMNotificationObserver | null {
+    try {
+      return this.moduleRef.get(BPM_NOTIFICATION_OBSERVER, { strict: false });
+    } catch {
+      return null;
+    }
   }
 
   private async recordSlaActivity({
