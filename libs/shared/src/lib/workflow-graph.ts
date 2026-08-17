@@ -6,6 +6,7 @@ import {
 } from './form';
 import {
   ApproverResolver,
+  DecisionPolicy,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -142,6 +143,47 @@ export function composeQuorumThreshold(
   const sanitised = Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
 
   return thresholdType === 'PERCENTAGE' ? Math.min(sanitised, 100) : sanitised;
+}
+
+/**
+ * How many approvers a resolver is guaranteed to produce, or `null` when only
+ * runtime can tell.
+ *
+ * Deliberately conservative: only `DIRECT` carries its member list in the
+ * definition. Every other resolver depends on the org chart at the moment the
+ * instance runs — an `ORG_MANAGER` may resolve to one manager, several, or
+ * none (falling through to its fallback). Guessing a count for those would
+ * reject templates that are in fact fine, which is worse than the check it
+ * would buy.
+ */
+export function readDesignTimeApproverCount(
+  resolver: ApproverResolver,
+): number | null {
+  return resolver.type === 'DIRECT' ? resolver.memberIds.length : null;
+}
+
+/**
+ * `true` when a policy demands more approvals than its node can ever collect,
+ * which leaves the task permanently incomplete: the engine gates on
+ * `completedCount >= Math.max(threshold, 1)` against the candidates this
+ * resolver produced, and an ad-hoc signer opens a *separate* task rather than
+ * adding a candidate to this one, so there is no runtime escape.
+ *
+ * Only `COUNT` can reach that state. A `PERCENTAGE` threshold resolves to
+ * `Math.ceil((totalCount * threshold) / 100)`, which never exceeds
+ * `totalCount` once {@link composeQuorumThreshold} has capped it at 100.
+ */
+export function isDecisionPolicyUnsatisfiable(
+  policy: DecisionPolicy | undefined,
+  resolver: ApproverResolver,
+): boolean {
+  if (policy?.type !== 'QUORUM' || policy.thresholdType !== 'COUNT') {
+    return false;
+  }
+
+  const available = readDesignTimeApproverCount(resolver);
+
+  return available !== null && policy.threshold > available;
 }
 
 /**
@@ -718,6 +760,14 @@ export function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readApproverResolverIssue(node.data.approverResolver)),
   );
+  const unsatisfiableQuorumNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      isDecisionPolicyUnsatisfiable(
+        node.data.decisionPolicy,
+        node.data.approverResolver,
+      ),
+  );
   const incompleteNotifyNode = definition.nodes.find(
     (node) =>
       node.type === 'serviceTask' &&
@@ -747,6 +797,19 @@ export function readWorkflowDefinitionIssue(
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
       incompleteUserTaskNode.data.approverResolver,
+    );
+  }
+
+  if (
+    unsatisfiableQuorumNode &&
+    unsatisfiableQuorumNode.type === 'userTask' &&
+    unsatisfiableQuorumNode.data.decisionPolicy?.type === 'QUORUM'
+  ) {
+    return (
+      `簽核節點「${unsatisfiableQuorumNode.data.label}」的門檻人數為 ` +
+      `${unsatisfiableQuorumNode.data.decisionPolicy.threshold}，` +
+      `但只指定了 ${readDesignTimeApproverCount(unsatisfiableQuorumNode.data.approverResolver)} 位簽核者，` +
+      '這一關將永遠無法通過。請降低門檻人數或增加簽核者。'
     );
   }
 

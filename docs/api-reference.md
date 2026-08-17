@@ -4,7 +4,7 @@ Canonical inventory of every export from every published BPMCore package. **This
 
 Last verified against (2026-08-13, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
-PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD` and `composeQuorumThreshold` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
+PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
 ---
 
@@ -264,6 +264,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `composeSlaDuration` / `readSlaDurationParts` / `isSlaCalendarModeApplicable` | function | ISO duration ⇄ value+unit, and whether `BUSINESS_DAY` applies |
 | `DEFAULT_QUORUM_THRESHOLD` | const | Threshold seeded when a `QUORUM` decision policy is first chosen |
 | `composeQuorumThreshold` | function | Sanitises a quorum threshold (integer, min 1, `PERCENTAGE` capped at 100) |
+| `readDesignTimeApproverCount` | function | Approvers a resolver is guaranteed to produce; `null` for runtime-resolved strategies |
+| `isDecisionPolicyUnsatisfiable` | function | `true` when a `COUNT` quorum exceeds the approvers the node can ever collect |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
 | `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
