@@ -668,7 +668,11 @@ map to the same `category_id` column, and TypeORM gives the relation precedence
 on persist. `categoryId` is therefore declared `insert: false, update: false` —
 it is a read-only projection, still usable for reading and in `where` clauses.
 Code that persists a category change must assign `categoryDetail`; assigning
-`categoryId` is silently discarded. `TemplateService.createApprovalTemplate` and
+`categoryId` is silently discarded. **This includes `repository.update()`** —
+`UpdateQueryBuilder` skips columns declared `update: false` without raising, so
+`update({ id }, { categoryId })` becomes a no-op rather than an error. Direct
+writers should either call `TemplateService.updateApprovalTemplate()` (which
+also restores the category validation) or set the relation. `TemplateService.createApprovalTemplate` and
 `updateApprovalTemplate` re-read the row before returning, so their result never
 reports a `categoryId` that disagrees with `categoryDetail`.
 
