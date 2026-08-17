@@ -1,6 +1,7 @@
 import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
+  DecisionPolicy,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaCalendarMode,
@@ -12,7 +13,9 @@ import {
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
+  DEFAULT_QUORUM_THRESHOLD,
   WORKFLOW_NODE_TYPE_LABELS,
+  composeQuorumThreshold,
   composeSlaDuration,
   isExclusiveGatewaySourceEdge,
   readWorkflowDefinitionIssue,
@@ -78,6 +81,20 @@ const SLA_TIMEOUT_ACTION_ENUM: readonly SlaConfig['onTimeout'][] = [
   'TERMINATE_INSTANCE',
 ];
 const SLA_DURATION_UNIT_ENUM = ['DAY', 'HOUR'] as const;
+
+/**
+ * Mirrors `DECISION_POLICY_OPTIONS` in the designer's property form rather
+ * than the full {@link DecisionPolicy} union: `SEQUENTIAL` is a valid engine
+ * policy but the form deliberately does not offer it, and this toolset's
+ * contract is parity with what a user can do on that form — no more.
+ */
+const DECISION_POLICY_TYPE_ENUM = [
+  'SINGLE',
+  'PARALLEL_ANY',
+  'PARALLEL_ALL',
+  'QUORUM',
+] as const;
+const QUORUM_THRESHOLD_TYPE_ENUM = ['COUNT', 'PERCENTAGE'] as const;
 
 const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
   description:
@@ -170,10 +187,35 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'set_user_task_approver',
     description:
-      '設定簽核節點的簽核人員（會將決策政策重設為 SINGLE）。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。',
+      '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。' +
+      '注意：這會將決策政策重設為 SINGLE（單人簽核）。若該節點原本設有其他決策政策而使用者並未要求變更，' +
+      '請先用 get_workflow_snapshot 讀出原政策，改完簽核人員後再用 set_user_task_decision_policy 設回去；' +
+      '但若新的簽核人員人數已撐不住原本的 QUORUM 門檻，請改為告知使用者而不要設回一個永遠無法通過的門檻。',
     inputSchema: objectSchema(
       { nodeId: { type: 'string' }, approverResolver: APPROVER_RESOLVER_SCHEMA },
       ['nodeId'],
+    ),
+    kind: 'mutation',
+  },
+  {
+    name: 'set_user_task_decision_policy',
+    description:
+      '設定簽核節點的決策政策，也就是這一關解析出來的簽核者要有幾個人同意才算通過。' +
+      'SINGLE=單人簽核；PARALLEL_ANY=任一人同意即通過；PARALLEL_ALL=全部同意才通過；' +
+      'QUORUM=達到指定門檻，此時需一併提供 threshold 與 thresholdType。' +
+      'thresholdType=COUNT 時 threshold 是同意人數；=PERCENTAGE 時是佔簽核者總數的百分比（換算人數無條件進位，上限 100）。' +
+      '門檻若超過該節點實際簽核者人數，這一關將永遠無法通過 —— 設定 COUNT 門檻前請先確認簽核人員數量。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        type: { enum: [...DECISION_POLICY_TYPE_ENUM], type: 'string' },
+        threshold: { type: 'number' },
+        thresholdType: {
+          enum: [...QUORUM_THRESHOLD_TYPE_ENUM],
+          type: 'string',
+        },
+      },
+      ['nodeId', 'type'],
     ),
     kind: 'mutation',
   },
@@ -473,7 +515,11 @@ function readNodeSnapshot(node: WorkflowNode): WorkflowNodeSnapshot {
 
 function readNodeSummary(node: WorkflowNode): string {
   if (node.type === 'userTask') {
-    return `簽核人=${node.data.approverResolver.type}；觸發=${node.data.triggerMode ?? 'AND'}`;
+    return (
+      `簽核人=${node.data.approverResolver.type}` +
+      `；決策=${readDecisionPolicySummary(node.data.decisionPolicy)}` +
+      `；觸發=${node.data.triggerMode ?? 'AND'}`
+    );
   }
 
   if (node.type === 'serviceTask') {
@@ -489,6 +535,21 @@ function readNodeSummary(node: WorkflowNode): string {
   }
 
   return '開始';
+}
+
+/**
+ * An omitted policy reads as `SINGLE` — the same default the engine falls back
+ * to (`readDecisionPolicySnapshot`) and the designer's form shows. Reporting
+ * it explicitly matters because `set_user_task_approver` resets the policy:
+ * without it in the snapshot the assistant has no way to notice what it just
+ * cleared, or to read a policy back before restoring it.
+ */
+function readDecisionPolicySummary(policy: DecisionPolicy | undefined): string {
+  if (policy?.type !== 'QUORUM') {
+    return policy?.type ?? 'SINGLE';
+  }
+
+  return `QUORUM(${policy.thresholdType} ${policy.threshold})`;
 }
 
 function readEdgeSnapshot(
@@ -697,6 +758,12 @@ function buildPrimitiveCommand(
         approverResolver: parseApproverResolver(input['approverResolver']),
         nodeId: readString(input, 'nodeId'),
         type: 'setUserTaskApprover',
+      };
+    case 'set_user_task_decision_policy':
+      return {
+        decisionPolicy: parseDecisionPolicy(input),
+        nodeId: readString(input, 'nodeId'),
+        type: 'setUserTaskDecisionPolicy',
       };
     case 'set_user_task_options':
       return {
@@ -1123,6 +1190,43 @@ function parseSlaConfig(
       ? { escalateLevelsUp: readPositiveInteger(input['escalateLevelsUp'], 1) }
       : {}),
     ...(warningAt === null ? {} : { warningAt }),
+  };
+}
+
+/**
+ * Parses a decision policy, applying the same sanitising the designer's
+ * property form applies through {@link composeQuorumThreshold}. An LLM is at
+ * least as likely as a user to emit `threshold: 0`, a fractional threshold, or
+ * a percentage above 100, and nothing downstream rejects any of them.
+ *
+ * A `QUORUM` without a usable `threshold` falls back to the same default the
+ * form seeds when the author first picks the policy, rather than throwing —
+ * the model reliably supplies `type` and is far less reliable about the
+ * dependent fields, and a seeded default is recoverable where a hard failure
+ * mid-conversation is not.
+ */
+function parseDecisionPolicy(
+  input: Readonly<Record<string, unknown>>,
+): DecisionPolicy {
+  const type = readEnum(input, 'type', DECISION_POLICY_TYPE_ENUM);
+
+  if (type !== 'QUORUM') {
+    return { type };
+  }
+
+  const thresholdType =
+    input['thresholdType'] === undefined
+      ? 'COUNT'
+      : readEnum(input, 'thresholdType', QUORUM_THRESHOLD_TYPE_ENUM);
+  const threshold =
+    typeof input['threshold'] === 'number'
+      ? input['threshold']
+      : DEFAULT_QUORUM_THRESHOLD;
+
+  return {
+    threshold: composeQuorumThreshold(threshold, thresholdType),
+    thresholdType,
+    type,
   };
 }
 

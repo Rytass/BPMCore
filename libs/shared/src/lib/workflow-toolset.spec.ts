@@ -379,3 +379,159 @@ describe('SLA and return-comment tools', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe('set_user_task_decision_policy', () => {
+  async function runTool(
+    state: WorkflowDesignerState,
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      name,
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const state = await runTool(initialState(), 'add_node', {
+      nodeType: 'userTask',
+    });
+    const nodeId = state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state };
+  }
+
+  function readDecisionPolicy(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node.data.decisionPolicy;
+  }
+
+  it('is exposed as a mutation tool', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_decision_policy',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('stores a bare type for the non-quorum policies', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      type: 'PARALLEL_ALL',
+    });
+
+    expect(readDecisionPolicy(next)).toEqual({ type: 'PARALLEL_ALL' });
+  });
+
+  it('sanitises the quorum threshold the way the designer form does', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const overCap = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      threshold: 500,
+      thresholdType: 'PERCENTAGE',
+      type: 'QUORUM',
+    });
+
+    expect(readDecisionPolicy(overCap)).toEqual({
+      threshold: 100,
+      thresholdType: 'PERCENTAGE',
+      type: 'QUORUM',
+    });
+
+    const underFloor = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      threshold: 0,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+
+    expect(readDecisionPolicy(underFloor)).toEqual({
+      threshold: 1,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+  });
+
+  it('seeds the default threshold when the model omits it', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      type: 'QUORUM',
+    });
+
+    expect(readDecisionPolicy(next)).toEqual({
+      threshold: 2,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+  });
+
+  it('reports the policy in the snapshot so it can be read back', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      threshold: 3,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+    const summary = readWorkflowSnapshot(next).nodes.find(
+      (node) => node.id === nodeId,
+    )?.summary;
+
+    expect(summary).toContain('決策=QUORUM(COUNT 3)');
+  });
+
+  it('restores a policy that set_user_task_approver reset', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withQuorum = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      threshold: 3,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+    const afterApprover = await runTool(withQuorum, 'set_user_task_approver', {
+      approverResolver: { memberIds: ['m1', 'm2', 'm3'], type: 'DIRECT' },
+      nodeId,
+    });
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
+
+    const restored = await runTool(
+      afterApprover,
+      'set_user_task_decision_policy',
+      { nodeId, threshold: 3, thresholdType: 'COUNT', type: 'QUORUM' },
+    );
+
+    expect(readDecisionPolicy(restored)).toEqual({
+      threshold: 3,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+  });
+});

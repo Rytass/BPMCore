@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-11, PR #6 remediation): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds no public exports.
+Last verified against (2026-08-17, PR #12 decision-policy designer): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds `DEFAULT_QUORUM_THRESHOLD` and `composeQuorumThreshold` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
 ---
 
@@ -246,7 +246,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/…) |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
@@ -266,7 +266,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment` and `set_user_task_sla` |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |
