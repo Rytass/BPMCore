@@ -16,6 +16,7 @@ import {
   createWorkflowNode,
   defaultWorkflowEdgeId,
   insertWorkflowNodeIntoDefinition,
+  isDecisionPolicyUnsatisfiable,
   isExclusiveGatewaySourceEdge,
   isWorkflowConnectionValid,
   isWorkflowNodeRemovable,
@@ -496,6 +497,23 @@ function applySetNodeTriggerMode(
   );
 }
 
+/**
+ * Changing the approver used to reset `decisionPolicy` to `SINGLE`
+ * unconditionally, because a policy's meaning depends entirely on how many
+ * approvers the node resolves to. That was a blunt safety net from when the
+ * policy was not author-visible: losing a setting nobody had chosen cost
+ * nothing.
+ *
+ * Now that the designer exposes the field, the reset is destructive, so it is
+ * narrowed to the case it was actually protecting against — a policy the new
+ * approver set can never satisfy, which would leave the task permanently
+ * incomplete. A policy that still works is carried across.
+ *
+ * The check lives here rather than in the designer so that every path agrees:
+ * the LLM toolset's `set_user_task_approver` runs this same reducer, and when
+ * the rule lived in the React view an assistant asked to change an approver
+ * destroyed an author's quorum while the same edit through the UI kept it.
+ */
 function applySetUserTaskApprover(
   state: WorkflowDesignerState,
   command: Extract<WorkflowCommand, { type: 'setUserTaskApprover' }>,
@@ -510,7 +528,12 @@ function applySetUserTaskApprover(
             data: {
               ...node.data,
               approverResolver: command.approverResolver,
-              decisionPolicy: { type: 'SINGLE' },
+              decisionPolicy: isDecisionPolicyUnsatisfiable(
+                node.data.decisionPolicy,
+                command.approverResolver,
+              )
+                ? { type: 'SINGLE' }
+                : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
             },
           }
         : node,

@@ -188,9 +188,9 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'set_user_task_approver',
     description:
       '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。' +
-      '注意：這會將決策政策重設為 SINGLE（單人簽核）。若該節點原本設有其他決策政策而使用者並未要求變更，' +
-      '請先用 get_workflow_snapshot 讀出原政策，改完簽核人員後再用 set_user_task_decision_policy 設回去；' +
-      '但若新的簽核人員人數已撐不住原本的 QUORUM 門檻，請改為告知使用者而不要設回一個永遠無法通過的門檻。',
+      '原有的決策政策會保留；只有當新的簽核人員人數已撐不住原本的 QUORUM 門檻（那樣這一關將永遠無法通過）時，' +
+      '才會自動重設為 SINGLE（單人簽核）。若發生重設，請主動告知使用者，並視需要用 ' +
+      'set_user_task_decision_policy 協助重新設定一個合理的門檻。',
     inputSchema: objectSchema(
       { nodeId: { type: 'string' }, approverResolver: APPROVER_RESOLVER_SCHEMA },
       ['nodeId'],

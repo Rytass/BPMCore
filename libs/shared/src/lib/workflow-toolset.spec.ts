@@ -507,7 +507,10 @@ describe('set_user_task_decision_policy', () => {
     expect(summary).toContain('決策=QUORUM(COUNT 3)');
   });
 
-  it('restores a policy that set_user_task_approver reset', async () => {
+  // The assistant reaches `applySetUserTaskApprover` through the toolset while
+  // the designer reaches it through the property form. Both must agree, which
+  // is why the rule lives in the reducer rather than in the React view.
+  it('keeps a quorum the new approver set can still satisfy', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const withQuorum = await runTool(state, 'set_user_task_decision_policy', {
       nodeId,
@@ -520,18 +523,26 @@ describe('set_user_task_decision_policy', () => {
       nodeId,
     });
 
-    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
-
-    const restored = await runTool(
-      afterApprover,
-      'set_user_task_decision_policy',
-      { nodeId, threshold: 3, thresholdType: 'COUNT', type: 'QUORUM' },
-    );
-
-    expect(readDecisionPolicy(restored)).toEqual({
+    expect(readDecisionPolicy(afterApprover)).toEqual({
       threshold: 3,
       thresholdType: 'COUNT',
       type: 'QUORUM',
     });
+  });
+
+  it('drops a quorum the new approver set can never satisfy', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withQuorum = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      threshold: 3,
+      thresholdType: 'COUNT',
+      type: 'QUORUM',
+    });
+    const afterApprover = await runTool(withQuorum, 'set_user_task_approver', {
+      approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+      nodeId,
+    });
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
   });
 });

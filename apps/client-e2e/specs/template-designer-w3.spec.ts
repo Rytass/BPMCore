@@ -738,10 +738,10 @@ test.describe('M1 W3 template designer', () => {
 
     await expect(page.getByRole('combobox', { name: '全部同意' })).toBeVisible();
 
-    // `applySetUserTaskApprover` (libs/shared) hard-resets decisionPolicy to
-    // SINGLE on every approver change as a documented upstream contract. The
-    // designer's approver update path must re-apply the policy the node
-    // already had so editing the approver does not silently discard it.
+    // `applySetUserTaskApprover` (libs/shared) carries a policy across an
+    // approver change and only drops one the new approver set could never
+    // satisfy. `PARALLEL_ALL` is satisfiable by any set, so editing the
+    // approver must not disturb it.
     const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
 
     await approverSearch.fill('chen');
@@ -767,6 +767,153 @@ test.describe('M1 W3 template designer', () => {
       },
       decisionPolicy: { type: 'PARALLEL_ALL' },
     });
+  });
+
+  test('drops a quorum the remaining approvers cannot satisfy, and says so', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // Two approvers, and a quorum that exactly consumes them.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({
+          threshold: 2,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+    await expect(
+      page.getByRole('combobox', { name: '達到指定門檻' }),
+    ).toBeVisible();
+
+    // Dropping to one approver leaves a threshold of 2 unreachable, so the
+    // policy cannot be carried across — the task would never complete.
+    await page
+      .locator('[data-testid="mzn-tag__close-icon"], .mzn-tag__close-icon')
+      .first()
+      .click();
+
+    await expect(page.getByRole('combobox', { name: '單人簽核' })).toBeVisible();
+
+    const notice = page.getByText(
+      '簽核者已變更為 1 位，不足原本設定的 2 位門檻，簽核政策已重設為單人簽核，請重新設定。',
+    );
+
+    await expect(notice).toBeVisible();
+
+    // The notice used to live in the page's request-failure banner, which
+    // `handleSearchMembers` clears on entry — so the very next keystroke in the
+    // still-open picker wiped it, in exactly the flow that produces it.
+    await page.getByPlaceholder('搜尋姓名或信箱').fill('chen');
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' }),
+    ).toBeVisible();
+    await expect(notice).toBeVisible();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({ decisionPolicy: { type: 'SINGLE' } });
+  });
+
+  test('does not revive the dropped-policy notice on a rebuilt node', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({
+          threshold: 2,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        }),
+      ),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+    await page
+      .locator('[data-testid="mzn-tag__close-icon"], .mzn-tag__close-icon')
+      .first()
+      .click();
+
+    const notice = page.getByText('簽核政策已重設為單人簽核');
+
+    await expect(notice).toBeVisible();
+
+    // Node ids are recycled — `readNextWorkflowNodeIndex` hands out the lowest
+    // unused index — so the replacement node is `userTask_1` again. Keying the
+    // notice on the id alone let it reattach to a node it never described.
+    await page.locator('.react-flow__node').filter({ hasText: '簽核' }).click();
+    await page.keyboard.press('Delete');
+    await expect(
+      page.locator('.react-flow__node').filter({ hasText: '簽核節點' }),
+    ).toHaveCount(0);
+
+    await page.getByRole('button', { name: '簽核節點' }).click();
+    await expect(
+      page.locator('.react-flow__node').filter({ hasText: '簽核' }),
+    ).toHaveCount(1);
+
+    await expect(notice).toHaveCount(0);
+  });
+
+  test('bounds member profile requests when resolution keeps failing', async ({
+    page,
+  }): Promise<void> => {
+    // `resolveWorkflowMemberOptions` runs from an effect that lists
+    // `memberOptions` in its dependencies. Once a failed resolve started
+    // writing "未知會員" placeholders that count as still-missing, a
+    // `mergeMemberOptions` that returned a fresh array every time re-ran the
+    // effect, re-requested the same ids, and looped on the API forever.
+    //
+    // The mock has no `SelectedMembers` branch, so every resolve here fails —
+    // which is precisely the condition that used to loop.
+    let selectedMembersRequests = 0;
+
+    page.on('request', (request): void => {
+      if (!request.url().includes('/graphql')) {
+        return;
+      }
+
+      if (request.postData()?.includes('query SelectedMembers')) {
+        selectedMembersRequests += 1;
+      }
+    });
+
+    // The fixture's user task carries two DIRECT approver ids, which is what
+    // makes the designer ask for their profiles on load.
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SINGLE' }),
+      ),
+    });
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await expect(
+      page.locator('.react-flow__node').filter({ hasText: '簽核節點' }),
+    ).toBeVisible();
+
+    // Settle: a loop would still be climbing well past this.
+    await page.waitForTimeout(3_000);
+
+    expect(selectedMembersRequests).toBeLessThanOrEqual(4);
   });
 
   test('hides the business-day選項 for an hour-based SLA', async ({
