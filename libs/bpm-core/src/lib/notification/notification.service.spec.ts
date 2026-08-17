@@ -27,6 +27,11 @@ import { UpdateNotificationPreferenceInput } from './dto/notification-preference
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
+  BPMNotificationObserver,
+  BPMNotificationsCreatedEvent,
+  BPM_NOTIFICATION_OBSERVER,
+} from './notification-observer.token';
+import {
   NotificationChannelEnum,
   NotificationDigestModeEnum,
   NotificationStatusEnum,
@@ -499,6 +504,163 @@ describe('NotificationService', () => {
         }),
       ]),
     );
+  });
+
+  describe('BPM_NOTIFICATION_OBSERVER', () => {
+    interface ObserverHarness {
+      readonly events: BPMNotificationsCreatedEvent[];
+      readonly service: NotificationService;
+    }
+
+    function createObserverHarness(
+      onCreated?: () => void,
+    ): ObserverHarness {
+      const events: BPMNotificationsCreatedEvent[] = [];
+      const observer: BPMNotificationObserver = {
+        onNotificationsCreated: (event): void => {
+          events.push(event);
+          onCreated?.();
+        },
+      };
+      const notificationRepository = {
+        create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+          Object.assign(new NotificationEntity(), entity),
+        save: (
+          entityOrEntities: NotificationEntity | NotificationEntity[],
+        ): Promise<NotificationEntity | NotificationEntity[]> =>
+          Promise.resolve(entityOrEntities),
+      } as unknown as Repository<NotificationEntity>;
+      const moduleRef = {
+        get: (token: unknown): unknown => {
+          if (token === BPM_NOTIFICATION_OBSERVER) {
+            return observer;
+          }
+
+          throw new Error('Unexpected ModuleRef lookup');
+        },
+      } as unknown as ModuleRef;
+      const service = new NotificationService(
+        notificationRepository,
+        {
+          findOne: (): Promise<NotificationPreferenceEntity | null> =>
+            Promise.resolve(null),
+        } as unknown as Repository<NotificationPreferenceEntity>,
+        createRepository<TaskEntity>(),
+        createRepository<TaskCandidateEntity>(),
+        createRepository<ApprovalInstanceEntity>(),
+        createRepository<ActivityLogEntity>(),
+        createDeliveryService(),
+        moduleRef,
+      );
+
+      return { events, service };
+    }
+
+    async function assignTask(
+      service: NotificationService,
+      manager?: EntityManager,
+    ): Promise<void> {
+      const instance = createApprovalInstance();
+      const node = instance.workflowSnapshot.nodes.find(
+        (candidate): candidate is UserTaskNode => candidate.type === 'userTask',
+      );
+
+      if (!node) {
+        throw new Error('Observer fixture must contain a user task');
+      }
+
+      await service.createTaskAssignedNotification({
+        instance,
+        manager: manager as unknown as EntityManager,
+        node,
+        task: Object.assign(new TaskEntity(), {
+          assigneeMemberId: 'member-a',
+          id: 'task-observer',
+          instanceId: instance.id,
+          nodeId: node.id,
+          originalAssigneeMemberId: 'member-a',
+        }),
+      });
+    }
+
+    it('reports in-app rows, which never reach the delivery dispatcher', async (): Promise<void> => {
+      const { events, service } = createObserverHarness();
+
+      await assignTask(service);
+
+      expect(events).toHaveLength(1);
+      expect(
+        events[0]?.notifications.some(
+          (notification) =>
+            notification.channel === NotificationChannelEnum.IN_APP,
+        ),
+      ).toBe(true);
+    });
+
+    it('lifts the routing fields out of the rows', async (): Promise<void> => {
+      // A host routing an SSE push should not have to unpack a row to learn
+      // what happened or which instance it belongs to.
+      const { events, service } = createObserverHarness();
+
+      await assignTask(service);
+
+      const event = events[0];
+
+      expect(event?.type).toBe(NotificationTypeEnum.TASK_ASSIGNED);
+      expect(event?.taskId).toBe('task-observer');
+      expect(event?.instanceId).toBe(event?.notifications[0]?.instanceId);
+      // Every row in a batch shares the type the event reports.
+      expect(
+        event?.notifications.every(
+          (notification) => notification.type === event.type,
+        ),
+      ).toBe(true);
+    });
+
+    it('passes the batch in one call rather than one call per row', async (): Promise<void> => {
+      const { events, service } = createObserverHarness();
+
+      await assignTask(service);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]?.notifications.length).toBeGreaterThan(0);
+    });
+
+    it('hands over the manager so a host can wait for the commit', async (): Promise<void> => {
+      const { events, service } = createObserverHarness();
+      const manager = {
+        getRepository: (): unknown => ({
+          create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+            Object.assign(new NotificationEntity(), entity),
+          save: (
+            entityOrEntities: NotificationEntity | NotificationEntity[],
+          ): Promise<NotificationEntity | NotificationEntity[]> =>
+            Promise.resolve(entityOrEntities),
+        }),
+      } as unknown as EntityManager;
+
+      // Rows written inside a caller-supplied transaction are not committed
+      // yet, so the host needs the manager to defer its push.
+      await assignTask(service, manager);
+
+      expect(events[0]?.manager).toBe(manager);
+    });
+
+    it('omits the manager when BPM owned the write', async (): Promise<void> => {
+      const { events, service } = createObserverHarness();
+
+      await assignTask(service);
+
+      expect(events[0]?.manager).toBeUndefined();
+    });
+
+    it('swallows observer failures so they cannot roll back the engine', async (): Promise<void> => {
+      const { service } = createObserverHarness((): never => {
+        throw new Error('host SSE broker is down');
+      });
+
+      await expect(assignTask(service)).resolves.toBeUndefined();
+    });
   });
 
   it('derives the rejection policy for legacy task notifications', async (): Promise<void> => {

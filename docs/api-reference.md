@@ -745,10 +745,29 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
+| Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
+
+**Realtime hook.** `BPM_NOTIFICATION_OBSERVER` fires after
+`createNotifications` persists a batch, for **every** channel — including
+`IN_APP`, which `BPM_NOTIFICATION_DISPATCHER` never sees because in-app
+notifications have no delivery step. It exists so a host can drive SSE /
+WebSocket push off the same rows BPM writes, instead of polling the table or
+putting a trigger on it.
+
+The observer receives the whole batch in one call, along with `type`,
+`instanceId` and `taskId` lifted to the event so a host can route without
+unpacking a row. A batch is always for **one recipient** — several rows mean
+several channels, not several people, so a node assigned to three approvers
+produces three events. It also receives the `EntityManager` when the rows were
+written inside a caller-supplied transaction — in that case they are **not committed yet**, and a
+host should defer its push until that transaction commits. The manager is absent
+when BPM owned the write, meaning the rows are already durable. Observer
+failures are logged and swallowed: a host's realtime push must never roll back
+the approval that produced the notification.
 
 **Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
 from *read* and from *deleted* — the row survives for statistics and audit.
