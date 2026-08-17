@@ -1273,9 +1273,15 @@ export function TemplateDesignerView({
     definition: WorkflowDefinition,
   ): Promise<void> {
     const memberIds = readWorkflowDirectMemberIds(definition);
+    // An unresolved placeholder counts as missing, not as cached. It carries
+    // the member id, so a plain presence check treats a failed fetch as a hit
+    // and never asks again — the "未知會員" sentinel would then survive every
+    // later definition load for the rest of the session.
     const missingMemberIds = memberIds.filter(
       (memberId) =>
-        !memberOptions.some((option) => option.memberId === memberId),
+        !memberOptions.some(
+          (option) => option.memberId === memberId && !option.unresolved,
+        ),
     );
 
     if (missingMemberIds.length === 0) {
