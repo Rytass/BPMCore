@@ -19,6 +19,10 @@
 | Signature       | `signatures`                                                                          |
 | Notification    | `notifications`, `notification_preferences`                                           |
 
+> Wrapper host-owned fixture table：`apps/api` 的 `api_form_data_source_options` 保存
+> deterministic demo DataSource rows，建立、truncate 與 seed 都由 `apps/api` 負責，
+> 不屬於 `libs/bpm-core` 或 `BPM_CORE_MIGRATIONS`。
+
 ---
 
 ## 1. Identity
@@ -236,6 +240,7 @@ initiator_metadata_snapshot         jsonb        -- 發起當下的 metadata 快
 workflow_snapshot                   jsonb        -- 流程定義快照
 form_definition_snapshot            jsonb        -- 表單定義快照
 form_data                           jsonb        -- 使用者填寫
+form_data_option_snapshot           jsonb        -- 動態選項 label/source/hash snapshot
 state                               text         -- DRAFT/RUNNING/APPROVED/REJECTED/CANCELLED/RETURNED/EXPIRED
 title                               text         -- 自動產生（從 form_data 取一個欄位 or 模板名）
 started_at                          timestamptz
@@ -246,6 +251,10 @@ INDEX (initiator_member_id, state)
 INDEX (template_id, state)
 INDEX (state, started_at)
 ```
+
+`form_data_option_snapshot` 的 key 是 field key；每筆 snapshot 保存 primitive value
+對應的 label、DataSource key/version、binding hash 與 validation timestamp。唯讀歷史
+畫面只依這份 instance snapshot 顯示，不需要重新呼叫宿主 DataSource。
 
 ### `workflow_tokens`
 

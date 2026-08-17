@@ -7,14 +7,20 @@
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": [
+        "{options.outputPath}"
+      ],
       "options": {
         "outputPath": "dist/libs/shared",
         "main": "libs/shared/src/index.ts",
         "tsConfig": "libs/shared/tsconfig.lib.json",
         "assets": [
           "libs/shared/*.md",
-          { "input": ".", "glob": "LICENSE", "output": "." }
+          {
+            "input": ".",
+            "glob": "LICENSE",
+            "output": "."
+          }
         ]
       }
     },
@@ -26,7 +32,9 @@
     },
     "pkg-quality": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "commands": [
           "pnpm exec publint dist/libs/shared"
@@ -36,14 +44,21 @@
     },
     "pkg-quality-attw": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "command": "pnpm exec attw --pack dist/libs/shared"
       }
     },
     "prepublish-check": {
       "executor": "nx:noop",
-      "dependsOn": ["typecheck", "lint", "build", "pkg-quality"]
+      "dependsOn": [
+        "typecheck",
+        "lint",
+        "build",
+        "pkg-quality"
+      ]
     },
     "nx-release-publish": {
       "options": {

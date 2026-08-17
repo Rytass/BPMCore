@@ -13,10 +13,44 @@
         "command": "vite build"
       }
     },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": [
+        "{workspaceRoot}/coverage/libs/bpm-core-react"
+      ],
+      "options": {
+        "jestConfig": "libs/bpm-core-react/jest.config.cts",
+        "passWithNoTests": true
+      }
+    },
     "typecheck": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p libs/bpm-core-react/tsconfig.lib.json"
+      }
+    },
+    "pkg-quality": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "commands": ["pnpm exec publint libs/bpm-core-react"],
+        "parallel": false
+      }
+    },
+    "pkg-quality-attw": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "pnpm exec attw --pack libs/bpm-core-react"
+      }
+    },
+    "prepublish-check": {
+      "executor": "nx:noop",
+      "dependsOn": ["typecheck", "lint", "build", "pkg-quality"]
+    },
+    "nx-release-publish": {
+      "options": {
+        "packageRoot": "libs/bpm-core-react"
       }
     }
   }

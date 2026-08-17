@@ -73,6 +73,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormUiSchema,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -101,7 +102,10 @@ import {
   composeSlaDuration,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import {
+  readFormBuilder,
+  readFormSchemaLintMessage,
+} from '@rytass/bpm-core-client/form';
 import {
   OrgUnitOption,
   OrgUnitPicker,
@@ -3611,11 +3615,27 @@ function applyWorkflowNodeTriggerMode(
 function normalizeDesignerWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinition {
-  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(definition);
+  const withEdgeData = normalizeDesignerEdgeData(definition);
+  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(withEdgeData);
 
   return normalizeSingleIncomingTriggerModes(
     normalizeUserTaskPolicies(withoutAsyncNotifyEdges),
   );
+}
+
+function normalizeDesignerEdgeData(
+  definition: WorkflowDefinition,
+): WorkflowDefinition {
+  const edges = definition.edges.map((edge): WorkflowEdge => {
+    const data = edge.data ?? {};
+
+    return edge.data === data ? edge : { ...edge, data };
+  });
+  const hasEdgeChanges = edges.some(
+    (edge, index) => edge !== definition.edges[index],
+  );
+
+  return hasEdgeChanges ? { ...definition, edges } : definition;
 }
 
 function normalizeUserTaskPolicies(
@@ -4345,12 +4365,12 @@ function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
     return true;
   }
 
-  if (field.type === 'select') {
-    return field.options[0]?.value ?? '';
-  }
-
-  if (field.type === 'checkbox') {
-    return field.options[0] ? [field.options[0].value] : [];
+  if (isFormStaticOptionFieldDefinition(field)) {
+    return field.type === 'checkbox'
+      ? field.options[0]
+        ? [field.options[0].value]
+        : []
+      : field.options[0]?.value ?? '';
   }
 
   if (field.type === 'date') {
@@ -4969,11 +4989,7 @@ function readConditionValueOptions(
     ];
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options.map((option) => ({
       id: option.value,
       name: option.label,
@@ -5041,5 +5057,9 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
 }
 
 function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '發生未知錯誤';
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
+  // readable copy and leave every other message untouched.
+  return error instanceof Error
+    ? readFormSchemaLintMessage(error.message)
+    : '發生未知錯誤';
 }

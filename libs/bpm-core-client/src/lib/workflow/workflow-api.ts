@@ -1,9 +1,11 @@
 import {
   FormDefinitionSchema,
+  FormDataSourceValueSnapshots,
   FormFieldDefinition,
   FormFieldValue,
   FormUiSchema,
-  SelectFieldDefinition,
+  FormStaticOptionFieldDefinition,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
@@ -98,6 +100,8 @@ export interface ApprovalInstanceRecord {
   readonly completedAt: string | null;
   readonly formData: WorkflowFormData;
   readonly formDataJson: string;
+  readonly formDataOptionSnapshot: FormDataSourceValueSnapshots;
+  readonly formDataOptionSnapshotJson: string;
   readonly formDefinitionSnapshot: FormDefinitionSnapshot;
   readonly formDefinitionSnapshotJson: string;
   readonly id: string;
@@ -230,6 +234,8 @@ export interface NotificationRecord {
    * task assignment). Server-derived; drives the inline 同意/拒絕 actions.
    */
   readonly actionable: boolean;
+  /** When the recipient archived it; `null` while it stays in the live list. */
+  readonly archivedAt: string | null;
   readonly attemptCount: number;
   readonly allowReject: boolean | null;
   readonly body: string;
@@ -549,9 +555,14 @@ interface LaunchFormVersionQueryData {
 
 interface InstanceJsonRecord extends Omit<
   ApprovalInstanceRecord,
-  'formData' | 'formDefinitionSnapshot' | 'workflowSnapshot'
+  | 'formData'
+  | 'formDataOptionSnapshot'
+  | 'formDataOptionSnapshotJson'
+  | 'formDefinitionSnapshot'
+  | 'workflowSnapshot'
 > {
   readonly formDataJson: string;
+  readonly formDataOptionSnapshotJson?: string;
   readonly formDefinitionSnapshotJson: string;
   readonly workflowSnapshotJson: string;
 }
@@ -564,6 +575,7 @@ export async function listApprovalInstances(): Promise<
       approvalInstances {
         completedAt
         formDataJson
+        formDataOptionSnapshotJson
         formDefinitionSnapshotJson
         id
         initiatorMemberId
@@ -616,6 +628,7 @@ export async function listApprovalInstancesPage({
         ) {
           completedAt
           formDataJson
+          formDataOptionSnapshotJson
           formDefinitionSnapshotJson
           id
           initiatorMemberId
@@ -805,6 +818,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
       approvalInstance(id: $id) {
         completedAt
         formDataJson
+        formDataOptionSnapshotJson
         formDefinitionSnapshotJson
         id
         initiatorMemberId
@@ -1405,11 +1419,13 @@ export async function revokeDelegationRule({
 }
 
 export async function listNotifications({
+  includeArchived = false,
   includeRead = true,
   page = 1,
   pageSize = 10,
   recipientMemberId,
 }: {
+  readonly includeArchived?: boolean;
   readonly includeRead?: boolean;
   readonly page?: number;
   readonly pageSize?: number;
@@ -1423,10 +1439,12 @@ export async function listNotifications({
     `query Notifications(
       $recipientMemberId: String!
       $includeRead: Boolean
+      $includeArchived: Boolean
       $page: Int
       $pageSize: Int
     ) {
       notifications(
+        includeArchived: $includeArchived
         includeRead: $includeRead
         page: $page
         pageSize: $pageSize
@@ -1434,6 +1452,7 @@ export async function listNotifications({
       ) {
         actionable
         allowReject
+        archivedAt
         attemptCount
         body
         channel
@@ -1457,12 +1476,13 @@ export async function listNotifications({
         type
       }
       notificationCount(
+        includeArchived: $includeArchived
         includeRead: $includeRead
         recipientMemberId: $recipientMemberId
       )
       unreadNotificationCount(recipientMemberId: $recipientMemberId)
     }`,
-    { includeRead, page, pageSize, recipientMemberId },
+    { includeArchived, includeRead, page, pageSize, recipientMemberId },
   );
 
   return {
@@ -1523,6 +1543,40 @@ export async function markAllNotificationsRead({
   );
 
   return data.markAllNotificationsRead;
+}
+
+export async function archiveNotifications({
+  ids,
+}: {
+  readonly ids: readonly string[];
+}): Promise<number> {
+  const data = await requestGraphQl<{
+    readonly archiveNotifications: number;
+  }>(
+    `mutation ArchiveNotifications($ids: [String!]!) {
+      archiveNotifications(ids: $ids)
+    }`,
+    { ids },
+  );
+
+  return data.archiveNotifications;
+}
+
+export async function unarchiveNotifications({
+  ids,
+}: {
+  readonly ids: readonly string[];
+}): Promise<number> {
+  const data = await requestGraphQl<{
+    readonly unarchiveNotifications: number;
+  }>(
+    `mutation UnarchiveNotifications($ids: [String!]!) {
+      unarchiveNotifications(ids: $ids)
+    }`,
+    { ids },
+  );
+
+  return data.unarchiveNotifications;
 }
 
 export async function readNotificationPreference(
@@ -2017,6 +2071,10 @@ function parseInstanceJson(record: InstanceJsonRecord): ApprovalInstanceRecord {
   return {
     ...record,
     formData: JSON.parse(record.formDataJson) as WorkflowFormData,
+    formDataOptionSnapshotJson: record.formDataOptionSnapshotJson ?? '{}',
+    formDataOptionSnapshot: JSON.parse(
+      record.formDataOptionSnapshotJson ?? '{}',
+    ) as FormDataSourceValueSnapshots,
     formDefinitionSnapshot: JSON.parse(
       record.formDefinitionSnapshotJson,
     ) as FormDefinitionSnapshot,
@@ -2107,7 +2165,7 @@ function readArrayFieldValueLabel(
 }
 
 function readSelectOptionLabel(
-  field: SelectFieldDefinition,
+  field: FormStaticOptionFieldDefinition,
   value: string,
 ): string {
   return (
@@ -2117,10 +2175,6 @@ function readSelectOptionLabel(
 
 function isSelectFieldDefinition(
   field: FormFieldDefinition,
-): field is SelectFieldDefinition {
-  return (
-    field.type === 'select' ||
-    field.type === 'radio' ||
-    field.type === 'checkbox'
-  );
+): field is FormStaticOptionFieldDefinition {
+  return isFormStaticOptionFieldDefinition(field);
 }

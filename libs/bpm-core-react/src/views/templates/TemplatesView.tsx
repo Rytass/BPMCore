@@ -31,6 +31,8 @@ import {
   ApprovalTemplateListStatus,
   ApprovalTemplateRecord,
   ApprovalTemplateCategoryRecord,
+  activateApprovalTemplate,
+  deactivateApprovalTemplate,
   listApprovalTemplateCategoriesPage,
   listApprovalTemplatesPage,
 } from '@rytass/bpm-core-client/template';
@@ -88,6 +90,8 @@ export function TemplatesView(): ReactElement {
   const [templateStatus, setTemplateStatus] =
     useState<TemplateStatusTabKey>('ALL');
   const [templateTotalCount, setTemplateTotalCount] = useState(0);
+  const [activationPendingTemplateId, setActivationPendingTemplateId] =
+    useState<string | null>(null);
   const refreshRequestIdRef = useRef(0);
 
   const refreshTemplates = useCallback(async (): Promise<void> => {
@@ -160,6 +164,25 @@ export function TemplatesView(): ReactElement {
     void refreshTemplates();
   }, [refreshTemplates]);
 
+  const toggleTemplateActivation = useCallback(
+    async (template: ApprovalTemplateRecord): Promise<void> => {
+      setActivationPendingTemplateId(template.id);
+      setError(null);
+
+      try {
+        await (template.isActive
+          ? deactivateApprovalTemplate(template.id)
+          : activateApprovalTemplate(template.id));
+        await refreshTemplates();
+      } catch (requestError: unknown) {
+        setError(readErrorMessage(requestError));
+      } finally {
+        setActivationPendingTemplateId(null);
+      }
+    },
+    [refreshTemplates],
+  );
+
   const rows = useMemo(
     (): TemplateRow[] =>
       templates.map((template) => ({
@@ -180,6 +203,14 @@ export function TemplatesView(): ReactElement {
           <TemplateStatusBadge status={record.status} />
         ),
         title: '狀態',
+        width: 120,
+      },
+      {
+        key: 'isActive',
+        render: (record: TemplateRow): ReactElement => (
+          <TemplateActivationBadge isActive={record.isActive} />
+        ),
+        title: '服務狀態',
         width: 120,
       },
       {
@@ -217,11 +248,25 @@ export function TemplatesView(): ReactElement {
           name: '版本',
           onClick: (): void => router.push(routes.templateVersions(record.id)),
         },
+        {
+          disabled: (template): boolean =>
+            activationPendingTemplateId === template.id,
+          name: record.isActive ? '停用' : '啟用',
+          onClick: (template): void => {
+            void toggleTemplateActivation(template);
+          },
+          variant: record.isActive ? 'destructive-secondary' : 'base-secondary',
+        },
       ],
       variant: 'base-secondary',
-      width: 192,
+      width: 264,
     }),
-    [launchableTemplateIds, router],
+    [
+      activationPendingTemplateId,
+      launchableTemplateIds,
+      router,
+      toggleTemplateActivation,
+    ],
   );
 
   return (
@@ -372,6 +417,18 @@ function TemplateStatusBadge({
   }
 
   return <Badge size="sub" text="草稿" variant="dot-inactive" />;
+}
+
+function TemplateActivationBadge({
+  isActive,
+}: {
+  readonly isActive: boolean;
+}): ReactElement {
+  if (isActive) {
+    return <Badge size="sub" text="啟用中" variant="dot-success" />;
+  }
+
+  return <Badge size="sub" text="已停用" variant="dot-inactive" />;
 }
 
 function TemplateCategoryLabel({

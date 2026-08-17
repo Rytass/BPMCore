@@ -50,6 +50,13 @@ describe('client API endpoint resolution', () => {
     expect(readGraphQlEndpoint()).toBe('https://api.example.test/graphql');
     expect(readApiBaseUrl()).toBe('https://auth.example.test');
   });
+
+  it('normalizes an explicit API base URL to the GraphQL endpoint', (): void => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.test';
+    delete process.env.NEXT_PUBLIC_API_AUTH_URL;
+
+    expect(readGraphQlEndpoint()).toBe('https://api.example.test/graphql');
+  });
 });
 
 function restoreEnvValue(

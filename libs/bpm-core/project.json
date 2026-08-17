@@ -7,7 +7,9 @@
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": [
+        "{options.outputPath}"
+      ],
       "options": {
         "outputPath": "dist/libs/bpm-core",
         "main": "libs/bpm-core/src/index.ts",
@@ -15,13 +17,19 @@
         "generatePackageJson": true,
         "assets": [
           "libs/bpm-core/*.md",
-          { "input": ".", "glob": "LICENSE", "output": "." }
+          {
+            "input": ".",
+            "glob": "LICENSE",
+            "output": "."
+          }
         ]
       }
     },
     "test": {
       "executor": "@nx/jest:jest",
-      "outputs": ["{workspaceRoot}/coverage/libs/bpm-core"],
+      "outputs": [
+        "{workspaceRoot}/coverage/libs/bpm-core"
+      ],
       "options": {
         "jestConfig": "libs/bpm-core/jest.config.cts",
         "passWithNoTests": true
@@ -35,7 +43,9 @@
     },
     "pkg-quality": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "commands": [
           "pnpm exec publint dist/libs/bpm-core"
@@ -45,14 +55,22 @@
     },
     "pkg-quality-attw": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "command": "pnpm exec attw --pack dist/libs/bpm-core"
       }
     },
     "prepublish-check": {
       "executor": "nx:noop",
-      "dependsOn": ["typecheck", "lint", "test", "build", "pkg-quality"]
+      "dependsOn": [
+        "typecheck",
+        "lint",
+        "test",
+        "build",
+        "pkg-quality"
+      ]
     },
     "nx-release-publish": {
       "options": {

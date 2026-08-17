@@ -32,6 +32,7 @@ import {
   UpdateApprovalTemplateInput,
 } from './dto/approval-template.input';
 import {
+  ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
@@ -47,6 +48,7 @@ interface MaxVersionRow {
 }
 
 interface ListApprovalTemplatesOptions {
+  readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
   readonly page?: number;
   readonly pageSize?: number;
   readonly categoryId?: string;
@@ -360,6 +362,7 @@ export class TemplateService {
           }
         : {}),
       where: createApprovalTemplateWhere({
+        activationStatus: options.activationStatus,
         categoryId: options.categoryId,
         searchText: options.searchText,
         status: options.status,
@@ -368,21 +371,38 @@ export class TemplateService {
   }
 
   async countApprovalTemplates({
+    activationStatus,
     categoryId,
     searchText,
     status,
   }: {
+    readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   } = {}): Promise<number> {
     return this.templateRepository.count({
-      where: createApprovalTemplateWhere({ categoryId, searchText, status }),
+      where: createApprovalTemplateWhere({
+        activationStatus,
+        categoryId,
+        searchText,
+        status,
+      }),
     });
   }
 
   async getApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
     return this.getTemplateOrThrow(id);
+  }
+
+  async activateApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
+    return this.setApprovalTemplateActive(id, true);
+  }
+
+  async deactivateApprovalTemplate(
+    id: string,
+  ): Promise<ApprovalTemplateEntity> {
+    return this.setApprovalTemplateActive(id, false);
   }
 
   async listApprovalTemplateCategories(
@@ -850,6 +870,19 @@ export class TemplateService {
     return entity;
   }
 
+  private async setApprovalTemplateActive(
+    id: string,
+    isActive: boolean,
+  ): Promise<ApprovalTemplateEntity> {
+    const template = await this.getTemplateOrThrow(id);
+
+    return this.templateRepository.save(
+      this.templateRepository.merge(template, {
+        isActive,
+      }),
+    );
+  }
+
   private async setApprovalTemplateCategoryActive(
     id: string,
     isActive: boolean,
@@ -948,6 +981,7 @@ function normalizePageSize(pageSize: number): number {
 
 function createApprovalTemplateWhere(
   options: Readonly<{
+    readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
@@ -958,6 +992,15 @@ function createApprovalTemplateWhere(
   const activeTemplateWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     deletedAt: IsNull(),
   };
+  // Administrative activation is orthogonal to the version-derived publication
+  // status, so an omitted filter keeps both active and deactivated templates.
+  const activationWhere: FindOptionsWhere<ApprovalTemplateEntity> =
+    options.activationStatus === ApprovalTemplateActivationStatusEnum.ACTIVE
+      ? { isActive: true }
+      : options.activationStatus ===
+          ApprovalTemplateActivationStatusEnum.INACTIVE
+        ? { isActive: false }
+        : {};
   const statusWhere: FindOptionsWhere<ApprovalTemplateEntity> =
     options.status === ApprovalTemplateListStatusEnum.DRAFT
       ? { currentVersionId: IsNull() }
@@ -968,6 +1011,7 @@ function createApprovalTemplateWhere(
       : {};
   const baseWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     ...activeTemplateWhere,
+    ...activationWhere,
     ...(options.categoryId ? { categoryId: options.categoryId } : {}),
     ...statusWhere,
     ...publicationWhere,

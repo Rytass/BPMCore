@@ -89,6 +89,7 @@
 - 2026-05-13: Workflow task assignment now supports candidate groups through `task_candidates`, multi-member direct/position/org resolvers, task candidate GraphQL fields, candidate-aware inbox/detail UI, and full `pnpm e2e:client` coverage.
 - 2026-05-14: W6 Edge Condition CEL expression runtime is verified for both actual workflow execution and dry run; `edge.data.condition` now represents the executable CEL condition, with structured field/operator data kept only as designer/fallback compatibility.
 - 2026-05-15: W9 notification/SLA is completed with flattened `BPMRootModule` notification config, pending delivery state, SMTP email delivery, signed webhook delivery, Handlebars templates, SLA timeout actions (`REMIND` / `AUTO_APPROVE` / `ESCALATE` / `TERMINATE_INSTANCE`), and header unread notification entry; full verification includes unit tests and `pnpm e2e:client`.
+- 2026-08-12: Form option DataSource Phase 0–6 and P6 gate are complete with host-owned registry fixtures, catalog/preview/runtime GraphQL, server-side submit/resubmit snapshots, Mezzanine renderer controls, builder bindings, deterministic demo seed, and a passing real-Chrome golden path; final repository-wide e2e is 43/43, with legacy edge-data normalization, GraphQL endpoint normalization, and aligned e2e contracts verified.
 
 ## Backlog Notes
 

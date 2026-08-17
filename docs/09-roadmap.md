@@ -307,16 +307,21 @@
 
 ## 已核准的後續規劃
 
-- [ ] 表單 Select／AutoComplete／Radio／Checkbox 支援宿主註冊的版本化 DataSource。
-- [ ] 完成 server-side resolve、label snapshot、退回編輯與重新送出一致性。
-- [ ] 完成 Designer Catalog／Preview、parameter bindings、發布 lint 與真實 wrapper-host e2e。
+- [x] 表單 Select／AutoComplete／Radio／Checkbox 支援宿主註冊的版本化 DataSource。
+- [x] 完成 server-side resolve、label snapshot、退回編輯與重新送出一致性。
+- [x] 完成 Designer Catalog／Preview、parameter bindings、發布 lint 與真實 wrapper-host e2e。
+
+上述三項已完成 Phase 0–6 的 code、unit、GraphQL/DB、focused real-browser golden path
+與 repository-wide `pnpm e2e:client` full-suite gate（system Chrome、單 worker，43/43
+通過）。
 
 權威架構與執行順序分別見：
 
 - [14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
 - [15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 
-以上項目目前為 **Planned**，不得因只有 schema、mock 或 unit test 就標記完成。
+以上項目目前為 **Completed**；完成證據包含真實 wrapper-host、GraphQL/DB、Chrome
+互動與完整 repository checks，不只依賴 schema、mock 或 unit test。
 
 ---
 

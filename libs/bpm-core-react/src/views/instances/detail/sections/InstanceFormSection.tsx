@@ -6,6 +6,7 @@ import { RefreshCcwIcon } from '@mezzanine-ui/icons';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
+import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
 
 const SECTION_BODY_STYLE: CSSProperties = {
   display: 'grid',
@@ -35,6 +36,14 @@ export interface InstanceFormSectionProps {
   readonly deciding: boolean;
   /** Called when the form data changes in the resubmit flow. */
   readonly onResubmitFormChange: (values: WorkflowFormData) => void;
+  /** Called when a dynamic option field changes validation state. */
+  readonly onDataSourceStateChange: (
+    fieldKey: string,
+    state: Pick<
+      FormDataSourceFieldState,
+      'hasValue' | 'invalidValues' | 'status'
+    >,
+  ) => void;
   /** Called when the user clicks "重新送出". */
   readonly onResubmitInstance: () => void;
   /** Called when an attachment upload is requested via the form field. */
@@ -55,6 +64,7 @@ export function InstanceFormSection({
   error,
   instance,
   loading,
+  onDataSourceStateChange,
   onResubmitFormChange,
   onResubmitInstance,
   onUploadAttachment,
@@ -77,13 +87,25 @@ export function InstanceFormSection({
       instance.formDefinitionSnapshot.uiSchema ? (
         <>
           <FormRenderer
+            dataSourceContext={
+              canResubmitInstance
+                ? {
+                    instanceId: instance.id,
+                    kind: 'runtime',
+                    templateId: instance.templateId,
+                  }
+                : undefined
+            }
+            dataSourceInitialValues={instance.formData}
             errors={resubmitFormErrors}
             onChange={(values): void => {
               onResubmitFormChange(values);
             }}
+            onDataSourceStateChange={onDataSourceStateChange}
             onUploadAttachment={
               canResubmitInstance ? onUploadAttachment : undefined
             }
+            optionSnapshots={instance.formDataOptionSnapshot}
             readonly={!canResubmitInstance}
             schema={instance.formDefinitionSnapshot.schema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}

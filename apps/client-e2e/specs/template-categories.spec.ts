@@ -179,6 +179,7 @@ async function mockTemplateCategoryGraphQl(page: Page): Promise<void> {
             currentVersionId: null,
             description: null,
             id: 'template-finance',
+            isActive: true,
             name: '財務簽核',
             updatedAt: UPDATED_AT,
           },

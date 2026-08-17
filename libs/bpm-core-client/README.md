@@ -16,6 +16,12 @@ This package contains:
 It does **not** ship React components, hooks, or UI. Hosts can call the
 functions directly from any framework (Next.js / Vite / Remix / plain Node).
 
+Form clients can import the shared option-field contracts from
+`@rytass/bpm-core-shared/form`. `createFieldDefinition()` includes the
+`autocomplete` variant, while the pure form-rendering helpers retain the
+primitive value contract and distinguish static option fields from dynamic
+DataSource references.
+
 ## Package Status
 
 Current version: `0.1.10`

@@ -15,6 +15,8 @@ export class NotificationQueries {
     recipientMemberId: string,
     @Args('includeRead', { nullable: true, type: () => Boolean })
     includeRead?: boolean | null,
+    @Args('includeArchived', { nullable: true, type: () => Boolean })
+    includeArchived?: boolean | null,
     @Args('page', { nullable: true, type: () => Int })
     page?: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
@@ -22,6 +24,7 @@ export class NotificationQueries {
     @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<readonly NotificationEntity[]> {
     return this.notificationService.listNotifications({
+      includeArchived: includeArchived ?? false,
       includeRead: includeRead ?? false,
       page: page ?? 1,
       pageSize: pageSize ?? 10,
@@ -35,9 +38,12 @@ export class NotificationQueries {
     recipientMemberId: string,
     @Args('includeRead', { nullable: true, type: () => Boolean })
     includeRead?: boolean | null,
+    @Args('includeArchived', { nullable: true, type: () => Boolean })
+    includeArchived?: boolean | null,
     @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<number> {
     return this.notificationService.countNotifications({
+      includeArchived: includeArchived ?? false,
       includeRead: includeRead ?? false,
       recipientMemberId: currentMemberId ?? recipientMemberId,
     });

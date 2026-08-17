@@ -1380,18 +1380,30 @@ function workflowDefinitionHasLinearTask(
 ): boolean {
   const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
 
-  if (!isRecord(parsedValue) || !Array.isArray(parsedValue.edges)) {
+  if (
+    !isRecord(parsedValue) ||
+    !Array.isArray(parsedValue.edges) ||
+    !Array.isArray(parsedValue.nodes)
+  ) {
     return false;
   }
 
   const edges = parsedValue.edges.filter(isWorkflowEdgeRecord);
+  const userTaskIds = parsedValue.nodes
+    .filter(
+      (node): node is Readonly<Record<string, unknown>> =>
+        isRecord(node) && node.type === 'userTask',
+    )
+    .flatMap((node): readonly string[] =>
+      typeof node.id === 'string' ? [node.id] : [],
+    );
 
   return (
     edges.some(
-      (edge) => edge.source === 'start' && edge.target.startsWith('userTask_'),
+      (edge) => edge.source === 'start' && userTaskIds.includes(edge.target),
     ) &&
     edges.some(
-      (edge) => edge.source.startsWith('userTask_') && edge.target === 'end',
+      (edge) => userTaskIds.includes(edge.source) && edge.target === 'end',
     )
   );
 }

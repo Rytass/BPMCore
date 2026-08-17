@@ -12,5 +12,12 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:17602',
     trace: 'on-first-retry',
     ...devices['Desktop Chrome'],
+    ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? {
+          launchOptions: {
+            executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+          },
+        }
+      : {}),
   },
 });

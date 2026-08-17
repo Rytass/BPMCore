@@ -2,6 +2,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
+  isFormStaticOptionFieldDefinition,
 } from './form';
 import {
   ApproverResolver,
@@ -898,11 +899,7 @@ export function readConditionValueOptions(
     ];
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options.map((option) => ({
       id: option.value,
       name: option.label,
@@ -993,11 +990,7 @@ export function readConditionValueLabel(
     return value === 'true' ? '是' : '否';
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return readFormFieldOption(field.options, value)?.label ?? value;
   }
 

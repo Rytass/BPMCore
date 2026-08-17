@@ -84,14 +84,15 @@ export async function requestGraphQl<TData>(
 export function readGraphQlEndpoint(): string {
   const configured = readBPMClientConfig().baseUrl?.trim();
   if (configured) {
-    return configured.endsWith('/graphql')
-      ? configured
-      : `${configured.replace(/\/$/, '')}/graphql`;
+    return normalizeGraphQlEndpoint(configured);
   }
-  return (
-    readOptionalPublicEnvValue(process.env.NEXT_PUBLIC_API_URL) ??
-    resolveDefaultGraphQlEndpoint(readBrowserHostname())
+  const configuredEnvironmentValue = readOptionalPublicEnvValue(
+    process.env.NEXT_PUBLIC_API_URL,
   );
+
+  return configuredEnvironmentValue
+    ? normalizeGraphQlEndpoint(configuredEnvironmentValue)
+    : resolveDefaultGraphQlEndpoint(readBrowserHostname());
 }
 
 /**
@@ -117,6 +118,12 @@ function buildGraphQlHeaders(): Readonly<Record<string, string>> {
 
 function readOptionalPublicEnvValue(value: string | undefined): string | null {
   return value?.trim() || null;
+}
+
+function normalizeGraphQlEndpoint(endpoint: string): string {
+  return endpoint.endsWith('/graphql')
+    ? endpoint
+    : `${endpoint.replace(/\/$/, '')}/graphql`;
 }
 
 function readBrowserHostname(): string | null {

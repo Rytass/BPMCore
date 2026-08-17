@@ -57,6 +57,9 @@
       "form": [
         "./src/lib/form/index.d.ts"
       ],
+      "form-data-source": [
+        "./src/lib/form-data-source/index.d.ts"
+      ],
       "identity": [
         "./src/lib/identity/index.d.ts"
       ],
@@ -113,6 +116,10 @@
     "./form": {
       "types": "./src/lib/form/index.d.ts",
       "default": "./src/lib/form/index.js"
+    },
+    "./form-data-source": {
+      "types": "./src/lib/form-data-source/index.d.ts",
+      "default": "./src/lib/form-data-source/index.js"
     },
     "./identity": {
       "types": "./src/lib/identity/index.d.ts",

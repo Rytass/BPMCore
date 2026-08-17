@@ -46,6 +46,10 @@ export class ApprovalTemplateEntity {
   @Field(() => ID, { nullable: true })
   currentVersionId!: string | null;
 
+  @Column('boolean', { default: true, name: 'is_active' })
+  @Field()
+  isActive!: boolean;
+
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz' })
   @Field(() => Date, { nullable: true })
   deletedAt!: Date | null;

@@ -34,6 +34,16 @@ import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 | Organization  | `./lib/organization` | Org unit, position, membership, manager rule contracts.       |
 | Status        | `./lib/status`       | Approval instance/task/status display contracts.              |
 
+## Form option sources
+
+Form option fields use the additive `FormFieldOptionSource` contract. Static
+`options` remain supported; dynamic fields store only a registered
+`FormDataSourceReference` with an exact version and direct field/constant
+bindings. Transport details, credentials, queries, and authorization context
+never belong in the form JSON. Legacy `select` and new `autocomplete` fields
+without a `mode` normalize to `single`; `radio` is always single and
+`checkbox` is always multiple.
+
 ## Workflow Notes
 
 `WorkflowDefinition` is the canonical serialized workflow shape:

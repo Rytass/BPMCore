@@ -6,6 +6,7 @@ import type {
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import { readFormSchemaLintMessage } from '@rytass/bpm-core-client/form';
 import {
   ComposeApprovalTemplateWithFormResult,
   composeApprovalTemplateWithForm,
@@ -208,5 +209,9 @@ const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
 };
 
 function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '發生未知錯誤';
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
+  // readable copy and leave every other message untouched.
+  return error instanceof Error
+    ? readFormSchemaLintMessage(error.message)
+    : '發生未知錯誤';
 }
