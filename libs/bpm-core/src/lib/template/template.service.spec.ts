@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionEntity } from '../form/form-definition.entity';
@@ -640,9 +641,18 @@ describe('TemplateService', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it('deactivates categories on delete when templates still use them', async (): Promise<void> => {
+  it('refuses to delete a category that templates still reference', async (): Promise<void> => {
+    // This used to succeed and quietly deactivate the category instead, so the
+    // caller was told the delete happened while `isActive` was flipped behind
+    // its back. Deactivation stays reachable through
+    // `deactivateApprovalTemplateCategory`.
     const category = createApprovalTemplateCategory('category-1');
     const categorySave = jest.fn(
+      (
+        value: ApprovalTemplateCategoryEntity,
+      ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
+    );
+    const categoryRemove = jest.fn(
       (
         value: ApprovalTemplateCategoryEntity,
       ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
@@ -662,7 +672,42 @@ describe('TemplateService', () => {
             value: Partial<ApprovalTemplateCategoryEntity>,
           ): ApprovalTemplateCategoryEntity => Object.assign(entity, value),
         ),
+        remove: categoryRemove,
         save: categorySave,
+      } as unknown as Repository<ApprovalTemplateCategoryEntity>,
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    await expect(
+      service.deleteApprovalTemplateCategory('category-1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Neither operation ran: no delete, and no deactivation substituted for it.
+    expect(categoryRemove).not.toHaveBeenCalled();
+    expect(categorySave).not.toHaveBeenCalled();
+    expect(category.isActive).toBe(true);
+  });
+
+  it('deletes a category that no template references', async (): Promise<void> => {
+    const category = createApprovalTemplateCategory('category-1');
+    const categoryRemove = jest.fn(
+      (
+        value: ApprovalTemplateCategoryEntity,
+      ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
+    );
+    const service = new TemplateService(
+      {
+        count: jest.fn((): Promise<number> => Promise.resolve(0)),
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateCategoryEntity | null> =>
+            Promise.resolve(category),
+        ),
+        remove: categoryRemove,
       } as unknown as Repository<ApprovalTemplateCategoryEntity>,
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
@@ -672,12 +717,8 @@ describe('TemplateService', () => {
 
     const deleted = await service.deleteApprovalTemplateCategory('category-1');
 
-    expect(deleted.isActive).toBe(false);
-    expect(categorySave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        isActive: false,
-      }),
-    );
+    expect(categoryRemove).toHaveBeenCalledWith(category);
+    expect(deleted).toBe(category);
   });
 });
 
