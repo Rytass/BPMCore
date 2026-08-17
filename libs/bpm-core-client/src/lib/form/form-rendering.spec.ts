@@ -3,18 +3,12 @@ import {
   formatDateTimePickerValue,
 } from './form-rendering';
 
-const ORIGINAL_TIME_ZONE = process.env.TZ;
-
-// The bug this file guards against only shows up east of UTC, so pin the zone
-// instead of trusting whatever the CI runner uses.
-beforeAll((): void => {
-  process.env.TZ = 'Asia/Taipei';
-});
-
-afterAll((): void => {
-  process.env.TZ = ORIGINAL_TIME_ZONE;
-});
-
+// The bug this file guards against only shows up east of UTC, so the suite
+// needs a non-UTC zone pinned. That pin lives in jest.global-setup.ts (wired
+// via globalSetup in jest.config.cts) rather than here: Jest sandboxes
+// `process.env` inside the test environment, so assigning `process.env.TZ`
+// in a beforeAll here would silently no-op instead of changing the timezone
+// dates/`Intl` actually resolve against.
 describe('formatDatePickerValue', () => {
   it('keeps the local calendar day for UTC values', (): void => {
     // 2026-08-19T16:00:00Z is 2026-08-20 00:00 in Asia/Taipei, which is what
