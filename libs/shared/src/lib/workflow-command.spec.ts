@@ -348,4 +348,79 @@ describe('user task return and SLA commands', () => {
 
     expect('sla' in readUserTaskNode(withoutSla.state).data).toBe(false);
   });
+
+  it('defaults a new user task to a single decider', () => {
+    expect(readUserTaskNode(stateWithUserTask()).data.decisionPolicy).toEqual({
+      type: 'SINGLE',
+    });
+  });
+
+  it('sets a quorum decision policy without touching the approver', () => {
+    const state = stateWithUserTask();
+    const node = readUserTaskNode(state);
+    const result = applyWorkflowCommand(state, {
+      decisionPolicy: {
+        threshold: 60,
+        thresholdType: 'PERCENTAGE',
+        type: 'QUORUM',
+      },
+      nodeId: node.id,
+      type: 'setUserTaskDecisionPolicy',
+    });
+    const nextNode = readUserTaskNode(result.state);
+
+    expect(nextNode.data.decisionPolicy).toEqual({
+      threshold: 60,
+      thresholdType: 'PERCENTAGE',
+      type: 'QUORUM',
+    });
+    expect(nextNode.data.approverResolver).toEqual(node.data.approverResolver);
+  });
+
+  it('switches between the parallel policies', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const all = applyWorkflowCommand(state, {
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+      nodeId,
+      type: 'setUserTaskDecisionPolicy',
+    });
+
+    expect(readUserTaskNode(all.state).data.decisionPolicy).toEqual({
+      type: 'PARALLEL_ALL',
+    });
+
+    const any = applyWorkflowCommand(all.state, {
+      decisionPolicy: { type: 'PARALLEL_ANY' },
+      nodeId,
+      type: 'setUserTaskDecisionPolicy',
+    });
+
+    expect(readUserTaskNode(any.state).data.decisionPolicy).toEqual({
+      type: 'PARALLEL_ANY',
+    });
+  });
+
+  // `setUserTaskApprover` deliberately resets the policy to SINGLE, so a
+  // designer that changes the approver after picking a policy silently loses
+  // it. Pin that ordering here so the UI keeps the two fields in the right
+  // sequence.
+  it('is reset to SINGLE when the approver changes afterwards', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const withPolicy = applyWorkflowCommand(state, {
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+      nodeId,
+      type: 'setUserTaskDecisionPolicy',
+    });
+    const afterApproverChange = applyWorkflowCommand(withPolicy.state, {
+      approverResolver: { memberIds: ['member-1'], type: 'DIRECT' },
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+
+    expect(readUserTaskNode(afterApproverChange.state).data.decisionPolicy).toEqual(
+      { type: 'SINGLE' },
+    );
+  });
 });
