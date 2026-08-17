@@ -1,6 +1,7 @@
 import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
+  DecisionPolicy,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaConfig,
@@ -95,6 +96,12 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskSla';
       readonly nodeId: string;
       readonly sla: SlaConfig | null;
+    }
+  | {
+      /** Replaces how many of the resolved approvers have to decide. */
+      readonly type: 'setUserTaskDecisionPolicy';
+      readonly nodeId: string;
+      readonly decisionPolicy: DecisionPolicy;
     }
   | {
       readonly type: 'setUserTaskOptions';
@@ -247,6 +254,8 @@ export function applyWorkflowCommand(
       return applySetUserTaskReturnRequireComment(state, command);
     case 'setUserTaskSla':
       return applySetUserTaskSla(state, command);
+    case 'setUserTaskDecisionPolicy':
+      return applySetUserTaskDecisionPolicy(state, command);
     case 'setUserTaskOptions':
       return applySetUserTaskOptions(state, command);
     case 'setServiceAction':
@@ -569,6 +578,27 @@ function applySetUserTaskReturnRequireComment(
             },
           }
         : node,
+    'userTask',
+  );
+}
+
+function applySetUserTaskDecisionPolicy(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskDecisionPolicy' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      return {
+        ...node,
+        data: { ...node.data, decisionPolicy: command.decisionPolicy },
+      };
+    },
     'userTask',
   );
 }

@@ -44,6 +44,9 @@ test.describe('M1 W3 template designer', () => {
   test('creates, designs, publishes, and reviews a template version', async ({
     page,
   }): Promise<void> => {
+    // The approval-node property panel is long enough that a select opened near
+    // its foot renders its options below the fold of the default viewport.
+    await page.setViewportSize({ height: 1800, width: 1440 });
     await mockTemplateGraphQl(page);
 
     await page.goto('/templates');
@@ -387,7 +390,10 @@ test.describe('M1 W3 template designer', () => {
   }): Promise<void> => {
     let savedData: Readonly<Record<string, unknown>> | null = null;
 
-    await page.setViewportSize({ height: 1200, width: 1440 });
+    // Taller than the other specs: this one opens the timeout-action select,
+    // which sits far enough down the panel that 1200 leaves its options below
+    // the fold.
+    await page.setViewportSize({ height: 1800, width: 1440 });
     await mockTemplateGraphQl(page, {
       onDraftUpdate: (input): void => {
         savedData = readFirstUserTaskData(input.workflowDefinitionJson);
@@ -465,6 +471,298 @@ test.describe('M1 W3 template designer', () => {
       allowAddSigner: false,
       allowReject: true,
       allowTransfer: true,
+    });
+  });
+
+  test('defaults a policyless approval node to single approval', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // Templates authored before `decisionPolicy` existed carry no such key,
+      // even though the schema types it as required.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy(null),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    // Select the node the fixture already carries. The toolbar button of the
+    // same name creates a new node instead, and it only renders once the
+    // initiator scope is set.
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    // The trigger must fall back to a readable label instead of rendering
+    // blank, and the quorum inputs stay hidden until they apply.
+    await expect(page.getByText('決策方式')).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: '單人簽核' }),
+    ).toBeVisible();
+    await expect(page.getByText('門檻計算方式')).toHaveCount(0);
+
+    await page.getByRole('combobox', { name: '單人簽核' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '全部同意' })
+      .click();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+    });
+  });
+
+  test('writes a default decision policy for a legacy template even without touching the field', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // Same policyless fixture as the read-side fallback test above, but
+      // this time the field is never touched: only loading + saving.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy(null),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+
+    // Saving without ever opening the 決策方式 field must still persist a
+    // concrete value. Before this normalisation ran on load, the field
+    // rendered 單人簽核 (a read-side-only fallback) but the saved JSON kept
+    // no `decisionPolicy` key at all, so the publish validator's
+    // `decisionPolicy is required` check failed with no visible cause.
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { type: 'SINGLE' },
+    });
+  });
+
+  test('reveals quorum threshold controls and saves the threshold', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SINGLE' }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    await page.getByRole('combobox', { name: '單人簽核' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '達到指定門檻' })
+      .click();
+
+    // Threshold controls reveal progressively, matching the SLA panel.
+    await expect(page.getByText('門檻計算方式')).toBeVisible();
+    await expect(page.getByText('門檻人數')).toBeVisible();
+
+    await page.locator('input[name="quorumThreshold"]').fill('3');
+
+    // Switching to a percentage relabels the same field rather than adding one.
+    await page.getByRole('combobox', { name: '人數' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '百分比' })
+      .click();
+    await expect(page.getByText('門檻百分比')).toBeVisible();
+    await expect(page.getByText('門檻人數')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: {
+        threshold: 3,
+        thresholdType: 'PERCENTAGE',
+        type: 'QUORUM',
+      },
+    });
+  });
+
+  test('sanitises the quorum threshold input', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({
+          threshold: 2,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    const thresholdInput = page.locator('input[name="quorumThreshold"]');
+
+    // Wait for the panel to settle on the fixture's value before editing —
+    // acting immediately after the node click can race the panel's mount.
+    await expect(thresholdInput).toHaveValue('2');
+
+    // Clearing the field must not commit `threshold: 0` — the engine only
+    // floors with `Math.max(threshold, 1)`, never rejects it, so `0` would
+    // leave this node permanently unable to complete.
+    await thresholdInput.fill('');
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+
+    // Poll on the *value* this save is expected to produce, not on mere
+    // non-nullness. Waiting for `savedData !== null` alone resolves as soon
+    // as any save has landed, including a stale one, so under load the
+    // assertion below can read a leftover value from a save that hasn't
+    // actually happened yet.
+    await expect
+      .poll((): number | undefined => readSavedQuorumThreshold(savedData))
+      .toBe(1);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+
+    savedData = null;
+
+    // Reload before the next edit (same pattern as the multi-save resolver
+    // test below): `commitDesigner` refreshes the whole designer from the
+    // server after saving, so continuing to type into the same mounted
+    // input races that refresh instead of exercising the sanitiser cleanly.
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    // Wait for the reloaded panel to settle on the just-saved value (1)
+    // before typing the next edit.
+    await expect(thresholdInput).toHaveValue('1');
+
+    // A fractional threshold is truncated rather than committed as typed.
+    await thresholdInput.fill('2.5');
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+
+    await expect
+      .poll((): number | undefined => readSavedQuorumThreshold(savedData))
+      .toBe(2);
+
+    expect(savedData).toMatchObject({
+      decisionPolicy: { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+    });
+  });
+
+  test('keeps a stored sequential policy readable', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // `SEQUENTIAL` is not offered in the dropdown because the engine treats
+      // it exactly like `PARALLEL_ALL`, but API-authored templates may use it.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SEQUENTIAL' }),
+      ),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    // `SEQUENTIAL` behaves exactly like `PARALLEL_ALL` in the engine, so the
+    // fallback label reads that way rather than implying a queued hand-off.
+    await expect(
+      page.getByRole('combobox', { name: '全部同意（既有設定）' }),
+    ).toBeVisible();
+  });
+
+  test('preserves a non-default decision policy across an approver edit', async ({
+    page,
+  }): Promise<void> => {
+    let savedData: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'PARALLEL_ALL' }),
+      ),
+      onDraftUpdate: (input): void => {
+        savedData = readFirstUserTaskData(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+
+    await expect(page.getByRole('combobox', { name: '全部同意' })).toBeVisible();
+
+    // `applySetUserTaskApprover` (libs/shared) hard-resets decisionPolicy to
+    // SINGLE on every approver change as a documented upstream contract. The
+    // designer's approver update path must re-apply the policy the node
+    // already had so editing the approver does not silently discard it.
+    const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
+
+    await approverSearch.fill('chen');
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' }),
+    ).toBeVisible();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '陳財務主管 (chen.manager@example.internal)' })
+      .click();
+
+    await expect(page.getByRole('combobox', { name: '全部同意' })).toBeVisible();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedData !== null).toBe(true);
+
+    expect(savedData).toMatchObject({
+      approverResolver: {
+        memberIds: ['member-001', 'member-002', 'member-101'],
+        type: 'DIRECT',
+      },
+      decisionPolicy: { type: 'PARALLEL_ALL' },
     });
   });
 
@@ -986,6 +1284,63 @@ function readLegacyWorkflowDefinition(): Readonly<Record<string, unknown>> {
   };
 }
 
+function readWorkflowDefinitionWithDecisionPolicy(
+  decisionPolicy: Readonly<Record<string, unknown>> | null,
+): Readonly<Record<string, unknown>> {
+  return {
+    // `WorkflowEdge.data` is required by the schema, and `readEdgeSnapshot`
+    // dereferences it without a guard, so omitting it crashes the designer at
+    // runtime rather than failing a type check.
+    // The node id has to keep the `userTask_` prefix that `createWorkflowNode`
+    // produces: the draft mock rejects any graph without a start → userTask_ →
+    // end path.
+    edges: [
+      {
+        data: {},
+        id: 'edge-start-task',
+        source: 'start',
+        target: 'userTask_1',
+      },
+      { data: {}, id: 'edge-task-end', source: 'userTask_1', target: 'end' },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: true,
+          approverResolver: {
+            memberIds: ['member-001', 'member-002'],
+            type: 'DIRECT',
+          },
+          // A `null` argument omits the key entirely, reproducing templates
+          // written before `decisionPolicy` existed.
+          ...(decisionPolicy === null ? {} : { decisionPolicy }),
+          label: '簽核節點',
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+          triggerMode: 'AND',
+        },
+        id: 'userTask_1',
+        position: { x: 320, y: 160 },
+        type: 'userTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+        id: 'end',
+        position: { x: 560, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
 function readOrganizationDashboardData(): Readonly<Record<string, unknown>> {
   return {
     managerResolutions: [],
@@ -1183,23 +1538,55 @@ function readFirstUserTaskResolver(
   return userTask.data.approverResolver;
 }
 
+/**
+ * Reads the QUORUM threshold back out of a captured `onDraftUpdate` payload,
+ * or `undefined` if it isn't there yet (still `null`) or isn't a QUORUM
+ * policy. Used to `expect.poll` on the *value* a save is expected to produce
+ * rather than on mere non-nullness — a test that only waits for `savedData
+ * !== null` can resolve against an earlier save's callback that lands late,
+ * which reads as the previous value rather than waiting for the next one.
+ */
+function readSavedQuorumThreshold(
+  savedData: Readonly<Record<string, unknown>> | null,
+): number | undefined {
+  if (!isRecord(savedData) || !isRecord(savedData.decisionPolicy)) {
+    return undefined;
+  }
+
+  const threshold = savedData.decisionPolicy.threshold;
+
+  return typeof threshold === 'number' ? threshold : undefined;
+}
+
 function workflowDefinitionHasLinearTask(
   workflowDefinitionJson: string,
 ): boolean {
   const parsedValue = JSON.parse(workflowDefinitionJson) as unknown;
 
-  if (!isRecord(parsedValue) || !Array.isArray(parsedValue.edges)) {
+  if (
+    !isRecord(parsedValue) ||
+    !Array.isArray(parsedValue.edges) ||
+    !Array.isArray(parsedValue.nodes)
+  ) {
     return false;
   }
 
   const edges = parsedValue.edges.filter(isWorkflowEdgeRecord);
+  const userTaskIds = parsedValue.nodes
+    .filter(
+      (node): node is Readonly<Record<string, unknown>> =>
+        isRecord(node) && node.type === 'userTask',
+    )
+    .flatMap((node): readonly string[] =>
+      typeof node.id === 'string' ? [node.id] : [],
+    );
 
   return (
     edges.some(
-      (edge) => edge.source === 'start' && edge.target.startsWith('userTask_'),
+      (edge) => edge.source === 'start' && userTaskIds.includes(edge.target),
     ) &&
     edges.some(
-      (edge) => edge.source.startsWith('userTask_') && edge.target === 'end',
+      (edge) => userTaskIds.includes(edge.source) && edge.target === 'end',
     )
   );
 }

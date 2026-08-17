@@ -1,7 +1,9 @@
 import { Args, ID, Mutation, Resolver } from '@nestjs/graphql';
 import {
   BPMAdminOnly,
+  BPMAuthContext,
   BPMAuthenticated,
+  BPMCurrentAuthContext,
   BPMCurrentMemberId,
 } from '../bpm-auth';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
@@ -31,12 +33,16 @@ export class WorkflowEngineMutations {
   async submitApprovalInstance(
     @Args('input') input: SubmitApprovalInstanceInput,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() authContext: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
-    return this.workflowEngineService.submitApprovalInstance({
-      ...input,
-      initiatorMemberId: currentMemberId,
-      initiatorMetadataSnapshotJson: null,
-    });
+    return this.workflowEngineService.submitApprovalInstance(
+      {
+        ...input,
+        initiatorMemberId: currentMemberId,
+        initiatorMetadataSnapshotJson: null,
+      },
+      authContext,
+    );
   }
 
   @Mutation(() => Boolean)
@@ -75,11 +81,15 @@ export class WorkflowEngineMutations {
   async resubmitApprovalInstance(
     @Args('input') input: ResubmitApprovalInstanceInput,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() authContext: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
-    return this.workflowEngineService.resubmitApprovalInstance({
-      ...input,
-      initiatorMemberId: currentMemberId,
-    });
+    return this.workflowEngineService.resubmitApprovalInstance(
+      {
+        ...input,
+        initiatorMemberId: currentMemberId,
+      },
+      authContext,
+    );
   }
 
   @Mutation(() => WorkflowDryRunResultObject)

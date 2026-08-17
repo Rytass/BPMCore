@@ -14,6 +14,7 @@ import {
   TaskRecord,
   WorkflowTokenRecord,
 } from '@rytass/bpm-core-client/workflow';
+import { readFormDataSourceErrorMessage } from '@rytass/bpm-core-client/form';
 import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
 import { formatDateTime } from '../../../../lib/format-date-time';
 
@@ -183,6 +184,14 @@ export function isPendingTask(task: TaskRecord): boolean {
 // ---------------------------------------------------------------------------
 
 export function readErrorMessage(error: unknown): string {
+  // DataSource failures arrive as stable codes so the backend never leaks
+  // upstream transport detail; translate them instead of showing the raw code.
+  const dataSourceMessage = readFormDataSourceErrorMessage(error);
+
+  if (dataSourceMessage) {
+    return dataSourceMessage;
+  }
+
   return error instanceof Error ? error.message : '發生未知錯誤';
 }
 

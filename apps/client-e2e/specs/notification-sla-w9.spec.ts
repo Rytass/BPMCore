@@ -280,6 +280,7 @@ function readNotifications(
 ): readonly Readonly<Record<string, unknown>>[] {
   return [
     {
+      actionable: true,
       allowReject: false,
       body: '案件 W9 SLA 測試 的 財務簽核 已指派給你。',
       channel: 'IN_APP',
@@ -296,6 +297,7 @@ function readNotifications(
       type: 'TASK_ASSIGNED',
     },
     {
+      actionable: false,
       allowReject: null,
       body: '財務簽核 將於 2026-05-09T10:00:00.000Z 到期，請儘快處理。',
       channel: 'IN_APP',

@@ -3,6 +3,7 @@ import {
   FormFieldDefinition,
   FormLayoutItem,
   FormUiSchema,
+  normalizeFormDefinitionSchema,
 } from '@rytass/bpm-core-shared/form';
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
@@ -13,6 +14,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'file_upload',
   'money',
   'number',
+  'autocomplete',
   'radio',
   'select',
   'text',
@@ -20,6 +22,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
 ];
 
 const SELECT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
+  'autocomplete',
   'checkbox',
   'radio',
   'select',
@@ -79,7 +82,7 @@ export function parseAndValidateFormSchemas(
   }
 
   return {
-    schema: schema as FormDefinitionSchema,
+    schema: normalizeFormDefinitionSchema(schema as FormDefinitionSchema),
     uiSchema: uiSchema as FormUiSchema,
   };
 }
@@ -162,17 +165,25 @@ function lintDefinitionSchema(schema: unknown): readonly string[] {
     return [...versionErrors, 'schema.fields must be an array'];
   }
 
+  const fieldKeys = readFieldKeySet(schema);
   const fieldErrors = fields.flatMap((field, index) =>
-    lintFieldDefinition(field, index),
+    lintFieldDefinition(field, index, fieldKeys),
   );
   const duplicateErrors = readDuplicateFieldKeyErrors(fields);
+  const dependencyErrors = lintFieldDependencyGraph(fields);
 
-  return [...versionErrors, ...fieldErrors, ...duplicateErrors];
+  return [
+    ...versionErrors,
+    ...fieldErrors,
+    ...duplicateErrors,
+    ...dependencyErrors,
+  ];
 }
 
 function lintFieldDefinition(
   field: unknown,
   index: number,
+  fieldKeys: ReadonlySet<string>,
 ): readonly string[] {
   if (!isRecord(field)) {
     return [`schema.fields[${index}] must be an object`];
@@ -214,7 +225,7 @@ function lintFieldDefinition(
   }
 
   if (SELECT_FIELD_TYPES.has(type)) {
-    return [...basicErrors, ...lintSelectField(field, type, path)];
+    return [...basicErrors, ...lintSelectField(field, type, path, fieldKeys)];
   }
 
   if (type === 'boolean') {
@@ -291,11 +302,183 @@ function lintSelectField(
   field: Readonly<Record<string, unknown>>,
   type: FormFieldDefinition['type'],
   path: string,
+  fieldKeys: ReadonlySet<string>,
 ): readonly string[] {
+  const sourceErrors = lintOptionSource(field, type, path, fieldKeys);
+  const hasDataSource = Object.prototype.hasOwnProperty.call(
+    field,
+    'dataSource',
+  );
+
   return [
-    ...lintFieldOptions(field.options, `${path}.options`),
-    ...lintSelectDefaultValue(field.defaultValue, type, path),
+    ...sourceErrors,
+    ...(hasDataSource
+      ? lintDynamicDefaultValue(field, path)
+      : lintSelectDefaultValue(field, type, path)),
   ];
+}
+
+function lintOptionSource(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+  fieldKeys: ReadonlySet<string>,
+): readonly string[] {
+  const hasOptions = Object.prototype.hasOwnProperty.call(field, 'options');
+  const hasDataSource = Object.prototype.hasOwnProperty.call(
+    field,
+    'dataSource',
+  );
+  const sourceCount = Number(hasOptions) + Number(hasDataSource);
+  const sourceShapeErrors =
+    sourceCount === 1
+      ? []
+      : [
+          `${path} must contain exactly one of options or dataSource`,
+        ];
+  const modeErrors = lintOptionMode(field, type, path);
+
+  if (sourceCount !== 1) {
+    return [...sourceShapeErrors, ...modeErrors];
+  }
+
+  if (hasOptions) {
+    return [
+      ...sourceShapeErrors,
+      ...modeErrors,
+      ...lintFieldOptions(field.options, `${path}.options`),
+    ];
+  }
+
+  return [
+    ...sourceShapeErrors,
+    ...modeErrors,
+    ...lintDataSourceReference(
+      field.dataSource,
+      `${path}.dataSource`,
+      fieldKeys,
+    ),
+  ];
+}
+
+function lintOptionMode(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+): readonly string[] {
+  const hasMode = Object.prototype.hasOwnProperty.call(field, 'mode');
+
+  if (type === 'radio' || type === 'checkbox') {
+    return hasMode
+      ? [`${path}.mode is not supported for ${type}; mode is fixed`]
+      : [];
+  }
+
+  if (!hasMode || typeof field.mode === 'undefined') {
+    return [];
+  }
+
+  return field.mode === 'single' || field.mode === 'multiple'
+    ? []
+    : [`${path}.mode must be single or multiple`];
+}
+
+function lintDataSourceReference(
+  value: unknown,
+  path: string,
+  fieldKeys: ReadonlySet<string>,
+): readonly string[] {
+  if (!isRecord(value)) {
+    return [`${path} must be an object`];
+  }
+
+  const referenceErrors = [
+    ...lintRequiredString(value.key, `${path}.key`),
+    ...lintRequiredInteger(value.version, `${path}.version`, 1),
+  ];
+  const bindings = value.bindings;
+
+  if (!Array.isArray(bindings)) {
+    return [...referenceErrors, `${path}.bindings must be an array`];
+  }
+
+  const bindingErrors = bindings.flatMap((binding, index) =>
+    lintDataSourceBinding(binding, `${path}.bindings[${index}]`, fieldKeys),
+  );
+  const parameters = bindings
+    .filter(isRecord)
+    .map((binding) => binding.parameter)
+    .filter((parameter): parameter is string => typeof parameter === 'string');
+  const duplicateParameters = [
+    ...new Set(
+      parameters.filter(
+        (parameter, index, allParameters) =>
+          allParameters.indexOf(parameter) !== index,
+      ),
+    ),
+  ];
+
+  return [
+    ...referenceErrors,
+    ...bindingErrors,
+    ...duplicateParameters.map(
+      (parameter) => `${path}.bindings.parameter is duplicated: ${parameter}`,
+    ),
+  ];
+}
+
+function lintDataSourceBinding(
+  value: unknown,
+  path: string,
+  fieldKeys: ReadonlySet<string>,
+): readonly string[] {
+  if (!isRecord(value)) {
+    return [`${path} must be an object`];
+  }
+
+  const errors = lintRequiredString(value.parameter, `${path}.parameter`);
+  const from = value.from;
+
+  if (!isRecord(from)) {
+    return [...errors, `${path}.from must be an object`];
+  }
+
+  if (from.kind === 'FIELD') {
+    return [
+      ...errors,
+      ...lintRequiredString(from.fieldKey, `${path}.from.fieldKey`),
+      ...(typeof from.fieldKey === 'string' && !fieldKeys.has(from.fieldKey)
+        ? [`${path}.from.fieldKey does not match a schema field`]
+        : []),
+    ];
+  }
+
+  if (from.kind === 'CONSTANT') {
+    return [
+      ...errors,
+      ...lintConstantValue(from.value, `${path}.from.value`),
+    ];
+  }
+
+  return [...errors, `${path}.from.kind must be FIELD or CONSTANT`];
+}
+
+function lintConstantValue(value: unknown, path: string): readonly string[] {
+  return value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+    ? []
+    : [`${path} must be a primitive constant`];
+}
+
+function lintDynamicDefaultValue(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  return Object.prototype.hasOwnProperty.call(field, 'defaultValue')
+    ? [`${path}.defaultValue is not supported for dynamic data sources`]
+    : [];
 }
 
 function lintBooleanField(
@@ -360,15 +543,22 @@ function lintFieldOption(
 }
 
 function lintSelectDefaultValue(
-  value: unknown,
+  field: Readonly<Record<string, unknown>>,
   type: FormFieldDefinition['type'],
   path: string,
 ): readonly string[] {
+  const value = field.defaultValue;
+
   if (typeof value === 'undefined') {
     return [];
   }
 
-  if (type === 'checkbox') {
+  const isMultiple =
+    type === 'checkbox' ||
+    ((type === 'select' || type === 'autocomplete') &&
+      field.mode === 'multiple');
+
+  if (isMultiple) {
     return isStringArray(value) || value === null
       ? []
       : [`${path}.defaultValue must be an array of strings or null`];
@@ -449,6 +639,64 @@ function readDuplicateFieldKeyErrors(fields: readonly unknown[]): readonly strin
   return uniqueDuplicated.map((key) => `schema.fields fieldKey is duplicated: ${key}`);
 }
 
+function lintFieldDependencyGraph(
+  fields: readonly unknown[],
+): readonly string[] {
+  const dependencies = fields.reduce<Map<string, readonly string[]>>(
+    (graph, field) => {
+      if (!isRecord(field) || typeof field.fieldKey !== 'string') {
+        return graph;
+      }
+
+      const nextDependencies = isRecord(field.dataSource) &&
+        Array.isArray(field.dataSource.bindings)
+        ? field.dataSource.bindings
+            .filter(isRecord)
+            .map((binding) => binding.from)
+            .filter(isRecord)
+            .filter((from) => from.kind === 'FIELD')
+            .map((from) => from.fieldKey)
+            .filter((fieldKey): fieldKey is string => typeof fieldKey === 'string')
+        : [];
+
+      return new Map(graph).set(field.fieldKey, nextDependencies);
+    },
+    new Map<string, readonly string[]>(),
+  );
+  const cycles = [...dependencies.keys()]
+    .map((fieldKey) => findDependencyCycle(fieldKey, dependencies, []))
+    .filter((cycle): cycle is readonly string[] => Boolean(cycle))
+    .map((cycle) => cycle.join(' -> '));
+  const uniqueCycles = [...new Set(cycles)];
+
+  return uniqueCycles.map((cycle) => `schema.fields dependency cycle: ${cycle}`);
+}
+
+function findDependencyCycle(
+  fieldKey: string,
+  dependencies: ReadonlyMap<string, readonly string[]>,
+  path: readonly string[],
+): readonly string[] | null {
+  const cycleStart = path.indexOf(fieldKey);
+
+  if (cycleStart >= 0) {
+    return [...path.slice(cycleStart), fieldKey];
+  }
+
+  const nextPath = [...path, fieldKey];
+  const nextFields = dependencies.get(fieldKey) ?? [];
+
+  for (const nextField of nextFields) {
+    const cycle = findDependencyCycle(nextField, dependencies, nextPath);
+
+    if (cycle) {
+      return cycle;
+    }
+  }
+
+  return null;
+}
+
 function readFieldKeySet(schema: unknown): ReadonlySet<string> {
   if (!isRecord(schema) || !Array.isArray(schema.fields)) {
     return new Set();
@@ -497,6 +745,16 @@ function lintOptionalInteger(
   }
 
   return [];
+}
+
+function lintRequiredInteger(
+  value: unknown,
+  path: string,
+  minimum: number,
+): readonly string[] {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum
+    ? []
+    : [`${path} must be an integer greater than or equal to ${minimum}`];
 }
 
 function lintOptionalStringArray(

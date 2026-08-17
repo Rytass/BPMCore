@@ -82,6 +82,8 @@ import `BPMRootModule` in their root module. The host system is responsible for:
 - Login/session/JWT handling.
 - `BPMAuthContext` creation.
 - `BPM_MEMBER_RESOLVER` provider implementation.
+- Versioned form option DataSource registry/provider through
+  `BPM_FORM_DATA_SOURCE_REGISTRY`; the host owns provider authorization and source data.
 - Attachment storage, public signed URL prefix, and signing secrets.
 - Notification delivery worker or `BPM_NOTIFICATION_DISPATCHER` integration.
 
@@ -116,7 +118,9 @@ pnpm staging:reset
 `bpm_core/staging`. Both commands are destructive for the target schema and
 seed a Taiwan manufacturing scenario with org units, positions, test members,
 memberships, manager rules, form definitions, approval templates, instances,
-tasks, notifications, attachments, signatures, and delegations.
+tasks, notifications, attachments, signatures, delegations, and the dynamic
+`demo.cost-centers@1` form-option fixture. The source table is wrapper-owned
+and is not part of the reusable BPM migration list.
 
 ## Local Commands
 

@@ -4,6 +4,23 @@ React provider / hook / view components for the Rytass BPM approval workflow sta
 
 This package composes [`@mezzanine-ui/react`](https://www.npmjs.com/package/@mezzanine-ui/react) primitives with the BPM domain logic in [`@rytass/bpm-core-client`](https://www.npmjs.com/package/@rytass/bpm-core-client) and [`@rytass/bpm-core-shared`](https://www.npmjs.com/package/@rytass/bpm-core-shared) so a consumer can wire up the full BPM admin UI by re-exporting page modules from their Next.js App Router.
 
+Form views understand the additive `autocomplete` and option-source schema
+variants while preserving primitive single-value and multiple-value payloads.
+Dynamic registry queries and server-side validation remain behind the BPM
+client/core runtime boundaries; React controls do not call external sources
+directly. Pass a `dataSourceContext` with `kind: 'preview'` for designer
+preview or a published-template/instance `kind: 'runtime'` context for an
+editable form. Read-only instance rendering should omit the runtime context
+and pass `optionSnapshots` so historical labels remain available without a
+network query.
+
+The controlled `FormBuilderView` loads only the host-registered DataSource
+Catalog. It filters sources by control capability, supports typed field and
+constant parameter bindings, preserves bindings when a field key is renamed,
+and asks for confirmation before source/mode changes or removing a field used
+by another dynamic field. The editor can send the complete schema to the
+server-side lint contract before publishing.
+
 ## Status
 
 `0.4.0` (breaking) — drops the bundled navigation shell. BPM views no longer wrap themselves in an `<AppLayout>` / Mezzanine `<Navigation>`; the host owns the layout chrome and mounts BPM views inside its own sidebar / top bar. New host-facing widgets ship in the root barrel: `useBPMMember`, `useBPMLogout`, `<BPMNotificationBellButton />`. See `CHANGELOG.md` for the migration walkthrough, and `docs/integration-guide.md` for a host integration recipe.

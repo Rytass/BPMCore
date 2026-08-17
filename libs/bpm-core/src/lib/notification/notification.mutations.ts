@@ -34,6 +34,28 @@ export class NotificationMutations {
     });
   }
 
+  @Mutation(() => Int)
+  async archiveNotifications(
+    @Args('ids', { type: () => [String] }) ids: readonly string[],
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<number> {
+    return this.notificationService.archiveNotifications({
+      ids,
+      memberId: currentMemberId,
+    });
+  }
+
+  @Mutation(() => Int)
+  async unarchiveNotifications(
+    @Args('ids', { type: () => [String] }) ids: readonly string[],
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<number> {
+    return this.notificationService.unarchiveNotifications({
+      ids,
+      memberId: currentMemberId,
+    });
+  }
+
   @Mutation(() => NotificationPreferenceEntity)
   async updateNotificationPreference(
     @Args('input') input: UpdateNotificationPreferenceInput,

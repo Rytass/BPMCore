@@ -2,9 +2,11 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
+  isFormStaticOptionFieldDefinition,
 } from './form';
 import {
   ApproverResolver,
+  DecisionPolicy,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -115,6 +117,73 @@ export function composeSlaDuration(parts: SlaDurationParts): string {
   const value = Math.max(Math.trunc(parts.value), 1);
 
   return parts.unit === 'DAY' ? `P${value}D` : `PT${value}H`;
+}
+
+export const DEFAULT_QUORUM_THRESHOLD = 2;
+
+/**
+ * Sanitises a `QUORUM` threshold the same way {@link composeSlaDuration}
+ * sanitises an SLA value: reject non-finite input, drop any fractional part,
+ * and floor at 1. Nothing downstream rejects `threshold: 0` or a fractional
+ * threshold — the publish lint only checks `decisionPolicy?.type` and the
+ * engine merely clamps with `Math.max(threshold, 1)` rather than validating.
+ *
+ * `PERCENTAGE` additionally gets an upper bound of 100. The engine computes
+ * `Math.ceil((totalCount * threshold) / 100)`, so a percentage above 100
+ * always exceeds `totalCount` and the quorum can never complete.
+ *
+ * Lives here rather than in the designer because the LLM toolset writes the
+ * same policy through `set_user_task_decision_policy`; a sanitiser that only
+ * guarded the React form would leave the assistant as a hole straight past it.
+ */
+export function composeQuorumThreshold(
+  value: number,
+  thresholdType: 'COUNT' | 'PERCENTAGE',
+): number {
+  const sanitised = Number.isFinite(value) ? Math.max(Math.trunc(value), 1) : 1;
+
+  return thresholdType === 'PERCENTAGE' ? Math.min(sanitised, 100) : sanitised;
+}
+
+/**
+ * How many approvers a resolver is guaranteed to produce, or `null` when only
+ * runtime can tell.
+ *
+ * Deliberately conservative: only `DIRECT` carries its member list in the
+ * definition. Every other resolver depends on the org chart at the moment the
+ * instance runs — an `ORG_MANAGER` may resolve to one manager, several, or
+ * none (falling through to its fallback). Guessing a count for those would
+ * reject templates that are in fact fine, which is worse than the check it
+ * would buy.
+ */
+export function readDesignTimeApproverCount(
+  resolver: ApproverResolver,
+): number | null {
+  return resolver.type === 'DIRECT' ? resolver.memberIds.length : null;
+}
+
+/**
+ * `true` when a policy demands more approvals than its node can ever collect,
+ * which leaves the task permanently incomplete: the engine gates on
+ * `completedCount >= Math.max(threshold, 1)` against the candidates this
+ * resolver produced, and an ad-hoc signer opens a *separate* task rather than
+ * adding a candidate to this one, so there is no runtime escape.
+ *
+ * Only `COUNT` can reach that state. A `PERCENTAGE` threshold resolves to
+ * `Math.ceil((totalCount * threshold) / 100)`, which never exceeds
+ * `totalCount` once {@link composeQuorumThreshold} has capped it at 100.
+ */
+export function isDecisionPolicyUnsatisfiable(
+  policy: DecisionPolicy | undefined,
+  resolver: ApproverResolver,
+): boolean {
+  if (policy?.type !== 'QUORUM' || policy.thresholdType !== 'COUNT') {
+    return false;
+  }
+
+  const available = readDesignTimeApproverCount(resolver);
+
+  return available !== null && policy.threshold > available;
 }
 
 /**
@@ -691,6 +760,14 @@ export function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readApproverResolverIssue(node.data.approverResolver)),
   );
+  const unsatisfiableQuorumNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      isDecisionPolicyUnsatisfiable(
+        node.data.decisionPolicy,
+        node.data.approverResolver,
+      ),
+  );
   const incompleteNotifyNode = definition.nodes.find(
     (node) =>
       node.type === 'serviceTask' &&
@@ -720,6 +797,19 @@ export function readWorkflowDefinitionIssue(
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
       incompleteUserTaskNode.data.approverResolver,
+    );
+  }
+
+  if (
+    unsatisfiableQuorumNode &&
+    unsatisfiableQuorumNode.type === 'userTask' &&
+    unsatisfiableQuorumNode.data.decisionPolicy?.type === 'QUORUM'
+  ) {
+    return (
+      `簽核節點「${unsatisfiableQuorumNode.data.label}」的門檻人數為 ` +
+      `${unsatisfiableQuorumNode.data.decisionPolicy.threshold}，` +
+      `但只指定了 ${readDesignTimeApproverCount(unsatisfiableQuorumNode.data.approverResolver)} 位簽核者，` +
+      '這一關將永遠無法通過。請降低門檻人數或增加簽核者。'
     );
   }
 
@@ -872,11 +962,7 @@ export function readConditionValueOptions(
     ];
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options.map((option) => ({
       id: option.value,
       name: option.label,
@@ -967,11 +1053,7 @@ export function readConditionValueLabel(
     return value === 'true' ? '是' : '否';
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return readFormFieldOption(field.options, value)?.label ?? value;
   }
 

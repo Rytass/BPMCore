@@ -23,6 +23,27 @@ file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Form schema parsing now supports additive versioned option-source references
+  and structural lint for bindings, dependency cycles, and dynamic defaults.
+- Added `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` so a submitted value that is no
+  longer selectable is reported separately from a provider contract breach.
+- Added the host-provided versioned DataSource registry contract, guarded
+  GraphQL catalog/preview/runtime queries, provider limits, and stable error
+  codes for dynamic form options.
+- Added server-side dynamic option resolution for submit/resubmit, persisted
+  option-label snapshots, optimistic revision protection around resubmit, and
+  the reversible `form_data_option_snapshot` migration.
+- Resubmit mutations now return the refreshed persisted instance after dynamic
+  option resolution and workflow processing, keeping GraphQL JSON accessors in
+  sync with the committed form data and option snapshot.
+- GraphQL DataSource input DTOs now carry explicit validation metadata so hosts
+  using `ValidationPipe({ forbidUnknownValues: true })` can call preview/runtime
+  option queries without bypassing input validation.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 
@@ -41,6 +62,55 @@ Conventional Commits — see `nx.json` for the release config.
 
 ### Fixed
 
+- **Rolling back to an archived version now honours the registry gate.**
+  `rollbackFormDefinitionVersion` republished an archived form without checking
+  the host registry, so a version referencing a source the host had dropped
+  could become current again.
+- **An illegal empty value no longer counts as "cleared".** `''` clears a
+  single-select and `[]` clears a multiple one; the mismatched shapes are
+  rejected instead of persisting a value the primitive contract forbids.
+- **A corrupt instance form snapshot returns a controlled error.** Snapshot
+  readers dereferenced field entries, so `fields: [null]` raised a `TypeError`
+  out of submit/resubmit; such a snapshot is now rejected as invalid.
+- **A `SET_FORM_FIELD` service task no longer leaves a wrong option label.**
+  Writing into a DataSource-backed field kept the previous option snapshot, so
+  instance history rendered the old label next to the new value. The snapshot
+  for that field is now dropped (the raw value is shown instead) and the
+  activity log records which field was cleared. The service task runs inside the
+  write transaction, so re-resolving through the host provider there would
+  breach the ADR's transaction boundary.
+- **Clearing a dynamic option now removes its snapshot on resubmit.** A host
+  without a registry kept the old label for a field the user had emptied. An
+  empty array only clears a `multiple` field; on a single-select it stays an
+  illegal value instead of silently dropping the snapshot.
+- **A binding-only preview failure now reports `FORM_DATA_SOURCE_INVALID_BINDING`.**
+  Binding lint lines stay prose because they quote a host-chosen parameter name,
+  so they carried no code and the preview fell back to `INVALID_DESCRIPTOR` —
+  telling the designer to contact an administrator about a binding they could
+  fix themselves. The code is now derived from the line shape.
+- **The preview error code now follows the first lint error.** It was picked by
+  scanning the error-code list for a substring match, so the reported code
+  depended on enum declaration order and would misfire once one code became a
+  substring of another. It is now read only from the code-bearing lint shape
+  `<path>.dataSource <CODE>`, so prose such as an unbound parameter whose name
+  looks like a code is no longer reported as that code.
+- **Publish lint no longer mislabels an unregistered DataSource key.** A key the
+  host never registered reported `FORM_DATA_SOURCE_VERSION_MISSING`, telling
+  designers to pick another version of a source that no longer exists. It now
+  reports `FORM_DATA_SOURCE_MISSING`, matching the runtime query path, and an
+  unsupported bounded control is reported once instead of twice.
+- **A host without a DataSource registry can no longer publish or submit
+  dynamic option fields — but drafts stay editable.** The registry check runs
+  only where a published version is produced, so a draft that references an
+  unavailable source is still saved verbatim, as the ADR requires. Both the publish lint and the submit/resubmit
+  resolution degraded to no-ops when no registry was provided, so a
+  DataSource-backed value could reach the database with nothing able to
+  validate it. Both paths now fail with `FORM_DATA_SOURCE_MISSING`; static
+  forms are unaffected.
+- **`initiatorMemberId` is no longer a required GraphQL input.** Submit and
+  resubmit inputs demanded a value the resolver always replaced with the
+  authenticated member id. The field is now optional and deprecated; the engine
+  still requires the server-derived id.
 - **Manager resolution priority now respected.**
   `resolveManagerResolutionCandidates` previously returned every active
   resolution regardless of priority. Now it keeps only the top-priority

@@ -240,7 +240,130 @@ describe('FormService', () => {
       expect(versionRepository.update).not.toHaveBeenCalled();
       expect(definition.currentVersionId).toBe('version-1');
     });
+
+    it('refuses to publish a dynamic option field without a host registry', async (): Promise<void> => {
+      const definition = createFormDefinition('def-1');
+      const versionRepository = createVersionRepository({ maxVersion: 1 });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      await expect(
+        service.publishFormDefinitionContent(
+          {
+            formDefinitionId: 'def-1',
+            schemaJson: dynamicSchemaJson,
+            uiSchemaJson: null,
+          },
+          'member-1',
+          createManager(
+            createDefinitionRepository(definition),
+            versionRepository,
+          ),
+        ),
+      ).rejects.toThrow('FORM_DATA_SOURCE_MISSING');
+    });
+
+    it('still saves a draft that references an unavailable DataSource', async (): Promise<void> => {
+      const definition = createFormDefinition('def-1');
+      const draft = createVersion({
+        id: 'version-1',
+        status: FormDefinitionVersionStatusEnum.DRAFT,
+      });
+      const versionRepository = createVersionRepository({
+        draft,
+        maxVersion: 1,
+      });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      // The ADR keeps an unavailable reference in the draft verbatim and only
+      // blocks publishing a new version.
+      const updated = await service.updateFormDefinitionDraft(
+        {
+          schemaJson: dynamicSchemaJson,
+          uiSchemaJson: '{"layout":[],"schemaVersion":1}',
+          versionId: 'version-1',
+        },
+        createManager(createDefinitionRepository(definition), versionRepository),
+      );
+
+      // Normalization still adds the implicit single mode; what matters is
+      // that the unavailable reference survived instead of being rejected.
+      expect(updated.schema.fields[1]).toMatchObject({
+        dataSource: { key: 'demo.cost-centers', version: 1 },
+        fieldKey: 'costCenter',
+      });
+    });
+
+    it('refuses to roll back to a version whose DataSource is unavailable', async (): Promise<void> => {
+      const archived = createVersion({
+        id: 'version-1',
+        schema: JSON.parse(dynamicSchemaJson) as Record<string, unknown>,
+        status: FormDefinitionVersionStatusEnum.ARCHIVED,
+      });
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        {
+          findOne: jest.fn(() => Promise.resolve(archived)),
+        } as unknown as Repository<FormDefinitionVersionEntity>,
+      );
+
+      // A rollback republishes the archived version, so the registry gate that
+      // guards publishing must apply here too.
+      await expect(
+        service.rollbackFormDefinitionVersion('version-1'),
+      ).rejects.toThrow('FORM_DATA_SOURCE_MISSING');
+    });
+
+    it('reports a dynamic option field as unlintable without a host registry', (): void => {
+      const service = new FormService(
+        createRepository<FormDefinitionEntity>(),
+        createRepository<FormDefinitionVersionEntity>(),
+      );
+
+      expect(
+        service.lintFormSchema({
+          schemaJson: dynamicSchemaJson,
+          uiSchemaJson: null,
+        }),
+      ).toEqual({
+        errors: ['schema.fields[1].dataSource FORM_DATA_SOURCE_MISSING'],
+        valid: false,
+      });
+    });
   });
+});
+
+const dynamicSchemaJson = JSON.stringify({
+  fields: [
+    {
+      fieldKey: 'plant',
+      label: 'Plant',
+      required: true,
+      type: 'text',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'costCenter',
+      label: 'Cost center',
+      required: true,
+      type: 'select',
+    },
+  ],
+  schemaVersion: 1,
 });
 
 function createFormDefinition(id: string): FormDefinitionEntity {

@@ -19,10 +19,12 @@ import { Typography } from '@mezzanine-ui/react';
 import type { NotificationSeverity } from '@mezzanine-ui/core/notification-center';
 import type { DropdownOption } from '@mezzanine-ui/core/dropdown/dropdown';
 import {
+  archiveNotifications,
   decideTask,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  unarchiveNotifications,
   type NotificationRecord,
   type NotificationResolution,
   type NotificationType,
@@ -55,7 +57,16 @@ const TIME_GROUP_LABEL: Readonly<Record<TimeGroup, string>> = {
 const PAGE_SIZE = 50;
 
 /** Identifiers for the per-notification `...` dropdown menu entries. */
-type NotificationAction = 'approve' | 'reject' | 'view' | 'read';
+type NotificationAction =
+  | 'approve'
+  | 'archive'
+  | 'reject'
+  | 'unarchive'
+  | 'view'
+  | 'read';
+
+/** Identifier for the filter-bar dropdown entry toggling the archived view. */
+const TOGGLE_ARCHIVED_OPTION_ID = 'toggleArchived';
 
 /**
  * Build the `...` dropdown options for one notification. Approve / reject are
@@ -63,6 +74,8 @@ type NotificationAction = 'approve' | 'reject' | 'view' | 'read';
  * (an unresolved task assignment) — once the task is decided / cancelled the
  * backend flips `actionable` to false, so a stale "同意" can never appear.
  * "查看案件" needs an `instanceId`; "標為已讀" only shows while unread.
+ * Archiving is independent of read state, so the entry flips between
+ * "封存" / "取消封存" for every notification.
  */
 function buildNotificationOptions(
   record: NotificationRecord,
@@ -82,6 +95,9 @@ function buildNotificationOptions(
     ...(record.status !== 'READ'
       ? ([{ id: 'read', name: '標為已讀' }] satisfies DropdownOption[])
       : []),
+    record.archivedAt
+      ? { id: 'unarchive', name: '取消封存' }
+      : { id: 'archive', name: '封存' },
   ];
 }
 
@@ -118,9 +134,10 @@ function resolveSeverity(record: NotificationRecord): NotificationSeverity {
  * Right-side notification drawer mounted at the root by `<Providers>`.
  * Opens / closes via `useNotificationDrawer()`, polls
  * `listNotifications()` for the current member, supports filter
- * (`all` / `read` / `unread`), per-row mark-read, bulk mark-all-read, and
- * load-more pagination. Clicking a row with an `instanceId` navigates to
- * `/instances/<id>` via the host's router adapter.
+ * (`all` / `read` / `unread`), per-row mark-read, per-row archive / unarchive,
+ * bulk mark-all-read, and load-more pagination. Archived notifications are
+ * hidden until the filter-bar menu turns "顯示已封存" on. Clicking a row with an
+ * `instanceId` navigates to `/instances/<id>` via the host's router adapter.
  */
 export function NotificationDrawer(): ReactElement | null {
   const router = useRouterAdapter();
@@ -137,6 +154,7 @@ export function NotificationDrawer(): ReactElement | null {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterValue>('all');
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [approveTarget, setApproveTarget] = useState<NotificationRecord | null>(
     null,
   );
@@ -157,6 +175,7 @@ export function NotificationDrawer(): ReactElement | null {
       setError(null);
       try {
         const result = await listNotifications({
+          includeArchived,
           includeRead: true,
           page: nextPage,
           pageSize: PAGE_SIZE,
@@ -176,7 +195,7 @@ export function NotificationDrawer(): ReactElement | null {
         setLoading(false);
       }
     },
-    [currentMemberId, refreshUnreadCount],
+    [currentMemberId, includeArchived, refreshUnreadCount],
   );
 
   useEffect((): void => {
@@ -225,6 +244,37 @@ export function NotificationDrawer(): ReactElement | null {
     },
     [currentMemberId, loadPage],
   );
+
+  const handleArchive = useCallback(
+    async (record: NotificationRecord): Promise<void> => {
+      if (!currentMemberId) return;
+      setError(null);
+      setNotice(null);
+      try {
+        // Name the notification the way the row does — `title` is the raw
+        // stored title, which can differ from the rendered one.
+        const label = resolveDisplayTitle(record);
+
+        if (record.archivedAt) {
+          await unarchiveNotifications({ ids: [record.id] });
+          setNotice(`已將「${label}」移出封存。`);
+        } else {
+          await archiveNotifications({ ids: [record.id] });
+          setNotice(`已封存「${label}」。`);
+        }
+        await loadPage(1, false);
+      } catch (e: unknown) {
+        setError(readErrorMessage(e));
+      }
+    },
+    [currentMemberId, loadPage],
+  );
+
+  const handleFilterAreaSelect = useCallback((option: DropdownOption): void => {
+    if (option.id !== TOGGLE_ARCHIVED_OPTION_ID) return;
+    setNotice(null);
+    setIncludeArchived((current): boolean => !current);
+  }, []);
 
   const handleOpenInstance = useCallback(
     async (record: NotificationRecord): Promise<void> => {
@@ -331,19 +381,45 @@ export function NotificationDrawer(): ReactElement | null {
       else if (action === 'reject') openRejectModal(record);
       else if (action === 'view') void handleOpenInstance(record);
       else if (action === 'read') void handleMarkRead(record.id);
+      else if (action === 'archive' || action === 'unarchive')
+        void handleArchive(record);
     },
-    [handleMarkRead, handleOpenInstance, openApproveModal, openRejectModal],
+    [
+      handleArchive,
+      handleMarkRead,
+      handleOpenInstance,
+      openApproveModal,
+      openRejectModal,
+    ],
+  );
+
+  /**
+   * Whether an event that reached the card wrapper actually happened inside the
+   * card, and not on one of its action controls.
+   *
+   * Two escape hatches are needed. The `...` menu button (and its `<svg>` icon —
+   * hence the `Element` check, SVG nodes are not HTMLElements) sits inside the
+   * card and must open the dropdown rather than navigate. The dropdown itself
+   * renders into a portal, and React replays events along the component tree
+   * rather than the DOM tree, so picking "封存" also reaches this handler even
+   * though the `<li role="option">` lives outside the card's DOM — and it is not
+   * a `<button>`, so the first guard alone misses it.
+   */
+  const isCardActivation = useCallback(
+    (target: EventTarget | null, card: HTMLDivElement): boolean => {
+      if (!(target instanceof Node) || !card.contains(target)) return false;
+
+      return !(target instanceof Element && target.closest('button'));
+    },
+    [],
   );
 
   const handleCardActivate = useCallback(
-    (record: NotificationRecord, target: EventTarget | null): void => {
-      // Let clicks on the `...` menu button (and its icon) open the dropdown
-      // instead of navigating away. The icon renders as an <svg>, so guard on
-      // `Element` (not `HTMLElement`) — SVG nodes are not HTMLElements.
-      if (target instanceof Element && target.closest('button')) return;
+    (record: NotificationRecord, event: ReactMouseEvent<HTMLDivElement>): void => {
+      if (!isCardActivation(event.target, event.currentTarget)) return;
       void handleOpenInstance(record);
     },
-    [handleOpenInstance],
+    [handleOpenInstance, isCardActivation],
   );
 
   const handleCardKeyDown = useCallback(
@@ -352,12 +428,11 @@ export function NotificationDrawer(): ReactElement | null {
       event: ReactKeyboardEvent<HTMLDivElement>,
     ): void => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
-      if (event.target instanceof Element && event.target.closest('button'))
-        return;
+      if (!isCardActivation(event.target, event.currentTarget)) return;
       event.preventDefault();
       void handleOpenInstance(record);
     },
-    [handleOpenInstance],
+    [handleOpenInstance, isCardActivation],
   );
 
   const filteredRows = useMemo(
@@ -411,9 +486,16 @@ export function NotificationDrawer(): ReactElement | null {
         bottomPrimaryActionDisabled={!hasMore || loading}
         bottomPrimaryActionLoading={loading && hasMore}
         bottomPrimaryActionText={hasMore ? '載入更多' : '已顯示全部'}
-        contentKey={`${filter}:${rows.length}`}
+        contentKey={`${filter}:${includeArchived}:${rows.length}`}
         filterAreaAllRadioLabel="全部"
         filterAreaOnRadioChange={handleFilterChange}
+        filterAreaOnSelect={handleFilterAreaSelect}
+        filterAreaOptions={[
+          {
+            id: TOGGLE_ARCHIVED_OPTION_ID,
+            name: includeArchived ? '隱藏已封存' : '顯示已封存',
+          },
+        ]}
         filterAreaReadRadioLabel="已讀"
         filterAreaShow
         filterAreaUnreadRadioLabel="未讀"
@@ -470,7 +552,7 @@ export function NotificationDrawer(): ReactElement | null {
                     onClick={
                       openable
                         ? (event: ReactMouseEvent<HTMLDivElement>): void => {
-                            handleCardActivate(record, event.target);
+                            handleCardActivate(record, event);
                           }
                         : undefined
                     }
@@ -486,6 +568,7 @@ export function NotificationDrawer(): ReactElement | null {
                     tabIndex={openable ? 0 : undefined}
                   >
                     <NotificationCenter
+                      appendTips={record.archivedAt ? '已封存' : undefined}
                       description={record.body}
                       onBadgeSelect={(option: DropdownOption): void => {
                         handleBadgeSelect(record, option);

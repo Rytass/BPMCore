@@ -35,6 +35,20 @@ export class TemplateMutations {
     return this.templateService.updateApprovalTemplate(input);
   }
 
+  @Mutation(() => ApprovalTemplateEntity)
+  async activateApprovalTemplate(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<ApprovalTemplateEntity> {
+    return this.templateService.activateApprovalTemplate(id);
+  }
+
+  @Mutation(() => ApprovalTemplateEntity)
+  async deactivateApprovalTemplate(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<ApprovalTemplateEntity> {
+    return this.templateService.deactivateApprovalTemplate(id);
+  }
+
   @Mutation(() => ApprovalTemplateCategoryEntity)
   async createApprovalTemplateCategory(
     @Args('input') input: CreateApprovalTemplateCategoryInput,

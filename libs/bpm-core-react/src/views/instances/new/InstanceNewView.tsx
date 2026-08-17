@@ -4,6 +4,7 @@ import {
   CSSProperties,
   ReactElement,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -23,6 +24,7 @@ import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
   focusFormRendererField,
   FormRendererValues,
+  readFormDataSourceErrorMessage,
   validateFormRendererValues,
 } from '@rytass/bpm-core-client/form';
 import {
@@ -39,6 +41,10 @@ import { useAuth } from '../../../lib/auth-provider';
 import { useRouterAdapter } from '../../../lib/router-adapter';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
+import {
+  isFormDataSourceFieldSubmissionBlocked,
+  type FormDataSourceFieldState,
+} from '../../forms/renderer/form-data-source-field';
 
 const FORM_SECTION_STYLE: CSSProperties = {
   display: 'grid',
@@ -98,6 +104,41 @@ function NewApprovalInstanceContent({
   >({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [dataSourceStates, setDataSourceStates] = useState<
+    Readonly<
+      Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
+    >
+  >({});
+
+  const handleDataSourceStateChange = useCallback(
+    (
+      fieldKey: string,
+      state: Pick<
+        FormDataSourceFieldState,
+        'hasValue' | 'invalidValues' | 'status'
+      >,
+    ): void => {
+      setDataSourceStates((currentStates) => {
+        const currentState = currentStates[fieldKey];
+
+        if (
+          currentState?.hasValue === state.hasValue &&
+          currentState.status === state.status
+        ) {
+          return currentStates;
+        }
+
+        return {
+          ...currentStates,
+          [fieldKey]: {
+            hasValue: state.hasValue,
+            status: state.status,
+          },
+        };
+      });
+    },
+    [],
+  );
 
   useEffect((): void => {
     if (!templateId) {
@@ -159,6 +200,7 @@ function NewApprovalInstanceContent({
     setLoading(true);
     setError(null);
     setContext(null);
+    setDataSourceStates({});
 
     try {
       setTemplates(await listLaunchableTemplates());
@@ -173,6 +215,7 @@ function NewApprovalInstanceContent({
     setLoading(true);
     setError(null);
     setTemplates([]);
+    setDataSourceStates({});
 
     try {
       setContext(await readLaunchContext(nextTemplateId));
@@ -191,6 +234,17 @@ function NewApprovalInstanceContent({
     setSubmitting(true);
     setError(null);
     setFormErrors({});
+
+    if (
+      Object.values(dataSourceStates).some(
+        isFormDataSourceFieldSubmissionBlocked,
+      )
+    ) {
+      setError('請先完成動態選項驗證。');
+      setSubmitting(false);
+
+      return;
+    }
 
     const validation = validateFormRendererValues({
       schema: context.formVersion.schema,
@@ -290,12 +344,17 @@ function NewApprovalInstanceContent({
 
               {context ? (
                 <FormRenderer
+                  dataSourceContext={{
+                    kind: 'runtime',
+                    templateId: context.template.id,
+                  }}
                   errors={formErrors}
                   maxWidth={480}
                   onChange={(values): void => {
                     setFormValues(values);
                     setFormErrors({});
                   }}
+                  onDataSourceStateChange={handleDataSourceStateChange}
                   onUploadAttachment={handleUploadAttachment}
                   schema={context.formVersion.schema}
                   singleColumn
@@ -347,5 +406,13 @@ function NewApprovalInstanceLoading(): ReactElement {
 }
 
 function readErrorMessage(error: unknown): string {
+  // DataSource failures arrive as stable codes so the backend never leaks
+  // upstream transport detail; translate them instead of showing the raw code.
+  const dataSourceMessage = readFormDataSourceErrorMessage(error);
+
+  if (dataSourceMessage) {
+    return dataSourceMessage;
+  }
+
   return error instanceof Error ? error.message : '發生未知錯誤';
 }

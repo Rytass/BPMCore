@@ -55,3 +55,10 @@ Thumbs.db
 .next
 out
 *.tsbuildinfo
+
+# Package tarballs produced by publint / npm pack
+*.tgz
+
+# Playwright run artifacts
+/test-results
+/playwright-report

@@ -73,6 +73,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormUiSchema,
+  isFormStaticOptionFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -90,16 +91,23 @@ import {
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  DEFAULT_QUORUM_THRESHOLD,
   DEFAULT_SLA_CONFIG,
   SLA_CALENDAR_MODE_OPTIONS,
   SLA_DURATION_UNIT_OPTIONS,
   SLA_TIMEOUT_ACTION_OPTIONS,
   SlaDurationParts,
   SlaDurationUnit,
+  composeQuorumThreshold,
   composeSlaDuration,
+  isDecisionPolicyUnsatisfiable,
+  readDesignTimeApproverCount,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import {
+  readFormBuilder,
+  readFormSchemaLintMessage,
+} from '@rytass/bpm-core-client/form';
 import {
   OrgUnitOption,
   OrgUnitPicker,
@@ -211,6 +219,14 @@ type ManagerLevelOption = Readonly<{
   id: string;
   name: string;
   value: number;
+}>;
+type DecisionPolicyOption = Readonly<{
+  id: DecisionPolicy['type'];
+  name: string;
+}>;
+type QuorumThresholdTypeOption = Readonly<{
+  id: 'COUNT' | 'PERCENTAGE';
+  name: string;
 }>;
 type ApproverFallbackMode = 'DIRECT' | 'NONE';
 type ApproverFallbackModeOption = Readonly<{
@@ -505,6 +521,21 @@ const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
   { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
   { id: 'POSITION', name: '指定職位' },
+];
+// `SEQUENTIAL` is intentionally absent: the engine treats it exactly like
+// `PARALLEL_ALL` (`workflow-engine.service.ts` resolves both to
+// `completedCount >= totalCount`), so offering it would promise a queued
+// hand-off that does not exist. Templates that already carry it stay readable
+// through `readDecisionPolicyOption`.
+const DECISION_POLICY_OPTIONS: readonly DecisionPolicyOption[] = [
+  { id: 'SINGLE', name: '單人簽核' },
+  { id: 'PARALLEL_ANY', name: '任一人同意' },
+  { id: 'PARALLEL_ALL', name: '全部同意' },
+  { id: 'QUORUM', name: '達到指定門檻' },
+];
+const QUORUM_THRESHOLD_TYPE_OPTIONS: readonly QuorumThresholdTypeOption[] = [
+  { id: 'COUNT', name: '人數' },
+  { id: 'PERCENTAGE', name: '百分比' },
 ];
 const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
   { id: '1', name: '直屬主管', value: 1 },
@@ -1476,10 +1507,47 @@ export function TemplateDesignerView({
       return;
     }
 
+    const nodeId = selectedNode.id;
+    const decisionPolicy = selectedNode.data.decisionPolicy;
+
     controller.dispatch({
       approverResolver,
-      nodeId: selectedNode.id,
+      nodeId,
       type: 'setUserTaskApprover',
+    });
+
+    // `applySetUserTaskApprover` (libs/shared/workflow-command.ts) hard-resets
+    // decisionPolicy to SINGLE on every approver change — a documented
+    // upstream contract (see the `set_user_task_approver` tool description)
+    // that other callers depend on, so it stays as-is. Now that the policy is
+    // author-visible on this branch, silently reverting it to SINGLE here
+    // would read as data loss; re-apply whatever non-default policy the node
+    // already had.
+    //
+    // But only when the new approver set can still satisfy it. Re-applying a
+    // `QUORUM` of 3 onto a resolver that yields one approver produces a task
+    // that can never complete, and nothing in the designer would show it —
+    // the threshold field keeps displaying 3. Losing the policy is visible and
+    // recoverable; a deadlocked node published into production is neither, so
+    // this drops the policy and says why.
+    if (!decisionPolicy || decisionPolicy.type === 'SINGLE') {
+      return;
+    }
+
+    if (isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
+      setError(
+        `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
+          `不足原本設定的 ${decisionPolicy.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
+          '簽核政策已重設為單人簽核，請重新設定。',
+      );
+
+      return;
+    }
+
+    controller.dispatch({
+      decisionPolicy,
+      nodeId,
+      type: 'setUserTaskDecisionPolicy',
     });
   }
 
@@ -1518,6 +1586,38 @@ export function TemplateDesignerView({
       nodeId: selectedNode.id,
       sla,
       type: 'setUserTaskSla',
+    });
+  }
+
+  function updateUserTaskDecisionPolicy(decisionPolicy: DecisionPolicy): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    // Every `BPMFormField` that writes a `QUORUM` policy — the threshold
+    // input, and the `quorumThresholdType` switch which carries the existing
+    // `threshold` across unchanged when only the type toggles — funnels
+    // through this one function. Re-sanitising `threshold` here, rather than
+    // trusting each call site to have clamped it against the *new*
+    // `thresholdType`, is what stops a `COUNT` value entered while
+    // unbounded (e.g. 500) from surviving a switch to `PERCENTAGE` and
+    // becoming an unreachable engine threshold; it also means a future
+    // caller of this function does not need to remember to clamp on its own.
+    const sanitisedDecisionPolicy: DecisionPolicy =
+      decisionPolicy.type === 'QUORUM'
+        ? {
+            ...decisionPolicy,
+            threshold: composeQuorumThreshold(
+              decisionPolicy.threshold,
+              decisionPolicy.thresholdType,
+            ),
+          }
+        : decisionPolicy;
+
+    controller.dispatch({
+      decisionPolicy: sanitisedDecisionPolicy,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskDecisionPolicy',
     });
   }
 
@@ -2295,6 +2395,12 @@ export function TemplateDesignerView({
     const slaEscalateLevel = readManagerLevelOption(
       sla?.escalateLevelsUp ?? 1,
     );
+    // The schema types `decisionPolicy` as required, but templates authored
+    // before the field existed carry no such key at runtime, so every read goes
+    // through helpers that tolerate `undefined` — same stance as
+    // `readDecisionPolicyHint`.
+    const decisionPolicyType = readDecisionPolicyType(node.data.decisionPolicy);
+    const quorum = readQuorumParts(node.data.decisionPolicy);
 
     return (
       <>
@@ -2620,6 +2726,88 @@ export function TemplateDesignerView({
               value={selectedPosition}
             />
           </BPMFormField>
+        ) : null}
+        <BPMFormField
+          hintText="決定這一關要幾位簽核者同意才會通過；單人簽核與任一人同意的效果完全相同，皆為其中一人同意即通過。"
+          label="決策方式"
+          name="decisionPolicy"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void =>
+              updateUserTaskDecisionPolicy(
+                readDecisionPolicyFromOptionId(
+                  option?.id ?? null,
+                  node.data.decisionPolicy,
+                ),
+              )
+            }
+            options={[...DECISION_POLICY_OPTIONS]}
+            value={readDecisionPolicyOption(decisionPolicyType)}
+          />
+        </BPMFormField>
+        {decisionPolicyType === 'QUORUM' ? (
+          <>
+            <BPMFormField
+              label="門檻計算方式"
+              name="quorumThresholdType"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskDecisionPolicy({
+                    threshold: quorum.threshold,
+                    thresholdType: readQuorumThresholdType(option?.id ?? null),
+                    type: 'QUORUM',
+                  })
+                }
+                options={[...QUORUM_THRESHOLD_TYPE_OPTIONS]}
+                value={readSelectOption(
+                  QUORUM_THRESHOLD_TYPE_OPTIONS,
+                  quorum.thresholdType,
+                )}
+              />
+            </BPMFormField>
+            <BPMFormField
+              hintText={
+                quorum.thresholdType === 'PERCENTAGE'
+                  ? '達到簽核者總數的這個百分比即通過，換算人數時無條件進位；超過 100 的輸入會自動夾至 100。'
+                  : '達到這個同意人數即通過；門檻超過實際簽核者人數時，這一關將永遠無法通過，請勿設定超過實際簽核者人數。'
+              }
+              label={
+                quorum.thresholdType === 'PERCENTAGE'
+                  ? '門檻百分比'
+                  : '門檻人數'
+              }
+              name="quorumThreshold"
+              required
+            >
+              <Input
+                id="quorumThreshold"
+                inputProps={
+                  quorum.thresholdType === 'PERCENTAGE'
+                    ? { max: 100, min: 1 }
+                    : { min: 1 }
+                }
+                inputType="number"
+                name="quorumThreshold"
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateUserTaskDecisionPolicy({
+                    threshold: composeQuorumThreshold(
+                      Number(event.target.value),
+                      quorum.thresholdType,
+                    ),
+                    thresholdType: quorum.thresholdType,
+                    type: 'QUORUM',
+                  })
+                }
+                value={String(quorum.threshold)}
+                variant="base"
+              />
+            </BPMFormField>
+          </>
         ) : null}
         {node.data.returnBehavior.allowReturn ? (
           <BPMFormField
@@ -3501,11 +3689,27 @@ function applyWorkflowNodeTriggerMode(
 function normalizeDesignerWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinition {
-  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(definition);
+  const withEdgeData = normalizeDesignerEdgeData(definition);
+  const withoutAsyncNotifyEdges = removeAsyncNotifyOutgoingEdges(withEdgeData);
 
   return normalizeSingleIncomingTriggerModes(
     normalizeUserTaskPolicies(withoutAsyncNotifyEdges),
   );
+}
+
+function normalizeDesignerEdgeData(
+  definition: WorkflowDefinition,
+): WorkflowDefinition {
+  const edges = definition.edges.map((edge): WorkflowEdge => {
+    const data = edge.data ?? {};
+
+    return edge.data === data ? edge : { ...edge, data };
+  });
+  const hasEdgeChanges = edges.some(
+    (edge, index) => edge !== definition.edges[index],
+  );
+
+  return hasEdgeChanges ? { ...definition, edges } : definition;
 }
 
 function normalizeUserTaskPolicies(
@@ -3519,11 +3723,20 @@ function normalizeUserTaskPolicies(
     const allowAddSigner = node.data.allowAddSigner ?? false;
     const allowReject = node.data.allowReject ?? true;
     const allowTransfer = node.data.allowTransfer ?? true;
+    // The schema types `decisionPolicy` as required, but templates authored
+    // before the field existed carry no such key at runtime (see
+    // `readDecisionPolicyType`). Only the read side tolerated that until now,
+    // so the field stayed permanently blank-but-required in the publish
+    // validator (`decisionPolicy is required`). Write the same default here,
+    // and only when it is actually missing — an already-set policy (whatever
+    // its value) must not be touched.
+    const decisionPolicyIsMissing = !node.data.decisionPolicy;
 
     if (
       node.data.allowAddSigner === allowAddSigner &&
       node.data.allowReject === allowReject &&
-      node.data.allowTransfer === allowTransfer
+      node.data.allowTransfer === allowTransfer &&
+      !decisionPolicyIsMissing
     ) {
       return node;
     }
@@ -3535,6 +3748,7 @@ function normalizeUserTaskPolicies(
         allowAddSigner,
         allowReject,
         allowTransfer,
+        decisionPolicy: node.data.decisionPolicy ?? { type: 'SINGLE' },
       },
     };
   });
@@ -3693,6 +3907,98 @@ function readDecisionPolicyHint(policy: DecisionPolicy | undefined): string {
     policy.thresholdType === 'PERCENTAGE' ? '%' : ' 位簽核者';
 
   return `可指定多位；需達到 ${policy.threshold}${thresholdUnit} 才會通過。`;
+}
+
+function readDecisionPolicyType(
+  policy: DecisionPolicy | undefined,
+): DecisionPolicy['type'] {
+  return policy?.type ?? 'SINGLE';
+}
+
+function readDecisionPolicyOption(
+  type: DecisionPolicy['type'],
+): DecisionPolicyOption {
+  const option = DECISION_POLICY_OPTIONS.find((item) => item.id === type);
+
+  if (option) {
+    return option;
+  }
+
+  // `SEQUENTIAL` is not offered in the dropdown, but templates authored
+  // through the API may already carry it — the AI assistant cannot produce
+  // it: its toolset (`workflow-toolset.ts`) has no decision-policy tool at
+  // all. The engine treats `SEQUENTIAL` exactly like `PARALLEL_ALL`
+  // (simultaneous notification, everyone must agree), so label it that way
+  // instead of implying a queued hand-off that does not exist.
+  if (type === 'SEQUENTIAL') {
+    return { id: type, name: '全部同意（既有設定）' };
+  }
+
+  // Any other stored value falls outside `DecisionPolicy['type']`'s own
+  // union — it can only have come from an untyped source (API payload, an
+  // older schema) this form was never told about. Echo it verbatim instead
+  // of mislabelling it as a specific known policy.
+  return { id: type, name: `未知決策方式（${type}）` };
+}
+
+function readDecisionPolicyFromOptionId(
+  id: string | null,
+  current: DecisionPolicy | undefined,
+): DecisionPolicy {
+  if (id === 'QUORUM') {
+    // Re-picking the option the node already uses must not discard the
+    // threshold the user typed.
+    return current?.type === 'QUORUM'
+      ? current
+      : {
+          threshold: DEFAULT_QUORUM_THRESHOLD,
+          thresholdType: 'COUNT',
+          type: 'QUORUM',
+        };
+  }
+
+  if (id === 'PARALLEL_ALL' || id === 'PARALLEL_ANY' || id === 'SEQUENTIAL') {
+    return { type: id };
+  }
+
+  return { type: 'SINGLE' };
+}
+
+/**
+ * Reads the quorum controls' state out of a stored policy.
+ *
+ * `threshold` and `thresholdType` get the same tolerance the rest of this read
+ * path already grants `type` (see `readDecisionPolicyType` /
+ * `readDecisionPolicyOption`): the publish validator only checks
+ * `decisionPolicy?.type`, so an API-authored template can store a bare
+ * `{ type: 'QUORUM' }`. Trusting the declared types there would put
+ * `String(undefined)` into the number input (rendering blank, with the field
+ * silently unusable) and would write `thresholdType: undefined` straight back
+ * into the policy on the next threshold keystroke.
+ *
+ * Only the *shape* is repaired here — a stored out-of-range value (e.g. a
+ * `PERCENTAGE` threshold of 500 written before `composeQuorumThreshold` capped
+ * it) is shown as-is, so the panel never displays a number that differs from
+ * what is actually stored.
+ */
+function readQuorumParts(policy: DecisionPolicy | undefined): Readonly<{
+  threshold: number;
+  thresholdType: 'COUNT' | 'PERCENTAGE';
+}> {
+  if (policy?.type !== 'QUORUM') {
+    return { threshold: DEFAULT_QUORUM_THRESHOLD, thresholdType: 'COUNT' };
+  }
+
+  return {
+    threshold: Number.isFinite(policy.threshold)
+      ? policy.threshold
+      : DEFAULT_QUORUM_THRESHOLD,
+    thresholdType: readQuorumThresholdType(policy.thresholdType ?? null),
+  };
+}
+
+function readQuorumThresholdType(value: string | null): 'COUNT' | 'PERCENTAGE' {
+  return value === 'PERCENTAGE' ? 'PERCENTAGE' : 'COUNT';
 }
 
 function readSlaDurationUnit(value: string | null): SlaDurationUnit {
@@ -4133,12 +4439,12 @@ function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
     return true;
   }
 
-  if (field.type === 'select') {
-    return field.options[0]?.value ?? '';
-  }
-
-  if (field.type === 'checkbox') {
-    return field.options[0] ? [field.options[0].value] : [];
+  if (isFormStaticOptionFieldDefinition(field)) {
+    return field.type === 'checkbox'
+      ? field.options[0]
+        ? [field.options[0].value]
+        : []
+      : field.options[0]?.value ?? '';
   }
 
   if (field.type === 'date') {
@@ -4757,11 +5063,7 @@ function readConditionValueOptions(
     ];
   }
 
-  if (
-    field.type === 'checkbox' ||
-    field.type === 'radio' ||
-    field.type === 'select'
-  ) {
+  if (isFormStaticOptionFieldDefinition(field)) {
     return field.options.map((option) => ({
       id: option.value,
       name: option.label,
@@ -4829,5 +5131,9 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
 }
 
 function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '發生未知錯誤';
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
+  // readable copy and leave every other message untouched.
+  return error instanceof Error
+    ? readFormSchemaLintMessage(error.message)
+    : '發生未知錯誤';
 }

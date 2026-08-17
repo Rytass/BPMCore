@@ -167,6 +167,10 @@ export interface BPMMemberResolver {
         provide: BPM_MEMBER_RESOLVER,
         useExisting: HostMemberResolverAdapter,
       },
+      formDataSourceRegistryProvider: {
+        provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+        useClass: HostFormDataSourceRegistry,
+      },
       workflowServiceTaskDispatcherProvider: {
         provide: BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
         useClass: HostWorkflowServiceTaskDispatcher,
@@ -203,6 +207,12 @@ export class AppModule {}
 retry queue、tenant router、稽核紀錄或內部 integration bus，應透過
 `workflowServiceTaskDispatcherProvider` 替換，而不是把外部整合細節放進
 `@rytass/bpm-core-nestjs-module`。
+
+`HostFormDataSourceRegistry` 同樣由宿主提供，並只從
+`@rytass/bpm-core-nestjs-module` 的 public exports 取得 registry token 與 contract。
+Schema 只保存已註冊來源的 key/version/bindings；URL、Header、Token、SQL 與查詢模板
+不得進入 form schema。`apps/api` 的 `ApiFormDataSourceRegistry` 是 deterministic demo
+fixture，資料表 `api_form_data_source_options` 的 ownership 留在 wrapper app。
 
 ## Domain Authorization
 

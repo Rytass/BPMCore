@@ -3,16 +3,19 @@ import {
   formatDateTimePickerValue,
 } from './form-rendering';
 
-const ORIGINAL_TIME_ZONE = process.env.TZ;
-
-// The bug this file guards against only shows up east of UTC, so pin the zone
-// instead of trusting whatever the CI runner uses.
-beforeAll((): void => {
-  process.env.TZ = 'Asia/Taipei';
-});
-
-afterAll((): void => {
-  process.env.TZ = ORIGINAL_TIME_ZONE;
+// Every expectation below is written for UTC+8, because the off-by-one-day bug
+// these tests guard against only appears when the local calendar day differs
+// from the UTC one. The zone is pinned in `jest.preset.js`, which the CLI loads
+// before forking its workers — setting `process.env.TZ` from a `beforeAll` here
+// looks like it works but does nothing, since the worker has already resolved
+// its timezone by then.
+//
+// Assert the zone up front so removing that pin fails with the reason instead
+// of an inscrutable one-day-off date mismatch.
+describe('timezone assumption', () => {
+  it('runs in UTC+8', (): void => {
+    expect(new Date('2026-08-20T00:00:00Z').getTimezoneOffset()).toBe(-480);
+  });
 });
 
 describe('formatDatePickerValue', () => {

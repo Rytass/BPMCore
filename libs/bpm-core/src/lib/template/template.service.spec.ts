@@ -8,6 +8,7 @@ import { ApprovalTemplateCategoryEntity } from './approval-template-category.ent
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import {
+  ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
@@ -207,6 +208,143 @@ describe('TemplateService', () => {
         }),
       }),
     );
+  });
+
+  it('keeps deactivated approval templates listed unless activation is filtered', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    );
+    const count = jest.fn((): Promise<number> => Promise.resolve(0));
+    const service = new TemplateService(
+      {
+        count,
+        find,
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    await service.listApprovalTemplates({});
+    await service.countApprovalTemplates({
+      activationStatus: ApprovalTemplateActivationStatusEnum.ALL,
+    });
+
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({
+          isActive: expect.anything(),
+        }),
+      }),
+    );
+    expect(count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({
+          isActive: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it('filters approval templates by activation status', async (): Promise<void> => {
+    const find = jest.fn(
+      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    );
+    const count = jest.fn((): Promise<number> => Promise.resolve(0));
+    const service = new TemplateService(
+      {
+        count,
+        find,
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    await service.listApprovalTemplates({
+      activationStatus: ApprovalTemplateActivationStatusEnum.ACTIVE,
+    });
+    await service.countApprovalTemplates({
+      activationStatus: ApprovalTemplateActivationStatusEnum.INACTIVE,
+    });
+
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          deletedAt: expect.any(Object),
+          isActive: true,
+        }),
+      }),
+    );
+    expect(count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          deletedAt: expect.any(Object),
+          isActive: false,
+        }),
+      }),
+    );
+  });
+
+  it('activates and deactivates approval templates without touching versions', async (): Promise<void> => {
+    const template = createApprovalTemplate('template-1');
+    const templateSave = jest.fn(
+      (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> =>
+        Promise.resolve(value),
+    );
+    const service = new TemplateService(
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateEntity | null> =>
+            Promise.resolve(template),
+        ),
+        merge: jest.fn(
+          (
+            entity: ApprovalTemplateEntity,
+            value: Partial<ApprovalTemplateEntity>,
+          ): ApprovalTemplateEntity => Object.assign(entity, value),
+        ),
+        save: templateSave,
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    const deactivated = await service.deactivateApprovalTemplate('template-1');
+
+    expect(deactivated.isActive).toBe(false);
+    expect(deactivated.currentVersionId).toBe(template.currentVersionId);
+
+    const activated = await service.activateApprovalTemplate('template-1');
+
+    expect(activated.isActive).toBe(true);
+    expect(templateSave).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects activation toggles for unknown approval templates', async (): Promise<void> => {
+    const service = new TemplateService(
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateEntity | null> => Promise.resolve(null),
+        ),
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    await expect(
+      service.deactivateApprovalTemplate('template-missing'),
+    ).rejects.toThrow('Approval template template-missing was not found');
   });
 
   it('lists active approval template categories by default', async (): Promise<void> => {
@@ -591,6 +729,7 @@ function createApprovalTemplate(id: string): ApprovalTemplateEntity {
     deletedAt: null,
     description: null,
     id,
+    isActive: true,
     name: `簽核模板 ${id}`,
     updatedAt: new Date('2026-05-10T00:00:00.000Z'),
   });

@@ -1,4 +1,8 @@
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  FormDataSourceValueSnapshots,
+  FormDefinitionSchema,
+  FormFieldOption,
+} from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
   ReturnBehavior,
@@ -16,6 +20,7 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
+import { BPMFormDataSourceValueResolver } from '../form-data-source';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationResolutionEnum,
@@ -94,6 +99,270 @@ describe('WorkflowEngineService', () => {
     ]);
   });
 
+  it('resolves dynamic options before saving a submitted instance', async (): Promise<void> => {
+    const snapshots: FormDataSourceValueSnapshots = {
+      costCenter: {
+        bindingHash: 'binding-hash-1',
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+        validatedAt: '2026-08-12T09:00:00.000Z',
+      },
+    };
+    const resolver = createValueResolver(snapshots);
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createDynamicOptionFormSchema(),
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const authContext = createAuthContext('member-001');
+
+    const instance = await fixture.service.submitApprovalInstance(
+      {
+        formDataJson: '{"costCenter":"CC-001","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      },
+      authContext,
+    );
+
+    expect(resolver.resolveFormDataOptionSnapshots).toHaveBeenCalledWith({
+      authContext,
+      formData: { costCenter: 'CC-001', plant: 'TPE' },
+      revalidateAll: true,
+      schema: createDynamicOptionFormSchema(),
+    });
+    expect(instance.formDataOptionSnapshot).toEqual(snapshots);
+  });
+
+  it('refuses a dynamic option value when the host registered no resolver', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createDynamicOptionFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"costCenter":"CC-001","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      }),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_MISSING' });
+  });
+
+  it('still accepts a static submission when the host registered no resolver', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const instance = await fixture.service.submitApprovalInstance({
+      formDataJson: '{"amount":1000}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: null,
+    });
+
+    expect(instance.formDataOptionSnapshot).toEqual({});
+  });
+
+  it('resolves dynamic options before resubmitting a returned instance', async (): Promise<void> => {
+    const snapshots: FormDataSourceValueSnapshots = {
+      costCenter: {
+        bindingHash: 'binding-hash-2',
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'Cost center HKG', value: 'CC-002' }],
+        validatedAt: '2026-08-12T09:00:00.000Z',
+      },
+    };
+    const resolver = createValueResolver(snapshots);
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const authContext = createAuthContext('member-001');
+
+    const resubmittedInstance = await fixture.service.resubmitApprovalInstance(
+      {
+        formDataJson: '{"costCenter":"CC-002","plant":"HKG"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Updated request',
+      },
+      authContext,
+    );
+
+    expect(resolver.resolveFormDataOptionSnapshots).toHaveBeenCalledWith({
+      authContext,
+      formData: { costCenter: 'CC-002', plant: 'HKG' },
+      previousFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      previousSnapshots: {},
+      schema: formSchema,
+    });
+    expect(fixture.savedInstance).toMatchObject({
+      formDataOptionSnapshot: snapshots,
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+    expect(resubmittedInstance.formDataJson).toBe(
+      '{"costCenter":"CC-002","plant":"HKG"}',
+    );
+    expect(resubmittedInstance.formDataOptionSnapshotJson).toBe(
+      JSON.stringify(snapshots),
+    );
+  });
+
+  it('removes the option snapshot when a resubmit clears a dynamic value', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema({
+      dynamicFieldRequired: false,
+    });
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processOptionSnapshot: {
+        costCenter: {
+          bindingHash: 'binding-hash-1',
+          dataSourceKey: 'demo.cost-centers',
+          dataSourceVersion: 1,
+          options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+          validatedAt: '2026-08-12T09:00:00.000Z',
+        },
+      },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.resubmitApprovalInstance({
+      formDataJson: '{"costCenter":null,"plant":"TPE"}',
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    });
+
+    expect(fixture.savedInstance?.formDataOptionSnapshot).toEqual({});
+  });
+
+  it('does not treat an array on a single-select as a cleared value', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema({
+      dynamicFieldRequired: false,
+    });
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"costCenter":[],"plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      }),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_MISSING' });
+  });
+
+  it('does not treat an empty string on a multiple field as a cleared value', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema({
+      dynamicFieldMode: 'multiple',
+      dynamicFieldRequired: false,
+    });
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: ['CC-001'], plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"costCenter":"","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      }),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_MISSING' });
+  });
+
+  it('resubmits with a controlled error when the instance schema is malformed', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { amount: 1000 },
+      processFormDefinitionSnapshot: {
+        schema: { fields: [null], schemaVersion: 1 },
+      },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    // A corrupt snapshot must surface as a controlled 400, never a TypeError.
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":1200}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      }),
+    ).rejects.toThrow('Approval instance form schema is invalid');
+  });
+
+  it('rejects a resubmit when the instance changes while options resolve', async (): Promise<void> => {
+    const resolver = createValueResolver({});
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      rootInstanceUpdatedAt: new Date('2026-08-12T09:00:00.000Z'),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      transactionalInstanceUpdatedAt: new Date('2026-08-12T09:00:01.000Z'),
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"costCenter":"CC-002","plant":"HKG"}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Updated request',
+      }),
+    ).rejects.toThrow(
+      'Approval instance changed while options were resolving; refresh and retry',
+    );
+    expect(fixture.savedInstance).toBeNull();
+  });
+
   it('builds initiator metadata from active memberships when submit omits a snapshot', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -154,6 +423,44 @@ describe('WorkflowEngineService', () => {
         title: 'Request',
       }),
     ).rejects.toThrow('Approval template does not have a published version');
+  });
+
+  it('rejects submit when the template is deactivated', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateIsActive: false,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Approval template is deactivated');
+  });
+
+  it('rejects resubmit when the template is deactivated', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      templateIsActive: false,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('Approval template is deactivated');
   });
 
   it('rejects submit when required form fields are missing', async (): Promise<void> => {
@@ -423,6 +730,144 @@ describe('WorkflowEngineService', () => {
       formData: { amount: 1200, approvalLevel: '主管簽核' },
       state: ApprovalInstanceStateEnum.APPROVED,
     });
+  });
+
+  it('drops a stale option snapshot when a service task overwrites a dynamic field', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processOptionSnapshot: {
+        costCenter: {
+          bindingHash: 'binding-hash-1',
+          dataSourceKey: 'demo.cost-centers',
+          dataSourceVersion: 1,
+          options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+          validatedAt: '2026-08-12T09:00:00.000Z',
+        },
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.costCenter',
+        value: '"CC-999"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    // Keeping the old snapshot would label CC-999 as "Cost center TPE".
+    // `toEqual` matters here: `toMatchObject({})` passes for any object.
+    expect(fixture.savedInstance?.formDataOptionSnapshot).toEqual({});
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { costCenter: 'CC-999', plant: 'TPE' },
+    });
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          action: 'SET_FORM_FIELD',
+          clearedOptionSnapshot: 'costCenter',
+        }),
+      }),
+    );
+  });
+
+  it('runs a service task on an instance whose form snapshot cannot be parsed', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: { schema: 'not-a-schema' },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, approvalLevel: '主管簽核' },
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
+  it('still prunes a valid dynamic field beside a malformed sibling entry', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: {
+        schema: { ...formSchema, fields: [null, ...formSchema.fields] },
+      },
+      processOptionSnapshot: {
+        costCenter: {
+          bindingHash: 'binding-hash-1',
+          dataSourceKey: 'demo.cost-centers',
+          dataSourceVersion: 1,
+          options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+          validatedAt: '2026-08-12T09:00:00.000Z',
+        },
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.costCenter',
+        value: '"CC-999"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance?.formDataOptionSnapshot).toEqual({});
+  });
+
+  it('survives a snapshot whose field list holds malformed entries', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: {
+        schema: { fields: [null, 'nonsense'], schemaVersion: 1 },
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, approvalLevel: '主管簽核' },
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
+  it('keeps option snapshots when a service task writes a static field', async (): Promise<void> => {
+    const formSchema = createDynamicOptionFormSchema();
+    const snapshot = {
+      costCenter: {
+        bindingHash: 'binding-hash-1',
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+        validatedAt: '2026-08-12T09:00:00.000Z',
+      },
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { costCenter: 'CC-001', plant: 'TPE' },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processOptionSnapshot: snapshot,
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.plant',
+        value: '"HKG"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance?.formDataOptionSnapshot).toEqual(snapshot);
   });
 
   it('resolves a user task assignee from a selected position', async (): Promise<void> => {
@@ -2531,6 +2976,7 @@ function createServiceFixture({
   delegationResolution,
   decisionTask,
   decisionToken,
+  formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
   instanceState,
@@ -2538,13 +2984,17 @@ function createServiceFixture({
   processAdhocDirectives = [],
   processFormData,
   processFormDefinitionSnapshot,
+  processOptionSnapshot,
   processManagerResolutions = [],
   processMemberships = [],
   processNotifications = [],
   processOrgUnits = [],
   processWorkflowSnapshot,
+  rootInstanceUpdatedAt,
   serviceTaskDispatcher,
+  templateIsActive = true,
   templateVersionStatus,
+  transactionalInstanceUpdatedAt,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
   readonly currentVersionId: string | null;
@@ -2561,10 +3011,15 @@ function createServiceFixture({
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processNotifications?: readonly NotificationEntity[];
+  readonly processOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
+  readonly rootInstanceUpdatedAt?: Date;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
+  readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
+  readonly transactionalInstanceUpdatedAt?: Date;
+  readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
 }): ServiceFixture {
   let savedToken: WorkflowTokenEntity | null = null;
   let tokenSequence = 1;
@@ -2590,7 +3045,7 @@ function createServiceFixture({
   let savedSingleActivityLogs: readonly ActivityLogEntity[] = [];
   let savedTasks: readonly TaskEntity[] = [];
   let savedTaskCandidates: readonly TaskCandidateEntity[] = [];
-  const template = createTemplate(currentVersionId);
+  const template = createTemplate(currentVersionId, templateIsActive);
   const templateVersion = createTemplateVersion(templateVersionStatus);
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
@@ -2611,7 +3066,18 @@ function createServiceFixture({
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
-    findOne: jest.fn(() => Promise.resolve(createApprovalInstance())),
+    findOne: jest.fn(() =>
+      Promise.resolve(
+        createApprovalInstance({
+          formData: processFormData,
+          formDataOptionSnapshot: processOptionSnapshot,
+          formDefinitionSnapshot: processFormDefinitionSnapshot,
+          state: instanceState,
+          updatedAt: rootInstanceUpdatedAt,
+          workflowSnapshot: processWorkflowSnapshot,
+        }),
+      ),
+    ),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
@@ -2759,18 +3225,21 @@ function createServiceFixture({
       ),
       findOne: jest.fn(() =>
         Promise.resolve(
-          createApprovalInstance({
-            formData: processFormData,
-            formDefinitionSnapshot: processFormDefinitionSnapshot,
-            state: instanceState,
-            workflowSnapshot: processWorkflowSnapshot,
-          }),
+          savedInstance ??
+            createApprovalInstance({
+              formData: processFormData,
+              formDataOptionSnapshot: processOptionSnapshot,
+              formDefinitionSnapshot: processFormDefinitionSnapshot,
+              state: instanceState,
+              updatedAt: transactionalInstanceUpdatedAt,
+              workflowSnapshot: processWorkflowSnapshot,
+            }),
         ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
-        savedInstance = entity;
+        savedInstance = Object.assign(createApprovalInstance(), entity);
 
-        return Promise.resolve(entity);
+        return Promise.resolve(savedInstance);
       }),
     });
   const transactionalTokenRepository = createRepository<WorkflowTokenEntity>({
@@ -3181,6 +3650,7 @@ function createServiceFixture({
       signatureService as unknown as SignatureService,
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
+      formDataSourceValueResolver,
     ),
     notificationService,
   };
@@ -3227,6 +3697,7 @@ function createApprovalInstanceQueryBuilderMock(
 
 function createTemplate(
   currentVersionId: string | null,
+  isActive: boolean,
 ): ApprovalTemplateEntity {
   return {
     category: null,
@@ -3236,6 +3707,7 @@ function createTemplate(
     deletedAt: null,
     description: null,
     id: 'template-1',
+    isActive,
     name: '費用申請',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
   };
@@ -3314,6 +3786,56 @@ function createFormVersion(
   };
 }
 
+function createValueResolver(
+  snapshots: FormDataSourceValueSnapshots,
+): BPMFormDataSourceValueResolver {
+  return {
+    resolveFormDataOptionSnapshots: jest.fn(() =>
+      Promise.resolve(snapshots),
+    ),
+    resolveFormFieldOptions: jest.fn(() =>
+      Promise.resolve([] as readonly FormFieldOption[]),
+    ),
+  };
+}
+
+function createDynamicOptionFormSchema({
+  dynamicFieldMode,
+  dynamicFieldRequired = true,
+}: {
+  readonly dynamicFieldMode?: 'multiple' | 'single';
+  readonly dynamicFieldRequired?: boolean;
+} = {}): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'plant',
+        label: 'Plant',
+        required: true,
+        type: 'text',
+      },
+      {
+        dataSource: {
+          bindings: [
+            {
+              from: { fieldKey: 'plant', kind: 'FIELD' },
+              parameter: 'plant',
+            },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
+        fieldKey: 'costCenter',
+        label: 'Cost center',
+        ...(dynamicFieldMode ? { mode: dynamicFieldMode } : {}),
+        required: dynamicFieldRequired,
+        type: 'select',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
 function createRequiredReasonFormSchema(): FormDefinitionSchema {
   return {
     fields: [
@@ -3350,26 +3872,31 @@ function createConditionalAttachmentFormSchema(): FormDefinitionSchema {
 }
 
 function createApprovalInstance({
+  formDataOptionSnapshot,
   formDefinitionSnapshot,
   formData,
   id,
   initiatorMemberId,
   state,
   title,
+  updatedAt,
   workflowSnapshot,
 }: {
+  readonly formDataOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly formData?: Readonly<Record<string, unknown>>;
   readonly id?: string;
   readonly initiatorMemberId?: string;
   readonly state?: ApprovalInstanceStateEnum;
   readonly title?: string;
+  readonly updatedAt?: Date;
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
     completedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formData: formData ?? {},
+    formDataOptionSnapshot: formDataOptionSnapshot ?? {},
     formDefinitionSnapshot: formDefinitionSnapshot ?? {
       schema: {
         fields: [],
@@ -3384,7 +3911,7 @@ function createApprovalInstance({
     templateId: 'template-1',
     templateVersionId: 'template-version-1',
     title: title ?? '費用申請',
-    updatedAt: new Date('2026-05-04T09:00:00.000Z'),
+    updatedAt: updatedAt ?? new Date('2026-05-04T09:00:00.000Z'),
     workflowSnapshot: workflowSnapshot ?? {
       edges: [],
       meta: { schemaVersion: 1 },
@@ -3697,7 +4224,13 @@ function createWebhookServiceTaskWorkflow(): WorkflowDefinition {
   };
 }
 
-function createSetFormFieldServiceTaskWorkflow(): WorkflowDefinition {
+function createSetFormFieldServiceTaskWorkflow({
+  fieldPath = 'form.approvalLevel',
+  value = '"主管簽核"',
+}: {
+  readonly fieldPath?: string;
+  readonly value?: string;
+} = {}): WorkflowDefinition {
   return {
     edges: [
       {
@@ -3726,9 +4259,9 @@ function createSetFormFieldServiceTaskWorkflow(): WorkflowDefinition {
       {
         data: {
           action: {
-            fieldPath: 'form.approvalLevel',
+            fieldPath,
             type: 'SET_FORM_FIELD',
-            value: '"主管簽核"',
+            value,
           },
           label: '設定簽核層級',
         },

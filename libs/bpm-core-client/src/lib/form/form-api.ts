@@ -348,7 +348,12 @@ export function createFieldDefinition(
     type,
   };
 
-  if (type === 'select' || type === 'radio' || type === 'checkbox') {
+  if (
+    type === 'select' ||
+    type === 'autocomplete' ||
+    type === 'radio' ||
+    type === 'checkbox'
+  ) {
     return {
       ...base,
       options: [
@@ -386,6 +391,7 @@ function readDefaultFieldLabel(
 ): string {
   const labels: Readonly<Record<FormFieldDefinition['type'], string>> = {
     boolean: '開關',
+    autocomplete: '自動完成',
     checkbox: '複選',
     date: '日期',
     datetime: '日期時間',

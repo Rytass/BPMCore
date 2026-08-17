@@ -9,6 +9,38 @@ All notable changes to `@rytass/bpm-core-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Form helpers now recognize `autocomplete` and distinguish static option
+  fields from DataSource-backed option fields without changing primitive form
+  values.
+- Added typed catalog, designer preview, and authenticated runtime wrappers
+  for the host-registered form DataSource GraphQL boundary.
+- Approval instance records now expose parsed and raw dynamic option snapshots
+  returned by the server.
+- Added immutable DataSource option merge, selected hydration, unresolved-value,
+  dependency, and value-signature helpers plus the `FormDataSourceFieldStatus`
+  union used by the React renderer.
+- Added immutable builder helpers for DataSource capability filtering, parameter
+  type matching, field/constant bindings, field-key rename propagation, and
+  dependent-field discovery.
+- Added `FORM_DATA_SOURCE_ERROR_CODES`, `readFormDataSourceErrorCode()`,
+  `readFormDataSourceErrorMessage()`, and `readFormSchemaLintMessage()` so
+  consumers can turn the backend's stable DataSource codes into display copy
+  instead of showing the raw code. A code this client does not map yet still
+  yields readable copy rather than leaking the code to the screen. Detection is
+  token-bounded, and a publish failure that joins several lint lines has every
+  code mapped, not just the first. Lint lines that quote a host-chosen parameter
+  or descriptor name are left verbatim, so a parameter named like an error code
+  is not rewritten as that error's copy.
+
+### Fixed
+
+- Explicit `NEXT_PUBLIC_API_URL` base URLs now resolve to `/graphql` before
+  browser requests, matching the documented API-base configuration contract.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 

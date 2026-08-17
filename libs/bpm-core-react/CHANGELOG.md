@@ -5,6 +5,31 @@ All notable changes to `@rytass/bpm-core-react` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Form builder and renderer schemas now recognize the `autocomplete` option
+  field while retaining Mezzanine controls and primitive form values.
+- FormRenderer now supports host-bounded preview/runtime DataSource contexts,
+  snapshot hydration, async Mezzanine Select/AutoComplete controls, complete
+  list Radio/Checkbox controls, paging/search state, retry feedback, and
+  submission blocking for unresolved dynamic values.
+- FormBuilderView now loads the host DataSource Catalog, filters sources by
+  control capability, edits field/constant bindings, preserves bindings when a
+  field key changes, and confirms source/mode changes or dependent-field
+  removal before updating the schema. DataSource schema lint is available from
+  the editor.
+
+### Fixed
+
+- The template designer now restores missing legacy edge data before rendering,
+  so older workflow JSON without an edge `data` object remains editable.
+- Dynamic option failures no longer surface raw `FORM_DATA_SOURCE_*` codes.
+  Launch, resubmit, field-level, form builder lint, and template
+  designer/compose publish messages now show mapped copy, so a value that
+  expired reads as "已選取的選項已失效，請重新選擇。" instead of an error code.
+
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.
 

@@ -2,7 +2,8 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-08-11
-- **實作狀態**：Planned，尚未進入程式實作
+- **實作狀態**：Phase 0–6 與 P6 repository-wide e2e final gate 已完成；完整 suite 43/43 通過；
+  2026-08-13 完成一輪獨立稽核修正（錯誤碼語意、前端訊息對應、registry-less 守衛）
 - **適用範圍**：Form Builder、FormRenderer、案件發起、案件退回編輯與重新送出、BPM 宿主整合
 - **交付規劃**：[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 
@@ -45,7 +46,9 @@ BPM core 定義 DataSource contract 與 registry injection token；真正的 API
 查詢、憑證、Header、簽章及領域授權由宿主 provider 實作。
 
 `BPMRootModule` 新增 optional host provider wiring。未註冊 registry 的既有宿主仍能
-使用全部靜態選項功能，但 Designer Catalog 為空，動態欄位顯示 unavailable。
+使用全部靜態選項功能，但 Designer Catalog 為空，動態欄位顯示 unavailable。此時
+DataSource 欄位不得發布，送出時也不得寫入動態值：兩條路徑都以
+`FORM_DATA_SOURCE_MISSING` 失敗，避免出現沒有任何權威能驗證的值。
 
 表單 schema 只保存：
 
@@ -238,7 +241,9 @@ resolve 結果。
 - single value 必須 resolve 到完全相同的一筆 value。
 - multiple values 必須全部 resolve；部分成功仍視為失敗。
 - 重複 value、空 value、provider 回傳未請求 value 或超量結果視為 provider contract
-  error。
+  error（`FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT`）。
+- provider 正常回應但無法解析某個送入 value，屬於使用者端驗證失敗，使用獨立錯誤碼
+  `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`，讓前端能區分「選項失效請重選」與「來源壞掉」。
 - clear value 時移除該欄位的 option snapshot。
 - resolve 失敗時不建立或更新 instance，不接受瀏覽器提供的 label 作為 fallback。
 
@@ -246,6 +251,11 @@ resolve 結果。
 
 `approval_instances` 規劃新增 `form_data_option_snapshot jsonb NOT NULL DEFAULT '{}'`。
 只有 DataSource-backed 欄位需要寫入；靜態選項已存在 immutable form schema snapshot。
+
+目前 `apps/api` 已提供 wrapper-owned 的 `demo.cost-centers@1`、
+`demo.cost-centers-complete@1` 與 `demo.cost-centers-always@1` fixture；來源資料表與
+reset/seed ownership 都留在 wrapper host，不進入 `BPM_CORE_MIGRATIONS`。Reusable core
+只消費宿主注入的 registry contract。
 
 規劃中的 snapshot contract：
 
@@ -266,6 +276,10 @@ export type FormDataSourceValueSnapshots = Readonly<Record<string, FormDataSourc
 
 歷史唯讀顯示一律使用 option snapshot，不向外部 API 查詢。DataSource 改 label、升版或
 下架都不能改變既有案件畫面。
+
+`SET_FORM_FIELD` service task 在 DB transaction 內執行，不得呼叫 provider，因此當它寫入
+DataSource 欄位時必須移除該欄位的 option snapshot：寧可顯示 raw value，也不能讓舊 label
+配上新值。清除動態欄位值時同樣移除對應 snapshot。
 
 ### 3.9 編輯與重新送出採用不自動清除原則
 
@@ -316,6 +330,9 @@ Builder 必須提供以下保護：
 
 宿主有責任在仍有 published form 或可編輯 instance 引用時保留對應 provider version。
 
+環境 lint 只在「產生新的已發布版本」時執行：草稿建立與編輯保留原 JSON（顯示 unavailable），
+而發布內容、發布版本與 rollback 回舊版本都視為發布，必須通過 registry 檢查。
+
 ### 3.11 查詢、競態與錯誤 UX
 
 所有動態 control 共用下列行為：
@@ -343,6 +360,15 @@ Core 與 host provider 必須共同落實：
 - Generic core cache 預設不跨 request 快取 DataSource result。Provider 可依自身授權與
   freshness contract 實作 cache。
 - Error message 對前端提供穩定錯誤碼，不暴露上游 URL、Header、SQL 或 response body。
+  錯誤碼不得直接當作畫面文案；client package 提供
+  `readFormDataSourceErrorMessage()` 做對應，由前端顯示可讀訊息。
+
+**已知限制**：publish lint 目前以 `'; '` 串接成單一字串回傳，前端 `readFormSchemaLintMessage()`
+必須從文字辨識帶碼片段（僅 `schema.fields[n].dataSource <CODE>` 且位於片段開頭）。若把 DataSource parameter
+或 field key 命名成含 `'; '` 與該路徑形狀的字串，該行在 Designer lint 面板會被誤映射成錯誤文案。
+這類名稱多數由設計者自己在表單 schema 內指定（少數來自宿主 descriptor），也就是刻意這樣命名的人
+正是唯一會看到該行的人，沒有跨使用者或跨權限邊界，無安全或資料影響。根治方式是改回傳結構化
+lint 結果（code 與 path 各自成欄位）而非解析文字，屬公開 lint surface 變更，需另立決策。
 
 ## 4. 發布前驗證不變式
 

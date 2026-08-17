@@ -12,6 +12,13 @@ application owns runtime infrastructure such as GraphQL setup, TypeORM
 connection setup, auth/session handling, Vault or secret loading, member
 directory integration, storage adapters, and deployment.
 
+Form Definition parsing accepts the additive static/DataSource option-source
+shape and performs structural publish lint for source XOR, selection mode,
+direct bindings, duplicate parameters, field references, dependency cycles,
+and dynamic default-value prohibition. Hosts can register versioned DataSources
+through `BPMRootModule`; the runtime validates bindings, bounds provider calls,
+and keeps transport details and credentials out of form JSON.
+
 ## Package Status
 
 Current version: `0.1.10`
@@ -121,7 +128,7 @@ import { HostSessionService } from './host-session.service';
         sortSchema: true,
       }),
     }),
-    BPMRootModule.forRoot({
+  BPMRootModule.forRoot({
       imports: [HostAuthModule],
       authContextFactory: buildBPMAuthContextFromExecutionContext,
       memberResolverProvider: {
@@ -374,6 +381,54 @@ configureBPMClient({
   headers: { Authorization: `Bearer ${process.env.BPM_SERVICE_TOKEN!}` },
 });
 ```
+
+### Dynamic form option DataSources
+
+The host owns the actual ERP, database, or integration-bus implementation. It
+registers one versioned catalog provider; a form stores only the source key,
+version, and field/constant bindings:
+
+```ts
+import {
+  BPM_FORM_DATA_SOURCE_REGISTRY,
+  BPM_MEMBER_RESOLVER,
+  BPMRootModule,
+} from '@rytass/bpm-core-nestjs-module';
+import { HostFormDataSourceRegistry } from './host-form-data-source.registry';
+
+BPMRootModule.forRoot({
+  formDataSourceRegistryProvider: {
+    provide: BPM_FORM_DATA_SOURCE_REGISTRY,
+    useClass: HostFormDataSourceRegistry,
+  },
+  memberResolverProvider: {
+    provide: BPM_MEMBER_RESOLVER,
+    useClass: HostBPMMemberResolver,
+  },
+});
+```
+
+`formDataSources` and `previewFormFieldOptions` are designer-only GraphQL
+queries. `formFieldOptions` is an authenticated runtime query whose source
+reference comes from the server's published form version or returned-instance
+snapshot. Missing registry versions, unsupported controls, incomplete
+bindings, provider failures, and over-limit results return stable DataSource
+error codes.
+
+On submit, the engine resolves every selected DataSource-backed value on the
+server and stores the returned labels, source version, binding hash, and
+validation timestamp in `approval_instances.form_data_option_snapshot`. A
+resubmit resolves outside the database transaction, then rechecks the
+instance revision under the transaction lock before writing form data and its
+snapshot atomically. This keeps historical labels readable even when a host
+later removes a registry version, while changed bindings or an `ALWAYS`
+revalidation policy still require a live provider call.
+
+The repository wrapper host demonstrates the contract with
+`ApiFormDataSourceRegistry` and the seeded `demo.cost-centers@1` family. Its
+database table and reset ownership remain in `apps/api`; an external host should
+replace that provider through `BPMRootModule.forRoot()` and keep its own source
+data and authorization rules outside the BPM package.
 
 This requires the wrapper host's auth middleware to honor `Authorization`
 headers (member-base hosts can be configured to do so via
@@ -812,6 +867,7 @@ BPMRootModule.forRootAsync({
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                      |
 | `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks. |
 | `businessCalendarProvider`                       | Monday–Friday calendar         | Host provider for `BPM_BUSINESS_CALENDAR`, used by `BUSINESS_DAY` SLAs. BPMCore ships no holiday data. |
+| `formDataSourceRegistryProvider`                 | Empty catalog                  | Single host provider for versioned Select / AutoComplete / Radio / Checkbox DataSources. |
 | `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below). |
 | `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
@@ -1281,6 +1337,7 @@ Importing `BPMRootModule` registers GraphQL resolvers for:
 - Organization units, positions, memberships, manager resolution, and summary.
 - Member profile lookup and member metadata cache inspection.
 - Form definitions and form definition versions.
+- Form option DataSource catalog, designer preview, and authenticated runtime option queries.
 - Approval templates, template versions, categories, validation, and dry run.
 - Workflow instances, tokens, tasks, task candidates, decisions, activity logs,
   submit/process/approve/return/cancel/resubmit operations.

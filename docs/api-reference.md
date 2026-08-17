@@ -2,7 +2,9 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-11, PR #6 remediation): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`; this change set adds no public exports.
+Last verified against (2026-08-13, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+
+PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
 ---
 
@@ -27,53 +29,72 @@ Bump the "Last verified against" line at the top to the current version of each 
 ### Versioning and changelogs — always `nx release`, never a manual bump
 
 **Do not hand-edit `version` in `libs/*/package.json`.** `nx release` (config in
-`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the
-`v{version}` git tag and the GitHub release for the three core packages
-(`shared`, `bpm-core`, `bpm-core-client`, released as a fixed version set). A
-manual bump silently skips the changelog, so consumers get a release whose
-`CHANGELOG.md` still ends at the previous version.
+`nx.json`) owns the version numbers, the per-package `CHANGELOG.md` files, the git
+tags and the GitHub releases for **all four** published packages. A manual bump
+silently skips the changelog, so consumers get a release whose `CHANGELOG.md`
+still ends at the previous version.
 
 ```bash
-# Determines the bump from Conventional Commits since the last v* tag,
+# Determines each group's bump from Conventional Commits since its last tag,
 # writes CHANGELOGs, commits and tags. Add --dry-run first to review.
 npx nx release --skip-publish
 ```
 
-`@rytass/bpm-core-react` is deliberately **not** in `release.projects` — it
-versions on its own cadence (it tracks React/Mezzanine, not the core contract).
-Bump its `version` and write its `CHANGELOG.md` entry by hand, matching the
-Keep a Changelog style already in that file.
+All four packages form **one fixed version set**: a shared version number, a
+`v{version}` tag, one workspace `CHANGELOG.md`, one GitHub release, and a
+per-package `CHANGELOG.md` each. `prepublish-check` (typecheck + lint + test +
+build + publint) runs for all four before versioning.
 
-Once the version commit and tag exist, run the publish flows below.
+The trade-off of a fixed set is that any change bumps every package, so
+`bpm-core-react` gets a new version even for a backend-only change. That is
+deliberate: versioning it on its own cadence is what let it drift to 0.8.0 while
+the core packages sat at 0.7.0.
 
-### Two publish flows
+Inter-package `peerDependencies` ranges are rewritten automatically, because
+`version.preserveMatchingDependencyRanges` is `false`. Do not hand-maintain the
+`@rytass/bpm-core-*` ranges. Aligning the set at 0.9.0 also collapsed
+`bpm-core-react`'s accumulated `^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0` into a
+single `^0.9.0`.
 
-The four packages have **two different publish flows** because they use different builders. Mixing them up has already caused a broken 0.1.3 release that had to be deprecated.
+`release.conventionalCommits.useCommitScope` is **`false` on purpose**. With
+nx's default (`true`), only commits whose scope matches a *project* name count
+toward the bump and everything else is forced to `patch` — and this repo scopes
+commits by domain (`feat(template)`, `fix(calendar)`), which made a three-feature
+release resolve to `patch`. Do not remove it.
 
-### Backend packages — publish from `dist/libs/<pkg>`
-
-`@rytass/bpm-core-shared`, `@rytass/bpm-core-client`, `@rytass/bpm-core-nestjs-module` use `@nx/js:tsc` with `generatePackageJson: true`. The `dist/libs/<pkg>/package.json` is the one that gets published — it has `main: "./src/index.js"` pointing at compiled artifacts. The source `libs/<pkg>/package.json` is for the monorepo dev experience and points at `.ts` files that npm consumers do not see.
-
-```bash
-# Always:
-npx nx run-many -t build -p shared,bpm-core-client,bpm-core
-node tools/publish/finalize-dist-package.mjs \
-  dist/libs/shared dist/libs/bpm-core-client dist/libs/bpm-core
-for pkg in shared bpm-core-client bpm-core; do
-  cd dist/libs/$pkg && npm publish --access public
-done
-```
-
-**Never** `cd libs/<pkg> && npm publish` for these — the published tarball will contain only `.ts` files and fail with `main: "./src/index.js"` not found.
-
-### Frontend package — publish from `libs/bpm-core-react/`
-
-`@rytass/bpm-core-react` uses Vite library mode, which emits to `libs/bpm-core-react/dist/`. Its `package.json` already has `files: ["dist", "README.md", "LICENSE", "CHANGELOG.md"]` and `main: "./dist/index.cjs"` pointing at the in-tree dist. Publish from the lib directory itself:
+### Publishing — one command for all four
 
 ```bash
-npx nx build bpm-core-react
-cd libs/bpm-core-react && npm publish --access public
+npx nx release publish        # add --dry-run first
 ```
+
+Each project declares its own `nx-release-publish.packageRoot`, so this publishes
+every package from the correct directory. The two builders still emit to
+different places, and that difference is now expressed in config rather than in
+two hand-run procedures — mixing them up by hand has already caused a broken
+0.1.3 release that had to be deprecated.
+
+| Package                            | Builder            | `packageRoot`            |
+| ---------------------------------- | ------------------ | ------------------------ |
+| `@rytass/bpm-core-shared`          | `@nx/js:tsc`       | `dist/libs/shared`       |
+| `@rytass/bpm-core-nestjs-module`   | `@nx/js:tsc`       | `dist/libs/bpm-core`     |
+| `@rytass/bpm-core-client`          | `@nx/js:tsc`       | `dist/libs/bpm-core-client` |
+| `@rytass/bpm-core-react`           | Vite library mode  | `libs/bpm-core-react`    |
+
+The three `@nx/js:tsc` packages publish from `dist/libs/<pkg>` because
+`generatePackageJson: true` writes the consumer-facing manifest there, with
+`main` pointing at compiled `.js`. **Never** `cd libs/<pkg> && npm publish` for
+those three — the source manifest points `main` at `./src/index.js` but the
+directory ships only `.ts`, so the tarball is non-functional. `bpm-core-react` is
+the opposite: Vite emits into `libs/bpm-core-react/dist/` and its in-tree
+manifest already has `files` and `main` pointing there, so the lib directory *is*
+the package root.
+
+There is no post-build manifest fixup step. `tools/publish/finalize-dist-package.mjs`
+used to inject `"type": "commonjs"` into the dist manifest; as of nx 22.7.1
+`generatePackageJson` emits that field itself, verified by clean-rebuilding all
+three packages, so the script and its `finalize-dist` targets were removed.
+`pkg-quality` (publint) now depends directly on `build`.
 
 ### Consumer setup gotchas
 
@@ -141,12 +162,29 @@ Form-schema definitions.
 | `TextFieldDefinition` | type | text / email / textarea |
 | `NumberFieldDefinition` | type | number (min/max/precision) |
 | `DateFieldDefinition` | type | date / datetime |
-| `SelectFieldDefinition` | type | single / multi select |
+| `FormSelectionMode` | type | `single` or `multiple` option selection |
+| `FormDataSourceReference` | interface | Registered source key, version, and bindings |
+| `FormDataSourceBinding` | type | Direct field or primitive constant binding |
+| `FormFieldOptionSource` | type | Static options / DataSource XOR union |
+| `SelectFieldDefinition` | type | Select option field with single / multiple mode |
+| `AutoCompleteFieldDefinition` | type | AutoComplete option field with single / multiple mode |
+| `RadioFieldDefinition` | type | Fixed single-selection option field |
+| `CheckboxFieldDefinition` | type | Fixed multiple-selection option field |
+| `FormOptionFieldDefinition` | type | Union of the four option controls |
 | `FormFieldOption` | interface | Option in a select field |
+| `FormDataSourceValueSnapshot` | type | Persisted dynamic option labels and validation metadata |
+| `FormDataSourceValueSnapshots` | type | Field-keyed dynamic option snapshot map |
+| `FormDataSourceOptionFieldDefinition` | type | Option field narrowed to a DataSource |
+| `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
 | `FormUiSchema` | interface | Layout description for renderer |
 | `FormLayoutItem` | interface | One cell in the layout grid |
+| `isFormOptionFieldDefinition()` | function | Option-control type guard |
+| `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
+| `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `readFormFieldSelectionMode()` | function | Normalized control selection mode |
+| `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization |
 
 ## `@rytass/bpm-core-shared/identity`
 
@@ -224,6 +262,10 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
 | `DEFAULT_SLA_CONFIG` | const | SLA applied when a node's timer is switched on |
 | `composeSlaDuration` / `readSlaDurationParts` / `isSlaCalendarModeApplicable` | function | ISO duration ⇄ value+unit, and whether `BUSINESS_DAY` applies |
+| `DEFAULT_QUORUM_THRESHOLD` | const | Threshold seeded when a `QUORUM` decision policy is first chosen |
+| `composeQuorumThreshold` | function | Sanitises a quorum threshold (integer, min 1, `PERCENTAGE` capped at 100) |
+| `readDesignTimeApproverCount` | function | Approvers a resolver is guaranteed to produce; `null` for runtime-resolved strategies |
+| `isDecisionPolicyUnsatisfiable` | function | `true` when a `COUNT` quorum exceeds the approvers the node can ever collect |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
 | `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
@@ -244,7 +286,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/…) |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
@@ -264,7 +306,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment` and `set_user_task_sla` |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |
@@ -329,9 +371,55 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 |---|---|
 | Records | `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `FormBuilderRecord`, `FormSchemaLintResult` |
 | Type | `FormDefinitionListStatus` |
-| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()` |
+| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()` |
 | Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
 | Factory | `createFieldDefinition()` |
+
+### Form DataSource records
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FormDataSourceControl`, `FormDataSourceParameterType`, `FormDataSourceRevalidationPolicy` | type | Client-facing descriptor unions |
+| `FormDataSourceParameterRecord`, `FormDataSourceDescriptorRecord`, `FormDataSourceOptionsResultRecord` | interface | Catalog and option result records |
+| `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` | interface | Preview/runtime query input contracts |
+
+### Form DataSource state helpers
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FormDataSourceFieldStatus` | type | Renderer state union: idle, dependency wait, loading, valid, stale, invalid, or unavailable |
+| `mergeFormDataSourceOptions()` | function | Immutable selected/snapshot/page option merge with stable order |
+| `readSelectedFormDataSourceOptions()` | function | Hydrate only selected options with authoritative labels |
+| `readMissingFormDataSourceOptionValues()` | function | Find selected values without an authoritative option |
+| `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present |
+| `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
+
+### Form DataSource error helpers
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FORM_DATA_SOURCE_ERROR_CODES` | const | Stable DataSource error codes returned by the GraphQL surface |
+| `FormDataSourceErrorCode` | type | Union of the stable DataSource error codes |
+| `readFormDataSourceErrorCode()` | function | Extract the DataSource code from a rejected request, else `null` |
+| `readFormDataSourceErrorMessage()` | function | Map a rejected request to display copy, else `null` |
+| `readFormSchemaLintMessage()` | function | Replace the code inside a publish-lint line, keeping the field path |
+
+### Form DataSource builder helpers
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FormDataSourceBindingFieldOption` | interface | Type-compatible form-field choice for a parameter binding |
+| `FormDataSourceBindingValueKind` | type | Constant or field binding discriminator |
+| `isFormDataSourceDescriptorCompatible()` | function | Enforce descriptor capability requirements for a control |
+| `readCompatibleFormDataSourceDescriptors()` | function | Filter catalog descriptors for a control |
+| `readFormDataSourceParameterType()` | function | Map a form field to a DataSource parameter type |
+| `readCompatibleFormDataSourceBindingFields()` | function | List type-compatible dependency fields, excluding the target |
+| `readFormDataSourceBinding()` | function | Read one parameter binding from a dynamic field |
+| `upsertFormDataSourceFieldBinding()` | function | Immutably add, replace, or remove one parameter binding |
+| `renameFormDataSourceFieldBindings()` | function | Keep FIELD bindings valid when a form field key changes |
+| `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
+| `readFormDataSourceBindingValue()` | function | Read a constant binding value |
+| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
 
@@ -362,7 +450,8 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Records | `ApprovalTemplateRecord`, `ApprovalTemplateCategoryRecord`, `ApprovalTemplateVersionRecord`, `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `PublishedFormVersionOption`, `MemberProfileRecord`, `WorkflowDryRunStepRecord`, `WorkflowDryRunResultRecord`, `TemplateDesignerRecord`, `ApprovalTemplatesPage`, `ApprovalTemplateCategoriesPage`, `ComposeApprovalTemplateWithFormResult` |
 | Types | `ApprovalTemplateListStatus`, `ApprovalTemplateCategoryStatus` |
 | Queries | `listApprovalTemplates()`, `listApprovalTemplatesPage()`, `listApprovalTemplateCategoriesPage()`, `readTemplateDesigner()`, `searchPublishedFormVersionOptions()`, `resolveMemberOptions()`, `searchMemberOptions()` |
-| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()` |
+| Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
+| Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
 
 ## `@rytass/bpm-core-client/workflow`
@@ -371,7 +460,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 | Group | Names |
 |---|---|
-| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord`, `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
+| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
 | Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
 | Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
@@ -426,7 +515,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 ### Notification
 
-`listNotifications({ ... })`, `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
+`listNotifications({ ... })` (accepts `includeArchived`), `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
 ### Pure helpers
 
@@ -446,9 +535,9 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, plus flattened notification/attachment/signature/identity options |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, plus flattened notification/attachment/signature/identity options |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 17-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 21-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -511,6 +600,35 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `publishFormDefinitionContent` publishes a brand-new version directly
 > (content-identical saves are a no-op returning the current version).
 
+## `@rytass/bpm-core-nestjs-module/form-data-source`
+
+Versioned host registry and guarded runtime boundary for dynamic form options.
+
+| Category | Names |
+|---|---|
+| Contract | `BPMFormDataSource`, `BPMFormDataSourceDescriptor`, `BPMFormDataSourceParameter`, `BPMFormDataSourceParameterType`, `BPMFormDataSourceControl`, `BPMFormDataSourceRevalidationPolicy` |
+| Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput`, `BPMFormDataSourceSnapshotResolutionInput` |
+| Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry` |
+| Snapshot resolver | `BPMFormDataSourceValueResolver`, `BPM_FORM_DATA_SOURCE_VALUE_RESOLVER` |
+| Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
+| Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult` |
+| Errors | `BPM_FORM_DATA_SOURCE_ERROR_CODES`, `BPMFormDataSourceErrorCode`, `BPMFormDataSourceException`, `BPMFormDataSourceForbiddenException` |
+| GraphQL objects | `FormDataSourceParameterObject`, `FormDataSourceDescriptorObject`, `FormFieldOptionObject`, `FormDataSourceOptionsResultObject` |
+| GraphQL inputs | `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` |
+| Resolver | `FormDataSourceQueries` (`formDataSources`, `previewFormFieldOptions`, `formFieldOptions`) |
+
+`formDataSources` and `previewFormFieldOptions` require designer permission.
+
+`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` marks a submitted value that is no longer
+selectable, and stays distinct from `FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT`
+(a host provider contract breach) so renderers can tell a bad selection apart
+from a broken source. A host without a registered registry keeps working for
+static forms, but publishing or submitting a DataSource-backed field fails with
+`FORM_DATA_SOURCE_MISSING` instead of silently skipping validation.
+`formFieldOptions` requires authentication and derives the referenced source from
+the published template version or returned-instance snapshot; clients cannot
+submit an arbitrary source reference or binding definition.
+
 ## `@rytass/bpm-core-nestjs-module/template`
 
 | Category | Names |
@@ -531,13 +649,34 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
 
+**Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
+`NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a
+template out of service without deleting it or archiving its published version.
+`TemplateService` adds `activateApprovalTemplate(id)` /
+`deactivateApprovalTemplate(id)`, mirroring the existing category pair, and
+`listApprovalTemplates` accepts `activationStatus` typed as the new
+`ApprovalTemplateActivationStatusEnum` (`ACTIVE` / `ALL` / `INACTIVE`, shaped
+like `ApprovalTemplateCategoryStatusEnum`). This is deliberately **not**
+`ApprovalTemplateListStatusEnum` — `DRAFT` / `PUBLISHED` is derived from version
+state, an orthogonal dimension. Omitting `activationStatus` means `ALL`, so
+existing callers are unaffected and admin screens still see deactivated
+templates in order to reactivate them.
+>
+> A deactivated template rejects `submitApprovalInstance` **and**
+> `resubmitApprovalInstance` with `ConflictException('Approval template is
+> deactivated')`. The guard runs right after the template is loaded, ahead of
+> form-data validation, so callers get the lifecycle reason rather than a
+> misleading field error. `launchableApprovalTemplates` filters deactivated
+> templates out. Instances already in flight are unaffected — they run from
+> `workflowSnapshot`.
+
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
 Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity`, `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskDecisionEntity`, `TaskCandidateEntity`, `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
 | Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
@@ -575,7 +714,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
 | Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
 | Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
-| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`) |
+| Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`). Options now extend `Pick<ModuleMetadata, 'imports'>`, and `BPMRootModule` threads its own `imports` through, so a `useClass` / `useFactory` `businessCalendarProvider` can depend on host repositories or config services without a host-side `@Global()` module |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 
@@ -584,11 +723,28 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Category | Names |
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
+| Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
+
+**Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
+from *read* and from *deleted* — the row survives for statistics and audit.
+`NotificationService` adds `archiveNotifications({ ids, memberId })` /
+`unarchiveNotifications({ ids, memberId })` (both scoped to
+`recipientMemberId`, so one member cannot archive another's notifications, and
+both idempotent — re-archiving an archived row affects 0 rows).
+`listNotifications` / `countNotifications` take `includeArchived?: boolean`,
+defaulting to `false`, so existing callers are unaffected.
+`countUnreadNotifications` **excludes** archived rows: otherwise the bell keeps
+its badge after archiving and the action would be pointless. Archived and read
+are independent dimensions — the archive filter is `archivedAt IS NULL`, not a
+`status` value. GraphQL exposes `archiveNotifications(ids)` /
+`unarchiveNotifications(ids)` mutations (member taken from
+`@BPMCurrentMemberId()`, never a client argument) and an `includeArchived`
+argument on the `notifications` / `notificationCount` queries.
 
 ## `@rytass/bpm-core-nestjs-module/attachment`
 
@@ -614,11 +770,11 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 17-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 21-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-18 ordered migrations:
+21 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001`
 2. `IdentityOrganizationFoundation0000000001000`
@@ -638,6 +794,9 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 16. `BackfillStaleNotificationResolution0000000015000`
 17. `ArchiveParallelFormDrafts0000000016000`
 18. `AdhocDirectives0000000017000`
+19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
+20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
+21. `FormDataOptionSnapshots0000000020000` (adds `approval_instances.form_data_option_snapshot`, default `{}`)
 
 ---
 
@@ -743,6 +902,17 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 
 ### Heavy views (must stay isolated, fat dependencies)
 
+The packages below are declared as **optional** `peerDependencies` in
+`libs/bpm-core-react/package.json` (`peerDependenciesMeta`). A host only has to
+install the ones matching the heavy views it actually mounts; hosts that mount
+none are not warned about missing peers. The version ranges pin what the
+monorepo builds against, so upgrading `@rytass/bpm-core-react` now signals when
+a peer needs bumping too.
+
+Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
+`@codemirror/view`, `@uiw/react-codemirror`, `@hello-pangea/dnd`, `pdfjs-dist`,
+`react-pdf`, `next`.
+
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
 | `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
@@ -751,8 +921,8 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
-| `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
-| `views/forms/renderer` | `FormRendererView` (alias of `FormRenderer`) | normal |
+| `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
+| `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState`, `UseFormDataSourceFieldInput`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()` | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |
 

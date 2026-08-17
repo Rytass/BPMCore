@@ -11,6 +11,12 @@ export enum ApprovalTemplateListStatusEnum {
   PUBLISHED = 'PUBLISHED',
 }
 
+export enum ApprovalTemplateActivationStatusEnum {
+  ACTIVE = 'ACTIVE',
+  ALL = 'ALL',
+  INACTIVE = 'INACTIVE',
+}
+
 export enum ApprovalTemplateCategoryStatusEnum {
   ACTIVE = 'ACTIVE',
   ALL = 'ALL',
@@ -23,6 +29,10 @@ registerEnumType(ApprovalTemplateVersionStatusEnum, {
 
 registerEnumType(ApprovalTemplateListStatusEnum, {
   name: 'ApprovalTemplateListStatus',
+});
+
+registerEnumType(ApprovalTemplateActivationStatusEnum, {
+  name: 'ApprovalTemplateActivationStatus',
 });
 
 registerEnumType(ApprovalTemplateCategoryStatusEnum, {
