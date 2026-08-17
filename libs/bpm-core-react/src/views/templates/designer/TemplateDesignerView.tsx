@@ -4745,6 +4745,13 @@ function readOrgUnitScopeIds(
  *
  * A resolved entry is never replaced by another resolved one, so a stale
  * search response still cannot overwrite a fresher name.
+ *
+ * Returns `currentOptions` itself when the merge is a no-op. The effect that
+ * drives `resolveWorkflowMemberOptions` lists `memberOptions` in its
+ * dependencies, so handing back a fresh array of identical entries re-runs it,
+ * which re-requests the same ids, which merges the same entries again. A
+ * failing profile fetch would loop on the API forever; identity is what stops
+ * it, not the contents.
  */
 function mergeMemberOptions(
   currentOptions: readonly MemberSelectOption[],
@@ -4761,15 +4768,15 @@ function mergeMemberOptions(
   const newOptions = nextOptions.filter(
     (option) => !currentOptionIds.has(option.memberId),
   );
+  const upgradedOptions = currentOptions.map(
+    (option) =>
+      (option.unresolved ? resolvedById.get(option.memberId) : null) ?? option,
+  );
+  const changed =
+    newOptions.length > 0 ||
+    upgradedOptions.some((option, index) => option !== currentOptions[index]);
 
-  return [
-    ...currentOptions.map(
-      (option) =>
-        (option.unresolved ? resolvedById.get(option.memberId) : null) ??
-        option,
-    ),
-    ...newOptions,
-  ];
+  return changed ? [...upgradedOptions, ...newOptions] : currentOptions;
 }
 
 /**
