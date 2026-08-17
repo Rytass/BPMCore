@@ -3869,13 +3869,37 @@ function readDecisionPolicyFromOptionId(
   return { type: 'SINGLE' };
 }
 
+/**
+ * Reads the quorum controls' state out of a stored policy.
+ *
+ * `threshold` and `thresholdType` get the same tolerance the rest of this read
+ * path already grants `type` (see `readDecisionPolicyType` /
+ * `readDecisionPolicyOption`): the publish validator only checks
+ * `decisionPolicy?.type`, so an API-authored template can store a bare
+ * `{ type: 'QUORUM' }`. Trusting the declared types there would put
+ * `String(undefined)` into the number input (rendering blank, with the field
+ * silently unusable) and would write `thresholdType: undefined` straight back
+ * into the policy on the next threshold keystroke.
+ *
+ * Only the *shape* is repaired here — a stored out-of-range value (e.g. a
+ * `PERCENTAGE` threshold of 500 written before `withQuorumThreshold` capped
+ * it) is shown as-is, so the panel never displays a number that differs from
+ * what is actually stored.
+ */
 function readQuorumParts(policy: DecisionPolicy | undefined): Readonly<{
   threshold: number;
   thresholdType: 'COUNT' | 'PERCENTAGE';
 }> {
-  return policy?.type === 'QUORUM'
-    ? { threshold: policy.threshold, thresholdType: policy.thresholdType }
-    : { threshold: DEFAULT_QUORUM_THRESHOLD, thresholdType: 'COUNT' };
+  if (policy?.type !== 'QUORUM') {
+    return { threshold: DEFAULT_QUORUM_THRESHOLD, thresholdType: 'COUNT' };
+  }
+
+  return {
+    threshold: Number.isFinite(policy.threshold)
+      ? policy.threshold
+      : DEFAULT_QUORUM_THRESHOLD,
+    thresholdType: readQuorumThresholdType(policy.thresholdType ?? null),
+  };
 }
 
 function readQuorumThresholdType(value: string | null): 'COUNT' | 'PERCENTAGE' {
