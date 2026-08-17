@@ -180,6 +180,13 @@ type MemberSelectOption = Readonly<{
   id: string;
   memberId: string;
   name: string;
+  /**
+   * Set on the placeholder written when a member's profile could not be
+   * fetched. Marking it explicitly lets {@link mergeMemberOptions} replace the
+   * placeholder once the real profile turns up, instead of the "未知會員"
+   * sentinel sticking for the rest of the session.
+   */
+  unresolved?: boolean;
 }>;
 type InitiatorPolicyMode =
   | 'ALL'
@@ -1234,19 +1241,31 @@ export function TemplateDesignerView({
       const options = await searchMemberOptions(searchText);
       const nextOptions = readMemberSelectOptions(options);
 
-      // Only the freshest request may write the pickers' visible results; a
-      // slower, superseded request's response is dropped here.
-      if (searchSequence === memberSearchSequenceRef.current) {
-        setMemberSearchResults(nextOptions);
-      }
-
+      // The id → name accumulation takes every response, fresh or not: those
+      // members exist regardless of which request asked for them, and the
+      // canvas reads names out of it.
       setMemberOptions((currentOptions) =>
         mergeMemberOptions(currentOptions, nextOptions),
       );
+
+      // Everything the picker *shows*, though, belongs to the freshest
+      // request only.
+      if (searchSequence === memberSearchSequenceRef.current) {
+        setMemberSearchResults(nextOptions);
+      }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      // A superseded request must not paint the error banner either. The
+      // newest request is still in flight and will report its own outcome.
+      if (searchSequence === memberSearchSequenceRef.current) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
-      setMemberLoading(false);
+      // Same for the spinner: clearing it from a superseded request drops the
+      // "搜尋成員中..." text while the newest one is still running, so the
+      // picker shows "沒有符合的成員" over a list it has just cleared.
+      if (searchSequence === memberSearchSequenceRef.current) {
+        setMemberLoading(false);
+      }
     }
   }
 
@@ -2455,6 +2474,11 @@ export function TemplateDesignerView({
                   void handleSearchMembers('');
                 }
               }}
+              // Selected members are merged in so they stay untickable from
+              // the dropdown: AutoComplete resolves a click back through
+              // `options`, so an already-picked member missing from the list
+              // could only be removed via its tag. The tags themselves render
+              // from `value` and do not need this.
               options={[
                 ...mergeMemberOptions(selectedMembers, memberSearchResults),
               ]}
@@ -2617,12 +2641,12 @@ export function TemplateDesignerView({
                       }
                     }}
                     options={[
-                      // The search results come first so that a genuine hit
-                      // for the fallback member's id wins the dedupe inside
-                      // `mergeMemberOptions` — the fallback member is only
-                      // ever pre-fetched via search, never by id (see
-                      // `readWorkflowDirectMemberIds`), so its own entry can
-                      // still be a "未知會員" sentinel.
+                      // The fallback member is pre-fetched by id on load (see
+                      // `readApproverResolverMemberIds`), so its entry is a
+                      // real profile rather than a sentinel. It is still
+                      // merged in — and still second, so a fresh search hit
+                      // wins the dedupe — so that it stays selectable when the
+                      // current search does not happen to return it.
                       ...mergeMemberOptions(
                         memberSearchResults,
                         fallbackMember ? [fallbackMember] : [],
@@ -3079,6 +3103,9 @@ export function TemplateDesignerView({
               void handleSearchMembers('');
             }
           }}
+          // As in the approver picker: merged so an already-picked member can
+          // still be unticked from the dropdown, which AutoComplete resolves
+          // through `options`.
           options={[
             ...mergeMemberOptions(selectedMembers, memberSearchResults),
           ]}
@@ -4531,6 +4558,7 @@ function readFallbackMemberSelectOption(memberId: string): MemberSelectOption {
     id: memberId,
     memberId,
     name: '未知會員',
+    unresolved: true,
   };
 }
 
@@ -4701,10 +4729,26 @@ function readOrgUnitScopeIds(
     .map((candidate) => candidate.id);
 }
 
+/**
+ * Appends the ids not seen yet, and — the one case an existing entry is
+ * overwritten — upgrades an unresolved placeholder once the real profile
+ * arrives. Without that upgrade a single failed profile fetch pinned the
+ * "未知會員" sentinel for the whole session: the id counts as "seen", so
+ * `resolveWorkflowMemberOptions` never asks for it again and every later
+ * search result for that member was discarded as a duplicate.
+ *
+ * A resolved entry is never replaced by another resolved one, so a stale
+ * search response still cannot overwrite a fresher name.
+ */
 function mergeMemberOptions(
   currentOptions: readonly MemberSelectOption[],
   nextOptions: readonly MemberSelectOption[],
 ): readonly MemberSelectOption[] {
+  const resolvedById = new Map(
+    nextOptions
+      .filter((option) => !option.unresolved)
+      .map((option) => [option.memberId, option] as const),
+  );
   const currentOptionIds = new Set(
     currentOptions.map((option) => option.memberId),
   );
@@ -4712,7 +4756,40 @@ function mergeMemberOptions(
     (option) => !currentOptionIds.has(option.memberId),
   );
 
-  return [...currentOptions, ...newOptions];
+  return [
+    ...currentOptions.map(
+      (option) =>
+        (option.unresolved ? resolvedById.get(option.memberId) : null) ??
+        option,
+    ),
+    ...newOptions,
+  ];
+}
+
+/**
+ * Every member id a resolver names outright, so the designer can pre-fetch
+ * their display names on load.
+ *
+ * The manager resolvers' `DIRECT` fallback ("固定改派") counts: it is a member
+ * the author picked and the property form renders it through
+ * `readMemberSelectOption`, which falls back to the "未知會員" sentinel for any
+ * id it cannot find. Leaving it out meant a saved fallback always rendered as
+ * 未知會員 until an unrelated search happened to return that member.
+ */
+function readApproverResolverMemberIds(
+  resolver: ApproverResolver,
+): readonly string[] {
+  if (resolver.type === 'DIRECT') {
+    return resolver.memberIds;
+  }
+
+  if (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') {
+    return resolver.fallback?.type === 'DIRECT' && resolver.fallback.memberId
+      ? [resolver.fallback.memberId]
+      : [];
+  }
+
+  return [];
 }
 
 function readWorkflowDirectMemberIds(
@@ -4722,9 +4799,7 @@ function readWorkflowDirectMemberIds(
     ...new Set(
       definition.nodes.flatMap((node) => {
         if (node.type === 'userTask') {
-          return node.data.approverResolver.type === 'DIRECT'
-            ? node.data.approverResolver.memberIds
-            : [];
+          return readApproverResolverMemberIds(node.data.approverResolver);
         }
 
         if (node.type === 'serviceTask') {
