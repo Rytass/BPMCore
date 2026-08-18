@@ -342,14 +342,27 @@ export class NotificationDeliveryService {
             NotificationStatusEnum.DELIVERY_IN_PROGRESS,
             claimStaleBefore,
           ],
-        )) as readonly { readonly id: string }[];
-        const claimedIds = claimedRows.map((row) => row.id);
+        )) as unknown;
+        const claimedIds = readClaimedIds(claimedRows);
 
-        return claimedIds.length
-          ? manager
-              .getRepository(NotificationEntity)
-              .find({ where: { id: In(claimedIds) } })
-          : [];
+        if (claimedIds.length === 0) {
+          return [];
+        }
+
+        const claimedNotifications = await manager
+          .getRepository(NotificationEntity)
+          .find({ where: { id: In([...claimedIds]) } });
+
+        if (claimedNotifications.length !== claimedIds.length) {
+          // A row moved to `DELIVERY_IN_PROGRESS` that this pass then cannot
+          // load would sit claimed with nothing to show for it, so say so
+          // rather than let the next stale window quietly re-claim it.
+          this.logger.warn(
+            `Claimed ${claimedIds.length} notifications but loaded ${claimedNotifications.length}; unloaded rows stay DELIVERY_IN_PROGRESS until the next stale claim`,
+          );
+        }
+
+        return claimedNotifications;
       },
     );
   }
@@ -523,6 +536,35 @@ function uniqueStrings(values: readonly string[]): readonly string[] {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown delivery error';
+}
+
+/**
+ * Reads the ids returned by the claiming `UPDATE ... RETURNING id`.
+ *
+ * TypeORM's Postgres driver returns `[rows, affectedCount]` for `UPDATE` and
+ * `DELETE`, and a bare row array for everything else. Reading the two-element
+ * form as a row array yields `[undefined, undefined]`, which matches no row —
+ * the claim commits, the delivery pass finds nothing, and the row is re-claimed
+ * on every stale window forever with `attempt_count` still at 0. Both shapes
+ * are accepted here so the claim does not depend on driver-specific packaging.
+ */
+function readClaimedIds(rawResult: unknown): readonly string[] {
+  const rows =
+    Array.isArray(rawResult) && Array.isArray(rawResult[0])
+      ? rawResult[0]
+      : rawResult;
+
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+
+  return rows
+    .map((row: unknown): unknown =>
+      row && typeof row === 'object' && 'id' in row
+        ? (row as { readonly id: unknown }).id
+        : undefined,
+    )
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
 function normalizePositiveInteger(

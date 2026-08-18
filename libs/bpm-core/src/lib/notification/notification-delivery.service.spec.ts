@@ -419,6 +419,47 @@ describe('NotificationDeliveryService', () => {
       }),
     );
   });
+  it('delivers rows claimed through the transactional scan', async (): Promise<void> => {
+    const sendMail = jest.fn((): Promise<void> => Promise.resolve());
+    jest.spyOn(nodemailer, 'createTransport').mockReturnValue({
+      sendMail,
+    } as unknown as ReturnType<typeof nodemailer.createTransport>);
+    const notification = createNotification(NotificationChannelEnum.EMAIL);
+    const repository = createClaimingNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createPreferenceRepository(),
+      createModuleRef(),
+    );
+
+    // The claiming `UPDATE ... RETURNING id` hands back TypeORM's
+    // `[rows, affectedCount]` pair, not a bare row array. Reading it as rows
+    // produced `[undefined, undefined]`, so the claim committed and the batch
+    // came back empty — the row stayed DELIVERY_IN_PROGRESS forever with
+    // `attemptCount` at 0 and no SMTP call ever made.
+    await expect(
+      service.deliverPendingNotifications({
+        options: {
+          ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+          emailEnabled: true,
+          emailFrom: 'BPM <bpm@example.com>',
+          emailSmtpHost: 'smtp.example.com',
+          emailSmtpPassword: 'secret',
+          emailSmtpPort: 587,
+          emailSmtpUsername: 'bpm@example.com',
+        },
+      }),
+    ).resolves.toBe(1);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptCount: 1,
+        id: 'notification-001',
+        status: NotificationStatusEnum.SENT,
+      }),
+    );
+  });
 });
 
 function createNotification(
@@ -466,6 +507,57 @@ function createNotificationRepository(
 
   return repository as unknown as Repository<NotificationEntity> & {
     readonly find: jest.Mock;
+    readonly save: jest.Mock;
+  };
+}
+
+/**
+ * Mirrors the Postgres runtime path: `manager.query` answers an
+ * `UPDATE ... RETURNING id` with TypeORM's `[rows, affectedCount]` pair, and
+ * the claimed entities are re-read through the transaction's own repository.
+ * The plain mock above has no `manager`, so it only ever exercises the
+ * non-transactional fallback.
+ */
+function createClaimingNotificationRepository(
+  ...notifications: readonly NotificationEntity[]
+): Repository<NotificationEntity> & {
+  readonly save: jest.Mock;
+} {
+  const repository = createNotificationRepository(...notifications);
+  const transactionManager = {
+    getRepository: (): { readonly find: jest.Mock } => ({
+      // Honours the `In(claimedIds)` filter, so ids the claim failed to read
+      // load nothing — exactly as Postgres answers `id IN (NULL, NULL)`.
+      find: jest.fn(
+        (options: {
+          readonly where: { readonly id: { readonly value: readonly unknown[] } };
+        }): Promise<readonly NotificationEntity[]> => {
+          const requestedIds = new Set(options.where.id.value);
+
+          return Promise.resolve(
+            notifications.filter((notification) =>
+              requestedIds.has(notification.id),
+            ),
+          );
+        },
+      ),
+    }),
+    query: jest.fn(
+      (): Promise<unknown> =>
+        Promise.resolve([
+          notifications.map((notification) => ({ id: notification.id })),
+          notifications.length,
+        ]),
+    ),
+  };
+
+  return Object.assign(repository, {
+    manager: {
+      transaction: (
+        runInTransaction: (manager: unknown) => Promise<unknown>,
+      ): Promise<unknown> => runInTransaction(transactionManager),
+    },
+  }) as unknown as Repository<NotificationEntity> & {
     readonly save: jest.Mock;
   };
 }
