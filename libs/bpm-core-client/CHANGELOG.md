@@ -1,3 +1,15 @@
+## 0.10.0 (2026-08-18)
+
+### 🚀 Features
+
+- **form-data-source:** add read-only resolve queries and dependency-wait signals ([e8d9b78](https://github.com/Rytass/BPMCore/commit/e8d9b78))
+- **template:** let hosts observe changes and refuse deactivated publishes ([3882dc2](https://github.com/Rytass/BPMCore/commit/3882dc2))
+- **notification:** honour recipient preferences instead of dropping rows ([576b8c4](https://github.com/Rytass/BPMCore/commit/576b8c4))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.9.1 (2026-08-18)
 
 ### 🩹 Fixes
