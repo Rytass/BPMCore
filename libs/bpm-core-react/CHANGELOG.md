@@ -1,3 +1,14 @@
+## 0.9.1 (2026-08-18)
+
+### 🩹 Fixes
+
+- **bpm-core-react:** keep moment a required dependency ([41dd5fa](https://github.com/Rytass/BPMCore/commit/41dd5fa))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.9.0 (2026-08-17)
 
 ### 🚀 Features
