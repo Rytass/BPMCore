@@ -1567,45 +1567,26 @@ export function TemplateDesignerView({
       type: 'setUserTaskApprover',
     });
 
-    // `applySetUserTaskApprover` (libs/shared/workflow-command.ts) hard-resets
-    // decisionPolicy to SINGLE on every approver change — a documented
-    // upstream contract (see the `set_user_task_approver` tool description)
-    // that other callers depend on, so it stays as-is. Now that the policy is
-    // author-visible on this branch, silently reverting it to SINGLE here
-    // would read as data loss; re-apply whatever non-default policy the node
-    // already had.
+    // `applySetUserTaskApprover` (libs/shared/workflow-command.ts) decides
+    // whether the policy survives the new approver set, so that the assistant
+    // gets the same answer as this form. All that is left here is explaining a
+    // drop the author would otherwise have to notice on their own: the reducer
+    // has no way to talk to them.
     //
-    // But only when the new approver set can still satisfy it. Re-applying a
-    // `QUORUM` of 3 onto a resolver that yields one approver produces a task
-    // that can never complete, and nothing in the designer would show it —
-    // the threshold field keeps displaying 3. Losing the policy is visible and
-    // recoverable; a deadlocked node published into production is neither, so
-    // this drops the policy and says why.
-
     // Any approver change re-decides the question, so retire the previous
     // answer before working out the new one.
     setPolicyNotice(null);
 
-    if (!decisionPolicy || decisionPolicy.type === 'SINGLE') {
+    if (!isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
       return;
     }
 
-    if (isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
-      setPolicyNotice({
-        message:
-          `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
-          `不足原本設定的 ${decisionPolicy.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
-          '簽核政策已重設為單人簽核，請重新設定。',
-        nodeId,
-      });
-
-      return;
-    }
-
-    controller.dispatch({
-      decisionPolicy,
+    setPolicyNotice({
+      message:
+        `簽核者已變更為 ${readDesignTimeApproverCount(approverResolver)} 位，` +
+        `不足原本設定的 ${decisionPolicy?.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
+        '簽核政策已重設為單人簽核，請重新設定。',
       nodeId,
-      type: 'setUserTaskDecisionPolicy',
     });
   }
 

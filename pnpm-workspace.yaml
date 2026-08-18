@@ -2,3 +2,24 @@ autoInstallPeers: true
 linkWorkspacePackages: true
 packages:
   - libs/*
+
+# Moved from package.json "pnpm" — pnpm 10 no longer reads that field,
+# so leaving them there silently stops enforcing them on the next resolve.
+overrides:
+  '@babel/plugin-transform-modules-systemjs': '7.29.4'
+  'axios': '1.15.2'
+  'brace-expansion@>=4.0.0 <5.0.5': '5.0.5'
+  'fast-uri': '3.1.2'
+  'follow-redirects': '1.16.0'
+  'lodash-es': '4.18.0'
+  'postcss': '8.5.10'
+  'yaml@>=2.0.0 <2.8.3': '2.8.3'
+onlyBuiltDependencies:
+  - '@apollo/protobufjs'
+  - '@nestjs/core'
+  - '@parcel/watcher'
+  - '@swc/core'
+  - 'less'
+  - 'nx'
+  - 'sharp'
+  - 'unrs-resolver'

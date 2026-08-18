@@ -2,7 +2,11 @@ import {
   readFallbackWorkflowDefinition,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
-import { WorkflowDefinition } from './workflow';
+import {
+  ApproverResolver,
+  DecisionPolicy,
+  WorkflowDefinition,
+} from './workflow';
 import {
   WorkflowCommandOptions,
   WorkflowDesignerState,
@@ -401,26 +405,65 @@ describe('user task return and SLA commands', () => {
     });
   });
 
-  // `setUserTaskApprover` deliberately resets the policy to SINGLE, so a
-  // designer that changes the approver after picking a policy silently loses
-  // it. Pin that ordering here so the UI keeps the two fields in the right
-  // sequence.
-  it('is reset to SINGLE when the approver changes afterwards', () => {
+  // `setUserTaskApprover` used to reset the policy to SINGLE unconditionally.
+  // It now resets only what the new approver set cannot satisfy, and the rule
+  // lives in the reducer so the LLM toolset reaches the same answer as the UI.
+  function afterApproverChange(
+    decisionPolicy: DecisionPolicy,
+    approverResolver: ApproverResolver,
+  ): DecisionPolicy | undefined {
     const state = stateWithUserTask();
     const nodeId = readUserTaskNode(state).id;
     const withPolicy = applyWorkflowCommand(state, {
-      decisionPolicy: { type: 'PARALLEL_ALL' },
+      decisionPolicy,
       nodeId,
       type: 'setUserTaskDecisionPolicy',
     });
-    const afterApproverChange = applyWorkflowCommand(withPolicy.state, {
-      approverResolver: { memberIds: ['member-1'], type: 'DIRECT' },
-      nodeId,
-      type: 'setUserTaskApprover',
-    });
 
-    expect(readUserTaskNode(afterApproverChange.state).data.decisionPolicy).toEqual(
-      { type: 'SINGLE' },
-    );
+    return readUserTaskNode(
+      applyWorkflowCommand(withPolicy.state, {
+        approverResolver,
+        nodeId,
+        type: 'setUserTaskApprover',
+      }).state,
+    ).data.decisionPolicy;
+  }
+
+  it('survives an approver change when the new set can satisfy it', () => {
+    expect(
+      afterApproverChange({ type: 'PARALLEL_ALL' }, {
+        memberIds: ['member-1'],
+        type: 'DIRECT',
+      }),
+    ).toEqual({ type: 'PARALLEL_ALL' });
+
+    expect(
+      afterApproverChange(
+        { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+        { memberIds: ['member-1', 'member-2'], type: 'DIRECT' },
+      ),
+    ).toEqual({ threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' });
+  });
+
+  it('is reset to SINGLE when the new approver set can never satisfy it', () => {
+    // Two approvers cannot produce three approvals; keeping the quorum would
+    // leave the task permanently incomplete.
+    expect(
+      afterApproverChange(
+        { threshold: 3, thresholdType: 'COUNT', type: 'QUORUM' },
+        { memberIds: ['member-1', 'member-2'], type: 'DIRECT' },
+      ),
+    ).toEqual({ type: 'SINGLE' });
+  });
+
+  it('keeps a quorum whose approver count is only known at run time', () => {
+    // A manager resolver may produce any number of approvers, so design time
+    // cannot call it unsatisfiable without rejecting workable templates.
+    expect(
+      afterApproverChange(
+        { threshold: 9, thresholdType: 'COUNT', type: 'QUORUM' },
+        { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+      ),
+    ).toEqual({ threshold: 9, thresholdType: 'COUNT', type: 'QUORUM' });
   });
 });

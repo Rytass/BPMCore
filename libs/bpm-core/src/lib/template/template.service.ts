@@ -109,7 +109,9 @@ export class TemplateService {
     const template = await templateRepository.save(
       templateRepository.create({
         category: input.category ?? category?.name ?? null,
-        categoryId: category?.id ?? null,
+        // `categoryDetail` owns `category_id`; the `categoryId` scalar is a
+        // read-only projection of the same column (see the entity).
+        categoryDetail: category ?? null,
         createdByMemberId: input.createdByMemberId,
         currentVersionId: null,
         description: input.description,
@@ -133,7 +135,10 @@ export class TemplateService {
       }),
     );
 
-    return template;
+    // As in `updateApprovalTemplate`: `categoryId` is no longer written by
+    // `save()`, so the in-memory entity would come back without it even though
+    // the row has it. Re-read so the caller sees the persisted truth.
+    return this.getTemplateOrThrow(template.id, manager);
   }
 
   /**
@@ -332,15 +337,25 @@ export class TemplateService {
           : category !== undefined
             ? (category?.name ?? null)
             : existing.category,
-      categoryId:
-        input.categoryId === undefined
-          ? existing.categoryId
-          : (category?.id ?? null),
       description: input.description ?? existing.description,
       name: input.name ?? existing.name,
     });
 
-    return this.templateRepository.save(next);
+    // Assigned outside `merge` because the relation, not the `categoryId`
+    // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
+    // caller omitted `categoryId` keeps the loaded relation, which persists
+    // the current category unchanged.
+    if (category !== undefined) {
+      next.categoryDetail = category;
+    }
+
+    await this.templateRepository.save(next);
+
+    // Re-read rather than returning the saved entity: `categoryId` is not
+    // written by `save()` any more, so the in-memory copy would still carry
+    // the previous category alongside the new `categoryDetail` — the same
+    // disagreement this change exists to remove, just moved to the response.
+    return this.getTemplateOrThrow(input.id);
   }
 
   async listApprovalTemplates(
@@ -489,11 +504,15 @@ export class TemplateService {
       where: { categoryId: id, deletedAt: IsNull() },
     });
 
+    // Deleting a referenced category used to quietly turn into a
+    // *deactivation* and report success, so a caller could not tell that the
+    // operation it asked for had not happened — and that `isActive` had been
+    // flipped as a side effect it never requested. Deactivation is already
+    // reachable on its own through `deactivateApprovalTemplateCategory`, so
+    // refusing here costs no capability.
     if (templateCount > 0) {
-      return this.templateCategoryRepository.save(
-        this.templateCategoryRepository.merge(category, {
-          isActive: false,
-        }),
+      throw new BadRequestException(
+        `Approval template category ${id} is still referenced by ${templateCount} template(s) and cannot be deleted`,
       );
     }
 

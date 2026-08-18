@@ -707,6 +707,30 @@ like `ApprovalTemplateCategoryStatusEnum`). This is deliberately **not**
 state, an orthogonal dimension. Omitting `activationStatus` means `ALL`, so
 existing callers are unaffected and admin screens still see deactivated
 templates in order to reactivate them.
+
+**Template category writes go through the relation.**
+`ApprovalTemplateEntity.categoryId` and `ApprovalTemplateEntity.categoryDetail`
+map to the same `category_id` column, and TypeORM gives the relation precedence
+on persist. `categoryId` is therefore declared `insert: false, update: false` —
+it is a read-only projection, still usable for reading and in `where` clauses.
+Code that persists a category change must assign `categoryDetail`; assigning
+`categoryId` is silently discarded. **This includes `repository.update()`** —
+`UpdateQueryBuilder` skips columns declared `update: false` without raising, so
+`update({ id }, { categoryId })` becomes a no-op rather than an error. Direct
+writers should either call `TemplateService.updateApprovalTemplate()` (which
+also restores the category validation) or set the relation. `TemplateService.createApprovalTemplate` and
+`updateApprovalTemplate` re-read the row before returning, so their result never
+reports a `categoryId` that disagrees with `categoryDetail`.
+
+**Deleting a referenced category throws (breaking).**
+`TemplateService.deleteApprovalTemplateCategory(id)` previously degraded into a
+*deactivation* when templates still referenced the category: it returned
+successfully, the category survived, and its `isActive` flag was flipped as a
+side effect the caller never asked for. It now raises `BadRequestException`
+naming the number of referencing templates, and leaves the category untouched.
+Callers that want the old outcome should call
+`deactivateApprovalTemplateCategory(id)`, which has always existed — so no
+capability is lost, only the silent substitution.
 >
 > A deactivated template rejects `submitApprovalInstance` **and**
 > `resubmitApprovalInstance` with `ConflictException('Approval template is
@@ -771,10 +795,29 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
+| Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
+
+**Realtime hook.** `BPM_NOTIFICATION_OBSERVER` fires after
+`createNotifications` persists a batch, for **every** channel — including
+`IN_APP`, which `BPM_NOTIFICATION_DISPATCHER` never sees because in-app
+notifications have no delivery step. It exists so a host can drive SSE /
+WebSocket push off the same rows BPM writes, instead of polling the table or
+putting a trigger on it.
+
+The observer receives the whole batch in one call, along with `type`,
+`instanceId` and `taskId` lifted to the event so a host can route without
+unpacking a row. A batch is always for **one recipient** — several rows mean
+several channels, not several people, so a node assigned to three approvers
+produces three events. It also receives the `EntityManager` when the rows were
+written inside a caller-supplied transaction — in that case they are **not committed yet**, and a
+host should defer its push until that transaction commits. The manager is absent
+when BPM owned the write, meaning the rows are already durable. Observer
+failures are logged and swallowed: a host's realtime push must never roll back
+the approval that produced the notification.
 
 **Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
 from *read* and from *deleted* — the row survives for statistics and audit.

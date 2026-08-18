@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionEntity } from '../form/form-definition.entity';
@@ -422,11 +423,26 @@ describe('TemplateService', () => {
       ): ApprovalTemplateVersionEntity =>
         Object.assign(new ApprovalTemplateVersionEntity(), value),
     );
+    // `createApprovalTemplate` re-reads the row it just wrote, because
+    // `categoryId` is a read-only projection of the column `categoryDetail`
+    // owns and so is absent from the in-memory entity after `save()`.
+    const templateFindOne = jest.fn(
+      (): Promise<ApprovalTemplateEntity> =>
+        Promise.resolve(
+          Object.assign(new ApprovalTemplateEntity(), {
+            category: '財務',
+            categoryDetail: category,
+            categoryId: category.id,
+            id: 'template-1',
+          }),
+        ),
+    );
     const manager = {
       getRepository: jest.fn((entity: unknown): unknown => {
         if (entity === ApprovalTemplateEntity) {
           return {
             create: templateCreate,
+            findOne: templateFindOne,
             save: templateSave,
           };
         }
@@ -480,12 +496,83 @@ describe('TemplateService', () => {
     expect(categoryFindOne).toHaveBeenCalledWith({
       where: { id: 'category-1' },
     });
+    // The category is assigned through the relation, not the scalar: both map
+    // to `category_id` and TypeORM lets the relation win on persist, so a
+    // scalar-only write is silently dropped.
     expect(templateCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         category: '財務',
-        categoryId: 'category-1',
+        categoryDetail: category,
       }),
     );
+    expect(templateCreate.mock.calls[0]?.[0]).not.toHaveProperty('categoryId');
+  });
+
+  it('moves a template to another category through the relation', async (): Promise<void> => {
+    // Regression: assigning only the `categoryId` scalar updated the legacy
+    // `category` string but left `category_id` on the old category, because
+    // the loaded `categoryDetail` relation overwrote it on save. The template
+    // then reported two different categories depending on which field a
+    // consumer read.
+    const nextCategory = createApprovalTemplateCategory('category-2');
+    const existing = Object.assign(new ApprovalTemplateEntity(), {
+      category: '財務',
+      categoryDetail: createApprovalTemplateCategory('category-1'),
+      categoryId: 'category-1',
+      id: 'template-1',
+    });
+    const saved: ApprovalTemplateEntity[] = [];
+    const templateFindOne = jest.fn(
+      (): Promise<ApprovalTemplateEntity> =>
+        Promise.resolve(
+          saved.length > 0
+            ? Object.assign(new ApprovalTemplateEntity(), {
+                ...saved[0],
+                categoryId: saved[0]?.categoryDetail?.id ?? null,
+              })
+            : existing,
+        ),
+    );
+    const templateRepository = {
+      findOne: templateFindOne,
+      merge: jest.fn(
+        (
+          target: ApprovalTemplateEntity,
+          patch: Partial<ApprovalTemplateEntity>,
+        ): ApprovalTemplateEntity => Object.assign(target, patch),
+      ),
+      save: jest.fn(
+        (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> => {
+          saved.push(value);
+
+          return Promise.resolve(value);
+        },
+      ),
+    } as unknown as Repository<ApprovalTemplateEntity>;
+    const service = new TemplateService(
+      templateRepository,
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateCategoryEntity> =>
+            Promise.resolve(nextCategory),
+        ),
+      } as unknown as Repository<ApprovalTemplateCategoryEntity>,
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    const updated = await service.updateApprovalTemplate({
+      category: null,
+      categoryId: 'category-2',
+      description: null,
+      id: 'template-1',
+      name: null,
+    });
+
+    expect(saved[0]?.categoryDetail).toBe(nextCategory);
+    expect(updated.categoryId).toBe('category-2');
   });
 
   it('rejects publishing a draft with workflow lint errors before mutating template state', async (): Promise<void> => {
@@ -554,9 +641,18 @@ describe('TemplateService', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it('deactivates categories on delete when templates still use them', async (): Promise<void> => {
+  it('refuses to delete a category that templates still reference', async (): Promise<void> => {
+    // This used to succeed and quietly deactivate the category instead, so the
+    // caller was told the delete happened while `isActive` was flipped behind
+    // its back. Deactivation stays reachable through
+    // `deactivateApprovalTemplateCategory`.
     const category = createApprovalTemplateCategory('category-1');
     const categorySave = jest.fn(
+      (
+        value: ApprovalTemplateCategoryEntity,
+      ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
+    );
+    const categoryRemove = jest.fn(
       (
         value: ApprovalTemplateCategoryEntity,
       ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
@@ -576,7 +672,42 @@ describe('TemplateService', () => {
             value: Partial<ApprovalTemplateCategoryEntity>,
           ): ApprovalTemplateCategoryEntity => Object.assign(entity, value),
         ),
+        remove: categoryRemove,
         save: categorySave,
+      } as unknown as Repository<ApprovalTemplateCategoryEntity>,
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+    );
+
+    await expect(
+      service.deleteApprovalTemplateCategory('category-1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Neither operation ran: no delete, and no deactivation substituted for it.
+    expect(categoryRemove).not.toHaveBeenCalled();
+    expect(categorySave).not.toHaveBeenCalled();
+    expect(category.isActive).toBe(true);
+  });
+
+  it('deletes a category that no template references', async (): Promise<void> => {
+    const category = createApprovalTemplateCategory('category-1');
+    const categoryRemove = jest.fn(
+      (
+        value: ApprovalTemplateCategoryEntity,
+      ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
+    );
+    const service = new TemplateService(
+      {
+        count: jest.fn((): Promise<number> => Promise.resolve(0)),
+      } as unknown as Repository<ApprovalTemplateEntity>,
+      {
+        findOne: jest.fn(
+          (): Promise<ApprovalTemplateCategoryEntity | null> =>
+            Promise.resolve(category),
+        ),
+        remove: categoryRemove,
       } as unknown as Repository<ApprovalTemplateCategoryEntity>,
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
@@ -586,12 +717,8 @@ describe('TemplateService', () => {
 
     const deleted = await service.deleteApprovalTemplateCategory('category-1');
 
-    expect(deleted.isActive).toBe(false);
-    expect(categorySave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        isActive: false,
-      }),
-    );
+    expect(categoryRemove).toHaveBeenCalledWith(category);
+    expect(deleted).toBe(category);
   });
 });
 

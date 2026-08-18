@@ -1,3 +1,59 @@
+## 0.9.1 (2026-08-18)
+
+### 🩹 Fixes
+
+- **bpm-core-react:** keep moment a required dependency ([41dd5fa](https://github.com/Rytass/BPMCore/commit/41dd5fa))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
+## 0.9.0 (2026-08-17)
+
+### 🚀 Features
+
+- **notification:** lift routing fields onto the created event ([e02270b](https://github.com/Rytass/BPMCore/commit/e02270b))
+- **notification:** let a host observe notifications as they are created ([#21](https://github.com/Rytass/BPMCore/pull/21))
+- **shared:** detect a quorum no approver set can ever satisfy ([5671497](https://github.com/Rytass/BPMCore/commit/5671497))
+- **shared:** expose the decision policy to the workflow toolset ([f6152b0](https://github.com/Rytass/BPMCore/commit/f6152b0))
+
+### 🩹 Fixes
+
+- ⚠️  **template:** reject deleting a referenced category ([#16](https://github.com/Rytass/BPMCore/pull/16))
+- **template:** let a template actually change category ([#17](https://github.com/Rytass/BPMCore/pull/17))
+- **shared:** keep an approver change from discarding a workable policy ([ea6afbe](https://github.com/Rytass/BPMCore/commit/ea6afbe))
+- **e2e:** poll on the expected value in the quorum threshold sanitiser spec ([099529f](https://github.com/Rytass/BPMCore/commit/099529f))
+- **bpm-core-react:** correct decision-policy panel review findings ([ebf0337](https://github.com/Rytass/BPMCore/commit/ebf0337))
+
+### ⚠️  Breaking Changes
+
+- **template:** reject deleting a referenced category  ([#16](https://github.com/Rytass/BPMCore/pull/16))
+  `deleteApprovalTemplateCategory` now throws
+  `BadRequestException` when templates still reference the category, instead
+  of deactivating it and reporting success.
+  The old behaviour substituted a different operation for the one requested
+  and returned the same entity type either way, so a caller could not tell
+  that the delete had not happened — nor that `isActive` had been flipped as
+  a side effect it never asked for. Downstream, the category vanished from
+  groupings because it was now inactive, with nothing to explain why.
+  Deactivation is not lost: `deactivateApprovalTemplateCategory(id)` has
+  always existed and is unchanged, so the fallback was never the only way to
+  reach that state.
+  The designer's category screen already wraps the call in try/catch and
+  surfaces the message, and it only closes the confirmation dialog on
+  success, so the new error reaches the author without a UI change.
+  Reported by a consumer on 0.7.0, who had to re-implement the reference
+  check ahead of the call to avoid telling users something had been deleted
+  when it had not.
+  Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+- Kai-Chieh Yang
+
 ## 0.7.0 (2026-08-10)
 
 This was a version bump only for bpm-core-client to align it with other projects, there were no code changes.
