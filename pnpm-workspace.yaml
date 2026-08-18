@@ -3,17 +3,53 @@ linkWorkspacePackages: true
 packages:
   - libs/*
 
-# Moved from package.json "pnpm" — pnpm 10 no longer reads that field,
-# so leaving them there silently stops enforcing them on the next resolve.
+# Security overrides.
+#
+# Use ranges, never exact pins. An exact pin stops pnpm taking the next patch,
+# so an override added to fix one advisory silently becomes the thing holding a
+# known-vulnerable version in place — which is exactly how axios/postcss/
+# fast-uri/brace-expansion accumulated 29 alerts here. A `^` floor still lets
+# the resolver move forward on its own.
 overrides:
-  '@babel/plugin-transform-modules-systemjs': '7.29.4'
-  'axios': '1.15.2'
-  'brace-expansion@>=4.0.0 <5.0.5': '5.0.5'
-  'fast-uri': '3.1.2'
-  'follow-redirects': '1.16.0'
-  'lodash-es': '4.18.0'
-  'postcss': '8.5.10'
-  'yaml@>=2.0.0 <2.8.3': '2.8.3'
+  '@babel/core': '^7.29.6'
+  '@babel/plugin-transform-modules-systemjs': '^7.29.4'
+  '@xhmikosr/decompress': '^11.1.3'
+  'adm-zip': '^0.6.0'
+  'axios': '^1.16.0'
+  'body-parser@1': '^1.20.6'
+  'body-parser@2': '^2.3.0'
+  'brace-expansion@1': '^1.1.18'
+  'brace-expansion@2': '^2.1.4'
+  'brace-expansion@5': '^5.0.9'
+  'fast-uri': '^3.1.3'
+  'follow-redirects': '^1.16.0'
+  'form-data': '^4.0.6'
+  'http-proxy-middleware': '^3.0.6'
+  'immutable': '^5.1.8'
+  'js-yaml@3': '^3.15.1'
+  'js-yaml@4': '^4.3.1'
+  'launch-editor': '^2.14.1'
+  'lodash-es': '^4.18.0'
+  'multer': '^2.2.0'
+  'piscina': '^4.9.3'
+  'postcss': '^8.5.23'
+  'qs@6': '^6.15.2'
+  'sharp': '^0.35.0'
+  'shell-quote': '^1.9.0'
+  'svgo@3': '^3.3.4'
+  'svgo@4': '^4.0.2'
+  'tmp': '^0.2.6'
+  # Forced to a single copy. Two typeorm versions give @nestjs/typeorm two
+  # structurally identical but unrelated TypeOrmModuleOptions types, and the
+  # host app's forRootAsync factory then fails to typecheck.
+  'typeorm': '^0.3.31'
+  'undici': '^7.28.0'
+  'uuid@11': '^11.1.1'
+  'webpack-dev-server': '^5.2.6'
+  'websocket-driver': '^0.7.5'
+  'ws@7': '^7.5.11'
+  'ws@8': '^8.21.0'
+  'yaml@>=2.0.0 <2.8.3': '^2.8.3'
 onlyBuiltDependencies:
   - '@apollo/protobufjs'
   - '@nestjs/core'
