@@ -278,24 +278,34 @@
     }
   },
   "peerDependencies": {
-    "@codemirror/lang-json": "^6.0.2",
-    "@codemirror/view": "^6.41.1",
-    "@hello-pangea/dnd": "^18.0.1",
-    "@mezzanine-ui/core": "^1.0.4",
-    "@mezzanine-ui/icons": "^1.0.2",
-    "@mezzanine-ui/react": "^1.1.0",
+    "@ai-sdk/openai": ">=3.0.0",
+    "@ai-sdk/react": ">=3.0.0",
+    "@codemirror/lang-json": ">=6.0.0",
+    "@codemirror/view": ">=6.0.0",
+    "@hello-pangea/dnd": ">=18.0.0",
+    "@mezzanine-ui/core": ">=1.0.0",
+    "@mezzanine-ui/icons": ">=1.0.0",
+    "@mezzanine-ui/react": ">=1.0.0",
     "@rytass/bpm-core-client": "^0.9.0",
     "@rytass/bpm-core-shared": "^0.9.0",
-    "@uiw/react-codemirror": "^4.25.9",
-    "@xyflow/react": "^12.10.2",
-    "dagre": "^0.8.5",
-    "next": "~16.2.6",
+    "@uiw/react-codemirror": ">=4.0.0",
+    "@xyflow/react": ">=12.0.0",
+    "ai": ">=6.0.0",
+    "dagre": ">=0.8.5",
+    "moment": ">=2.29.0",
+    "next": ">=15.0.0",
     "pdfjs-dist": "^5.4.296",
-    "react": "^18.0.0 || ^19.0.0",
-    "react-dom": "^18.0.0 || ^19.0.0",
-    "react-pdf": "^10.4.1"
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0",
+    "react-pdf": ">=10.0.0"
   },
   "peerDependenciesMeta": {
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@ai-sdk/react": {
+      "optional": true
+    },
     "@codemirror/lang-json": {
       "optional": true
     },
@@ -314,7 +324,13 @@
     "@xyflow/react": {
       "optional": true
     },
+    "ai": {
+      "optional": true
+    },
     "dagre": {
+      "optional": true
+    },
+    "moment": {
       "optional": true
     },
     "next": {
@@ -326,11 +342,5 @@
     "react-pdf": {
       "optional": true
     }
-  },
-  "dependencies": {
-    "@ai-sdk/openai": "^3.0.67",
-    "@ai-sdk/react": "^3.0.195",
-    "ai": "^6.0.193",
-    "moment": "^2.30.1"
   }
 }
