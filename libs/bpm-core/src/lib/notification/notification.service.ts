@@ -20,6 +20,10 @@ import {
   Not,
   Repository,
 } from 'typeorm';
+import {
+  BPM_BUSINESS_CALENDAR,
+  BPMBusinessCalendar,
+} from '../calendar/business-calendar.token';
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
@@ -38,6 +42,11 @@ import {
 } from '../workflow-engine/workflow-engine.enums';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
+import {
+  DEFAULT_QUIET_HOURS_TIME_ZONE,
+  isWithinQuietHours,
+  resolveEmailReleaseAt,
+} from './notification-schedule';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
@@ -844,23 +853,36 @@ export class NotificationService {
   private async createNotifications(
     input: CreateNotificationInput,
     manager?: EntityManager,
+    now: Date = new Date(),
   ): Promise<readonly NotificationEntity[]> {
     const preference = await this.getPreference(input.recipientMemberId);
     const repository = manager
       ? manager.getRepository(NotificationEntity)
       : this.notificationRepository;
-    const notifications = input.channels.flatMap((channel) =>
-      isChannelEnabled(channel, preference, this.notificationOptions)
+    const quietHoursTimeZone = this.readQuietHoursTimeZone();
+    const notifications = input.channels.flatMap((channel) => {
+      const delivery = resolveChannelDelivery({
+        at: now,
+        channel,
+        options: this.notificationOptions,
+        preference,
+        quietHoursTimeZone,
+      });
+
+      return delivery.record
         ? [
             createNotificationEntity({
               channel,
               input,
+              now,
               options: this.notificationOptions,
+              releaseAt: delivery.releaseAt,
               repository,
+              silenced: delivery.silenced,
             }),
           ]
-        : [],
-    );
+        : [];
+    });
 
     if (notifications.length === 0) {
       return [];
@@ -872,7 +894,11 @@ export class NotificationService {
       savedNotifications
         .filter(
           (notification) =>
-            notification.channel !== NotificationChannelEnum.IN_APP,
+            notification.channel !== NotificationChannelEnum.IN_APP &&
+            // A row held for quiet hours or a daily digest carries its release
+            // instant in `nextRetryAt`; the delivery scan is what picks it up
+            // once that instant passes.
+            notification.nextRetryAt === null,
         )
         .map((notification) =>
           manager
@@ -922,6 +948,29 @@ export class NotificationService {
         `BPM_NOTIFICATION_OBSERVER failed for ${notifications.length} notification(s)`,
         error instanceof Error ? error.stack : String(error),
       );
+    }
+  }
+
+  /**
+   * The zone the recipients' bare `HH:mm` quiet-hours preferences are read in.
+   *
+   * Falls back to the registered business calendar rather than to UTC: the
+   * calendar already states where the host's people are, and a host that
+   * supplied one would otherwise get quiet hours silently offset by its whole
+   * UTC offset. Resolved here rather than in the flattened options because the
+   * calendar is a DI provider that does not exist at wiring time.
+   */
+  private readQuietHoursTimeZone(): string {
+    if (this.notificationOptions.quietHoursTimeZone) {
+      return this.notificationOptions.quietHoursTimeZone;
+    }
+
+    try {
+      return this.moduleRef.get<BPMBusinessCalendar>(BPM_BUSINESS_CALENDAR, {
+        strict: false,
+      }).timeZone;
+    } catch {
+      return DEFAULT_QUIET_HOURS_TIME_ZONE;
     }
   }
 
@@ -1227,20 +1276,77 @@ function isUniqueConstraintViolation(error: unknown): boolean {
   );
 }
 
-function isChannelEnabled(
-  channel: NotificationChannelEnum,
-  preference: NotificationPreferenceEntity,
-  options: BPMResolvedNotificationOptions,
-): boolean {
+interface ChannelDelivery {
+  /**
+   * When the row may go out, or `null` for "immediately". Only ever set for
+   * the delivered channels; written to `nextRetryAt`.
+   */
+  readonly releaseAt: Date | null;
+  /** Whether BPM writes a row for this channel at all. */
+  readonly record: boolean;
+  /** Whether the recorded row is deliberately not announced. */
+  readonly silenced: boolean;
+}
+
+/**
+ * Splits a channel's fate into "is it recorded" and "is it announced", which
+ * `inAppEnabled` used to conflate.
+ *
+ * The member preference decides announcement. Recording is the host's call:
+ * `options.inAppEnabled` is a wiring-level switch for running BPM without
+ * notification-centre data at all, not something a member can trip. Email and
+ * webhook have no BPM-side record to lose, so for them the two answers stay
+ * the same — except in time, where quiet hours and the daily digest push
+ * delivery later rather than dropping it.
+ */
+function resolveChannelDelivery({
+  at,
+  channel,
+  options,
+  preference,
+  quietHoursTimeZone,
+}: {
+  readonly at: Date;
+  readonly channel: NotificationChannelEnum;
+  readonly options: BPMResolvedNotificationOptions;
+  readonly preference: NotificationPreferenceEntity;
+  readonly quietHoursTimeZone: string;
+}): ChannelDelivery {
+  const quietHours = {
+    quietHoursEnd: preference.quietHoursEnd,
+    quietHoursStart: preference.quietHoursStart,
+    timeZone: quietHoursTimeZone,
+  };
+
   if (channel === NotificationChannelEnum.IN_APP) {
-    return options.inAppEnabled && preference.inAppEnabled;
+    return {
+      releaseAt: null,
+      record: options.inAppEnabled,
+      silenced: !preference.inAppEnabled || isWithinQuietHours(at, quietHours),
+    };
   }
 
   if (channel === NotificationChannelEnum.EMAIL) {
-    return options.emailEnabled && preference.emailEnabled;
+    const record = options.emailEnabled && preference.emailEnabled;
+
+    return {
+      releaseAt: record
+        ? resolveEmailReleaseAt(at, {
+            ...quietHours,
+            digestHour: options.emailDigestHour,
+            digestMode: preference.emailDigestMode,
+          })
+        : null,
+      record,
+      silenced: false,
+    };
   }
 
-  return options.webhookEnabled;
+  return {
+    releaseAt: null,
+    record: options.webhookEnabled,
+    silenced: false,
+  };
 }
 
 function hasSlaEscalationStep(task: TaskEntity): boolean {
@@ -1271,13 +1377,19 @@ function isSlaTimeoutActionEnabled(
 function createNotificationEntity({
   channel,
   input,
+  now,
   options,
+  releaseAt,
   repository,
+  silenced,
 }: {
   readonly channel: NotificationChannelEnum;
   readonly input: CreateNotificationInput;
+  readonly now: Date;
   readonly options: BPMResolvedNotificationOptions;
+  readonly releaseAt: Date | null;
   readonly repository: Repository<NotificationEntity>;
+  readonly silenced: boolean;
 }): NotificationEntity {
   const renderedTemplate = renderNotificationTemplate({
     customTemplate: input.customTemplate,
@@ -1295,18 +1407,21 @@ function createNotificationEntity({
     attemptCount: 0,
     body: renderedTemplate.body,
     channel,
-    deliveredAt: isInApp ? new Date() : null,
+    // An in-app row is "delivered" the moment it exists, silenced or not:
+    // what silencing withholds is the announcement, not the record.
+    deliveredAt: isInApp ? now : null,
     deliveryError: null,
     deliveryTarget: null,
     instanceId: input.instanceId,
     lastAttemptAt: null,
-    nextRetryAt: null,
+    nextRetryAt: releaseAt,
     payload: input.payload,
     readAt: null,
     recipientMemberId: input.recipientMemberId,
     resolution: null,
     resolvedAt: null,
-    sentAt: isInApp ? new Date() : null,
+    sentAt: isInApp ? now : null,
+    silenced,
     status: isInApp
       ? NotificationStatusEnum.SENT
       : NotificationStatusEnum.PENDING,

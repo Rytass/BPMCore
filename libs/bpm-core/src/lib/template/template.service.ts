@@ -2,8 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -24,6 +26,12 @@ import { ComposeApprovalTemplateWithFormObject } from './compose-approval-templa
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
+import {
+  BPMTemplateChangeActionEnum,
+  BPMTemplateChangedEvent,
+  BPMTemplateObserver,
+  BPM_TEMPLATE_OBSERVER,
+} from './template-observer.token';
 import {
   CreateApprovalTemplateCategoryInput,
   CreateApprovalTemplateInput,
@@ -63,8 +71,16 @@ interface ListApprovalTemplateCategoriesOptions {
   readonly status?: ApprovalTemplateCategoryStatusEnum;
 }
 
+interface PublishedVersionResult {
+  readonly previousVersionId: string | null;
+  readonly template: ApprovalTemplateEntity;
+  readonly version: ApprovalTemplateVersionEntity;
+}
+
 @Injectable()
 export class TemplateService {
+  private readonly logger = new Logger(TemplateService.name);
+
   constructor(
     @InjectRepository(ApprovalTemplateEntity)
     private readonly templateRepository: Repository<ApprovalTemplateEntity>,
@@ -76,6 +92,7 @@ export class TemplateService {
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
     private readonly conditionService: ConditionService,
     private readonly formService: FormService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   async createApprovalTemplate(
@@ -115,6 +132,10 @@ export class TemplateService {
         createdByMemberId: input.createdByMemberId,
         currentVersionId: null,
         description: input.description,
+        // Stated rather than left to the column default, because publishing
+        // reads `isActive` back and a template that never carried the value
+        // in memory would read as deactivated.
+        isActive: true,
         name: input.name,
       }),
     );
@@ -150,8 +171,13 @@ export class TemplateService {
     input: ComposeApprovalTemplateWithFormInput,
     currentMemberId: string | null,
   ): Promise<ComposeApprovalTemplateWithFormObject> {
-    return this.templateRepository.manager.transaction(
-      async (manager): Promise<ComposeApprovalTemplateWithFormObject> => {
+    const { event, result } = await this.templateRepository.manager.transaction(
+      async (
+        manager,
+      ): Promise<{
+        readonly event: BPMTemplateChangedEvent;
+        readonly result: ComposeApprovalTemplateWithFormObject;
+      }> => {
         const formDefinitionVersion = await this.resolveComposedFormVersion(
           manager,
           input,
@@ -175,13 +201,17 @@ export class TemplateService {
           },
           manager,
         );
+        let previousVersionId: string | null = null;
 
         if (input.publish) {
-          templateVersion = await this.publishApprovalTemplateVersion(
+          const published = await this.publishVersion(
             templateDraftVersion.id,
             currentMemberId ?? undefined,
             manager,
           );
+
+          previousVersionId = published.previousVersionId;
+          templateVersion = published.version;
         }
 
         const formDefinition = await manager
@@ -192,14 +222,30 @@ export class TemplateService {
           .findOneByOrFail({ id: templateVersion.templateId });
 
         return {
-          formDefinition,
-          formDefinitionVersion,
-          published: input.publish,
-          template,
-          templateVersion,
+          event: {
+            action: BPMTemplateChangeActionEnum.COMPOSED,
+            actorMemberId: currentMemberId,
+            previousVersionId: input.publish
+              ? previousVersionId
+              : template.currentVersionId,
+            published: input.publish,
+            template,
+            version: templateVersion,
+          },
+          result: {
+            formDefinition,
+            formDefinitionVersion,
+            published: input.publish,
+            template,
+            templateVersion,
+          },
         };
       },
     );
+
+    await this.notifyTemplateObserver(event);
+
+    return result;
   }
 
   private async resolveComposedFormVersion(
@@ -619,6 +665,35 @@ export class TemplateService {
     publishedByMemberId?: string,
     manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
+    const published = await this.publishVersion(
+      versionId,
+      publishedByMemberId,
+      manager,
+    );
+
+    await this.notifyTemplateObserver({
+      action: BPMTemplateChangeActionEnum.VERSION_PUBLISHED,
+      actorMemberId: publishedByMemberId ?? null,
+      previousVersionId: published.previousVersionId,
+      published: true,
+      template: published.template,
+      version: published.version,
+      ...(manager ? { manager } : {}),
+    });
+
+    return published.version;
+  }
+
+  /**
+   * The publish itself, without the observer notification. Split out so
+   * `composeApprovalTemplateWithForm` can publish inside its own transaction
+   * and still report a single `COMPOSED` event rather than two.
+   */
+  private async publishVersion(
+    versionId: string,
+    publishedByMemberId?: string,
+    manager?: EntityManager,
+  ): Promise<PublishedVersionResult> {
     const version = await this.getTemplateVersionOrThrow(versionId, manager);
 
     if (version.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
@@ -629,9 +704,7 @@ export class TemplateService {
 
     await this.validatePublishableVersion(version, manager);
 
-    const run = (
-      txManager: EntityManager,
-    ): Promise<ApprovalTemplateVersionEntity> =>
+    const run = (txManager: EntityManager): Promise<PublishedVersionResult> =>
       this.publishApprovalTemplateVersionWithManager(
         txManager,
         version,
@@ -647,7 +720,7 @@ export class TemplateService {
     manager: EntityManager,
     version: ApprovalTemplateVersionEntity,
     publishedByMemberId?: string,
-  ): Promise<ApprovalTemplateVersionEntity> {
+  ): Promise<PublishedVersionResult> {
     const templateRepository = manager.getRepository(ApprovalTemplateEntity);
     const versionRepository = manager.getRepository(
       ApprovalTemplateVersionEntity,
@@ -661,6 +734,15 @@ export class TemplateService {
         `Approval template ${version.templateId} was not found`,
       );
     }
+
+    // Same refusal the workflow engine applies when starting or advancing an
+    // instance: a deactivated template must not gain a new published version
+    // behind the host's back.
+    if (!template.isActive) {
+      throw new ConflictException('Approval template is deactivated');
+    }
+
+    const previousVersionId = template.currentVersionId;
 
     if (template.currentVersionId) {
       await versionRepository.update(
@@ -679,17 +761,22 @@ export class TemplateService {
       status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
     const saved = await versionRepository.save(published);
-    await templateRepository.save(
+    const savedTemplate = await templateRepository.save(
       templateRepository.merge(template, {
         currentVersionId: saved.id,
       }),
     );
 
-    return saved;
+    return {
+      previousVersionId,
+      template: savedTemplate,
+      version: saved,
+    };
   }
 
   async rollbackApprovalTemplateVersion(
     versionId: string,
+    rolledBackByMemberId?: string,
   ): Promise<ApprovalTemplateVersionEntity> {
     const target = await this.getTemplateVersionOrThrow(versionId);
 
@@ -699,8 +786,8 @@ export class TemplateService {
       );
     }
 
-    return this.templateRepository.manager.transaction(
-      async (manager): Promise<ApprovalTemplateVersionEntity> => {
+    const rolledBack = await this.templateRepository.manager.transaction(
+      async (manager): Promise<PublishedVersionResult> => {
         const templateRepository = manager.getRepository(
           ApprovalTemplateEntity,
         );
@@ -716,6 +803,14 @@ export class TemplateService {
             `Approval template ${target.templateId} was not found`,
           );
         }
+
+        // See `publishApprovalTemplateVersionWithManager`: rolling back moves
+        // the published pointer, which a deactivated template must not do.
+        if (!template.isActive) {
+          throw new ConflictException('Approval template is deactivated');
+        }
+
+        const previousVersionId = template.currentVersionId;
 
         if (
           template.currentVersionId &&
@@ -735,15 +830,62 @@ export class TemplateService {
           status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
         });
         const saved = await versionRepository.save(restored);
-        await templateRepository.save(
+        const savedTemplate = await templateRepository.save(
           templateRepository.merge(template, {
             currentVersionId: saved.id,
           }),
         );
 
-        return saved;
+        return {
+          previousVersionId,
+          template: savedTemplate,
+          version: saved,
+        };
       },
     );
+
+    await this.notifyTemplateObserver({
+      action: BPMTemplateChangeActionEnum.VERSION_ROLLED_BACK,
+      actorMemberId: rolledBackByMemberId ?? null,
+      previousVersionId: rolledBack.previousVersionId,
+      published: true,
+      template: rolledBack.template,
+      version: rolledBack.version,
+    });
+
+    return rolledBack.version;
+  }
+
+  /**
+   * Tells a host-provided observer that a template changed. Errors are logged
+   * and dropped: an audit-trail hook must not be able to fail the mutation it
+   * is observing.
+   */
+  private async notifyTemplateObserver(
+    event: BPMTemplateChangedEvent,
+  ): Promise<void> {
+    const observer = this.readHostObserver();
+
+    if (!observer) {
+      return;
+    }
+
+    try {
+      await observer.onTemplateChanged(event);
+    } catch (error: unknown) {
+      this.logger.error(
+        `BPM_TEMPLATE_OBSERVER failed for ${event.action} on template ${event.template.id}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  private readHostObserver(): BPMTemplateObserver | null {
+    try {
+      return this.moduleRef.get(BPM_TEMPLATE_OBSERVER, { strict: false });
+    } catch {
+      return null;
+    }
   }
 
   private async validatePublishableVersion(
@@ -826,7 +968,9 @@ export class TemplateService {
     return this.getTemplateCategoryOrThrow(categoryId, manager);
   }
 
-  private templates(manager?: EntityManager): Repository<ApprovalTemplateEntity> {
+  private templates(
+    manager?: EntityManager,
+  ): Repository<ApprovalTemplateEntity> {
     return manager
       ? manager.getRepository(ApprovalTemplateEntity)
       : this.templateRepository;

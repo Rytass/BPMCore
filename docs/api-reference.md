@@ -10,6 +10,20 @@ Versions are bumped by `nx release` at publish time — the numbers above are th
 
 PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
+Argus integration follow-ups (2026-08-18, against `@0.9.1`) additionally add:
+`BPM_TEMPLATE_OBSERVER` / `BPMTemplateObserver` / `BPMTemplateChangedEvent` /
+`BPMTemplateChangeActionEnum` to `@rytass/bpm-core-nestjs-module/template`; the
+`notification-schedule` helpers and `NotificationEntity.silenced` to
+`@rytass/bpm-core-nestjs-module/notification`; the optional `dispatchDigest`
+method on `BPMNotificationDispatcher`; the
+`notificationQuietHoursTimeZone` / `notificationEmailDigestHour` root options;
+migration `NotificationSilenced0000000021000`; a trailing
+`rolledBackByMemberId` on `TemplateService.rollbackApprovalTemplateVersion`;
+and `silenced` on the client's `NotificationRecord`. Behavioural changes in the
+same set: in-app notifications are recorded even when silenced, quiet hours and
+`emailDigestMode` are enforced, and publish / rollback refuse a deactivated
+template.
+
 ---
 
 ## Maintenance Contract
@@ -483,7 +497,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
 | Delegation | `DelegationScopeType`, `DelegationRuleStatus`, `DelegationRuleRecord` |
-| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord`, `NotificationPreferenceRecord` |
+| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord` (incl. `silenced` — recorded but not announced), `NotificationPreferenceRecord` |
 | Attachment / Signature | `AttachmentRecord`, `SignatureRecord`, `SignatureVerificationRecord` |
 | Template embed | `ApprovalTemplateRecord`, `ApprovalTemplateVersionRecord` |
 | Dashboard | `WorkflowDashboardSummaryRecord` |
@@ -685,6 +699,7 @@ definition snapshot rather than whatever version the template publishes today.
 | Validators | `WorkflowDefinitionValidator` |
 | Enums | `TemplateEnums` |
 | Service | `TemplateService` |
+| Token | `BPM_TEMPLATE_OBSERVER` + `BPMTemplateObserver` / `BPMTemplateChangedEvent` / `BPMTemplateChangeActionEnum` (host observes template changes, for audit) |
 | Module | `TemplateModule` |
 
 > `composeApprovalTemplateWithForm` mutation (`ComposeTemplateMutations`) builds
@@ -740,6 +755,40 @@ capability is lost, only the silent substitution.
 > templates out. Instances already in flight are unaffected — they run from
 > `workflowSnapshot`.
 
+`publishApprovalTemplateVersion` and `rollbackApprovalTemplateVersion` apply
+the same guard: a deactivated template cannot gain a new published version or
+move its published pointer, and both raise
+`ConflictException('Approval template is deactivated')`.
+`composeApprovalTemplateWithForm` inherits it through its publish step, so
+`publish: true` on a deactivated template is refused while a draft-only compose
+still succeeds. Before this the engine refused to *run* a deactivated template
+while the designer happily published onto it — the same user action behaved
+differently depending on which button was pressed.
+
+**Audit hook.** `BPM_TEMPLATE_OBSERVER` exists so a host can answer "who
+changed the approval flow, and when". BPM registers
+`publishApprovalTemplateVersion`, `rollbackApprovalTemplateVersion` and
+`composeApprovalTemplateWithForm` on the same GraphQL schema as the host's own
+resolvers, and the embedded `<WorkflowDesigner>` calls them directly, so
+without this hook the only way to notice a template change is a global
+interceptor matching those field names — coupling the host to BPM's schema
+rather than to an interface.
+
+One `onTemplateChanged(event)` fires per host-facing mutation, carrying
+`action` (`COMPOSED` / `VERSION_PUBLISHED` / `VERSION_ROLLED_BACK`), the
+resulting `template` and `version`, the `previousVersionId` the template
+pointed at beforehand, whether the version is now `published`, and
+`actorMemberId`. A compose that also publishes reports a single `COMPOSED`
+event with `published: true`, so a host never has to de-duplicate two events
+for one change. `manager` is present only when the change was written inside a
+caller-supplied transaction and is therefore **not committed yet**, exactly as
+in `BPM_NOTIFICATION_OBSERVER`. Observer failures are logged and swallowed: an
+audit sink must not be able to fail the mutation it observes.
+
+`rollbackApprovalTemplateVersion` now takes an optional trailing
+`rolledBackByMemberId`, supplied by the mutation from `@BPMCurrentMemberId()`,
+so the rollback event names an actor.
+
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
 Workflow execution engine — the heaviest module.
@@ -788,16 +837,32 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
 
+**The calendar provider must not depend on BPM.** Because `BPMRootModule`
+forwards its `imports` into `CalendarModule`, it is easy for a
+`businessCalendarProvider` to reach a host service that itself depends on
+`TemplateService` or another BPM provider. Nest cannot resolve the resulting
+cycle **and does not report one**: the application simply never finishes
+bootstrapping. There is no exception, nothing for `bootstrap().catch()` to
+catch, no stack trace, and the process exits with code `0`; the last log line
+is usually an unrelated `pg` deprecation warning. Confirming it means attaching
+`async_hooks` and dumping promises still pending at `beforeExit`, where the
+stacks point at `@nestjs/core/helpers/barrier.js`.
+
+Keep the calendar's dependency chain to host-owned services that never reach
+back into BPM. A calendar that needs BPM data should read it from its own
+narrow, read-only service rather than from a BPM provider.
+
 ## `@rytass/bpm-core-nestjs-module/notification`
 
 | Category | Names |
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
-| Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
+| Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
+| Schedule | `isWithinQuietHours`, `resolveQuietHoursEnd`, `resolveEmailReleaseAt`, `normalizeDigestHour`, `DEFAULT_EMAIL_DIGEST_HOUR`, `DEFAULT_QUIET_HOURS_TIME_ZONE`, `NotificationQuietHours`, `EmailReleaseOptions` (pure functions behind quiet-hours / digest scheduling) |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
 
@@ -818,6 +883,61 @@ host should defer its push until that transaction commits. The manager is absent
 when BPM owned the write, meaning the rows are already durable. Observer
 failures are logged and swallowed: a host's realtime push must never roll back
 the approval that produced the notification.
+
+**Recording vs announcing.** A member preference decides whether a
+notification is *announced*; it no longer decides whether it is *recorded*.
+`inAppEnabled: false` used to filter the channel out **before** the insert, so
+silencing notifications for an afternoon destroyed every notification raised
+in it — turning the preference back on recovered nothing. In-app rows are now
+always written and carry `NotificationEntity.silenced`, set when the recipient
+turned in-app off or the notification arrived inside their quiet hours. Hosts
+driving a realtime channel should skip the toast or push for a silenced row and
+still place it in the list. The bell badge counts silenced rows: they are
+unread notifications, and a badge that ignored them would leave the member
+opening an app full of entries that never announced themselves.
+
+Dropping in-app rows entirely is still possible, but only as a wiring
+decision: `notificationInAppEnabled: false` means "run BPM without notification
+centre data" and is not something a member can trip. Email and webhook rows are
+unchanged — they have no BPM-side record to lose, so `emailEnabled: false`
+still means no row.
+
+**Quiet hours and digests are enforced.** `quietHoursStart` / `quietHoursEnd`
+and `emailDigestMode` were persisted and validated but read by nothing before
+this. They now behave as their names claim:
+
+- an email raised inside quiet hours has `nextRetryAt` set to the instant the
+  window closes, so the existing delivery scan releases it afterwards — quiet
+  hours **delay** a notification, never drop it;
+- a recipient on `emailDigestMode: DAILY` has their email held until the next
+  digest hour, and the delivery scan then sends **one** message covering every
+  notification waiting for them (a lone notification is sent on its own rather
+  than as a digest of one);
+- an in-app notification arriving inside quiet hours is recorded with
+  `silenced: true`.
+
+Two options configure this. `notificationQuietHoursTimeZone` is the zone the
+bare `HH:mm` preferences are read in. When it is omitted BPM reads the zone off
+the registered `BPM_BUSINESS_CALENDAR` — the host's own calendar when it
+supplied one, otherwise the built-in weekday calendar built from
+`notificationSlaBusinessCalendarTimeZone` — and only falls back to `UTC` when
+neither answers. Deferring to the calendar rather than to the flattened option
+matters: a host that registers its own calendar never sets
+`notificationSlaBusinessCalendarTimeZone` (BPM ignores it in that case), so
+resolving the zone at wiring time would silently read a Taiwan
+`20:00–08:00` window in UTC and silence the whole working afternoon.
+`notificationEmailDigestHour` (default `9`) is the local hour a `DAILY`
+recipient's held email is flushed. A window whose start equals its end counts
+as *no* quiet hours rather than as all day.
+
+Note that a held email needs something to release it: with
+`notificationDeliverySchedulerEnabled: false` (the default) nothing scans for
+due deliveries, so a host that enforces quiet hours should either enable the
+scheduler in a worker process or call
+`NotificationDeliveryService.deliverPendingNotifications` itself. Digest
+merging is BPM's built-in SMTP behaviour; a host with its own
+`BPM_NOTIFICATION_DISPATCHER` gets the hold either way and gets merging only if
+it implements the optional `dispatchDigest`.
 
 **Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
 from *read* and from *deleted* — the row survives for statistics and audit.
@@ -886,6 +1006,7 @@ argument on the `notifications` / `notificationCount` queries.
 19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
 20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
 21. `FormDataOptionSnapshots0000000020000` (adds `approval_instances.form_data_option_snapshot`, default `{}`)
+22. `NotificationSilenced0000000021000` (adds `notifications.silenced`, `NOT NULL DEFAULT false`; existing rows were announced by definition)
 
 ---
 

@@ -4,6 +4,7 @@ export * from './approval-template.entity';
 export * from './compose-approval-template.object';
 export * from './dto/approval-template.input';
 export * from './dto/compose-approval-template.input';
+export * from './template-observer.token';
 export * from './template.enums';
 export * from './template.module';
 export * from './template.service';

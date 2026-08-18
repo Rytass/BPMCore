@@ -9,9 +9,11 @@ import {
   BPM_NOTIFICATION_DISPATCHER,
   BPMNotificationDispatcher,
 } from './notification-dispatcher.token';
+import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
+  NotificationDigestModeEnum,
   NotificationStatusEnum,
 } from './notification.enums';
 import { BPMResolvedNotificationOptions } from './notification-options';
@@ -23,6 +25,8 @@ export class NotificationDeliveryService {
   constructor(
     @InjectRepository(NotificationEntity)
     private readonly notificationRepository: Repository<NotificationEntity>,
+    @InjectRepository(NotificationPreferenceEntity)
+    private readonly notificationPreferenceRepository: Repository<NotificationPreferenceEntity>,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -46,13 +50,191 @@ export class NotificationDeliveryService {
       limit: deliveryLimit,
       now,
     });
-    const results = await Promise.all(
-      pendingNotifications.map((notification) =>
+    const { digests, individual } =
+      await this.groupDigestBatches(pendingNotifications);
+    const results = await Promise.all([
+      ...individual.map((notification) =>
         this.deliverNotification(notification, options),
       ),
+      ...digests.map((batch) => this.deliverDigest(batch, options)),
+    ]);
+
+    // `deliverNotification` reports a boolean per row and `deliverDigest` a
+    // row count, so both coerce to "notifications delivered".
+    return results.reduce<number>((total, result) => total + Number(result), 0);
+  }
+
+  /**
+   * Splits a claimed batch into recipients who asked for a daily digest and
+   * everyone else.
+   *
+   * Only email digests, and only when a recipient has more than one row
+   * waiting — a "digest" of a single notification is just that notification
+   * with a worse subject line.
+   */
+  private async groupDigestBatches(
+    notifications: readonly NotificationEntity[],
+  ): Promise<{
+    readonly digests: readonly (readonly NotificationEntity[])[];
+    readonly individual: readonly NotificationEntity[];
+  }> {
+    const emailNotifications = notifications.filter(
+      (notification) => notification.channel === NotificationChannelEnum.EMAIL,
     );
 
-    return results.filter(Boolean).length;
+    if (emailNotifications.length === 0) {
+      return { digests: [], individual: notifications };
+    }
+
+    const digestMemberIds = await this.readDailyDigestMemberIds(
+      uniqueStrings(
+        emailNotifications.map(
+          (notification) => notification.recipientMemberId,
+        ),
+      ),
+    );
+    const byRecipient = emailNotifications.reduce<
+      Map<string, NotificationEntity[]>
+    >((groups, notification) => {
+      if (!digestMemberIds.has(notification.recipientMemberId)) {
+        return groups;
+      }
+
+      const group = groups.get(notification.recipientMemberId) ?? [];
+
+      group.push(notification);
+      groups.set(notification.recipientMemberId, group);
+
+      return groups;
+    }, new Map());
+    const digests = [...byRecipient.values()].filter(
+      (group) => group.length > 1,
+    );
+    const digestedIds = new Set(
+      digests.flatMap((group) => group.map((notification) => notification.id)),
+    );
+
+    return {
+      digests,
+      individual: notifications.filter(
+        (notification) => !digestedIds.has(notification.id),
+      ),
+    };
+  }
+
+  private async readDailyDigestMemberIds(
+    memberIds: readonly string[],
+  ): Promise<ReadonlySet<string>> {
+    if (memberIds.length === 0) {
+      return new Set();
+    }
+
+    const preferences = await this.notificationPreferenceRepository.find({
+      where: { memberId: In([...memberIds]) },
+    });
+
+    return new Set(
+      preferences
+        .filter(
+          (preference) =>
+            preference.emailDigestMode === NotificationDigestModeEnum.DAILY,
+        )
+        .map((preference) => preference.memberId),
+    );
+  }
+
+  /**
+   * Sends one message covering a recipient's held notifications and marks all
+   * of them delivered, so a member on `DAILY` gets one email rather than one
+   * per approval that happened overnight.
+   *
+   * Returns how many rows were delivered, so the scan's count still reflects
+   * notifications rather than messages.
+   */
+  private async deliverDigest(
+    notifications: readonly NotificationEntity[],
+    options: BPMResolvedNotificationOptions,
+  ): Promise<number> {
+    try {
+      const deliveryTarget = await this.dispatchDigest(notifications, options);
+      const deliveredAt = new Date();
+
+      await this.notificationRepository.save(
+        notifications.map((notification) => ({
+          ...notification,
+          attemptCount: notification.attemptCount + 1,
+          deliveredAt,
+          deliveryError: null,
+          deliveryTarget,
+          lastAttemptAt: deliveredAt,
+          nextRetryAt: null,
+          sentAt: deliveredAt,
+          status: NotificationStatusEnum.SENT,
+        })),
+      );
+
+      return notifications.length;
+    } catch (error: unknown) {
+      const errorMessage = readErrorMessage(error);
+
+      // Recorded per row: a digest that fails must leave each notification
+      // retryable on its own terms, not strand the whole batch.
+      await Promise.all(
+        notifications.map((notification) =>
+          this.recordDeliveryFailure(notification, errorMessage, options),
+        ),
+      );
+
+      return 0;
+    }
+  }
+
+  private async dispatchDigest(
+    notifications: readonly NotificationEntity[],
+    options: BPMResolvedNotificationOptions,
+  ): Promise<string> {
+    const hostDispatcher = this.readHostDispatcher();
+
+    if (hostDispatcher?.dispatchDigest) {
+      return hostDispatcher.dispatchDigest(notifications, options);
+    }
+
+    if (hostDispatcher) {
+      // The host owns delivery and cannot combine, so honour the hold but not
+      // the merge: every row still goes out now, at the digest hour.
+      const targets = await notifications.reduce<Promise<readonly string[]>>(
+        async (previousPromise, notification) => [
+          ...(await previousPromise),
+          await hostDispatcher.dispatch(notification, options),
+        ],
+        Promise.resolve([]),
+      );
+
+      return targets[0] ?? '';
+    }
+
+    return this.dispatchDigestEmail(notifications, options);
+  }
+
+  private async dispatchDigestEmail(
+    notifications: readonly NotificationEntity[],
+    options: BPMResolvedNotificationOptions,
+  ): Promise<string> {
+    const transporter = this.createEmailTransport(options);
+    const recipientEmail = await this.readRecipientEmail(
+      notifications[0].recipientMemberId,
+    );
+
+    await transporter.sendMail({
+      from: options.emailFrom ?? '',
+      subject: `BPM 通知摘要（${notifications.length} 則）`,
+      text: notifications
+        .map((notification) => `${notification.title}\n${notification.body}`)
+        .join('\n\n---\n\n'),
+      to: recipientEmail,
+    });
+
+    return recipientEmail;
   }
 
   async deliverNotification(
@@ -214,6 +396,24 @@ export class NotificationDeliveryService {
     notification: NotificationEntity,
     options: BPMResolvedNotificationOptions,
   ): Promise<string> {
+    const transporter = this.createEmailTransport(options);
+    const recipientEmail = await this.readRecipientEmail(
+      notification.recipientMemberId,
+    );
+
+    await transporter.sendMail({
+      from: options.emailFrom ?? '',
+      subject: notification.title,
+      text: notification.body,
+      to: recipientEmail,
+    });
+
+    return recipientEmail;
+  }
+
+  private createEmailTransport(
+    options: BPMResolvedNotificationOptions,
+  ): nodemailer.Transporter {
     if (
       !options.emailEnabled ||
       !options.emailSmtpHost ||
@@ -225,13 +425,7 @@ export class NotificationDeliveryService {
       throw new Error('EMAIL_DISABLED');
     }
 
-    const identityService = this.moduleRef.get(IdentityService, {
-      strict: false,
-    });
-    const recipient = await identityService.resolveMember(
-      notification.recipientMemberId,
-    );
-    const transporter = nodemailer.createTransport({
+    return nodemailer.createTransport({
       auth: {
         pass: options.emailSmtpPassword,
         user: options.emailSmtpUsername,
@@ -240,13 +434,13 @@ export class NotificationDeliveryService {
       port: options.emailSmtpPort,
       secure: options.emailSmtpSecure,
     });
+  }
 
-    await transporter.sendMail({
-      from: options.emailFrom,
-      subject: notification.title,
-      text: notification.body,
-      to: recipient.email,
+  private async readRecipientEmail(memberId: string): Promise<string> {
+    const identityService = this.moduleRef.get(IdentityService, {
+      strict: false,
     });
+    const recipient = await identityService.resolveMember(memberId);
 
     return recipient.email;
   }
@@ -321,6 +515,10 @@ export class NotificationDeliveryService {
       `Notification ${notification.id} delivery failed: ${errorMessage}`,
     );
   }
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return Array.from(new Set(values));
 }
 
 function readErrorMessage(error: unknown): string {

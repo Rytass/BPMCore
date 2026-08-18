@@ -1,5 +1,9 @@
 import { InjectionToken } from '@nestjs/common';
 import {
+  DEFAULT_EMAIL_DIGEST_HOUR,
+  normalizeDigestHour,
+} from './notification-schedule';
+import {
   NotificationChannelEnum,
   NotificationDigestModeEnum,
 } from './notification.enums';
@@ -212,6 +216,30 @@ export interface BPMRootNotificationOptions {
   readonly notificationDefaultEmailDigestMode?: NotificationDigestModeEnum;
 
   /**
+   * IANA time zone the members' `quietHoursStart` / `quietHoursEnd`
+   * preferences are read in.
+   *
+   * Those columns store a bare wall-clock time, so a zone is required to turn
+   * "22:00" into an instant. When omitted, BPM reads the zone off the
+   * registered `BPM_BUSINESS_CALENDAR` — the host's own calendar when it
+   * supplied one, otherwise the built-in weekday calendar built from
+   * `notificationSlaBusinessCalendarTimeZone`. A host that already told BPM
+   * where its people work therefore gets sensible quiet hours without a second
+   * setting. Set this only when notification quiet hours and business days
+   * belong to different zones.
+   */
+  readonly notificationQuietHoursTimeZone?: string;
+
+  /**
+   * Local hour (0–23) at which held email is flushed for members whose
+   * `emailDigestMode` is `DAILY`.
+   *
+   * Read in `notificationQuietHoursTimeZone`. Defaults to `9`. Values outside
+   * 0–23 fall back to the default rather than throwing at wiring time.
+   */
+  readonly notificationEmailDigestHour?: number;
+
+  /**
    * Default in-app notification preference for members without a stored
    * preference.
    */
@@ -242,6 +270,14 @@ export interface BPMResolvedNotificationOptions {
   readonly deliveryRetryBaseDelayMs: number;
   readonly deliveryScanIntervalMs: number;
   readonly deliverySchedulerEnabled: boolean;
+  readonly emailDigestHour: number;
+  /**
+   * `null` when the host did not configure one, which means "use the
+   * registered business calendar's zone" — resolved at notification time,
+   * because the calendar is a DI provider and options are flattened before it
+   * exists.
+   */
+  readonly quietHoursTimeZone: string | null;
   readonly slaBusinessCalendarTimeZone: string;
   readonly slaScanIntervalMs: number;
   readonly slaSchedulerEnabled: boolean;
@@ -277,6 +313,8 @@ export const DEFAULT_BPM_NOTIFICATION_OPTIONS: BPMResolvedNotificationOptions =
     deliveryRetryBaseDelayMs: 60_000,
     deliveryScanIntervalMs: 30_000,
     deliverySchedulerEnabled: false,
+    emailDigestHour: DEFAULT_EMAIL_DIGEST_HOUR,
+    quietHoursTimeZone: null,
     slaBusinessCalendarTimeZone: 'UTC',
     slaScanIntervalMs: 60_000,
     slaSchedulerEnabled: false,
@@ -307,6 +345,10 @@ export function resolveBPMNotificationOptions(
   );
   const webhookEndpointUrl = normalizeText(
     options.notificationWebhookEndpointUrl,
+  );
+  const slaBusinessCalendarTimeZone = normalizeTimeZone(
+    options.notificationSlaBusinessCalendarTimeZone,
+    DEFAULT_BPM_NOTIFICATION_OPTIONS.slaBusinessCalendarTimeZone,
   );
 
   return {
@@ -360,9 +402,15 @@ export function resolveBPMNotificationOptions(
     defaultInAppPreferenceEnabled:
       options.notificationDefaultInAppPreferenceEnabled ??
       DEFAULT_BPM_NOTIFICATION_OPTIONS.defaultInAppPreferenceEnabled,
-    slaBusinessCalendarTimeZone: normalizeTimeZone(
-      options.notificationSlaBusinessCalendarTimeZone,
+    emailDigestHour: normalizeDigestHour(options.notificationEmailDigestHour),
+    // Left null when unset so `NotificationService` can read the zone off the
+    // registered business calendar. Resolving it here would silently mean UTC
+    // for every host that supplies its own calendar — the calendar knows the
+    // zone, but it does not exist yet at option-flattening time.
+    quietHoursTimeZone: normalizeOptionalTimeZone(
+      options.notificationQuietHoursTimeZone,
     ),
+    slaBusinessCalendarTimeZone,
     slaScanIntervalMs: normalizeInterval(
       options.notificationSlaScanIntervalMs,
       DEFAULT_BPM_NOTIFICATION_OPTIONS.slaScanIntervalMs,
@@ -414,14 +462,15 @@ function normalizePort(value: number | null | undefined): number | null {
 }
 
 /**
- * Rejects unknown IANA zones at wiring time rather than letting every SLA
- * calculation throw later inside `Intl.DateTimeFormat`.
+ * As {@link normalizeTimeZone}, but reports "not configured" as `null` instead
+ * of substituting a fallback. An unreadable zone is treated as absent, so the
+ * caller's own fallback applies rather than a silently wrong zone.
  */
-function normalizeTimeZone(value: string | undefined): string {
+function normalizeOptionalTimeZone(value: string | undefined): string | null {
   const trimmedValue = value?.trim() ?? '';
 
   if (!trimmedValue) {
-    return DEFAULT_BPM_NOTIFICATION_OPTIONS.slaBusinessCalendarTimeZone;
+    return null;
   }
 
   try {
@@ -429,7 +478,30 @@ function normalizeTimeZone(value: string | undefined): string {
 
     return trimmedValue;
   } catch {
-    return DEFAULT_BPM_NOTIFICATION_OPTIONS.slaBusinessCalendarTimeZone;
+    return null;
+  }
+}
+
+/**
+ * Rejects unknown IANA zones at wiring time rather than letting every SLA
+ * calculation throw later inside `Intl.DateTimeFormat`.
+ */
+function normalizeTimeZone(
+  value: string | undefined,
+  fallback: string,
+): string {
+  const trimmedValue = value?.trim() ?? '';
+
+  if (!trimmedValue) {
+    return fallback;
+  }
+
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: trimmedValue });
+
+    return trimmedValue;
+  } catch {
+    return fallback;
   }
 }
 

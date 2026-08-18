@@ -20,6 +20,7 @@ import { AdhocDirectives0000000017000 } from './0000000017000-adhoc-directives';
 import { NotificationArchive0000000018000 } from './0000000018000-notification-archive';
 import { ApprovalTemplateActivation0000000019000 } from './0000000019000-approval-template-activation';
 import { FormDataOptionSnapshots0000000020000 } from './0000000020000-form-data-option-snapshots';
+import { NotificationSilenced0000000021000 } from './0000000021000-notification-silenced';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -43,6 +44,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   NotificationArchive0000000018000,
   ApprovalTemplateActivation0000000019000,
   FormDataOptionSnapshots0000000020000,
+  NotificationSilenced0000000021000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -66,3 +68,4 @@ export * from './0000000017000-adhoc-directives';
 export * from './0000000018000-notification-archive';
 export * from './0000000019000-approval-template-activation';
 export * from './0000000020000-form-data-option-snapshots';
+export * from './0000000021000-notification-silenced';

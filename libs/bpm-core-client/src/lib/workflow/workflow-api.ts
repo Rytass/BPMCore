@@ -255,6 +255,12 @@ export interface NotificationRecord {
   readonly resolution: NotificationResolution | null;
   readonly resolvedAt: string | null;
   readonly sentAt: string | null;
+  /**
+   * Recorded but deliberately not announced — the recipient turned in-app
+   * notifications off, or it arrived inside their quiet hours. It belongs in
+   * the list; what it must not get is a toast or a push.
+   */
+  readonly silenced: boolean;
   readonly status: NotificationStatus;
   readonly taskId: string | null;
   readonly title: string;
@@ -1470,6 +1476,7 @@ export async function listNotifications({
         resolution
         resolvedAt
         sentAt
+        silenced
         status
         taskId
         title

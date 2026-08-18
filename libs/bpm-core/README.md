@@ -911,6 +911,8 @@ BPMRootModule.forRootAsync({
 | `notificationDefaultEmailDigestMode`             | `INSTANT`                      | Default digest mode for missing preferences.                   |
 | `notificationDefaultInAppPreferenceEnabled`      | `true`                         | Default in-app preference for missing preferences.             |
 | `notificationDefaultEmailPreferenceEnabled`      | `true`                         | Default email preference for missing preferences.              |
+| `notificationQuietHoursTimeZone`                 | registered calendar's zone     | IANA zone the members' `quietHoursStart` / `quietHoursEnd` are read in. Falls back to `BPM_BUSINESS_CALENDAR.timeZone`, then `UTC`. |
+| `notificationEmailDigestHour`                    | `9`                            | Local hour a `DAILY` recipient's held email is flushed.        |
 | `signatureCurrentKeyVersion`                     | `1`                            | Key version used for new signatures.                           |
 | `signatureKeyProvider`                           | local development key provider | Host key provider for signing and verification.                |
 | `signatureTimestampProvider`                     | mock timestamp provider        | Host timestamp token provider.                                 |

@@ -12,6 +12,12 @@ export interface BPMNotificationsCreatedEvent {
    * Note that a batch is always for **one recipient**: several rows mean
    * several channels, not several people. A node assigned to three approvers
    * produces three separate events.
+   *
+   * A row whose `silenced` flag is set was recorded but must not be
+   * announced: the recipient turned in-app notifications off, or it arrived
+   * inside their quiet hours. Push it into the list without a toast rather
+   * than skipping it — the row exists precisely so the notification centre
+   * stays complete.
    */
   readonly notifications: readonly NotificationEntity[];
   /**

@@ -114,7 +114,11 @@ export class TemplateMutations {
   @Mutation(() => ApprovalTemplateVersionEntity)
   async rollbackApprovalTemplateVersion(
     @Args('versionId', { type: () => String }) versionId: string,
+    @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<ApprovalTemplateVersionEntity> {
-    return this.templateService.rollbackApprovalTemplateVersion(versionId);
+    return this.templateService.rollbackApprovalTemplateVersion(
+      versionId,
+      currentMemberId,
+    );
   }
 }
