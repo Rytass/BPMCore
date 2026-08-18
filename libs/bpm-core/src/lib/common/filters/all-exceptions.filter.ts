@@ -57,7 +57,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const statusCode =
       exception instanceof HttpException
         ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+        : // Body parsers and other Express middleware reject with a plain
+          // `Error` that still carries the status they mean — `413` for an
+          // oversized payload, say. Reporting those as `500` would blame the
+          // server for what the request did wrong.
+          (this.readHttpStatus(exception) ?? HttpStatus.INTERNAL_SERVER_ERROR);
     const message = this.resolveMessage(exception);
     const body: ErrorResponseBody = {
       error:
@@ -89,6 +93,46 @@ export class AllExceptionsFilter implements ExceptionFilter {
       typeof candidate?.status === 'function' &&
       typeof candidate.json === 'function'
     );
+  }
+
+  /**
+   * Reads a usable HTTP status off a non-`HttpException` rejection.
+   *
+   * Restricted to 4xx errors that opt in through `http-errors`' `expose: true`
+   * — the convention Express body parsers follow — so only an error that
+   * already declares itself safe to report can set the status. An HTTP client
+   * added later (axios and friends) attaches the *upstream* response's status
+   * to its rejection without that flag; trusting those would let a remote
+   * service dictate what this API answers.
+   */
+  private readHttpStatus(exception: unknown): number | null {
+    if (typeof exception !== 'object' || exception === null) {
+      return null;
+    }
+
+    const candidate = exception as {
+      readonly expose?: unknown;
+      readonly status?: unknown;
+      readonly statusCode?: unknown;
+    };
+
+    if (candidate.expose !== true) {
+      return null;
+    }
+
+    const status =
+      typeof candidate.status === 'number'
+        ? candidate.status
+        : typeof candidate.statusCode === 'number'
+          ? candidate.statusCode
+          : null;
+
+    return status !== null &&
+      Number.isInteger(status) &&
+      status >= 400 &&
+      status <= 499
+      ? status
+      : null;
   }
 
   private resolveMessage(exception: unknown): string {
