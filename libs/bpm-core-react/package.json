@@ -292,7 +292,6 @@
     "@xyflow/react": ">=12.0.0",
     "ai": ">=6.0.0",
     "dagre": ">=0.8.5",
-    "moment": ">=2.29.0",
     "next": ">=15.0.0",
     "pdfjs-dist": "^5.4.296",
     "react": ">=18.0.0",
@@ -330,9 +329,6 @@
     "dagre": {
       "optional": true
     },
-    "moment": {
-      "optional": true
-    },
     "next": {
       "optional": true
     },
@@ -342,5 +338,8 @@
     "react-pdf": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "moment": "^2.30.1"
   }
 }
