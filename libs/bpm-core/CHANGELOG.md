@@ -1,3 +1,19 @@
+## 0.11.0 (2026-08-18)
+
+### 🚀 Features
+
+- **notification:** bound delivery dispatch with a timeout ([d8115f0](https://github.com/Rytass/BPMCore/commit/d8115f0))
+
+### 🩹 Fixes
+
+- **notification:** read claimed ids from the UPDATE result pair ([2fe6e44](https://github.com/Rytass/BPMCore/commit/2fe6e44))
+- **notification:** move nodemailer to ^9.0.1 ([e094738](https://github.com/Rytass/BPMCore/commit/e094738))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.10.0 (2026-08-18)
 
 ### 🚀 Features
