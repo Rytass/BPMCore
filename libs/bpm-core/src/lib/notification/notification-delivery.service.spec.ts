@@ -460,6 +460,44 @@ describe('NotificationDeliveryService', () => {
       }),
     );
   });
+
+  it('records a dispatch that never settles as a delivery failure', async (): Promise<void> => {
+    let settleDispatch: ((deliveryTarget: string) => void) | undefined;
+    const notification = createNotification(NotificationChannelEnum.EMAIL);
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createPreferenceRepository(),
+      createModuleRef({
+        dispatch: (): Promise<string> =>
+          new Promise<string>((resolve): void => {
+            // Held and never called: models a dispatcher whose promise never
+            // settles. Released after the assertions so nothing is left
+            // pending between tests.
+            settleDispatch = resolve;
+          }),
+      }),
+    );
+
+    // Without the timeout the row keeps its DELIVERY_IN_PROGRESS claim and an
+    // empty `deliveryError`, which leaves a host nothing to diagnose.
+    await expect(
+      service.deliverNotification(notification, {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        deliveryDispatchTimeoutMs: 20,
+      }),
+    ).resolves.toBe(false);
+
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptCount: 1,
+        deliveryError: 'DELIVERY_TIMEOUT_20MS',
+        status: NotificationStatusEnum.PENDING,
+      }),
+    );
+
+    settleDispatch?.('released');
+  });
 });
 
 function createNotification(

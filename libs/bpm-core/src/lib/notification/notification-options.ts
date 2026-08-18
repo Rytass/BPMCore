@@ -139,6 +139,19 @@ export interface BPMRootNotificationOptions {
   readonly notificationDeliveryRetryBaseDelayMs?: number;
 
   /**
+   * Maximum time in milliseconds a single delivery dispatch may take before it
+   * is recorded as a failed attempt.
+   *
+   * Covers the whole dispatch, including the host `BPM_NOTIFICATION_DISPATCHER`,
+   * member resolution and the SMTP or webhook call. Delivery claims a row
+   * before dispatching and only writes back on success or failure, so a
+   * dispatch that never settles would otherwise leave that row permanently in
+   * `DELIVERY_IN_PROGRESS` with no recorded error. Defaults to `30000`. Set to
+   * `0` to wait indefinitely.
+   */
+  readonly notificationDeliveryDispatchTimeoutMs?: number;
+
+  /**
    * Enables the background SLA scheduler that scans pending tasks.
    *
    * Defaults to `false`. Set to `true` only in a dedicated worker process or
@@ -266,6 +279,7 @@ export interface BPMResolvedNotificationOptions {
   readonly defaultEmailPreferenceEnabled: boolean;
   readonly defaultInAppPreferenceEnabled: boolean;
   readonly deliveryBatchSize: number;
+  readonly deliveryDispatchTimeoutMs: number;
   readonly deliveryMaxAttempts: number;
   readonly deliveryRetryBaseDelayMs: number;
   readonly deliveryScanIntervalMs: number;
@@ -309,6 +323,7 @@ export const DEFAULT_BPM_NOTIFICATION_OPTIONS: BPMResolvedNotificationOptions =
     defaultEmailPreferenceEnabled: true,
     defaultInAppPreferenceEnabled: true,
     deliveryBatchSize: 25,
+    deliveryDispatchTimeoutMs: 30_000,
     deliveryMaxAttempts: 3,
     deliveryRetryBaseDelayMs: 60_000,
     deliveryScanIntervalMs: 30_000,
@@ -359,6 +374,10 @@ export function resolveBPMNotificationOptions(
     deliveryBatchSize: normalizePositiveInteger(
       options.notificationDeliveryBatchSize,
       DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryBatchSize,
+    ),
+    deliveryDispatchTimeoutMs: normalizeTimeout(
+      options.notificationDeliveryDispatchTimeoutMs,
+      DEFAULT_BPM_NOTIFICATION_OPTIONS.deliveryDispatchTimeoutMs,
     ),
     deliveryMaxAttempts: normalizePositiveInteger(
       options.notificationDeliveryMaxAttempts,
@@ -514,6 +533,22 @@ function normalizeInterval(
   }
 
   return Math.max(value, 1000);
+}
+
+/**
+ * Unlike {@link normalizeInterval} this accepts `0`, which means "wait
+ * indefinitely" for a dispatch, and imposes no 1000ms floor: a host may want a
+ * tight timeout without that being mistaken for a scan loop.
+ */
+function normalizeTimeout(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return fallback;
+  }
+
+  return value;
 }
 
 function normalizePositiveInteger(

@@ -941,6 +941,16 @@ merging is BPM's built-in SMTP behaviour; a host with its own
 `BPM_NOTIFICATION_DISPATCHER` gets the hold either way and gets merging only if
 it implements the optional `dispatchDigest`.
 
+**Dispatch timeout.** Delivery claims a row into `DELIVERY_IN_PROGRESS` before
+dispatching, and only the success and failure paths write back. A dispatch that
+never settles would therefore park the row permanently, with `attemptCount` at
+`0` and `deliveryError` empty — the one failure mode a host cannot see from the
+table. `notificationDeliveryDispatchTimeoutMs` (default `30000`) bounds the
+whole dispatch, host `BPM_NOTIFICATION_DISPATCHER`, member resolution and the
+SMTP/webhook call included; exceeding it is recorded as an ordinary failed
+attempt with `DELIVERY_TIMEOUT_<ms>MS` and retried on the normal schedule. Set
+it to `0` to wait indefinitely.
+
 **Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
 from *read* and from *deleted* — the row survives for statistics and audit.
 `NotificationService` adds `archiveNotifications({ ids, memberId })` /

@@ -156,7 +156,10 @@ export class NotificationDeliveryService {
     options: BPMResolvedNotificationOptions,
   ): Promise<number> {
     try {
-      const deliveryTarget = await this.dispatchDigest(notifications, options);
+      const deliveryTarget = await withDispatchTimeout(
+        this.dispatchDigest(notifications, options),
+        options.deliveryDispatchTimeoutMs,
+      );
       const deliveredAt = new Date();
 
       await this.notificationRepository.save(
@@ -253,7 +256,10 @@ export class NotificationDeliveryService {
     }
 
     try {
-      const deliveryTarget = await this.dispatch(notification, options);
+      const deliveryTarget = await withDispatchTimeout(
+        this.dispatch(notification, options),
+        options.deliveryDispatchTimeoutMs,
+      );
       await this.notificationRepository.save({
         ...notification,
         attemptCount: notification.attemptCount + 1,
@@ -565,6 +571,42 @@ function readClaimedIds(rawResult: unknown): readonly string[] {
         : undefined,
     )
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
+}
+
+/**
+ * Fails a dispatch that never settles.
+ *
+ * Delivery marks a row `DELIVERY_IN_PROGRESS` before dispatching, and only the
+ * resolve and reject paths write back. A host dispatcher, member resolver or
+ * SMTP call that hangs would therefore leave a permanently claimed row with an
+ * empty `delivery_error` — nothing for the host to diagnose. A timeout turns
+ * that into an ordinary recorded failure that retries.
+ */
+async function withDispatchTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return operation;
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject): void => {
+        timer = setTimeout((): void => {
+          reject(new Error(`DELIVERY_TIMEOUT_${timeoutMs}MS`));
+        }, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function normalizePositiveInteger(
