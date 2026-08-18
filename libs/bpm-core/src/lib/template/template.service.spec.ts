@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { FormDefinitionEntity } from '../form/form-definition.entity';
@@ -8,6 +9,13 @@ import { FormService } from '../form/form.service';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
+import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
+import {
+  BPMTemplateChangeActionEnum,
+  BPMTemplateChangedEvent,
+  BPMTemplateObserver,
+  BPM_TEMPLATE_OBSERVER,
+} from './template-observer.token';
 import {
   ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
@@ -45,6 +53,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     const pageTwo = await service.listApprovalTemplates({
@@ -88,6 +97,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplates({
@@ -130,6 +140,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplates({
@@ -184,6 +195,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplates({
@@ -226,6 +238,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplates({});
@@ -264,6 +277,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplates({
@@ -316,6 +330,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     const deactivated = await service.deactivateApprovalTemplate('template-1');
@@ -341,6 +356,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await expect(
@@ -364,6 +380,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.listApprovalTemplateCategories({
@@ -482,6 +499,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await service.createApprovalTemplate({
@@ -561,6 +579,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     const updated = await service.updateApprovalTemplate({
@@ -631,6 +650,7 @@ describe('TemplateService', () => {
       } as unknown as Repository<FormDefinitionVersionEntity>,
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await expect(
@@ -679,6 +699,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     await expect(
@@ -713,6 +734,7 @@ describe('TemplateService', () => {
       createRepository<FormDefinitionVersionEntity>(),
       new ConditionService(),
       {} as unknown as FormService,
+      createTemplateModuleRef(),
     );
 
     const deleted = await service.deleteApprovalTemplateCategory('category-1');
@@ -843,6 +865,135 @@ describe('TemplateService.composeApprovalTemplateWithForm', () => {
     // would roll back the form rows created before the failing publish step.
     expect(store(ApprovalTemplateEntity).size).toBeGreaterThanOrEqual(1);
   });
+
+  it('refuses to publish a new version onto a deactivated template', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const drafted = await service.composeApprovalTemplateWithForm(
+      composeInput(),
+      'member-admin',
+    );
+
+    await service.deactivateApprovalTemplate(drafted.template.id);
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeInput({ publish: true, templateId: drafted.template.id }),
+        'member-admin',
+      ),
+    ).rejects.toThrow('Approval template is deactivated');
+
+    // The refusal is the whole point: the template must still have no
+    // published version, exactly as the workflow engine assumes.
+    const template = store(ApprovalTemplateEntity).get(
+      drafted.template.id,
+    ) as ApprovalTemplateEntity;
+    expect(template.currentVersionId).toBeNull();
+  });
+
+  it('refuses to roll back onto a deactivated template', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const published = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true }),
+      'member-admin',
+    );
+
+    await service.deactivateApprovalTemplate(published.template.id);
+
+    await expect(
+      service.rollbackApprovalTemplateVersion(
+        published.templateVersion.id,
+        'member-admin',
+      ),
+    ).rejects.toThrow('Approval template is deactivated');
+  });
+
+  it('reports one COMPOSED event to a host template observer', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const events: BPMTemplateChangedEvent[] = [];
+    const service = createStoreBackedService(manager, {
+      onTemplateChanged: (event): void => {
+        events.push(event);
+      },
+    });
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true }),
+      'member-admin',
+    );
+
+    // A compose that also publishes is still one host-facing mutation, so the
+    // host must not have to de-duplicate a COMPOSED against a
+    // VERSION_PUBLISHED for the same change.
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual(
+      expect.objectContaining({
+        action: BPMTemplateChangeActionEnum.COMPOSED,
+        actorMemberId: 'member-admin',
+        previousVersionId: null,
+        published: true,
+      }),
+    );
+    expect(events[0].version.id).toBe(result.templateVersion.id);
+    expect(events[0].template.id).toBe(result.template.id);
+    // BPM owned the transaction, so the rows are already committed and the
+    // host is free to push immediately.
+    expect(events[0].manager).toBeUndefined();
+  });
+
+  it('reports a rollback to the observer with the version it replaced', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const events: BPMTemplateChangedEvent[] = [];
+    const service = createStoreBackedService(manager, {
+      onTemplateChanged: (event): void => {
+        events.push(event);
+      },
+    });
+
+    const first = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true }),
+      'member-admin',
+    );
+    const second = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true, templateId: first.template.id }),
+      'member-admin',
+    );
+
+    const restored = await service.rollbackApprovalTemplateVersion(
+      first.templateVersion.id,
+      'member-auditor',
+    );
+
+    expect(restored.id).toBe(first.templateVersion.id);
+    expect(events).toHaveLength(3);
+    expect(events[2]).toEqual(
+      expect.objectContaining({
+        action: BPMTemplateChangeActionEnum.VERSION_ROLLED_BACK,
+        actorMemberId: 'member-auditor',
+        previousVersionId: second.templateVersion.id,
+        published: true,
+      }),
+    );
+  });
+
+  it('keeps the mutation succeeding when the host observer throws', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager, {
+      onTemplateChanged: (): never => {
+        throw new Error('host audit sink is down');
+      },
+    });
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeInput({ publish: true }),
+        'member-admin',
+      ),
+    ).resolves.toEqual(expect.objectContaining({ published: true }));
+  });
 });
 
 function createApprovalTemplate(id: string): ApprovalTemplateEntity {
@@ -951,6 +1102,79 @@ const VALID_WORKFLOW_DEFINITION = {
   ],
 };
 
+/**
+ * `TemplateService` only reaches for `ModuleRef` to look up the optional
+ * `BPM_TEMPLATE_OBSERVER`; throwing is how "no host observer registered" is
+ * expressed, which is the default these tests run under.
+ */
+function createTemplateModuleRef(observer?: BPMTemplateObserver): ModuleRef {
+  return {
+    get: (token: unknown): BPMTemplateObserver => {
+      if (observer && token === BPM_TEMPLATE_OBSERVER) {
+        return observer;
+      }
+
+      throw new Error('Unexpected ModuleRef lookup');
+    },
+  } as unknown as ModuleRef;
+}
+
+/**
+ * A `TemplateService` whose four repositories all read and write the same
+ * in-memory store, so the paths that run without a caller-supplied manager
+ * (publish, rollback) work as well as the composed ones.
+ */
+function createStoreBackedService(
+  manager: EntityManager,
+  observer?: BPMTemplateObserver,
+): TemplateService {
+  const repositoryFor = <TEntity extends ObjectLiteral>(
+    entity: new () => ObjectLiteral,
+  ): Repository<TEntity> =>
+    ({
+      ...manager.getRepository(entity),
+      manager,
+    }) as unknown as Repository<TEntity>;
+
+  return new TemplateService(
+    repositoryFor<ApprovalTemplateEntity>(ApprovalTemplateEntity),
+    repositoryFor<ApprovalTemplateCategoryEntity>(
+      ApprovalTemplateCategoryEntity,
+    ),
+    repositoryFor<ApprovalTemplateVersionEntity>(ApprovalTemplateVersionEntity),
+    repositoryFor<FormDefinitionVersionEntity>(FormDefinitionVersionEntity),
+    new ConditionService(),
+    new FormService(
+      {} as Repository<FormDefinitionEntity>,
+      {} as Repository<FormDefinitionVersionEntity>,
+    ),
+    createTemplateModuleRef(observer),
+  );
+}
+
+function composeInput(
+  overrides: Partial<ComposeApprovalTemplateWithFormInput> = {},
+): ComposeApprovalTemplateWithFormInput {
+  return {
+    category: null,
+    categoryId: null,
+    formDefinitionId: null,
+    formDescription: null,
+    formName: '請款表單',
+    initiatorPolicyCel: null,
+    notificationConfigJson: null,
+    publish: false,
+    schemaJson: JSON.stringify(SAMPLE_FORM_SCHEMA),
+    slaDefaultsJson: null,
+    templateDescription: null,
+    templateId: null,
+    templateName: '請款簽核',
+    uiSchemaJson: JSON.stringify(SAMPLE_FORM_UI_SCHEMA),
+    workflowDefinitionJson: JSON.stringify(VALID_WORKFLOW_DEFINITION),
+    ...overrides,
+  };
+}
+
 function createComposingService(manager: EntityManager): TemplateService {
   const formService = new FormService(
     {} as Repository<FormDefinitionEntity>,
@@ -964,6 +1188,7 @@ function createComposingService(manager: EntityManager): TemplateService {
     {} as Repository<FormDefinitionVersionEntity>,
     new ConditionService(),
     formService,
+    createTemplateModuleRef(),
   );
 }
 
@@ -1018,6 +1243,33 @@ function createInMemoryManager(): {
     return {
       create: (value: ObjectLiteral): ObjectLiteral =>
         Object.assign(new entity(), value),
+      // Only `readNextVersionNumber` builds a query, and only ever to read
+      // MAX(version) for one template, so the stub answers that one shape.
+      createQueryBuilder: (): Record<string, unknown> => {
+        let templateId: string | null = null;
+        const builder: Record<string, unknown> = {
+          getRawOne: (): Promise<{ readonly maxVersion: number | null }> => {
+            const versions = [...store.values()]
+              .filter((row) => row['templateId'] === templateId)
+              .map((row) => Number(row['version'] ?? 0));
+
+            return Promise.resolve({
+              maxVersion: versions.length ? Math.max(...versions) : null,
+            });
+          },
+          select: (): Record<string, unknown> => builder,
+          where: (
+            _clause: string,
+            parameters: Readonly<Record<string, unknown>>,
+          ): Record<string, unknown> => {
+            templateId = String(parameters['templateId']);
+
+            return builder;
+          },
+        };
+
+        return builder;
+      },
       findOne: ({
         where,
       }: {

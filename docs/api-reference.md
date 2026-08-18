@@ -639,6 +639,7 @@ submit an arbitrary source reference or binding definition.
 | Validators | `WorkflowDefinitionValidator` |
 | Enums | `TemplateEnums` |
 | Service | `TemplateService` |
+| Token | `BPM_TEMPLATE_OBSERVER` + `BPMTemplateObserver` / `BPMTemplateChangedEvent` / `BPMTemplateChangeActionEnum` (host observes template changes, for audit) |
 | Module | `TemplateModule` |
 
 > `composeApprovalTemplateWithForm` mutation (`ComposeTemplateMutations`) builds
@@ -693,6 +694,40 @@ capability is lost, only the silent substitution.
 > misleading field error. `launchableApprovalTemplates` filters deactivated
 > templates out. Instances already in flight are unaffected — they run from
 > `workflowSnapshot`.
+
+`publishApprovalTemplateVersion` and `rollbackApprovalTemplateVersion` apply
+the same guard: a deactivated template cannot gain a new published version or
+move its published pointer, and both raise
+`ConflictException('Approval template is deactivated')`.
+`composeApprovalTemplateWithForm` inherits it through its publish step, so
+`publish: true` on a deactivated template is refused while a draft-only compose
+still succeeds. Before this the engine refused to *run* a deactivated template
+while the designer happily published onto it — the same user action behaved
+differently depending on which button was pressed.
+
+**Audit hook.** `BPM_TEMPLATE_OBSERVER` exists so a host can answer "who
+changed the approval flow, and when". BPM registers
+`publishApprovalTemplateVersion`, `rollbackApprovalTemplateVersion` and
+`composeApprovalTemplateWithForm` on the same GraphQL schema as the host's own
+resolvers, and the embedded `<WorkflowDesigner>` calls them directly, so
+without this hook the only way to notice a template change is a global
+interceptor matching those field names — coupling the host to BPM's schema
+rather than to an interface.
+
+One `onTemplateChanged(event)` fires per host-facing mutation, carrying
+`action` (`COMPOSED` / `VERSION_PUBLISHED` / `VERSION_ROLLED_BACK`), the
+resulting `template` and `version`, the `previousVersionId` the template
+pointed at beforehand, whether the version is now `published`, and
+`actorMemberId`. A compose that also publishes reports a single `COMPOSED`
+event with `published: true`, so a host never has to de-duplicate two events
+for one change. `manager` is present only when the change was written inside a
+caller-supplied transaction and is therefore **not committed yet**, exactly as
+in `BPM_NOTIFICATION_OBSERVER`. Observer failures are logged and swallowed: an
+audit sink must not be able to fail the mutation it observes.
+
+`rollbackApprovalTemplateVersion` now takes an optional trailing
+`rolledBackByMemberId`, supplied by the mutation from `@BPMCurrentMemberId()`,
+so the rollback event names an actor.
 
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 
