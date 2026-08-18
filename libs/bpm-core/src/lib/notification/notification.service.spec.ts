@@ -13,6 +13,10 @@ import {
   ObjectLiteral,
   Repository,
 } from 'typeorm';
+import {
+  BPM_BUSINESS_CALENDAR,
+  BPMBusinessCalendar,
+} from '../calendar/business-calendar.token';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
@@ -506,15 +510,300 @@ describe('NotificationService', () => {
     );
   });
 
+  describe('recipient preferences', () => {
+    interface PreferenceHarness {
+      readonly delivered: NotificationEntity[];
+      readonly events: BPMNotificationsCreatedEvent[];
+      readonly saved: NotificationEntity[];
+      readonly service: NotificationService;
+    }
+
+    function createPreferenceHarness({
+      calendarTimeZone,
+      channels = [NotificationChannelEnum.IN_APP],
+      options = {},
+      preference = {},
+    }: {
+      /** Registers a business calendar and leaves the zone option unset. */
+      readonly calendarTimeZone?: string;
+      readonly channels?: readonly NotificationChannelEnum[];
+      readonly options?: Partial<typeof DEFAULT_BPM_NOTIFICATION_OPTIONS>;
+      readonly preference?: Partial<NotificationPreferenceEntity>;
+    } = {}): PreferenceHarness & {
+      readonly assign: () => Promise<void>;
+    } {
+      const saved: NotificationEntity[] = [];
+      const delivered: NotificationEntity[] = [];
+      const events: BPMNotificationsCreatedEvent[] = [];
+      const notificationRepository = {
+        create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+          Object.assign(new NotificationEntity(), entity),
+        save: (
+          entityOrEntities: NotificationEntity | NotificationEntity[],
+        ): Promise<NotificationEntity | NotificationEntity[]> => {
+          saved.push(
+            ...(Array.isArray(entityOrEntities)
+              ? entityOrEntities
+              : [entityOrEntities]),
+          );
+
+          return Promise.resolve(entityOrEntities);
+        },
+      } as unknown as Repository<NotificationEntity>;
+      const service = new NotificationService(
+        notificationRepository,
+        {
+          findOne: (): Promise<NotificationPreferenceEntity | null> =>
+            Promise.resolve(
+              Object.assign(new NotificationPreferenceEntity(), {
+                emailDigestMode: NotificationDigestModeEnum.INSTANT,
+                emailEnabled: true,
+                inAppEnabled: true,
+                memberId: 'member-a',
+                quietHoursEnd: null,
+                quietHoursStart: null,
+                ...preference,
+              }),
+            ),
+        } as unknown as Repository<NotificationPreferenceEntity>,
+        createRepository<TaskEntity>(),
+        createRepository<TaskCandidateEntity>(),
+        createRepository<ApprovalInstanceEntity>(),
+        createRepository<ActivityLogEntity>(),
+        {
+          deliverNotification: (
+            notification: NotificationEntity,
+          ): Promise<boolean> => {
+            delivered.push(notification);
+
+            return Promise.resolve(true);
+          },
+        } as unknown as NotificationDeliveryService,
+        {
+          get: (
+            token: unknown,
+          ): BPMNotificationObserver | BPMBusinessCalendar => {
+            if (token === BPM_NOTIFICATION_OBSERVER) {
+              return {
+                onNotificationsCreated: (event): void => {
+                  events.push(event);
+                },
+              };
+            }
+
+            if (token === BPM_BUSINESS_CALENDAR && calendarTimeZone) {
+              return {
+                isBusinessDay: (): boolean => true,
+                timeZone: calendarTimeZone,
+              };
+            }
+
+            throw new Error('Unexpected ModuleRef lookup');
+          },
+        } as unknown as ModuleRef,
+        {
+          ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+          emailEnabled: true,
+          // Explicit unless a test is exercising the calendar fallback.
+          quietHoursTimeZone: calendarTimeZone ? null : 'Asia/Taipei',
+          ...options,
+        },
+      );
+
+      const assign = async (): Promise<void> => {
+        const instance = createApprovalInstance();
+        const sourceNode = instance.workflowSnapshot.nodes.find(
+          (candidate): candidate is UserTaskNode =>
+            candidate.type === 'userTask',
+        );
+
+        if (!sourceNode) {
+          throw new Error('Preference fixture must contain a user task');
+        }
+
+        const node: UserTaskNode = {
+          ...sourceNode,
+          data: {
+            ...sourceNode.data,
+            notification: { channels: [...channels] },
+          },
+        };
+
+        await service.createTaskAssignedNotification({
+          instance,
+          manager: undefined as unknown as EntityManager,
+          node,
+          task: Object.assign(new TaskEntity(), {
+            assigneeMemberId: 'member-a',
+            id: 'task-preference',
+            instanceId: instance.id,
+            nodeId: node.id,
+            originalAssigneeMemberId: 'member-a',
+          }),
+        });
+      };
+
+      return { assign, delivered, events, saved, service };
+    }
+
+    afterEach((): void => {
+      jest.useRealTimers();
+    });
+
+    it('records an in-app notification even when the member turned in-app off', async (): Promise<void> => {
+      const { assign, events, saved } = createPreferenceHarness({
+        preference: { inAppEnabled: false },
+      });
+
+      await assign();
+
+      // The whole point: silencing must not destroy the record. Before this,
+      // an afternoon of quiet left the notification centre empty afterwards.
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toEqual(
+        expect.objectContaining({
+          channel: NotificationChannelEnum.IN_APP,
+          silenced: true,
+          status: NotificationStatusEnum.SENT,
+        }),
+      );
+      // And the host still hears about it, so it can record quietly instead of
+      // never learning the notification existed.
+      expect(events).toHaveLength(1);
+    });
+
+    it('silences an in-app notification that arrives inside quiet hours', async (): Promise<void> => {
+      jest.useFakeTimers();
+      // 23:30 Taipei.
+      jest.setSystemTime(new Date('2026-08-18T15:30:00.000Z'));
+
+      const { assign, saved } = createPreferenceHarness({
+        preference: { quietHoursEnd: '08:00', quietHoursStart: '22:00' },
+      });
+
+      await assign();
+
+      expect(saved[0]).toEqual(expect.objectContaining({ silenced: true }));
+    });
+
+    it('announces an in-app notification that arrives outside quiet hours', async (): Promise<void> => {
+      jest.useFakeTimers();
+      // 09:00 Taipei.
+      jest.setSystemTime(new Date('2026-08-18T01:00:00.000Z'));
+
+      const { assign, saved } = createPreferenceHarness({
+        preference: { quietHoursEnd: '08:00', quietHoursStart: '22:00' },
+      });
+
+      await assign();
+
+      expect(saved[0]).toEqual(expect.objectContaining({ silenced: false }));
+    });
+
+    it('holds an email raised inside quiet hours until the window closes', async (): Promise<void> => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-08-18T15:30:00.000Z'));
+
+      const { assign, delivered, saved } = createPreferenceHarness({
+        channels: [NotificationChannelEnum.EMAIL],
+        preference: { quietHoursEnd: '08:00', quietHoursStart: '22:00' },
+      });
+
+      await assign();
+
+      expect(saved[0]).toEqual(
+        expect.objectContaining({
+          channel: NotificationChannelEnum.EMAIL,
+          // 08:00 Taipei the next morning.
+          nextRetryAt: new Date('2026-08-19T00:00:00.000Z'),
+          status: NotificationStatusEnum.PENDING,
+        }),
+      );
+      // Held, not dropped — and not pushed out immediately either.
+      expect(delivered).toHaveLength(0);
+    });
+
+    it('holds a daily-digest email until the next digest hour', async (): Promise<void> => {
+      jest.useFakeTimers();
+      // 14:00 Taipei, past the 09:00 digest hour.
+      jest.setSystemTime(new Date('2026-08-18T06:00:00.000Z'));
+
+      const { assign, delivered, saved } = createPreferenceHarness({
+        channels: [NotificationChannelEnum.EMAIL],
+        preference: { emailDigestMode: NotificationDigestModeEnum.DAILY },
+      });
+
+      await assign();
+
+      expect(saved[0].nextRetryAt).toEqual(
+        new Date('2026-08-19T01:00:00.000Z'),
+      );
+      expect(delivered).toHaveLength(0);
+    });
+
+    it('sends an instant email straight away when no window defers it', async (): Promise<void> => {
+      const { assign, delivered, saved } = createPreferenceHarness({
+        channels: [NotificationChannelEnum.EMAIL],
+      });
+
+      await assign();
+
+      expect(saved[0].nextRetryAt).toBeNull();
+      expect(delivered).toHaveLength(1);
+    });
+
+    it('reads quiet hours in the registered calendar zone when none is configured', async (): Promise<void> => {
+      jest.useFakeTimers();
+      // 14:56 Taipei — the middle of a working afternoon, but 06:56 in UTC,
+      // which falls inside a 20:00–08:00 window. A host that registered a
+      // Taiwan calendar must not have its afternoon silenced by BPM defaulting
+      // the zone to UTC.
+      jest.setSystemTime(new Date('2026-08-18T06:56:00.000Z'));
+
+      const { assign, saved } = createPreferenceHarness({
+        calendarTimeZone: 'Asia/Taipei',
+        preference: { quietHoursEnd: '08:00', quietHoursStart: '20:00' },
+      });
+
+      await assign();
+
+      expect(saved[0]).toEqual(expect.objectContaining({ silenced: false }));
+    });
+
+    it('falls back to UTC when neither an option nor a calendar answers', async (): Promise<void> => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-08-18T06:56:00.000Z'));
+
+      const { assign, saved } = createPreferenceHarness({
+        options: { quietHoursTimeZone: null },
+        preference: { quietHoursEnd: '08:00', quietHoursStart: '20:00' },
+      });
+
+      await assign();
+
+      expect(saved[0]).toEqual(expect.objectContaining({ silenced: true }));
+    });
+
+    it('drops in-app rows only for the host-level kill switch', async (): Promise<void> => {
+      const { assign, saved } = createPreferenceHarness({
+        // `notificationInAppEnabled: false` is a wiring decision — "run BPM
+        // without notification centre data" — not something a member can trip.
+        options: { inAppEnabled: false },
+      });
+
+      await assign();
+
+      expect(saved).toHaveLength(0);
+    });
+  });
+
   describe('BPM_NOTIFICATION_OBSERVER', () => {
     interface ObserverHarness {
       readonly events: BPMNotificationsCreatedEvent[];
       readonly service: NotificationService;
     }
 
-    function createObserverHarness(
-      onCreated?: () => void,
-    ): ObserverHarness {
+    function createObserverHarness(onCreated?: () => void): ObserverHarness {
       const events: BPMNotificationsCreatedEvent[] = [];
       const observer: BPMNotificationObserver = {
         onNotificationsCreated: (event): void => {
@@ -719,8 +1008,7 @@ describe('NotificationService', () => {
     const notificationRepository = {
       create: (entity: Partial<NotificationEntity>): NotificationEntity =>
         Object.assign(new NotificationEntity(), entity),
-      findOne: (): Promise<NotificationEntity | null> =>
-        Promise.resolve(null),
+      findOne: (): Promise<NotificationEntity | null> => Promise.resolve(null),
       save: (
         entityOrEntities: NotificationEntity | NotificationEntity[],
       ): Promise<NotificationEntity | NotificationEntity[]> => {
@@ -780,10 +1068,9 @@ describe('NotificationService', () => {
     await expect(
       service.runSlaScan(new Date('2026-05-10T09:01:00.000Z')),
     ).resolves.toEqual({ overdueCount: 1, warningCount: 0 });
-    expect(savedNotifications.map((notification) => notification.recipientMemberId)).toEqual([
-      'member-a',
-      'member-b',
-    ]);
+    expect(
+      savedNotifications.map((notification) => notification.recipientMemberId),
+    ).toEqual(['member-a', 'member-b']);
     expect(savedNotifications).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

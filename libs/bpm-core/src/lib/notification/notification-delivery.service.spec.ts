@@ -7,9 +7,11 @@ import {
   BPM_NOTIFICATION_DISPATCHER,
   BPMNotificationDispatcher,
 } from './notification-dispatcher.token';
+import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import {
   NotificationChannelEnum,
+  NotificationDigestModeEnum,
   NotificationStatusEnum,
   NotificationTypeEnum,
 } from './notification.enums';
@@ -29,6 +31,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -75,6 +78,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -110,13 +114,17 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef({
         dispatch,
       }),
     );
 
     await expect(
-      service.deliverNotification(notification, DEFAULT_BPM_NOTIFICATION_OPTIONS),
+      service.deliverNotification(
+        notification,
+        DEFAULT_BPM_NOTIFICATION_OPTIONS,
+      ),
     ).resolves.toBe(true);
 
     expect(dispatch).toHaveBeenCalledWith(
@@ -136,6 +144,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -164,6 +173,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -190,6 +200,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -210,6 +221,7 @@ describe('NotificationDeliveryService', () => {
     const repository = createNotificationRepository(notification);
     const service = new NotificationDeliveryService(
       repository,
+      createPreferenceRepository(),
       createModuleRef(),
     );
 
@@ -229,6 +241,181 @@ describe('NotificationDeliveryService', () => {
             status: NotificationStatusEnum.DELIVERY_IN_PROGRESS,
           }),
         ]),
+      }),
+    );
+  });
+
+  it('combines a daily-digest recipient into one email and marks every row sent', async (): Promise<void> => {
+    const sendMail = jest.fn((): Promise<void> => Promise.resolve());
+    jest.spyOn(nodemailer, 'createTransport').mockReturnValue({
+      sendMail,
+    } as unknown as ReturnType<typeof nodemailer.createTransport>);
+    const notifications = [
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        body: '請處理採購申請。',
+        id: 'notification-001',
+        title: '待簽任務 A',
+      }),
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        body: '請處理請款申請。',
+        id: 'notification-002',
+        title: '待簽任務 B',
+      }),
+    ];
+    const repository = createNotificationRepository(...notifications);
+    const service = new NotificationDeliveryService(
+      repository,
+      createPreferenceRepository([createDailyDigestPreference('member-001')]),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.deliverPendingNotifications({
+        options: {
+          ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+          emailEnabled: true,
+          emailFrom: 'BPM <bpm@example.com>',
+          emailSmtpHost: 'smtp.example.com',
+          emailSmtpPassword: 'secret',
+          emailSmtpPort: 587,
+          emailSmtpUsername: 'bpm@example.com',
+        },
+      }),
+      // The count reports notifications delivered, not messages sent.
+    ).resolves.toBe(2);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: 'BPM 通知摘要（2 則）',
+        // Both notifications, in claim order, in the one message body.
+        text: expect.stringMatching(/待簽任務 A[\s\S]+待簽任務 B/),
+        to: 'member-001@example.com',
+      }),
+    );
+    expect(repository.save).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'notification-001',
+        status: NotificationStatusEnum.SENT,
+      }),
+      expect.objectContaining({
+        id: 'notification-002',
+        status: NotificationStatusEnum.SENT,
+      }),
+    ]);
+  });
+
+  it('sends a lone held notification on its own rather than as a digest of one', async (): Promise<void> => {
+    const sendMail = jest.fn((): Promise<void> => Promise.resolve());
+    jest.spyOn(nodemailer, 'createTransport').mockReturnValue({
+      sendMail,
+    } as unknown as ReturnType<typeof nodemailer.createTransport>);
+    const notification = createNotification(NotificationChannelEnum.EMAIL);
+    const repository = createNotificationRepository(notification);
+    const service = new NotificationDeliveryService(
+      repository,
+      createPreferenceRepository([createDailyDigestPreference('member-001')]),
+      createModuleRef(),
+    );
+
+    await service.deliverPendingNotifications({
+      options: {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        emailEnabled: true,
+        emailFrom: 'BPM <bpm@example.com>',
+        emailSmtpHost: 'smtp.example.com',
+        emailSmtpPassword: 'secret',
+        emailSmtpPort: 587,
+        emailSmtpUsername: 'bpm@example.com',
+      },
+    });
+
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: notification.title }),
+    );
+  });
+
+  it('leaves an INSTANT recipient on one email per notification', async (): Promise<void> => {
+    const sendMail = jest.fn((): Promise<void> => Promise.resolve());
+    jest.spyOn(nodemailer, 'createTransport').mockReturnValue({
+      sendMail,
+    } as unknown as ReturnType<typeof nodemailer.createTransport>);
+    const repository = createNotificationRepository(
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        id: 'notification-001',
+      }),
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        id: 'notification-002',
+      }),
+    );
+    const service = new NotificationDeliveryService(
+      repository,
+      // No stored preference means the member is on the INSTANT default.
+      createPreferenceRepository(),
+      createModuleRef(),
+    );
+
+    await service.deliverPendingNotifications({
+      options: {
+        ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+        emailEnabled: true,
+        emailFrom: 'BPM <bpm@example.com>',
+        emailSmtpHost: 'smtp.example.com',
+        emailSmtpPassword: 'secret',
+        emailSmtpPort: 587,
+        emailSmtpUsername: 'bpm@example.com',
+      },
+    });
+
+    expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves each digest row retryable when the combined send fails', async (): Promise<void> => {
+    jest.spyOn(nodemailer, 'createTransport').mockReturnValue({
+      sendMail: jest.fn(
+        (): Promise<void> => Promise.reject(new Error('SMTP_UNREACHABLE')),
+      ),
+    } as unknown as ReturnType<typeof nodemailer.createTransport>);
+    const repository = createNotificationRepository(
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        id: 'notification-001',
+      }),
+      Object.assign(createNotification(NotificationChannelEnum.EMAIL), {
+        id: 'notification-002',
+      }),
+    );
+    const service = new NotificationDeliveryService(
+      repository,
+      createPreferenceRepository([createDailyDigestPreference('member-001')]),
+      createModuleRef(),
+    );
+
+    await expect(
+      service.deliverPendingNotifications({
+        options: {
+          ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+          emailEnabled: true,
+          emailFrom: 'BPM <bpm@example.com>',
+          emailSmtpHost: 'smtp.example.com',
+          emailSmtpPassword: 'secret',
+          emailSmtpPort: 587,
+          emailSmtpUsername: 'bpm@example.com',
+        },
+      }),
+    ).resolves.toBe(0);
+
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryError: 'SMTP_UNREACHABLE',
+        id: 'notification-001',
+        status: NotificationStatusEnum.PENDING,
+      }),
+    );
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryError: 'SMTP_UNREACHABLE',
+        id: 'notification-002',
+        status: NotificationStatusEnum.PENDING,
       }),
     );
   });
@@ -261,7 +448,7 @@ function createNotification(
 }
 
 function createNotificationRepository(
-  notification: NotificationEntity,
+  ...notifications: readonly NotificationEntity[]
 ): Repository<NotificationEntity> & {
   readonly find: jest.Mock;
   readonly save: jest.Mock;
@@ -269,7 +456,7 @@ function createNotificationRepository(
   const repository = {
     find: jest.fn(
       (): Promise<readonly NotificationEntity[]> =>
-        Promise.resolve([notification]),
+        Promise.resolve(notifications),
     ),
     save: jest.fn(
       (entity: NotificationEntity): Promise<NotificationEntity> =>
@@ -283,9 +470,32 @@ function createNotificationRepository(
   };
 }
 
-function createModuleRef(
-  dispatcher?: BPMNotificationDispatcher,
-): ModuleRef {
+function createPreferenceRepository(
+  preferences: readonly NotificationPreferenceEntity[] = [],
+): Repository<NotificationPreferenceEntity> {
+  return {
+    find: jest.fn(
+      (): Promise<readonly NotificationPreferenceEntity[]> =>
+        Promise.resolve(preferences),
+    ),
+  } as unknown as Repository<NotificationPreferenceEntity>;
+}
+
+function createDailyDigestPreference(
+  memberId: string,
+): NotificationPreferenceEntity {
+  return Object.assign(new NotificationPreferenceEntity(), {
+    emailDigestMode: NotificationDigestModeEnum.DAILY,
+    emailEnabled: true,
+    inAppEnabled: true,
+    memberId,
+    quietHoursEnd: null,
+    quietHoursStart: null,
+    updatedAt: new Date('2026-05-15T00:00:00.000Z'),
+  });
+}
+
+function createModuleRef(dispatcher?: BPMNotificationDispatcher): ModuleRef {
   return {
     get: (token: unknown): BPMNotificationDispatcher | IdentityService => {
       if (token === BPM_NOTIFICATION_DISPATCHER && dispatcher) {

@@ -90,6 +90,21 @@ export class NotificationEntity {
   @Field(() => Date, { nullable: true })
   archivedAt!: Date | null;
 
+  /**
+   * The row was recorded but deliberately not announced, because the
+   * recipient's preferences asked for quiet — `inAppEnabled: false`, or the
+   * notification arriving inside their quiet hours.
+   *
+   * BPM keeps writing the row either way: "do not interrupt me" and "do not
+   * keep a record" are different requests, and a notification centre that
+   * silently loses an approval task is the worse failure. Hosts driving a
+   * realtime channel should skip the toast or push for a silenced row and
+   * style it as read-later in the list.
+   */
+  @Column('boolean', { name: 'silenced', default: false })
+  @Field()
+  silenced!: boolean;
+
   @Column('integer', { name: 'attempt_count', default: 0 })
   @Field(() => Number)
   attemptCount!: number;

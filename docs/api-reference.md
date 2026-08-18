@@ -467,7 +467,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
 | Delegation | `DelegationScopeType`, `DelegationRuleStatus`, `DelegationRuleRecord` |
-| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord`, `NotificationPreferenceRecord` |
+| Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord` (incl. `silenced` — recorded but not announced), `NotificationPreferenceRecord` |
 | Attachment / Signature | `AttachmentRecord`, `SignatureRecord`, `SignatureVerificationRecord` |
 | Template embed | `ApprovalTemplateRecord`, `ApprovalTemplateVersionRecord` |
 | Dashboard | `WorkflowDashboardSummaryRecord` |
@@ -748,10 +748,11 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
-| Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter) |
+| Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
+| Schedule | `isWithinQuietHours`, `resolveQuietHoursEnd`, `resolveEmailReleaseAt`, `normalizeDigestHour`, `DEFAULT_EMAIL_DIGEST_HOUR`, `DEFAULT_QUIET_HOURS_TIME_ZONE`, `NotificationQuietHours`, `EmailReleaseOptions` (pure functions behind quiet-hours / digest scheduling) |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
 
@@ -772,6 +773,61 @@ host should defer its push until that transaction commits. The manager is absent
 when BPM owned the write, meaning the rows are already durable. Observer
 failures are logged and swallowed: a host's realtime push must never roll back
 the approval that produced the notification.
+
+**Recording vs announcing.** A member preference decides whether a
+notification is *announced*; it no longer decides whether it is *recorded*.
+`inAppEnabled: false` used to filter the channel out **before** the insert, so
+silencing notifications for an afternoon destroyed every notification raised
+in it — turning the preference back on recovered nothing. In-app rows are now
+always written and carry `NotificationEntity.silenced`, set when the recipient
+turned in-app off or the notification arrived inside their quiet hours. Hosts
+driving a realtime channel should skip the toast or push for a silenced row and
+still place it in the list. The bell badge counts silenced rows: they are
+unread notifications, and a badge that ignored them would leave the member
+opening an app full of entries that never announced themselves.
+
+Dropping in-app rows entirely is still possible, but only as a wiring
+decision: `notificationInAppEnabled: false` means "run BPM without notification
+centre data" and is not something a member can trip. Email and webhook rows are
+unchanged — they have no BPM-side record to lose, so `emailEnabled: false`
+still means no row.
+
+**Quiet hours and digests are enforced.** `quietHoursStart` / `quietHoursEnd`
+and `emailDigestMode` were persisted and validated but read by nothing before
+this. They now behave as their names claim:
+
+- an email raised inside quiet hours has `nextRetryAt` set to the instant the
+  window closes, so the existing delivery scan releases it afterwards — quiet
+  hours **delay** a notification, never drop it;
+- a recipient on `emailDigestMode: DAILY` has their email held until the next
+  digest hour, and the delivery scan then sends **one** message covering every
+  notification waiting for them (a lone notification is sent on its own rather
+  than as a digest of one);
+- an in-app notification arriving inside quiet hours is recorded with
+  `silenced: true`.
+
+Two options configure this. `notificationQuietHoursTimeZone` is the zone the
+bare `HH:mm` preferences are read in. When it is omitted BPM reads the zone off
+the registered `BPM_BUSINESS_CALENDAR` — the host's own calendar when it
+supplied one, otherwise the built-in weekday calendar built from
+`notificationSlaBusinessCalendarTimeZone` — and only falls back to `UTC` when
+neither answers. Deferring to the calendar rather than to the flattened option
+matters: a host that registers its own calendar never sets
+`notificationSlaBusinessCalendarTimeZone` (BPM ignores it in that case), so
+resolving the zone at wiring time would silently read a Taiwan
+`20:00–08:00` window in UTC and silence the whole working afternoon.
+`notificationEmailDigestHour` (default `9`) is the local hour a `DAILY`
+recipient's held email is flushed. A window whose start equals its end counts
+as *no* quiet hours rather than as all day.
+
+Note that a held email needs something to release it: with
+`notificationDeliverySchedulerEnabled: false` (the default) nothing scans for
+due deliveries, so a host that enforces quiet hours should either enable the
+scheduler in a worker process or call
+`NotificationDeliveryService.deliverPendingNotifications` itself. Digest
+merging is BPM's built-in SMTP behaviour; a host with its own
+`BPM_NOTIFICATION_DISPATCHER` gets the hold either way and gets merging only if
+it implements the optional `dispatchDigest`.
 
 **Archiving.** `NotificationEntity.archivedAt` separates *cleared from my list*
 from *read* and from *deleted* — the row survives for statistics and audit.
@@ -840,6 +896,7 @@ argument on the `notifications` / `notificationCount` queries.
 19. `NotificationArchive0000000018000` (adds `notifications.archived_at` + partial index on unarchived rows per recipient)
 20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
 21. `FormDataOptionSnapshots0000000020000` (adds `approval_instances.form_data_option_snapshot`, default `{}`)
+22. `NotificationSilenced0000000021000` (adds `notifications.silenced`, `NOT NULL DEFAULT false`; existing rows were announced by definition)
 
 ---
 
