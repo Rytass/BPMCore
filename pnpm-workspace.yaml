@@ -31,6 +31,9 @@ overrides:
   'launch-editor': '^2.14.1'
   'lodash-es': '^4.18.0'
   'multer': '^2.2.0'
+  # Kept to one copy so the eslint config's older next does not become the
+  # version bpm-core-react's peer resolves against.
+  'next': '^16.2.12'
   'piscina': '^4.9.3'
   'postcss': '^8.5.23'
   'qs@6': '^6.15.2'

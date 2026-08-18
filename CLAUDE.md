@@ -122,6 +122,31 @@ Staging wrapper-host runtime secrets include `API_SESSION_SECRET`,
 `BPM_API_PUBLIC_URL`, and `BPM_ATTACHMENT_SIGNING_SECRET`; the API host passes
 the BPM attachment values into `BPMRootModule`.
 
+## Dependency Overrides
+
+Security fixes for transitive dependencies live in `pnpm-workspace.yaml`
+`overrides`. **Always write them as a `^` range, never as an exact version.**
+
+An exact pin stops pnpm taking the next patch, so an override added to fix one
+advisory silently becomes the thing holding a known-vulnerable version in
+place. That is not hypothetical: `axios@1.15.2`, `postcss@8.5.10`,
+`fast-uri@3.1.2` and `brace-expansion@5.0.5` each sat one patch below their fix
+and accounted for 29 of the repository's open alerts before being converted to
+ranges.
+
+Some overrides exist to force a **single copy** rather than to raise a floor —
+currently `typeorm` and `next`. Two copies of either break typechecking rather
+than security: `@nestjs/typeorm` ends up with two unrelated
+`TypeOrmModuleOptions` types, and `bpm-core-react`'s `next` peer can resolve
+against the older copy the eslint config pulls in. Keep those, and keep the
+whole `@nx/*` set on the same version as `nx`.
+
+CI reports `pnpm audit` on every run and fails only on `critical`. A blocking
+`high` gate would be permanently red — `image-size`, reached through
+`@nx/webpack > less`, has no published fix — and a permanently red gate stops
+being read. Nothing is suppressed into an allowlist; the outstanding findings
+stay visible in the log.
+
 ## Dev Supervisor 控制通道（`pnpm dev:ctl`）
 
 在使用者已自行啟動 `pnpm dev` 的前提下，agent 改完程式碼後**應主動**用

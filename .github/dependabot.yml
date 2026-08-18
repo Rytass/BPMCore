@@ -1,0 +1,54 @@
+version: 2
+
+updates:
+  # Security advisories reach this repository mostly through transitive
+  # dependencies, which Dependabot cannot bump directly in a pnpm workspace —
+  # it can only raise the direct declarations. The `overrides` block in
+  # pnpm-workspace.yaml is what actually pins the transitive floors; grouping
+  # the direct updates keeps that file from being the only thing anyone
+  # remembers to look at.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      nx:
+        # The nx package set must move together — a mismatched @nx/* against
+        # nx fails to load its executors.
+        patterns:
+          - nx
+          - '@nx/*'
+      nest:
+        patterns:
+          - '@nestjs/*'
+      react-and-next:
+        patterns:
+          - next
+          - react
+          - react-dom
+          - '@types/react'
+          - '@types/react-dom'
+          - eslint-config-next
+          - '@next/eslint-plugin-next'
+      types:
+        patterns:
+          - '@types/*'
+        exclude-patterns:
+          - '@types/react'
+          - '@types/react-dom'
+    ignore:
+      # Published peer ranges are deliberately wide (`typeorm >=0.3.0`,
+      # `next >=15.0.0`); a major here is a decision about what hosts must
+      # run, not a routine bump.
+      - dependency-name: typeorm
+        update-types: [version-update:semver-major]
+      - dependency-name: next
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
