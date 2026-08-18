@@ -344,7 +344,7 @@ function FormRendererField({
           >
             {dataSourceStatusMessage}
           </Typography>
-          {dataSourceState.status === 'UNAVAILABLE' ? (
+          {dataSourceState.status === 'UNAVAILABLE' && dataSourceState.canRetry ? (
             <Button
               onClick={dataSourceState.retry}
               size="sub"
@@ -584,6 +584,11 @@ function renderDynamicOptionControl(
     dataSourceState.status === 'WAITING_FOR_DEPENDENCIES';
   const interactiveSearch = Boolean(dataSourceContext) && !readonly;
   const optionControlDisabled = readonly || waitingForDependencies;
+  // AutoComplete alone has no pre-query gate — it only learns a dependency is
+  // missing from the answer to a search the filler already typed. Disabling it
+  // at that point strands that text in a locked input with no way to clear it,
+  // so it stays editable and reports the wait through the status line instead.
+  const autoCompleteDisabled = readonly;
 
   if (field.type === 'autocomplete') {
     if (readFormFieldSelectionMode(field) === 'multiple') {
@@ -591,7 +596,7 @@ function renderDynamicOptionControl(
         <AutoComplete
           asyncData={interactiveSearch}
           clearSearchText
-          disabled={optionControlDisabled}
+          disabled={autoCompleteDisabled}
           disabledOptionsFilter={interactiveSearch}
           globalPortal
           loading={loading}
@@ -623,7 +628,7 @@ function renderDynamicOptionControl(
       <AutoComplete
         asyncData={interactiveSearch}
         clearSearchText
-        disabled={optionControlDisabled}
+        disabled={autoCompleteDisabled}
         disabledOptionsFilter={interactiveSearch}
         globalPortal
         loading={loading}

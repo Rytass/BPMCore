@@ -36,6 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or descriptor name are left verbatim, so a parameter named like an error code
   is not rewritten as that error's copy.
 
+- Added `resolveFormFieldOptions()` and `previewResolveFormFieldOptions()` plus
+  `FormDataSourceResolveResultRecord`, so a caller can ask the host whether
+  already-selected values are still valid. `unresolvedValues` names the ones the
+  source can no longer account for; this is the authority behind the renderer's
+  `INVALID` status, which a merged option snapshot would otherwise paper over.
+- `FormDataSourceOptionsResultRecord` and the resolve result both expose
+  `waitingForFieldKeys`, the authoritative answer to whether a control can be
+  queried yet. `readMissingFormDataSourceDependencies()` stays available but is
+  advisory only — it cannot tell a required parameter from an optional one, so
+  runtime callers must not block a control on it.
+- Added `readFormDataSourceSelectedValues()` for reading the selected option
+  values carried by a field value.
+- `requestGraphQl()` and every DataSource query accept an optional
+  `AbortSignal`, so a newer search or resolve supersedes an in-flight one before
+  it reaches the host.
+
 ### Fixed
 
 - Explicit `NEXT_PUBLIC_API_URL` base URLs now resolve to `/graphql` before

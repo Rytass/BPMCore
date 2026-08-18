@@ -117,6 +117,14 @@ export type FormDataSourceValueSnapshot = {
   readonly dataSourceKey: string;
   readonly dataSourceVersion: number;
   readonly options: readonly FormFieldOption[];
+  /**
+   * The policy the source declared when this snapshot was written. Once the
+   * source leaves the registry its descriptor is gone, so without this record
+   * there is no way to tell whether reusing the snapshot would quietly skip an
+   * `ALWAYS` revalidation. Optional because snapshots persisted before this
+   * field existed must keep loading.
+   */
+  readonly revalidationPolicy?: 'ALWAYS' | 'WHEN_VALUE_OR_BINDINGS_CHANGE';
   readonly validatedAt: string;
 };
 

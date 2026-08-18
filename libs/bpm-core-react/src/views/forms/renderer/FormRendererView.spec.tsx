@@ -59,7 +59,10 @@ jest.mock('@mezzanine-ui/react', () => {
         : undefined;
 
     return (
-      <div data-mock-control={controlName}>
+      <div
+        data-mock-control={controlName}
+        data-mock-disabled={String(props.disabled === true)}
+      >
         <input
           data-mock-search={controlName}
           onChange={(event): void => onSearch?.(event.target.value)}
@@ -81,7 +84,10 @@ jest.mock('@mezzanine-ui/react', () => {
         : undefined;
 
     return (
-      <div data-mock-control="RadioGroup">
+      <div
+        data-mock-control="RadioGroup"
+        data-mock-disabled={String(props.disabled === true)}
+      >
         {options.map((option) => (
           <label key={option.id}>
             <input
@@ -111,7 +117,10 @@ jest.mock('@mezzanine-ui/react', () => {
         : undefined;
 
     return (
-      <div data-mock-control="CheckboxGroup">
+      <div
+        data-mock-control="CheckboxGroup"
+        data-mock-disabled={String(props.disabled === true)}
+      >
         {options.map((option) => (
           <label key={option.id}>
             <input
@@ -225,6 +234,7 @@ describe('FormRenderer DataSource controls', () => {
           { label: `${input.fieldKey} A`, value: 'A' },
           { label: `${input.fieldKey} B`, value: 'B' },
         ],
+        waitingForFieldKeys: [],
       }),
     );
 
@@ -301,6 +311,88 @@ describe('FormRenderer DataSource controls', () => {
       container.remove();
     }
   });
+
+  // AutoComplete is the one control that must stay editable while the host says
+  // a dependency is missing: it has no pre-query gate, so by the time the answer
+  // arrives the filler has already typed, and disabling it would strand that
+  // text. Every other control blocks up front.
+  it('disables every control but AutoComplete while a dependency is missing', async (): Promise<void> => {
+    previewOptionsMock.mockImplementation(
+      async (): Promise<FormDataSourceOptionsResultRecord> => ({
+        dataSourceKey: 'demo.options',
+        dataSourceVersion: 1,
+        nextCursor: null,
+        options: [],
+        waitingForFieldKeys: ['plant'],
+      }),
+    );
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      act((): void => {
+        root.render(
+          <FormRenderer
+            dataSourceContext={{ kind: 'preview' }}
+            schema={createControlSchema()}
+            uiSchema={createUiSchema()}
+          />,
+        );
+      });
+
+      await waitForCondition(
+        (): boolean =>
+          container.textContent?.includes('請先填寫相依欄位。') === true,
+      );
+
+      // AutoComplete only learns a dependency is missing from the answer to a
+      // search, so it has to be typed into before its wait state exists at all.
+      const search = container.querySelector(
+        '[data-form-field-key="autocomplete"] [data-mock-search]',
+      ) as HTMLInputElement | null;
+      expect(search).not.toBeNull();
+
+      act((): void => {
+        if (search) {
+          // React tracks the input's value internally, so assigning `.value`
+          // directly is invisible to it; the native setter is what makes the
+          // synthetic change event fire.
+          Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            'value',
+          )?.set?.call(search, 'TW');
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+
+      // Wait for the answer to be applied, not merely requested: the wait state
+      // only exists once `waitingForFieldKeys` has come back.
+      await waitForCondition(
+        (): boolean =>
+          container
+            .querySelector('[data-form-field-key="autocomplete"]')
+            ?.textContent?.includes('請先填寫相依欄位。') === true,
+      );
+
+      const readDisabled = (fieldKey: string): string | null =>
+        container
+          .querySelector(`[data-form-field-key="${fieldKey}"] [data-mock-disabled]`)
+          ?.getAttribute('data-mock-disabled') ?? null;
+
+      expect(readDisabled('autocomplete')).toBe('false');
+      expect(readDisabled('select')).toBe('true');
+      expect(readDisabled('radio')).toBe('true');
+      expect(readDisabled('checkbox')).toBe('true');
+    } finally {
+      act((): void => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
 });
 
 function createControlSchema(): FormDefinitionSchema {

@@ -2,7 +2,11 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-13, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields. Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
+Last verified against (2026-08-16, issues #7–#11): `libs/shared@0.7.0`, `libs/bpm-core-client@0.7.0`, `libs/bpm-core@0.7.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.8.0`. This change set adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
+
+The 2026-08-16 DataSource audit round adds, on top of that: read-only `resolveFormFieldOptions` / `previewResolveFormFieldOptions` queries returning `BPMFormDataSourceResolveResult` (partial resolution reported through `unresolvedValues` instead of throwing, while submit/resubmit stays all-or-nothing), `waitingForFieldKeys` on both the options and resolve results as the authoritative dependency-wait signal, an optional `revalidationPolicy` on `FormDataSourceValueSnapshot`, `readFormDataSourceSelectedValues()`, a `canRetry` flag on `FormDataSourceFieldState`, per-request `AbortSignal` support on `requestGraphQl()` and every DataSource client query, and `@MaxLength` bounds on every DataSource GraphQL input field.
+
+Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
 PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
@@ -172,7 +176,7 @@ Form-schema definitions.
 | `CheckboxFieldDefinition` | type | Fixed multiple-selection option field |
 | `FormOptionFieldDefinition` | type | Union of the four option controls |
 | `FormFieldOption` | interface | Option in a select field |
-| `FormDataSourceValueSnapshot` | type | Persisted dynamic option labels and validation metadata |
+| `FormDataSourceValueSnapshot` | type | Persisted dynamic option labels and validation metadata; optional `revalidationPolicy` records the policy the source declared when the snapshot was written |
 | `FormDataSourceValueSnapshots` | type | Field-keyed dynamic option snapshot map |
 | `FormDataSourceOptionFieldDefinition` | type | Option field narrowed to a DataSource |
 | `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
@@ -326,7 +330,8 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `requestGraphQl<T>(query, variables?)` | async function | Generic GraphQL POST, returns typed data |
+| `requestGraphQl<T>(query, variables?, options?)` | async function | Generic GraphQL POST, returns typed data |
+| `GraphQlRequestOptions` | interface | Per-request transport options; currently `signal?: AbortSignal` |
 | `readGraphQlEndpoint()` | function | Resolve current GraphQL endpoint URL |
 | `resolveDefaultGraphQlEndpoint(hostname)` | function | Pure helper to derive endpoint from hostname |
 | `readApiBaseUrl()` | function | Resolve REST auth base URL |
@@ -371,7 +376,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 |---|---|
 | Records | `FormDefinitionRecord`, `FormDefinitionVersionRecord`, `FormBuilderRecord`, `FormSchemaLintResult` |
 | Type | `FormDefinitionListStatus` |
-| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()` |
+| Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()`, `previewResolveFormFieldOptions()`, `resolveFormFieldOptions()` |
 | Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
 | Factory | `createFieldDefinition()` |
 
@@ -380,8 +385,18 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `FormDataSourceControl`, `FormDataSourceParameterType`, `FormDataSourceRevalidationPolicy` | type | Client-facing descriptor unions |
-| `FormDataSourceParameterRecord`, `FormDataSourceDescriptorRecord`, `FormDataSourceOptionsResultRecord` | interface | Catalog and option result records |
-| `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` | interface | Preview/runtime query input contracts |
+| `FormDataSourceParameterRecord`, `FormDataSourceDescriptorRecord` | interface | Catalog descriptor records |
+| `FormDataSourceOptionsResultRecord` | interface | Search result: page options, `nextCursor`, and `waitingForFieldKeys` |
+| `FormDataSourceResolveResultRecord` | interface | Resolve result: authoritative options, `unresolvedValues`, and `waitingForFieldKeys` |
+| `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` | interface | Preview/runtime search input contracts (optional `signal`) |
+| `PreviewResolveFormFieldOptionsInput`, `RuntimeResolveFormFieldOptionsInput` | interface | Preview/runtime resolve input contracts: `values` plus an optional `signal` |
+
+`waitingForFieldKeys` is the authoritative answer to "can this control be queried
+yet". The browser never receives the descriptor, so it cannot tell a required
+parameter from an optional one; a non-empty list means no provider call was made
+and `options` is empty. `unresolvedValues` reports the already-selected values
+the source can no longer account for — the read-only resolve queries report the
+gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 ### Form DataSource state helpers
 
@@ -390,8 +405,9 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `FormDataSourceFieldStatus` | type | Renderer state union: idle, dependency wait, loading, valid, stale, invalid, or unavailable |
 | `mergeFormDataSourceOptions()` | function | Immutable selected/snapshot/page option merge with stable order |
 | `readSelectedFormDataSourceOptions()` | function | Hydrate only selected options with authoritative labels |
+| `readFormDataSourceSelectedValues()` | function | Read the selected option values carried by a field value, dropping blanks |
 | `readMissingFormDataSourceOptionValues()` | function | Find selected values without an authoritative option |
-| `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present |
+| `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present — advisory only; runtime callers must take `waitingForFieldKeys` from the server result |
 | `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
 
 ### Form DataSource error helpers
@@ -611,13 +627,38 @@ Versioned host registry and guarded runtime boundary for dynamic form options.
 | Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry` |
 | Snapshot resolver | `BPMFormDataSourceValueResolver`, `BPM_FORM_DATA_SOURCE_VALUE_RESOLVER` |
 | Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
-| Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult` |
+| Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult`, `BPMFormDataSourceResolveResult` |
+| Service inputs | `BPMFormDataSourcePreviewInput`, `BPMFormDataSourceRuntimeInput`, `BPMFormDataSourcePreviewResolveInput`, `BPMFormDataSourceRuntimeResolveInput` |
 | Errors | `BPM_FORM_DATA_SOURCE_ERROR_CODES`, `BPMFormDataSourceErrorCode`, `BPMFormDataSourceException`, `BPMFormDataSourceForbiddenException` |
-| GraphQL objects | `FormDataSourceParameterObject`, `FormDataSourceDescriptorObject`, `FormFieldOptionObject`, `FormDataSourceOptionsResultObject` |
-| GraphQL inputs | `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput` |
-| Resolver | `FormDataSourceQueries` (`formDataSources`, `previewFormFieldOptions`, `formFieldOptions`) |
+| GraphQL objects | `FormDataSourceParameterObject`, `FormDataSourceDescriptorObject`, `FormFieldOptionObject`, `FormDataSourceOptionsResultObject`, `FormDataSourceResolveResultObject` |
+| GraphQL inputs | `PreviewFormFieldOptionsInput`, `RuntimeFormFieldOptionsInput`, `PreviewResolveFormFieldOptionsInput`, `RuntimeResolveFormFieldOptionsInput` |
+| Resolver | `FormDataSourceQueries` (`formDataSources`, `previewFormFieldOptions`, `formFieldOptions`, `previewResolveFormFieldOptions`, `resolveFormFieldOptions`) |
 
-`formDataSources` and `previewFormFieldOptions` require designer permission.
+`formDataSources`, `previewFormFieldOptions` and `previewResolveFormFieldOptions`
+require designer permission; `formFieldOptions` and `resolveFormFieldOptions`
+require authentication.
+
+`resolveFormFieldOptions` / `previewResolveFormFieldOptions` are the read-only
+counterpart to the submit-time resolve. They confirm already-selected values and
+report the ones the source can no longer account for in `unresolvedValues`
+instead of throwing, so a renderer can mark dead options individually. The
+authoritative resolve behind `submitApprovalInstance` /
+`resubmitApprovalInstance` is unchanged and stays all-or-nothing: one value the
+provider no longer offers fails the whole submission with
+`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`.
+
+Both option results carry `waitingForFieldKeys`. When a required parameter has
+no value, the service returns that field-key list and never calls the provider,
+rather than raising `FORM_DATA_SOURCE_WAITING_FOR_DEPENDENCIES` at the query
+boundary. A required parameter no binding feeds, or one fed by an empty
+constant, remains `FORM_DATA_SOURCE_INVALID_BINDING` — nobody can fix that by
+typing.
+
+Every field on all four GraphQL inputs carries a `@MaxLength` bound (schema JSON
+262 144, form-data JSON 65 536, values JSON 8 192, cursor 512, field key 256,
+search text 200, identifiers 128). An over-long input is rejected with the
+stable `FORM_DATA_SOURCE_INVALID_BINDING` code, never a class-validator
+sentence describing the limits.
 
 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` marks a submitted value that is no longer
 selectable, and stays distinct from `FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT`
@@ -625,9 +666,14 @@ selectable, and stays distinct from `FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT`
 from a broken source. A host without a registered registry keeps working for
 static forms, but publishing or submitting a DataSource-backed field fails with
 `FORM_DATA_SOURCE_MISSING` instead of silently skipping validation.
-`formFieldOptions` requires authentication and derives the referenced source from
-the published template version or returned-instance snapshot; clients cannot
-submit an arbitrary source reference or binding definition.
+`formFieldOptions` and `resolveFormFieldOptions` derive the referenced source
+from the published template version or returned-instance snapshot; clients cannot
+submit an arbitrary source reference or binding definition. Both runtime inputs
+require **exactly one** of `templateId` (launch context) or `instanceId` (a
+returned instance being edited) — passing both, or neither, is
+`FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN`. An instance being resubmitted must
+be addressed by `instanceId` alone so its options resolve against its own form
+definition snapshot rather than whatever version the template publishes today.
 
 ## `@rytass/bpm-core-nestjs-module/template`
 
@@ -922,7 +968,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
 | `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
-| `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState`, `UseFormDataSourceFieldInput`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()` | normal |
+| `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState` (now carries `canRetry`, false when there is no query to re-issue), `UseFormDataSourceFieldInput`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()`, `readFormDataSourceSubmissionBlockMessage()` (picks wait-vs-fix copy for a refused submission) | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |
 

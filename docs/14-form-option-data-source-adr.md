@@ -2,8 +2,12 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-08-11
-- **實作狀態**：Phase 0–6 與 P6 repository-wide e2e final gate 已完成；完整 suite 43/43 通過；
-  2026-08-13 完成一輪獨立稽核修正（錯誤碼語意、前端訊息對應、registry-less 守衛）
+- **實作狀態**：Phase 0–6 與 P6 repository-wide e2e final gate 已完成；
+  2026-08-13 完成第一輪獨立稽核修正（錯誤碼語意、前端訊息對應、registry-less 守衛），
+  完整 suite 43/43 通過；
+  2026-08-16 完成第二輪獨立稽核修正（新增 runtime resolve query、`waitingForFieldKeys`
+  相依契約、snapshot `revalidationPolicy`、後端 validation helper 統一、退回編輯 runtime
+  context 修正、input 長度上限與 abort），完整 suite 49/49 通過
 - **適用範圍**：Form Builder、FormRenderer、案件發起、案件退回編輯與重新送出、BPM 宿主整合
 - **交付規劃**：[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 
@@ -207,22 +211,53 @@ descriptor 的 minimum search length、page size 與 result limit 保護上游�
 
 ### 3.6 分離 Designer Catalog、Designer Preview 與 Runtime Query
 
-規劃中的 GraphQL surface 分成三種用途：
+GraphQL surface 分成兩個維度：Designer 或 Runtime（誰有權查）、search 或 resolve（問的是
+「有哪些選項」還是「這些已選值是否仍有效」）：
 
 1. `formDataSources`：Designer-only，回傳可選 descriptor，不回傳 secret 或 transport
    details。
-2. `previewFormFieldOptions`：Designer-only，測試尚未發布的設定；後端先做 structural、
-   registry 與 binding validation，再呼叫已註冊 provider。
-3. `formFieldOptions`：authenticated runtime query；前端只提供 context id、field key、
+2. `previewFormFieldOptions`：Designer-only search，測試尚未發布的設定；後端先做
+   structural、registry 與 binding validation，再呼叫已註冊 provider。
+3. `formFieldOptions`：authenticated runtime search；前端只提供 context id、field key、
    form values、search text 與 cursor。
+4. `previewResolveFormFieldOptions`：Designer-only resolve，對 Designer 手上尚未發布的
+   schema 確認一組已選值。
+5. `resolveFormFieldOptions`：authenticated runtime resolve，回答「目前的 bindings 與
+   authorization context 下，這些已選值是否仍解得出來」。
 
-Runtime query 必須從權威資料取得 DataSource reference：
+前三者回傳 `BPMFormDataSourceOptionResult`，後兩者回傳
+`BPMFormDataSourceResolveResult`（`options`、`unresolvedValues`、
+`waitingForFieldKeys`）。
+
+**只有 resolve query 能回答「值是否仍有效」。** search 結果會與案件 snapshot 合併顯示，
+所以一個上游已下架的值仍會出現在 merged options 裡；沒有 resolve query 時，前端拿不到
+任何可否定該值的證據，只能誤報 VALID 並放行送出。
+
+Read-only resolve 採**部分解析回報**：provider 正常回應但解不出其中幾個值時，不 throw，
+而是把那些值放進 `unresolvedValues` 回傳，讓 renderer 逐項標示失效選項、其餘照常顯示
+權威 label。這與 §3.7 的送出時 resolve 是兩套語意，且刻意不統一：
+
+| 面向     | Read-only resolve query    | Submit／resubmit resolve（§3.7）      |
+|----------|----------------------------|---------------------------------------|
+| 目的     | 告知使用者哪幾項失效       | 決定是否寫入 instance                 |
+| 部分解析 | 回報 `unresolvedValues`    | 整批失敗                              |
+| 失敗表現 | 正常回應，欄位轉 `INVALID` | `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` |
+| 權威性   | 顯示用，不寫入任何資料     | 唯一寫入權威                          |
+
+送出／重新送出的權威 resolve 維持**全有全無**不變：任一 value 解不出來即整次操作失敗，
+不接受部分寫入，也不接受瀏覽器提供的 label 作為 fallback。
+
+Runtime query（search 與 resolve 皆同）必須從權威資料取得 DataSource reference：
 
 - 發起頁：以 published form version／launch context 為準，並檢查目前使用者可發起該
   template。
 - 退回編輯：以 instance 的 form definition snapshot 為準，並檢查目前使用者可讀且可
   resubmit 該 instance。
 - 唯讀案件：不呼叫 Runtime Query，只讀案件 snapshot。
+
+Runtime input 必須**恰好提供 `templateId` 或 `instanceId` 其中一個**；同時給或都不給一律
+`FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN`。退回編輯只能給 `instanceId`：該 instance
+的選項必須對它自己的 form definition snapshot 解析，而不是 template 今天發布的版本。
 
 Runtime API 不接受瀏覽器直接送入任意 DataSource key、version 或 binding definition。
 
@@ -247,6 +282,15 @@ resolve 結果。
 - clear value 時移除該欄位的 option snapshot。
 - resolve 失敗時不建立或更新 instance，不接受瀏覽器提供的 label 作為 fallback。
 
+search（§3.6）與 submit resolve 兩條入口**必須共用同一份 binding／descriptor／provider
+result 驗證實作**。兩邊各自維護一份 helper 會漂移：曾出現 search 端漏了 `Number.isFinite`
+且 `isRecord` 未排除 array，使 `1e999` → `Infinity` 在搜尋時通過、送出時才被拒——一個
+只在按下送出那一刻才現形的落差。實作上抽為單一內部模組
+`libs/bpm-core/src/lib/form-data-source/form-data-source.validation.ts`，採較嚴格的那一側
+語意，且刻意不從 package index 對外匯出。
+
+送出時對多個動態欄位的 provider 呼叫設並行上限（見 §3.12）。
+
 ### 3.8 案件另存動態選項顯示快照
 
 `approval_instances` 規劃新增 `form_data_option_snapshot jsonb NOT NULL DEFAULT '{}'`。
@@ -257,22 +301,37 @@ resolve 結果。
 reset/seed ownership 都留在 wrapper host，不進入 `BPM_CORE_MIGRATIONS`。Reusable core
 只消費宿主注入的 registry contract。
 
-規劃中的 snapshot contract：
+Snapshot contract：
 
 ```ts
-export interface FormDataSourceValueSnapshot {
+export type FormDataSourceValueSnapshot = {
   readonly bindingHash: string;
   readonly dataSourceKey: string;
   readonly dataSourceVersion: number;
   readonly options: readonly FormFieldOption[];
+  readonly revalidationPolicy?: 'ALWAYS' | 'WHEN_VALUE_OR_BINDINGS_CHANGE';
   readonly validatedAt: string;
-}
+};
 
 export type FormDataSourceValueSnapshots = Readonly<Record<string, FormDataSourceValueSnapshot>>;
 ```
 
 `bindingHash` 由後端將該欄位實際使用的 binding values canonicalize 後計算。資料庫不需要
 為了重新驗證而保存完整參數副本，避免複製敏感表單內容。
+
+`revalidationPolicy` 記錄「寫入這份 snapshot 當下，來源自己宣告的 policy」。來源一旦離開
+registry，它的 descriptor 就不存在了；沒有這筆記錄就無從判斷沿用 snapshot 會不會靜默略過
+一次 `ALWAYS` 重新驗證。因此 **source 缺席時的沿用規則**為：
+
+- 只有非 `ALWAYS`（含此欄位不存在的舊 snapshot）、且 value 與 key/version 都沒變、且不是
+  `revalidateAll` 時，才允許沿用既有 snapshot。
+- snapshot 記錄為 `ALWAYS` 時一律不得沿用，改為以 §3.10 的 registry 缺席錯誤碼失敗
+  （`FORM_DATA_SOURCE_MISSING` 或 `FORM_DATA_SOURCE_VERSION_MISSING`）。人員有效性、庫存、
+  合約這類要求即時有效性的來源，正是最不能靠一份舊 snapshot 蒙混過去的。
+
+此欄位為 **optional**，讓此欄位存在之前寫入的 snapshot 仍可載入、退回案件仍可重新送出。
+descriptor 還讀得到時（source 仍在 registry），沿用 snapshot 會順手補上當下的 policy，
+舊 snapshot 因此會在第一次被帶過時停止曖昧。
 
 歷史唯讀顯示一律使用 option snapshot，不向外部 API 查詢。DataSource 改 label、升版或
 下架都不能改變既有案件畫面。
@@ -302,15 +361,30 @@ DataSource 欄位時必須移除該欄位的 option snapshot：寧可顯示 raw 
 當 value 或 bindings 已變更：
 
 - UI 狀態先變成 `STALE`，保留舊值與 label。
+- 立即以 §3.6 的 read-only resolve query 向後端確認已選值；在回應到達前維持 `STALE`，
+  不得只憑 merged options 判定有效。
 - resolve 有效時更新 label、binding hash 與 `validatedAt`。
-- resolve 確認無效時顯示 `INVALID`，保留舊 label 供使用者辨識，但禁止送出。
+- resolve 回報 `unresolvedValues` 非空時顯示 `INVALID`，逐項標示失效選項，保留舊 label
+  供使用者辨識，但禁止送出。
 - API 暫時無法連線時顯示 `UNAVAILABLE`，不清除值；需要 resolve 的案件仍禁止送出。
 
-規劃中的 field status：
+Field status：
 
 ```ts
 export type FormDataSourceFieldStatus = 'IDLE' | 'WAITING_FOR_DEPENDENCIES' | 'LOADING' | 'VALID' | 'STALE' | 'INVALID' | 'UNAVAILABLE';
 ```
+
+`WAITING_FOR_DEPENDENCIES` 的**權威來源是後端回傳的 `waitingForFieldKeys`**，不是前端自行
+比對 binding 欄位是否有值。瀏覽器拿不到 descriptor，分不出 required 與 optional 參數；
+若以「有 FIELD binding 指向空欄位」為準，綁到 optional 參數的欄位只要沒填，控制項就會被
+永久鎖死。因此：
+
+- 後端在必要參數缺值時**不 throw**，改回傳該欄位清單並且完全不呼叫 provider。
+- 前端可在首次回應到達前做樂觀猜測（避免閃現一個可點但空的清單），但這個猜測只活到第一次
+  回應為止；`waitingForFieldKeys` 一到就取代它。AutoComplete 例外——它 disabled 時無法被
+  搜尋，也就沒有任何動作能修正錯誤猜測，所以不做這個猜測。
+- 必要參數沒有任何 binding 餵、或由空字串常數餵，屬於填表者打字也修不好的 schema 缺陷，
+  維持 `FORM_DATA_SOURCE_INVALID_BINDING`，不進入無盡等待。
 
 ### 3.10 表單定義編輯遵循既有版本模型
 
@@ -337,14 +411,39 @@ Builder 必須提供以下保護：
 
 所有動態 control 共用下列行為：
 
-- 必要 binding 尚未有值：disabled，顯示「請先填寫〈欄位〉」。
+- 後端回報的 `waitingForFieldKeys` 非空：disabled，顯示「請先填寫〈欄位〉」。
+  **AutoComplete 是唯一例外，兩處都不同**：它不做前置 gate（其他控制項一載入就查詢，能在
+  第一次作答前就知道要不要等；AutoComplete 只在使用者輸入時才查詢，若也樂觀鎖住，綁到
+  optional parameter 的欄位會因為無法輸入而永遠解不開），而且收到 `waitingForFieldKeys`
+  後**不 disable**，只在狀態列顯示提示——此時使用者已經打了字，鎖住輸入框會讓那段文字
+  卡在裡面既不能改也不能清。
 - 載入中：顯示 Mezzanine loading state。
 - 查詢成功但無資料：顯示 empty state。
 - 查詢失敗：顯示 inline error 與重試；不得偽裝成 empty state。
 - AutoComplete 使用 Mezzanine async search，預設 300ms debounce。
-- 新 request 取消或 supersede 舊 request；較舊 response 不得覆蓋新結果。
+- 新 request 取消或 supersede 舊 request；較舊 response 不得覆蓋新結果。取消採
+  `AbortSignal`，被取消的 request 不算失敗，不得寫入任何狀態。
 - 分頁或搜尋結果要與目前 selected options immutable merge。
 - multiple resolve 有任一 value 失效時，欄位整體為 invalid，並逐項標示失效選項。
+
+**錯誤分級**：查詢失敗不是只有一種。使用者能靠自己修正的錯誤，與「來源壞掉」必須分開：
+
+| 分級       | 例                              | 狀態                         | 送出     |
+|------------|---------------------------------|------------------------------|----------|
+| 可修正     | `SEARCH_TOO_SHORT`              | 維持原狀，只顯示 inline 提示 | 不擋     |
+| 來源不可用 | timeout、provider failure       | `UNAVAILABLE` 並提供重試     | 有值時擋 |
+| 值失效     | resolve 回報 `unresolvedValues` | `INVALID`，逐項標示          | 擋       |
+
+「可修正」目前為 `FORM_DATA_SOURCE_SEARCH_TOO_SHORT` 與
+`FORM_DATA_SOURCE_SEARCH_NOT_SUPPORTED`：填表者換個打法就能解決，且該欄位若原本已有值，
+仍維持有值時的狀態。「來源不可用」涵蓋 timeout、provider failure 與
+descriptor／registry 問題。
+
+搜尋字串太短不代表既有的值失效，把它一律當成 `UNAVAILABLE` 會憑空擋住一份原本合法的表單。
+
+重試按鈕只在真的有查詢可重下時出現：唯讀欄位與沒有 runtime／preview context 的欄位沒有
+可重下的查詢，不得顯示無效的重試動作。唯讀且未填值的動態欄位一律靜默（`IDLE`）——沒人會
+去查的來源，不需要為它示警。
 
 ### 3.12 安全與可觀測性
 
@@ -355,6 +454,15 @@ Core 與 host provider 必須共同落實：
 - Runtime context 檢查 launchability 或 instance readability／resubmit ownership。
 - 每次 query／resolve 設 timeout、page size、result count、search length 與 parameter size
   上限。
+- **每個瀏覽器可控的 GraphQL input 欄位都有 `@MaxLength` 上限**，在進到 parse 與 provider
+  之前就擋掉：schema JSON 262 144、form data JSON 65 536、values JSON 8 192、cursor 512、
+  field key 256、search text 200、`templateId`／`instanceId` 128。超長一律回穩定錯誤碼
+  `FORM_DATA_SOURCE_INVALID_BINDING`，不得把 class-validator 描述我方限制的句子送到前端。
+- 送出時的 provider 呼叫設**並行上限 4**：一張含多個動態欄位的表單，不應在按下送出的瞬間
+  變成打向宿主上游系統的一陣突發流量。
+- Client 的 preview／runtime search 與 resolve query 都接受 optional `AbortSignal`
+  （`requestGraphQl()` 一併支援）。較新的 search 或 resolve 會 abort 較舊的那一次，讓它
+  根本不會抵達宿主；元件卸載時同樣 abort。被取消的 request 不寫入任何狀態。
 - Log 只記 source key、version、operation、duration、result count、status/error code；不記
   完整 bindings、search text、form values、credential 或 option payload。
 - Generic core cache 預設不跨 request 快取 DataSource result。Provider 可依自身授權與

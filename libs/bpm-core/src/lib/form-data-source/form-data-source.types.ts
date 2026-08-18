@@ -127,6 +127,24 @@ export interface BPMFormDataSourceOptionResult {
   readonly dataSourceVersion: number;
   readonly nextCursor: string | null;
   readonly options: readonly FormFieldOption[];
+  /**
+   * The fields the filler still has to complete before this source can be
+   * queried. Non-empty means no provider call was made and `options` is empty.
+   */
+  readonly waitingForFieldKeys: readonly string[];
+}
+
+/**
+ * The read-only counterpart to the submit-time resolve: it reports which of the
+ * requested values the provider could still account for instead of failing the
+ * whole batch, so the renderer can mark the dead options individually.
+ */
+export interface BPMFormDataSourceResolveResult {
+  readonly dataSourceKey: string;
+  readonly dataSourceVersion: number;
+  readonly options: readonly FormFieldOption[];
+  readonly unresolvedValues: readonly string[];
+  readonly waitingForFieldKeys: readonly string[];
 }
 
 export interface BPMFormDataSourceResolveFieldInput {

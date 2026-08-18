@@ -42,7 +42,7 @@ import { useRouterAdapter } from '../../../lib/router-adapter';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import { FormRenderer } from '../../forms/renderer/FormRendererView';
 import {
-  isFormDataSourceFieldSubmissionBlocked,
+  readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 
@@ -235,12 +235,12 @@ function NewApprovalInstanceContent({
     setError(null);
     setFormErrors({});
 
-    if (
-      Object.values(dataSourceStates).some(
-        isFormDataSourceFieldSubmissionBlocked,
-      )
-    ) {
-      setError('請先完成動態選項驗證。');
+    const dataSourceBlockMessage = readFormDataSourceSubmissionBlockMessage(
+      Object.values(dataSourceStates),
+    );
+
+    if (dataSourceBlockMessage) {
+      setError(dataSourceBlockMessage);
       setSubmitting(false);
 
       return;

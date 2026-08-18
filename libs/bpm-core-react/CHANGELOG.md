@@ -29,6 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Launch, resubmit, field-level, form builder lint, and template
   designer/compose publish messages now show mapped copy, so a value that
   expired reads as "已選取的選項已失效，請重新選擇。" instead of an error code.
+- A stale dynamic field now asks the host to resolve its selected values instead
+  of trusting the merged option list, which still carries the instance snapshot
+  and would vouch for a value the source has already dropped. A value the host
+  cannot resolve turns the field `INVALID`, is marked individually, and blocks
+  resubmit.
+- A control bound to an optional DataSource parameter is no longer disabled
+  forever when that dependency field is empty. `WAITING_FOR_DEPENDENCIES` now
+  follows the server's `waitingForFieldKeys`; the browser's optimistic guess
+  survives only until the first response, and AutoComplete makes no guess at all
+  because nothing could correct it while the control is disabled.
+- A read-only dynamic field with no value is quiet instead of reporting
+  "選項來源暫時無法使用。" next to a retry button that could not do anything.
+  `FormDataSourceFieldState` gained `canRetry`, and the renderer only offers
+  retry when a query can actually be re-issued.
+- A recoverable search failure such as `FORM_DATA_SOURCE_SEARCH_TOO_SHORT` now
+  shows an inline hint and leaves the field as usable as it was, instead of
+  marking the source unavailable and blocking a submission that was valid.
+- `InstanceFormSection` now passes only `instanceId` when a returned instance is
+  reopened for editing. It previously sent `templateId` as well, which the
+  runtime context rejects (exactly one is required), so every dynamic option
+  query during return-edit failed with "沒有權限查詢此欄位的選項。". The existing
+  e2e coverage missed it because it only asserted snapshot labels, which need no
+  query.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

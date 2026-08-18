@@ -95,7 +95,7 @@ import {
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
 import { InstanceHistorySection } from './sections/InstanceHistorySection';
 import {
-  isFormDataSourceFieldSubmissionBlocked,
+  readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 
@@ -502,29 +502,8 @@ export function InstanceDetailView({
     setError(null);
     setResubmitFormErrors({});
 
-    if (
-      instance.formDefinitionSnapshot.schema &&
-      instance.formDefinitionSnapshot.uiSchema
-    ) {
-      const validation = validateFormRendererValues({
-        schema: instance.formDefinitionSnapshot.schema,
-        uiSchema: instance.formDefinitionSnapshot.uiSchema,
-        values: resubmitFormData,
-      });
-
-      if (!validation.valid) {
-        setResubmitFormErrors(validation.errors);
-        setError('請先補齊必填欄位。');
-
-        if (validation.firstInvalidFieldKey) {
-          focusFormRendererField(validation.firstInvalidFieldKey);
-        }
-
-        setDeciding(false);
-
-        return;
-      }
-    }
+    // Cancelling throws the case away, so an incomplete resubmit form is not a
+    // reason to refuse it. The required-field check belongs to resubmit only.
 
     try {
       await cancelApprovalInstance({
@@ -549,16 +528,43 @@ export function InstanceDetailView({
 
     setDeciding(true);
     setError(null);
+    setResubmitFormErrors({});
 
-    if (
-      Object.values(resubmitDataSourceStates).some(
-        isFormDataSourceFieldSubmissionBlocked,
-      )
-    ) {
-      setError('請先完成動態選項驗證。');
+    const dataSourceBlockMessage = readFormDataSourceSubmissionBlockMessage(
+      Object.values(resubmitDataSourceStates),
+    );
+
+    if (dataSourceBlockMessage) {
+      setError(dataSourceBlockMessage);
       setDeciding(false);
 
       return;
+    }
+
+    // The DataSource gate only speaks for fields that still hold a value, so a
+    // cleared required field has to be caught here rather than by the backend.
+    if (
+      instance.formDefinitionSnapshot.schema &&
+      instance.formDefinitionSnapshot.uiSchema
+    ) {
+      const validation = validateFormRendererValues({
+        schema: instance.formDefinitionSnapshot.schema,
+        uiSchema: instance.formDefinitionSnapshot.uiSchema,
+        values: resubmitFormData,
+      });
+
+      if (!validation.valid) {
+        setResubmitFormErrors(validation.errors);
+        setError('請先補齊必填欄位。');
+
+        if (validation.firstInvalidFieldKey) {
+          focusFormRendererField(validation.firstInvalidFieldKey);
+        }
+
+        setDeciding(false);
+
+        return;
+      }
     }
 
     try {

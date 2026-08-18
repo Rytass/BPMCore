@@ -50,6 +50,28 @@ export interface FormDataSourceOptionsResultRecord {
   readonly dataSourceVersion: number;
   readonly nextCursor: string | null;
   readonly options: readonly FormFieldOption[];
+  /**
+   * Field keys the host still needs before the source can be queried. The
+   * server decides this — a binding pointing at an empty field is only
+   * blocking when the bound parameter is required, and the browser never sees
+   * the descriptor that says so.
+   */
+  readonly waitingForFieldKeys: readonly string[];
+}
+
+/**
+ * Authoritative answer for a set of already-selected values.
+ *
+ * `unresolvedValues` is how a value that the upstream source no longer offers
+ * is reported: the provider answered normally, it just cannot resolve those
+ * values under the current bindings and auth context.
+ */
+export interface FormDataSourceResolveResultRecord {
+  readonly dataSourceKey: string;
+  readonly dataSourceVersion: number;
+  readonly options: readonly FormFieldOption[];
+  readonly unresolvedValues: readonly string[];
+  readonly waitingForFieldKeys: readonly string[];
 }
 
 export interface PreviewFormFieldOptionsInput {
@@ -58,6 +80,7 @@ export interface PreviewFormFieldOptionsInput {
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
   readonly schema: FormDefinitionSchema;
   readonly searchText?: string | null;
+  readonly signal?: AbortSignal;
   readonly uiSchema: FormUiSchema;
 }
 
@@ -67,7 +90,26 @@ export interface RuntimeFormFieldOptionsInput {
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
   readonly instanceId?: string | null;
   readonly searchText?: string | null;
+  readonly signal?: AbortSignal;
   readonly templateId?: string | null;
+}
+
+export interface PreviewResolveFormFieldOptionsInput {
+  readonly fieldKey: string;
+  readonly formData?: Readonly<Record<string, FormFieldValue>>;
+  readonly schema: FormDefinitionSchema;
+  readonly signal?: AbortSignal;
+  readonly uiSchema: FormUiSchema;
+  readonly values: readonly string[];
+}
+
+export interface RuntimeResolveFormFieldOptionsInput {
+  readonly fieldKey: string;
+  readonly formData?: Readonly<Record<string, FormFieldValue>>;
+  readonly instanceId?: string | null;
+  readonly signal?: AbortSignal;
+  readonly templateId?: string | null;
+  readonly values: readonly string[];
 }
 
 interface FormDataSourcesQueryData {
@@ -80,6 +122,14 @@ interface FormFieldOptionsQueryData {
 
 interface PreviewFormFieldOptionsQueryData {
   readonly previewFormFieldOptions: FormDataSourceOptionsResultRecord;
+}
+
+interface ResolveFormFieldOptionsQueryData {
+  readonly resolveFormFieldOptions: FormDataSourceResolveResultRecord;
+}
+
+interface PreviewResolveFormFieldOptionsQueryData {
+  readonly previewResolveFormFieldOptions: FormDataSourceResolveResultRecord;
 }
 
 const DESCRIPTOR_FIELDS = `
@@ -111,6 +161,18 @@ const OPTION_RESULT_FIELDS = `
     label
     value
   }
+  waitingForFieldKeys
+`;
+
+const RESOLVE_RESULT_FIELDS = `
+  dataSourceKey
+  dataSourceVersion
+  options {
+    label
+    value
+  }
+  unresolvedValues
+  waitingForFieldKeys
 `;
 
 export async function listFormDataSources(): Promise<
@@ -131,6 +193,7 @@ export async function previewFormFieldOptions(
       previewFormFieldOptions(input: $input) { ${OPTION_RESULT_FIELDS} }
     }`,
     { input: serializePreviewInput(input) },
+    { signal: input.signal },
   );
 
   return data.previewFormFieldOptions;
@@ -144,9 +207,48 @@ export async function readFormFieldOptions(
       formFieldOptions(input: $input) { ${OPTION_RESULT_FIELDS} }
     }`,
     { input: serializeRuntimeInput(input) },
+    { signal: input.signal },
   );
 
   return data.formFieldOptions;
+}
+
+/**
+ * Asks the host to confirm already-selected values for a Designer preview.
+ */
+export async function previewResolveFormFieldOptions(
+  input: PreviewResolveFormFieldOptionsInput,
+): Promise<FormDataSourceResolveResultRecord> {
+  const data = await requestGraphQl<PreviewResolveFormFieldOptionsQueryData>(
+    `query PreviewResolveFormFieldOptions($input: BPMPreviewResolveFormFieldOptionsInput!) {
+      previewResolveFormFieldOptions(input: $input) { ${RESOLVE_RESULT_FIELDS} }
+    }`,
+    { input: serializePreviewResolveInput(input) },
+    { signal: input.signal },
+  );
+
+  return data.previewResolveFormFieldOptions;
+}
+
+/**
+ * Asks the host to confirm already-selected values for a runtime instance.
+ *
+ * This is the authority behind the `INVALID` field status: a value the source
+ * no longer offers comes back in `unresolvedValues` instead of being papered
+ * over by an option snapshot merged for display.
+ */
+export async function resolveFormFieldOptions(
+  input: RuntimeResolveFormFieldOptionsInput,
+): Promise<FormDataSourceResolveResultRecord> {
+  const data = await requestGraphQl<ResolveFormFieldOptionsQueryData>(
+    `query ResolveFormFieldOptions($input: BPMRuntimeResolveFormFieldOptionsInput!) {
+      resolveFormFieldOptions(input: $input) { ${RESOLVE_RESULT_FIELDS} }
+    }`,
+    { input: serializeRuntimeResolveInput(input) },
+    { signal: input.signal },
+  );
+
+  return data.resolveFormFieldOptions;
 }
 
 function serializePreviewInput(
@@ -172,5 +274,29 @@ function serializeRuntimeInput(
     instanceId: input.instanceId ?? null,
     searchText: input.searchText ?? null,
     templateId: input.templateId ?? null,
+  };
+}
+
+function serializePreviewResolveInput(
+  input: PreviewResolveFormFieldOptionsInput,
+): Readonly<Record<string, unknown>> {
+  return {
+    fieldKey: input.fieldKey,
+    formDataJson: input.formData ? JSON.stringify(input.formData) : null,
+    schemaJson: JSON.stringify(input.schema),
+    uiSchemaJson: JSON.stringify(input.uiSchema),
+    valuesJson: JSON.stringify(input.values),
+  };
+}
+
+function serializeRuntimeResolveInput(
+  input: RuntimeResolveFormFieldOptionsInput,
+): Readonly<Record<string, unknown>> {
+  return {
+    fieldKey: input.fieldKey,
+    formDataJson: input.formData ? JSON.stringify(input.formData) : null,
+    instanceId: input.instanceId ?? null,
+    templateId: input.templateId ?? null,
+    valuesJson: JSON.stringify(input.values),
   };
 }

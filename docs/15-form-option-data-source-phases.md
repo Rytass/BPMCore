@@ -1,6 +1,7 @@
 # 15 — 表單選項 DataSource 開發 Phase
 
-- **狀態**：Phase 0–6 與 P6 full-suite gate 已完成
+- **狀態**：Phase 0–6 與 P6 full-suite gate 已完成；2026-08-16 完成第二輪獨立稽核修正，
+  full suite 49/49 通過
 - **規劃日期**：2026-08-11
 - **權威決策**：[14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
 - **完成定義**：所有 Phase gate、真實 wrapper-host journey 與文件同步完成
@@ -19,6 +20,157 @@ GraphQL/DB golden path、package consumer wiring 與真實 Chrome golden path �
 `initiatorMemberId` 改為 optional（server 仍為權威來源），並讓 DataSource golden path
 spec 預設執行而不再靜默跳過。稽核後 `pnpm e2e:client --workers=1` 在未設定任何
 `E2E_*` 變數下仍為 43 passed / 0 failed、0 skipped。
+
+2026-08-16 追加第二輪獨立稽核與修正，處理十四個實際會在畫面上出錯的問題：
+
+1. **缺少 runtime resolve query**。ADR §3.9／§3.11 要求「stale → resolve →
+   VALID/INVALID、逐項標示、禁止送出」，但 GraphQL surface 只有 catalog／preview／runtime
+   search，前端無從確認值是否仍有效——實測改變 binding 後上游已無舊值，UI 仍報 VALID 且
+   不擋送出。新增 `resolveFormFieldOptions`（authenticated）與
+   `previewResolveFormFieldOptions`（Designer-only），回傳
+   `BPMFormDataSourceResolveResult`；部分解不出來時以 `unresolvedValues` 回報而非 throw。
+   submit／resubmit 的權威 resolve 維持全有全無不變。
+2. **optional parameter 綁定鎖死控制項**。前端把任何指向空欄位的 FIELD binding 都當成
+   必填。`BPMFormDataSourceOptionsResult` 新增 `waitingForFieldKeys`：缺必要參數時後端不再
+   throw，而是回報該欄位清單且不呼叫 provider，前端改以它為權威。
+3. **唯讀未填欄位誤報**。唯讀且未填值的動態欄位原本顯示「選項來源暫時無法使用。」與一個
+   按了也沒用的重試鈕，改為靜默（`IDLE`）；重試鈕只在真有查詢可重下時出現。
+4. **重複 helper 漂移**。`form-data-source.service.ts` 與
+   `form-data-source-value-resolver.service.ts` 兩份 helper 已不一致（前者缺
+   `Number.isFinite`、`isRecord` 未排除 array），`1e999` → `Infinity` 在 search 通過卻在
+   submit 被拒。抽為 `form-data-source.validation.ts` 單一實作，採嚴格語意。
+5. **source 下架時繞過 `ALWAYS` policy**。`FormDataSourceValueSnapshot` 新增 optional
+   `revalidationPolicy`；registry 缺席時只有非 `ALWAYS` 才允許沿用 snapshot（舊 snapshot
+   無此欄位時維持相容）。
+6. **退回編輯的動態查詢從未成功過**。`InstanceFormSection` 同時傳 `instanceId` 與
+   `templateId`，而 runtime context 規則是兩者恰好一個，因此畫面永遠顯示「沒有權限查詢
+   此欄位的選項。」。既有 e2e 沒抓到，是因為它只驗證 snapshot label（不需要發查詢）。
+   已改為只傳 `instanceId`。
+7. **必填驗證接錯 handler**（由第二輪瀏覽器稽核發現）。`InstanceDetailView` 的
+   `validateFormRendererValues` 長在 `handleCancelInstance` 而不是
+   `handleResubmitInstance`，造成一體兩面的兩個錯誤：清空必填動態欄位後「重新送出」不被
+   前端擋、請求真的送出並讓畫面吐出後端原始英文訊息
+   （`Form data is missing required fields: ...`）；而「取消案件」卻被這段必填驗證誤擋，
+   使用者無法取消自己的退回案件。DataSource 閘門
+   （`isFormDataSourceFieldSubmissionBlocked`）的定義是 `hasValue && status !== 'VALID'`，
+   值被清空後 `hasValue === false` 便不再擋，本該接手的必填檢查卻不在該路徑上。已把該
+   區塊移到 `handleResubmitInstance`，順序比照 `InstanceNewView`：DataSource 閘門 →
+   必填驗證 → 送出。
+8. **三項由最終瀏覽器稽核提出的既有瑕疵**（非本輪迴歸，一併處理）。其一，非 UUID 的
+   `instanceId`／`templateId` 會讓 Postgres 的
+   `invalid input syntax for type uuid: ...` 原樣回到前端，洩漏資料庫引擎與欄位型別，
+   違反 ADR §3.12；改為在 runtime context 查詢外層攔截非 `HttpException` 的底層錯誤，
+   記錄後一律回 `FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN`（刻意拋出的 not-found／
+   forbidden 仍原樣傳遞）。其二，超大 request body 回 HTTP 500 而非 413；
+   `AllExceptionsFilter` 改為在非 `HttpException` 上讀取其自帶的有效 HTTP status
+   （400–599）再 fallback 到 500。其三，在動態選項重新驗證中（`LOADING`／`STALE`）點送出
+   會顯示「請先完成動態選項驗證。」，讀起來像永久失敗，實際只要等查詢回來再點一次即可；
+   新增 `readFormDataSourceSubmissionBlockMessage()`，暫時性阻擋改顯示
+   「選項驗證中，請稍候再送出。」，需要使用者處理的情況維持原文案。
+9. **第三輪稽核提出的三項邊界收尾**。其一，`GET /attachments/:id/download` 缺 `token`
+   query 時 `token.split('.')` 直接拋 TypeError，變成 500 並帶出
+   `Cannot read properties of undefined (reading 'split')`；改為與「token 錯誤」走同一條
+   `NotFoundException`，因為兩者都無法驗證，區分它們等於洩漏附件是否存在。其二，
+   `AllExceptionsFilter.readHttpStatus` 原本採信例外自帶的任何 400–599 status，日後若引入
+   HTTP client（axios 等）會把**上游服務**的狀態碼當成本 API 的回覆；收緊為只接受
+   `http-errors` 慣例中 `expose === true` 的 4xx（Express body parser 正是這類），413 行為
+   不變。其三，`app.module.ts` 未顯式設定 `includeStacktraceInErrorResponses`，
+   Apollo 僅在 `NODE_ENV` 恰為 `production` 時關閉，staging 若非該值就會把絕對路徑與
+   相依版本送到瀏覽器；已顯式設為 `false`。
+10. **第四輪稽核提出的四項既有弱點**（皆非本輪迴歸，一併收掉）。其一，Apollo 會把未處理
+    錯誤的 `message` 原樣透傳，`attachments(instanceId:"not-a-uuid")` 因此回
+    `invalid input syntax for type uuid: ...`——第 8 項只修好 DataSource 那條路徑，其餘
+    resolver 沒有同等保護；改在 `app.module.ts` 加 `formatError`，僅當
+    `code === 'INTERNAL_SERVER_ERROR'` **且** `unwrapResolverError()` 不是 `HttpException`
+    時才換成固定字串。**這個判斷是必要的**：Nest 的 `HttpException` 在 GraphQL 下 code 同樣
+    是 `INTERNAL_SERVER_ERROR`，若只看 code 就替換，會把
+    `FORM_DATA_SOURCE_*` 這類前端賴以顯示對應文案的穩定錯誤碼一併吃掉。其二，
+    `uploadAttachment` 宣告 `@Max(10MB)`，但 Express 的 JSON body 預設上限 100KB、base64
+    再膨脹 4/3，實際約 74KB 就被 413 擋下，契約與實作差兩個數量級；host 改用
+    `app.useBodyParser('json'|'urlencoded', { limit: '16mb' })` 對齊（不直接 import
+    `express`，它不是 `apps/api` 的依賴）。其三，附件簽名密鑰用到內建預設值時的警告原本只在
+    `NODE_ENV === 'production'` 才發，NODE_ENV 沒設好的 staging 會靜默使用套件內公開常數當
+    簽名密鑰；改為只在明確的 `development`／`test` 才靜音。其四，`AllExceptionsFilter` 與
+    附件 token 守衛都沒有測試保護，補上 `all-exceptions.filter.spec.ts`（10 例，涵蓋
+    `expose` 才採信、只收 4xx、`status` 優先於 `statusCode`、非整數與越界拒絕、GraphQL
+    context rethrow）與 4 例壞 token 案例；unit suite 由 300 增為 318。
+
+11. **第五輪稽核發現的 F-1**。第 10 項讓未處理錯誤的 message 一律變成
+    `Internal server error` 之後，FormRenderer 的 fallback
+    （`readFormDataSourceErrorMessage(...) ?? requestError.message`）就把這串英文原樣渲染到
+    欄位上——`readFormDataSourceErrorMessage` 只認得 `FORM_DATA_SOURCE_*`，非 DataSource
+    錯誤一律回 `null`。兩處 fallback 改為固定中文「選項來源暫時無法使用。」，並補上
+    regression test。這是 commit 295de6a「stop showing raw DataSource error codes」
+    尚未收尾的最後一角：該次處理了錯誤碼，沒處理非 DataSource 的原始訊息。
+
+12. **AutoComplete 收到 `waitingForFieldKeys` 後鎖住輸入框**（第一輪瀏覽器稽核的
+    FINDING 2，因報告延遲送達而最後處理）。AutoComplete 是唯一不做前置 gate 的控制項——
+    其他控制項一載入就查詢，能在使用者作答前就知道要不要等；AutoComplete 只在輸入時才
+    查詢，若也樂觀鎖住，綁到 optional parameter 的欄位會因無法輸入而永遠解不開。但原本
+    收到 `waitingForFieldKeys` 後會 disable，此時使用者已經打了字，那段文字就卡在鎖住的
+    輸入框裡既不能改也不能清。改為 AutoComplete 只有 `readonly` 才 disable，等待狀態改由
+    狀態列呈現；其餘控制項行為不變。ADR §3.11 原本寫「所有動態 control 共用下列行為」而
+    未標註例外，已補上說明。
+
+同輪修正的測試工具地雷：`form-data-source-real.spec.ts` 的 `chooseOption()`／`openSelect()`
+原本點 `.mzn-select-trigger` 的幾何中心。當 `multiple` select 帶有 chip 時，該點落在**第一個
+chip 的關閉圖示**上——舊寫法會靜默移除一個已選值且不展開選單。兩者改為共用
+`openSelectTrigger()`，改點 `.mzn-select-trigger__suffix-action-icon`（chevron）。
+
+> 第一版修法改點「內層 input」是錯的，由稽核以 `document.elementFromPoint()` 反證：input 的
+> bounding box 幾乎等於 trigger（310×36 vs 312×38），與幾何中心打在同一個像素，同樣被 chip
+> 圖層蓋住，只是改為 Playwright interception timeout 而非默默刪值。真正的地雷也不是 `+N`
+> overflow counter，而是可見 chip 的關閉鈕。
+
+同時補上 AutoComplete 例外的回歸護欄（`FormRendererView.spec.tsx`）：斷言等待狀態下
+AutoComplete 為 enabled、Select／Radio／Checkbox 為 disabled。該護欄以突變測試驗證過確實會
+抓錯——把 `autoCompleteDisabled` 改回 `optionControlDisabled` 會讓它變紅。**前兩版護欄都是假的**：
+AutoComplete 不做前置 gate，不先觸發搜尋就不存在等待狀態；且必須等回應被套用（欄位內出現
+提示文字）而非等查詢發出，否則突變後照樣全綠。
+
+13. **分頁來源的第二頁在 Select 上永遠選不到**（由第八輪稽核在複驗時挖出）。下拉選單只有在
+    內容溢出時才會觸發 `onReachBottom`，而 `demo.cost-centers` 每頁 3 筆、恰好填滿選單
+    （`clientHeight` 108 = `scrollHeight` 108），於是永遠不會捲動、`nextCursor` 永遠不被
+    消費——TW01 底下的 004–008 在 Select 控制項中**完全無法選取**。這是典型的「首頁資料量
+    小於視窗高度 ⇒ 無限捲動死鎖」，只要選單高度大於首頁筆數就會重演，等於 ADR §3.5 允諾的
+    CURSOR 分頁在最主要的控制項上不可用。改為載入後若仍有 `nextCursor` 且累積筆數少於可捲動
+    門檻（10）就自動續載，直到足以捲動或來源耗盡；並防住「回空頁卻仍給 cursor」的無限迴圈。
+    Radio／Checkbox 走 `pageSize: 50` 的完整清單來源、AutoComplete 靠搜尋，都不受影響。
+
+14. **每個動態欄位重複發出 4 次首頁查詢**（第九輪稽核在複驗時量到）。`useFormDataSourceField`
+    的三處 effect／callback 相依項用了 `dynamicField` 的**物件識別**，而該物件由父層每次
+    render 重建，於是同一次相依變動會重跑 4 次、前 3 次被 abort。改以內容簽章
+    （`fieldKey` + `type` + `dataSource`）取代物件識別後，整段流程（開頁＋選廠別）降為 3 次。
+    分佈才是重點：**相依變動本身已收斂到 1 次（理論最佳）**——稽核實測初次掛載 2 次、選
+    廠別 1 次，之後每次相依變動（TW01 → TW02）都穩定為 1 次。ADR §3.12「保護上游」在穩態
+    下已完全達成，殘留的只有一次性的掛載成本（來自 launch context 載入完成後的額外 render）。
+
+同輪改進：client 各 query 與 `requestGraphQl()` 支援 optional `AbortSignal`；submit 的
+provider 呼叫加並行上限 4；GraphQL input 全面加 `@MaxLength`；前端將可修正的錯誤
+（如 `SEARCH_TOO_SHORT`）與「來源壞掉」分級，不再一律 `UNAVAILABLE`、也不再誤擋送出。
+
+第二輪稽核後的驗證結果：
+
+- `npx nx run-many -t test -p bpm-core shared bpm-core-client bpm-core-react --runInBand`：
+  4 個 project 合計 43 suites / 415 tests 全通過（`bpm-core` 318、`bpm-core-client` 49、
+  `shared` 31、`bpm-core-react` 17；先前版本誤把單一專案的數字當成總數）。
+- `pnpm typecheck`：6 projects 全通過。
+- `pnpm lint`：0 errors、2 個既有 warnings。
+- `pnpm demo:reset` 後 `pnpm e2e:client --workers=1`（system Chrome，未設定任何 `E2E_*`
+  變數，打 supervisor 管理的 17602／17603）：**50 passed / 0 failed**，即原本 43 項加上
+  7 項新增的 DataSource 案例。
+
+新增的 7 項 e2e 案例（`apps/client-e2e/specs/form-data-source-real.spec.ts`）：
+
+| 案例                                       | 對應問題 |
+|--------------------------------------------|----------|
+| optional binding 未填仍可使用控制項        | 2        |
+| optional binding 填值後選項收斂            | 2        |
+| 切換 plant 後舊值轉 INVALID 並擋住重新送出 | 1、6     |
+| 唯讀未填欄位不顯示錯誤                     | 3        |
+| 清空必填動態欄位後阻擋重新送出             | 7        |
+| 清空必填值時仍可取消退回案件               | 7        |
+| 分頁來源第二頁的選項可被選取               | 13       |
 
 ## 1. 目標
 
@@ -417,6 +569,35 @@ wrapper app seed 擁有，不放進 reusable BPM domain。建議資料包含：
 
 - 驗證外部 Nest host 只透過 package public exports 註冊 DataSource。
 - 不允許測試直接 import `libs/bpm-core/src/**` internal path。
+
+## 5.1 已知限制與後續 backlog
+
+以下由 2026-08-16 的六輪獨立稽核提出，經評估**不屬於 DataSource 這個題目**，未在本輪處理：
+
+- **`skill-matrix-real.spec.ts:582` 的測試隔離問題**。該斷言要求 seed 通知
+  `SLA 已逾期：鋁合金胚料採購` 出現在通知中心第一頁，而 `notification-drawer.tsx` 以
+  `includeRead: true`、`PAGE_SIZE = 50` 取第一頁。每跑一次 e2e 就替 member-001 多累積數筆
+  通知，累計超過 50 筆後該 seed 通知被擠到「載入更多」之後，斷言**必然**開始失敗（不是
+  flaky，重跑不會過）。`pnpm demo:reset` 後即恢復，因此「full suite 49 passed」這個基準
+  只在剛 reset 過的 DB 上成立。修法擇一：改以 seed 通知 id 篩選、改打
+  `notifications(recipientMemberId, page/pageSize)` 直接斷言資料而非 UI 第一頁、或讓該
+  spec 在 `beforeAll` 先歸檔測試自產的通知。
+- **`admin-orgs.spec.ts:101`（org tree 拖放）偶發失敗**，屬 mouse 事件時序 flaky，單獨
+  重跑會過。
+- **`workflow-org-resolution-real.spec.ts:168`**：該 spec 會在單次執行內連續建立多個模板
+  （`exhaustively creates templates`），再回模板列表用名稱定位剛建立的那一列。模板列表變長
+  後新建的列會被擠出第一頁，於是
+  `getByRole('row').filter({ hasText: '平行 AND 匯合 org-...' })` 等不到而 timeout。這是
+  spec 自身的定位設計問題（**與 DataSource 無關**，該檔對 `dataSource`／`costCenter` 的
+  grep 命中數為 0），在機器負載高、列表回應變慢時更容易暴露。修法方向：改以模板 id 定位、
+  或建立後直接導向該模板頁面，而不是回列表用名稱找。
+- **`adhoc-directives.spec.ts:370` 與 `skill-matrix-real.spec.ts:246`**：跑完整核准流程的
+  重測試，在高機器負載下會出現 `已同意` 等狀態文字等不到的 timeout，單獨重跑即過。
+  判定方式：`pnpm dev:ctl restart client` 後 `pnpm demo:reset` 再跑。實測一次：重啟前
+  2 failed、重啟後 50 passed。
+- **動態欄位在頁面首次掛載時會多發 1 次首頁查詢**（見上方第 14 項）。相依變動後的穩態已是
+  1 次／次，只有掛載階段因 launch context 載入造成一次額外 render。影響小，屬 FormRenderer
+  render 最佳化範疇。
 
 ## 6. 完成條件
 

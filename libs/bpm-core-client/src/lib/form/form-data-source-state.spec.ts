@@ -4,6 +4,7 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import {
   mergeFormDataSourceOptions,
+  readFormDataSourceSelectedValues,
   readMissingFormDataSourceOptionValues,
   readMissingFormDataSourceDependencies,
   readSelectedFormDataSourceOptions,
@@ -49,6 +50,14 @@ describe('form data source state helpers', () => {
         plant: 'TPE',
       }),
     ).toEqual([]);
+  });
+
+  it('reads the selected values a resolve request has to confirm', (): void => {
+    expect(readFormDataSourceSelectedValues('A')).toEqual(['A']);
+    expect(readFormDataSourceSelectedValues(['A', 'B'])).toEqual(['A', 'B']);
+    expect(readFormDataSourceSelectedValues('   ')).toEqual([]);
+    expect(readFormDataSourceSelectedValues(undefined)).toEqual([]);
+    expect(readFormDataSourceSelectedValues(null)).toEqual([]);
   });
 
   it('keeps the unresolved selected values in their original order', (): void => {

@@ -69,6 +69,7 @@ const FORM_IDS = {
   ACCESS: '30000000-0000-4000-8000-000000000003',
   DISCOUNT: '30000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '30000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_OPTIONAL: '30000000-0000-4000-8000-000000000007',
   EXPENSE: '30000000-0000-4000-8000-000000000001',
   LEAVE: '30000000-0000-4000-8000-000000000002',
   PURCHASE: '30000000-0000-4000-8000-000000000005',
@@ -77,6 +78,7 @@ const FORM_IDS = {
 const FORM_VERSION_IDS = {
   ACCESS_V1: '31000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '31000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_OPTIONAL_V1: '31000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '31000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '31000000-0000-4000-8000-000000000006',
   EXPENSE_DRAFT: '31000000-0000-4000-8000-000000000007',
@@ -89,6 +91,7 @@ const TEMPLATE_IDS = {
   ACCESS: '50000000-0000-4000-8000-000000000003',
   DISCOUNT: '50000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '50000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_OPTIONAL: '50000000-0000-4000-8000-000000000007',
   EXPENSE: '50000000-0000-4000-8000-000000000001',
   LEAVE: '50000000-0000-4000-8000-000000000002',
   PURCHASE: '50000000-0000-4000-8000-000000000005',
@@ -97,6 +100,7 @@ const TEMPLATE_IDS = {
 const TEMPLATE_VERSION_IDS = {
   ACCESS_V1: '51000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '51000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_OPTIONAL_V1: '51000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '51000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '51000000-0000-4000-8000-000000000006',
   EXPENSE_V1: '51000000-0000-4000-8000-000000000001',
@@ -107,6 +111,8 @@ const TEMPLATE_VERSION_IDS = {
 const INSTANCE_IDS = {
   ACCESS_RETURNED: '60000000-0000-4000-8000-000000000005',
   DISCOUNT_REJECTED: '60000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_OPTIONAL_APPROVED: '60000000-0000-4000-8000-000000000010',
+  DYNAMIC_OPTIONS_OPTIONAL_RETURNED: '60000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_RETURNED: '60000000-0000-4000-8000-000000000008',
   EXPENSE_APPROVED: '60000000-0000-4000-8000-000000000003',
   EXPENSE_RUNNING: '60000000-0000-4000-8000-000000000001',
@@ -118,6 +124,8 @@ const INSTANCE_IDS = {
 const TOKEN_IDS = {
   ACCESS_RETURNED: '61000000-0000-4000-8000-000000000005',
   DISCOUNT_REJECTED: '61000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_OPTIONAL_APPROVED: '61000000-0000-4000-8000-000000000010',
+  DYNAMIC_OPTIONS_OPTIONAL_RETURNED: '61000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_RETURNED: '61000000-0000-4000-8000-000000000008',
   EXPENSE_APPROVED: '61000000-0000-4000-8000-000000000003',
   EXPENSE_RUNNING_FINANCE: '61000000-0000-4000-8000-000000000001',
@@ -129,6 +137,10 @@ const TOKEN_IDS = {
 const TASK_IDS = {
   ACCESS_RETURNED_IT: '62000000-0000-4000-8000-000000000006',
   DISCOUNT_REJECTED_MANAGER: '62000000-0000-4000-8000-000000000005',
+  DYNAMIC_OPTIONS_OPTIONAL_APPROVED_MANAGER:
+    '62000000-0000-4000-8000-000000000012',
+  DYNAMIC_OPTIONS_OPTIONAL_RETURNED_MANAGER:
+    '62000000-0000-4000-8000-000000000011',
   DYNAMIC_OPTIONS_RETURNED_MANAGER: '62000000-0000-4000-8000-000000000010',
   EXPENSE_APPROVED_FINANCE: '62000000-0000-4000-8000-000000000004',
   EXPENSE_APPROVED_MANAGER: '62000000-0000-4000-8000-000000000003',
@@ -449,6 +461,100 @@ const DYNAMIC_OPTIONS_FORM_SCHEMA = {
   schemaVersion: 1,
 } as const;
 
+/**
+ * Companion form for `demo.cost-centers-optional-filter@1`. `costCategory` is an
+ * optional field bound to the source's optional `category` parameter, so the
+ * dynamic controls must stay usable while it is empty. `projectCostCenterNote`
+ * is deliberately left unfilled by the archived instance below so a read-only
+ * dynamic field without a value can be asserted on.
+ */
+const DYNAMIC_OPTIONS_OPTIONAL_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'plant',
+      label: '廠別',
+      options: [
+        { label: '台中廠 TW01', value: 'TW01' },
+        { label: '台北廠 TW02', value: 'TW02' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      fieldKey: 'costCategory',
+      label: '費用類別（選填）',
+      options: [
+        { label: '資本支出 CAPEX', value: 'CAPEX' },
+        { label: '營運費用 OPEX', value: 'OPEX' },
+      ],
+      required: false,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+          {
+            from: { fieldKey: 'costCategory', kind: 'FIELD' },
+            parameter: 'category',
+          },
+        ],
+        key: 'demo.cost-centers-optional-filter',
+        version: 1,
+      },
+      fieldKey: 'projectCostCenterSingle',
+      label: '專案成本中心 單選',
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+          {
+            from: { fieldKey: 'costCategory', kind: 'FIELD' },
+            parameter: 'category',
+          },
+        ],
+        key: 'demo.cost-centers-optional-filter',
+        version: 1,
+      },
+      fieldKey: 'projectCostCenterMultiple',
+      label: '專案成本中心 複選',
+      mode: 'multiple',
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: { fieldKey: 'plant', kind: 'FIELD' },
+            parameter: 'plant',
+          },
+          {
+            from: { fieldKey: 'costCategory', kind: 'FIELD' },
+            parameter: 'category',
+          },
+        ],
+        key: 'demo.cost-centers-optional-filter',
+        version: 1,
+      },
+      fieldKey: 'projectCostCenterNote',
+      label: '備註成本中心（選填）',
+      required: false,
+      type: 'autocomplete',
+    },
+  ],
+  schemaVersion: 1,
+} as const;
+
 const EXPENSE_FORM_UI_SCHEMA = {
   layout: [
     { fieldKey: 'vendorName', width: 'HALF' },
@@ -513,6 +619,17 @@ const DYNAMIC_OPTIONS_FORM_UI_SCHEMA = {
   schemaVersion: 1,
 } as const;
 
+const DYNAMIC_OPTIONS_OPTIONAL_FORM_UI_SCHEMA = {
+  layout: [
+    { fieldKey: 'plant', width: 'HALF' },
+    { fieldKey: 'costCategory', width: 'HALF' },
+    { fieldKey: 'projectCostCenterSingle', width: 'HALF' },
+    { fieldKey: 'projectCostCenterMultiple', width: 'HALF' },
+    { fieldKey: 'projectCostCenterNote', width: 'FULL' },
+  ],
+  schemaVersion: 1,
+} as const;
+
 const DYNAMIC_OPTIONS_RETURNED_FORM_DATA = {
   costCenterAutocompleteMultiple: ['CC-TW01-004', 'CC-TW01-005'],
   costCenterAutocompleteSingle: 'CC-TW01-003',
@@ -555,6 +672,117 @@ const DYNAMIC_OPTIONS_RETURNED_SNAPSHOT = {
     [DYNAMIC_OPTIONS_RETURNED_FORM_DATA.costCenterSelectSingle],
   ),
 } as const;
+
+/**
+ * Returned case for the optional-parameter source. Every value belongs to TW01
+ * and no TW01 value exists under TW02, so switching `plant` on the edit page
+ * must turn the kept values invalid instead of silently revalidating.
+ * `costCategory` is filled here so this case isolates the stale-to-invalid
+ * transition; the unfilled optional binding is covered by the launch journey.
+ */
+const DYNAMIC_OPTIONS_OPTIONAL_RETURNED_FORM_DATA = {
+  costCategory: 'CAPEX',
+  plant: 'TW01',
+  projectCostCenterMultiple: ['CC-CAPEX-TW01-002', 'CC-CAPEX-TW01-003'],
+  projectCostCenterSingle: 'CC-CAPEX-TW01-001',
+} as const;
+
+const DYNAMIC_OPTIONS_OPTIONAL_RETURNED_SNAPSHOT = {
+  projectCostCenterMultiple: createOptionalFilterOptionSnapshot(
+    [
+      ['plant', 'TW01'],
+      ['category', 'CAPEX'],
+    ],
+    DYNAMIC_OPTIONS_OPTIONAL_RETURNED_FORM_DATA.projectCostCenterMultiple,
+  ),
+  projectCostCenterSingle: createOptionalFilterOptionSnapshot(
+    [
+      ['plant', 'TW01'],
+      ['category', 'CAPEX'],
+    ],
+    [DYNAMIC_OPTIONS_OPTIONAL_RETURNED_FORM_DATA.projectCostCenterSingle],
+  ),
+} as const;
+
+/**
+ * Archived read-only case. `projectCostCenterNote` is intentionally absent from
+ * both the form data and the snapshot: a read-only dynamic field that was never
+ * filled has nothing to resolve and must not be reported as a broken source.
+ */
+const DYNAMIC_OPTIONS_OPTIONAL_APPROVED_FORM_DATA = {
+  costCategory: 'CAPEX',
+  plant: 'TW02',
+  projectCostCenterMultiple: ['CC-CAPEX-TW02-002'],
+  projectCostCenterSingle: 'CC-CAPEX-TW02-001',
+} as const;
+
+const DYNAMIC_OPTIONS_OPTIONAL_APPROVED_SNAPSHOT = {
+  projectCostCenterMultiple: createOptionalFilterOptionSnapshot(
+    [
+      ['plant', 'TW02'],
+      ['category', 'CAPEX'],
+    ],
+    DYNAMIC_OPTIONS_OPTIONAL_APPROVED_FORM_DATA.projectCostCenterMultiple,
+  ),
+  projectCostCenterSingle: createOptionalFilterOptionSnapshot(
+    [
+      ['plant', 'TW02'],
+      ['category', 'CAPEX'],
+    ],
+    [DYNAMIC_OPTIONS_OPTIONAL_APPROVED_FORM_DATA.projectCostCenterSingle],
+  ),
+} as const;
+
+interface DynamicOptionSnapshot {
+  readonly bindingHash: string;
+  readonly dataSourceKey: string;
+  readonly dataSourceVersion: number;
+  readonly options: readonly {
+    readonly label: string;
+    readonly value: string;
+  }[];
+  readonly revalidationPolicy?: 'ALWAYS' | 'WHEN_VALUE_OR_BINDINGS_CHANGE';
+  readonly validatedAt: string;
+}
+
+/**
+ * `bindingHash` must match what the backend recomputes, so the binding values
+ * are listed in descriptor parameter order with unbound parameters as `null`.
+ */
+function createOptionalFilterOptionSnapshot(
+  bindingValues: readonly (readonly [string, string | null])[],
+  values: readonly string[],
+): DynamicOptionSnapshot {
+  const dataSourceKey = 'demo.cost-centers-optional-filter';
+  const dataSourceVersion = 1;
+
+  return {
+    bindingHash: createHash('sha256')
+      .update(
+        JSON.stringify({
+          dataSourceKey,
+          dataSourceVersion,
+          values: bindingValues.map((entry) => [entry[0], entry[1]]),
+        }),
+      )
+      .digest('hex'),
+    dataSourceKey,
+    dataSourceVersion,
+    options: values.map((value) => ({
+      label: readOptionalFilterOptionLabel(value),
+      value,
+    })),
+    revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+    validatedAt: '2026-05-19T04:30:00.000Z',
+  };
+}
+
+function readOptionalFilterOptionLabel(value: string): string {
+  const [, category, plant, sequence] = value.split('-');
+  const categoryLabel = category === 'CAPEX' ? '資本支出中心' : '營運費用中心';
+
+  return `${plant ?? 'TW01'} ${categoryLabel} ${sequence ?? value}`;
+}
 
 function createDynamicOptionSnapshot(
   dataSourceKey: string,
@@ -861,9 +1089,11 @@ async function seedApiFormDataSourceOptions(
       'label',
       'is_active',
       'sort_order',
+      'category',
     ],
     API_FORM_DATA_SOURCE_OPTION_SEEDS.map(
       (seed): SeedRow => ({
+        category: text(seed.category),
         data_source_key: text(seed.dataSourceKey),
         data_source_version: numberCell(seed.dataSourceVersion),
         is_active: bool(seed.isActive),
@@ -1213,6 +1443,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         '用 plant dependency 驗證 Select、AutoComplete、Radio 與 Checkbox 選項。',
         'member-101',
       ),
+      formDefinitionRow(
+        FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        '專案成本中心申請單',
+        '用 optional category parameter 驗證未填相依欄位時仍可查詢選項。',
+        'member-101',
+      ),
     ],
   );
 
@@ -1321,6 +1557,17 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         'member-101',
         null,
       ),
+      formVersionRow(
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+        FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_UI_SCHEMA,
+        '2026-05-19T03:00:00.000Z',
+        'member-101',
+        null,
+      ),
     ],
   );
 
@@ -1359,6 +1606,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     'form_definitions',
     FORM_IDS.DYNAMIC_OPTIONS,
     FORM_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+    FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
   );
 }
 
@@ -1472,6 +1725,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         CATEGORY_IDS.FINANCE,
         'member-101',
       ),
+      templateRow(
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        '專案成本中心申請',
+        '用 optional parameter binding 驗證未填相依欄位、失效值與唯讀空值顯示。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
     ],
   );
 
@@ -1572,6 +1833,17 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         'member-101',
         null,
       ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+        '2026-05-19T04:00:00.000Z',
+        'member-101',
+        null,
+      ),
     ],
   );
 
@@ -1610,6 +1882,12 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     'approval_templates',
     TEMPLATE_IDS.DYNAMIC_OPTIONS,
     TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+    TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
   );
 }
 
@@ -1661,6 +1939,36 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         '2026-05-18T04:30:00.000Z',
         null,
         DYNAMIC_OPTIONS_RETURNED_SNAPSHOT,
+      ),
+      instanceRow(
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+        'member-102',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_UI_SCHEMA,
+        DYNAMIC_OPTIONS_OPTIONAL_RETURNED_FORM_DATA,
+        'RETURNED',
+        '專案成本中心申請：TW01 資本支出',
+        '2026-05-19T04:30:00.000Z',
+        null,
+        DYNAMIC_OPTIONS_OPTIONAL_RETURNED_SNAPSHOT,
+      ),
+      instanceRow(
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+        'member-102',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_OPTIONAL_FORM_UI_SCHEMA,
+        DYNAMIC_OPTIONS_OPTIONAL_APPROVED_FORM_DATA,
+        'APPROVED',
+        '專案成本中心申請：TW02 資本支出',
+        '2026-05-19T05:00:00.000Z',
+        '2026-05-19T06:30:00.000Z',
+        DYNAMIC_OPTIONS_OPTIONAL_APPROVED_SNAPSHOT,
       ),
       instanceRow(
         INSTANCE_IDS.EXPENSE_RUNNING,
@@ -1825,6 +2133,22 @@ async function seedTokens(queryRunner: QueryRunner): Promise<void> {
         null,
       ),
       tokenRow(
+        TOKEN_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
+        'manager_review',
+        'WAITING',
+        '2026-05-19T04:30:00.000Z',
+        null,
+      ),
+      tokenRow(
+        TOKEN_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED,
+        'end',
+        'CONSUMED',
+        '2026-05-19T05:00:00.000Z',
+        '2026-05-19T06:30:00.000Z',
+      ),
+      tokenRow(
         TOKEN_IDS.EXPENSE_RUNNING_FINANCE,
         INSTANCE_IDS.EXPENSE_RUNNING,
         'finance_review',
@@ -1915,6 +2239,32 @@ async function seedTasks(queryRunner: QueryRunner): Promise<void> {
         '2026-05-18T04:30:00.000Z',
         null,
         null,
+      ),
+      taskRow(
+        TASK_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED_MANAGER,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
+        TOKEN_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
+        'manager_review',
+        'member-101',
+        'member-101',
+        'PENDING',
+        '2026-05-21T04:30:00.000Z',
+        '2026-05-19T04:30:00.000Z',
+        null,
+        null,
+      ),
+      taskRow(
+        TASK_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED_MANAGER,
+        INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED,
+        TOKEN_IDS.DYNAMIC_OPTIONS_OPTIONAL_APPROVED,
+        'manager_review',
+        'member-101',
+        'member-101',
+        'COMPLETED',
+        '2026-05-21T05:00:00.000Z',
+        '2026-05-19T05:00:00.000Z',
+        '2026-05-19T05:30:00.000Z',
+        '2026-05-19T06:30:00.000Z',
       ),
       taskRow(
         TASK_IDS.EXPENSE_RUNNING_MANAGER,

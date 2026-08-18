@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persisted label-snapshot contracts.
 - Added `autocomplete` fields plus pure option-field guards and legacy schema
   normalization.
+- `FormDataSourceValueSnapshot` now carries an optional `revalidationPolicy`,
+  recording the policy the source declared when the snapshot was written. Once a
+  source leaves the host registry its descriptor is gone, so without this record
+  there is no way to tell whether reusing the snapshot would quietly skip an
+  `ALWAYS` revalidation. The field is optional so snapshots persisted before it
+  existed keep loading.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

@@ -90,9 +90,12 @@ export function InstanceFormSection({
             dataSourceContext={
               canResubmitInstance
                 ? {
+                    // Instance-scoped only: the runtime query rejects a context
+                    // that names both, and a returned instance must resolve its
+                    // options against its own form definition snapshot rather
+                    // than whatever version the template publishes today.
                     instanceId: instance.id,
                     kind: 'runtime',
-                    templateId: instance.templateId,
                   }
                 : undefined
             }

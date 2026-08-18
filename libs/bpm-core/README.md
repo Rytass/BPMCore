@@ -408,12 +408,21 @@ BPMRootModule.forRoot({
 });
 ```
 
-`formDataSources` and `previewFormFieldOptions` are designer-only GraphQL
-queries. `formFieldOptions` is an authenticated runtime query whose source
-reference comes from the server's published form version or returned-instance
-snapshot. Missing registry versions, unsupported controls, incomplete
+`formDataSources`, `previewFormFieldOptions` and
+`previewResolveFormFieldOptions` are designer-only GraphQL queries.
+`formFieldOptions` and `resolveFormFieldOptions` are authenticated runtime
+queries whose source reference comes from the server's published form version
+or returned-instance snapshot; each requires exactly one of `templateId` or
+`instanceId`. Missing registry versions, unsupported controls, incomplete
 bindings, provider failures, and over-limit results return stable DataSource
 error codes.
+
+The two `*Resolve*` queries are read-only: they confirm already-selected values
+and report the ones the source can no longer account for in `unresolvedValues`
+instead of failing, so a renderer can mark dead options individually. When a
+required parameter still has no value, an option or resolve result comes back
+with `waitingForFieldKeys` naming the fields to fill and no provider call is
+made — only the server knows which bound parameters are required.
 
 On submit, the engine resolves every selected DataSource-backed value on the
 server and stores the returned labels, source version, binding hash, and
@@ -1337,7 +1346,8 @@ Importing `BPMRootModule` registers GraphQL resolvers for:
 - Organization units, positions, memberships, manager resolution, and summary.
 - Member profile lookup and member metadata cache inspection.
 - Form definitions and form definition versions.
-- Form option DataSource catalog, designer preview, and authenticated runtime option queries.
+- Form option DataSource catalog, designer preview, authenticated runtime option
+  queries, and read-only value-resolve queries for both preview and runtime.
 - Approval templates, template versions, categories, validation, and dry run.
 - Workflow instances, tokens, tasks, task candidates, decisions, activity logs,
   submit/process/approve/return/cancel/resubmit operations.

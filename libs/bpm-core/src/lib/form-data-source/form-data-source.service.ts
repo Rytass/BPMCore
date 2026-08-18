@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -33,15 +34,29 @@ import {
 import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
   BPMFormDataSource,
-  BPMFormDataSourceControl,
   BPMFormDataSourceDescriptor,
   BPMFormDataSourceOptionResult,
-  BPMFormDataSourceParameter,
-  BPMFormDataSourceParameterType,
   BPMFormDataSourceRegistry,
-  BPMFormDataSourceResolveFieldInput,
+  BPMFormDataSourceResolveResult,
   BPMFormDataSourceSearchResult,
 } from './form-data-source.types';
+import {
+  assertControlSupported,
+  callProvider,
+  isRecord,
+  isStringArray,
+  readBindingValues,
+  readDescriptorErrors,
+  readDynamicOptionField,
+  readMissingSourceCode,
+  readOrderedResolvedOptions,
+  readProviderResolvedOptions,
+  readSourceOrThrow,
+  readUnresolvedValues,
+  readWaitingForFieldKeys,
+  validateOptions,
+  validateRequestedValues,
+} from './form-data-source.validation';
 
 export interface BPMFormDataSourcePreviewInput {
   readonly cursor?: string | null;
@@ -61,34 +76,26 @@ export interface BPMFormDataSourceRuntimeInput {
   readonly templateId?: string | null;
 }
 
+export interface BPMFormDataSourcePreviewResolveInput {
+  readonly fieldKey: string;
+  readonly formDataJson?: string | null;
+  readonly schemaJson: string;
+  readonly uiSchemaJson?: string | null;
+  readonly valuesJson: string;
+}
+
+export interface BPMFormDataSourceRuntimeResolveInput {
+  readonly fieldKey: string;
+  readonly formDataJson?: string | null;
+  readonly instanceId?: string | null;
+  readonly templateId?: string | null;
+  readonly valuesJson: string;
+}
+
 interface RuntimeSchemaContext {
   readonly schema: FormDefinitionSchema;
   readonly uiSchemaJson: string;
 }
-
-interface ResolvedBindingValues {
-  readonly values: Readonly<Record<string, FormFieldValue>>;
-  readonly missingParameters: readonly string[];
-}
-
-interface TimeoutMarker extends Error {
-  readonly kind: 'FORM_DATA_SOURCE_TIMEOUT';
-}
-
-const MAX_PARAMETER_BYTES = 16_384;
-const PROVIDER_TIMEOUT_MS = 5_000;
-const SOURCE_CONTROLS: readonly BPMFormDataSourceControl[] = [
-  'autocomplete',
-  'checkbox',
-  'radio',
-  'select',
-];
-const PARAMETER_TYPES: readonly BPMFormDataSourceParameterType[] = [
-  'BOOLEAN',
-  'NUMBER',
-  'STRING',
-  'STRING_ARRAY',
-];
 
 @Injectable()
 export class FormDataSourceService {
@@ -105,11 +112,13 @@ export class FormDataSourceService {
   ) {}
 
   listDescriptors(): readonly BPMFormDataSourceDescriptor[] {
-    return this.registry.list().flatMap((source) =>
-      this.readDescriptorErrors(source.descriptor).length === 0
-        ? [source.descriptor]
-        : [],
-    );
+    return this.registry
+      .list()
+      .flatMap((source) =>
+        readDescriptorErrors(source.descriptor).length === 0
+          ? [source.descriptor]
+          : [],
+      );
   }
 
   lintDefinitionSchemaEnvironment(
@@ -127,10 +136,12 @@ export class FormDataSourceService {
       );
 
       if (!source) {
-        return [`${path} ${this.readMissingSourceCode(field.dataSource.key)}`];
+        return [
+          `${path} ${readMissingSourceCode(this.registry, field.dataSource.key)}`,
+        ];
       }
 
-      const descriptorErrors = this.readDescriptorErrors(source.descriptor);
+      const descriptorErrors = readDescriptorErrors(source.descriptor);
       const controlErrors = this.readControlErrors(
         field,
         source.descriptor,
@@ -181,6 +192,37 @@ export class FormDataSourceService {
     });
   }
 
+  async previewResolveFormFieldOptionValues(
+    input: BPMFormDataSourcePreviewResolveInput,
+    authContext: BPMAuthContext,
+  ): Promise<BPMFormDataSourceResolveResult> {
+    const { schema } = this.parseSchema(input.schemaJson, input.uiSchemaJson);
+    this.assertEnvironmentSchema(schema);
+    const field = this.readOptionField(schema, input.fieldKey);
+
+    return this.reportFormFieldOptionValues({
+      authContext,
+      field,
+      formData: this.parseFormData(input.formDataJson),
+      values: this.parseValues(input.valuesJson),
+    });
+  }
+
+  async resolveFormFieldOptionValues(
+    input: BPMFormDataSourceRuntimeResolveInput,
+    authContext: BPMAuthContext,
+  ): Promise<BPMFormDataSourceResolveResult> {
+    const context = await this.readRuntimeSchema(input, authContext);
+    const field = this.readOptionField(context.schema, input.fieldKey);
+
+    return this.reportFormFieldOptionValues({
+      authContext,
+      field,
+      formData: this.parseFormData(input.formDataJson),
+      values: this.parseValues(input.valuesJson),
+    });
+  }
+
   async searchFormFieldOptions(input: {
     readonly authContext: BPMAuthContext;
     readonly cursor: string | null;
@@ -188,23 +230,34 @@ export class FormDataSourceService {
     readonly formData: Readonly<Record<string, unknown>>;
     readonly searchText: string;
   }): Promise<BPMFormDataSourceOptionResult> {
-    const field = this.readDynamicOptionField(input.field);
-    const source = this.readSourceOrThrow(field.dataSource);
-    this.assertControlSupported(field, source.descriptor);
-    const bindings = this.readBindingValues(field, source.descriptor, input.formData);
+    const field = readDynamicOptionField(input.field);
+    const source = readSourceOrThrow(this.registry, field.dataSource);
+    assertControlSupported(field, source.descriptor);
+    const bindings = readBindingValues(
+      field,
+      source.descriptor,
+      input.formData,
+    );
 
+    // Waiting on a dependency is a state, not a failure: the caller needs the
+    // field names to prompt for, and an error carries none of them.
     if (bindings.missingParameters.length > 0) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.WAITING_FOR_DEPENDENCIES,
-      );
+      return {
+        dataSourceKey: source.descriptor.key,
+        dataSourceVersion: source.descriptor.version,
+        nextCursor: null,
+        options: [],
+        waitingForFieldKeys: readWaitingForFieldKeys(
+          field,
+          bindings.missingParameters,
+        ),
+      };
     }
 
     const searchText = input.searchText.trim();
     this.assertSearchRequest(source.descriptor, searchText, input.cursor);
-    const result = await this.callProvider(
-      source,
-      'search',
-      (signal): Promise<BPMFormDataSourceSearchResult> =>
+    const result = await callProvider({
+      call: (signal): Promise<BPMFormDataSourceSearchResult> =>
         source.search({
           authContext: input.authContext,
           bindings: bindings.values,
@@ -212,7 +265,10 @@ export class FormDataSourceService {
           searchText,
           signal,
         }),
-    );
+      logger: this.logger,
+      operation: 'search',
+      source,
+    });
     const options = this.validateSearchResult(result, source.descriptor);
 
     return {
@@ -220,59 +276,138 @@ export class FormDataSourceService {
       dataSourceVersion: source.descriptor.version,
       nextCursor: this.readNextCursor(result, source.descriptor),
       options,
+      waitingForFieldKeys: [],
     };
   }
 
-  async resolveFormFieldOptions(
-    input: BPMFormDataSourceResolveFieldInput,
-  ): Promise<readonly FormFieldOption[]> {
-    const field = this.readDynamicOptionField(input.field);
-    const source = this.readSourceOrThrow(field.dataSource);
-    this.assertControlSupported(field, source.descriptor);
-    const values = this.validateRequestedValues(
+  /**
+   * Read-only value check for the renderer. A value the provider no longer
+   * offers is reported in `unresolvedValues` rather than thrown, because the
+   * field has to show which of several selected options went dead. Provider
+   * contract breaches and transport failures still throw.
+   */
+  private async reportFormFieldOptionValues(input: {
+    readonly authContext: BPMAuthContext;
+    readonly field: FormOptionFieldDefinition;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly values: readonly string[];
+  }): Promise<BPMFormDataSourceResolveResult> {
+    const field = readDynamicOptionField(input.field);
+    const source = readSourceOrThrow(this.registry, field.dataSource);
+    assertControlSupported(field, source.descriptor);
+
+    // Nothing selected means nothing to check; asking the provider anyway would
+    // be a request for the empty set.
+    if (input.values.length === 0) {
+      return {
+        dataSourceKey: source.descriptor.key,
+        dataSourceVersion: source.descriptor.version,
+        options: [],
+        unresolvedValues: [],
+        waitingForFieldKeys: [],
+      };
+    }
+
+    const values = validateRequestedValues(
       input.values,
       source.descriptor.maximumResultCount,
     );
-    const bindings = this.readBindingValues(
+    const bindings = readBindingValues(
       field,
       source.descriptor,
       input.formData,
     );
 
     if (bindings.missingParameters.length > 0) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.WAITING_FOR_DEPENDENCIES,
-      );
+      return {
+        dataSourceKey: source.descriptor.key,
+        dataSourceVersion: source.descriptor.version,
+        options: [],
+        unresolvedValues: [],
+        waitingForFieldKeys: readWaitingForFieldKeys(
+          field,
+          bindings.missingParameters,
+        ),
+      };
     }
 
-    const result = await this.callProvider(
+    const result = await this.callResolve(
       source,
-      'resolve',
-      (signal): Promise<readonly FormFieldOption[]> =>
-        source.resolve({
-          authContext: input.authContext,
-          bindings: bindings.values,
-          signal,
-          values,
-        }),
+      input.authContext,
+      bindings.values,
+      values,
     );
-    const options = this.validateResolveResult(
+    const options = readProviderResolvedOptions(
       result,
       values,
       source.descriptor.maximumResultCount,
     );
-    const optionByValue = new Map(
-      options.map((option): readonly [string, FormFieldOption] => [
-        option.value,
-        option,
-      ]),
-    );
 
-    return values.map((value) => optionByValue.get(value) as FormFieldOption);
+    return {
+      dataSourceKey: source.descriptor.key,
+      dataSourceVersion: source.descriptor.version,
+      options: readOrderedResolvedOptions(options, values),
+      unresolvedValues: readUnresolvedValues(options, values),
+      waitingForFieldKeys: [],
+    };
   }
 
+  private callResolve(
+    source: BPMFormDataSource,
+    authContext: BPMAuthContext,
+    bindings: Readonly<Record<string, FormFieldValue>>,
+    values: readonly string[],
+  ): Promise<readonly FormFieldOption[]> {
+    return callProvider({
+      call: (signal): Promise<readonly FormFieldOption[]> =>
+        source.resolve({ authContext, bindings, signal, values }),
+      logger: this.logger,
+      operation: 'resolve',
+      source,
+    });
+  }
+
+  /**
+   * Wraps the runtime context lookup so a failure from the storage layer never
+   * reaches the caller verbatim. An id that is not a UUID, for instance, comes
+   * back from Postgres as `invalid input syntax for type uuid: ...`, which
+   * hands out the database engine and column type; ADR §3.12 requires a stable
+   * code instead. Deliberate `HttpException`s — the not-found and forbidden
+   * answers this method is built to give — pass straight through.
+   */
   private async readRuntimeSchema(
-    input: BPMFormDataSourceRuntimeInput,
+    input: {
+      readonly instanceId?: string | null;
+      readonly templateId?: string | null;
+    },
+    authContext: BPMAuthContext,
+  ): Promise<RuntimeSchemaContext> {
+    try {
+      return await this.readRuntimeSchemaContext(input, authContext);
+    } catch (error: unknown) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      this.logger.warn(
+        JSON.stringify({
+          errorCode: BPM_FORM_DATA_SOURCE_ERROR_CODES.RUNTIME_CONTEXT_FORBIDDEN,
+          operation: 'runtimeContext',
+          status: 'error',
+        }),
+      );
+
+      throw new BPMFormDataSourceForbiddenException(
+        BPM_FORM_DATA_SOURCE_ERROR_CODES.RUNTIME_CONTEXT_FORBIDDEN,
+      );
+    }
+  }
+
+  private async readRuntimeSchemaContext(
+    input: {
+      readonly instanceId?: string | null;
+      readonly templateId?: string | null;
+    },
     authContext: BPMAuthContext,
   ): Promise<RuntimeSchemaContext> {
     const templateId = readOptionalText(input.templateId);
@@ -313,7 +448,9 @@ export class FormDataSourceService {
         );
       }
 
-      return this.readPublishedFormSchema(templateVersion.formDefinitionVersionId);
+      return this.readPublishedFormSchema(
+        templateVersion.formDefinitionVersionId,
+      );
     }
 
     const instance = await this.workflowEngineService.getApprovalInstance(
@@ -359,7 +496,10 @@ export class FormDataSourceService {
       );
     }
 
-    return this.parseSchema(JSON.stringify(version.schema), JSON.stringify(version.uiSchema));
+    return this.parseSchema(
+      JSON.stringify(version.schema),
+      JSON.stringify(version.uiSchema),
+    );
   }
 
   private parseSchema(
@@ -425,11 +565,29 @@ export class FormDataSourceService {
     );
   }
 
+  private parseValues(valuesJson: string): readonly string[] {
+    try {
+      const value = JSON.parse(valuesJson) as unknown;
+
+      if (isStringArray(value)) {
+        return value;
+      }
+    } catch {
+      // The stable error below deliberately hides parser details.
+    }
+
+    throw new BPMFormDataSourceException(
+      BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+    );
+  }
+
   private readOptionField(
     schema: FormDefinitionSchema,
     fieldKey: string,
   ): FormOptionFieldDefinition {
-    const field = schema.fields.find((candidate) => candidate.fieldKey === fieldKey);
+    const field = schema.fields.find(
+      (candidate) => candidate.fieldKey === fieldKey,
+    );
 
     if (!field || !isFormOptionField(field)) {
       throw new BPMFormDataSourceException(
@@ -438,82 +596,6 @@ export class FormDataSourceService {
     }
 
     return field;
-  }
-
-  private readDynamicOptionField(
-    field: FormOptionFieldDefinition,
-  ): FormDataSourceOptionFieldDefinition {
-    if (!isFormDataSourceFieldDefinition(field)) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.FIELD_NOT_DYNAMIC,
-      );
-    }
-
-    return field;
-  }
-
-  private readSourceOrThrow(
-    reference: FormDataSourceReference,
-  ): BPMFormDataSource {
-    const source = this.registry.get(reference.key, reference.version);
-
-    if (!source) {
-      throw new BPMFormDataSourceException(
-        this.readMissingSourceCode(reference.key),
-      );
-    }
-
-    const descriptorErrors = this.readDescriptorErrors(source.descriptor);
-
-    if (descriptorErrors.length > 0) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_DESCRIPTOR,
-      );
-    }
-
-    return source;
-  }
-
-  /**
-   * A key the host never registered and a key whose requested version was
-   * dropped are different operational problems, so they keep distinct codes:
-   * the first tells the designer the source is gone, the second that only this
-   * version is.
-   */
-  private readMissingSourceCode(
-    key: string,
-  ):
-    | typeof BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING
-    | typeof BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING {
-    const hasKey = this.registry
-      .list()
-      .some((candidate) => candidate.descriptor?.key === key);
-
-    return hasKey
-      ? BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_VERSION_MISSING
-      : BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING;
-  }
-
-  private assertControlSupported(
-    field: FormOptionFieldDefinition,
-    descriptor: BPMFormDataSourceDescriptor,
-  ): void {
-    const control = field.type;
-
-    if (!descriptor.supportedControls.includes(control)) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.UNSUPPORTED_CONTROL,
-      );
-    }
-
-    if (
-      (control === 'radio' || control === 'checkbox') &&
-      (!descriptor.returnsCompleteList || descriptor.maximumResultCount > 50)
-    ) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.UNSUPPORTED_CONTROL,
-      );
-    }
   }
 
   private assertSearchRequest(
@@ -544,96 +626,6 @@ export class FormDataSourceService {
     }
   }
 
-  private readBindingValues(
-    field: FormDataSourceOptionFieldDefinition,
-    descriptor: BPMFormDataSourceDescriptor,
-    formData: Readonly<Record<string, unknown>>,
-  ): ResolvedBindingValues {
-    const parameterByKey = new Map(
-      descriptor.parameters.map((parameter): readonly [string, BPMFormDataSourceParameter] => [
-        parameter.key,
-        parameter,
-      ]),
-    );
-    const bindingValues = field.dataSource.bindings.reduce<
-      Readonly<Record<string, FormFieldValue>>
-    >((values, binding) => {
-      const parameter = parameterByKey.get(binding.parameter);
-
-      if (!parameter) {
-        throw new BPMFormDataSourceException(
-          BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
-        );
-      }
-
-      const nextValue =
-        binding.from.kind === 'FIELD'
-          ? readFormDataValue(formData[binding.from.fieldKey])
-          : binding.from.value;
-
-      if (typeof nextValue === 'undefined') {
-        return values;
-      }
-
-      this.assertParameterValue(parameter, nextValue);
-
-      return { ...values, [parameter.key]: nextValue };
-    }, {});
-    const missingParameters = descriptor.parameters
-      .filter((parameter) => parameter.required)
-      .filter((parameter) => !isPresentFormDataValue(bindingValues[parameter.key]))
-      .map((parameter) => parameter.key);
-
-    if (JSON.stringify(bindingValues).length > MAX_PARAMETER_BYTES) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.PARAMETER_LIMIT_EXCEEDED,
-      );
-    }
-
-    return { missingParameters, values: bindingValues };
-  }
-
-  private assertParameterValue(
-    parameter: BPMFormDataSourceParameter,
-    value: FormFieldValue,
-  ): void {
-    const valid =
-      (parameter.type === 'BOOLEAN' && typeof value === 'boolean') ||
-      (parameter.type === 'NUMBER' && typeof value === 'number') ||
-      (parameter.type === 'STRING' && typeof value === 'string') ||
-      (parameter.type === 'STRING_ARRAY' && isStringArray(value)) ||
-      value === null;
-
-    if (!valid) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
-      );
-    }
-  }
-
-  private validateRequestedValues(
-    values: readonly string[],
-    maximumResultCount: number,
-  ): readonly string[] {
-    if (
-      values.length === 0 ||
-      values.some((value) => !value.trim()) ||
-      new Set(values).size !== values.length
-    ) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
-      );
-    }
-
-    if (values.length > maximumResultCount) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.RESULT_LIMIT_EXCEEDED,
-      );
-    }
-
-    return [...values];
-  }
-
   private validateSearchResult(
     result: BPMFormDataSourceSearchResult,
     descriptor: BPMFormDataSourceDescriptor,
@@ -653,61 +645,7 @@ export class FormDataSourceService {
       );
     }
 
-    return this.validateOptions(result.options);
-  }
-
-  private validateResolveResult(
-    result: readonly FormFieldOption[],
-    values: readonly string[],
-    maximumResultCount: number,
-  ): readonly FormFieldOption[] {
-    if (!Array.isArray(result) || result.length > maximumResultCount) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
-      );
-    }
-
-    const options = this.validateOptions(result);
-    const requestedValues = new Set(values);
-
-    // A value the caller never asked for is a provider contract breach.
-    if (options.some((option) => !requestedValues.has(option.value))) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
-      );
-    }
-
-    // Every requested value resolved to exactly one option, or the submitted
-    // value is simply no longer selectable — that is a user-facing failure.
-    if (options.length !== values.length) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
-      );
-    }
-
-    return options;
-  }
-
-  private validateOptions(value: unknown): readonly FormFieldOption[] {
-    if (!Array.isArray(value)) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
-      );
-    }
-
-    const options = value.filter(isFormFieldOption);
-
-    if (
-      options.length !== value.length ||
-      options.some((option) => !option.label.trim() || !option.value.trim()) ||
-      new Set(options.map((option) => option.value)).size !== options.length
-    ) {
-      throw new BPMFormDataSourceException(
-        BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_PROVIDER_RESULT,
-      );
-    }
-
-    return options;
+    return validateOptions(result.options);
   }
 
   private readNextCursor(
@@ -726,174 +664,6 @@ export class FormDataSourceService {
     }
 
     return nextCursor;
-  }
-
-  private async callProvider<TValue>(
-    source: BPMFormDataSource,
-    operation: 'resolve' | 'search',
-    call: (signal: AbortSignal) => Promise<TValue>,
-  ): Promise<TValue> {
-    const controller = new AbortController();
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const startedAt = Date.now();
-
-    try {
-      const result = await Promise.race([
-        call(controller.signal),
-        new Promise<TValue>((_resolve, reject) => {
-          timeoutId = setTimeout((): void => {
-            controller.abort();
-            const timeout = new Error('provider timeout') as TimeoutMarker;
-            Object.assign(timeout, { kind: 'FORM_DATA_SOURCE_TIMEOUT' });
-            reject(timeout);
-          }, PROVIDER_TIMEOUT_MS);
-        }),
-      ]);
-
-      this.logger.log(
-        JSON.stringify({
-          dataSourceKey: source.descriptor.key,
-          dataSourceVersion: source.descriptor.version,
-          durationMs: Date.now() - startedAt,
-          operation,
-          status: 'success',
-        }),
-      );
-
-      return result;
-    } catch (error: unknown) {
-      const code = isTimeoutMarker(error)
-        ? BPM_FORM_DATA_SOURCE_ERROR_CODES.TIMEOUT
-        : BPM_FORM_DATA_SOURCE_ERROR_CODES.PROVIDER_FAILURE;
-      this.logger.warn(
-        JSON.stringify({
-          dataSourceKey: source.descriptor.key,
-          dataSourceVersion: source.descriptor.version,
-          durationMs: Date.now() - startedAt,
-          errorCode: code,
-          operation,
-          status: 'error',
-        }),
-      );
-      throw new BPMFormDataSourceException(code);
-    } finally {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    }
-  }
-
-  private readDescriptorErrors(
-    descriptor: BPMFormDataSourceDescriptor,
-  ): readonly string[] {
-    const descriptorValue: Readonly<Record<string, unknown>> = isRecord(
-      descriptor,
-    )
-      ? descriptor
-      : {};
-    const parameters = Array.isArray(descriptorValue.parameters)
-      ? descriptorValue.parameters
-      : [];
-    const supportedControls = Array.isArray(descriptorValue.supportedControls)
-      ? descriptorValue.supportedControls
-      : [];
-    const version = descriptorValue.version;
-    const maximumResultCount = descriptorValue.maximumResultCount;
-    const pageSize = descriptorValue.pageSize;
-    const minimumSearchLength = descriptorValue.minimumSearchLength;
-    const errors = [
-      ...(typeof descriptorValue.key === 'string' && descriptorValue.key.trim()
-        ? []
-        : ['descriptor.key is required']),
-      ...(typeof descriptorValue.label === 'string' && descriptorValue.label.trim()
-        ? []
-        : ['descriptor.label is required']),
-      ...(isPositiveInteger(version)
-        ? []
-        : ['descriptor.version must be a positive integer']),
-      ...(isPositiveInteger(maximumResultCount)
-        ? []
-        : ['descriptor.maximumResultCount must be positive']),
-      ...(isPositiveInteger(pageSize)
-        ? []
-        : ['descriptor.pageSize must be positive']),
-      ...(isNonNegativeInteger(minimumSearchLength)
-        ? []
-        : ['descriptor.minimumSearchLength must be non-negative']),
-      ...(typeof pageSize === 'number' &&
-      typeof maximumResultCount === 'number' &&
-      pageSize <= maximumResultCount
-        ? []
-        : ['descriptor.pageSize cannot exceed descriptor.maximumResultCount']),
-      ...(descriptorValue.paginationMode === 'CURSOR' ||
-      descriptorValue.paginationMode === 'NONE'
-        ? []
-        : ['descriptor.paginationMode is invalid']),
-      ...(descriptorValue.revalidationPolicy === 'ALWAYS' ||
-      descriptorValue.revalidationPolicy === 'WHEN_VALUE_OR_BINDINGS_CHANGE'
-        ? []
-        : ['descriptor.revalidationPolicy is invalid']),
-      ...(Array.isArray(descriptorValue.parameters)
-        ? []
-        : ['descriptor.parameters must be an array']),
-      ...(typeof descriptorValue.returnsCompleteList === 'boolean'
-        ? []
-        : ['descriptor.returnsCompleteList must be boolean']),
-      ...(typeof descriptorValue.supportsSearch === 'boolean'
-        ? []
-        : ['descriptor.supportsSearch must be boolean']),
-      ...(Array.isArray(descriptorValue.supportedControls) &&
-      supportedControls.every((control) =>
-        SOURCE_CONTROLS.includes(control as BPMFormDataSourceControl),
-      )
-        ? []
-        : ['descriptor.supportedControls contains an invalid control']),
-      ...(new Set(supportedControls).size === supportedControls.length
-        ? []
-        : ['descriptor.supportedControls contains duplicates']),
-    ];
-    const parameterErrors = Array.isArray(descriptorValue.parameters)
-      ? parameters.flatMap((parameter, index) =>
-          this.readParameterErrors(parameter, index),
-        )
-      : [];
-    const parameterKeys = parameters.flatMap((parameter) =>
-      isRecord(parameter) && typeof parameter.key === 'string'
-        ? [parameter.key]
-        : [],
-    );
-    const duplicateParameterKeys = Array.isArray(descriptorValue.parameters)
-      ? [
-          ...new Set(
-            parameterKeys
-              .filter((key, index, keys) => keys.indexOf(key) !== index),
-          ),
-        ]
-      : [];
-    const duplicateParameterErrors = duplicateParameterKeys.map(
-      (key) => `descriptor.parameters.key is duplicated: ${key}`,
-    );
-
-    return [...errors, ...parameterErrors, ...duplicateParameterErrors];
-  }
-
-  private readParameterErrors(
-    parameter: unknown,
-    index: number,
-  ): readonly string[] {
-    const parameterValue = isRecord(parameter) ? parameter : {};
-
-    return [
-      ...(typeof parameterValue.key === 'string' && parameterValue.key.trim()
-        ? []
-        : [`descriptor.parameters[${index}].key is required`]),
-      ...(typeof parameterValue.required === 'boolean'
-        ? []
-        : [`descriptor.parameters[${index}].required must be boolean`]),
-      ...(PARAMETER_TYPES.includes(parameterValue.type as BPMFormDataSourceParameterType)
-        ? []
-        : [`descriptor.parameters[${index}].type is invalid`]),
-    ];
   }
 
   private readControlErrors(
@@ -920,11 +690,20 @@ export class FormDataSourceService {
     descriptor: BPMFormDataSourceDescriptor,
     path: string,
   ): readonly string[] {
-    const parameterKeys = new Set(descriptor.parameters.map((parameter) => parameter.key));
-    const bindingKeys = new Set(reference.bindings.map((binding) => binding.parameter));
+    const parameterKeys = new Set(
+      descriptor.parameters.map((parameter) => parameter.key),
+    );
+    const bindingKeys = new Set(
+      reference.bindings.map((binding) => binding.parameter),
+    );
     const missingRequired = descriptor.parameters
-      .filter((parameter) => parameter.required && !bindingKeys.has(parameter.key))
-      .map((parameter) => `${path}.bindings missing required parameter: ${parameter.key}`);
+      .filter(
+        (parameter) => parameter.required && !bindingKeys.has(parameter.key),
+      )
+      .map(
+        (parameter) =>
+          `${path}.bindings missing required parameter: ${parameter.key}`,
+      );
     const unknownParameters = reference.bindings
       .filter((binding) => !parameterKeys.has(binding.parameter))
       .map((binding) => `${path}.bindings unknown parameter: ${binding.parameter}`);
@@ -933,7 +712,9 @@ export class FormDataSourceService {
   }
 }
 
-function isFormOptionField(field: FormFieldDefinition): field is FormOptionFieldDefinition {
+function isFormOptionField(
+  field: FormFieldDefinition,
+): field is FormOptionFieldDefinition {
   return (
     field.type === 'select' ||
     field.type === 'autocomplete' ||
@@ -942,74 +723,10 @@ function isFormOptionField(field: FormFieldDefinition): field is FormOptionField
   );
 }
 
-function isFormFieldOption(value: unknown): value is FormFieldOption {
-  return (
-    isRecord(value) &&
-    typeof value.label === 'string' &&
-    typeof value.value === 'string'
-  );
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isStringArray(value: FormFieldValue): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function readFormDataValue(value: unknown): FormFieldValue | undefined {
-  if (
-    value === null ||
-    typeof value === 'boolean' ||
-    typeof value === 'number' ||
-    typeof value === 'string' ||
-    isStringArrayValue(value)
-  ) {
-    return value;
-  }
-
-  if (typeof value === 'undefined') {
-    return undefined;
-  }
-
-  throw new BPMFormDataSourceException(
-    BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
-  );
-}
-
-function isStringArrayValue(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isPresentFormDataValue(value: FormFieldValue | undefined): boolean {
-  if (typeof value === 'undefined' || value === null) {
-    return false;
-  }
-
-  if (typeof value === 'string') {
-    return value.trim().length > 0;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-
-  return true;
-}
-
 function readOptionalText(value: string | null | undefined): string | null {
   const text = value?.trim() ?? '';
 
   return text || null;
-}
-
-function isTimeoutMarker(value: unknown): value is TimeoutMarker {
-  return (
-    value instanceof Error &&
-    (value as Error & { readonly kind?: unknown }).kind ===
-      'FORM_DATA_SOURCE_TIMEOUT'
-  );
 }
 
 /**
@@ -1055,12 +772,4 @@ function isFormDataSourceErrorCode(
   return (
     Object.values(BPM_FORM_DATA_SOURCE_ERROR_CODES) as readonly string[]
   ).includes(value);
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }

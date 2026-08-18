@@ -11,6 +11,7 @@ import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { ApprovalInstanceStateEnum } from '../workflow-engine/workflow-engine.enums';
 import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
 import { FormDataSourceService } from './form-data-source.service';
+import { FormDataSourceValueResolverService } from './form-data-source-value-resolver.service';
 import {
   BPMFormDataSource,
   BPMFormDataSourceDescriptor,
@@ -68,7 +69,7 @@ describe('FormDataSourceService', () => {
     );
   });
 
-  it('waits for required dependencies before calling the provider', async (): Promise<void> => {
+  it('names the fields it is waiting for instead of failing the query', async (): Promise<void> => {
     const search = jest.fn(
       (): Promise<BPMFormDataSourceSearchResult> =>
         Promise.resolve({ options: [] }),
@@ -85,8 +86,138 @@ describe('FormDataSourceService', () => {
         },
         authContext,
       ),
+    ).resolves.toEqual({
+      dataSourceKey: 'demo.cost-centers',
+      dataSourceVersion: 1,
+      nextCursor: null,
+      options: [],
+      waitingForFieldKeys: ['plant'],
+    });
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('does not wait on a field bound to an optional parameter', async (): Promise<void> => {
+    // The renderer cannot tell required from optional, so a source with one
+    // required and one optional parameter is exactly the case that used to
+    // disable the control forever.
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [{ label: 'A', value: 'A' }] }),
+    );
+    const service = createService(
+      createSource(
+        { search },
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            { key: 'costType', required: false, type: 'STRING' },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema({ withOptionalBinding: true })),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        options: [{ label: 'A', value: 'A' }],
+        waitingForFieldKeys: [],
+      }),
+    );
+    expect(search).toHaveBeenCalled();
+  });
+
+  it('rejects a required parameter fed by an empty constant as a schema defect', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(createSource({ search }));
+    const schema = createSchema();
+    const constantSchema: FormDefinitionSchema = {
+      ...schema,
+      fields: schema.fields.map((field) =>
+        field.fieldKey === 'costCenter'
+          ? {
+              ...field,
+              dataSource: {
+                ...(field as FormDataSourceOptionFieldDefinition).dataSource,
+                bindings: [
+                  { from: { kind: 'CONSTANT', value: null }, parameter: 'plant' },
+                ],
+              },
+            }
+          : field,
+      ) as FormDefinitionSchema['fields'],
+    };
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(constantSchema),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
     ).rejects.toMatchObject({
-      code: 'FORM_DATA_SOURCE_WAITING_FOR_DEPENDENCIES',
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('rejects array form data instead of treating it as a binding source', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: '[1,2]',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+  });
+
+  it('rejects a non-finite binding value that JSON cannot round-trip', async (): Promise<void> => {
+    // `1e999` parses to Infinity, which `JSON.stringify` would hand the
+    // provider as `null` — a value the parameter never declared.
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(
+      createSource(
+        { search },
+        { parameters: [{ key: 'plant', required: true, type: 'NUMBER' }] },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: '{"plant":1e999}',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
     });
     expect(search).not.toHaveBeenCalled();
   });
@@ -126,10 +257,7 @@ describe('FormDataSourceService', () => {
         { label: 'A', value: 'A' },
       ]),
     );
-    const source = createSource({
-      resolve,
-    });
-    const service = createService(source);
+    const service = createValueResolver(createSource({ resolve }));
 
     const result = await service.resolveFormFieldOptions({
       authContext,
@@ -443,6 +571,289 @@ describe('FormDataSourceService', () => {
     });
   });
 
+  it('reports the values a provider could not account for instead of failing', async (): Promise<void> => {
+    const service = createService(
+      createSource({
+        resolve: jest.fn(() => Promise.resolve([{ label: 'A', value: 'A' }])),
+      }),
+    );
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify(['A', 'GONE']),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual({
+      dataSourceKey: 'demo.cost-centers',
+      dataSourceVersion: 1,
+      options: [{ label: 'A', value: 'A' }],
+      unresolvedValues: ['GONE'],
+      waitingForFieldKeys: [],
+    });
+  });
+
+  it('keeps submit-time resolution all-or-nothing while the query is lenient', async (): Promise<void> => {
+    // The same provider answer the read-only query reports as a partial result
+    // must still refuse to be written into an instance, so both modes are
+    // driven from one source here rather than trusted to stay in step.
+    const source = createSource({
+      resolve: jest.fn(() => Promise.resolve([{ label: 'A', value: 'A' }])),
+    });
+
+    await expect(
+      createValueResolver(source).resolveFormFieldOptions({
+        authContext,
+        field: createSchema().fields[1] as FormDataSourceOptionFieldDefinition,
+        formData: { plant: 'TPE' },
+        values: ['A', 'GONE'],
+      }),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_VALUE_NOT_RESOLVED',
+    });
+    await expect(
+      createService(source).previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify(['A', 'GONE']),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ unresolvedValues: ['GONE'] }),
+    );
+  });
+
+  it('reports only the required dependency when an optional one is also empty', async (): Promise<void> => {
+    // The shape the demo form uses: one required binding and one optional one,
+    // both pointing at empty fields. Naming the optional field too would keep
+    // the control disabled after the filler has done everything required.
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(
+      createSource(
+        { search },
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            { key: 'costType', required: false, type: 'STRING' },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({}),
+          schemaJson: JSON.stringify(createSchema({ withOptionalBinding: true })),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ options: [], waitingForFieldKeys: ['plant'] }),
+    );
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('does not call the provider to resolve an empty value list', async (): Promise<void> => {
+    const resolve = jest.fn(() => Promise.resolve([]));
+    const service = createService(createSource({ resolve }));
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: '[]',
+        },
+        authContext,
+      ),
+    ).resolves.toEqual({
+      dataSourceKey: 'demo.cost-centers',
+      dataSourceVersion: 1,
+      options: [],
+      unresolvedValues: [],
+      waitingForFieldKeys: [],
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('reports a waiting dependency from the resolve query without calling the provider', async (): Promise<void> => {
+    const resolve = jest.fn(() => Promise.resolve([]));
+    const service = createService(createSource({ resolve }));
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify(['A']),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual({
+      dataSourceKey: 'demo.cost-centers',
+      dataSourceVersion: 1,
+      options: [],
+      unresolvedValues: [],
+      waitingForFieldKeys: ['plant'],
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a provider that answers with an unrequested value', async (): Promise<void> => {
+    const service = createService(
+      createSource({
+        resolve: jest.fn(() =>
+          Promise.resolve([{ label: 'Other', value: 'OTHER' }]),
+        ),
+      }),
+    );
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify(['A']),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT',
+    });
+  });
+
+  it('rejects a duplicated requested value', async (): Promise<void> => {
+    const resolve = jest.fn(() => Promise.resolve([]));
+    const service = createService(createSource({ resolve }));
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify(['A', 'A']),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('rejects a values payload that is not a JSON string array', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    await expect(
+      service.previewResolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+          valuesJson: JSON.stringify([1, 2]),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+  });
+
+  it('resolves runtime values through the same launchable-template check', async (): Promise<void> => {
+    const resolve = jest.fn(() =>
+      Promise.resolve([{ label: 'Cost center A', value: 'A' }]),
+    );
+    const service = createService(createSource({ resolve }), {
+      approvalTemplateVersionRepository: {
+        findOne: jest.fn(() =>
+          Promise.resolve({
+            formDefinitionVersionId: 'form-version-1',
+            id: 'template-version-1',
+            status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          } as ApprovalTemplateVersionEntity),
+        ),
+      } as unknown as Repository<ApprovalTemplateVersionEntity>,
+      formDefinitionVersionRepository: {
+        findOne: jest.fn(() =>
+          Promise.resolve({
+            id: 'form-version-1',
+            schema: createSchema(),
+            status: FormDefinitionVersionStatusEnum.PUBLISHED,
+            uiSchema: { layout: [], schemaVersion: 1 },
+          } as unknown as FormDefinitionVersionEntity),
+        ),
+      } as unknown as Repository<FormDefinitionVersionEntity>,
+      workflowEngineService: {
+        listLaunchableApprovalTemplates: jest.fn(() =>
+          Promise.resolve([
+            { currentVersionId: 'template-version-1', id: 'template-1' },
+          ]),
+        ),
+      } as unknown as WorkflowEngineService,
+    });
+
+    await expect(
+      service.resolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          templateId: 'template-1',
+          valuesJson: JSON.stringify(['A']),
+        },
+        authContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        options: [{ label: 'Cost center A', value: 'A' }],
+        unresolvedValues: [],
+      }),
+    );
+  });
+
+  it('rejects a runtime resolve for a non-launchable template', async (): Promise<void> => {
+    const service = createService(createSource(), {
+      workflowEngineService: {
+        listLaunchableApprovalTemplates: jest.fn(() => Promise.resolve([])),
+      } as unknown as WorkflowEngineService,
+    });
+
+    await expect(
+      service.resolveFormFieldOptionValues(
+        {
+          fieldKey: 'costCenter',
+          templateId: 'not-launchable',
+          valuesJson: JSON.stringify(['A']),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
+    });
+  });
+
   it('allows only the initiator to query a returned instance', async (): Promise<void> => {
     const service = createService(createSource(), {
       workflowEngineService: {
@@ -492,6 +903,18 @@ function createService(
   );
 }
 
+/**
+ * The submit-time resolver is a different class from the query service, and the
+ * all-or-nothing rule lives there, so contrast tests build both from one source.
+ */
+function createValueResolver(
+  source: BPMFormDataSource,
+): FormDataSourceValueResolverService {
+  return new FormDataSourceValueResolverService(
+    new StaticBPMFormDataSourceRegistry([source]),
+  );
+}
+
 function createSource(
   overrides: Partial<BPMFormDataSource> = {},
   descriptorOverrides: Partial<BPMFormDataSourceDescriptor> = {},
@@ -526,7 +949,9 @@ function createSource(
   };
 }
 
-function createSchema(): FormDefinitionSchema {
+function createSchema({
+  withOptionalBinding = false,
+}: { readonly withOptionalBinding?: boolean } = {}): FormDefinitionSchema {
   return {
     fields: [
       {
@@ -535,6 +960,16 @@ function createSchema(): FormDefinitionSchema {
         required: true,
         type: 'text',
       },
+      ...(withOptionalBinding
+        ? [
+            {
+              fieldKey: 'costType',
+              label: 'Cost type',
+              required: false,
+              type: 'text' as const,
+            },
+          ]
+        : []),
       {
         dataSource: {
           bindings: [
@@ -542,6 +977,14 @@ function createSchema(): FormDefinitionSchema {
               from: { fieldKey: 'plant', kind: 'FIELD' },
               parameter: 'plant',
             },
+            ...(withOptionalBinding
+              ? [
+                  {
+                    from: { fieldKey: 'costType', kind: 'FIELD' as const },
+                    parameter: 'costType',
+                  },
+                ]
+              : []),
           ],
           key: 'demo.cost-centers',
           version: 1,

@@ -43,6 +43,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GraphQL DataSource input DTOs now carry explicit validation metadata so hosts
   using `ValidationPipe({ forbidUnknownValues: true })` can call preview/runtime
   option queries without bypassing input validation.
+- Added the read-only `resolveFormFieldOptions` (authenticated) and
+  `previewResolveFormFieldOptions` (designer-only) queries returning
+  `BPMFormDataSourceResolveResult`. They confirm already-selected values and
+  report the ones the source can no longer account for in `unresolvedValues`
+  instead of throwing, so a renderer can mark dead options individually. The
+  authoritative submit/resubmit resolve is unchanged and stays all-or-nothing.
+- Both option results now carry `waitingForFieldKeys`. When a required parameter
+  has no value the service returns that field-key list and makes no provider
+  call, rather than raising an error the caller cannot act on — the browser
+  never receives the descriptor, so it cannot tell a required parameter from an
+  optional one on its own.
+
+### Changed
+
+- Binding, descriptor, and provider-result validation moved into one internal
+  `form-data-source.validation.ts` shared by the query service and the
+  submit-time value resolver. The two former copies had drifted: a non-finite
+  number such as `1e999` passed a search and was only rejected at submit.
+- Submit-time provider calls are now bounded to 4 concurrent requests, so a form
+  with many dynamic fields does not turn a single submit into a burst against
+  the host's upstream systems.
+- Every browser-controlled DataSource GraphQL input field now carries a
+  `@MaxLength` bound and reports an over-long input with the stable
+  `FORM_DATA_SOURCE_INVALID_BINDING` code instead of a class-validator sentence
+  describing the limits.
+- A snapshot whose recorded `revalidationPolicy` is `ALWAYS` is no longer reused
+  when its source has left the registry; only non-`ALWAYS` snapshots (including
+  older ones written before the field existed) keep the previous reuse
+  behaviour.
 
 Releases are managed by [`nx release`](https://nx.dev/recipes/nx-release) with
 Conventional Commits — see `nx.json` for the release config.

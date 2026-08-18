@@ -15,6 +15,11 @@ export const API_FORM_DATA_SOURCE_OPTIONS_TABLE =
   'api_form_data_source_options';
 
 export interface ApiFormDataSourceOptionSeed {
+  /**
+   * Only the optional-parameter fixture uses this; the original three sources
+   * declare no `category` parameter, so their rows stay `null`.
+   */
+  readonly category: string | null;
   readonly dataSourceKey: string;
   readonly dataSourceVersion: number;
   readonly isActive: boolean;
@@ -24,10 +29,19 @@ export interface ApiFormDataSourceOptionSeed {
   readonly value: string;
 }
 
+const OPTIONAL_FILTER_CATEGORIES: readonly {
+  readonly key: string;
+  readonly label: string;
+}[] = [
+  { key: 'CAPEX', label: '資本支出中心' },
+  { key: 'OPEX', label: '營運費用中心' },
+];
+
 export const API_FORM_DATA_SOURCE_OPTION_SEEDS: readonly ApiFormDataSourceOptionSeed[] = [
   ...createCostCenterSeeds('demo.cost-centers', 1),
   ...createCostCenterSeeds('demo.cost-centers-complete', 1),
   ...createCostCenterSeeds('demo.cost-centers-always', 1),
+  ...createOptionalFilterSeeds('demo.cost-centers-optional-filter', 1),
 ];
 
 const PAGED_DESCRIPTOR: BPMFormDataSourceDescriptor = {
@@ -84,6 +98,31 @@ const ALWAYS_DESCRIPTOR: BPMFormDataSourceDescriptor = {
   version: 1,
 };
 
+/**
+ * The only fixture with an optional parameter. `category` is `required: false`,
+ * so a form may bind it to a field the requester never fills; the source then
+ * returns every cost center of the plant instead of refusing to answer.
+ */
+const OPTIONAL_FILTER_DESCRIPTOR: BPMFormDataSourceDescriptor = {
+  description:
+    '依 plant 篩選成本中心；category 為選填參數，未取得值時回傳該廠全部成本中心。',
+  key: 'demo.cost-centers-optional-filter',
+  label: 'Demo 成本中心（選填類別）',
+  maximumResultCount: 50,
+  minimumSearchLength: 0,
+  pageSize: 10,
+  paginationMode: 'CURSOR',
+  parameters: [
+    { key: 'plant', label: '廠別', required: true, type: 'STRING' },
+    { key: 'category', label: '費用類別', required: false, type: 'STRING' },
+  ],
+  revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+  returnsCompleteList: false,
+  supportedControls: ['autocomplete', 'select'],
+  supportsSearch: true,
+  version: 1,
+};
+
 interface ApiFormDataSourceOptionRow {
   readonly label: string;
   readonly sort_order: number;
@@ -103,6 +142,7 @@ export class ApiFormDataSourceRegistry
       createHostDataSource(dataSource, PAGED_DESCRIPTOR),
       createHostDataSource(dataSource, COMPLETE_LIST_DESCRIPTOR),
       createHostDataSource(dataSource, ALWAYS_DESCRIPTOR),
+      createHostDataSource(dataSource, OPTIONAL_FILTER_DESCRIPTOR),
     ];
   }
 
@@ -144,8 +184,15 @@ export async function ensureApiFormDataSourceOptionsTable(
       label text NOT NULL,
       is_active boolean NOT NULL DEFAULT true,
       sort_order integer NOT NULL DEFAULT 0,
+      category text,
       PRIMARY KEY (data_source_key, data_source_version, plant, value)
     )
+  `);
+  // `CREATE TABLE IF NOT EXISTS` leaves databases created before the optional
+  // parameter fixture without the column, so add it separately.
+  await queryRunner.query(`
+    ALTER TABLE ${API_FORM_DATA_SOURCE_OPTIONS_TABLE}
+      ADD COLUMN IF NOT EXISTS category text
   `);
   await queryRunner.query(`
     CREATE INDEX IF NOT EXISTS ${API_FORM_DATA_SOURCE_OPTIONS_TABLE}_lookup_idx
@@ -178,6 +225,7 @@ async function searchHostOptions(
 ): Promise<BPMFormDataSourceSearchResult> {
   assertRequestIsActive(request.signal);
   const plant = readPlantBinding(request.bindings);
+  const category = readCategoryBinding(request.bindings);
   const offset = readCursor(request.cursor);
   const searchPattern = request.searchText
     ? `%${escapeLikePattern(request.searchText)}%`
@@ -191,14 +239,16 @@ async function searchHostOptions(
         AND plant = $3
         AND is_active = true
         AND ($4::text IS NULL OR value ILIKE $4 ESCAPE '\\' OR label ILIKE $4 ESCAPE '\\')
+        AND ($5::text IS NULL OR category = $5)
       ORDER BY sort_order ASC, value ASC
-      LIMIT $5 OFFSET $6
+      LIMIT $6 OFFSET $7
     `,
     [
       descriptor.key,
       descriptor.version,
       plant,
       searchPattern,
+      category,
       descriptor.pageSize + 1,
       offset,
     ],
@@ -221,6 +271,7 @@ async function resolveHostOptions(
 ): Promise<readonly FormFieldOption[]> {
   assertRequestIsActive(request.signal);
   const plant = readPlantBinding(request.bindings);
+  const category = readCategoryBinding(request.bindings);
   const rows = await dataSource.query<ApiFormDataSourceOptionRow[]>(
     `
       SELECT value, label, sort_order
@@ -230,9 +281,10 @@ async function resolveHostOptions(
         AND plant = $3
         AND is_active = true
         AND value = ANY($4::text[])
+        AND ($5::text IS NULL OR category = $5)
       ORDER BY sort_order ASC, value ASC
     `,
-    [descriptor.key, descriptor.version, plant, [...request.values]],
+    [descriptor.key, descriptor.version, plant, [...request.values], category],
   );
   assertRequestIsActive(request.signal);
 
@@ -264,6 +316,7 @@ function createCostCenterSeeds(
       createSeed(dataSourceKey, dataSourceVersion, 'TW02', index + 1),
     ),
     {
+      category: null,
       dataSourceKey,
       dataSourceVersion,
       isActive: true,
@@ -273,6 +326,7 @@ function createCostCenterSeeds(
       value: 'CC-SHARED-001',
     },
     {
+      category: null,
       dataSourceKey,
       dataSourceVersion,
       isActive: false,
@@ -282,6 +336,7 @@ function createCostCenterSeeds(
       value: 'CC-DISABLED-001',
     },
     {
+      category: null,
       dataSourceKey,
       dataSourceVersion,
       isActive: false,
@@ -302,6 +357,7 @@ function createSeed(
   const paddedSequence = String(sequence).padStart(3, '0');
 
   return {
+    category: null,
     dataSourceKey,
     dataSourceVersion,
     isActive: true,
@@ -312,12 +368,67 @@ function createSeed(
   };
 }
 
+/**
+ * Values never repeat across plants, so switching the bound plant always makes
+ * a previously selected cost center unresolvable — the fixture the STALE to
+ * INVALID journey needs. Labels also stay distinct from the other three
+ * fixtures so a page rendering both is unambiguous to assert against.
+ */
+function createOptionalFilterSeeds(
+  dataSourceKey: string,
+  dataSourceVersion: number,
+): readonly ApiFormDataSourceOptionSeed[] {
+  return [
+    ...createOptionalFilterPlantSeeds(dataSourceKey, dataSourceVersion, 'TW01', 3),
+    ...createOptionalFilterPlantSeeds(dataSourceKey, dataSourceVersion, 'TW02', 2),
+  ];
+}
+
+function createOptionalFilterPlantSeeds(
+  dataSourceKey: string,
+  dataSourceVersion: number,
+  plant: string,
+  countPerCategory: number,
+): readonly ApiFormDataSourceOptionSeed[] {
+  return OPTIONAL_FILTER_CATEGORIES.flatMap((category, categoryIndex) =>
+    Array.from({ length: countPerCategory }, (_, index) => {
+      const sequence = index + 1;
+      const paddedSequence = String(sequence).padStart(3, '0');
+
+      return {
+        category: category.key,
+        dataSourceKey,
+        dataSourceVersion,
+        isActive: true,
+        label: `${plant} ${category.label} ${paddedSequence}`,
+        plant,
+        sortOrder: categoryIndex * 100 + sequence,
+        value: `CC-${category.key}-${plant}-${paddedSequence}`,
+      };
+    }),
+  );
+}
+
+
 function readPlantBinding(
   bindings: Readonly<Record<string, FormFieldValue>>,
 ): string | null {
   const plant = bindings.plant;
 
   return typeof plant === 'string' && plant.trim() ? plant : null;
+}
+
+/**
+ * Optional parameter: an absent or blank binding means "no category filter",
+ * never "refuse to answer". Sources without a `category` parameter never
+ * receive the binding, so their queries are unaffected.
+ */
+function readCategoryBinding(
+  bindings: Readonly<Record<string, FormFieldValue>>,
+): string | null {
+  const category = bindings.category;
+
+  return typeof category === 'string' && category.trim() ? category : null;
 }
 
 function readCursor(cursor: string | null): number {

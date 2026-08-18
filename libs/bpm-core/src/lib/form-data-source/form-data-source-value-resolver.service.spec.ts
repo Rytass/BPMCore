@@ -239,6 +239,180 @@ describe('FormDataSourceValueResolverService', () => {
     ).resolves.toEqual(previousSnapshots);
   });
 
+  it('records the source policy on every snapshot it writes', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: { costCenter: 'CC-001', plant: 'TPE' },
+      revalidateAll: true,
+      schema: createSchema(),
+    });
+
+    expect(snapshots.costCenter.revalidationPolicy).toBe(
+      'WHEN_VALUE_OR_BINDINGS_CHANGE',
+    );
+  });
+
+  it('refuses to carry an ALWAYS snapshot forward once its source is gone', async (): Promise<void> => {
+    // The descriptor is unreachable at this point, so the snapshot's own record
+    // of the policy is the only thing standing between a delisted source and a
+    // resubmit that skips the revalidation the host demanded.
+    const alwaysSource = createSource({
+      descriptor: { ...createDescriptor(), revalidationPolicy: 'ALWAYS' },
+    });
+    const formData = { costCenter: 'CC-001', plant: 'TPE' };
+    const previousSnapshots = await createService(
+      alwaysSource,
+    ).resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      revalidateAll: true,
+      schema: createSchema(),
+    });
+
+    await expect(
+      createService(null).resolveFormDataOptionSnapshots({
+        authContext,
+        formData,
+        previousFormData: formData,
+        previousSnapshots,
+        schema: createSchema(),
+      }),
+    ).rejects.toMatchObject({
+      code: BPM_FORM_DATA_SOURCE_ERROR_CODES.DATA_SOURCE_MISSING,
+    });
+  });
+
+  it('keeps reusing a snapshot written before the policy was recorded', async (): Promise<void> => {
+    // Instances persisted before the field existed must stay resubmittable.
+    const formData = { costCenter: 'CC-001', plant: 'TPE' };
+    const previousSnapshots = await createService(
+      createSource(),
+    ).resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      revalidateAll: true,
+      schema: createSchema(),
+    });
+    const legacySnapshots = {
+      costCenter: {
+        bindingHash: previousSnapshots.costCenter.bindingHash,
+        dataSourceKey: previousSnapshots.costCenter.dataSourceKey,
+        dataSourceVersion: previousSnapshots.costCenter.dataSourceVersion,
+        options: previousSnapshots.costCenter.options,
+        validatedAt: previousSnapshots.costCenter.validatedAt,
+      },
+    };
+
+    await expect(
+      createService(null).resolveFormDataOptionSnapshots({
+        authContext,
+        formData,
+        previousFormData: formData,
+        previousSnapshots: legacySnapshots,
+        schema: createSchema(),
+      }),
+    ).resolves.toEqual(legacySnapshots);
+  });
+
+  it('stamps the current policy onto a reused snapshot while the source is readable', async (): Promise<void> => {
+    const service = createService(createSource());
+    const formData = { costCenter: 'CC-001', plant: 'TPE' };
+    const previousSnapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      revalidateAll: true,
+      schema: createSchema(),
+    });
+    const legacySnapshots = {
+      costCenter: {
+        bindingHash: previousSnapshots.costCenter.bindingHash,
+        dataSourceKey: previousSnapshots.costCenter.dataSourceKey,
+        dataSourceVersion: previousSnapshots.costCenter.dataSourceVersion,
+        options: previousSnapshots.costCenter.options,
+        validatedAt: previousSnapshots.costCenter.validatedAt,
+      },
+    };
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      previousFormData: formData,
+      previousSnapshots: legacySnapshots,
+      schema: createSchema(),
+    });
+
+    expect(snapshots.costCenter.revalidationPolicy).toBe(
+      'WHEN_VALUE_OR_BINDINGS_CHANGE',
+    );
+  });
+
+  it('bounds how many providers a single submit calls at once', async (): Promise<void> => {
+    const pendingCalls: (() => void)[] = [];
+    const resolve = jest.fn(
+      (request: BPMFormDataSourceResolveRequest): Promise<readonly FormFieldOption[]> =>
+        new Promise<readonly FormFieldOption[]>((settle) => {
+          pendingCalls.push(() =>
+            settle([{ label: request.values[0], value: request.values[0] }]),
+          );
+        }),
+    );
+    const service = createService(createSource({ resolve }));
+    const pending = service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: createWideFormData(10),
+      revalidateAll: true,
+      schema: createWideSchema(10),
+    });
+
+    // Ten dynamic fields, but the eleventh call only opens once one of the
+    // first four has answered.
+    await flushMicrotasks();
+    expect(resolve).toHaveBeenCalledTimes(4);
+
+    await releaseAll(pendingCalls);
+    expect(resolve).toHaveBeenCalledTimes(8);
+
+    await releaseAll(pendingCalls);
+    expect(resolve).toHaveBeenCalledTimes(10);
+
+    await releaseAll(pendingCalls);
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({ costCenter9: expect.anything() }),
+    );
+  });
+
+  it('stops starting provider calls once one field has failed', async (): Promise<void> => {
+    const resolve = jest.fn(
+      (request: BPMFormDataSourceResolveRequest): Promise<readonly FormFieldOption[]> =>
+        request.values[0] === 'CC-0'
+          ? Promise.reject(new Error('upstream down'))
+          : new Promise<readonly FormFieldOption[]>((settle) => {
+              setImmediate(() =>
+                settle([
+                  { label: request.values[0], value: request.values[0] },
+                ]),
+              );
+            }),
+    );
+    const service = createService(createSource({ resolve }));
+
+    await expect(
+      service.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: createWideFormData(10),
+        revalidateAll: true,
+        schema: createWideSchema(10),
+      }),
+    ).rejects.toMatchObject({
+      code: BPM_FORM_DATA_SOURCE_ERROR_CODES.PROVIDER_FAILURE,
+    });
+    // The failure is seen before the already-running calls answer, so the
+    // fields behind them never reach their provider at all.
+    expect(resolve.mock.calls.length).toBeLessThan(10);
+  });
+
   it('does not create a snapshot for an empty dynamic value', async (): Promise<void> => {
     const resolve = jest.fn(() => Promise.resolve([]));
     const service = createService(createSource({ resolve }));
@@ -296,6 +470,49 @@ function createDescriptor(): BPMFormDataSourceDescriptor {
     supportedControls: ['select'],
     supportsSearch: false,
     version: 1,
+  };
+}
+
+/**
+ * Lets every already-queued microtask run before the assertion, so "how many
+ * provider calls are open right now" is a settled number rather than a race.
+ */
+function flushMicrotasks(): Promise<void> {
+  return new Promise<void>((settle) => {
+    setImmediate(settle);
+  });
+}
+
+async function releaseAll(pendingCalls: (() => void)[]): Promise<void> {
+  pendingCalls.splice(0, pendingCalls.length).forEach((release) => release());
+
+  await flushMicrotasks();
+}
+
+function createWideFormData(
+  fieldCount: number,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries([
+    ['plant', 'TPE'],
+    ...Array.from({ length: fieldCount }, (_item, index) => [
+      `costCenter${index}`,
+      `CC-${index}`,
+    ]),
+  ]);
+}
+
+function createWideSchema(fieldCount: number): FormDefinitionSchema {
+  const [plantField, dynamicField] = createSchema().fields;
+
+  return {
+    fields: [
+      plantField,
+      ...Array.from({ length: fieldCount }, (_item, index) => ({
+        ...dynamicField,
+        fieldKey: `costCenter${index}`,
+      })),
+    ] as FormDefinitionSchema['fields'],
+    schemaVersion: 1,
   };
 }
 

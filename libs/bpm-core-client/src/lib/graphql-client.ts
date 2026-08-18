@@ -11,6 +11,16 @@ interface GraphQlError {
   readonly message: string;
 }
 
+/**
+ * Per-request transport options.
+ *
+ * `signal` lets a caller supersede an in-flight operation — a newer search or
+ * resolve aborts the older one instead of letting it reach the host.
+ */
+export interface GraphQlRequestOptions {
+  readonly signal?: AbortSignal;
+}
+
 interface GraphQlResponse<TData> {
   readonly data?: TData;
   readonly errors?: readonly GraphQlError[];
@@ -34,6 +44,7 @@ interface GraphQlResponse<TData> {
  * @typeParam TData - Shape of the `data` field for the operation.
  * @param query - GraphQL operation document (query or mutation source).
  * @param variables - Variables passed to the GraphQL operation.
+ * @param options - Optional transport options, currently an `AbortSignal`.
  *
  * @example
  * ```ts
@@ -45,6 +56,7 @@ interface GraphQlResponse<TData> {
 export async function requestGraphQl<TData>(
   query: string,
   variables?: Readonly<Record<string, unknown>>,
+  options?: GraphQlRequestOptions,
 ): Promise<TData> {
   const fetchImpl = resolveBPMFetch();
   const response = await fetchImpl(readGraphQlEndpoint(), {
@@ -52,6 +64,7 @@ export async function requestGraphQl<TData>(
     credentials: 'include',
     headers: buildGraphQlHeaders(),
     method: 'POST',
+    ...(options?.signal ? { signal: options.signal } : {}),
   });
 
   if (!response.ok) {

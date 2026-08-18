@@ -1,7 +1,9 @@
 import {
   listFormDataSources,
   previewFormFieldOptions,
+  previewResolveFormFieldOptions,
   readFormFieldOptions,
+  resolveFormFieldOptions,
 } from './form-data-source-api';
 
 interface CapturedRequest {
@@ -11,6 +13,7 @@ interface CapturedRequest {
 
 function installFetchMock<TData>(payload: TData): {
   readonly capture: () => CapturedRequest;
+  readonly captureSignal: () => AbortSignal | null | undefined;
   readonly restore: () => void;
 } {
   const originalFetch = global.fetch;
@@ -34,6 +37,8 @@ function installFetchMock<TData>(payload: TData): {
       const init = fetchMock.mock.calls[0]?.[1];
       return JSON.parse(String(init?.body ?? '{}')) as CapturedRequest;
     },
+    captureSignal: (): AbortSignal | null | undefined =>
+      fetchMock.mock.calls[0]?.[1]?.signal,
     restore: (): void => {
       (global as { fetch: typeof fetch }).fetch = originalFetch;
     },
@@ -119,6 +124,96 @@ describe('@rytass/bpm-core-client/form DataSource API', () => {
       });
       expect(input).not.toHaveProperty('dataSourceKey');
       expect(input).not.toHaveProperty('dataSourceVersion');
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('reports the field keys the host is still waiting for', async (): Promise<void> => {
+    const harness = installFetchMock({
+      formFieldOptions: {
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        nextCursor: null,
+        options: [],
+        waitingForFieldKeys: ['plant'],
+      },
+    });
+
+    try {
+      const result = await readFormFieldOptions({
+        fieldKey: 'costCenter',
+        instanceId: 'returned-instance-1',
+      });
+
+      expect(harness.capture().query).toContain('waitingForFieldKeys');
+      expect(result.waitingForFieldKeys).toEqual(['plant']);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('resolves runtime values and passes the abort signal down', async (): Promise<void> => {
+    const harness = installFetchMock({
+      resolveFormFieldOptions: {
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [{ label: 'A', value: 'A' }],
+        unresolvedValues: ['B'],
+        waitingForFieldKeys: [],
+      },
+    });
+    const controller = new AbortController();
+
+    try {
+      const result = await resolveFormFieldOptions({
+        fieldKey: 'costCenter',
+        formData: { plant: 'TPE' },
+        instanceId: 'returned-instance-1',
+        signal: controller.signal,
+        values: ['A', 'B'],
+      });
+      const request = harness.capture();
+      const input = request.variables?.input as Readonly<Record<string, unknown>>;
+
+      expect(request.query).toContain('query ResolveFormFieldOptions');
+      expect(input.valuesJson).toBe(JSON.stringify(['A', 'B']));
+      expect(input.formDataJson).toBe(JSON.stringify({ plant: 'TPE' }));
+      expect(harness.captureSignal()).toBe(controller.signal);
+      expect(result.unresolvedValues).toEqual(['B']);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('resolves preview values from the draft schema', async (): Promise<void> => {
+    const harness = installFetchMock({
+      previewResolveFormFieldOptions: {
+        dataSourceKey: 'demo.cost-centers',
+        dataSourceVersion: 1,
+        options: [],
+        unresolvedValues: [],
+        waitingForFieldKeys: ['plant'],
+      },
+    });
+
+    try {
+      const result = await previewResolveFormFieldOptions({
+        fieldKey: 'costCenter',
+        schema: { fields: [], schemaVersion: 1 },
+        uiSchema: { layout: [], schemaVersion: 1 },
+        values: ['A'],
+      });
+      const request = harness.capture();
+      const input = request.variables?.input as Readonly<Record<string, unknown>>;
+
+      expect(request.query).toContain('query PreviewResolveFormFieldOptions');
+      expect(input.schemaJson).toBe(
+        JSON.stringify({ fields: [], schemaVersion: 1 }),
+      );
+      expect(input.valuesJson).toBe(JSON.stringify(['A']));
+      expect(input).not.toHaveProperty('dataSourceKey');
+      expect(result.waitingForFieldKeys).toEqual(['plant']);
     } finally {
       harness.restore();
     }

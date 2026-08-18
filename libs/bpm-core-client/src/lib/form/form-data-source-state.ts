@@ -45,6 +45,16 @@ export function mergeFormDataSourceOptions(
   });
 }
 
+/**
+ * Reads the selected option values carried by a field value, dropping blanks.
+ * Single fields yield at most one value, multiple fields yield the whole list.
+ */
+export function readFormDataSourceSelectedValues(
+  value: FormFieldValue | undefined,
+): readonly string[] {
+  return readSelectedValues(value);
+}
+
 export function readSelectedFormDataSourceOptions(
   value: FormFieldValue | undefined,
   options: readonly FormFieldOption[],
@@ -65,6 +75,14 @@ export function readMissingFormDataSourceOptionValues(
   return selectedValues.filter((selectedValue) => !optionValues.has(selectedValue));
 }
 
+/**
+ * Lists the FIELD-bound source fields that currently hold no value.
+ *
+ * Advisory only: the browser never receives the DataSource descriptor, so it
+ * cannot tell a required parameter from an optional one. Runtime callers must
+ * take `waitingForFieldKeys` from the server result instead of blocking a
+ * control on this list — an optional binding left empty is not a blocker.
+ */
 export function readMissingFormDataSourceDependencies(
   field: FormDataSourceOptionFieldDefinition,
   values: FormRendererValues,
