@@ -57,9 +57,15 @@ export function resolveBPMAttachmentOptions(
     normalizeText(options.attachmentSignedUrlSecret) ??
     DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
 
+  // Warn everywhere except an explicit local development run. Gating this on
+  // `NODE_ENV === 'production'` meant a staging host that never set the variable
+  // signed attachment URLs with a constant published in this package — and said
+  // nothing about it. One extra line in a developer's console is the cheaper
+  // trade.
   if (
     resolvedSignedUrlSecret === DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret &&
-    process.env.NODE_ENV === 'production'
+    process.env.NODE_ENV !== 'development' &&
+    process.env.NODE_ENV !== 'test'
   ) {
     // eslint-disable-next-line no-console
     console.warn(

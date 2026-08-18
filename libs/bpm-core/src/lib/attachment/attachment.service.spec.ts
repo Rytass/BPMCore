@@ -108,6 +108,45 @@ describe('AttachmentService', () => {
     expect(url.searchParams.get('disposition')).toBe('inline');
   });
 
+  // A missing `?token=` used to reach `token.split('.')` and throw a raw
+  // TypeError, which the global filter reported as a 500 carrying the
+  // implementation detail. It now answers exactly like a wrong token: telling
+  // them apart would reveal whether the attachment exists.
+  it.each([
+    ['missing', undefined as unknown as string],
+    ['empty', ''],
+    ['unsigned', 'no-dot-separator'],
+    ['wrongly signed', 'body.badsignature'],
+  ])('rejects a %s download token without leaking internals', async (
+    _label,
+    token,
+  ): Promise<void> => {
+    const attachments: AttachmentEntity[] = [];
+    const service = new AttachmentService(
+      createAttachmentRepository(attachments),
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
+      createStorage(),
+      {
+        publicBaseUrl: 'https://bpm.example.com',
+        routePrefix: '/attachments',
+        signedUrlSecret: 'attachment-secret',
+        signedUrlTtlSeconds: 60,
+        storageProviderId: 'local',
+      },
+    );
+
+    await expect(
+      service.readSignedAttachment({
+        disposition: 'inline',
+        id: '11111111-1111-4111-8111-111111111111',
+        token,
+      }),
+    ).rejects.toThrow('Attachment token is invalid');
+  });
+
   it('records custom storage provider metadata and uses configured signed URL route prefix', async (): Promise<void> => {
     const attachments: AttachmentEntity[] = [];
     const service = new AttachmentService(

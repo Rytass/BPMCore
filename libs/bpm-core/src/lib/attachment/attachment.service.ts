@@ -441,6 +441,14 @@ function verifyAttachmentToken(
   token: string,
   signedUrlSecret: string,
 ): AttachmentTokenPayload {
+  // A missing `?token=` is the same failure as a wrong one — answering it
+  // differently would say whether the attachment exists. Without this guard the
+  // `split` below throws a raw TypeError, which the global filter reports as a
+  // 500 carrying the implementation detail.
+  if (typeof token !== 'string' || !token) {
+    throw new NotFoundException('Attachment token is invalid');
+  }
+
   const [body, signature] = token.split('.');
   const expectedSignature = createHmac('sha256', signedUrlSecret)
     .update(body ?? '')
