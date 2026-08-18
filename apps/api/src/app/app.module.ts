@@ -1,5 +1,7 @@
-import { Module } from '@nestjs/common';
+import { HttpException, Module } from '@nestjs/common';
 import { GraphQLModule } from '@nestjs/graphql';
+import { unwrapResolverError } from '@apollo/server/errors';
+import type { GraphQLFormattedError } from 'graphql';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
@@ -42,6 +44,24 @@ import { ApiFormDataSourceRegistry } from './api-form-data-source';
           req,
         }),
         driver: ApolloDriver,
+        // Apollo passes an unhandled error's own message straight through, so a
+        // driver-level failure answers with something like
+        // `invalid input syntax for type uuid: "..."` — naming the database and
+        // the column type. Deliberate errors keep their message; only the
+        // internal ones are replaced, and `code`/`path` survive either way so
+        // clients can still branch on them.
+        formatError: (
+          formattedError: GraphQLFormattedError,
+          error: unknown,
+        ): GraphQLFormattedError =>
+          formattedError.extensions?.code === 'INTERNAL_SERVER_ERROR' &&
+          !(unwrapResolverError(error) instanceof HttpException)
+            ? { ...formattedError, message: 'Internal server error' }
+            : formattedError,
+        // Stack traces carry absolute repository paths and dependency versions.
+        // Apollo only hides them when NODE_ENV is exactly 'production', so a
+        // staging host left on any other value would ship them to the browser.
+        includeStacktraceInErrorResponses: false,
         introspection: process.env.NODE_ENV !== 'production',
         path: '/graphql',
         playground: false,
