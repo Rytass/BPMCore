@@ -74,7 +74,7 @@
     "jest-util": "^30.0.2",
     "jsonc-eslint-parser": "^2.1.0",
     "lint-staged": "^16.4.0",
-    "nx": "22.7.8",
+    "nx": "23.1.1",
     "prettier": "^3.8.3",
     "publint": "^0.3.21",
     "rollup-preserve-directives": "^1.1.3",
