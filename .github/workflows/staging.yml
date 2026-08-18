@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: tagging
-        uses: anothrNick/github-tag-action@1.69.0
+        uses: anothrNick/github-tag-action@1.75.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BUMP: patch
