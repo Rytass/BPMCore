@@ -6,6 +6,20 @@ Last verified against (2026-08-13, issues #7–#11): `libs/shared@0.7.0`, `libs/
 
 PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
 
+Argus integration follow-ups (2026-08-18, against `@0.9.1`) additionally add:
+`BPM_TEMPLATE_OBSERVER` / `BPMTemplateObserver` / `BPMTemplateChangedEvent` /
+`BPMTemplateChangeActionEnum` to `@rytass/bpm-core-nestjs-module/template`; the
+`notification-schedule` helpers and `NotificationEntity.silenced` to
+`@rytass/bpm-core-nestjs-module/notification`; the optional `dispatchDigest`
+method on `BPMNotificationDispatcher`; the
+`notificationQuietHoursTimeZone` / `notificationEmailDigestHour` root options;
+migration `NotificationSilenced0000000021000`; a trailing
+`rolledBackByMemberId` on `TemplateService.rollbackApprovalTemplateVersion`;
+and `silenced` on the client's `NotificationRecord`. Behavioural changes in the
+same set: in-app notifications are recorded even when silenced, quiet hours and
+`emailDigestMode` are enforced, and publish / rollback refuse a deactivated
+template.
+
 ---
 
 ## Maintenance Contract
@@ -776,6 +790,21 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`). Options now extend `Pick<ModuleMetadata, 'imports'>`, and `BPMRootModule` threads its own `imports` through, so a `useClass` / `useFactory` `businessCalendarProvider` can depend on host repositories or config services without a host-side `@Global()` module |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
+
+**The calendar provider must not depend on BPM.** Because `BPMRootModule`
+forwards its `imports` into `CalendarModule`, it is easy for a
+`businessCalendarProvider` to reach a host service that itself depends on
+`TemplateService` or another BPM provider. Nest cannot resolve the resulting
+cycle **and does not report one**: the application simply never finishes
+bootstrapping. There is no exception, nothing for `bootstrap().catch()` to
+catch, no stack trace, and the process exits with code `0`; the last log line
+is usually an unrelated `pg` deprecation warning. Confirming it means attaching
+`async_hooks` and dumping promises still pending at `beforeExit`, where the
+stacks point at `@nestjs/core/helpers/barrier.js`.
+
+Keep the calendar's dependency chain to host-owned services that never reach
+back into BPM. A calendar that needs BPM data should read it from its own
+narrow, read-only service rather than from a BPM provider.
 
 ## `@rytass/bpm-core-nestjs-module/notification`
 

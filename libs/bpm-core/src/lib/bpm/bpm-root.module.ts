@@ -73,6 +73,12 @@ export interface BPMRootModuleOptions
    * Monday–Friday calendar (see `notificationSlaBusinessCalendarTimeZone`);
    * hosts that need national holidays or make-up working days register their
    * own `BPM_BUSINESS_CALENDAR` provider here.
+   *
+   * The modules listed in `imports` are also given to BPM's `CalendarModule`
+   * so this provider can reach host services. A provider whose dependency
+   * chain reaches **back into BPM** therefore produces a DI cycle that Nest
+   * never reports — see `CalendarModuleOptions.businessCalendarProvider` for
+   * what that failure looks like.
    */
   readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
 
@@ -148,6 +154,11 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    *
    * This provider is static at module wiring time. If secrets or a repository
    * are required, use a Nest provider with `useFactory` / `inject` here.
+   *
+   * Its dependency chain must not reach back into BPM: the modules listed in
+   * `imports` are forwarded to BPM's `CalendarModule`, and a cycle there stops
+   * the application booting with no exception and exit code `0`. See
+   * `CalendarModuleOptions.businessCalendarProvider`.
    */
   readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
 
