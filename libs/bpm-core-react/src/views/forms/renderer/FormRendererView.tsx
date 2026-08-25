@@ -338,11 +338,18 @@ function FormRendererField({
       >
         {isTableFieldDefinition(field) ? (
           <FormTableField
+            dataSourceContext={dataSourceContext}
+            dataSourceInitialValues={dataSourceInitialValues}
             errors={errors}
             field={field}
             onChange={onChange}
+            onDataSourceStateChange={onDataSourceStateChange}
+            optionSnapshots={optionSnapshots}
             readonly={fieldReadonly}
+            schema={schema}
+            uiSchema={uiSchema}
             value={value}
+            values={values}
           />
         ) : (
           renderControl(
@@ -432,20 +439,40 @@ type FormTableRowRecord = Readonly<
  * key come from an ephemeral id minted here and never written to the value.
  */
 function FormTableField({
+  dataSourceContext,
+  dataSourceInitialValues,
   errors,
   field,
   onChange,
+  onDataSourceStateChange,
+  optionSnapshots,
   readonly,
+  schema,
+  uiSchema,
   value,
+  values,
 }: {
+  readonly dataSourceContext?: FormRendererDataSourceContext;
+  readonly dataSourceInitialValues?: FormRendererValues;
   readonly errors: Readonly<Record<string, string>>;
   readonly field: TableFieldDefinition;
   readonly onChange: (
     fieldKey: string,
     value: FormFieldValue | undefined,
   ) => void;
+  readonly onDataSourceStateChange?: (
+    fieldKey: string,
+    state: Pick<
+      FormDataSourceFieldState,
+      'hasValue' | 'invalidValues' | 'status'
+    >,
+  ) => void;
+  readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly: boolean;
+  readonly schema: FormDefinitionSchema;
+  readonly uiSchema: FormUiSchema;
   readonly value: FormFieldValue | undefined;
+  readonly values: FormRendererValues;
 }): ReactElement {
   const rows = readFormTableRows(value);
   const bounds = readFormTableRowBounds(field);
@@ -504,21 +531,36 @@ function FormTableField({
       render: (row): ReactElement => (
         <FormTableCell
           column={column}
+          dataSourceContext={dataSourceContext}
           error={
             errors[
               readFormTableCellPath(field.fieldKey, row.index, column.fieldKey)
             ] ?? null
           }
+          fieldPath={`${field.fieldKey}.${column.fieldKey}`}
+          formData={values}
+          initialFormData={dataSourceInitialValues}
+          initialRowValues={readInitialTableRow(
+            dataSourceInitialValues?.[field.fieldKey],
+            row.index,
+          )}
+          // Keyed by the ephemeral row id, so a cell's DataSource state follows
+          // its row rather than its position (ADR 16 §3.9).
+          key={`${rowIds[row.index] ?? row.index}-${column.fieldKey}`}
           onChange={(cellValue): void =>
             handleCellChange(row.index, column.fieldKey, cellValue)
           }
+          onDataSourceStateChange={onDataSourceStateChange}
+          optionSnapshots={optionSnapshots}
           path={readFormTableCellPath(
             field.fieldKey,
             row.index,
             column.fieldKey,
           )}
           readonly={readonly}
-          value={readTableCellValue(rows[row.index], column.fieldKey)}
+          rowValues={rows[row.index] ?? {}}
+          schema={schema}
+          uiSchema={uiSchema}
         />
       ),
       title: column.label || column.fieldKey,
@@ -578,35 +620,146 @@ function FormTableField({
 
 function FormTableCell({
   column,
+  dataSourceContext,
   error,
+  fieldPath,
+  formData,
+  initialFormData,
+  initialRowValues,
   onChange,
+  onDataSourceStateChange,
+  optionSnapshots,
   path,
   readonly,
-  value,
+  rowValues,
+  schema,
+  uiSchema,
 }: {
   readonly column: TableColumnDefinition;
+  readonly dataSourceContext?: FormRendererDataSourceContext;
   readonly error: string | null;
+  readonly fieldPath: string;
+  readonly formData: FormRendererValues;
+  readonly initialFormData?: FormRendererValues;
+  readonly initialRowValues?: FormTableRowValue;
   readonly onChange: (value: FormFieldValue | undefined) => void;
+  readonly onDataSourceStateChange?: (
+    fieldKey: string,
+    state: Pick<
+      FormDataSourceFieldState,
+      'hasValue' | 'invalidValues' | 'status'
+    >,
+  ) => void;
+  readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly path: string;
   readonly readonly: boolean;
-  readonly value: FormFieldValue | undefined;
+  readonly rowValues: FormTableRowValue;
+  readonly schema: FormDefinitionSchema;
+  readonly uiSchema: FormUiSchema;
 }): ReactElement {
+  const value = readTableCellValue(rowValues, column.fieldKey);
+  const dataSourceState = useFormDataSourceField({
+    context: dataSourceContext,
+    field: column,
+    fieldPath,
+    formData,
+    initialFormData,
+    initialValue: initialRowValues
+      ? readTableCellValue(initialRowValues, column.fieldKey)
+      : undefined,
+    optionSnapshots,
+    readonly,
+    row: {
+      initialValues: initialRowValues,
+      values: rowValues,
+    },
+    schema,
+    snapshotKey: path,
+    uiSchema,
+  });
+  const statusMessage = readFormDataSourceFieldStatusMessage(dataSourceState);
+  const stateSignature = JSON.stringify({
+    hasValue: dataSourceState.hasValue,
+    invalidValues: dataSourceState.invalidValues,
+    status: dataSourceState.status,
+  });
+
+  useEffect((): (() => void) | void => {
+    if (!isFormDataSourceFieldDefinition(column)) {
+      return;
+    }
+
+    onDataSourceStateChange?.(path, {
+      hasValue: dataSourceState.hasValue,
+      invalidValues: dataSourceState.invalidValues,
+      status: dataSourceState.status,
+    });
+
+    // A deleted row must stop blocking the submit it can no longer be fixed in.
+    return (): void => {
+      onDataSourceStateChange?.(path, {
+        hasValue: false,
+        invalidValues: [],
+        status: 'IDLE',
+      });
+    };
+  }, [onDataSourceStateChange, path, stateSignature]);
+
   return (
     <div data-form-field-key={path} style={TABLE_CELL_STYLE}>
-      {renderStaticControl(
+      {renderControl(
         column,
         value,
         readonly,
         (_columnKey, nextValue): void => onChange(nextValue),
         undefined,
+        dataSourceContext,
+        dataSourceState,
       )}
       {error ? (
         <Typography color="text-error" variant="caption">
           {error}
         </Typography>
       ) : null}
+      {statusMessage ? (
+        <div style={DATA_SOURCE_FEEDBACK_STYLE}>
+          <Typography
+            color={
+              dataSourceState.status === 'INVALID' ||
+              dataSourceState.status === 'UNAVAILABLE'
+                ? 'text-error'
+                : 'text-neutral'
+            }
+            variant="caption"
+          >
+            {statusMessage}
+          </Typography>
+          {dataSourceState.status === 'UNAVAILABLE' &&
+          dataSourceState.canRetry ? (
+            <Button
+              onClick={dataSourceState.retry}
+              size="sub"
+              type="button"
+              variant="base-ghost"
+            >
+              重試
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * The row as it was loaded, used to tell a returned case's stored values from
+ * edits. Absent when the table itself is new.
+ */
+function readInitialTableRow(
+  value: FormFieldValue | undefined,
+  rowIndex: number,
+): FormTableRowValue | undefined {
+  return readFormTableRows(value)[rowIndex];
 }
 
 function createRowId(sequenceRef: { current: number }): string {

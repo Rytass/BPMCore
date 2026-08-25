@@ -546,10 +546,7 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
-  // Until cell-level DataSource lands, a column bound to one would render as a
-  // plain text box and pass the publish lint, because the environment lint does
-  // not descend into columns. The picker is a top-level affordance only.
-  it('offers no DataSource picker for a table column', async (): Promise<void> => {
+  it('offers a DataSource picker for a table column', async (): Promise<void> => {
     listDataSourcesMock.mockResolvedValue([createDescriptor()]);
     const harness = await mountBuilder(
       createSchema([createTableFieldWithSelectColumn()]),
@@ -560,13 +557,96 @@ describe('FormBuilderView field settings', () => {
 
       expect(
         harness.container.querySelector(
-          '[data-mock-form-field="fieldOptionSource"]',
+          '[data-mock-form-field="fieldOptionSource"] [data-mock-select-option="demo.cost-centers@1"]',
         ),
-      ).toBeNull();
-      // The static option table is still there, so the column stays editable.
-      expect(
-        harness.container.querySelector('[data-mock-form-field="fieldOptions"]'),
       ).not.toBeNull();
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // ADR 16 §3.4: a column's parameter may read a sibling cell of its own row,
+  // which no top-level field can offer.
+  it('offers the sibling columns of the row as a binding source', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithDynamicColumn()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 1);
+
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="dataSourceParameter_plant"] [data-mock-select-option="__ROW_FIELD__:plant"]',
+        ),
+      ).not.toBeNull();
+      expect(harness.container.textContent).toContain(
+        '使用同一列「plant」欄的目前值。',
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('binds a column parameter to a sibling column', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithUnboundDynamicColumn()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 1);
+      selectOption(
+        harness.container,
+        'dataSourceParameter_plant',
+        '__ROW_FIELD__:plant',
+      );
+
+      expect(readColumns(harness.readSchema())[1]).toMatchObject({
+        dataSource: {
+          bindings: [
+            {
+              from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+              parameter: 'plant',
+            },
+          ],
+        },
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('does not offer a row binding for a top-level field', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'plant', label: '工廠', required: false, type: 'text' },
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+
+      const options = [
+        ...harness.container.querySelectorAll(
+          '[data-mock-form-field="dataSourceParameter_plant"] [data-mock-select-option]',
+        ),
+      ].map((option) => option.getAttribute('data-mock-select-option'));
+
+      expect(options).toContain('plant');
+      expect(
+        options.some((option) => option?.startsWith('__ROW_FIELD__')),
+      ).toBe(false);
     } finally {
       await unmount(harness);
     }
@@ -728,7 +808,7 @@ function createDescriptor(): Parameters<
     minimumSearchLength: 0,
     pageSize: 20,
     paginationMode: 'NONE',
-    parameters: [],
+    parameters: [{ key: 'plant', required: true, type: 'STRING' }],
     revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
     returnsCompleteList: true,
     supportedControls: ['autocomplete', 'checkbox', 'radio', 'select'],
@@ -746,6 +826,55 @@ function createTableFieldWithSelectColumn(): unknown {
         label: '成本中心',
         mode: 'single',
         options: [{ label: '選項 A', value: 'option_a' }],
+        required: false,
+        type: 'select',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+}
+
+function createTableFieldWithDynamicColumn(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'plant', label: '工廠', required: true, type: 'text' },
+      {
+        dataSource: {
+          bindings: [
+            {
+              from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+              parameter: 'plant',
+            },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
+        fieldKey: 'costCenter',
+        label: '成本中心',
+        mode: 'single',
+        required: false,
+        type: 'select',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+}
+
+function createTableFieldWithUnboundDynamicColumn(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'plant', label: '工廠', required: true, type: 'text' },
+      {
+        dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+        fieldKey: 'costCenter',
+        label: '成本中心',
+        mode: 'single',
         required: false,
         type: 'select',
       },
@@ -940,6 +1069,20 @@ function selectOption(
 
   act((): void => {
     option.click();
+  });
+}
+
+function selectField(container: HTMLElement, fieldKey: string): void {
+  const block = container.querySelector(
+    `[data-form-builder-field-key="${fieldKey}"] [aria-label="選取或拖曳排序欄位"]`,
+  ) as HTMLElement | null;
+
+  if (!block) {
+    throw new Error(`Field block ${fieldKey} was not rendered.`);
+  }
+
+  act((): void => {
+    block.click();
   });
 }
 

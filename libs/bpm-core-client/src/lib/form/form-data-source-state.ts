@@ -86,15 +86,26 @@ export function readMissingFormDataSourceOptionValues(
 export function readMissingFormDataSourceDependencies(
   field: FormDataSourceOptionFieldDefinition,
   values: FormRendererValues,
+  rowValues?: FormRendererValues,
 ): readonly string[] {
   return field.dataSource.bindings.flatMap((binding) => {
-    if (binding.from.kind !== 'FIELD') {
-      return [];
+    if (binding.from.kind === 'FIELD') {
+      return isPresentFormDataSourceValue(values[binding.from.fieldKey])
+        ? []
+        : [binding.from.fieldKey];
     }
 
-    return isPresentFormDataSourceValue(values[binding.from.fieldKey])
-      ? []
-      : [binding.from.fieldKey];
+    // A `ROW_FIELD` binding reads the sibling cell of its own row. Without row
+    // values there is nothing to read, so it counts as missing — the same
+    // optimistic guess the top-level case makes, corrected by the host's
+    // `waitingForFieldKeys` on the first answer (ADR 16 §3.5).
+    if (binding.from.kind === 'ROW_FIELD') {
+      return isPresentFormDataSourceValue(rowValues?.[binding.from.columnKey])
+        ? []
+        : [binding.from.columnKey];
+    }
+
+    return [];
   });
 }
 

@@ -437,7 +437,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readSelectedFormDataSourceOptions()` | function | Hydrate only selected options with authoritative labels |
 | `readFormDataSourceSelectedValues()` | function | Read the selected option values carried by a field value, dropping blanks |
 | `readMissingFormDataSourceOptionValues()` | function | Find selected values without an authoritative option |
-| `readMissingFormDataSourceDependencies()` | function | Find FIELD bindings that are not yet present — advisory only; runtime callers must take `waitingForFieldKeys` from the server result |
+| `readMissingFormDataSourceDependencies()` | function | Find FIELD (and, with row values, ROW_FIELD) bindings that are not yet present — advisory only; runtime callers must take `waitingForFieldKeys` from the server result |
 | `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
 
 ### Form DataSource error helpers
@@ -455,7 +455,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Name | Kind | Purpose |
 |---|---|---|
 | `FormDataSourceBindingFieldOption` | interface | Type-compatible form-field choice for a parameter binding |
-| `FormDataSourceBindingValueKind` | type | Constant or field binding discriminator |
+| `FormDataSourceBindingValueKind` | type | `'CONSTANT' \| 'FIELD' \| 'ROW_FIELD'` binding discriminator |
 | `isFormDataSourceDescriptorCompatible()` | function | Enforce descriptor capability requirements for a control |
 | `readCompatibleFormDataSourceDescriptors()` | function | Filter catalog descriptors for a control |
 | `readFormDataSourceParameterType()` | function | Map a form field to a DataSource parameter type |
@@ -466,7 +466,8 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `renameFormTableColumnBindings()` | function | Keep a table's ROW_FIELD bindings valid when a column key changes |
 | `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
 | `readFormDataSourceBindingValue()` | function | Read a constant binding value |
-| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator |
+| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator (`CONSTANT` / `FIELD` / `ROW_FIELD`) |
+| `readCompatibleFormTableColumnBindingFields()` | function | List type-compatible sibling columns for a ROW_FIELD binding |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
 
@@ -481,6 +482,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `validateFormRendererValues()` | function | Whole-form validation, recursing into table rows; cell errors keyed by instance path |
 | `focusFormRendererField(key)` | function | DOM focus on a field or a table cell instance path |
 | `readFormTableCellPath()` | function | Build the `<tableKey>[<i>].<columnKey>` instance path |
+| DataSource query inputs | interface | `PreviewFormFieldOptionsInput` / `RuntimeFormFieldOptionsInput` / `PreviewResolveFormFieldOptionsInput` / `RuntimeResolveFormFieldOptionsInput` accept an optional `rowValues`, and their `fieldKey` accepts a `<tableKey>.<columnKey>` schema path |
 | `readFormTableRows()` | function | Narrow a field value to table rows |
 | `readFormTableRowBounds()` | function | Resolve a table's effective `minRows` / `maxRows` |
 | `createFormTableRow()` | function | Build one row seeded from the column defaults |
@@ -1163,7 +1165,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
 | `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
-| `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState` (now carries `canRetry`, false when there is no query to re-issue), `UseFormDataSourceFieldInput`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()`, `readFormDataSourceSubmissionBlockMessage()` (picks wait-vs-fix copy for a refused submission) | normal |
+| `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState` (now carries `canRetry`, false when there is no query to re-issue), `UseFormDataSourceFieldInput` (adds the table-cell inputs `fieldPath`, `snapshotKey` and `row`), `UseFormDataSourceFieldRow`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()`, `readFormDataSourceSubmissionBlockMessage()` (picks wait-vs-fix copy for a refused submission) | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |
 

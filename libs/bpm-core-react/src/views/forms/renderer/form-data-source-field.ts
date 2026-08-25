@@ -53,15 +53,32 @@ export interface FormDataSourceFieldState {
   readonly status: FormDataSourceFieldStatus;
 }
 
+/**
+ * What makes a table cell different from a top-level field: it is addressed by
+ * a schema path, snapshotted under an instance path, and its `ROW_FIELD`
+ * bindings read from its own row rather than the form (ADR 16 §3.3, §3.5).
+ */
+export interface UseFormDataSourceFieldRow {
+  /** The row as it was loaded, so a returned case can tell what changed. */
+  readonly initialValues?: FormRendererValues;
+  readonly values: FormRendererValues;
+}
+
 export interface UseFormDataSourceFieldInput {
   readonly context?: FormRendererDataSourceContext;
   readonly field: FormFieldDefinition;
+  /** Schema path used to address the field; defaults to its own key. */
+  readonly fieldPath?: string;
   readonly formData: FormRendererValues;
   readonly initialFormData?: FormRendererValues;
   readonly initialValue?: FormFieldValue | undefined;
   readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly: boolean;
+  /** Set only for a table cell. */
+  readonly row?: UseFormDataSourceFieldRow;
   readonly schema: FormDefinitionSchema;
+  /** Snapshot map key; defaults to the field key. */
+  readonly snapshotKey?: string;
   readonly uiSchema: FormUiSchema;
 }
 
@@ -110,8 +127,9 @@ export function useFormDataSourceField(
   const dynamicField = isFormDataSourceFieldDefinition(input.field)
     ? input.field
     : null;
+  const queryFieldKey = input.fieldPath ?? dynamicField?.fieldKey ?? '';
   const snapshot = dynamicField
-    ? input.optionSnapshots?.[dynamicField.fieldKey]
+    ? input.optionSnapshots?.[input.snapshotKey ?? dynamicField.fieldKey]
     : undefined;
   // The field object is rebuilt on every parent render, so depending on its
   // identity re-ran the load effect three extra times per change — each request
@@ -137,8 +155,16 @@ export function useFormDataSourceField(
     input.context?.kind === 'runtime' ? input.context.instanceId : undefined;
   const contextTemplateId =
     input.context?.kind === 'runtime' ? input.context.templateId : undefined;
+  const rowValuesSignature = JSON.stringify(input.row?.values ?? null);
+  const initialRowValuesSignature = JSON.stringify(
+    input.row?.initialValues ?? null,
+  );
+  // A cell's value lives on its row, never on the form data — a top-level field
+  // may even share the column's key.
   const currentValue = dynamicField
-    ? input.formData[dynamicField.fieldKey]
+    ? input.row
+      ? input.row.values[dynamicField.fieldKey]
+      : input.formData[dynamicField.fieldKey]
     : undefined;
   const currentValueSignature = readFormDataSourceValueSignature(currentValue);
   const selectedValues = useMemo(
@@ -156,14 +182,15 @@ export function useFormDataSourceField(
               }
             : binding.from.kind === 'CONSTANT'
               ? { value: binding.from.value }
-              : // ROW_FIELD values live on the row, which this top-level hook
-                // does not hold; the cell-level hook arrives in P3.
-                { columnKey: binding.from.columnKey },
+              : {
+                  columnKey: binding.from.columnKey,
+                  value: input.row?.values[binding.from.columnKey],
+                },
         ),
         value:
           typeof input.initialFormData !== 'undefined' ||
           typeof input.initialValue !== 'undefined'
-            ? input.formData[dynamicField.fieldKey]
+            ? currentValue
             : undefined,
       })
     : '';
@@ -199,16 +226,29 @@ export function useFormDataSourceField(
   const bindingsChanged = dynamicField
     ? typeof input.initialFormData !== 'undefined' &&
       dynamicField.dataSource.bindings.some((binding) => {
-        if (binding.from.kind !== 'FIELD') {
-          return false;
+        if (binding.from.kind === 'FIELD') {
+          return (
+            readFormDataSourceValueSignature(
+              input.initialFormData?.[binding.from.fieldKey],
+            ) !==
+            readFormDataSourceValueSignature(
+              input.formData[binding.from.fieldKey],
+            )
+          );
         }
 
-        return (
-          readFormDataSourceValueSignature(
-            input.initialFormData?.[binding.from.fieldKey],
-          ) !==
-          readFormDataSourceValueSignature(input.formData[binding.from.fieldKey])
-        );
+        if (binding.from.kind === 'ROW_FIELD' && input.row?.initialValues) {
+          return (
+            readFormDataSourceValueSignature(
+              input.row.initialValues[binding.from.columnKey],
+            ) !==
+            readFormDataSourceValueSignature(
+              input.row.values[binding.from.columnKey],
+            )
+          );
+        }
+
+        return false;
       })
     : false;
   const isStale = Boolean(
@@ -236,8 +276,11 @@ export function useFormDataSourceField(
   const waitsForDependencies =
     autoQueries &&
     dynamicField !== null &&
-    readMissingFormDataSourceDependencies(dynamicField, input.formData).length >
-      0;
+    readMissingFormDataSourceDependencies(
+      dynamicField,
+      input.formData,
+      input.row?.values,
+    ).length > 0;
   const pendingQueryStatus = readPendingQueryStatus(isStale, waitsForDependencies);
   const [remoteOptions, setRemoteOptions] = useState<readonly FormFieldOption[]>(
     [],
@@ -271,16 +314,13 @@ export function useFormDataSourceField(
 
   const queryFormData = useMemo(
     (): Readonly<Record<string, FormFieldValue>> =>
-      Object.entries(input.formData).reduce<
-        Readonly<Record<string, FormFieldValue>>
-      >((values, [key, value]) => {
-        if (typeof value === 'undefined') {
-          return values;
-        }
-
-        return { ...values, [key]: value };
-      }, {}),
+      readDefinedValues(input.formData),
     [formDataSignature],
+  );
+  const queryRowValues = useMemo(
+    (): Readonly<Record<string, FormFieldValue>> | undefined =>
+      input.row ? readDefinedValues(input.row.values) : undefined,
+    [rowValuesSignature],
   );
   const mergedOptions = useMemo(
     (): readonly FormFieldOption[] =>
@@ -321,8 +361,9 @@ export function useFormDataSourceField(
         effectiveContext.kind === 'preview'
           ? previewFormFieldOptions({
               cursor,
-              fieldKey: dynamicField.fieldKey,
+              fieldKey: queryFieldKey,
               formData: queryFormData,
+              rowValues: queryRowValues,
               schema: input.schema,
               searchText: nextSearchTextToLoad,
               signal: controller.signal,
@@ -330,9 +371,10 @@ export function useFormDataSourceField(
             })
           : readFormFieldOptions({
               cursor,
-              fieldKey: dynamicField.fieldKey,
+              fieldKey: queryFieldKey,
               formData: queryFormData,
               instanceId: effectiveContext.instanceId ?? null,
+              rowValues: queryRowValues,
               searchText: nextSearchTextToLoad,
               signal: controller.signal,
               templateId: effectiveContext.templateId ?? null,
@@ -346,7 +388,7 @@ export function useFormDataSourceField(
 
           setRemoteOptions((currentOptions) => {
             const selectedOptions = readSelectedFormDataSourceOptions(
-              dynamicField ? input.formData[dynamicField.fieldKey] : undefined,
+              currentValue,
               currentOptions,
             );
 
@@ -403,11 +445,14 @@ export function useFormDataSourceField(
         });
     },
     [
+      currentValueSignature,
       dynamicFieldSignature,
       effectiveContext,
       hasValue,
       pendingQueryStatus,
+      queryFieldKey,
       queryFormData,
+      queryRowValues,
       schemaSignature,
       uiSchemaSignature,
     ],
@@ -431,17 +476,19 @@ export function useFormDataSourceField(
     const request =
       effectiveContext.kind === 'preview'
         ? previewResolveFormFieldOptions({
-            fieldKey: dynamicField.fieldKey,
+            fieldKey: queryFieldKey,
             formData: queryFormData,
+            rowValues: queryRowValues,
             schema: input.schema,
             signal: controller.signal,
             uiSchema: input.uiSchema,
             values: selectedValues,
           })
         : resolveFormFieldOptions({
-            fieldKey: dynamicField.fieldKey,
+            fieldKey: queryFieldKey,
             formData: queryFormData,
             instanceId: effectiveContext.instanceId ?? null,
+            rowValues: queryRowValues,
             signal: controller.signal,
             templateId: effectiveContext.templateId ?? null,
             values: selectedValues,
@@ -488,7 +535,9 @@ export function useFormDataSourceField(
     dataSourceRefreshSignature,
     dynamicFieldSignature,
     effectiveContext,
+    queryFieldKey,
     queryFormData,
+    queryRowValues,
     schemaSignature,
     selectedValues,
     uiSchemaSignature,
@@ -531,6 +580,7 @@ export function useFormDataSourceField(
     effectiveContext,
     dataSourceRefreshSignature,
     initialFormDataSignature,
+    initialRowValuesSignature,
     input.readonly,
     pendingQueryStatus,
     quiescentStatus,
@@ -770,4 +820,18 @@ function isSupersededRequest(
   requestId: number,
 ): boolean {
   return controller.signal.aborted || sequence.current !== requestId;
+}
+
+function readDefinedValues(
+  values: FormRendererValues,
+): Readonly<Record<string, FormFieldValue>> {
+  return Object.entries(values).reduce<
+    Readonly<Record<string, FormFieldValue>>
+  >((defined, [key, value]) => {
+    if (typeof value === 'undefined') {
+      return defined;
+    }
+
+    return { ...defined, [key]: value };
+  }, {});
 }

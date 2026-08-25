@@ -4,8 +4,10 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldValue,
+  TableColumnDefinition,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
@@ -112,6 +114,11 @@ export function upsertFormDataSourceFieldBinding(
   };
 }
 
+/**
+ * Rewrites every `FIELD` binding that names the renamed field — including the
+ * ones inside table columns, which may address a top-level field just as a
+ * top-level dynamic field can (ADR 16 §3.4).
+ */
 export function renameFormDataSourceFieldBindings(
   schema: FormDefinitionSchema,
   previousFieldKey: string,
@@ -119,30 +126,45 @@ export function renameFormDataSourceFieldBindings(
 ): FormDefinitionSchema {
   return {
     ...schema,
-    fields: schema.fields.map((field) => {
-      if (!isFormDataSourceFieldDefinition(field)) {
-        return field;
+    fields: schema.fields.map((field): FormFieldDefinition => {
+      if (isTableFieldDefinition(field)) {
+        return {
+          ...field,
+          columns: field.columns.map((column) =>
+            isFormDataSourceFieldDefinition(column)
+              ? (renameFieldBindings(
+                  column,
+                  previousFieldKey,
+                  nextFieldKey,
+                ) as TableColumnDefinition)
+              : column,
+          ),
+        };
       }
 
-      return {
-        ...field,
-        dataSource: {
-          ...field.dataSource,
-          bindings: field.dataSource.bindings.map((binding) =>
-            binding.from.kind === 'FIELD' &&
-            binding.from.fieldKey === previousFieldKey
-              ? {
-                  ...binding,
-                  from: {
-                    ...binding.from,
-                    fieldKey: nextFieldKey,
-                  },
-                }
-              : binding,
-          ),
-        },
-      };
+      return isFormDataSourceFieldDefinition(field)
+        ? renameFieldBindings(field, previousFieldKey, nextFieldKey)
+        : field;
     }),
+  };
+}
+
+function renameFieldBindings(
+  field: FormDataSourceOptionFieldDefinition,
+  previousFieldKey: string,
+  nextFieldKey: string,
+): FormDataSourceOptionFieldDefinition {
+  return {
+    ...field,
+    dataSource: {
+      ...field.dataSource,
+      bindings: field.dataSource.bindings.map((binding) =>
+        binding.from.kind === 'FIELD' &&
+        binding.from.fieldKey === previousFieldKey
+          ? { ...binding, from: { ...binding.from, fieldKey: nextFieldKey } }
+          : binding,
+      ),
+    },
   };
 }
 
@@ -203,14 +225,31 @@ export function readFormDataSourceBindingValue(
   return binding?.from.kind === 'CONSTANT' ? binding.from.value : undefined;
 }
 
-export type FormDataSourceBindingValueKind = 'CONSTANT' | 'FIELD';
+export type FormDataSourceBindingValueKind =
+  | 'CONSTANT'
+  | 'FIELD'
+  | 'ROW_FIELD';
 
 export function readFormDataSourceBindingValueKind(
   binding: FormDataSourceBinding | null,
 ): FormDataSourceBindingValueKind | null {
-  const kind = binding?.from.kind;
+  return binding?.from.kind ?? null;
+}
 
-  // ROW_FIELD only exists on table columns, which the builder cannot edit yet
-  // (P3); reporting null keeps the top-level binding editor unchanged.
-  return kind === 'CONSTANT' || kind === 'FIELD' ? kind : null;
+/**
+ * The sibling columns a `ROW_FIELD` binding may address: same table, same
+ * parameter type, never the column being configured. Column keys live in their
+ * own per-table namespace (ADR 16 §3.1), so the search never leaves the table.
+ */
+export function readCompatibleFormTableColumnBindingFields(
+  parameterType: FormDataSourceParameterType,
+  columns: readonly TableColumnDefinition[],
+  targetColumnKey: string,
+): readonly FormDataSourceBindingFieldOption[] {
+  return columns
+    .filter((column) => column.fieldKey !== targetColumnKey)
+    .filter(
+      (column) => readFormDataSourceParameterType(column) === parameterType,
+    )
+    .map((column) => ({ id: column.fieldKey, name: column.label }));
 }

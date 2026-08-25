@@ -84,6 +84,7 @@ import {
   lintFormSchema,
   listFormDataSources,
   readCompatibleFormDataSourceBindingFields,
+  readCompatibleFormTableColumnBindingFields,
   readCompatibleFormDataSourceDescriptors,
   readFormDataSourceBinding,
   readFormDataSourceBindingValue,
@@ -178,6 +179,16 @@ type OptionFieldChangeRequester = (
   nextField: FormOptionFieldDefinition,
   impact?: string,
 ) => void;
+
+/**
+ * Where an edited DataSource binding is written back, and which sibling columns
+ * a `ROW_FIELD` binding may address. `rowColumns` is present only for a table
+ * column — at the top level there is no row to read from (ADR 16 §3.4).
+ */
+type DataSourceBindingScope = Readonly<{
+  commit: (nextField: FormDataSourceOptionFieldDefinition) => void;
+  rowColumns?: readonly TableColumnDefinition[];
+}>;
 
 type PendingBuilderConfirmation =
   | Readonly<{
@@ -558,6 +569,7 @@ const EMPTY_UI_SCHEMA: FormUiSchema = {
 
 const STATIC_OPTION_SOURCE_ID = '__STATIC_OPTIONS__';
 const CONSTANT_BINDING_ID = '__CONSTANT__';
+const ROW_FIELD_BINDING_PREFIX = '__ROW_FIELD__:';
 const UNBOUND_BINDING_ID = '__UNBOUND__';
 
 const OPTION_SOURCE_KIND_OPTIONS: readonly {
@@ -1486,7 +1498,11 @@ export function FormBuilderView({
     field: FormFieldDefinition,
     commit: FieldCommit<FormFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
-    supportsDataSource = true,
+    /**
+     * The sibling columns a `ROW_FIELD` binding may address. Present only when
+     * the field being edited is itself a table column (ADR 16 §3.4).
+     */
+    rowColumns?: readonly TableColumnDefinition[],
   ): ReactElement | null {
     if (isTextFieldDefinition(field)) {
       return renderTextFieldSettings(field, commit);
@@ -1501,12 +1517,7 @@ export function FormBuilderView({
     }
 
     if (isFormOptionFieldDefinition(field)) {
-      return renderOptionFieldSettings(
-        field,
-        commit,
-        requestChange,
-        supportsDataSource,
-      );
+      return renderOptionFieldSettings(field, commit, requestChange, rowColumns);
     }
 
     if (field.type === 'boolean') {
@@ -1776,8 +1787,9 @@ export function FormBuilderView({
               );
             }
           },
-          // Only the selection mode reaches this in P2, and switching it just
-          // converts the default value, so it applies directly.
+          // A column's option-source and selection-mode changes apply directly:
+          // the confirmation modal is reserved for the two discrete destructive
+          // column actions (delete, retype).
           (_column, nextColumn): void => {
             if (isTableColumnFieldType(nextColumn.type)) {
               commitTableColumn(
@@ -1787,7 +1799,7 @@ export function FormBuilderView({
               );
             }
           },
-          false,
+          field.columns,
         )}
       </div>
     );
@@ -1946,11 +1958,16 @@ export function FormBuilderView({
     field: FormOptionFieldDefinition,
     commit: FieldCommit<FormOptionFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
-    supportsDataSource: boolean,
+    rowColumns?: readonly TableColumnDefinition[],
   ): ReactElement {
-    const compatibleDescriptors = supportsDataSource
-      ? readCompatibleFormDataSourceDescriptors(field.type, dataSourceCatalog)
-      : [];
+    const compatibleDescriptors = readCompatibleFormDataSourceDescriptors(
+      field.type,
+      dataSourceCatalog,
+    );
+    const bindingScope: DataSourceBindingScope = {
+      commit: (nextField): void => commit(nextField),
+      rowColumns,
+    };
     const currentSourceId = isFormDataSourceFieldDefinition(field)
       ? readDataSourceDescriptorOptionId(field.dataSource)
       : STATIC_OPTION_SOURCE_ID;
@@ -2007,66 +2024,38 @@ export function FormBuilderView({
                 {mode === 'multiple' ? '固定複選' : '固定單選'}
               </Typography>,
             )}
-        {/*
-          A table column can only carry static options until cell-level
-          DataSource lands (P3): the renderer has no per-cell resolve, the
-          environment lint does not descend into columns, and nothing would
-          catch the mismatch before it reached a filler as a plain text box.
-          Offering the picker here would let a designer build exactly that.
-        */}
-        {supportsDataSource
-          ? renderSettingsFormRow(
-              '選項來源',
-              'fieldOptionSource',
-              <Select
-                clearable={false}
-                disabled={
-                  dataSourceCatalogState === 'loading' &&
-                  !isFormDataSourceFieldDefinition(field)
-                }
-                onChange={(option): void =>
-                  handleOptionSourceChange(field, option?.id, requestChange)
-                }
-                options={sourceOptions}
-                placeholder="選擇選項來源"
-                value={readSelectOption(sourceOptions, currentSourceId)}
-              />,
-            )
-          : null}
+        {renderSettingsFormRow(
+          '選項來源',
+          'fieldOptionSource',
+          <Select
+            clearable={false}
+            disabled={
+              dataSourceCatalogState === 'loading' &&
+              !isFormDataSourceFieldDefinition(field)
+            }
+            onChange={(option): void =>
+              handleOptionSourceChange(field, option?.id, requestChange)
+            }
+            options={sourceOptions}
+            placeholder="選擇選項來源"
+            value={readSelectOption(sourceOptions, currentSourceId)}
+          />,
+        )}
         {isFormDataSourceFieldDefinition(field)
-          ? supportsDataSource
-            ? renderDataSourceFieldSettings(field, compatibleDescriptors)
-            : renderUnsupportedColumnDataSourceNotice(field)
+          ? renderDataSourceFieldSettings(
+              field,
+              compatibleDescriptors,
+              bindingScope,
+            )
           : renderStaticOptionFieldSettings(field, commit)}
       </>
-    );
-  }
-
-  /**
-   * A hand-authored schema can still put a DataSource on a column. Say so
-   * plainly rather than rendering an empty settings area — the original JSON is
-   * preserved either way, which is the same "keep it, show unavailable"
-   * treatment ADR 14 §3.10 gives an unknown source.
-   */
-  function renderUnsupportedColumnDataSourceNotice(
-    field: FormDataSourceOptionFieldDefinition,
-  ): ReactElement {
-    return (
-      <Typography
-        color="text-warning"
-        style={FIELD_SETTINGS_HINT_STYLE}
-        variant="body"
-      >
-        此欄目前綁定 DataSource「{field.dataSource.key} v
-        {field.dataSource.version}」。欄位層級的 DataSource 尚未支援，設定會原樣
-        保留，但填寫時不會出現選單。
-      </Typography>
     );
   }
 
   function renderDataSourceFieldSettings(
     field: FormDataSourceOptionFieldDefinition,
     compatibleDescriptors: readonly FormDataSourceDescriptorRecord[],
+    scope: DataSourceBindingScope,
   ): ReactElement {
     const descriptor = dataSourceCatalog.find(
       (candidate) =>
@@ -2101,7 +2090,7 @@ export function FormBuilderView({
         {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
         {descriptor
           ? descriptor.parameters.map((parameter) =>
-              renderDataSourceParameterBinding(field, parameter),
+              renderDataSourceParameterBinding(field, parameter, scope),
             )
           : null}
         {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
@@ -2160,6 +2149,7 @@ export function FormBuilderView({
   function renderDataSourceParameterBinding(
     field: FormDataSourceOptionFieldDefinition,
     parameter: FormDataSourceDescriptorRecord['parameters'][number],
+    scope: DataSourceBindingScope,
   ): ReactElement {
     const binding = readFormDataSourceBinding(field, parameter.key);
     const bindingId = readDataSourceBindingOptionId(binding);
@@ -2168,10 +2158,23 @@ export function FormBuilderView({
       schema.fields,
       field.fieldKey,
     );
+    // Sibling columns come first: inside a table, the row is the near context
+    // and the form is the far one.
+    const rowFieldOptions = scope.rowColumns
+      ? readCompatibleFormTableColumnBindingFields(
+          parameter.type,
+          scope.rowColumns,
+          field.fieldKey,
+        ).map((option) => ({
+          id: `${ROW_FIELD_BINDING_PREFIX}${option.id}`,
+          name: `同列：${option.name}`,
+        }))
+      : [];
     const bindingOptions = [
       ...(parameter.required
         ? []
         : [{ id: UNBOUND_BINDING_ID, name: '未綁定' }]),
+      ...rowFieldOptions,
       ...fieldOptions,
       ...(parameter.type === 'STRING_ARRAY'
         ? []
@@ -2192,6 +2195,7 @@ export function FormBuilderView({
                 parameter.key,
                 parameter.type,
                 option?.id,
+                scope,
               )
             }
             options={bindingOptions}
@@ -2199,23 +2203,35 @@ export function FormBuilderView({
             value={readSelectOption(bindingOptions, bindingId)}
           />
         </BPMFormField>
-        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT'
-          ? renderDataSourceConstantEditor(field, parameter.key, parameter.type, binding)
-          : readFormDataSourceBindingValueKind(binding) === 'FIELD'
-            ? (
-                <Typography color="text-neutral" variant="caption">
-                  使用表單欄位「{binding?.from.kind === 'FIELD' ? binding.from.fieldKey : ''}」的目前值。
-                </Typography>
-              )
-            : (
-                <Typography color="text-neutral" variant="caption">
-                  {parameter.required
-                    ? fieldOptions.length > 0
-                      ? '請選擇相容的表單欄位或固定常數。'
-                      : '目前沒有型別相容的表單欄位，請先建立 dependency。'
-                    : '此參數可不綁定。'}
-                </Typography>
-              )}
+        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT' ? (
+          renderDataSourceConstantEditor(
+            field,
+            parameter.key,
+            parameter.type,
+            binding,
+            scope,
+          )
+        ) : readFormDataSourceBindingValueKind(binding) === 'FIELD' ? (
+          <Typography color="text-neutral" variant="caption">
+            使用表單欄位「
+            {binding?.from.kind === 'FIELD' ? binding.from.fieldKey : ''}
+            」的目前值。
+          </Typography>
+        ) : readFormDataSourceBindingValueKind(binding) === 'ROW_FIELD' ? (
+          <Typography color="text-neutral" variant="caption">
+            使用同一列「
+            {binding?.from.kind === 'ROW_FIELD' ? binding.from.columnKey : ''}
+            」欄的目前值。
+          </Typography>
+        ) : (
+          <Typography color="text-neutral" variant="caption">
+            {parameter.required
+              ? fieldOptions.length + rowFieldOptions.length > 0
+                ? '請選擇相容的欄位或固定常數。'
+                : '目前沒有型別相容的欄位，請先建立 dependency。'
+              : '此參數可不綁定。'}
+          </Typography>
+        )}
       </div>
     );
   }
@@ -2225,6 +2241,7 @@ export function FormBuilderView({
     parameterKey: string,
     parameterType: FormDataSourceParameterType,
     binding: FormDataSourceBinding | null,
+    scope: DataSourceBindingScope,
   ): ReactElement {
     const value = readFormDataSourceBindingValue(field, parameterKey);
 
@@ -2239,8 +2256,10 @@ export function FormBuilderView({
           clearable={false}
           onChange={(option): void =>
             updateDataSourceConstant(
+              field,
               parameterKey,
               option?.id === 'true',
+              scope,
             )
           }
           options={options}
@@ -2264,10 +2283,12 @@ export function FormBuilderView({
       <Input
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
           updateDataSourceConstant(
+            field,
             parameterKey,
             parameterType === 'NUMBER'
-              ? parseOptionalNumberInput(event.target.value) ?? 0
+              ? (parseOptionalNumberInput(event.target.value) ?? 0)
               : event.target.value,
+            scope,
           )
         }
         placeholder={parameterType === 'NUMBER' ? '輸入數字' : '輸入固定值'}
@@ -2282,58 +2303,28 @@ export function FormBuilderView({
     parameterKey: string,
     parameterType: FormDataSourceParameterType,
     optionId: string | undefined,
+    scope: DataSourceBindingScope,
   ): void {
-    if (!optionId || optionId === UNBOUND_BINDING_ID) {
-      updateSelectedFieldWith((currentField) =>
-        isFormDataSourceFieldDefinition(currentField)
-          ? upsertFormDataSourceFieldBinding(currentField, parameterKey, null)
-          : currentField,
-      );
-
-      return;
-    }
-
-    if (optionId === CONSTANT_BINDING_ID) {
-      updateSelectedFieldWith((currentField) =>
-        isFormDataSourceFieldDefinition(currentField)
-          ? upsertFormDataSourceFieldBinding(
-              currentField,
-              parameterKey,
-              {
-                from: {
-                  kind: 'CONSTANT',
-                  value: readDefaultDataSourceConstant(parameterType),
-                },
-                parameter: parameterKey,
-              },
-            )
-          : currentField,
-      );
-
-      return;
-    }
-
-    updateSelectedFieldWith((currentField) =>
-      isFormDataSourceFieldDefinition(currentField)
-        ? upsertFormDataSourceFieldBinding(currentField, parameterKey, {
-            from: { fieldKey: optionId, kind: 'FIELD' },
-            parameter: parameterKey,
-          })
-        : currentField,
+    scope.commit(
+      upsertFormDataSourceFieldBinding(
+        field,
+        parameterKey,
+        readNextDataSourceBinding(parameterKey, parameterType, optionId),
+      ),
     );
   }
 
   function updateDataSourceConstant(
+    field: FormDataSourceOptionFieldDefinition,
     parameterKey: string,
     value: FormDataSourceConstantValue,
+    scope: DataSourceBindingScope,
   ): void {
-    updateSelectedFieldWith((currentField) =>
-      isFormDataSourceFieldDefinition(currentField)
-        ? upsertFormDataSourceFieldBinding(currentField, parameterKey, {
-            from: { kind: 'CONSTANT', value },
-            parameter: parameterKey,
-          })
-        : currentField,
+    scope.commit(
+      upsertFormDataSourceFieldBinding(field, parameterKey, {
+        from: { kind: 'CONSTANT', value },
+        parameter: parameterKey,
+      }),
     );
   }
 
@@ -3103,8 +3094,12 @@ function readDataSourceBindingOptionId(
     return UNBOUND_BINDING_ID;
   }
 
-  return binding.from.kind === 'FIELD'
-    ? binding.from.fieldKey
+  if (binding.from.kind === 'FIELD') {
+    return binding.from.fieldKey;
+  }
+
+  return binding.from.kind === 'ROW_FIELD'
+    ? `${ROW_FIELD_BINDING_PREFIX}${binding.from.columnKey}`
     : CONSTANT_BINDING_ID;
 }
 
@@ -3136,6 +3131,46 @@ function readDataSourceConstantInputValue(
   }
 
   return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Maps a binding picker option back to the binding it means. Row options carry
+ * a prefix because a column key and a top-level field key can spell the same
+ * thing — they live in separate namespaces (ADR 16 §3.1).
+ */
+function readNextDataSourceBinding(
+  parameterKey: string,
+  parameterType: FormDataSourceParameterType,
+  optionId: string | undefined,
+): FormDataSourceBinding | null {
+  if (!optionId || optionId === UNBOUND_BINDING_ID) {
+    return null;
+  }
+
+  if (optionId === CONSTANT_BINDING_ID) {
+    return {
+      from: {
+        kind: 'CONSTANT',
+        value: readDefaultDataSourceConstant(parameterType),
+      },
+      parameter: parameterKey,
+    };
+  }
+
+  if (optionId.startsWith(ROW_FIELD_BINDING_PREFIX)) {
+    return {
+      from: {
+        columnKey: optionId.slice(ROW_FIELD_BINDING_PREFIX.length),
+        kind: 'ROW_FIELD',
+      },
+      parameter: parameterKey,
+    };
+  }
+
+  return {
+    from: { fieldKey: optionId, kind: 'FIELD' },
+    parameter: parameterKey,
+  };
 }
 
 function readBuilderConfirmationTitle(

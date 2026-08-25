@@ -78,6 +78,12 @@ export interface PreviewFormFieldOptionsInput {
   readonly cursor?: string | null;
   readonly fieldKey: string;
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
+  /**
+   * The cells of the row a table column's query belongs to. Only a table cell
+   * sends this; a `ROW_FIELD` binding reads its parameter from it, and its
+   * absence is reported through `waitingForFieldKeys` (ADR 16 §3.5).
+   */
+  readonly rowValues?: Readonly<Record<string, FormFieldValue>>;
   readonly schema: FormDefinitionSchema;
   readonly searchText?: string | null;
   readonly signal?: AbortSignal;
@@ -89,6 +95,12 @@ export interface RuntimeFormFieldOptionsInput {
   readonly fieldKey: string;
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
   readonly instanceId?: string | null;
+  /**
+   * The cells of the row a table column's query belongs to. Only a table cell
+   * sends this; a `ROW_FIELD` binding reads its parameter from it, and its
+   * absence is reported through `waitingForFieldKeys` (ADR 16 §3.5).
+   */
+  readonly rowValues?: Readonly<Record<string, FormFieldValue>>;
   readonly searchText?: string | null;
   readonly signal?: AbortSignal;
   readonly templateId?: string | null;
@@ -97,6 +109,12 @@ export interface RuntimeFormFieldOptionsInput {
 export interface PreviewResolveFormFieldOptionsInput {
   readonly fieldKey: string;
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
+  /**
+   * The cells of the row a table column's query belongs to. Only a table cell
+   * sends this; a `ROW_FIELD` binding reads its parameter from it, and its
+   * absence is reported through `waitingForFieldKeys` (ADR 16 §3.5).
+   */
+  readonly rowValues?: Readonly<Record<string, FormFieldValue>>;
   readonly schema: FormDefinitionSchema;
   readonly signal?: AbortSignal;
   readonly uiSchema: FormUiSchema;
@@ -107,6 +125,12 @@ export interface RuntimeResolveFormFieldOptionsInput {
   readonly fieldKey: string;
   readonly formData?: Readonly<Record<string, FormFieldValue>>;
   readonly instanceId?: string | null;
+  /**
+   * The cells of the row a table column's query belongs to. Only a table cell
+   * sends this; a `ROW_FIELD` binding reads its parameter from it, and its
+   * absence is reported through `waitingForFieldKeys` (ADR 16 §3.5).
+   */
+  readonly rowValues?: Readonly<Record<string, FormFieldValue>>;
   readonly signal?: AbortSignal;
   readonly templateId?: string | null;
   readonly values: readonly string[];
@@ -258,6 +282,7 @@ function serializePreviewInput(
     cursor: input.cursor ?? null,
     fieldKey: input.fieldKey,
     formDataJson: input.formData ? JSON.stringify(input.formData) : null,
+    rowValuesJson: input.rowValues ? JSON.stringify(input.rowValues) : null,
     schemaJson: JSON.stringify(input.schema),
     searchText: input.searchText ?? null,
     uiSchemaJson: JSON.stringify(input.uiSchema),
@@ -272,6 +297,7 @@ function serializeRuntimeInput(
     fieldKey: input.fieldKey,
     formDataJson: input.formData ? JSON.stringify(input.formData) : null,
     instanceId: input.instanceId ?? null,
+    rowValuesJson: input.rowValues ? JSON.stringify(input.rowValues) : null,
     searchText: input.searchText ?? null,
     templateId: input.templateId ?? null,
   };
@@ -283,6 +309,7 @@ function serializePreviewResolveInput(
   return {
     fieldKey: input.fieldKey,
     formDataJson: input.formData ? JSON.stringify(input.formData) : null,
+    rowValuesJson: input.rowValues ? JSON.stringify(input.rowValues) : null,
     schemaJson: JSON.stringify(input.schema),
     uiSchemaJson: JSON.stringify(input.uiSchema),
     valuesJson: JSON.stringify(input.values),
@@ -296,6 +323,7 @@ function serializeRuntimeResolveInput(
     fieldKey: input.fieldKey,
     formDataJson: input.formData ? JSON.stringify(input.formData) : null,
     instanceId: input.instanceId ?? null,
+    rowValuesJson: input.rowValues ? JSON.stringify(input.rowValues) : null,
     templateId: input.templateId ?? null,
     valuesJson: JSON.stringify(input.values),
   };
