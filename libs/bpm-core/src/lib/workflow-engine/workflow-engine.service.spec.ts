@@ -801,6 +801,64 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('formData.items[0].qty is required');
   });
 
+  it('leaves a table untouched when a set-form-field task addresses a cell path', async (): Promise<void> => {
+    const formSchema = createTableFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { items: [{ name: 'Bolt', qty: 3 }] },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.items.qty',
+        value: '99',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    // A `{}` substitution would have replaced the row array with `{ qty: 99 }`.
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { items: [{ name: 'Bolt', qty: 3 }] },
+    });
+  });
+
+  it('leaves a scalar untouched when a set-form-field task writes through it', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.amount.currency',
+        value: '"TWD"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({ formData: { amount: 1200 } });
+  });
+
+  it('still creates a nested object when a set-form-field task writes to an absent path', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.audit.level',
+        value: '"L2"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, audit: { level: 'L2' } },
+    });
+  });
+
   it('uses an advisory lock when processing an instance', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

@@ -5710,6 +5710,19 @@ function writeNestedValue(
   }
 
   const currentValue = value[currentSegment];
+
+  // Descending through something that already holds a non-record value must be
+  // a no-op, not an overwrite. `items.qty` against a table would otherwise
+  // replace the whole row array with `{ qty: ... }`; the same guard protects a
+  // scalar from being swallowed by a nested write (ADR 16 §3.8).
+  if (
+    typeof currentValue !== 'undefined' &&
+    currentValue !== null &&
+    !isRecord(currentValue)
+  ) {
+    return value;
+  }
+
   const nestedValue = isRecord(currentValue) ? currentValue : {};
 
   return {
