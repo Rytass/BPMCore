@@ -34,6 +34,7 @@ import {
   Tab,
   TabItem,
   Table,
+  Tag,
   Textarea,
   Toggle,
   Typography,
@@ -562,6 +563,24 @@ const DATA_SOURCE_SETTINGS_STYLE: CSSProperties = {
   gridColumn: '1 / -1',
 };
 
+const DATA_SOURCE_PARAMETERS_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+};
+
+// Left-aligned with the settings it checks, rather than pushed to the far edge
+// of a panel whose other end holds the thing being checked.
+const DATA_SOURCE_CHECK_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-start',
+};
+
+const DATA_SOURCE_TRAIT_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 4,
+};
+
 const DATA_SOURCE_SUMMARY_STYLE: CSSProperties = {
   backgroundColor: 'var(--mzn-color-bg-surface-secondary)',
   borderRadius: 6,
@@ -595,8 +614,8 @@ const TABLE_COLUMNS_HEADER_STYLE: CSSProperties = {
 
 const DATA_SOURCE_PARAMETER_GRID_STYLE: CSSProperties = {
   display: 'grid',
-  gap: 8,
-  gridTemplateColumns: 'minmax(180px, 0.7fr) minmax(220px, 1.3fr)',
+  gap: 4,
+  justifyItems: 'start',
 };
 
 function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
@@ -2251,9 +2270,6 @@ export function FormBuilderView({
             placeholder="選擇選項來源"
             value={readSelectOption(sourceOptions, currentSourceId)}
           />,
-          // A source reads as its name plus its key and version, which never
-          // fits the width a one-line setting gets.
-          true,
         )}
         {isFormDataSourceFieldDefinition(field)
           ? renderDataSourceFieldSettings(
@@ -2302,17 +2318,22 @@ export function FormBuilderView({
           </Typography>
         ) : null}
         {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
-        {descriptor
-          ? descriptor.parameters.map((parameter) =>
+        {descriptor && descriptor.parameters.length > 0 ? (
+          <div style={DATA_SOURCE_PARAMETERS_STYLE}>
+            <Typography color="text-neutral" variant="label-secondary">
+              這個來源需要的條件
+            </Typography>
+            {descriptor.parameters.map((parameter) =>
               renderDataSourceParameterBinding(field, parameter, scope),
-            )
-          : null}
+            )}
+          </div>
+        ) : null}
         {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
           <Typography color="text-warning" variant="body">
             沒有符合目前控制項能力的已註冊來源。
           </Typography>
         ) : null}
-        <div style={OPTION_ACTIONS_STYLE}>
+        <div style={DATA_SOURCE_CHECK_ROW_STYLE}>
           <Button
             disabled={dataSourceLintLoading}
             onClick={(): void => void handleLintDataSourceSchema()}
@@ -2320,7 +2341,7 @@ export function FormBuilderView({
             type="button"
             variant="base-secondary"
           >
-            {dataSourceLintLoading ? '驗證中…' : '驗證 DataSource 設定'}
+            {dataSourceLintLoading ? '檢查中…' : '檢查來源設定'}
           </Button>
         </div>
         {dataSourceLint ? (
@@ -2342,19 +2363,21 @@ export function FormBuilderView({
   ): ReactElement {
     return (
       <div style={DATA_SOURCE_SUMMARY_STYLE}>
-        <Typography variant="label-primary">
-          {descriptor.label} · v{descriptor.version}
-        </Typography>
         {descriptor.description ? (
-          <Typography color="text-neutral" variant="caption">
-            {descriptor.description}
-          </Typography>
+          <Typography variant="body">{descriptor.description}</Typography>
         ) : null}
+        {/*
+          What the source does, said as behaviour the designer can act on.
+          Printing `supportedControls` and the revalidation enum told them the
+          shape of our types, not what their form will do.
+        */}
+        <div style={DATA_SOURCE_TRAIT_ROW_STYLE}>
+          {readDataSourceTraits(descriptor).map((trait) => (
+            <Tag key={trait} label={trait} readOnly size="minor" />
+          ))}
+        </div>
         <Typography color="text-neutral" variant="caption">
-          支援：{descriptor.supportedControls.join('、')}；
-          {descriptor.supportsSearch ? '支援搜尋' : '不支援搜尋'}；
-          {descriptor.paginationMode === 'CURSOR' ? '支援分頁' : '完整清單'}；
-          policy：{descriptor.revalidationPolicy}
+          來源代號：{descriptor.key} · v{descriptor.version}
         </Typography>
       </div>
     );
@@ -2399,8 +2422,9 @@ export function FormBuilderView({
       <div key={parameter.key} style={DATA_SOURCE_PARAMETER_GRID_STYLE}>
         <BPMFormField
           label={`${parameter.label ?? parameter.key}${parameter.required ? '（必填）' : '（選填）'}`}
-          // This grid column is barely wider than the select itself, so a
-          // horizontal label had nowhere to go and broke mid-word.
+          // Label above, control below, explanation under the control: the
+          // three used to sit in an L with the explanation off to the right,
+          // so reading one binding meant looking in three directions.
           layout={FormFieldLayout.VERTICAL}
           name={`dataSourceParameter_${parameter.key}`}
         >
@@ -3345,12 +3369,37 @@ function readDataSourceDescriptorOptionId(value: {
   return `${value.key}@${value.version}`;
 }
 
+/**
+ * The descriptor's capabilities, phrased as what the filler will experience.
+ * `supportedControls` is deliberately absent: the picker only ever offers
+ * sources that already support this field's control, so repeating it here
+ * answers a question nobody asked.
+ */
+function readDataSourceTraits(
+  descriptor: FormDataSourceDescriptorRecord,
+): readonly string[] {
+  return [
+    descriptor.supportsSearch
+      ? `可輸入關鍵字搜尋${descriptor.minimumSearchLength > 0 ? `（至少 ${descriptor.minimumSearchLength} 字）` : ''}`
+      : '不支援搜尋',
+    descriptor.paginationMode === 'CURSOR'
+      ? `捲動載入更多（每次 ${descriptor.pageSize} 筆）`
+      : '一次載入完整清單',
+    descriptor.revalidationPolicy === 'ALWAYS'
+      ? '每次送出都重新驗證'
+      : '值或條件變更時才重新驗證',
+  ];
+}
+
 function readDataSourceDescriptorOption(
   descriptor: FormDataSourceDescriptorRecord,
 ): { readonly id: string; readonly name: string } {
   return {
     id: readDataSourceDescriptorOptionId(descriptor),
-    name: `${descriptor.label} · ${descriptor.key} v${descriptor.version}`,
+    // The stored key and version identify the source when something breaks;
+    // they are not how a designer picks one, so they live in the summary below
+    // rather than in every line of the picker.
+    name: descriptor.label,
   };
 }
 

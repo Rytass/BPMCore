@@ -137,6 +137,10 @@ jest.mock('@mezzanine-ui/react', () => {
     );
   }
 
+  function MockTag(props: Readonly<Record<string, unknown>>): ReactElement {
+    return <span data-mock-tag="">{String(props.label ?? '')}</span>;
+  }
+
   function MockTable(props: Readonly<Record<string, unknown>>): ReactElement {
     const columns = Array.isArray(props.columns) ? props.columns : [];
     const rows = Array.isArray(props.dataSource) ? props.dataSource : [];
@@ -271,6 +275,7 @@ jest.mock('@mezzanine-ui/react', () => {
     Tab: MockContainer,
     TabItem: MockContainer,
     Table: MockTable,
+    Tag: MockTag,
     Textarea: MockTextarea,
     Toggle: MockToggle,
     Typography: MockContainer,
@@ -781,7 +786,7 @@ describe('FormBuilderView field settings', () => {
       expandTableRow(harness.container, 1);
 
       await act(async (): Promise<void> => {
-        clickButton(harness.container, '驗證 DataSource 設定');
+        clickButton(harness.container, '檢查來源設定');
       });
 
       expect(harness.container.textContent).toContain(
