@@ -1,9 +1,18 @@
-import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+  FormUiSchema,
+} from '@rytass/bpm-core-shared/form';
+import {
+  buildFormRendererValues,
   formatDatePickerValue,
   formatDateTimePickerValue,
   isFormRendererFieldRequired,
   isFormRendererFieldVisible,
+  readFormTableCellPath,
+  readFormTableRowBounds,
+  readFormTableRows,
+  validateFormRendererValues,
 } from './form-rendering';
 
 // Every expectation below is written for UTC+8, because the off-by-one-day bug
@@ -150,5 +159,131 @@ describe('table values as condition operands', () => {
         { tags: ['a'] },
       ),
     ).toBe(true);
+  });
+});
+
+describe('table field values', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      {
+        columns: [
+          { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+          { fieldKey: 'qty', label: '數量', required: false, type: 'number' },
+          {
+            defaultValue: true,
+            fieldKey: 'inStock',
+            label: '有庫存',
+            required: false,
+            type: 'boolean',
+          },
+        ],
+        fieldKey: 'items',
+        label: '請購明細',
+        maxRows: 3,
+        minRows: 1,
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [{ fieldKey: 'items', width: 'FULL' }],
+    schemaVersion: 1,
+  };
+
+  it('seeds minRows rows from the column defaults', (): void => {
+    expect(buildFormRendererValues(schema.fields, {}).items).toEqual([
+      { inStock: true },
+    ]);
+  });
+
+  it('leaves a column without a default absent rather than null', (): void => {
+    const [row] = buildFormRendererValues(schema.fields, {})
+      .items as readonly Readonly<Record<string, unknown>>[];
+
+    expect(Object.prototype.hasOwnProperty.call(row, 'name')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(row, 'qty')).toBe(false);
+  });
+
+  it('reports a missing required cell by its instance path', (): void => {
+    const result = validateFormRendererValues({
+      schema,
+      uiSchema,
+      values: { items: [{ name: 'Bolt' }, { qty: 2 }] },
+    });
+
+    expect(result.errors).toEqual({ 'items[1].name': '品項為必填欄位。' });
+    expect(result.firstInvalidFieldKey).toBe('items[1].name');
+    expect(result.valid).toBe(false);
+  });
+
+  it('reports a row count problem on the table itself and stops there', (): void => {
+    expect(
+      validateFormRendererValues({ schema, uiSchema, values: { items: [] } })
+        .errors,
+    ).toEqual({ items: '請購明細至少需要 1 列。' });
+
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { items: [{}, {}, {}, {}] },
+      }).errors,
+    ).toEqual({ items: '請購明細最多 3 列。' });
+  });
+
+  it('treats a required table as needing at least one row', (): void => {
+    const tableField = schema.fields[0];
+
+    if (!tableField || tableField.type !== 'table') {
+      throw new Error('Expected the fixture to start with a table field.');
+    }
+
+    const requiredSchema: FormDefinitionSchema = {
+      fields: [{ ...tableField, minRows: 0, required: true }],
+      schemaVersion: 1,
+    };
+
+    expect(
+      validateFormRendererValues({
+        schema: requiredSchema,
+        uiSchema,
+        values: { items: [] },
+      }).errors,
+    ).toEqual({ items: '請購明細至少需要 1 列。' });
+  });
+
+  it('accepts rows that satisfy every required column', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { items: [{ name: 'Bolt', qty: 3 }] },
+      }),
+    ).toEqual({ errors: {}, firstInvalidFieldKey: null, valid: true });
+  });
+
+  it('builds a cell instance path', (): void => {
+    expect(readFormTableCellPath('items', 2, 'qty')).toBe('items[2].qty');
+  });
+
+  it('reads rows only from a table-shaped value', (): void => {
+    expect(readFormTableRows([{ name: 'Bolt' }])).toEqual([{ name: 'Bolt' }]);
+    expect(readFormTableRows(['a', 'b'])).toEqual([]);
+    expect(readFormTableRows('not-a-table')).toEqual([]);
+    expect(readFormTableRows(undefined)).toEqual([]);
+  });
+
+  it('falls back to the hard ceiling when maxRows is absent', (): void => {
+    expect(
+      readFormTableRowBounds({
+        columns: [],
+        fieldKey: 'items',
+        label: '明細',
+        required: false,
+        type: 'table',
+      }),
+    ).toEqual({ maxRows: 100, minRows: 0 });
   });
 });

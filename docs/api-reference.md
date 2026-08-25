@@ -475,10 +475,14 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `FormRendererValidationResult` | interface | Validation outcome |
 | `ConditionOperator` | type | Operator union |
 | `ParsedConditionRule` | type | Parsed condition AST |
-| `buildFormRendererValues()` | function | Build initial values from schema |
+| `buildFormRendererValues()` | function | Build initial values from schema (table fields seed `minRows` rows) |
 | `readVisibleFormRendererFields()` | function | Filter visible fields by condition |
-| `validateFormRendererValues()` | function | Whole-form validation |
-| `focusFormRendererField(key)` | function | DOM focus on a field |
+| `validateFormRendererValues()` | function | Whole-form validation, recursing into table rows; cell errors keyed by instance path |
+| `focusFormRendererField(key)` | function | DOM focus on a field or a table cell instance path |
+| `readFormTableCellPath()` | function | Build the `<tableKey>[<i>].<columnKey>` instance path |
+| `readFormTableRows()` | function | Narrow a field value to table rows |
+| `readFormTableRowBounds()` | function | Resolve a table's effective `minRows` / `maxRows` |
+| `createFormTableRow()` | function | Build one row seeded from the column defaults |
 | `isFormRendererFieldVisible / Required / Readonly` | function | Predicate helpers |
 | `evaluateConditionExpression()` | function | Evaluate a condition expression |
 | `parseConditionRule()` / `buildConditionExpression()` | function | Rule ↔ string conversion |

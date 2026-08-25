@@ -1,13 +1,20 @@
 import {
   DateFieldDefinition,
+  FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
   FormFieldValue,
+  FormTableCellValue,
+  FormTableRowValue,
   FormUiSchema,
   NumberFieldDefinition,
   FormStaticOptionFieldDefinition,
+  TableColumnDefinition,
+  TableFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isFormTableCellValue,
+  isFormTableRowValues,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 
@@ -85,25 +92,170 @@ export function validateFormRendererValues({
 }): FormRendererValidationResult {
   const visibleFields = readVisibleFormRendererFields(schema, uiSchema, values);
   const errors = visibleFields.reduce<Readonly<Record<string, string>>>(
-    (currentErrors, field) =>
-      isFormRendererFieldRequired(field, schema.fields, values) &&
-      !isFormRendererFieldValuePresent(values[field.fieldKey])
-        ? {
-            ...currentErrors,
-            [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。`,
-          }
-        : currentErrors,
+    (currentErrors, field) => ({
+      ...currentErrors,
+      ...readFormRendererFieldErrors(field, schema, values),
+    }),
     {},
   );
-  const firstInvalidFieldKey = visibleFields.find(
-    (field) => errors[field.fieldKey],
-  )?.fieldKey;
 
   return {
     errors,
-    firstInvalidFieldKey: firstInvalidFieldKey ?? null,
+    firstInvalidFieldKey: readFirstInvalidFieldKey(visibleFields, errors),
     valid: Object.keys(errors).length === 0,
   };
+}
+
+function readFormRendererFieldErrors(
+  field: FormFieldDefinition,
+  schema: FormDefinitionSchema,
+  values: FormRendererValues,
+): Readonly<Record<string, string>> {
+  const required = isFormRendererFieldRequired(field, schema.fields, values);
+
+  if (isTableFieldDefinition(field)) {
+    return readFormTableErrors(field, values[field.fieldKey], required);
+  }
+
+  return required && !isFormRendererFieldValuePresent(values[field.fieldKey])
+    ? { [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。` }
+    : {};
+}
+
+/**
+ * Row bounds first, then per-row required columns. A wrong row count is fixed
+ * by adding or deleting rows, so listing the cells of rows that should not
+ * exist would only add noise (mirrors the backend order, ADR 16 §3.7).
+ */
+function readFormTableErrors(
+  field: TableFieldDefinition,
+  value: FormFieldValue | undefined,
+  required: boolean,
+): Readonly<Record<string, string>> {
+  const rows = readFormTableRows(value);
+  const bounds = readFormTableRowBounds(field);
+  const minRows = required ? Math.max(bounds.minRows, 1) : bounds.minRows;
+  const label = field.label || field.fieldKey;
+
+  if (rows.length < minRows) {
+    return { [field.fieldKey]: `${label}至少需要 ${minRows} 列。` };
+  }
+
+  if (rows.length > bounds.maxRows) {
+    return { [field.fieldKey]: `${label}最多 ${bounds.maxRows} 列。` };
+  }
+
+  return rows.reduce<Readonly<Record<string, string>>>(
+    (currentErrors, row, rowIndex) => ({
+      ...currentErrors,
+      ...readFormTableRowErrors(field, row, rowIndex),
+    }),
+    {},
+  );
+}
+
+function readFormTableRowErrors(
+  field: TableFieldDefinition,
+  row: FormTableRowValue,
+  rowIndex: number,
+): Readonly<Record<string, string>> {
+  return field.columns
+    .filter(
+      (column) =>
+        column.required && !isFormRendererFieldValuePresent(row[column.fieldKey]),
+    )
+    .reduce<Readonly<Record<string, string>>>(
+      (currentErrors, column) => ({
+        ...currentErrors,
+        [readFormTableCellPath(field.fieldKey, rowIndex, column.fieldKey)]:
+          `${column.label || column.fieldKey}為必填欄位。`,
+      }),
+      {},
+    );
+}
+
+/**
+ * The first error in display order, so focusing it lands on the topmost
+ * problem. A table contributes either its own key (row count) or a cell
+ * instance path, both of which `focusFormRendererField` can address.
+ */
+function readFirstInvalidFieldKey(
+  fields: readonly FormFieldDefinition[],
+  errors: Readonly<Record<string, string>>,
+): string | null {
+  const errorKeys = Object.keys(errors);
+
+  return (
+    fields
+      .flatMap((field) =>
+        errorKeys.filter(
+          (key) =>
+            key === field.fieldKey || key.startsWith(`${field.fieldKey}[`),
+        ),
+      )
+      .at(0) ?? null
+  );
+}
+
+/**
+ * Instance path of one cell (ADR 16 §3.3). Used as the error map key and as the
+ * `data-form-field-key` the focus helper looks for.
+ */
+export function readFormTableCellPath(
+  tableKey: string,
+  rowIndex: number,
+  columnKey: string,
+): string {
+  return `${tableKey}[${rowIndex}].${columnKey}`;
+}
+
+/**
+ * Narrows a field value to table rows. An empty array is ambiguous — it also
+ * satisfies the multi-select shape — so only call this when the field
+ * definition says `table`.
+ */
+export function readFormTableRows(
+  value: FormFieldValue | undefined,
+): readonly FormTableRowValue[] {
+  return isFormTableRowValues(value) ? value : [];
+}
+
+export function readFormTableRowBounds(field: TableFieldDefinition): {
+  readonly maxRows: number;
+  readonly minRows: number;
+} {
+  return {
+    maxRows:
+      typeof field.maxRows === 'number' ? field.maxRows : FORM_TABLE_MAX_ROWS,
+    minRows: typeof field.minRows === 'number' ? field.minRows : 0,
+  };
+}
+
+/**
+ * A fresh row seeded from each column's own `defaultValue`. Columns without one
+ * are left absent rather than set to `null`, so an untouched cell reads exactly
+ * like an untouched flat field.
+ */
+export function createFormTableRow(
+  columns: readonly TableColumnDefinition[],
+): FormTableRowValue {
+  return columns.reduce<FormTableRowValue>((row, column) => {
+    const value = readInitialFormTableCellValue(column);
+
+    return typeof value === 'undefined' ? row : { ...row, [column.fieldKey]: value };
+  }, {});
+}
+
+function readInitialFormTableCellValue(
+  column: TableColumnDefinition,
+): FormTableCellValue | undefined {
+  if (typeof column.defaultValue !== 'undefined') {
+    return isFormTableCellValue(column.defaultValue)
+      ? column.defaultValue
+      : undefined;
+  }
+
+  return column.type === 'boolean' ? false : undefined;
 }
 
 export function focusFormRendererField(fieldKey: string): void {
@@ -369,6 +521,15 @@ const CONDITION_OPERATOR_OPTIONS: readonly {
 function readInitialFormRendererValue(
   field: FormFieldDefinition,
 ): FormFieldValue | undefined {
+  // Checked before `defaultValue`: a table has no default of its own (the type
+  // says `never` and the lint rejects one), its initial rows come from
+  // `minRows` × the column defaults (ADR 16 §3.1).
+  if (isTableFieldDefinition(field)) {
+    return Array.from({ length: readFormTableRowBounds(field).minRows }, () =>
+      createFormTableRow(field.columns),
+    );
+  }
+
   if (typeof field.defaultValue !== 'undefined') {
     return field.defaultValue;
   }
