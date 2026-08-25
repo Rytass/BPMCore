@@ -15,7 +15,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | ----- | ----------------------------------------- | ---- | ------------ |
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
-| P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED      |
+| P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFYING    |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
 
@@ -297,6 +297,104 @@ attachment 2）。**必修 3 項，已全數修復並複驗歸零**：
 - **真實瀏覽器互動驗證**（依開發守則）：在 client host 實際建立含表格的表單、
   發起案件填寫並送出、詳情頁唯讀檢視。
 - `docs/api-reference.md` 同 commit 更新（react 套件新 export／props）。
+
+**實作結果**（2026-08-25）
+
+異動檔案：
+
+- `libs/bpm-core-react/src/views/forms/builder/FormBuilderView.tsx`：
+  **前置重構** —— `renderTextFieldSettings` 等 type-specific 設定函式改為
+  `(field, commit)` 參數化（option 類另收 `requestChange`），刪掉六個
+  `updateSelectedXxxField` closure；接著新增 `FIELD_TYPE_OPTIONS` 的「表格」、
+  `renderTableFieldSettings`（min/maxRows、addRowLabel、column 清單 CRUD +
+  Mezzanine `Table` 原生 `draggable` 排序 + 選取欄的型別專屬設定）、
+  `PendingBuilderConfirmation` 新增 `remove-column`／`replace-column`。
+- `libs/bpm-core-react/src/views/forms/renderer/FormRendererView.tsx`：
+  `renderStaticControl` 從 `renderControl` 抽出供 cell 重用；新增
+  `FormTableField`／`FormTableCell`（列 CRUD、min/maxRows 約束、readonly、
+  cell instance path 作為 `data-form-field-key`、ephemeral row id）。
+- `libs/bpm-core-client/src/lib/form/form-rendering.ts`：
+  `buildFormRendererValues` 對 table 種出 `minRows` 列、
+  `validateFormRendererValues` 遞迴 + instance path、新增
+  `readFormTableCellPath`／`readFormTableRows`／`readFormTableRowBounds`／
+  `createFormTableRow`。
+- `libs/bpm-core-client/src/lib/form/form-api.ts`：`createFieldDefinition`
+  支援 `table`、新增 `createTableColumnDefinition`。
+- `libs/bpm-core-client/src/lib/form/form-data-source-builder.ts`：新增
+  `renameFormTableColumnBindings`。
+- `libs/bpm-core-react/src/views/instances/new/InstanceNewView.tsx` 與
+  `.../detail/InstanceDetailView.tsx`：送出與驗證改用
+  `buildFormRendererValues` 組出的值（見下方瀏覽器驗證發現 2）。
+- `libs/bpm-core-react/jest.config.cts` +
+  `src/testing/mezzanine-icons.jest.cjs`：ESM-only 的 `@mezzanine-ui/icons`
+  在 CommonJS 測試環境載不進來，改以 stub 對應（比照 bpm-core 的 cel-js 先例）。
+
+新測試：`FormBuilderView.spec.tsx`（新檔，13 例）、`FormRendererView.spec.tsx`
+（+6 例）、`form-rendering.spec.ts`（+10 例）。
+
+**Gate 結果**：`pnpm typecheck` 6 專案、`pnpm lint` 0 error、
+`nx run-many -t test --skip-nx-cache` 6 專案全綠（bpm-core-react 36、
+bpm-core-client 65）。`docs/api-reference.md` 已同步四個新 client export 與
+`createTableColumnDefinition`、`renameFormTableColumnBindings`。
+
+**重構的行為不變證明**：Builder 原本沒有任何 spec。先寫
+`FormBuilderView.spec.tsx` 覆蓋文字／數字／boolean／靜態選項與欄位 key rename，
+確認它對**重構前後的程式碼都通過**，再進行參數化重構——而不是重構完才補測試。
+
+**真實瀏覽器互動驗證**（cswap 專用瀏覽器，develop DB）
+
+實際走完：建立模板「表格欄位驗證 P2」→ 加入文字欄位與表格欄位 → 改 column key
+與標題、切必填 → 新增第二欄並切換型別為「數字」（確認 Modal 出現後才寫入）→
+預覽分頁新增／刪除列、逐 cell 編輯 → 發布 → 發起案件 → 空品項送出（逐 cell
+必填訊息出現在該 cell 下方且焦點跳至該 cell）→ 補齊兩列後送出 → 詳情頁唯讀
+表格（兩列、無新增／刪除動作、案件標題取第一個非表格欄位）。
+
+同時確認：型別下拉只列出 ADR §3.10 允許的 8 種 column 型別；表格欄位自動以
+FULL 寬度加入 layout；只剩一欄時「移除此欄」為 disabled。
+
+**瀏覽器驗證抓到、單元測試沒抓到的兩個缺陷（皆已修復並補上會失敗的迴歸測試）**
+
+1. **column key 只吃得到第一個字**：column 列的 React key 原本是
+   `${tableKey}-${columnKey}`，也就是這一列正在編輯的值。打第一個字就換 key、
+   整列重掛、焦點消失。改以位置為 key（與既有靜態選項表格一致）。spec 的 Table
+   mock 原本忽略列的 `key`，因此測不到；一併改為沿用列的 `key`，該測試對舊
+   實作確實會失敗。
+2. **發起頁把看得見的表格判為「至少需要 1 列」**：`InstanceNewView` 自己持有
+   `formValues`，在填寫者動手前是 `{}`，而 Renderer 顯示的是
+   `buildFormRendererValues` 種出來的列。驗證看的是前者、畫面顯示的是後者。
+   兩個 view 改為先組出值再驗證與送出——順帶修好「欄位 defaultValue 不會被送
+   出」這個同源的既有問題。
+
+**ADR 未載明而在 P2 自決的項目**（皆取最小、additive、可回退解）
+
+1. **column key rename 不走確認 Modal**：ADR §3.9 把「改 column key」列為 Modal
+   案例，但欄位 key 是逐字輸入的，每打一個字彈一次 Modal 無法使用；且 P2 的
+   column 還不能綁 DataSource，改名沒有任何 `ROW_FIELD` binding 會失效，沒有
+   可警示的破壞性。因此 rename 直接套用並同步 `ROW_FIELD` bindings（與 top-level
+   fieldKey rename 的既有行為一致），Modal 保留給真正離散且破壞性的兩件事：
+   刪除欄與切換欄型別。P3 讓 column 可綁 DataSource 後，若要對「改名會影響既有
+   binding」再加提示，屆時可 additive 補上。
+2. **切換 column 型別只保留身分與必填**：`fieldKey`／`label`／`required`／
+   `description`／`placeholder` 留下，型別專屬設定（預設值、選項、數值範圍、
+   長度）一律捨棄。留著會產生 lint 會擋、但原因看起來莫名其妙的 schema。
+3. **cell 清空的儲存形式**：控制項回 `undefined` 時移除該 key（未填的 cell 就
+   長這樣）；文字欄位清空得到的是 `''`，與扁平文字欄位一致，required 檢查照樣
+   擋得住。
+4. **P2 的 column 只支援靜態選項**：`renderTableFieldSettings` 傳給共用 option
+   renderer 的 `requestChange` 目前直接套用而不彈 Modal，因為沒有 DataSource
+   可切換。P3 接上 column DataSource 時換成真正的確認流程。
+
+**ADR 與現實不符，已記錄（觸發 ADR §9 Review Trigger 候選）**
+
+- ADR §3.9 寫「超寬表格由 Mezzanine `Table` `scroll` 處理」。實際上
+  `TableScroll` 只有 `virtualized` 與 `y`（垂直），**沒有水平捲動選項**。P2 改以
+  外層 `overflow-x: auto` 容器承接，不覆寫元件本身任何樣式。若未來要真正的
+  凍結欄／水平捲動，需要 Mezzanine 端支援，屬 ADR §9 的重新檢視項目。
+
+**P2 期間記錄、不在本 phase 處理**
+
+- 唯讀模式的數字 cell 仍顯示 spinner 按鈕。這是扁平 `number` 欄位既有的 readonly
+  呈現行為（`Input` 的 `readonly` 不隱藏 spinner），非表格引入，未一併更動。
 
 ## P3 — Cell 層級 DataSource
 
