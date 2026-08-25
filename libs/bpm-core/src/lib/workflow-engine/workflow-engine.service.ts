@@ -1,10 +1,15 @@
 import {
+  FORM_TABLE_MAX_ROWS,
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
   NumberFieldDefinition,
+  TableColumnDefinition,
+  TableFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isFormTableCellValue,
+  isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
@@ -6162,15 +6167,18 @@ function validateSubmittedFormData(
   schema: FormDefinitionSchema,
   formData: Readonly<Record<string, unknown>>,
 ): void {
-  const missingFields = schema.fields.filter((field) => {
-    const fieldValue = formData[field.fieldKey];
-
-    return (
-      isSubmittedFormFieldVisible(field, schema.fields, formData) &&
+  const visibleFields = schema.fields.filter((field) =>
+    isSubmittedFormFieldVisible(field, schema.fields, formData),
+  );
+  // Tables answer "is this filled?" by row count and report per-row problems
+  // with an instance path, so they get their own pass instead of the flat
+  // "missing required fields" list (ADR 16 §3.7).
+  const missingFields = visibleFields.filter(
+    (field) =>
+      !isTableFieldDefinition(field) &&
       isSubmittedFormFieldRequired(field, schema.fields, formData) &&
-      !isSubmittedFieldValuePresent(fieldValue)
-    );
-  });
+      !isSubmittedFieldValuePresent(formData[field.fieldKey]),
+  );
 
   if (missingFields.length > 0) {
     throw new BadRequestException(
@@ -6179,6 +6187,129 @@ function validateSubmittedFormData(
         .join(', ')}`,
     );
   }
+
+  const tableErrors = visibleFields
+    .filter(isTableFieldDefinition)
+    .flatMap((field) =>
+      validateSubmittedTableValue(
+        field,
+        formData[field.fieldKey],
+        isSubmittedFormFieldRequired(field, schema.fields, formData),
+      ),
+    );
+
+  if (tableErrors.length > 0) {
+    throw new BadRequestException(tableErrors.join('; '));
+  }
+}
+
+/**
+ * Authoritative shape, row-count and per-row required checks for one table
+ * value (ADR 16 §3.7). Depth stops here on purpose: like the flat fields, only
+ * required / shape / row count are enforced server side; `minimum`, `maxLength`
+ * and friends stay a frontend hint.
+ */
+function validateSubmittedTableValue(
+  field: TableFieldDefinition,
+  value: unknown,
+  required: boolean,
+): readonly string[] {
+  const path = `formData.${field.fieldKey}`;
+
+  if (typeof value === 'undefined' || value === null) {
+    return required || readTableMinRows(field) > 0
+      ? [`${path} must include at least ${readTableRequiredRowCount(field)} row(s)`]
+      : [];
+  }
+
+  if (!Array.isArray(value)) {
+    return [`${path} must be an array of rows`];
+  }
+
+  const rowErrors = value.flatMap((row, index) =>
+    validateSubmittedTableRow(field, row, `${path}[${index}]`),
+  );
+
+  // A malformed row cannot be counted against min/max meaningfully; report the
+  // shape problem first so the submitter fixes the real cause.
+  if (rowErrors.length > 0) {
+    return rowErrors;
+  }
+
+  return validateSubmittedTableRowCount(field, value.length, required, path);
+}
+
+function validateSubmittedTableRowCount(
+  field: TableFieldDefinition,
+  rowCount: number,
+  required: boolean,
+  path: string,
+): readonly string[] {
+  const minRows = required
+    ? Math.max(readTableMinRows(field), 1)
+    : readTableMinRows(field);
+  const maxRows = readTableMaxRows(field);
+
+  return [
+    ...(rowCount < minRows
+      ? [`${path} must include at least ${minRows} row(s)`]
+      : []),
+    ...(rowCount > maxRows
+      ? [`${path} must include at most ${maxRows} row(s)`]
+      : []),
+  ];
+}
+
+function validateSubmittedTableRow(
+  field: TableFieldDefinition,
+  row: unknown,
+  path: string,
+): readonly string[] {
+  if (!isRecord(row)) {
+    return [`${path} must be an object`];
+  }
+
+  const columnsByKey = new Map(
+    field.columns.map((column) => [column.fieldKey, column]),
+  );
+  const unknownKeyErrors = Object.keys(row)
+    .filter((columnKey) => !columnsByKey.has(columnKey))
+    .map((columnKey) => `${path}.${columnKey} is not a table column`);
+  const cellErrors = Object.entries(row)
+    .filter(
+      ([columnKey, cellValue]) =>
+        columnsByKey.has(columnKey) && !isFormTableCellValue(cellValue),
+    )
+    .map(([columnKey]) => `${path}.${columnKey} is not a valid cell value`);
+  const requiredErrors = field.columns
+    .filter(
+      (column) =>
+        isSubmittedTableColumnRequired(column) &&
+        !isSubmittedFieldValuePresent(row[column.fieldKey]),
+    )
+    .map((column) => `${path}.${column.fieldKey} is required`);
+
+  return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
+}
+
+/**
+ * Columns carry no `requiredWhen`: row-scoped conditions are out of scope for
+ * V1 and the structural lint rejects them (ADR 16 §3.1).
+ */
+function isSubmittedTableColumnRequired(column: TableColumnDefinition): boolean {
+  return column.required === true;
+}
+
+function readTableMinRows(field: TableFieldDefinition): number {
+  return typeof field.minRows === 'number' ? field.minRows : 0;
+}
+
+function readTableMaxRows(field: TableFieldDefinition): number {
+  return typeof field.maxRows === 'number' ? field.maxRows : FORM_TABLE_MAX_ROWS;
+}
+
+function readTableRequiredRowCount(field: TableFieldDefinition): number {
+  return Math.max(readTableMinRows(field), 1);
 }
 
 function readFormDefinitionSnapshotSchema(

@@ -2,6 +2,7 @@ import {
   FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldOption,
+  TableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -529,6 +530,275 @@ describe('WorkflowEngineService', () => {
         title: 'Request',
       }),
     ).rejects.toThrow('Form data is missing required fields: 事由');
+  });
+
+  it('accepts a table submission that satisfies shape, row bounds and per-row required columns', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const instance = await fixture.service.submitApprovalInstance({
+      formDataJson:
+        '{"items":[{"name":"Bolt","qty":3,"tags":["a"]},{"name":"Nut","qty":1}]}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: 'Request',
+    });
+
+    expect(instance.formData).toEqual({
+      items: [
+        { name: 'Bolt', qty: 3, tags: ['a'] },
+        { name: 'Nut', qty: 1 },
+      ],
+    });
+  });
+
+  it('rejects a table value that is not an array of rows', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":{"name":"Bolt"}}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must be an array of rows');
+  });
+
+  it('rejects a table row that is not an object', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{"name":"Bolt","qty":1},["Nut"]]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[1] must be an object');
+  });
+
+  it('rejects a table row carrying a key that is not a column', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{"name":"Bolt","qty":1,"secret":"x"}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[0].secret is not a table column');
+  });
+
+  it('rejects a cell value that is not a primitive', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{"name":{"nested":true},"qty":1}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[0].name is not a valid cell value');
+  });
+
+  it('names the row and column of a missing required cell', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{"name":"Bolt","qty":3},{"name":"Nut"}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[1].qty is required');
+  });
+
+  it('rejects a required table submitted with no rows', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema({ required: true }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+  });
+
+  it('rejects a required table that is absent from the submitted data', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema({ required: true }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+  });
+
+  it('enforces minRows even when the table itself is optional', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema({ minRows: 2 }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{"name":"Bolt","qty":1}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at least 2 row(s)');
+  });
+
+  it('rejects a table submitted with more rows than maxRows', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema({ maxRows: 2 }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson:
+          '{"items":[{"name":"a","qty":1},{"name":"b","qty":2},{"name":"c","qty":3}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at most 2 row(s)');
+  });
+
+  it('caps rows at the hard ceiling when the table declares no maxRows', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const rows = Array.from({ length: 101 }, (_, index) => ({
+      name: `item-${index}`,
+      qty: 1,
+    }));
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify({ items: rows }),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at most 100 row(s)');
+  });
+
+  it('skips table validation for a table hidden by its visibility condition', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createConditionalTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"needsItems":false}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"needsItems":true}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+  });
+
+  it('validates table form data on resubmit as well', async (): Promise<void> => {
+    const formSchema = createTableFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormDefinitionSnapshot: { schema: formSchema },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"items":[{"name":"Bolt"}]}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[0].qty is required');
   });
 
   it('uses an advisory lock when processing an instance', async (): Promise<void> => {
@@ -3844,6 +4114,68 @@ function createRequiredReasonFormSchema(): FormDefinitionSchema {
         label: '事由',
         required: true,
         type: 'text',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function createTableColumns(): TableFieldDefinition['columns'] {
+  return [
+    { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+    { fieldKey: 'qty', label: '數量', required: true, type: 'number' },
+    {
+      fieldKey: 'tags',
+      label: '標籤',
+      mode: 'multiple',
+      options: [{ label: 'A', value: 'a' }],
+      required: false,
+      type: 'select',
+    },
+  ];
+}
+
+function createTableFormSchema({
+  maxRows,
+  minRows,
+  required = false,
+}: {
+  readonly maxRows?: number;
+  readonly minRows?: number;
+  readonly required?: boolean;
+} = {}): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        columns: createTableColumns(),
+        fieldKey: 'items',
+        label: '請購明細',
+        ...(typeof maxRows === 'number' ? { maxRows } : {}),
+        ...(typeof minRows === 'number' ? { minRows } : {}),
+        required,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function createConditionalTableFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'needsItems',
+        label: '需要明細',
+        required: false,
+        type: 'boolean',
+      },
+      {
+        columns: createTableColumns(),
+        fieldKey: 'items',
+        label: '請購明細',
+        required: true,
+        type: 'table',
+        visibleWhen: 'form.needsItems == true',
       },
     ],
     schemaVersion: 1,
