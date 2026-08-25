@@ -324,10 +324,22 @@ const CANVAS_COLUMN_STYLE: CSSProperties = {
   minWidth: 0,
 };
 
+// Mezzanine's dropdown always opens downward — its Popper carries no flip or
+// shift middleware — so a select sitting at the very bottom of the page has its
+// menu clipped by the viewport with no way to scroll to it. Reserving room
+// below the settings column lets the page scroll far enough that the menu of
+// the last control still fits (see `TYPE_MENU_MAX_HEIGHT`).
+const SETTINGS_COLUMN_TRAILING_SPACE = 260;
+
 const SETTINGS_COLUMN_STYLE: CSSProperties = {
   flex: '1.45 1 720px',
   minWidth: 620,
+  paddingBottom: SETTINGS_COLUMN_TRAILING_SPACE,
 };
+
+// Kept under the reserved space above so the whole menu fits once the page is
+// scrolled to the end.
+const TYPE_MENU_MAX_HEIGHT = 240;
 
 const STACK_STYLE: CSSProperties = {
   display: 'grid',
@@ -1660,6 +1672,7 @@ export function FormBuilderView({
         render: (row): ReactElement => (
           <Select
             clearable={false}
+            menuMaxHeight={TYPE_MENU_MAX_HEIGHT}
             onChange={(option): void =>
               handleTableColumnTypeChange(field, row.index, option?.id)
             }
