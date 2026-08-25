@@ -6,6 +6,7 @@ import {
   FormUiSchema,
   FormStaticOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
@@ -2127,11 +2128,20 @@ function readFirstCaseTitleField(
   const fieldsByKey = new Map(
     schema.fields.map((field) => [field.fieldKey, field]),
   );
+  // A row count is a poor case title, so a table never becomes the title field
+  // — the first non-table field takes its place (ADR 16 §3.8).
   const firstLayoutField = uiSchema?.layout
     .map((layoutItem) => fieldsByKey.get(layoutItem.fieldKey) ?? null)
-    .find((field): field is FormFieldDefinition => Boolean(field));
+    .find(
+      (field): field is FormFieldDefinition =>
+        field !== null && !isTableFieldDefinition(field),
+    );
 
-  return firstLayoutField ?? schema.fields[0] ?? null;
+  return (
+    firstLayoutField ??
+    schema.fields.find((field) => !isTableFieldDefinition(field)) ??
+    null
+  );
 }
 
 function readFieldValueLabel(
@@ -2140,6 +2150,16 @@ function readFieldValueLabel(
 ): string | null {
   if (typeof value === 'undefined' || value === null) {
     return null;
+  }
+
+  // A table summarises as its row count; the rows themselves are records and
+  // have no single-line label (ADR 16 §3.8). Defence in depth: the title field
+  // picker above already skips tables, so this branch only matters if a future
+  // caller asks for a summary of an arbitrary field.
+  if (isTableFieldDefinition(field)) {
+    const rowCount = Array.isArray(value) ? value.length : 0;
+
+    return rowCount > 0 ? `${rowCount} 列` : null;
   }
 
   if (Array.isArray(value)) {

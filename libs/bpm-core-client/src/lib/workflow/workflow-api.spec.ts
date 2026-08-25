@@ -1,7 +1,9 @@
+import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
   listApprovalInstances,
   listInboxTasks,
   readApprovalInstance,
+  readFormDataCaseTitle,
 } from './workflow-api';
 
 interface CapturedRequest {
@@ -129,4 +131,56 @@ describe('@rytass/bpm-core-client/workflow', () => {
       }
     });
   });
+
+  describe('readFormDataCaseTitle', () => {
+    const tableField: FormFieldDefinition = {
+      columns: [
+        { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+      ],
+      fieldKey: 'items',
+      label: '請購明細',
+      required: true,
+      type: 'table',
+    };
+    const textField: FormFieldDefinition = {
+      fieldKey: 'reason',
+      label: '事由',
+      required: true,
+      type: 'text',
+    };
+
+    // A row count is not a case title, so the table is skipped even when the
+    // layout lists it first (ADR 16 §3.8).
+    it('skips a table and titles the case with the first scalar field', (): void => {
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { items: [{ name: 'Bolt' }], reason: '汰換' },
+          schema: { fields: [tableField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'items', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+    });
+
+    it('falls back when a table is the only field', (): void => {
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { items: [{ name: 'Bolt' }] },
+          schema: { fields: [tableField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [{ fieldKey: 'items', width: 'FULL' }],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('fallback');
+    });
+  });
+
 });
