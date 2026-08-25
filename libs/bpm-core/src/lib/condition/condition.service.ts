@@ -14,7 +14,10 @@ interface ConditionLintOptions {
 export type CelEvaluationContext = Readonly<Record<string, unknown>>;
 
 const DEFAULT_MAX_EXPRESSION_LENGTH = 2000;
-const CEL_KEYWORDS = new Set(['false', 'has', 'in', 'null', 'true']);
+// `has` and `size` are CEL macros, not context identifiers; the root-identifier
+// lint must not report them as unknown. `size` is required by the table field
+// IS_FILLED / IS_EMPTY expressions (ADR 16 §3.8).
+const CEL_KEYWORDS = new Set(['false', 'has', 'in', 'null', 'size', 'true']);
 
 @Injectable()
 export class ConditionService {

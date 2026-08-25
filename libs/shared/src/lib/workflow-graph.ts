@@ -2,6 +2,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldOption,
+  isFormIdentifierKey,
   isFormStaticOptionFieldDefinition,
 } from './form';
 import {
@@ -914,7 +915,7 @@ export function readConditionOperator(
 export function readConditionOperatorIds(
   field: FormFieldDefinition,
 ): readonly WorkflowEdgeConditionOperator[] {
-  if (field.type === 'file_upload') {
+  if (field.type === 'file_upload' || field.type === 'table') {
     return ['IS_FILLED', 'IS_EMPTY'];
   }
 
@@ -1078,6 +1079,21 @@ export function readConditionExpression(
 
   const fieldReference = readFormFieldReference(field.fieldKey);
 
+  if (field.type === 'table') {
+    // A table value is a list, so emptiness means row count, not `== ""`.
+    // cel-js supports the global `size()` macro but not a `.size()` method,
+    // and `size(null)` throws — hence the null guard (see docs/17 appendix A).
+    if (operator === 'IS_FILLED') {
+      return `${fieldReference} != null && size(${fieldReference}) > 0`;
+    }
+
+    if (operator === 'IS_EMPTY') {
+      return `${fieldReference} == null || size(${fieldReference}) == 0`;
+    }
+
+    return undefined;
+  }
+
   if (operator === 'IS_FILLED') {
     return `${fieldReference} != null && ${fieldReference} != ""`;
   }
@@ -1096,7 +1112,7 @@ export function readConditionExpression(
 }
 
 export function readFormFieldReference(fieldKey: string): string {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(fieldKey)
+  return isFormIdentifierKey(fieldKey)
     ? `form.${fieldKey}`
     : `form[${JSON.stringify(fieldKey)}]`;
 }

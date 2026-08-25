@@ -1,9 +1,12 @@
 import {
   isDecisionPolicyUnsatisfiable,
+  readConditionExpression,
+  readConditionOperatorIds,
   readDesignTimeApproverCount,
   readFallbackWorkflowDefinition,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
+import { FormFieldDefinition } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
@@ -125,5 +128,52 @@ describe('readWorkflowDefinitionIssue', () => {
         definitionWithUserTask(THREE_MEMBERS, quorum(2)),
       ),
     ).toBeNull();
+  });
+});
+
+describe('table field conditions', () => {
+  const TABLE_FIELD: FormFieldDefinition = {
+    columns: [
+      { fieldKey: 'qty', label: 'Quantity', required: true, type: 'number' },
+    ],
+    fieldKey: 'items',
+    label: 'Items',
+    required: true,
+    type: 'table',
+  };
+  const TEXT_FIELD: FormFieldDefinition = {
+    fieldKey: 'note',
+    label: 'Note',
+    required: false,
+    type: 'text',
+  };
+
+  it('offers only emptiness operators for a table', () => {
+    expect(readConditionOperatorIds(TABLE_FIELD)).toEqual([
+      'IS_FILLED',
+      'IS_EMPTY',
+    ]);
+    expect(readConditionOperatorIds(TEXT_FIELD)).toEqual([
+      'EQUALS',
+      'NOT_EQUALS',
+      'IS_FILLED',
+      'IS_EMPTY',
+    ]);
+  });
+
+  it('compiles table emptiness to a row count, not a string comparison', () => {
+    expect(readConditionExpression(TABLE_FIELD, 'IS_FILLED', undefined)).toBe(
+      'form.items != null && size(form.items) > 0',
+    );
+    expect(readConditionExpression(TABLE_FIELD, 'IS_EMPTY', undefined)).toBe(
+      'form.items == null || size(form.items) == 0',
+    );
+    expect(readConditionExpression(TEXT_FIELD, 'IS_FILLED', undefined)).toBe(
+      'form.note != null && form.note != ""',
+    );
+  });
+
+  it('refuses to compile value operators against a table', () => {
+    expect(readConditionExpression(TABLE_FIELD, 'EQUALS', '1')).toBeUndefined();
   });
 });
