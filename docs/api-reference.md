@@ -178,13 +178,16 @@ Form-schema definitions.
 |---|---|---|
 | `FormDefinitionSchema` | interface | Full form definition (fields + uiSchema) |
 | `FormFieldDefinition` | type | Union of all field-definition variants |
-| `FormFieldValue` | type | Union of all field-value variants |
+| `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
+| `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
+| `FormTableRowValue` | type | One table row: column key to cell value |
 | `TextFieldDefinition` | type | text / email / textarea |
 | `NumberFieldDefinition` | type | number (min/max/precision) |
 | `DateFieldDefinition` | type | date / datetime |
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
 | `FormDataSourceReference` | interface | Registered source key, version, and bindings |
-| `FormDataSourceBinding` | type | Direct field or primitive constant binding |
+| `FormDataSourceBinding` | interface | One parameter bound to a source |
+| `FormDataSourceBindingSource` | type | Top-level field, primitive constant, or same-row column |
 | `FormFieldOptionSource` | type | Static options / DataSource XOR union |
 | `SelectFieldDefinition` | type | Select option field with single / multiple mode |
 | `AutoCompleteFieldDefinition` | type | AutoComplete option field with single / multiple mode |
@@ -198,13 +201,24 @@ Form-schema definitions.
 | `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
+| `TableFieldDefinition` | type | Repeating-row table field (columns, row bounds, add-row label) |
+| `TableColumnDefinition` | type | Union of the field types a table column may use |
+| `TABLE_COLUMN_FIELD_TYPES` | const | Field types the structural lint accepts as a column |
+| `FORM_TABLE_MAX_ROWS` | const | Hard ceiling (100) on table rows |
 | `FormUiSchema` | interface | Layout description for renderer |
 | `FormLayoutItem` | interface | One cell in the layout grid |
 | `isFormOptionFieldDefinition()` | function | Option-control type guard |
 | `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
 | `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `isTableFieldDefinition()` | function | Table field type guard |
+| `isTableColumnFieldType()` | function | Whether a field type may be used as a column |
+| `isFormTableCellValue()` | function | Primitive cell-value guard |
+| `isFormTableRowValue()` | function | Single table row guard |
+| `isFormTableRowValues()` | function | Table row array guard |
+| `readFormTableCellValue()` | function | Narrow a field value to a cell value, `undefined` for table rows |
+| `isFormIdentifierKey()` | function | Whether a key is a plain identifier (required for table and column keys) |
 | `readFormFieldSelectionMode()` | function | Normalized control selection mode |
-| `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization |
+| `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization, recursing into table columns |
 
 ## `@rytass/bpm-core-shared/identity`
 

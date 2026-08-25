@@ -21,6 +21,8 @@
 | 13  | [Ad-hoc 臨時指令](./13-adhoc-directives.md)                              | 臨時會簽/加簽/階段通知/結案通知的流程與介接方式   |
 | 14  | [表單選項 DataSource ADR](./14-form-option-data-source-adr.md)           | 動態選項來源、版本、驗證、快照與編輯語意          |
 | 15  | [表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md) | 分階段交付、gate、E2E matrix 與完成定義           |
+| 16  | [表格欄位 ADR](./16-form-table-field-adr.md)                             | 多行多欄表格欄位、column schema 與 cell DataSource |
+| 17  | [表格欄位開發 Phase](./17-form-table-field-phases.md)                    | 表格欄位 P0–P4 分階段交付與 gate                  |
 | ★   | [Public API Reference](./api-reference.md)                               | 4 個 lib 套件所有 export 的完整清冊（必維護）     |
 
 ## Stack
