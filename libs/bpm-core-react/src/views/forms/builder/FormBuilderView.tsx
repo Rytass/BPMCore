@@ -142,6 +142,24 @@ type ConditionRuleConfig = Readonly<{
 type DataSourceCatalogState = 'loading' | 'ready' | 'unavailable';
 type FormDataSourceConstantValue = string | number | boolean | null;
 
+/**
+ * How a settings renderer hands back an edited field. Passing the whole next
+ * field (rather than a patch) keeps one signature for every field type, and
+ * lets the same renderer serve a top-level field or a table column — the caller
+ * decides where the result is written (ADR 16 §3.9).
+ */
+type FieldCommit<TField extends FormFieldDefinition> = (nextField: TField) => void;
+
+/**
+ * A change that needs confirmation before it touches the schema, because it can
+ * invalidate existing options, bindings or default values.
+ */
+type OptionFieldChangeRequester = (
+  field: FormOptionFieldDefinition,
+  nextField: FormOptionFieldDefinition,
+  impact?: string,
+) => void;
+
 type PendingBuilderConfirmation =
   | Readonly<{
       affectedFieldKeys: readonly string[];
@@ -820,59 +838,30 @@ export function FormBuilderView({
     setDataSourceLint(null);
   }
 
-  function updateSelectedTextField(
-    patch: Partial<
-      Pick<TextFieldDefinition, 'defaultValue' | 'maxLength' | 'minLength'>
-    >,
-  ): void {
-    updateSelectedFieldWith((field) =>
-      isTextFieldDefinition(field) ? { ...field, ...patch } : field,
-    );
+  /**
+   * Commits a whole replacement field. Every type-specific settings renderer
+   * takes a committer like this instead of closing over the selected field, so
+   * one implementation can serve both a top-level field and a table column
+   * (ADR 16 §3.9).
+   */
+  function commitSelectedField(nextField: FormFieldDefinition): void {
+    updateSelectedFieldWith((): FormFieldDefinition => nextField);
   }
 
-  function updateSelectedNumberField(
-    patch: Partial<
-      Pick<NumberFieldDefinition, 'defaultValue' | 'maximum' | 'minimum'>
-    >,
+  function handleOptionModeChange(
+    field: FormOptionFieldDefinition,
+    mode: 'multiple' | 'single',
+    requestChange: OptionFieldChangeRequester,
   ): void {
-    updateSelectedFieldWith((field) =>
-      isNumberFieldDefinition(field) ? { ...field, ...patch } : field,
-    );
-  }
-
-  function updateSelectedDateField(
-    patch: Partial<Pick<DateFieldDefinition, 'defaultValue'>>,
-  ): void {
-    updateSelectedFieldWith((field) =>
-      isDateFieldDefinition(field) ? { ...field, ...patch } : field,
-    );
-  }
-
-  function updateSelectedSelectField(
-    patch: Partial<
-      Pick<FormOptionFieldDefinition, 'defaultValue' | 'options'>
-    >,
-  ): void {
-    updateSelectedFieldWith((field) =>
-      isSelectFieldDefinition(field) ? { ...field, ...patch } : field,
-    );
-  }
-
-  function updateSelectedOptionMode(mode: 'multiple' | 'single'): void {
-    if (
-      !selectedField ||
-      (selectedField.type !== 'select' && selectedField.type !== 'autocomplete')
-    ) {
+    if (field.type !== 'select' && field.type !== 'autocomplete') {
       return;
     }
 
-    const currentMode = readFormFieldSelectionMode(selectedField);
-
-    if (currentMode === mode) {
+    if (readFormFieldSelectionMode(field) === mode) {
       return;
     }
 
-    const currentDefaultValue = selectedField.defaultValue;
+    const currentDefaultValue = field.defaultValue;
     const defaultValue =
       mode === 'multiple'
         ? typeof currentDefaultValue === 'string'
@@ -882,10 +871,10 @@ export function FormBuilderView({
           ? currentDefaultValue[0]
           : currentDefaultValue;
 
-    requestDataSourceFieldChange(
-      selectedField,
+    requestChange(
+      field,
       {
-        ...selectedField,
+        ...field,
         defaultValue,
         mode,
       },
@@ -913,6 +902,7 @@ export function FormBuilderView({
   function handleOptionSourceChange(
     field: FormOptionFieldDefinition,
     optionId: string | undefined,
+    requestChange: OptionFieldChangeRequester,
   ): void {
     if (!optionId) {
       return;
@@ -926,10 +916,10 @@ export function FormBuilderView({
       const { dataSource, defaultValue, ...baseField } = field;
       void dataSource;
       void defaultValue;
-      requestDataSourceFieldChange(field, {
+      requestChange(field, {
         ...baseField,
         options: [],
-      } as FormFieldDefinition);
+      } as FormOptionFieldDefinition);
 
       return;
     }
@@ -950,7 +940,7 @@ export function FormBuilderView({
         parameterKeys.has(binding.parameter),
       );
 
-      requestDataSourceFieldChange(field, {
+      requestChange(field, {
         ...field,
         dataSource: {
           bindings: nextBindings,
@@ -965,7 +955,7 @@ export function FormBuilderView({
     const { options, defaultValue, ...baseField } = field;
     void options;
     void defaultValue;
-    requestDataSourceFieldChange(field, {
+    requestChange(field, {
       ...baseField,
       dataSource: {
         bindings: [],
@@ -1011,27 +1001,6 @@ export function FormBuilderView({
     } finally {
       setDataSourceLintLoading(false);
     }
-  }
-
-  function updateSelectedBooleanField(
-    patch: Partial<Pick<BooleanFieldDefinition, 'defaultValue'>>,
-  ): void {
-    updateSelectedFieldWith((field) =>
-      field.type === 'boolean' ? { ...field, ...patch } : field,
-    );
-  }
-
-  function updateSelectedFileUploadField(
-    patch: Partial<
-      Pick<
-        FileUploadFieldDefinition,
-        'acceptedMimeTypes' | 'defaultValue' | 'maxFiles'
-      >
-    >,
-  ): void {
-    updateSelectedFieldWith((field) =>
-      field.type === 'file_upload' ? { ...field, ...patch } : field,
-    );
   }
 
   function updatePreviewValues(values: FormRendererValues): void {
@@ -1293,7 +1262,11 @@ export function FormBuilderView({
             variant="base"
           />,
         )}
-        {renderTypeSpecificSettings(field)}
+        {renderTypeSpecificSettings(
+          field,
+          commitSelectedField,
+          requestDataSourceFieldChange,
+        )}
       </div>
     );
   }
@@ -1330,37 +1303,40 @@ export function FormBuilderView({
 
   function renderTypeSpecificSettings(
     field: FormFieldDefinition,
+    commit: FieldCommit<FormFieldDefinition>,
+    requestChange: OptionFieldChangeRequester,
   ): ReactElement | null {
     if (isTextFieldDefinition(field)) {
-      return renderTextFieldSettings(field);
+      return renderTextFieldSettings(field, commit);
     }
 
     if (isNumberFieldDefinition(field)) {
-      return renderNumberFieldSettings(field);
+      return renderNumberFieldSettings(field, commit);
     }
 
     if (isDateFieldDefinition(field)) {
-      return renderDateFieldSettings(field);
+      return renderDateFieldSettings(field, commit);
     }
 
     if (isFormOptionFieldDefinition(field)) {
-      return renderOptionFieldSettings(field);
+      return renderOptionFieldSettings(field, commit, requestChange);
     }
 
     if (field.type === 'boolean') {
-      return renderBooleanFieldSettings(field);
+      return renderBooleanFieldSettings(field, commit);
     }
 
     if (field.type === 'file_upload') {
-      return renderFileUploadFieldSettings(field);
+      return renderFileUploadFieldSettings(field, commit);
     }
 
-    // Table column settings land in P2; the builder cannot create a table
-    // field yet, so this branch is unreachable from the UI today.
     return null;
   }
 
-  function renderTextFieldSettings(field: TextFieldDefinition): ReactElement {
+  function renderTextFieldSettings(
+    field: TextFieldDefinition,
+    commit: FieldCommit<TextFieldDefinition>,
+  ): ReactElement {
     return (
       <>
         {renderSettingsFormRow(
@@ -1370,7 +1346,7 @@ export function FormBuilderView({
             renderSettingsTextarea({
               name: 'fieldDefaultValue',
               onChange: (value): void =>
-                updateSelectedTextField({ defaultValue: value || undefined }),
+                commit({ ...field, defaultValue: value || undefined }),
               placeholder: '輸入此欄位的預設文字',
               rows: 3,
               value: readStringDefaultValue(field.defaultValue),
@@ -1378,7 +1354,8 @@ export function FormBuilderView({
           ) : (
             <Input
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                updateSelectedTextField({
+                commit({
+                  ...field,
                   defaultValue: event.target.value || undefined,
                 })
               }
@@ -1393,7 +1370,7 @@ export function FormBuilderView({
           'fieldMinLength',
           renderNumberInput(
             field.minLength,
-            (value): void => updateSelectedTextField({ minLength: value }),
+            (value): void => commit({ ...field, minLength: value }),
             '例如：2',
             { min: 0 },
           ),
@@ -1403,7 +1380,7 @@ export function FormBuilderView({
           'fieldMaxLength',
           renderNumberInput(
             field.maxLength,
-            (value): void => updateSelectedTextField({ maxLength: value }),
+            (value): void => commit({ ...field, maxLength: value }),
             '例如：100',
             { min: 1 },
           ),
@@ -1414,6 +1391,7 @@ export function FormBuilderView({
 
   function renderNumberFieldSettings(
     field: NumberFieldDefinition,
+    commit: FieldCommit<NumberFieldDefinition>,
   ): ReactElement {
     return (
       <>
@@ -1424,7 +1402,7 @@ export function FormBuilderView({
             typeof field.defaultValue === 'number'
               ? field.defaultValue
               : undefined,
-            (value): void => updateSelectedNumberField({ defaultValue: value }),
+            (value): void => commit({ ...field, defaultValue: value }),
             field.type === 'money' ? '例如：1000' : '輸入預設數值',
             { max: field.maximum, min: field.minimum },
           ),
@@ -1434,7 +1412,7 @@ export function FormBuilderView({
           'fieldMinimum',
           renderNumberInput(
             field.minimum,
-            (value): void => updateSelectedNumberField({ minimum: value }),
+            (value): void => commit({ ...field, minimum: value }),
             '例如：0',
           ),
         )}
@@ -1443,7 +1421,7 @@ export function FormBuilderView({
           'fieldMaximum',
           renderNumberInput(
             field.maximum,
-            (value): void => updateSelectedNumberField({ maximum: value }),
+            (value): void => commit({ ...field, maximum: value }),
             '例如：999999',
           ),
         )}
@@ -1451,20 +1429,25 @@ export function FormBuilderView({
     );
   }
 
-  function renderDateFieldSettings(field: DateFieldDefinition): ReactElement {
+  function renderDateFieldSettings(
+    field: DateFieldDefinition,
+    commit: FieldCommit<DateFieldDefinition>,
+  ): ReactElement {
     return renderSettingsFormRow(
       '預設值',
       'fieldDefaultValue',
       renderDateValuePicker(
         field,
         readStringDefaultValue(field.defaultValue),
-        (value): void => updateSelectedDateField({ defaultValue: value }),
+        (value): void => commit({ ...field, defaultValue: value }),
       ),
     );
   }
 
   function renderOptionFieldSettings(
     field: FormOptionFieldDefinition,
+    commit: FieldCommit<FormOptionFieldDefinition>,
+    requestChange: OptionFieldChangeRequester,
   ): ReactElement {
     const compatibleDescriptors = readCompatibleFormDataSourceDescriptors(
       field.type,
@@ -1512,7 +1495,7 @@ export function FormBuilderView({
                 clearable={false}
                 onChange={(option): void => {
                   if (option?.id === 'single' || option?.id === 'multiple') {
-                    updateSelectedOptionMode(option.id);
+                    handleOptionModeChange(field, option.id, requestChange);
                   }
                 }}
                 options={[...OPTION_MODE_OPTIONS]}
@@ -1536,7 +1519,7 @@ export function FormBuilderView({
               !isFormDataSourceFieldDefinition(field)
             }
             onChange={(option): void =>
-              handleOptionSourceChange(field, option?.id)
+              handleOptionSourceChange(field, option?.id, requestChange)
             }
             options={sourceOptions}
             placeholder="選擇選項來源"
@@ -1545,7 +1528,7 @@ export function FormBuilderView({
         )}
         {isFormDataSourceFieldDefinition(field)
           ? renderDataSourceFieldSettings(field, compatibleDescriptors)
-          : renderStaticOptionFieldSettings(field)}
+          : renderStaticOptionFieldSettings(field, commit)}
       </>
     );
   }
@@ -1825,6 +1808,7 @@ export function FormBuilderView({
 
   function renderStaticOptionFieldSettings(
     field: FormStaticOptionFieldDefinition,
+    commit: FieldCommit<FormStaticOptionFieldDefinition>,
   ): ReactElement {
     const mode = readFormFieldSelectionMode(field);
     const defaultValues = Array.isArray(field.defaultValue)
@@ -1845,7 +1829,8 @@ export function FormBuilderView({
               clearable
               mode="multiple"
               onChange={(nextOptions): void =>
-                updateSelectedSelectField({
+                commit({
+                  ...field,
                   defaultValue: nextOptions.length
                     ? nextOptions.map((option) => option.id)
                     : undefined,
@@ -1859,9 +1844,7 @@ export function FormBuilderView({
             <Select
               clearable
               onChange={(option): void =>
-                updateSelectedSelectField({
-                  defaultValue: option?.id || undefined,
-                })
+                commit({ ...field, defaultValue: option?.id || undefined })
               }
               options={options}
               placeholder="選擇預設選項"
@@ -1876,7 +1859,7 @@ export function FormBuilderView({
         {renderSettingsFormRow(
           '選項',
           'fieldOptions',
-          renderFieldOptionsTable(field),
+          renderFieldOptionsTable(field, commit),
           true,
         )}
       </>
@@ -1885,6 +1868,7 @@ export function FormBuilderView({
 
   function renderBooleanFieldSettings(
     field: BooleanFieldDefinition,
+    commit: FieldCommit<BooleanFieldDefinition>,
   ): ReactElement {
     const defaultValue =
       typeof field.defaultValue === 'boolean'
@@ -1897,7 +1881,8 @@ export function FormBuilderView({
       <Select
         clearable={false}
         onChange={(option): void =>
-          updateSelectedBooleanField({
+          commit({
+            ...field,
             defaultValue:
               option?.id === 'true'
                 ? true
@@ -1915,6 +1900,7 @@ export function FormBuilderView({
 
   function renderFileUploadFieldSettings(
     field: FileUploadFieldDefinition,
+    commit: FieldCommit<FileUploadFieldDefinition>,
   ): ReactElement {
     return (
       <>
@@ -1923,7 +1909,7 @@ export function FormBuilderView({
           'fieldMaxFiles',
           renderNumberInput(
             field.maxFiles,
-            (value): void => updateSelectedFileUploadField({ maxFiles: value }),
+            (value): void => commit({ ...field, maxFiles: value }),
             '例如：1',
             { min: 1 },
           ),
@@ -1934,7 +1920,8 @@ export function FormBuilderView({
           renderSettingsTextarea({
             name: 'fieldAcceptedMimeTypes',
             onChange: (value): void =>
-              updateSelectedFileUploadField({
+              commit({
+                ...field,
                 acceptedMimeTypes: parseStringList(value),
               }),
             placeholder: '每行一個 MIME type，例如：application/pdf',
@@ -2262,6 +2249,7 @@ export function FormBuilderView({
 
   function renderFieldOptionsTable(
     field: FormStaticOptionFieldDefinition,
+    commit: FieldCommit<FormStaticOptionFieldDefinition>,
   ): ReactElement {
     const optionRows: FieldOptionRow[] = field.options.map((option, index) => ({
       index,
@@ -2275,7 +2263,8 @@ export function FormBuilderView({
         render: (row): ReactElement => (
           <Input
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-              updateSelectedSelectField({
+              commit({
+                ...field,
                 options: updateFieldOption(field.options, row.index, {
                   label: event.target.value,
                 }),
@@ -2294,7 +2283,8 @@ export function FormBuilderView({
         render: (row): ReactElement => (
           <Input
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-              updateSelectedSelectField({
+              commit({
+                ...field,
                 options: updateFieldOption(field.options, row.index, {
                   value: event.target.value,
                 }),
@@ -2317,7 +2307,8 @@ export function FormBuilderView({
           iconType: 'icon-only',
           name: '移除選項',
           onClick: (): void =>
-            updateSelectedSelectField({
+            commit({
+              ...field,
               options: field.options.filter((_, index) => index !== row.index),
             }),
           variant: 'destructive-ghost',
@@ -2340,7 +2331,8 @@ export function FormBuilderView({
             icon={PlusIcon}
             iconType="leading"
             onClick={(): void =>
-              updateSelectedSelectField({
+              commit({
+                ...field,
                 options: [
                   ...field.options,
                   createNextFieldOption(field.options),
