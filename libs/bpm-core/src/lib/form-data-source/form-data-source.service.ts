@@ -840,7 +840,8 @@ const LINT_LINE_CODE_PATTERN = /^\S+\.dataSource (FORM_DATA_SOURCE_[A-Z_]+)$/u;
  * Without this the preview would fall back to `INVALID_DESCRIPTOR` ("contact
  * your administrator") for a binding the designer can fix themselves.
  */
-const LINT_BINDING_LINE_PATTERN = /^schema\.fields\[\d+\]\.dataSource\.bindings /u;
+const LINT_BINDING_LINE_PATTERN =
+  /^schema\.fields\[\d+\](?:\.columns\[\d+\])?\.dataSource\.bindings /u;
 
 function readBindingLintErrorCode(
   error: string,

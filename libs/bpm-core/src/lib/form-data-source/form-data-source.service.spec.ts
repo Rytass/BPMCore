@@ -616,6 +616,35 @@ describe('FormDataSourceService', () => {
     });
   });
 
+  // The same must hold for a column: ADR 16 §3.7 says a column's binding check
+  // is the top-level one, and that has to include the code the designer sees.
+  it('reports a column binding failure as an actionable binding error', async (): Promise<void> => {
+    const service = createService(
+      createSource(
+        {},
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            { key: 'company', required: true, type: 'STRING' },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'items.costCenter',
+          schemaJson: JSON.stringify(createTableColumnSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_INVALID_BINDING',
+    });
+  });
+
   it('falls back to the descriptor code when no lint line carries one', async (): Promise<void> => {
     // An invalid descriptor only produces prose ("descriptor.pageSize must be
     // positive"), so there is no code to extract. This pins the fallback branch
