@@ -61,6 +61,16 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 `cel-js-list-behaviour.spec.ts`，以及 validator／workflow-graph／condition 三份
 既有 spec 的新增段落。
 
+**驗證狀態**：Gate 全綠（`pnpm typecheck` 6 專案、`pnpm lint` 0 error、
+`nx run-many -t test --skip-nx-cache` 530 tests / 54 suites 全過）。另以 12 組惡意
+schema 實測 lint（columns 非陣列、column 非物件、ROW_FIELD 自我引用、三層巢狀
+table、`form["items"][0]` bracket 形式條件、`maxRows: 0`、無 maxRows 但
+`minRows: 500`、column defaultValue 型別錯誤、column select 無 option source 等）
+結果皆符合預期；同時確認「top-level fieldKey 與某 table 的 column key 同名」與
+「兩張 table 使用相同 column key」維持合法（ADR §3.1 的命名空間分層）。
+**狀態停在 IMPLEMENTED**：獨立 verifier 未能完成簽署，VERIFIED 待未參與實作者
+重跑核對後推進。
+
 **ADR 未載明而在 P0 自決的項目**（皆取最小、additive、可回退解）
 
 1. `TableFieldDefinition.defaultValue` 型別為 `never`：ADR §3.1 已規定 lint 禁止，
