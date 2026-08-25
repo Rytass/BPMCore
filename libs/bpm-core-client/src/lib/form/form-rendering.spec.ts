@@ -283,6 +283,47 @@ describe('table field values', () => {
     ).toEqual({ 'items[0].name': '品項為必填欄位。' });
   });
 
+  // `constructor` and friends satisfy the column key identifier rule, so a
+  // plain index read walks the prototype chain and calls an empty row filled —
+  // passing a submission the backend then rejects. The backend guards this in
+  // `readRowCellValue`; this is the matching frontend guard.
+  it('does not read a required cell off the row prototype', (): void => {
+    const prototypeSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          columns: [
+            {
+              fieldKey: 'constructor',
+              label: '建構',
+              required: true,
+              type: 'text',
+            },
+            { fieldKey: 'toString', label: '字串', required: true, type: 'text' },
+          ],
+          fieldKey: 'items',
+          label: '明細',
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+
+    expect(
+      validateFormRendererValues({
+        schema: prototypeSchema,
+        uiSchema: {
+          layout: [{ fieldKey: 'items', width: 'FULL' }],
+          schemaVersion: 1,
+        },
+        values: { items: [{}] },
+      }).errors,
+    ).toEqual({
+      'items[0].constructor': '建構為必填欄位。',
+      'items[0].toString': '字串為必填欄位。',
+    });
+  });
+
   it('builds a cell instance path', (): void => {
     expect(readFormTableCellPath('items', 2, 'qty')).toBe('items[2].qty');
   });

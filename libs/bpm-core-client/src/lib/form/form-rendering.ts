@@ -162,7 +162,8 @@ function readFormTableRowErrors(
   return field.columns
     .filter(
       (column) =>
-        column.required && !isFormRendererFieldValuePresent(row[column.fieldKey]),
+        column.required &&
+        !isFormRendererFieldValuePresent(readFormTableCellValue(row, column)),
     )
     .reduce<Readonly<Record<string, string>>>(
       (currentErrors, column) => ({
@@ -195,6 +196,22 @@ function readFirstInvalidFieldKey(
       )
       .at(0) ?? null
   );
+}
+
+/**
+ * Own-property read, matching the backend's authoritative check.
+ * `constructor`, `toString` and `valueOf` all satisfy the column key
+ * identifier rule, so a plain index walks the prototype chain and reports an
+ * empty row as filled — which would let the frontend pass a submission the
+ * backend then rejects.
+ */
+function readFormTableCellValue(
+  row: FormTableRowValue,
+  column: TableColumnDefinition,
+): FormTableCellValue | undefined {
+  return Object.prototype.hasOwnProperty.call(row, column.fieldKey)
+    ? row[column.fieldKey]
+    : undefined;
 }
 
 /**
