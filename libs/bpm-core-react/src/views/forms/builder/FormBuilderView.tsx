@@ -786,12 +786,24 @@ export function FormBuilderView({
   }
 
   function handleRemoveField(fieldKey: string): void {
-    const affectedFieldKeys = schema.fields.flatMap((field) =>
-      isFormDataSourceFieldDefinition(field) &&
-      readFormDataSourceFieldDependencyKeys(field).includes(fieldKey)
+    // Table columns can bind to a top-level field too, so the impact list has
+    // to descend into them — otherwise deleting the field leaves a dangling
+    // binding that only surfaces at publish time (ADR 16 §3.4).
+    const affectedFieldKeys = schema.fields.flatMap((field) => {
+      if (isTableFieldDefinition(field)) {
+        return field.columns.flatMap((column) =>
+          isFormDataSourceFieldDefinition(column) &&
+          readFormDataSourceFieldDependencyKeys(column).includes(fieldKey)
+            ? [`${field.fieldKey}.${column.fieldKey}`]
+            : [],
+        );
+      }
+
+      return isFormDataSourceFieldDefinition(field) &&
+        readFormDataSourceFieldDependencyKeys(field).includes(fieldKey)
         ? [field.fieldKey]
-        : [],
-    );
+        : [];
+    });
 
     if (affectedFieldKeys.length > 0) {
       setPendingBuilderConfirmation({

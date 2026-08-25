@@ -677,6 +677,35 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  // A column can bind to a top-level field, so removing that field has to warn
+  // about the column too — otherwise the binding is left dangling until publish.
+  it('names an affected table column when removing the field it binds', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'plant', label: '工廠', required: false, type: 'text' },
+        createTableFieldWithFieldBoundColumn(),
+      ]),
+    );
+
+    try {
+      const remove = harness.container.querySelector(
+        '[data-form-builder-field-key="plant"] [data-mock-button="移除欄位"]',
+      ) as HTMLButtonElement | null;
+      expect(remove).not.toBeNull();
+
+      act((): void => {
+        remove?.click();
+      });
+
+      expect(harness.container.textContent).toContain('items.costCenter');
+      // Still gated behind the confirmation, so nothing is lost yet.
+      expect(harness.readSchema().fields).toHaveLength(2);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   // Two columns can share a key mid-edit; filtering by key deleted both.
   it('removes only the column at the chosen position', async (): Promise<void> => {
     const harness = await mountBuilder(
@@ -872,6 +901,32 @@ function createTableFieldWithUnboundDynamicColumn(): unknown {
       { fieldKey: 'plant', label: '工廠', required: true, type: 'text' },
       {
         dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+        fieldKey: 'costCenter',
+        label: '成本中心',
+        mode: 'single',
+        required: false,
+        type: 'select',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+}
+
+function createTableFieldWithFieldBoundColumn(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+      {
+        dataSource: {
+          bindings: [
+            { from: { fieldKey: 'plant', kind: 'FIELD' }, parameter: 'plant' },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
         fieldKey: 'costCenter',
         label: '成本中心',
         mode: 'single',
