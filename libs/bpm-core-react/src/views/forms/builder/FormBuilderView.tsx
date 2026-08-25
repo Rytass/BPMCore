@@ -72,6 +72,7 @@ import {
   TableFieldDefinition,
   TextFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
   isTableColumnFieldType,
   isTableFieldDefinition,
@@ -1450,7 +1451,7 @@ export function FormBuilderView({
             </Typography>
           ) : (
             <Typography variant="body">
-              {pendingBuilderConfirmation.impact}確認後才會寫入 schema。
+              {pendingBuilderConfirmation.impact}
             </Typography>
           )}
         </Modal>
@@ -1810,6 +1811,7 @@ export function FormBuilderView({
         key: 'label',
         render: (row): ReactElement => (
           <Input
+            fullWidth
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               commitTableColumn(field, row.index, {
                 ...readTableColumn(field, row.index),
@@ -1828,6 +1830,7 @@ export function FormBuilderView({
         key: 'type',
         render: (row): ReactElement => (
           <Select
+            fullWidth
             clearable={false}
             menuMaxHeight={TYPE_MENU_MAX_HEIGHT}
             onChange={(option): void =>
@@ -2005,14 +2008,35 @@ export function FormBuilderView({
       return;
     }
 
+    const nextColumn = convertTableColumnType(column, nextType);
+    const discarded = readDiscardedColumnSettings(column);
+
+    // Nothing configured yet means nothing to lose, and a confirmation that
+    // warns about losing nothing only teaches people to dismiss confirmations.
+    if (discarded.length === 0) {
+      commitTableColumn(field, columnIndex, nextColumn);
+      setSelectedColumnIndex(columnIndex);
+
+      return;
+    }
+
     setPendingBuilderConfirmation({
       columnIndex,
       columnKey: column.fieldKey,
       fieldKey: field.fieldKey,
-      impact: '變更欄型別會捨棄該欄目前的預設值、選項與數值範圍設定。',
+      impact: `「${column.label || column.fieldKey}」改為${readTableColumnTypeLabel(nextType)}後，這一欄的${discarded.join('、')}會被捨棄。`,
       kind: 'replace-column',
-      nextColumn: convertTableColumnType(column, nextType),
+      nextColumn,
     });
+  }
+
+  function readTableColumnTypeLabel(
+    type: TableColumnDefinition['type'],
+  ): string {
+    return (
+      TABLE_COLUMN_TYPE_OPTIONS.find((option) => option.id === type)?.name ??
+      type
+    );
   }
 
   function readTableColumn(
@@ -3140,7 +3164,8 @@ export function FormBuilderView({
         <div style={FIELD_SETTINGS_VALUE_STYLE}>
           <BPMFormField
             label={label}
-            layout={              // A wide row carries a table or a textarea, which needs the whole
+            layout={
+              // A wide row carries a table or a textarea, which needs the whole
               // row: stretch would squeeze it into the same 240px box as a text
               // input, so the label moves above it instead.
               wide ? FormFieldLayout.VERTICAL : FormFieldLayout.STRETCH
@@ -3292,11 +3317,7 @@ export function FormBuilderView({
     return (
       <div style={ADVANCED_SCHEMA_ROW_STYLE}>
         <div style={ADVANCED_SCHEMA_VALUE_STYLE}>
-          <BPMFormField
-            label={label}
-            layout={FormFieldLayout.STRETCH}
-            name={name}
-          >
+          <BPMFormField label={label} name={name}>
             {control}
           </BPMFormField>
         </div>
@@ -3434,6 +3455,78 @@ function readBuilderConfirmationTitle(
  * `number` column's `minimum` means nothing to a `date` one, and carrying it
  * over would leave a schema the lint rejects for the wrong reason.
  */
+const DEFAULT_COLUMN_OPTIONS: readonly FormFieldOption[] = [
+  { label: '選項 A', value: 'option_a' },
+  { label: '選項 B', value: 'option_b' },
+];
+
+/**
+ * What retyping a column would throw away, named the way the settings panel
+ * names it. Everything type-specific goes; identity, label, required,
+ * description and placeholder survive (see {@link convertTableColumnType}).
+ * An empty list means the confirmation has nothing to warn about.
+ */
+function readDiscardedColumnSettings(
+  column: TableColumnDefinition,
+): readonly string[] {
+  const discarded: string[] = [];
+
+  if (typeof column.defaultValue !== 'undefined') {
+    discarded.push('預設值');
+  }
+
+  if (
+    column.type === 'text' &&
+    (typeof column.minLength === 'number' ||
+      typeof column.maxLength === 'number')
+  ) {
+    discarded.push('長度限制');
+  }
+
+  if (
+    (column.type === 'number' || column.type === 'money') &&
+    (typeof column.minimum === 'number' || typeof column.maximum === 'number')
+  ) {
+    discarded.push('數值範圍');
+  }
+
+  if (isFormDataSourceFieldDefinition(column)) {
+    discarded.push('選項來源設定');
+  } else if (
+    isFormStaticOptionFieldDefinition(column) &&
+    !isDefaultColumnOptions(column.options)
+  ) {
+    discarded.push(`${column.options.length} 個選項`);
+  }
+
+  if (
+    (column.type === 'select' || column.type === 'autocomplete') &&
+    column.mode === 'multiple'
+  ) {
+    discarded.push('選擇模式');
+  }
+
+  return discarded;
+}
+
+/**
+ * The pair a column is seeded with when it becomes a select. Untouched
+ * boilerplate is not the designer's work, so losing it is not worth a
+ * confirmation.
+ */
+function isDefaultColumnOptions(
+  options: readonly FormFieldOption[],
+): boolean {
+  return (
+    options.length === DEFAULT_COLUMN_OPTIONS.length &&
+    options.every(
+      (option, index) =>
+        option.label === DEFAULT_COLUMN_OPTIONS[index]?.label &&
+        option.value === DEFAULT_COLUMN_OPTIONS[index]?.value,
+    )
+  );
+}
+
 function convertTableColumnType(
   column: TableColumnDefinition,
   type: TableColumnDefinition['type'],
@@ -3450,10 +3543,7 @@ function convertTableColumnType(
     ? {
         ...base,
         mode: 'single' as const,
-        options: [
-          { label: '選項 A', value: 'option_a' },
-          { label: '選項 B', value: 'option_b' },
-        ],
+        options: [...DEFAULT_COLUMN_OPTIONS],
         type,
       }
     : ({ ...base, type } as TableColumnDefinition);

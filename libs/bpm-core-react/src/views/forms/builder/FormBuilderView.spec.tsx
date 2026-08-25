@@ -549,20 +549,23 @@ describe('FormBuilderView field settings', () => {
   });
 
   it('confirms a column type change before discarding its type settings', async (): Promise<void> => {
-    const harness = await mountBuilder(createSchema([createTableField()]));
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithConfiguredColumn()]),
+    );
 
     try {
-      selectTableCellOption(harness.container, 'type', 0, 'number');
+      selectTableCellOption(harness.container, 'type', 0, 'text');
+      // Held until confirmed, because this column has settings to lose.
       expect(readColumns(harness.readSchema())[0]).toMatchObject({
-        type: 'text',
+        type: 'number',
       });
 
       confirmModal(harness.container);
       expect(readColumns(harness.readSchema())[0]).toEqual({
-        fieldKey: 'name',
-        label: '品項',
-        required: true,
-        type: 'number',
+        fieldKey: 'qty',
+        label: '數量',
+        required: false,
+        type: 'text',
       });
     } finally {
       await unmount(harness);
@@ -671,6 +674,41 @@ describe('FormBuilderView field settings', () => {
       expect(
         readExpandedSettingInput(harness.container, 1, 'columnFieldKey')?.value,
       ).toBe('costCenter');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // A confirmation that warns about losing nothing only teaches people to
+  // dismiss confirmations.
+  it('retypes a column without confirmation when nothing is configured', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      selectTableCellOption(harness.container, 'type', 0, 'number');
+
+      expect(
+        harness.container.querySelector('[data-mock-modal]'),
+      ).toBeNull();
+      expect(readColumns(harness.readSchema())[0]).toMatchObject({
+        type: 'number',
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('names what a retype discards when the column carries settings', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithConfiguredColumn()]),
+    );
+
+    try {
+      selectTableCellOption(harness.container, 'type', 0, 'text');
+
+      expect(harness.container.textContent).toContain(
+        '「數量」改為文字後，這一欄的預設值、數值範圍會被捨棄。',
+      );
     } finally {
       await unmount(harness);
     }
@@ -1009,6 +1047,26 @@ function createDescriptor(): Parameters<
     supportedControls: ['autocomplete', 'checkbox', 'radio', 'select'],
     supportsSearch: false,
     version: 1,
+  };
+}
+
+function createTableFieldWithConfiguredColumn(): unknown {
+  return {
+    columns: [
+      {
+        defaultValue: 3,
+        fieldKey: 'qty',
+        label: '數量',
+        maximum: 10,
+        minimum: 1,
+        required: false,
+        type: 'number',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
   };
 }
 
