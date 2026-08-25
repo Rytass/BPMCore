@@ -652,6 +652,52 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('formData.items[1].qty is required');
   });
 
+  // `constructor` and `toString` satisfy the column key identifier rule, so a
+  // plain `row[columnKey]` read walked the prototype chain and reported an
+  // empty row as filled.
+  it('does not read a required cell off the row prototype', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          {
+            columns: [
+              {
+                fieldKey: 'constructor',
+                label: '建構',
+                required: true,
+                type: 'text',
+              },
+              {
+                fieldKey: 'toString',
+                label: '字串',
+                required: true,
+                type: 'text',
+              },
+            ],
+            fieldKey: 'items',
+            label: '明細',
+            required: false,
+            type: 'table',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"items":[{}]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).rejects.toThrow('formData.items[0].constructor is required');
+  });
+
   it('rejects a required table submitted with no rows', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -820,6 +866,30 @@ describe('WorkflowEngineService', () => {
     // A `{}` substitution would have replaced the row array with `{ qty: 99 }`.
     expect(fixture.savedInstance).toMatchObject({
       formData: { items: [{ name: 'Bolt', qty: 3 }] },
+    });
+  });
+
+  // `items[0].qty` splits into the literal segment `items[0]`, which used to be
+  // created as a brand new top-level key — polluting the CEL context and making
+  // `readValueAtPath` start answering for a path it must never resolve.
+  it('leaves form data untouched when a set-form-field path indexes a row', async (): Promise<void> => {
+    const formSchema = createTableFormSchema();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { items: [{ name: 'Bolt', qty: 3 }] },
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.items[0].qty',
+        value: '99',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance?.formData).toEqual({
+      items: [{ name: 'Bolt', qty: 3 }],
     });
   });
 

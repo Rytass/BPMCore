@@ -5691,6 +5691,16 @@ function writeValueAtPath(
     return value;
   }
 
+  // An index step is not understood by this writer — `items[0].qty` splits into
+  // the literal segment `items[0]`, which would be created as a brand new
+  // top-level key rather than reaching the row. That is not the no-op ADR 16
+  // §3.8 asks for: it pollutes `formData` (and therefore the CEL context) with
+  // a key no schema declares, and makes `readValueAtPath` start answering for
+  // a path it should never resolve.
+  if (segments.some((segment) => /[[\]]/u.test(segment))) {
+    return value;
+  }
+
   return writeNestedValue(value, segments, nextValue);
 }
 
@@ -6298,11 +6308,25 @@ function validateSubmittedTableRow(
     .filter(
       (column) =>
         isSubmittedTableColumnRequired(column) &&
-        !isSubmittedFieldValuePresent(row[column.fieldKey]),
+        !isSubmittedFieldValuePresent(readRowCellValue(row, column.fieldKey)),
     )
     .map((column) => `${path}.${column.fieldKey} is required`);
 
   return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
+}
+
+/**
+ * Own-property read. `constructor`, `toString` and friends all satisfy the
+ * column key identifier rule, so a plain index would walk the prototype chain
+ * and report an empty row as filled.
+ */
+function readRowCellValue(
+  row: Readonly<Record<string, unknown>>,
+  columnKey: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(row, columnKey)
+    ? row[columnKey]
+    : undefined;
 }
 
 /**
