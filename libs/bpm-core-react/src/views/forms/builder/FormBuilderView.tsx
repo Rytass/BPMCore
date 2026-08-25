@@ -209,6 +209,7 @@ type PendingBuilderConfirmation =
       kind: 'remove-column';
     }>
   | Readonly<{
+      columnIndex: number;
       columnKey: string;
       fieldKey: string;
       impact: string;
@@ -723,7 +724,10 @@ export function FormBuilderView({
   const [dataSourceLintLoading, setDataSourceLintLoading] = useState(false);
   const [pendingBuilderConfirmation, setPendingBuilderConfirmation] =
     useState<PendingBuilderConfirmation | null>(null);
-  const [selectedColumnKey, setSelectedColumnKey] = useState<string | null>(
+  // By index, not by key: two columns can share a key mid-edit, and looking the
+  // selection up by key would then follow the wrong row — unmounting the very
+  // input being typed into, since the key is edited inside the expanded row.
+  const [selectedColumnIndex, setSelectedColumnIndex] = useState<number | null>(
     null,
   );
 
@@ -1035,9 +1039,6 @@ export function FormBuilderView({
         : nextField;
     });
 
-    if (previousColumnKey !== nextColumn.fieldKey) {
-      setSelectedColumnKey(nextColumn.fieldKey);
-    }
   }
 
   function handleAddTableColumn(field: TableFieldDefinition): void {
@@ -1047,7 +1048,7 @@ export function FormBuilderView({
       ...currentField,
       columns: [...currentField.columns, column],
     }));
-    setSelectedColumnKey(column.fieldKey);
+    setSelectedColumnIndex(field.columns.length);
   }
 
   /**
@@ -1059,7 +1060,15 @@ export function FormBuilderView({
       ...currentField,
       columns: currentField.columns.filter((_, index) => index !== columnIndex),
     }));
-    setSelectedColumnKey(null);
+    // Removing the open column leaves its neighbour open rather than closing
+    // everything, so the panel does not collapse under the designer.
+    setSelectedColumnIndex((current) =>
+      current === null || current < columnIndex
+        ? current
+        : current === columnIndex
+          ? null
+          : current - 1,
+    );
   }
 
   function handleReorderTableColumns(
@@ -1071,6 +1080,18 @@ export function FormBuilderView({
       ...currentField,
       columns: moveItemByIndex(currentField.columns, fromIndex, toIndex),
     }));
+    // The selection follows the column it was on, not the position it left.
+    setSelectedColumnIndex((current) =>
+      current === null
+        ? current
+        : current === fromIndex
+          ? toIndex
+          : current > fromIndex && current <= toIndex
+            ? current - 1
+            : current < fromIndex && current >= toIndex
+              ? current + 1
+              : current,
+    );
   }
 
   function handleOptionModeChange(
@@ -1226,7 +1247,7 @@ export function FormBuilderView({
       // A new type brings its own settings — options for a select, a range for
       // a number — so put the designer in front of them instead of leaving the
       // panel on whichever column was selected before.
-      setSelectedColumnKey(confirmation.columnKey);
+      setSelectedColumnIndex(confirmation.columnIndex);
 
       return;
     }
@@ -1586,20 +1607,27 @@ export function FormBuilderView({
             variant="base"
           />,
         )}
-        {renderSettingsFormRow(
-          '提示文字',
-          'fieldPlaceholder',
-          <Input
-            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-              updateSelectedField({
-                placeholder: event.target.value || undefined,
-              })
-            }
-            placeholder="例如：請輸入申請金額"
-            value={field.placeholder ?? ''}
-            variant="base"
-          />,
-        )}
+        {/*
+          A table has no single control to hint at — `FormTableField` never
+          reads `placeholder` — so the input is hidden rather than left there
+          doing nothing. Any value already stored is kept untouched.
+        */}
+        {isTableFieldDefinition(field)
+          ? null
+          : renderSettingsFormRow(
+              '提示文字',
+              'fieldPlaceholder',
+              <Input
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateSelectedField({
+                    placeholder: event.target.value || undefined,
+                  })
+                }
+                placeholder="例如：請輸入申請金額"
+                value={field.placeholder ?? ''}
+                variant="base"
+              />,
+            )}
         {renderTypeSpecificSettings(
           field,
           commitSelectedField,
@@ -1805,6 +1833,9 @@ export function FormBuilderView({
               handleTableColumnTypeChange(field, row.index, option?.id)
             }
             options={[...TABLE_COLUMN_TYPE_OPTIONS]}
+            // Every control in a `sub` table is `sub` too, or the row is sized
+            // by whichever control forgot to say so.
+            size="sub"
             value={readSelectOption(TABLE_COLUMN_TYPE_OPTIONS, row.type)}
           />
         ),
@@ -1815,6 +1846,11 @@ export function FormBuilderView({
         render: (row): ReactElement => (
           <Toggle
             checked={readTableColumn(field, row.index).required === true}
+            // The visible label duplicated the column header, so the name
+            // moves onto the input itself rather than disappearing.
+            inputProps={{
+              'aria-label': `${row.label || row.fieldKey} 必填`,
+            }}
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               commitTableColumn(field, row.index, {
                 ...readTableColumn(field, row.index),
@@ -1834,7 +1870,7 @@ export function FormBuilderView({
           // last one stays.
           disabled: (): boolean => field.columns.length <= 1,
           icon: TrashIcon,
-          iconType: 'icon-only',
+          iconType: 'leading',
           name: '移除此欄',
           onClick: (): void =>
             setPendingBuilderConfirmation({
@@ -1846,11 +1882,12 @@ export function FormBuilderView({
           variant: 'destructive-ghost',
         },
       ],
-      width: 56,
+      width: 104,
     };
-    const expandedRowKey = columnRows.find(
-      (row) => row.fieldKey === selectedColumnKey,
-    )?.key;
+    const expandedRowKey =
+      selectedColumnIndex === null
+        ? undefined
+        : columnRows[selectedColumnIndex]?.key;
 
     return (
       <Table
@@ -1870,9 +1907,12 @@ export function FormBuilderView({
           expandedRowRender: (row): ReactNode =>
             renderTableColumnSettings(field, row.index),
           onExpand: (expanded, row): void =>
-            setSelectedColumnKey(expanded ? row.fieldKey : null),
+            setSelectedColumnIndex(expanded ? row.index : null),
         }}
         fullWidth
+        // Rows carry form controls rather than text, so the height comes from
+        // the roomy container token instead of the default compact one.
+        rowHeightPreset="roomy"
         showHeader
         size="sub"
       />
@@ -1965,6 +2005,7 @@ export function FormBuilderView({
     }
 
     setPendingBuilderConfirmation({
+      columnIndex,
       columnKey: column.fieldKey,
       fieldKey: field.fieldKey,
       impact: '變更欄型別會捨棄該欄目前的預設值、選項與數值範圍設定。',

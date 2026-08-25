@@ -676,6 +676,48 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  // A key can be typed into a duplicate mid-edit, and a selection tracked by
+  // key would then jump to the other row — unmounting the very input being
+  // typed into, since the key is edited inside the expanded row.
+  it('keeps the expanded row on its own column while a duplicate key is typed', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithSelectColumn()]),
+    );
+
+    try {
+      expandTableRow(harness.container, 1);
+      typeIntoExpandedSetting(harness.container, 1, 'columnFieldKey', 'name');
+
+      expect(
+        readExpandedSettingInput(harness.container, 0, 'columnFieldKey'),
+      ).toBeNull();
+      expect(
+        readExpandedSettingInput(harness.container, 1, 'columnFieldKey')?.value,
+      ).toBe('name');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('keeps a neighbour open when the open column is removed', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithSelectColumn()]),
+    );
+
+    try {
+      expandTableRow(harness.container, 1);
+      clickTableAction(harness.container, '移除此欄', 0);
+      confirmModal(harness.container);
+
+      // The second column became the first, and its settings stay open.
+      expect(
+        readExpandedSettingInput(harness.container, 0, 'columnFieldKey')?.value,
+      ).toBe('costCenter');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   // The publish lint speaks in schema paths and parameter keys; the designer is
   // looking at labels, so the builder has to translate before showing it.
   it('names the field, column and parameter when the lint rejects a binding', async (): Promise<void> => {
