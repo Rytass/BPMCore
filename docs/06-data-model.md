@@ -256,6 +256,46 @@ INDEX (state, started_at)
 對應的 label、DataSource key/version、binding hash 與 validation timestamp。唯讀歷史
 畫面只依這份 instance snapshot 顯示，不需要重新呼叫宿主 DataSource。
 
+#### `form_data` 與 snapshot 的表格欄位形狀
+
+`table` 欄位（[16 — 表格欄位 ADR](./16-form-table-field-adr.md)）是**唯一**值不是
+primitive 的欄位型別：它的值是**列陣列**，每一列是一筆以 column key 為鍵的
+record，cell 值維持與扁平欄位相同的 primitive contract。列**不落地任何 row id**
+——陣列順序即顯示順序，前端編輯期的 row id 是 ephemeral 的，不寫入資料。
+
+```jsonc
+// approval_instances.form_data
+{
+  "purpose": "產線耗材補充",          // 扁平欄位，形狀一如既往
+  "items": [                          // table 欄位：列陣列
+    { "plant": "TW01", "costCenter": "CC-TW01-001", "quantity": 120 },
+    { "plant": "TW02", "costCenter": "CC-TW02-002", "quantity": 40 }
+  ]
+}
+```
+
+表格內的動態 column 逐 cell 產生 snapshot，key 是 **instance path**
+`<tableKey>[<i>].<columnKey>`；`form_data_option_snapshot` 的型別與欄位一個位元
+都沒變，只是 key 的形式擴充，因此**不需要 migration**：
+
+```jsonc
+// approval_instances.form_data_option_snapshot
+{
+  "items[0].costCenter": { "dataSourceKey": "demo.cost-centers", "dataSourceVersion": 1,
+    "options": [{ "label": "TW01 成本中心 001", "value": "CC-TW01-001" }],
+    "bindingHash": "…", "revalidationPolicy": "WHEN_VALUE_OR_BINDINGS_CHANGE",
+    "validatedAt": "2026-05-21T04:30:00.000Z" },
+  "items[1].costCenter": { "dataSourceKey": "demo.cost-centers", "dataSourceVersion": 1,
+    "options": [{ "label": "TW02 成本中心 002", "value": "CC-TW02-002" }], "…": "…" }
+}
+```
+
+因為 key 帶列索引，插入或刪除列會讓其後所有列的 key 對不上舊 snapshot，重送時那些
+cell 會重新 resolve。這是刻意的 fail-safe：寧可多打一次宿主 provider，也不讓 A 列
+的 snapshot 去背書 B 列的值。
+
+`title` 取值時會**跳過** table 欄位——列數不是好標題，改取第一個非表格欄位。
+
 ### `workflow_tokens`
 
 > 每顆 token 是引擎執行的最小單位。

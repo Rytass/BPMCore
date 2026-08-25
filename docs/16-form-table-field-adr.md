@@ -1,7 +1,8 @@
 # 16 — ADR：表格欄位（Table Field）架構
 
-- **狀態**：Accepted（2026-08-25 與產品擁有者確認，含 §3.10 column 型別排除項與
-  maxRows 100 上限；implementation underway as Phase P0–P4，not yet implemented）
+- **狀態**：Accepted (implemented 2026-08-25)（2026-08-25 與產品擁有者確認，含
+  §3.10 column 型別排除項與 maxRows 100 上限；Phase P0–P4 全數 VERIFIED，交付
+  紀錄見 [17 — 表格欄位開發 Phase](./17-form-table-field-phases.md)）
 - **決策日期**：2026-08-24（規劃日）
 - **適用範圍**：Form Definition Schema、Form Builder、FormRenderer、案件發起／退回編輯／
   重新送出、workflow 條件、DataSource 整合
@@ -242,7 +243,10 @@ errors key 用 instance path，`firstInvalidFieldKey` 可為 cell path，聚焦�
   cell 非 VALID（有值時）即阻擋，訊息指名列與欄。
 - 唯讀模式：同一元件 `readonly` 渲染，動態 cell 以 snapshot label 顯示。
 - 效能邊界：cell hook 數 = 列數 × 動態 column 數，上限 100 列由 lint 保證；
-  超寬表格由 Mezzanine `Table` `scroll` 處理，不另做虛擬化（V1）。
+  不另做虛擬化（V1）。**實作期更正**：Mezzanine `TableScroll` 只有 `virtualized`
+  與 `y`（垂直），沒有水平捲動選項，因此超寬表格改由外層 `overflow-x: auto`
+  容器承接，不覆寫元件本身任何樣式。若日後需要凍結欄或元件層級的水平捲動，
+  需 Mezzanine 端支援（見 §9）。
 
 ### 3.10 相容性與版本策略
 
@@ -361,3 +365,9 @@ migration、既有讀取端全部不動；巢狀結構要改型別與所有讀�
 - cel-js 驗證（Phase 0）發現 list of map 在條件評估有不可接受的限制。
 - 宿主要求 cell 級 `file_upload` 或跨列彙總進入 workflow 條件。
 - FormBuilderView 重構後仍無法以單一實作服務 top-level 與 column 設定。
+  （P2 已達成單一實作；此條保留為日後回歸的警戒線。）
+- 需要凍結欄，或需要 Mezzanine `Table` 元件層級的水平捲動——目前由外層
+  `overflow-x` 容器承接（§3.9 實作期更正）。
+- 需要擋下 `SET_FORM_FIELD` 的 `fieldPath` 直接指向 table 欄位本身：P1 已把多段
+  與 bracket 路徑收斂為 no-op，剩下的單段整包覆寫若要擋，需新增「fieldPath 必須
+  對應 schema 欄位且不得為 table」的發布期檢查（見 docs/17 P1 待辦）。
