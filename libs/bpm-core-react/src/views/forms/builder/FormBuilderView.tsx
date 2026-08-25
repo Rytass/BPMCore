@@ -192,6 +192,7 @@ type PendingBuilderConfirmation =
       nextField: FormFieldDefinition;
     }>
   | Readonly<{
+      columnIndex: number;
       columnKey: string;
       fieldKey: string;
       kind: 'remove-column';
@@ -978,16 +979,16 @@ export function FormBuilderView({
     setSelectedColumnKey(column.fieldKey);
   }
 
-  function applyRemoveTableColumn(fieldKey: string, columnKey: string): void {
+  /**
+   * By index, not by key: two columns can share a key mid-edit (the publish
+   * lint catches that later), and filtering by key would delete both.
+   */
+  function applyRemoveTableColumn(fieldKey: string, columnIndex: number): void {
     updateTableField(fieldKey, (currentField) => ({
       ...currentField,
-      columns: currentField.columns.filter(
-        (column) => column.fieldKey !== columnKey,
-      ),
+      columns: currentField.columns.filter((_, index) => index !== columnIndex),
     }));
-    setSelectedColumnKey((currentKey) =>
-      currentKey === columnKey ? null : currentKey,
-    );
+    setSelectedColumnKey(null);
   }
 
   function handleReorderTableColumns(
@@ -1137,7 +1138,7 @@ export function FormBuilderView({
     }
 
     if (confirmation.kind === 'remove-column') {
-      applyRemoveTableColumn(confirmation.fieldKey, confirmation.columnKey);
+      applyRemoveTableColumn(confirmation.fieldKey, confirmation.columnIndex);
 
       return;
     }
@@ -1485,6 +1486,7 @@ export function FormBuilderView({
     field: FormFieldDefinition,
     commit: FieldCommit<FormFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
+    supportsDataSource = true,
   ): ReactElement | null {
     if (isTextFieldDefinition(field)) {
       return renderTextFieldSettings(field, commit);
@@ -1499,7 +1501,12 @@ export function FormBuilderView({
     }
 
     if (isFormOptionFieldDefinition(field)) {
-      return renderOptionFieldSettings(field, commit, requestChange);
+      return renderOptionFieldSettings(
+        field,
+        commit,
+        requestChange,
+        supportsDataSource,
+      );
     }
 
     if (field.type === 'boolean') {
@@ -1675,6 +1682,7 @@ export function FormBuilderView({
           name: '移除此欄',
           onClick: (): void =>
             setPendingBuilderConfirmation({
+              columnIndex: row.index,
               columnKey: row.fieldKey,
               fieldKey: field.fieldKey,
               kind: 'remove-column',
@@ -1768,8 +1776,8 @@ export function FormBuilderView({
               );
             }
           },
-          // Column DataSource selection arrives in P3; until then a column can
-          // only carry static options, so a change never needs confirming.
+          // Only the selection mode reaches this in P2, and switching it just
+          // converts the default value, so it applies directly.
           (_column, nextColumn): void => {
             if (isTableColumnFieldType(nextColumn.type)) {
               commitTableColumn(
@@ -1779,6 +1787,7 @@ export function FormBuilderView({
               );
             }
           },
+          false,
         )}
       </div>
     );
@@ -1937,11 +1946,11 @@ export function FormBuilderView({
     field: FormOptionFieldDefinition,
     commit: FieldCommit<FormOptionFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
+    supportsDataSource: boolean,
   ): ReactElement {
-    const compatibleDescriptors = readCompatibleFormDataSourceDescriptors(
-      field.type,
-      dataSourceCatalog,
-    );
+    const compatibleDescriptors = supportsDataSource
+      ? readCompatibleFormDataSourceDescriptors(field.type, dataSourceCatalog)
+      : [];
     const currentSourceId = isFormDataSourceFieldDefinition(field)
       ? readDataSourceDescriptorOptionId(field.dataSource)
       : STATIC_OPTION_SOURCE_ID;
@@ -1998,27 +2007,60 @@ export function FormBuilderView({
                 {mode === 'multiple' ? '固定複選' : '固定單選'}
               </Typography>,
             )}
-        {renderSettingsFormRow(
-          '選項來源',
-          'fieldOptionSource',
-          <Select
-            clearable={false}
-            disabled={
-              dataSourceCatalogState === 'loading' &&
-              !isFormDataSourceFieldDefinition(field)
-            }
-            onChange={(option): void =>
-              handleOptionSourceChange(field, option?.id, requestChange)
-            }
-            options={sourceOptions}
-            placeholder="選擇選項來源"
-            value={readSelectOption(sourceOptions, currentSourceId)}
-          />,
-        )}
+        {/*
+          A table column can only carry static options until cell-level
+          DataSource lands (P3): the renderer has no per-cell resolve, the
+          environment lint does not descend into columns, and nothing would
+          catch the mismatch before it reached a filler as a plain text box.
+          Offering the picker here would let a designer build exactly that.
+        */}
+        {supportsDataSource
+          ? renderSettingsFormRow(
+              '選項來源',
+              'fieldOptionSource',
+              <Select
+                clearable={false}
+                disabled={
+                  dataSourceCatalogState === 'loading' &&
+                  !isFormDataSourceFieldDefinition(field)
+                }
+                onChange={(option): void =>
+                  handleOptionSourceChange(field, option?.id, requestChange)
+                }
+                options={sourceOptions}
+                placeholder="選擇選項來源"
+                value={readSelectOption(sourceOptions, currentSourceId)}
+              />,
+            )
+          : null}
         {isFormDataSourceFieldDefinition(field)
-          ? renderDataSourceFieldSettings(field, compatibleDescriptors)
+          ? supportsDataSource
+            ? renderDataSourceFieldSettings(field, compatibleDescriptors)
+            : renderUnsupportedColumnDataSourceNotice(field)
           : renderStaticOptionFieldSettings(field, commit)}
       </>
+    );
+  }
+
+  /**
+   * A hand-authored schema can still put a DataSource on a column. Say so
+   * plainly rather than rendering an empty settings area — the original JSON is
+   * preserved either way, which is the same "keep it, show unavailable"
+   * treatment ADR 14 §3.10 gives an unknown source.
+   */
+  function renderUnsupportedColumnDataSourceNotice(
+    field: FormDataSourceOptionFieldDefinition,
+  ): ReactElement {
+    return (
+      <Typography
+        color="text-warning"
+        style={FIELD_SETTINGS_HINT_STYLE}
+        variant="body"
+      >
+        此欄目前綁定 DataSource「{field.dataSource.key} v
+        {field.dataSource.version}」。欄位層級的 DataSource 尚未支援，設定會原樣
+        保留，但填寫時不會出現選單。
+      </Typography>
     );
   }
 

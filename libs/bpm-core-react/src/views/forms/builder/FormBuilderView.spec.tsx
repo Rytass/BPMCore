@@ -546,6 +546,76 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  // Until cell-level DataSource lands, a column bound to one would render as a
+  // plain text box and pass the publish lint, because the environment lint does
+  // not descend into columns. The picker is a top-level affordance only.
+  it('offers no DataSource picker for a table column', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithSelectColumn()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 1);
+
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="fieldOptionSource"]',
+        ),
+      ).toBeNull();
+      // The static option table is still there, so the column stays editable.
+      expect(
+        harness.container.querySelector('[data-mock-form-field="fieldOptions"]'),
+      ).not.toBeNull();
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('keeps a top-level field DataSource picker', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          fieldKey: 'level',
+          label: '層級',
+          options: [{ label: '選項 A', value: 'option_a' }],
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="fieldOptionSource"]',
+        ),
+      ).not.toBeNull();
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // Two columns can share a key mid-edit; filtering by key deleted both.
+  it('removes only the column at the chosen position', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithDuplicateKeys()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '移除此欄', 0);
+      confirmModal(harness.container);
+
+      expect(readColumns(harness.readSchema())).toHaveLength(1);
+      expect(readColumns(harness.readSchema())[0]).toMatchObject({
+        label: '第二欄',
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   it('renames a field key and keeps the ui schema layout aligned', async (): Promise<void> => {
     const harness = await mountBuilder(
       createSchema([
@@ -642,6 +712,59 @@ function createTableField(): unknown {
     fieldKey: 'items',
     label: '請購明細',
     minRows: 1,
+    required: false,
+    type: 'table',
+  };
+}
+
+function createDescriptor(): Parameters<
+  typeof listDataSourcesMock.mockResolvedValue
+>[0][number] {
+  return {
+    description: null,
+    key: 'demo.cost-centers',
+    label: '成本中心',
+    maximumResultCount: 20,
+    minimumSearchLength: 0,
+    pageSize: 20,
+    paginationMode: 'NONE',
+    parameters: [],
+    revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+    returnsCompleteList: true,
+    supportedControls: ['autocomplete', 'checkbox', 'radio', 'select'],
+    supportsSearch: false,
+    version: 1,
+  };
+}
+
+function createTableFieldWithSelectColumn(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+      {
+        fieldKey: 'costCenter',
+        label: '成本中心',
+        mode: 'single',
+        options: [{ label: '選項 A', value: 'option_a' }],
+        required: false,
+        type: 'select',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+}
+
+function createTableFieldWithDuplicateKeys(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'dup', label: '第一欄', required: false, type: 'text' },
+      { fieldKey: 'dup', label: '第二欄', required: false, type: 'text' },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
     required: false,
     type: 'table',
   };
