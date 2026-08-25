@@ -250,11 +250,13 @@ errors key 用 instance path，`firstInvalidFieldKey` 可為 cell path，聚焦�
 - 效能邊界：cell hook 數 = 列數 × 動態 column 數，上限 100 列由 lint 保證；
   不另做虛擬化（V1）。**實作期更正**：Mezzanine `TableScroll` 只有 `virtualized`
   與 `y`（垂直），沒有水平捲動選項，因此超寬表格改由外層 `overflow-x: auto`
-  容器承接，不覆寫元件本身任何樣式。**P4 補正**：只有容器不夠——Mezzanine
-  `Table` 會撐滿容器，於是容器永遠不會真的捲動，欄寬被一路壓縮到 cell 內的控制項
-  溢出自己的儲存格、蓋住隔壁欄的下拉箭頭（P4 e2e 實測）。因此再加兩件事：表格
-  欄位不套用單欄版面的閱讀寬度上限，且捲動容器內側給表格一個「欄數 × 160px
-  （＋列動作欄 56px）」的寬度下限，容器才會真的捲動。表格仍受 Mezzanine
+  容器承接，不覆寫元件本身任何樣式。**P4 補正**：只有容器不夠——表格若又被套上
+  單欄版面的閱讀寬度上限（發起頁的 480px），欄寬會被壓到 53px，cell 內的控制項
+  溢出自己的儲存格 31px 並蓋住前一欄的下拉箭頭，該欄因此點不開（P4 e2e 實測）。
+  修法是**表格欄位不套用該閱讀寬度上限**；經拆開量測，這一項就足以消除溢出。
+  另加的「欄數 × 160px（＋列動作欄 56px）」寬度下限**不是**消除溢出的必要條件，
+  而是欄數更多時的防禦——Mezzanine `Table` 會撐滿容器，沒有這個下限時
+  `overflow-x: auto` 容器不會真的捲動，欄寬只會一路變窄。表格仍受 Mezzanine
   `.mzn-form-field__data-entry` 自身的 640px 上限限制，該上限不覆寫。若日後需要
   元件層級的水平捲動或凍結欄，見 §9。
 
@@ -381,6 +383,9 @@ migration、既有讀取端全部不動；巢狀結構要改型別與所有讀�
   （P4 實測 `scrollWidth` 126 > `clientWidth` 90），唯讀歷史因此讀不到完整值。
   若宿主回報這影響判讀，需決定是加大欄寬下限、讓唯讀 cell 改以純文字渲染，還是
   在 cell 上補 title/tooltip——三者都會動到已驗證的唯讀渲染，不在 V1 範圍。
+- 需要讓表格用滿表單寬度：Mezzanine 的 `FormFieldLayout.STRETCH` 版型本身就沒有
+  `.__data-entry` 的 640px 上限，換版型即可，不需覆寫元件樣式。目前維持預設版型並
+  在其內水平捲動。
 - 需要 Mezzanine `Table` **元件層級**的水平捲動：目前由外層 `overflow-x` 容器
   加上依欄數推算的寬度下限承接（§3.9 實作期更正）。凍結欄本身 Mezzanine 已支援
   （`TableColumnBase.fixed`），但其 sticky 陰影依賴 Table 自己的 scroller，因此

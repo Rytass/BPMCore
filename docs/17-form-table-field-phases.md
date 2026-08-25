@@ -1,7 +1,6 @@
 # 17 — 表格欄位開發 Phase
 
-- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 第一輪獨立
-  驗證退回的 7 項必修已修完，複驗中
+- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P4 全數 VERIFIED
 - **規劃日期**：2026-08-24
 - **權威決策**：[16 — ADR：表格欄位架構](./16-form-table-field-adr.md)
 - **完成定義**：所有 Phase gate、demo seed 場景、repository-wide e2e 與文件同步完成
@@ -18,7 +17,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFIED     |
-| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | VERIFYING    |
+| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | VERIFIED     |
 
 ## P0 — Shared 契約與結構 lint
 
@@ -663,7 +662,7 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 | `nx run-many -t test --skip-nx-cache` | 6 專案全綠（627 tests）                   |
 | `pnpm build`                       | 6 專案全綠                                  |
 | `pnpm demo:reset`                  | exit 0，seed 可重現                         |
-| `pnpm e2e:client`（表格 spec）     | **2 passed**（實際執行，見下）              |
+| `pnpm e2e:client --workers=1`      | **64 passed / 0 skipped**（第二輪驗證者實跑） |
 | `npx nx release --dry-run`         | 解析為 **minor → 0.12.0**，四套件同步寫入   |
 
 `nx release --dry-run` 另確認：changelog 依 `useCommitScope: false` 正確吃到本次
@@ -684,12 +683,38 @@ PLAYWRIGHT_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Googl
   specs/form-table-field-real.spec.ts --workers=1
 ```
 
+完整 e2e 套件不是每次都綠：第二輪驗證者第一次跑到 63 passed / 1 failed，失敗在
+`skill-matrix-real.spec.ts:407` 的 `waitForURL` 逾時（該表單沒有表格欄位，與本次
+修正無關，單跑該 spec 3 passed），`pnpm demo:reset` 後重跑即 64 passed。表格 spec
+本身也觀察到 1/14 的 flake（測試 2 送出到 `quantity` 仍是 120），已在
+`fillCell` 與「重新送出」之間補上明確等待條件。
+
 **demo seed 實測**：`pnpm demo:reset` 後以 API 確認新案件
 `60000000-0000-4000-8000-000000000011` 狀態為 `RETURNED`、標題取第一個非表格欄位
 （`請購事由：產線耗材補充`）、`formData.items` 為兩列 record、
 `form_data_option_snapshot` 的 key 為 `items[0].costCenter`／`items[1].costCenter`；
 再以 initiator 身分實打 `resubmitApprovalInstance`，走完逐 cell 權威 resolve 後
 狀態轉為 `RUNNING`。驗證後已再次 `pnpm demo:reset` 還原。
+
+**獨立驗證（第二輪）：七項必修 6 CLOSED／1 PARTIAL，程式面必修 0**
+
+第二輪驗證者（未參與第一輪修正）重跑六道 gate 全綠（627 tests、dry-run 0.12.0），
+並實跑完整 `pnpm e2e:client --workers=1`（64 passed / 0 skipped）。逐項判定：
+
+- 必修 1、3、4、5、6、7 **CLOSED**，各附獨立量測或實打證據。其中必修 3 以「在同一
+  頁面還原修正前形狀」對照量測，確認溢出 +31px → −12px、每個 chevron 都命中自己
+  那格；並逐一實測四個 `FormRenderer` 呼叫端（含非 singleColumn 的 HALF/THIRD 版型
+  與唯讀詳情頁），**無回歸**。必修 6 以「刪掉第一列後重送」實打證明 key 確實撞上舊
+  snapshot、該 cell 仍重新 resolve（`validatedAt` 更新、options 換成 TW02）。
+- 必修 2 **PARTIAL**：表格 spec 累計 14 次跑出 1 次 flake（測試 2 送出時 `quantity`
+  仍是 120）。已在 `fillCell` 與「重新送出」之間補上明確等待條件並重跑通過。
+- 新增三項文件必修（A/B/C），均為「文件把 floor 的作用寫得比實測更強」，已於本節
+  與 ADR §3.9 更正：真正消除溢出的是「表格不吃 480 單欄上限」，floor 是欄數更多時
+  的防禦而非成因；自決事項 7 的「最小值」理由改為可讀性餘裕，並補記「欄數少時反而
+  多出水平捲動」的代價。
+- 回歸測試有效性經第三方以 `moduleNameMapper` 換模組驗證：對修正前檔案失敗於
+  `Expected "480px"`，移除 floor 則失敗於 `Expected "376px"`——兩個不變量各自獨立
+  被鎖住。
 
 **獨立驗證（第一輪）：退回，7 項必修**
 
@@ -716,10 +741,11 @@ GraphQL introspection 確認四支 input 都有 `rowValuesJson`、api-reference 
 **必修 3 的根因與修法**（唯一一項程式缺陷）
 
 `InstanceNewView` 對 `FormRenderer` 傳 `singleColumn` + `maxWidth={480}`，該上限
-原本套在 grid 容器上，表格也一起被夾。更關鍵的是：Mezzanine `Table` 會撐滿容器，
-所以 `overflow-x: auto` 容器**永遠不會真的捲動**，欄寬一路被壓縮到 cell 內的
-select trigger 溢出自己的 `<td>`、蓋住隔壁欄的下拉箭頭，該 cell 因此點不開
-（驗證者以 `elementFromPoint` 證實，e2e 也就卡在這裡 30 秒逾時）。
+原本套在 grid 容器上，表格也一起被夾。而 Mezzanine `Table` 會撐滿容器，所以
+`overflow-x: auto` 容器**不會真的捲動**（修正前容器 `clientWidth` 與 `scrollWidth`
+同為 325），欄寬被壓到 53px，cell 內的 select trigger 溢出自己的 `<td>` 31px 並
+蓋住**前一欄**的下拉箭頭——後繪製的鄰欄控制項疊在前一欄上方，因此點不開的是
+`items[0].plant` 而不是 costCenter，e2e 卡在這裡 30 秒逾時。
 
 修法兩件事，都在 `FormRendererView.tsx`：`maxWidth` 改為逐欄位套用並跳過 table
 欄位；捲動容器內側加一層「欄數 × 160px（＋列動作欄 56px）」的寬度下限。修正後實
@@ -728,9 +754,15 @@ select trigger 溢出自己的 `<td>`、蓋住隔壁欄的下拉箭頭，該 cel
 | 量測項 | 修正前 | 修正後 |
 | ------------------------------ | ------ | ------ |
 | 表格寬度                        | 345    | 856（= 5×160+56） |
-| 捲動容器 clientWidth／scrollWidth | 325／345 | 640／856（真的會捲） |
+| 捲動容器 clientWidth／scrollWidth | 325／325 | 640／856（真的會捲） |
 | `items[0].plant` 的 `<td>` 寬   | 53     | 160    |
-| costCenter chevron 的命中元素   | 鄰欄 `<input>` | chevron 自身 |
+| 控制項溢出自身 `<td>` 的最大值   | +31px  | −12px（都在格內） |
+| `items[0].plant` chevron 的命中元素 | 鄰欄 costCenter 的 `.mzn-text-field` | chevron 自身 |
+
+**兩項修改的個別貢獻**（第二輪驗證者拆開量測）：真正消除溢出的是「表格不套 480
+單欄上限」——只保留這一項、不加 floor 時，表格 640、每欄 117px、最大溢出 −12px，
+已經不溢出。floor 的作用是把欄寬拉到 160 並讓容器真的水平捲動，屬欄數更多時的
+防禦，不是本次缺陷的成因。
 
 容器仍停在 640，那是 Mezzanine `.mzn-form-field__data-entry` 自己的上限；依
 CLAUDE.md「不可覆寫改造元件外觀結構」不去動它，表格在其內水平捲動。
@@ -741,9 +773,12 @@ Received ""`）。
 
 **自決事項（ADR 未規範，取最小可逆選項）**
 
-7. **每欄寬度下限 160px、列動作欄 56px**：160 是能讓多數 cell 控制項（select
-   trigger、number input）不溢出自己儲存格的最小值；比照列動作欄既有的 56。取固定
-   值而非依欄型別推算，是因為後者要維護一張型別對照表，收益不明顯而且更難回退。
+7. **每欄寬度下限 160px、列動作欄 56px**：160 不是「不溢出的最小值」——實測 117px
+   欄寬就已經不溢出（−12px）；160 取的是可讀性餘裕（欄名與多數 cell 值不被壓到只剩
+   幾十 px），56 比照列動作欄既有寬度。**已知代價**：採 160 後，本來放得進 640 容器
+   的 5 欄表格變成必須水平捲動（856 > 640）；欄數少時這是純粹的損失，欄數多時才有
+   收益。取固定值而非依欄型別推算，是因為後者要維護一張型別對照表，收益不明顯而且
+   更難回退。要回退只需調整 `TABLE_COLUMN_MIN_WIDTH`，不影響溢出修正本身。
 
 **非阻擋觀察（記錄，不在 P4 處理）**
 

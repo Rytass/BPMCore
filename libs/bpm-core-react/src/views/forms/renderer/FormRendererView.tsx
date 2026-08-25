@@ -427,9 +427,11 @@ const TABLE_SCROLLER_STYLE: CSSProperties = {
 };
 
 // Mezzanine `Table` fills whatever box it is given, so an `overflow-x: auto`
-// wrapper on its own never scrolls: the columns just keep shrinking until each
-// cell's control overflows its own `<td>` and covers the next column's select
-// chevron. The floor below is what actually makes the wrapper scroll.
+// wrapper on its own never scrolls: the columns just keep shrinking. Keeping
+// the table out of the single-column reading width is what stops a control
+// from overflowing its own cell; this floor is the defence for tables wide
+// enough that even the full width would squeeze them, and it is what makes the
+// wrapper actually scroll when that happens.
 const TABLE_COLUMN_MIN_WIDTH = 160;
 const TABLE_ACTIONS_COLUMN_WIDTH = 56;
 
