@@ -6,6 +6,7 @@ import {
   Key,
   MouseEvent,
   ReactElement,
+  ReactNode,
   useEffect,
   useMemo,
   useState,
@@ -49,7 +50,6 @@ import {
   FileIcon,
   ListIcon,
   PlusIcon,
-  SettingIcon,
   TrashIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
@@ -567,13 +567,27 @@ const DATA_SOURCE_SUMMARY_STYLE: CSSProperties = {
   padding: 10,
 };
 
+// The settings of the column being edited render inside that column's own row,
+// so the panel needs no heading of its own to say which column it belongs to.
+// Nested under its own row, so it stays a single readable column instead of
+// competing with the two-column grid above it.
 const TABLE_COLUMN_SETTINGS_STYLE: CSSProperties = {
-  backgroundColor: 'var(--mzn-color-bg-surface-secondary)',
-  borderRadius: 6,
+  ...FIELD_SETTINGS_SECTION_STYLE,
+  gridTemplateColumns: 'minmax(280px, 520px)',
+  padding: '4px 0 8px',
+};
+
+const TABLE_COLUMNS_SECTION_STYLE: CSSProperties = {
   display: 'grid',
-  gap: 10,
+  gap: 8,
   gridColumn: '1 / -1',
-  padding: 12,
+};
+
+const TABLE_COLUMNS_HEADER_STYLE: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: 12,
+  justifyContent: 'space-between',
 };
 
 const DATA_SOURCE_PARAMETER_GRID_STYLE: CSSProperties = {
@@ -1530,6 +1544,9 @@ export function FormBuilderView({
     return (
       <div style={FIELD_SETTINGS_FORM_STYLE}>
         {renderMainFieldSettings(field)}
+        {isTableFieldDefinition(field)
+          ? renderTableColumnsSection(field)
+          : null}
         {renderAdvancedFieldSettings(field)}
       </div>
     );
@@ -1711,14 +1728,37 @@ export function FormBuilderView({
             variant="base"
           />,
         )}
-        {renderSettingsFormRow(
-          '欄',
-          'fieldColumns',
-          renderTableColumnsTable(field),
-          true,
-        )}
-        {renderSelectedTableColumnSettings(field)}
       </>
+    );
+  }
+
+  /**
+   * Rendered as a sibling of the settings grid rather than inside it: the grid
+   * is capped at a readable two-column width, and this list wants the whole
+   * panel. It is also deliberately not wrapped in a form field, because
+   * Mezzanine caps a field's data entry at 640px — that cap is what squeezed
+   * the list into a third of the panel while the settings beside it ran wide.
+   */
+  function renderTableColumnsSection(field: TableFieldDefinition): ReactElement {
+    return (
+      <div style={TABLE_COLUMNS_SECTION_STYLE}>
+        <div style={TABLE_COLUMNS_HEADER_STYLE}>
+          <Typography component="h3" variant="label-primary">
+            欄（{field.columns.length}）
+          </Typography>
+          <Button
+            icon={PlusIcon}
+            iconType="leading"
+            onClick={(): void => handleAddTableColumn(field)}
+            size="sub"
+            type="button"
+            variant="base-secondary"
+          >
+            新增欄
+          </Button>
+        </div>
+        {renderTableColumnsTable(field)}
+      </div>
     );
   }
 
@@ -1734,25 +1774,9 @@ export function FormBuilderView({
       label: column.label,
       type: column.type,
     }));
+    // The stored key is a machine value the flow conditions read; it lives in
+    // the expanded settings so the list stays scannable by label.
     const columns: TableColumn<TableColumnRow>[] = [
-      {
-        key: 'fieldKey',
-        render: (row): ReactElement => (
-          <Input
-            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-              commitTableColumn(field, row.index, {
-                ...readTableColumn(field, row.index),
-                fieldKey: event.target.value,
-              })
-            }
-            placeholder="例如：qty"
-            size="sub"
-            value={row.fieldKey}
-            variant="base"
-          />
-        ),
-        title: '欄位 Key',
-      },
       {
         key: 'label',
         render: (row): ReactElement => (
@@ -1791,7 +1815,6 @@ export function FormBuilderView({
         render: (row): ReactElement => (
           <Toggle
             checked={readTableColumn(field, row.index).required === true}
-            label="必填"
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               commitTableColumn(field, row.index, {
                 ...readTableColumn(field, row.index),
@@ -1806,13 +1829,6 @@ export function FormBuilderView({
     ];
     const actions: TableActions<TableColumnRow> = {
       render: (row): ReturnType<TableActions<TableColumnRow>['render']> => [
-        {
-          icon: SettingIcon,
-          iconType: 'icon-only',
-          name: '設定此欄',
-          onClick: (): void => setSelectedColumnKey(row.fieldKey),
-          variant: 'base-ghost',
-        },
         {
           // A table with no columns cannot be published (ADR 16 §4), so the
           // last one stays.
@@ -1830,66 +1846,66 @@ export function FormBuilderView({
           variant: 'destructive-ghost',
         },
       ],
-      width: 96,
+      width: 56,
     };
+    const expandedRowKey = columnRows.find(
+      (row) => row.fieldKey === selectedColumnKey,
+    )?.key;
 
     return (
-      <div style={COMPACT_STACK_STYLE}>
-        <Table
-          actions={actions}
-          columns={columns}
-          dataSource={columnRows}
-          draggable={{
-            enabled: true,
-            onDragEnd: (_rows, options): void =>
-              handleReorderTableColumns(
-                field,
-                options.fromIndex,
-                options.toIndex,
-              ),
-          }}
-          showHeader
-          size="sub"
-        />
-        <div style={OPTION_ACTIONS_STYLE}>
-          <Button
-            icon={PlusIcon}
-            iconType="leading"
-            onClick={(): void => handleAddTableColumn(field)}
-            variant="base-secondary"
-          >
-            新增欄
-          </Button>
-        </div>
-      </div>
+      <Table
+        actions={actions}
+        columns={columns}
+        dataSource={columnRows}
+        draggable={{
+          enabled: true,
+          onDragEnd: (_rows, options): void =>
+            handleReorderTableColumns(field, options.fromIndex, options.toIndex),
+        }}
+        // Expanding a row is what selects the column: the settings then sit
+        // under the row they belong to, so there is nothing to guess about
+        // which column is being edited.
+        expandable={{
+          expandedRowKeys: expandedRowKey ? [expandedRowKey] : [],
+          expandedRowRender: (row): ReactNode =>
+            renderTableColumnSettings(field, row.index),
+          onExpand: (expanded, row): void =>
+            setSelectedColumnKey(expanded ? row.fieldKey : null),
+        }}
+        fullWidth
+        showHeader
+        size="sub"
+      />
     );
   }
 
-  function renderSelectedTableColumnSettings(
+  function renderTableColumnSettings(
     field: TableFieldDefinition,
-  ): ReactElement {
-    const columnIndex = field.columns.findIndex(
-      (column) => column.fieldKey === selectedColumnKey,
-    );
+    columnIndex: number,
+  ): ReactNode {
     const column = field.columns[columnIndex];
 
     if (!column) {
-      return (
-        <Typography
-          color="text-neutral"
-          style={FIELD_SETTINGS_HINT_STYLE}
-          variant="body"
-        >
-          選取上方任一欄的「設定此欄」，即可調整該欄的型別專屬設定。
-        </Typography>
-      );
+      return null;
     }
 
     return (
       <div style={TABLE_COLUMN_SETTINGS_STYLE}>
-        <Typography component="h3" variant="label-primary">
-          欄設定：{column.label || column.fieldKey}
-        </Typography>
+        {renderSettingsFormRow(
+          '欄位 Key',
+          'columnFieldKey',
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commitTableColumn(field, columnIndex, {
+                ...column,
+                fieldKey: event.target.value,
+              })
+            }
+            placeholder="例如：qty"
+            value={column.fieldKey}
+            variant="base"
+          />,
+        )}
         {renderSettingsFormRow(
           '提示文字',
           'columnPlaceholder',

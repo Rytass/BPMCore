@@ -143,6 +143,15 @@ jest.mock('@mezzanine-ui/react', () => {
     const actions = props.actions as
       | { readonly render: (row: unknown) => readonly unknown[] }
       | undefined;
+    // Mirrors Mezzanine's expandable rows: a toggle per row, and the expanded
+    // content rendered inside the row it belongs to.
+    const expandable = props.expandable as
+      | {
+          readonly expandedRowKeys?: readonly string[];
+          readonly expandedRowRender: (row: unknown) => ReactNode;
+          readonly onExpand?: (expanded: boolean, row: unknown) => void;
+        }
+      | undefined;
 
     return (
       <div data-mock-table="">
@@ -166,6 +175,34 @@ jest.mock('@mezzanine-ui/react', () => {
                 </span>
               );
             })}
+            {expandable
+              ? (() => {
+                  const rowKey = String(
+                    (row as { readonly key?: unknown }).key ?? rowIndex,
+                  );
+                  const expanded =
+                    expandable.expandedRowKeys?.includes(rowKey) === true;
+
+                  return (
+                    <>
+                      <button
+                        data-mock-table-expand={String(expanded)}
+                        onClick={(): void =>
+                          expandable.onExpand?.(!expanded, row)
+                        }
+                        type="button"
+                      >
+                        展開此欄
+                      </button>
+                      {expanded ? (
+                        <div data-mock-table-expanded="">
+                          {expandable.expandedRowRender(row)}
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()
+              : null}
             {(actions?.render(row) ?? []).map((action, actionIndex): ReactElement => {
               const entry = action as {
                 readonly disabled?: () => boolean;
@@ -443,14 +480,20 @@ describe('FormBuilderView field settings', () => {
     const harness = await mountBuilder(createSchema([createTableField()]));
 
     try {
-      const before = harness.container.querySelector(
-        '[data-mock-table-row="0"] [data-mock-table-cell="fieldKey"] input',
+      expandTableRow(harness.container, 0);
+
+      const before = readExpandedSettingInput(
+        harness.container,
+        0,
+        'columnFieldKey',
       );
 
-      typeIntoTableCell(harness.container, 'fieldKey', 0, 'n');
+      typeIntoExpandedSetting(harness.container, 0, 'columnFieldKey', 'n');
 
-      const after = harness.container.querySelector(
-        '[data-mock-table-row="0"] [data-mock-table-cell="fieldKey"] input',
+      const after = readExpandedSettingInput(
+        harness.container,
+        0,
+        'columnFieldKey',
       );
 
       expect(readColumnKeys(harness.readSchema())).toEqual(['n']);
@@ -478,7 +521,13 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      typeIntoTableCell(harness.container, 'fieldKey', 0, 'plantCode');
+      expandTableRow(harness.container, 0);
+      typeIntoExpandedSetting(
+        harness.container,
+        0,
+        'columnFieldKey',
+        'plantCode',
+      );
 
       const columns = readColumns(harness.readSchema());
 
@@ -542,7 +591,7 @@ describe('FormBuilderView field settings', () => {
     const harness = await mountBuilder(createSchema([createTableField()]));
 
     try {
-      clickTableAction(harness.container, '設定此欄', 0);
+      expandTableRow(harness.container, 0);
       typeInto(harness.container, 'fieldMaxLength', '30');
 
       expect(readColumns(harness.readSchema())[0]).toMatchObject({
@@ -560,7 +609,7 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      clickTableAction(harness.container, '設定此欄', 1);
+      expandTableRow(harness.container, 1);
 
       expect(
         harness.container.querySelector(
@@ -581,7 +630,7 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      clickTableAction(harness.container, '設定此欄', 1);
+      expandTableRow(harness.container, 1);
 
       expect(
         harness.container.querySelector(
@@ -606,13 +655,22 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      clickTableAction(harness.container, '設定此欄', 0);
-      expect(harness.container.textContent).toContain('欄設定：品項');
+      expandTableRow(harness.container, 0);
+      expect(
+        readExpandedSettingInput(harness.container, 0, 'columnFieldKey')?.value,
+      ).toBe('name');
 
       selectTableCellOption(harness.container, 'type', 1, 'number');
       confirmModal(harness.container);
 
-      expect(harness.container.textContent).toContain('欄設定：成本中心');
+      // The settings moved to the row whose type changed, not the one that
+      // happened to be open.
+      expect(
+        readExpandedSettingInput(harness.container, 0, 'columnFieldKey'),
+      ).toBeNull();
+      expect(
+        readExpandedSettingInput(harness.container, 1, 'columnFieldKey')?.value,
+      ).toBe('costCenter');
     } finally {
       await unmount(harness);
     }
@@ -640,7 +698,7 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      clickTableAction(harness.container, '設定此欄', 1);
+      expandTableRow(harness.container, 1);
 
       await act(async (): Promise<void> => {
         clickButton(harness.container, '驗證 DataSource 設定');
@@ -662,7 +720,7 @@ describe('FormBuilderView field settings', () => {
     );
 
     try {
-      clickTableAction(harness.container, '設定此欄', 1);
+      expandTableRow(harness.container, 1);
       selectOption(
         harness.container,
         'dataSourceParameter_plant',
@@ -1135,6 +1193,33 @@ function typeInto(
   setControlValue(input, value);
 }
 
+function typeIntoExpandedSetting(
+  container: HTMLElement,
+  rowIndex: number,
+  fieldName: string,
+  value: string,
+): void {
+  const input = container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-expanded] [data-mock-form-field="${fieldName}"] input`,
+  ) as HTMLInputElement | null;
+
+  if (!input) {
+    throw new Error(`Expanded setting ${fieldName} of row ${rowIndex} is missing.`);
+  }
+
+  setControlValue(input, value);
+}
+
+function readExpandedSettingInput(
+  container: HTMLElement,
+  rowIndex: number,
+  fieldName: string,
+): HTMLInputElement | null {
+  return container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-expanded] [data-mock-form-field="${fieldName}"] input`,
+  );
+}
+
 function typeIntoTableCell(
   container: HTMLElement,
   cellKey: string,
@@ -1218,6 +1303,20 @@ function clickButton(container: HTMLElement, label: string): void {
 
   act((): void => {
     button.click();
+  });
+}
+
+function expandTableRow(container: HTMLElement, rowIndex: number): void {
+  const toggle = container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-expand]`,
+  ) as HTMLButtonElement | null;
+
+  if (!toggle) {
+    throw new Error(`Row ${rowIndex} has no expand toggle.`);
+  }
+
+  act((): void => {
+    toggle.click();
   });
 }
 
