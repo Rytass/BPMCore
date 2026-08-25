@@ -581,6 +581,24 @@ describe('FormDataSourceValueResolverService', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  // A malformed row must not shift every snapshot key after it. The submit
+  // validator rejects one before this runs, but the index must not depend on
+  // that ordering to be right.
+  it('keeps the row index of the cells after a malformed row', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: {
+        items: ['not-a-row', { costCenter: 'CC-001', plant: 'TPE' }],
+      },
+      revalidateAll: true,
+      schema: createTableSchema(),
+    });
+
+    expect(Object.keys(snapshots)).toEqual(['items[1].costCenter']);
+  });
+
   it('keeps the submit-wide concurrency limit across table cells', async (): Promise<void> => {
     let inFlight = 0;
     let peak = 0;

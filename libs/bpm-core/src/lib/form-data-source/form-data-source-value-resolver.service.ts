@@ -287,25 +287,36 @@ function readTableResolutionTargets(
   const previousRows = readTableRows(input.previousFormData?.[field.fieldKey]);
 
   return rows.flatMap((row, rowIndex) =>
-    dynamicColumns.map((column): DynamicResolutionTarget => ({
-      field: column,
-      previousValue: readOwnProperty(
-        previousRows[rowIndex] ?? {},
-        column.fieldKey,
-      ),
-      rowValues: row,
-      snapshotKey: `${field.fieldKey}[${rowIndex}].${column.fieldKey}`,
-      value: readOwnProperty(row, column.fieldKey),
-    })),
+    row
+      ? dynamicColumns.map((column): DynamicResolutionTarget => ({
+          field: column,
+          previousValue: readOwnProperty(
+            previousRows[rowIndex] ?? {},
+            column.fieldKey,
+          ),
+          rowValues: row,
+          snapshotKey: `${field.fieldKey}[${rowIndex}].${column.fieldKey}`,
+          value: readOwnProperty(row, column.fieldKey),
+        }))
+      : [],
   );
 }
 
+/**
+ * Keeps position, so a malformed row does not shift every snapshot key after
+ * it. `validateSubmittedFormData` rejects a non-record row before this runs,
+ * but the index must not depend on that ordering to stay correct.
+ */
 function readTableRows(
   value: unknown,
-): readonly Readonly<Record<string, unknown>>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
+): readonly (Readonly<Record<string, unknown>> | null)[] {
+  return Array.isArray(value) ? value.map((row) => (isRecord(row) ? row : null)) : [];
 }
 
+/**
+ * Own-property read. Both a column key and a host parameter key may be
+ * `constructor` or `toString`; a plain index would pick one off the prototype.
+ */
 function readOwnProperty(
   row: Readonly<Record<string, unknown>>,
   key: string,
