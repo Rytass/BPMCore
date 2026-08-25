@@ -14,7 +14,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | Phase | 交付                                      | 相依 | 狀態         |
 | ----- | ----------------------------------------- | ---- | ------------ |
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
-| P1    | 後端送出驗證 + runtime 韌性               | P0   | IMPLEMENTED  |
+| P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFYING    |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED      |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
