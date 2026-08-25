@@ -1,7 +1,7 @@
 # 17 — 表格欄位開發 Phase
 
-- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 修正中
-  （第一輪獨立驗證退回，7 項必修）
+- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 第一輪獨立
+  驗證退回的 7 項必修已修完，複驗中
 - **規劃日期**：2026-08-24
 - **權威決策**：[16 — ADR：表格欄位架構](./16-form-table-field-adr.md)
 - **完成定義**：所有 Phase gate、demo seed 場景、repository-wide e2e 與文件同步完成
@@ -18,7 +18,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFIED     |
-| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | IMPLEMENTING |
+| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | VERIFYING    |
 
 ## P0 — Shared 契約與結構 lint
 
@@ -405,9 +405,9 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
 
 **驗證者留下的非阻擋觀察（記錄，不在 P2 處理）**
 
-- `minRows > maxRows` 會做出鎖死的表單（新增與刪除同時 disabled）。發布 lint 已
-  擋，但 builder 輸入過程中可暫時達成。`readFormTableRowBounds` 若要收斂，屬
-  additive 的防禦性改動，留待需要時再做。
+- `minRows > maxRows` 會做出鎖死的表單（新增與刪除同時 disabled），發布 lint 已擋。
+  **P4 更正**：builder 兩個輸入互相夾擠（`clampOptionalNumber`），UI 上重現不了，
+  只有手寫或匯入 schema 能達成；原本記為「builder 輸入過程中可暫時達成」是誤記。
 - `renameFormDataSourceFieldBindings` 不下探 table columns，top-level 欄位改名時
   column 的 `FIELD` binding 不會同步。P2 因 column 不開放 DataSource 而無害，
   **P3 接上時必須一併處理**。
@@ -610,8 +610,10 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 
 - `apps/api` demo seed 新增含表格欄位（靜態 + 動態 column）的模板場景，
   `pnpm demo:reset` 可重現。
-- Playwright golden path：設計表格 → 發布 → 發起填寫（含動態 cell）→ 送出 →
-  詳情唯讀 → 退回 → 編輯重送。
+- Playwright golden path：發起填寫（含動態 cell）→ 送出 → 詳情唯讀 → 退回案件
+  編輯重送。**範圍界定**：spec 從 demo seed 已發布的模板與已退回的案件出發，
+  不重跑 builder 設計／發布與「退回」動作本身——前者由 P2 的 builder 測試與
+  ADR §4 發布不變式覆蓋，後者由既有簽核 e2e 覆蓋，在此重跑只是重複成本。
 - 文件同步：`docs/README.md` 索引、`docs/06-data-model.md`（formData／snapshot
   形狀補述）、`docs/api-reference.md` 終檢、ADR 16 狀態改
   `Accepted (implemented YYYY-MM-DD)`。
@@ -635,31 +637,52 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
   `createTableCellOptionSnapshot` 依該列 plant 算 bindingHash）。
 - `apps/client-e2e/specs/form-table-field-real.spec.ts`（新增）：Playwright golden
   path 兩例——逐列填寫並送出（含每列獨立等待、跨列選項不互相污染、snapshot key
-  為 instance path、case title 跳過 table、把 DataSource host route 掉後唯讀歷史
-  仍以 snapshot 顯示），以及退回編輯後重新送出（未動的列不丟值）。
+  為 instance path、case title 跳過 table、唯讀歷史全程沒有向宿主查任何選項就把
+  每個 cell 的 label 顯示出來），以及退回編輯後重新送出（未動的列不丟值）。
 - `docs/06-data-model.md`：補述 `form_data` 的表格列陣列形狀與
   `form_data_option_snapshot` 的 instance path key（含「為何列位移要重 resolve」）。
+- `libs/bpm-core-react/src/views/forms/renderer/FormRendererView.tsx`：表格欄位
+  不再套用單欄版面的 `maxWidth`，捲動容器內側加上依欄數推算的寬度下限（必修 3）。
+- `libs/bpm-core/src/lib/form-data-source/form-data-source-value-resolver.service.ts`：
+  更正 `readDynamicResolutionTargets` 的註解——擋住跨列誤用的是同索引舊值與
+  bindingHash，不是 key 本身（必修 6，純註解，無行為變更）。
 - `docs/16-form-table-field-adr.md`：狀態改
-  `Accepted (implemented 2026-08-25)`；§3.9 的 Mezzanine `scroll` 敘述加上實作期
-  更正；§9 補三條新的 Review Trigger。
+  `Accepted (implemented 2026-08-25)`，VERIFIED 與否改以本檔 Phase 總覽為準；
+  §3.6 snapshot fail-safe 機制更正；§3.9 加上 P4 版面補正；§9 補四條 Review
+  Trigger 並更正凍結欄與多段路徑兩處陳述。
 - `docs/api-reference.md`：頂端「Last verified against」改為 2026-08-25／pending
-  `v0.12.0`，並註明 manifest 仍是 0.11.0（版本由 `nx release` 在發布時寫入）。
+  `v0.12.0`；補述 `renameFormDataSourceFieldBindings` 會下探 table columns、
+  `createFieldDefinition` 支援 `'table'`、`readFormDataCaseTitle` 跳過 table。
 
-**Gate 結果**
+**Gate 結果**（第二輪，UI 修正後重跑）
 
 | 項目 | 結果 |
 | ---------------------------------- | ------------------------------------------ |
 | `pnpm typecheck`                   | 6 專案全綠                                  |
 | `pnpm lint`                        | 0 error（2 個既有 warning，非本次引入）      |
-| `nx run-many -t test --skip-nx-cache` | 6 專案全綠                                |
+| `nx run-many -t test --skip-nx-cache` | 6 專案全綠（627 tests）                   |
 | `pnpm build`                       | 6 專案全綠                                  |
 | `pnpm demo:reset`                  | exit 0，seed 可重現                         |
-| `pnpm e2e:client --workers=1`      | **未執行——見下方「待人工驗證」**            |
+| `pnpm e2e:client`（表格 spec）     | **2 passed**（實際執行，見下）              |
 | `npx nx release --dry-run`         | 解析為 **minor → 0.12.0**，四套件同步寫入   |
 
 `nx release --dry-run` 另確認：changelog 依 `useCommitScope: false` 正確吃到本次
-所有 `feat`／`fix` commit（13 feat、13 fix），四個 package manifest 都寫入
-`0.12.0`，tag 為 `v0.12.0`。**未執行** version／tag／publish。
+所有 `feat`／`fix` commit，四個 package manifest 都寫入 `0.12.0`，tag 為
+`v0.12.0`。**未執行** version／tag／publish。
+
+**e2e 實際執行方式（重要）**
+
+本機 Playwright 的 chromium 下載殘缺（`chromium-1217` 只有 448 KB），
+`npx playwright install chromium` 在此網路環境實質停滯。但
+`apps/client-e2e/playwright.config.ts` 本來就支援 `PLAYWRIGHT_EXECUTABLE_PATH`，
+指向系統既有的 Chrome 即可跑：
+
+```bash
+pnpm demo:reset          # spec 依賴表格 seed 場景，且不可重入
+PLAYWRIGHT_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  npx playwright test -c apps/client-e2e/playwright.config.ts \
+  specs/form-table-field-real.spec.ts --workers=1
+```
 
 **demo seed 實測**：`pnpm demo:reset` 後以 API 確認新案件
 `60000000-0000-4000-8000-000000000011` 狀態為 `RETURNED`、標題取第一個非表格欄位
@@ -668,23 +691,76 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 再以 initiator 身分實打 `resubmitApprovalInstance`，走完逐 cell 權威 resolve 後
 狀態轉為 `RUNNING`。驗證後已再次 `pnpm demo:reset` 還原。
 
-**待人工驗證**
+**獨立驗證（第一輪）：退回，7 項必修**
 
-- **`pnpm e2e:client --workers=1` 未能執行**：本機 Playwright 尚未安裝瀏覽器
-  （`chromium_headless_shell-1217` 不存在），`npx playwright install chromium`
-  在此環境下載實質停滯（10 分鐘僅取得 448 KB），判定為網路受限而非程式問題。
-  新增的 `form-table-field-real.spec.ts` 只做過 TypeScript 檢查，**尚未實際執行**。
-  請在可下載 Playwright 瀏覽器的環境執行：
+驗證者（未參與實作）以 fresh session 重跑五道 gate 全綠，並額外做了：45 組對抗性
+輸入實打 ADR §4 九條發布不變式（全數被擋、反向對照正確放行）、11 組送出驗證惡意
+輸入（全數被擋）、bindingHash 逐位元核對 seed 與後端 `hashBindings` 一致、
+GraphQL introspection 確認四支 input 都有 `rowValuesJson`、api-reference 對
+`git diff` 的公開符號盤點（零遺漏）。**後端安全邊界與發布準備兩層簽 PASS、必修 0
+項。**P4 本身被退回，關鍵是驗證者用 `PLAYWRIGHT_EXECUTABLE_PATH` 把 e2e 跑了起來
+——結果是 **1 failed / 1 passed**，而不是原本記錄的「未執行」。
 
-  ```bash
-  npx playwright install chromium
-  pnpm demo:reset          # spec 依賴表格 seed 場景
-  pnpm e2e:client --workers=1
-  ```
+七項必修與處置：
 
-  該 spec 斷言的每一項行為，都已在 P2／P3 以 cswap 專用瀏覽器對真實 client
-  逐項手動驗證過（見 P2／P3 的「真實瀏覽器互動驗證」段落）；未驗證的是 spec
-  本身的選擇器與時序是否穩定。
+| # | 必修項 | 處置 |
+| - | ------------------------------------------------ | -------------------------------------- |
+| 1 | ADR 狀態行宣稱 P0–P4 全數 VERIFIED，事實不成立     | ADR 狀態改以本檔 Phase 總覽為準（`9643190`／文件 commit） |
+| 2 | e2e 測試 1 實跑失敗（不是未執行）                  | 修正後重跑 **2 passed**，本節 Gate 表更正 |
+| 3 | 表格在發起頁被壓成 325px，控制項溢出疊到鄰欄       | 真實 UI 缺陷，程式修正 `0ca798f`        |
+| 4 | 唯讀 select 的 label 不是 text node，斷言必定失敗  | 改用 `toHaveValue`（`2cf8235`）         |
+| 5 | offline 區塊的 `route.abort()` 是死碼，且丟掉唯一的離線證明 | 改回「收集 request 後斷言為空」（`2cf8235`） |
+| 6 | `docs/06` 與 ADR 把 snapshot fail-safe 的機制寫錯  | 三處（含程式註解）改為「同索引舊值 + bindingHash」 |
+| 7 | ADR §9 兩處與現實不符（凍結欄、多段路徑 no-op 條件）| 依實測改寫                              |
+
+**必修 3 的根因與修法**（唯一一項程式缺陷）
+
+`InstanceNewView` 對 `FormRenderer` 傳 `singleColumn` + `maxWidth={480}`，該上限
+原本套在 grid 容器上，表格也一起被夾。更關鍵的是：Mezzanine `Table` 會撐滿容器，
+所以 `overflow-x: auto` 容器**永遠不會真的捲動**，欄寬一路被壓縮到 cell 內的
+select trigger 溢出自己的 `<td>`、蓋住隔壁欄的下拉箭頭，該 cell 因此點不開
+（驗證者以 `elementFromPoint` 證實，e2e 也就卡在這裡 30 秒逾時）。
+
+修法兩件事，都在 `FormRendererView.tsx`：`maxWidth` 改為逐欄位套用並跳過 table
+欄位；捲動容器內側加一層「欄數 × 160px（＋列動作欄 56px）」的寬度下限。修正後實
+測（Desktop Chrome 1280 寬）：
+
+| 量測項 | 修正前 | 修正後 |
+| ------------------------------ | ------ | ------ |
+| 表格寬度                        | 345    | 856（= 5×160+56） |
+| 捲動容器 clientWidth／scrollWidth | 325／345 | 640／856（真的會捲） |
+| `items[0].plant` 的 `<td>` 寬   | 53     | 160    |
+| costCenter chevron 的命中元素   | 鄰欄 `<input>` | chevron 自身 |
+
+容器仍停在 640，那是 Mezzanine `.mzn-form-field__data-entry` 自己的上限；依
+CLAUDE.md「不可覆寫改造元件外觀結構」不去動它，表格在其內水平捲動。
+
+回歸測試 `FormRendererView.spec.tsx`「keeps the single-column cap off the table
+and floors its width per column」已驗證對修正前的檔案會失敗（`Expected "480px",
+Received ""`）。
+
+**自決事項（ADR 未規範，取最小可逆選項）**
+
+7. **每欄寬度下限 160px、列動作欄 56px**：160 是能讓多數 cell 控制項（select
+   trigger、number input）不溢出自己儲存格的最小值；比照列動作欄既有的 56。取固定
+   值而非依欄型別推算，是因為後者要維護一張型別對照表，收益不明顯而且更難回退。
+
+**非阻擋觀察（記錄，不在 P4 處理）**
+
+- 窄欄下 cell 內容會被截斷且無 tooltip（160px 欄寬時 `scrollWidth` 126 >
+  `clientWidth` 90，讀不到完整成本中心名稱）。已列入 ADR §9 Review Trigger——
+  三種修法都會動到已驗證的唯讀渲染，不在 V1 範圍。
+- `RowFieldValues` 在 barrel 未外洩（`lib/form-data-source/index.ts` 不 export
+  `.validation`），但 `form-data-source.service.d.ts` 因 public method 參數而結構性
+  引用它，消費端可用 `Parameters<…>` 取到；展開後即
+  `Readonly<Record<string, unknown>>`，無實質風險。若要維持「內部」語意，可把該
+  參數改寫成內聯型別。
+- P1 待辦（`SET_FORM_FIELD` 單段 fieldPath、`action.fieldPath` 未納入 lint、
+  attachment 掃描非 instance path、`isFormTableCellValue` 接受 `NaN`／`Infinity`、
+  `readFormDataCaseTitle` 取 layout 外欄位）、P2 待辦（唯讀 number cell 仍有
+  spinner、前端對畸形 table 值靜默放行）與 P3 六條自決事項，經第一輪驗證者逐條
+  對程式碼確認**仍然成立**，維持原記錄。P2 記的
+  「`renameFormDataSourceFieldBindings` 不下探 columns」已由 P3 收掉。
 
 ## 附錄 A — cel-js list 行為驗證結論
 
