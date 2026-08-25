@@ -1,6 +1,6 @@
 # 17 — 表格欄位開發 Phase
 
-- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0 VERIFIED，P1 可啟動
+- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 驗證中
 - **規劃日期**：2026-08-24
 - **權威決策**：[16 — ADR：表格欄位架構](./16-form-table-field-adr.md)
 - **完成定義**：所有 Phase gate、demo seed 場景、repository-wide e2e 與文件同步完成
@@ -17,7 +17,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFIED     |
-| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
+| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | VERIFYING    |
 
 ## P0 — Shared 契約與結構 lint
 
@@ -621,6 +621,69 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 - `pnpm typecheck && pnpm lint && pnpm test && pnpm build` 全綠；
   `pnpm e2e:client --workers=1` 全綠（0 skipped）。
 - 獨立 verifier 以 fresh session 走完 golden path 並簽署 VERIFIED。
+
+**實作結果**（2026-08-25）
+
+異動檔案：
+
+- `apps/api/tools/reset-demo-data.ts`：新增 `請購明細申請（表格）` 模板場景——
+  表單 `TABLE_PURCHASE_FORM_SCHEMA` 的表格混合靜態 column（廠別 select、品項
+  text、數量 number、急件 boolean）與一個 `ROW_FIELD → plant` 的動態 column
+  （`demo.cost-centers@1`），加上一筆 `RETURNED` 案件，兩列分屬 TW01／TW02，
+  snapshot 以 instance path 逐 cell 落地（新 helper
+  `createTableCellOptionSnapshot` 依該列 plant 算 bindingHash）。
+- `apps/client-e2e/specs/form-table-field-real.spec.ts`（新增）：Playwright golden
+  path 兩例——逐列填寫並送出（含每列獨立等待、跨列選項不互相污染、snapshot key
+  為 instance path、case title 跳過 table、把 DataSource host route 掉後唯讀歷史
+  仍以 snapshot 顯示），以及退回編輯後重新送出（未動的列不丟值）。
+- `docs/06-data-model.md`：補述 `form_data` 的表格列陣列形狀與
+  `form_data_option_snapshot` 的 instance path key（含「為何列位移要重 resolve」）。
+- `docs/16-form-table-field-adr.md`：狀態改
+  `Accepted (implemented 2026-08-25)`；§3.9 的 Mezzanine `scroll` 敘述加上實作期
+  更正；§9 補三條新的 Review Trigger。
+- `docs/api-reference.md`：頂端「Last verified against」改為 2026-08-25／pending
+  `v0.12.0`，並註明 manifest 仍是 0.11.0（版本由 `nx release` 在發布時寫入）。
+
+**Gate 結果**
+
+| 項目 | 結果 |
+| ---------------------------------- | ------------------------------------------ |
+| `pnpm typecheck`                   | 6 專案全綠                                  |
+| `pnpm lint`                        | 0 error（2 個既有 warning，非本次引入）      |
+| `nx run-many -t test --skip-nx-cache` | 6 專案全綠                                |
+| `pnpm build`                       | 6 專案全綠                                  |
+| `pnpm demo:reset`                  | exit 0，seed 可重現                         |
+| `pnpm e2e:client --workers=1`      | **未執行——見下方「待人工驗證」**            |
+| `npx nx release --dry-run`         | 解析為 **minor → 0.12.0**，四套件同步寫入   |
+
+`nx release --dry-run` 另確認：changelog 依 `useCommitScope: false` 正確吃到本次
+所有 `feat`／`fix` commit（13 feat、13 fix），四個 package manifest 都寫入
+`0.12.0`，tag 為 `v0.12.0`。**未執行** version／tag／publish。
+
+**demo seed 實測**：`pnpm demo:reset` 後以 API 確認新案件
+`60000000-0000-4000-8000-000000000011` 狀態為 `RETURNED`、標題取第一個非表格欄位
+（`請購事由：產線耗材補充`）、`formData.items` 為兩列 record、
+`form_data_option_snapshot` 的 key 為 `items[0].costCenter`／`items[1].costCenter`；
+再以 initiator 身分實打 `resubmitApprovalInstance`，走完逐 cell 權威 resolve 後
+狀態轉為 `RUNNING`。驗證後已再次 `pnpm demo:reset` 還原。
+
+**待人工驗證**
+
+- **`pnpm e2e:client --workers=1` 未能執行**：本機 Playwright 尚未安裝瀏覽器
+  （`chromium_headless_shell-1217` 不存在），`npx playwright install chromium`
+  在此環境下載實質停滯（10 分鐘僅取得 448 KB），判定為網路受限而非程式問題。
+  新增的 `form-table-field-real.spec.ts` 只做過 TypeScript 檢查，**尚未實際執行**。
+  請在可下載 Playwright 瀏覽器的環境執行：
+
+  ```bash
+  npx playwright install chromium
+  pnpm demo:reset          # spec 依賴表格 seed 場景
+  pnpm e2e:client --workers=1
+  ```
+
+  該 spec 斷言的每一項行為，都已在 P2／P3 以 cswap 專用瀏覽器對真實 client
+  逐項手動驗證過（見 P2／P3 的「真實瀏覽器互動驗證」段落）；未驗證的是 spec
+  本身的選擇器與時序是否穩定。
 
 ## 附錄 A — cel-js list 行為驗證結論
 
