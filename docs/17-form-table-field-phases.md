@@ -14,7 +14,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | Phase | 交付                                      | 相依 | 狀態         |
 | ----- | ----------------------------------------- | ---- | ------------ |
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
-| P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFYING    |
+| P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED      |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
@@ -164,16 +164,61 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
   `readFirstCaseTitleField` 跳過 table；`readFieldValueLabel` 對 table 回「N 列」。
 
 新測試：`workflow-condition-evaluator.spec.ts`（新檔，6 例），以及
-`workflow-engine.service.spec.ts`（15 例）、`template.service.spec.ts`（5 例）、
+`workflow-engine.service.spec.ts`（16 例）、`template.service.spec.ts`（5 例）、
 `attachment.service.spec.ts`（2 例）、`workflow-api.spec.ts`（2 例）、
-`form-rendering.spec.ts`（3 例）的新增段落。
+`form-rendering.spec.ts`（3 例）的新增段落。獨立驗證後再補 5 例（見下）。
 
 **Gate 結果**：`pnpm typecheck` 6 專案全過、`pnpm lint` 0 error（2 個既有
-warning，非本次引入）、`nx run-many -t test --skip-nx-cache` 6 專案
-564 tests 全過（P0 為 530）。`docs/api-reference.md` 不需更新——本 phase 沒有
-新增、移除或改名任何 `libs/*/src/**` 的公開 export，`form-table-reference.ts`
-刻意不從 `lib/form/index.ts` 匯出，比照 ADR 14 §3.7 的
-`form-data-source.validation.ts`。
+warning，位於 `attachment-options.ts:70` 與 `signature-options.ts:85`，皆不在
+本次 diff 內）、`nx run-many -t test --skip-nx-cache` 6 專案 569 tests 全過
+（P0 為 530）。`docs/api-reference.md` 不需更新——本 phase 沒有新增、移除或改名
+任何 `libs/*/src/**` 的公開 export，`form-table-reference.ts` 刻意不從
+`lib/form/index.ts` 匯出，比照 ADR 14 §3.7 的
+`form-data-source.validation.ts`。（獨立驗證者已逐鏈確認此不變式成立。）
+
+**獨立驗證（2026-08-25，未參與實作者）**：三個 gate 於驗證者環境 fresh 重跑
+全綠；ADR 16 §3.7／§3.8／§4 逐條核對；30 組自備對抗性輸入實測（送出驗證 21、
+前後端條件一致性 4、發布 lint 15、`writeNestedValue` 6、edge evaluator 8、
+attachment 2）。**必修 3 項，已全數修復並複驗歸零**：
+
+1. **CEL table-internals lint 的空白繞過**（`form-table-reference.ts`）：兩條
+   regex 要求 `form` 與存取子緊鄰，`form ["items"][0].qty` 因此漏網。驗證者以
+   真實 cel-js（非測試 shim）實證該式 parse 成功且求值為 `true`，而
+   `ConditionService` 的 root-identifier lint 也放行（table key 藏在字串常值裡
+   被 `stripStringLiterals` 抹掉，`qty` 前置字元是 `.` 被排除）——等於沒有任何
+   一層擋得住一條可運作的 cell 條件。修法：`form` 之後補 `\s*`（兩條 regex）。
+   新增 3 個 spec（spaced bracket、spaced dot、`itemsExtra` 前綴不誤擋）。
+2. **`SET_FORM_FIELD` 的 bracket path 不是 no-op**
+   （`workflow-engine.service.ts` `writeValueAtPath`）：`form.items[0].qty` 被
+   `normalizeFormFieldPath` 切成 `["items[0]", "qty"]`，該鍵不存在於 formData，
+   於是走「建立巢狀物件」分支，實測產出多餘的 top-level 鍵
+   `"items[0]": { "qty": 99 }`。後果不只是髒資料：CEL context 從此多一個
+   `form["items[0]"]`，且 `readValueAtPath('items[0].qty')` 會開始回傳值，
+   DYNAMIC_FORM approver resolver 的安全性論證因此被破壞。修法：任一 segment
+   含 `[` 或 `]` 即整體 no-op。新增 1 個 spec。
+3. **required 檢查沿原型鏈取值**（同檔 `validateSubmittedTableRow`）：
+   `constructor`／`toString`／`valueOf` 都符合 P0 的 column key 識別字規則，可
+   合法發布；送出空列 `{}` 時 `row['constructor']` 取到 `Object` 建構子被判為
+   有值，逐列 required 被靜默略過。未知 column key 檢查用 `Map` 所以安全，只有
+   required 這一處用原始索引。修法：改用 `hasOwnProperty` 的 own-property 讀取
+   （`readRowCellValue`）。新增 1 個 spec。
+
+**一併採納的非阻擋建議**：edge structured condition 若對 table 使用比較運算子
+（非 IS_FILLED／IS_EMPTY），原本會把列記錄 `String()` 成 `[object Object]` 做
+字串比對，手寫或匯入的 workflowDefinition 可繞過 designer 的 operator 限制，
+在**路由**上造成的後果比 form-level 條件更大。`workflow-condition-evaluator`
+現對含非 primitive 元素的值一律回 `false`；多選字串陣列行為不變。
+
+**驗證者留下的非阻擋觀察（記錄，不在 P1 處理）**
+
+- attachment 掃描對表格記錄的 `formFieldPath` 是 `form.items.name`，不是 ADR
+  §3.3 的 `form.items[1].name`。V1 無 `file_upload` column，目前只在「cell 存了
+  UUID 形狀字串」這個既有限制下可達；若未來開放 cell 附件需改為 instance path。
+- `isFormTableCellValue` 接受 `NaN`／`Infinity`。目前三個送出 call site 一律走
+  `JSON.parse`，兩者穿不過 JSON 邊界，故不可達；若日後新增非 JSON 送出路徑需補
+  `Number.isFinite`。
+- `readFormDataCaseTitle` 在 uiSchema 只列出 table 時，會取用 layout 之外的第一
+  個純量欄位當標題。行為符合本 phase 的意圖，僅記錄此為相對 P0 的語意變化。
 
 **ADR 未載明而在 P1 自決的項目**（皆取最小、additive、可回退解）
 
@@ -222,6 +267,10 @@ warning，非本次引入）、`nx run-many -t test --skip-nx-cache` 6 專案
   schema，這在扁平欄位時代就是如此。要擋需要新增「fieldPath 必須對應 schema
   欄位且不得為 table」的發布期檢查，屬 ADR §7「`SET_FORM_FIELD` 指向 table
   內部」條目的延伸，記入 ADR Review Triggers 候選，不在 P1 擴大實作。
+  （P1 已把多段與 bracket 路徑收成 no-op；剩下的只有這條單段覆寫。）
+- `lintWorkflowTableReferences` 涵蓋所有 CEL 運算式與 edge structured
+  `conditionFieldKey`，但**不涵蓋 `action.fieldPath`**——上一條的發布期檢查若要
+  做，是同一個切入點。
 
 ## P2 — 前端靜態表格（Builder + Renderer）
 
