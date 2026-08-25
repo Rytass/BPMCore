@@ -15,7 +15,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | ----- | ----------------------------------------- | ---- | ------------ |
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
-| P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFYING    |
+| P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
 
@@ -329,8 +329,9 @@ attachment 2）。**必修 3 項，已全數修復並複驗歸零**：
   `src/testing/mezzanine-icons.jest.cjs`：ESM-only 的 `@mezzanine-ui/icons`
   在 CommonJS 測試環境載不進來，改以 stub 對應（比照 bpm-core 的 cel-js 先例）。
 
-新測試：`FormBuilderView.spec.tsx`（新檔，13 例）、`FormRendererView.spec.tsx`
-（+6 例）、`form-rendering.spec.ts`（+10 例）。
+新測試：`FormBuilderView.spec.tsx`（新檔，16 例）、`InstanceNewView.spec.tsx`
+（新檔，3 例）、`FormRendererView.spec.tsx`（+6 例）、`form-rendering.spec.ts`
+（+11 例）。
 
 **Gate 結果**：`pnpm typecheck` 6 專案、`pnpm lint` 0 error、
 `nx run-many -t test --skip-nx-cache` 6 專案全綠（bpm-core-react 36、
@@ -365,6 +366,53 @@ FULL 寬度加入 layout；只剩一欄時「移除此欄」為 disabled。
    兩個 view 改為先組出值再驗證與送出——順帶修好「欄位 defaultValue 不會被送
    出」這個同源的既有問題。
 
+**獨立驗證（2026-08-25，未參與實作者）**：三個 gate 於驗證者環境 fresh 重跑全綠
+（56 suites / 598 tests）；ADR §3.1／§3.3／§3.4／§3.7／§3.9／§3.10 逐條核對；
+41 組自備對抗性輸入實測（`buildFormRendererValues` 8、
+`validateFormRendererValues` 12、純函式邊界 9、Renderer 實際掛載 12）；
+api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 className 覆寫、
+樣式只在自建容器上、`Table` 本身無覆寫、背景色用 design token）通過。驗證者並以
+`git archive` 到 /tmp 的唯讀方式複驗了「重構前後同一份 spec 都通過」的宣稱屬實。
+**必修 2 項，已全數修復並複驗歸零**：
+
+1. **Builder 可替 column 綁 DataSource，Renderer 卻渲染成純文字輸入框**：column
+   共用 `renderOptionFieldSettings` 時一併拿到了「選項來源」下拉。只要宿主註冊過
+   相容來源，設計者就能把 column 切成 DataSource 且不彈確認直接寫入；該 schema
+   **還擋不住發布**——結構 lint 接受合法的 column dataSource，而環境 lint
+   `lintDefinitionSchemaEnvironment` 只走 top-level、不下探 columns（正是本文件
+   P3 scope 已載明待補的那條）。填寫時該欄落到 `renderStaticControl` 的 fallback
+   變成自由文字輸入，值會未經 resolve 就進 `formData` 且沒有 snapshot。修法：
+   `renderTypeSpecificSettings` 新增 `supportsDataSource` 參數，column 傳
+   `false` 即不渲染選項來源列；已由手寫 JSON 帶進來的 column dataSource 原樣保留
+   並顯示明確提示（比照 ADR 14 §3.10 的 unavailable 處理）。新增 2 個 spec。
+2. **前端必填檢查沿原型鏈讀 cell**：與 P1 後端修過的同一類問題——
+   `constructor`／`toString` 是合法 column key，`row[columnKey]` 對空列會取到
+   `Object` 而被判為有值，導致前端放行、後端以難懂訊息拒收。修法：改用
+   `hasOwnProperty` 的 own-property 讀取（`readFormTableCellValue`），與後端
+   `readRowCellValue` 及 renderer 的 `readTableCellValue` 一致。新增 1 個 spec。
+
+**一併採納的非阻擋建議**
+
+- 驗證者指出「發起頁送出可見表格」這個瀏覽器發現的缺陷**沒有守門測試**——當時
+  新增的 spec 只測 `form-rendering.ts` 的純函式，而修復動的是兩個 view。已新增
+  `InstanceNewView.spec.tsx`（掛載真實 view + 真實 Renderer，完全不編輯就送出），
+  並實測該組測試對修復前的程式碼確實失敗 2 例。
+- `applyRemoveTableColumn` 改為依 index 刪除：編輯過程中兩欄可能暫時同名，依 key
+  過濾會一次刪掉兩欄。
+- `FormRendererView.spec.tsx` 的 Table mock 改為沿用列的 `key`，讓 ephemeral row
+  id 機制（P3 的 per-cell DataSource 狀態鍵）在測試中真的被走到。
+
+**驗證者留下的非阻擋觀察（記錄，不在 P2 處理）**
+
+- `minRows > maxRows` 會做出鎖死的表單（新增與刪除同時 disabled）。發布 lint 已
+  擋，但 builder 輸入過程中可暫時達成。`readFormTableRowBounds` 若要收斂，屬
+  additive 的防禦性改動，留待需要時再做。
+- `renameFormDataSourceFieldBindings` 不下探 table columns，top-level 欄位改名時
+  column 的 `FIELD` binding 不會同步。P2 因 column 不開放 DataSource 而無害，
+  **P3 接上時必須一併處理**。
+- 前端對畸形 table 值（字串／物件／未知 column key）靜默放行，後端明確拒收。正常
+  操作產不出這種值，退回編輯載入舊資料時前端不會提示。深度取捨，記錄即可。
+
 **ADR 未載明而在 P2 自決的項目**（皆取最小、additive、可回退解）
 
 1. **column key rename 不走確認 Modal**：ADR §3.9 把「改 column key」列為 Modal
@@ -380,9 +428,10 @@ FULL 寬度加入 layout；只剩一欄時「移除此欄」為 disabled。
 3. **cell 清空的儲存形式**：控制項回 `undefined` 時移除該 key（未填的 cell 就
    長這樣）；文字欄位清空得到的是 `''`，與扁平文字欄位一致，required 檢查照樣
    擋得住。
-4. **P2 的 column 只支援靜態選項**：`renderTableFieldSettings` 傳給共用 option
-   renderer 的 `requestChange` 目前直接套用而不彈 Modal，因為沒有 DataSource
-   可切換。P3 接上 column DataSource 時換成真正的確認流程。
+4. **P2 的 column 只支援靜態選項**：`renderTypeSpecificSettings` 對 column 傳
+   `supportsDataSource: false`，選項來源下拉不渲染；傳給共用 option renderer 的
+   `requestChange` 直接套用而不彈 Modal，因為 P2 只有「選擇模式」會走到它，切換
+   模式僅轉換預設值。P3 接上 column DataSource 時同時開啟下拉與真正的確認流程。
 
 **ADR 與現實不符，已記錄（觸發 ADR §9 Review Trigger 候選）**
 
