@@ -2251,6 +2251,9 @@ export function FormBuilderView({
             placeholder="選擇選項來源"
             value={readSelectOption(sourceOptions, currentSourceId)}
           />,
+          // A source reads as its name plus its key and version, which never
+          // fits the width a one-line setting gets.
+          true,
         )}
         {isFormDataSourceFieldDefinition(field)
           ? renderDataSourceFieldSettings(
@@ -2396,6 +2399,9 @@ export function FormBuilderView({
       <div key={parameter.key} style={DATA_SOURCE_PARAMETER_GRID_STYLE}>
         <BPMFormField
           label={`${parameter.label ?? parameter.key}${parameter.required ? '（必填）' : '（選填）'}`}
+          // This grid column is barely wider than the select itself, so a
+          // horizontal label had nowhere to go and broke mid-word.
+          layout={FormFieldLayout.VERTICAL}
           name={`dataSourceParameter_${parameter.key}`}
         >
           <Select
