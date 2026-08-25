@@ -1,6 +1,9 @@
+import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
   formatDatePickerValue,
   formatDateTimePickerValue,
+  isFormRendererFieldRequired,
+  isFormRendererFieldVisible,
 } from './form-rendering';
 
 // Every expectation below is written for UTC+8, because the off-by-one-day bug
@@ -70,5 +73,82 @@ describe('formatDateTimePickerValue', () => {
   it('returns undefined for empty or unparsable values', (): void => {
     expect(formatDateTimePickerValue(undefined)).toBeUndefined();
     expect(formatDateTimePickerValue('not-a-date')).toBeUndefined();
+  });
+});
+
+describe('table values as condition operands', () => {
+  const tableField: FormFieldDefinition = {
+    columns: [
+      { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+  const dependentField: FormFieldDefinition = {
+    fieldKey: 'note',
+    label: '備註',
+    required: false,
+    type: 'text',
+    visibleWhen: 'form.items == "Bolt"',
+  };
+
+  // Row records used to fall into the multi-select branch and get string
+  // compared, so a condition could decide visibility by accident. A table is
+  // not a comparable operand in V1, so the caller's fallback stands
+  // (ADR 16 §3.8).
+  it('falls back instead of string-comparing row records', (): void => {
+    expect(
+      isFormRendererFieldVisible(dependentField, [tableField, dependentField], {
+        items: [{ name: 'Bolt' }],
+      }),
+    ).toBe(true);
+    expect(
+      isFormRendererFieldVisible(dependentField, [tableField, dependentField], {
+        items: [{ name: 'Nut' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not make a table operand satisfy a requiredWhen condition', (): void => {
+    expect(
+      isFormRendererFieldRequired(
+        {
+          fieldKey: 'note',
+          label: '備註',
+          required: false,
+          requiredWhen: 'form.items != "Bolt"',
+          type: 'text',
+        },
+        [tableField],
+        { items: [{ name: 'Nut' }] },
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the flat multi-select condition behaviour unchanged', (): void => {
+    const tagsField: FormFieldDefinition = {
+      fieldKey: 'tags',
+      label: '標籤',
+      mode: 'multiple',
+      options: [{ label: 'A', value: 'a' }],
+      required: false,
+      type: 'select',
+    };
+
+    expect(
+      isFormRendererFieldVisible(
+        {
+          fieldKey: 'note',
+          label: '備註',
+          required: false,
+          type: 'text',
+          visibleWhen: 'form.tags == "a"',
+        },
+        [tagsField],
+        { tags: ['a'] },
+      ),
+    ).toBe(true);
   });
 });

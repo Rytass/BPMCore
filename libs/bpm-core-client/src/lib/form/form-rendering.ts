@@ -8,6 +8,7 @@ import {
   NumberFieldDefinition,
   FormStaticOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 
 export type ConditionOperator =
@@ -169,6 +170,14 @@ export function evaluateConditionExpression(
   );
 
   if (!field) {
+    return fallback;
+  }
+
+  // Mirrors the backend: a table value is a list of rows, so it is not a
+  // comparable operand. Without this the row records fall into the array
+  // branch and get string-compared, which decides visibility by accident
+  // (ADR 16 §3.8).
+  if (isTableFieldDefinition(field)) {
     return fallback;
   }
 

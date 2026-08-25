@@ -6398,6 +6398,14 @@ function evaluateFormConditionExpression(
     return fallback;
   }
 
+  // A table value is a list of rows; comparing it with `==` / `>` has no
+  // meaning, and the structural lint already rejects cell-level references.
+  // Falling back keeps a table operand from silently deciding visibility
+  // through a string comparison against row records (ADR 16 §3.8).
+  if (isTableFieldDefinition(field)) {
+    return fallback;
+  }
+
   return evaluateFormConditionRule(rule, field, values[field.fieldKey]);
 }
 
