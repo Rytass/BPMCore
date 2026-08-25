@@ -109,8 +109,13 @@ function readSelectedValues(value: FormFieldValue | undefined): readonly string[
     return [value];
   }
 
+  // The element check also keeps table row records out: they are arrays too,
+  // and a record has no `trim`.
   return Array.isArray(value)
-    ? value.filter((item): item is string => Boolean(item.trim()))
+    ? value.filter(
+        (item): item is string =>
+          typeof item === 'string' && Boolean(item.trim()),
+      )
     : [];
 }
 

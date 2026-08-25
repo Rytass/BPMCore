@@ -1330,7 +1330,7 @@ export function FormBuilderView({
 
   function renderTypeSpecificSettings(
     field: FormFieldDefinition,
-  ): ReactElement {
+  ): ReactElement | null {
     if (isTextFieldDefinition(field)) {
       return renderTextFieldSettings(field);
     }
@@ -1351,7 +1351,13 @@ export function FormBuilderView({
       return renderBooleanFieldSettings(field);
     }
 
-    return renderFileUploadFieldSettings(field);
+    if (field.type === 'file_upload') {
+      return renderFileUploadFieldSettings(field);
+    }
+
+    // Table column settings land in P2; the builder cannot create a table
+    // field yet, so this branch is unreachable from the UI today.
+    return null;
   }
 
   function renderTextFieldSettings(field: TextFieldDefinition): ReactElement {

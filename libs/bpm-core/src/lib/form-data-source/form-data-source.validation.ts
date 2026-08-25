@@ -168,10 +168,15 @@ export function readBindingValues(
       );
     }
 
+    // ROW_FIELD sources read from the row the cell belongs to, which this
+    // top-level path does not carry; treating them as absent keeps them in the
+    // existing "missing parameter" branch until P3 wires row values through.
     const nextValue =
       binding.from.kind === 'FIELD'
         ? readFormDataValue(formData[binding.from.fieldKey])
-        : binding.from.value;
+        : binding.from.kind === 'CONSTANT'
+          ? binding.from.value
+          : undefined;
 
     if (typeof nextValue === 'undefined') {
       return values;

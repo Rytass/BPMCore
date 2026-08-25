@@ -154,7 +154,11 @@ export function useFormDataSourceField(
                 fieldKey: binding.from.fieldKey,
                 value: input.formData[binding.from.fieldKey],
               }
-            : { value: binding.from.value },
+            : binding.from.kind === 'CONSTANT'
+              ? { value: binding.from.value }
+              : // ROW_FIELD values live on the row, which this top-level hook
+                // does not hold; the cell-level hook arrives in P3.
+                { columnKey: binding.from.columnKey },
         ),
         value:
           typeof input.initialFormData !== 'undefined' ||

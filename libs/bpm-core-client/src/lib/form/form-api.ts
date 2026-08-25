@@ -400,6 +400,7 @@ function readDefaultFieldLabel(
     number: '數字',
     radio: '單選',
     select: '下拉選單',
+    table: '表格',
     text: '文字',
     textarea: '長文字',
   };

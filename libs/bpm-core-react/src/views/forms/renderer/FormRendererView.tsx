@@ -755,7 +755,11 @@ function readStringValue(value: FormFieldValue | undefined): string {
 function readStringArrayValue(
   value: FormFieldValue | undefined,
 ): readonly string[] {
-  return Array.isArray(value) ? value : [];
+  // A table value is also an array, so the element check is what separates a
+  // multi-select value from table rows here.
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? value
+    : [];
 }
 
 function readNumberInputValue(value: FormFieldValue | undefined): string {
@@ -774,6 +778,7 @@ function readInputPlaceholder(type: FormFieldDefinition['type']): string {
     number: '請輸入數字',
     radio: '請選擇一個選項',
     select: '請選擇一個選項',
+    table: '',
     text: '請輸入文字',
     textarea: '請輸入多行文字',
   };

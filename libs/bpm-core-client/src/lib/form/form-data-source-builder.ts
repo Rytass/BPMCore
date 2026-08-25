@@ -167,5 +167,9 @@ export type FormDataSourceBindingValueKind = 'CONSTANT' | 'FIELD';
 export function readFormDataSourceBindingValueKind(
   binding: FormDataSourceBinding | null,
 ): FormDataSourceBindingValueKind | null {
-  return binding?.from.kind ?? null;
+  const kind = binding?.from.kind;
+
+  // ROW_FIELD only exists on table columns, which the builder cannot edit yet
+  // (P3); reporting null keeps the top-level binding editor unchanged.
+  return kind === 'CONSTANT' || kind === 'FIELD' ? kind : null;
 }
