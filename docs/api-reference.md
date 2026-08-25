@@ -408,7 +408,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Type | `FormDefinitionListStatus` |
 | Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()`, `previewResolveFormFieldOptions()`, `resolveFormFieldOptions()` |
 | Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
-| Factory | `createFieldDefinition()`, `createTableColumnDefinition()` |
+| Factory | `createFieldDefinition()` (accepts `'table'`), `createTableColumnDefinition()` |
 
 ### Form DataSource records
 
@@ -462,7 +462,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readCompatibleFormDataSourceBindingFields()` | function | List type-compatible dependency fields, excluding the target |
 | `readFormDataSourceBinding()` | function | Read one parameter binding from a dynamic field |
 | `upsertFormDataSourceFieldBinding()` | function | Immutably add, replace, or remove one parameter binding |
-| `renameFormDataSourceFieldBindings()` | function | Keep FIELD bindings valid when a form field key changes |
+| `renameFormDataSourceFieldBindings()` | function | Keep FIELD bindings valid when a form field key changes, including bindings inside table columns |
 | `renameFormTableColumnBindings()` | function | Keep a table's ROW_FIELD bindings valid when a column key changes |
 | `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
 | `readFormDataSourceBindingValue()` | function | Read a constant binding value |
@@ -575,7 +575,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Name | Purpose |
 |---|---|
 | `readApprovalInstanceCaseTitle(instance)` | Display title from an instance |
-| `readFormDataCaseTitle({ ... })` | Display title from form data before submission |
+| `readFormDataCaseTitle({ ... })` | Display title from form data before submission; skips table fields and labels a table value as `N 列` |
 
 ---
 
