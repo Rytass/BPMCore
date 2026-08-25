@@ -645,6 +645,88 @@ describe('FormDataSourceService', () => {
     });
   });
 
+  // A host may name a parameter `constructor`; a plain index would find one on
+  // the prototype and call the required parameter satisfied.
+  it('does not satisfy a required parameter off the binding prototype', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(
+      createSource(
+        { search },
+        { parameters: [{ key: 'constructor', required: true, type: 'STRING' }] },
+      ),
+    );
+    const schema = createSchema();
+    const result = await service.previewFormFieldOptions(
+      {
+        fieldKey: 'costCenter',
+        formDataJson: JSON.stringify({ plant: 'TPE' }),
+        schemaJson: JSON.stringify({
+          ...schema,
+          fields: schema.fields.map((field) =>
+            field.fieldKey === 'costCenter'
+              ? {
+                  ...field,
+                  dataSource: {
+                    bindings: [
+                      {
+                        from: { fieldKey: 'plant', kind: 'FIELD' },
+                        parameter: 'constructor',
+                      },
+                    ],
+                    key: 'demo.cost-centers',
+                    version: 1,
+                  },
+                }
+              : field,
+          ),
+        }),
+        uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+      },
+      authContext,
+    );
+
+    // The binding does feed it, so this must NOT wait — the point is that the
+    // check reads the binding's own value rather than `Object`.
+    expect(result.waitingForFieldKeys).toEqual([]);
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ bindings: { constructor: 'TPE' } }),
+    );
+  });
+
+  it('waits on a required prototype-named parameter that nothing feeds', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(
+      createSource(
+        { search },
+        {
+          parameters: [
+            { key: 'plant', required: true, type: 'STRING' },
+            { key: 'constructor', required: true, type: 'STRING' },
+          ],
+        },
+      ),
+    );
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'costCenter',
+          formDataJson: JSON.stringify({ plant: 'TPE' }),
+          schemaJson: JSON.stringify(createSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_INVALID_BINDING' });
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it('falls back to the descriptor code when no lint line carries one', async (): Promise<void> => {
     // An invalid descriptor only produces prose ("descriptor.pageSize must be
     // positive"), so there is no code to extract. This pins the fallback branch

@@ -216,7 +216,17 @@ export function readBindingValues(
   }, {});
   const missingParameters = descriptor.parameters
     .filter((parameter) => parameter.required)
-    .filter((parameter) => !isPresentFormDataValue(bindingValues[parameter.key]))
+    // Own-property on this side too: a host descriptor may name a parameter
+    // `constructor`, and a plain index would find one on the prototype and
+    // call a required parameter satisfied that no binding ever fed.
+    .filter(
+      (parameter) =>
+        !isPresentFormDataValue(
+          readOwnProperty(bindingValues, parameter.key) as
+            | FormFieldValue
+            | undefined,
+        ),
+    )
     .map((parameter) => parameter.key);
 
   if (JSON.stringify(bindingValues).length > MAX_PARAMETER_BYTES) {

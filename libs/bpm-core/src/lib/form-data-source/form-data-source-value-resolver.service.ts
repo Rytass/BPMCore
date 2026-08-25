@@ -399,7 +399,7 @@ function hashBindings(
 ): string {
   const orderedValues = descriptor.parameters.map((parameter) => [
     parameter.key,
-    values[parameter.key] ?? null,
+    readOwnProperty(values, parameter.key) ?? null,
   ]);
 
   return createHash('sha256')
