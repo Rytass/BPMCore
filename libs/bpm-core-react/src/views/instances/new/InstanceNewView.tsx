@@ -22,6 +22,7 @@ import { CheckedIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  buildFormRendererValues,
   focusFormRendererField,
   FormRendererValues,
   readFormDataSourceErrorMessage,
@@ -246,10 +247,19 @@ function NewApprovalInstanceContent({
       return;
     }
 
+    // What the renderer shows, not just what has been touched: a table seeds
+    // its `minRows` rows and a field can carry a `defaultValue`, and neither
+    // reaches this state until the filler edits something. Validating and
+    // submitting the raw state would reject a table the user can plainly see
+    // rows in — and submit a default the backend never receives.
+    const submittedValues = buildFormRendererValues(
+      context.formVersion.schema.fields,
+      formValues,
+    );
     const validation = validateFormRendererValues({
       schema: context.formVersion.schema,
       uiSchema: context.formVersion.uiSchema,
-      values: formValues,
+      values: submittedValues,
     });
 
     if (!validation.valid) {
@@ -267,12 +277,12 @@ function NewApprovalInstanceContent({
 
     try {
       const instanceId = await submitApprovalInstance({
-        formData: formValues,
+        formData: submittedValues,
         initiatorMemberId: currentMemberId,
         templateId: context.template.id,
         title: readFormDataCaseTitle({
           fallbackTitle: context.template.name,
-          formData: formValues,
+          formData: submittedValues,
           schema: context.formVersion.schema,
           uiSchema: context.formVersion.uiSchema,
         }),

@@ -264,6 +264,25 @@ describe('table field values', () => {
     ).toEqual({ errors: {}, firstInvalidFieldKey: null, valid: true });
   });
 
+  // The launch and resubmit views hold their own copy of the values, which
+  // stays empty until the filler edits something — while the renderer already
+  // shows the seeded rows. Validating the untouched copy reported "at least 1
+  // row" for a table with a visible row, so both views must compose these two
+  // the way this test does.
+  it('needs the seeded values to agree with what the renderer shows', (): void => {
+    expect(
+      validateFormRendererValues({ schema, uiSchema, values: {} }).errors,
+    ).toEqual({ items: '請購明細至少需要 1 列。' });
+
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: buildFormRendererValues(schema.fields, {}),
+      }).errors,
+    ).toEqual({ 'items[0].name': '品項為必填欄位。' });
+  });
+
   it('builds a cell instance path', (): void => {
     expect(readFormTableCellPath('items', 2, 'qty')).toBe('items[2].qty');
   });

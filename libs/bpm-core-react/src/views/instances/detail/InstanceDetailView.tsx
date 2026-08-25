@@ -48,6 +48,7 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  buildFormRendererValues,
   focusFormRendererField,
   validateFormRendererValues,
 } from '@rytass/bpm-core-client/form';
@@ -541,6 +542,16 @@ export function InstanceDetailView({
       return;
     }
 
+    // What the renderer shows, not just what has been touched: a table seeds
+    // its `minRows` rows and a field can carry a `defaultValue`, and neither is
+    // in this state until the filler edits something.
+    const resubmittedValues = instance.formDefinitionSnapshot.schema
+      ? buildFormRendererValues(
+          instance.formDefinitionSnapshot.schema.fields,
+          resubmitFormData,
+        )
+      : resubmitFormData;
+
     // The DataSource gate only speaks for fields that still hold a value, so a
     // cleared required field has to be caught here rather than by the backend.
     if (
@@ -550,7 +561,7 @@ export function InstanceDetailView({
       const validation = validateFormRendererValues({
         schema: instance.formDefinitionSnapshot.schema,
         uiSchema: instance.formDefinitionSnapshot.uiSchema,
-        values: resubmitFormData,
+        values: resubmittedValues,
       });
 
       if (!validation.valid) {
@@ -569,7 +580,7 @@ export function InstanceDetailView({
 
     try {
       await resubmitApprovalInstance({
-        formData: resubmitFormData,
+        formData: resubmittedValues,
         initiatorMemberId: currentMemberId,
         instanceId: instance.id,
         title: instance.title,
