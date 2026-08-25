@@ -189,6 +189,11 @@ test.describe('Seeded table field golden path', () => {
     );
 
     await fillCell(page, 0, 'quantity', '150');
+    // Submitting straight after the fill has been seen to send the pre-edit
+    // value, so wait for the edit to be committed to the cell first.
+    await expect(readCell(page, 0, 'quantity').locator('input')).toHaveValue(
+      '150',
+    );
     await page.getByRole('button', { name: '重新送出' }).click();
 
     await expect(page.getByRole('button', { name: '重新送出' })).toHaveCount(0);
