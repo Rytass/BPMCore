@@ -118,6 +118,7 @@ import {
   readFormTableRowBounds,
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
+import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
 import { JsonCodeEditor } from './json-code-editor';
@@ -3118,6 +3119,14 @@ export function FormBuilderView({
     );
   }
 
+  /**
+   * Settings rows lay out as `STRETCH`, not the admin default `HORIZONTAL`.
+   * Horizontal sizes the data entry to the control's own intrinsic width, so a
+   * number input with a spinner came out 204px wide against a text input's
+   * 192px and every label shifted to compensate — measured, and the reason the
+   * panel read as ragged. Stretch gives every control the same width and lines
+   * both edges up.
+   */
   function renderSettingsFormRow(
     label: string,
     name: string,
@@ -3129,7 +3138,15 @@ export function FormBuilderView({
         style={wide ? FIELD_SETTINGS_ROW_WIDE_STYLE : FIELD_SETTINGS_ROW_STYLE}
       >
         <div style={FIELD_SETTINGS_VALUE_STYLE}>
-          <BPMFormField label={label} name={name}>
+          <BPMFormField
+            label={label}
+            layout={              // A wide row carries a table or a textarea, which needs the whole
+              // row: stretch would squeeze it into the same 240px box as a text
+              // input, so the label moves above it instead.
+              wide ? FormFieldLayout.VERTICAL : FormFieldLayout.STRETCH
+            }
+            name={name}
+          >
             {control}
           </BPMFormField>
         </div>
@@ -3275,7 +3292,11 @@ export function FormBuilderView({
     return (
       <div style={ADVANCED_SCHEMA_ROW_STYLE}>
         <div style={ADVANCED_SCHEMA_VALUE_STYLE}>
-          <BPMFormField label={label} name={name}>
+          <BPMFormField
+            label={label}
+            layout={FormFieldLayout.STRETCH}
+            name={name}
+          >
             {control}
           </BPMFormField>
         </div>
