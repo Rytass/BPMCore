@@ -341,6 +341,21 @@ const SETTINGS_COLUMN_STYLE: CSSProperties = {
 // scrolled to the end.
 const TYPE_MENU_MAX_HEIGHT = 240;
 
+const PARAMETER_TYPE_LABELS: Readonly<
+  Record<FormDataSourceDescriptorRecord['parameters'][number]['type'], string>
+> = {
+  BOOLEAN: '開關',
+  NUMBER: '數字',
+  STRING: '文字或選單',
+  STRING_ARRAY: '多選',
+};
+
+const LINT_MISSING_PARAMETER_PATTERN =
+  /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings missing required parameter: (.+)$/u;
+
+const LINT_UNKNOWN_PARAMETER_PATTERN =
+  /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings unknown parameter: (.+)$/u;
+
 const STACK_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
@@ -1211,12 +1226,91 @@ export function FormBuilderView({
       const result = await lintFormSchema(schema, uiSchema);
       // Lint lines carry stable `FORM_DATA_SOURCE_*` codes; show the designer
       // readable copy while keeping the field path.
-      setDataSourceLint(result.errors.map(readFormSchemaLintMessage));
+      setDataSourceLint(result.errors.map(readLintDisplayMessage));
     } catch {
       setDataSourceLint(['目前無法完成 DataSource schema 驗證。']);
     } finally {
       setDataSourceLintLoading(false);
     }
+  }
+
+  /**
+   * The backend lint speaks in schema paths and parameter keys
+   * (`schema.fields[0].columns[1].dataSource.bindings missing required
+   * parameter: plant`). The designer is looking at labels, so name the field,
+   * the column and the parameter the way the settings panel does.
+   */
+  function readLintDisplayMessage(line: string): string {
+    const missing = LINT_MISSING_PARAMETER_PATTERN.exec(line);
+
+    if (missing?.[1] && missing[3]) {
+      return `${readLintTargetLabel(missing[1], missing[2])}尚未指定必要參數「${readLintParameterLabel(missing[1], missing[2], missing[3])}」的來源`;
+    }
+
+    const unknown = LINT_UNKNOWN_PARAMETER_PATTERN.exec(line);
+
+    if (unknown?.[1] && unknown[3]) {
+      return `${readLintTargetLabel(unknown[1], unknown[2])}綁定了來源沒有的參數「${unknown[3]}」`;
+    }
+
+    return readFormSchemaLintMessage(line);
+  }
+
+  function readLintTargetLabel(
+    fieldIndex: string,
+    columnIndex: string | undefined,
+  ): string {
+    const field = schema.fields[Number(fieldIndex)];
+
+    if (!field) {
+      return '';
+    }
+
+    const fieldLabel = field.label || field.fieldKey;
+    const column = readLintColumn(field, columnIndex);
+
+    return column
+      ? `「${fieldLabel}」表格的「${column.label || column.fieldKey}」欄`
+      : `「${fieldLabel}」欄位`;
+  }
+
+  function readLintParameterLabel(
+    fieldIndex: string,
+    columnIndex: string | undefined,
+    parameterKey: string,
+  ): string {
+    const field = schema.fields[Number(fieldIndex)];
+
+    if (!field) {
+      return parameterKey;
+    }
+
+    const target = readLintColumn(field, columnIndex) ?? field;
+    const reference = isFormDataSourceFieldDefinition(target)
+      ? target.dataSource
+      : null;
+    const descriptor = reference
+      ? dataSourceCatalog.find(
+          (candidate) =>
+            candidate.key === reference.key &&
+            candidate.version === reference.version,
+        )
+      : undefined;
+
+    return (
+      descriptor?.parameters.find(
+        (parameter) => parameter.key === parameterKey,
+      )?.label || parameterKey
+    );
+  }
+
+  function readLintColumn(
+    field: FormFieldDefinition,
+    columnIndex: string | undefined,
+  ): TableColumnDefinition | undefined {
+    return typeof columnIndex === 'string' && isTableFieldDefinition(field)
+      ? field.columns[Number(columnIndex)]
+      : undefined;
   }
 
   function updatePreviewValues(values: FormRendererValues): void {
@@ -2238,27 +2332,60 @@ export function FormBuilderView({
           )
         ) : readFormDataSourceBindingValueKind(binding) === 'FIELD' ? (
           <Typography color="text-neutral" variant="caption">
-            使用表單欄位「
-            {binding?.from.kind === 'FIELD' ? binding.from.fieldKey : ''}
-            」的目前值。
+            選項會依表單欄位「{readBindingSourceLabel(binding, scope)}
+            」目前填的值而變動。
           </Typography>
         ) : readFormDataSourceBindingValueKind(binding) === 'ROW_FIELD' ? (
           <Typography color="text-neutral" variant="caption">
-            使用同一列「
-            {binding?.from.kind === 'ROW_FIELD' ? binding.from.columnKey : ''}
-            」欄的目前值。
+            每一列的選項會依該列「{readBindingSourceLabel(binding, scope)}
+            」欄目前填的值而變動。
           </Typography>
         ) : (
           <Typography color="text-neutral" variant="caption">
             {parameter.required
               ? fieldOptions.length + rowFieldOptions.length > 0
                 ? '請選擇相容的欄位或固定常數。'
-                : '目前沒有型別相容的欄位，請先建立 dependency。'
+                : `目前沒有型別相容的欄位可以帶入這個參數，請先新增一個${readParameterTypeLabel(parameter.type)}欄位，或改用固定常數。`
               : '此參數可不綁定。'}
           </Typography>
         )}
       </div>
     );
+  }
+
+  function readParameterTypeLabel(
+    type: FormDataSourceDescriptorRecord['parameters'][number]['type'],
+  ): string {
+    return PARAMETER_TYPE_LABELS[type];
+  }
+
+  /**
+   * Binding hints name the source the way the designer named it, not by the
+   * key the schema stores.
+   */
+  function readBindingSourceLabel(
+    binding: ReturnType<typeof readFormDataSourceBinding>,
+    scope: DataSourceBindingScope,
+  ): string {
+    const from = binding?.from;
+
+    if (from?.kind === 'FIELD') {
+      const source = schema.fields.find(
+        (candidate) => candidate.fieldKey === from.fieldKey,
+      );
+
+      return source ? source.label || source.fieldKey : '';
+    }
+
+    if (from?.kind === 'ROW_FIELD') {
+      const column = scope.rowColumns?.find(
+        (candidate) => candidate.fieldKey === from.columnKey,
+      );
+
+      return column ? column.label || column.fieldKey : '';
+    }
+
+    return '';
   }
 
   function renderDataSourceConstantEditor(

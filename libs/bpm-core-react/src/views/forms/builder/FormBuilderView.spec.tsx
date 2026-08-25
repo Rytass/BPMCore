@@ -4,7 +4,10 @@ import type {
   FormDefinitionSchema,
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
-import { listFormDataSources } from '@rytass/bpm-core-client/form';
+import {
+  listFormDataSources,
+  lintFormSchema,
+} from '@rytass/bpm-core-client/form';
 import { FormBuilderView } from './FormBuilderView';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -255,6 +258,10 @@ jest.mock(
 
 const listDataSourcesMock = listFormDataSources as jest.MockedFunction<
   typeof listFormDataSources
+>;
+
+const lintFormSchemaMock = lintFormSchema as jest.MockedFunction<
+  typeof lintFormSchema
 >;
 
 interface BuilderHarness {
@@ -581,9 +588,47 @@ describe('FormBuilderView field settings', () => {
           '[data-mock-form-field="dataSourceParameter_plant"] [data-mock-select-option="__ROW_FIELD__:plant"]',
         ),
       ).not.toBeNull();
+      // The hint names the column the designer named, not the stored key.
       expect(harness.container.textContent).toContain(
-        '使用同一列「plant」欄的目前值。',
+        '每一列的選項會依該列「工廠」欄目前填的值而變動。',
       );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // The publish lint speaks in schema paths and parameter keys; the designer is
+  // looking at labels, so the builder has to translate before showing it.
+  it('names the field, column and parameter when the lint rejects a binding', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([
+      {
+        ...createDescriptor(),
+        parameters: [
+          { key: 'plant', label: '廠別', required: true, type: 'STRING' },
+        ],
+      },
+    ]);
+    lintFormSchemaMock.mockResolvedValue({
+      errors: [
+        'schema.fields[0].columns[1].dataSource.bindings missing required parameter: plant',
+      ],
+      valid: false,
+    });
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithUnboundDynamicColumn()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 1);
+
+      await act(async (): Promise<void> => {
+        clickButton(harness.container, '驗證 DataSource 設定');
+      });
+
+      expect(harness.container.textContent).toContain(
+        '「請購明細」表格的「成本中心」欄尚未指定必要參數「廠別」的來源',
+      );
+      expect(harness.container.textContent).not.toContain('schema.fields[0]');
     } finally {
       await unmount(harness);
     }
