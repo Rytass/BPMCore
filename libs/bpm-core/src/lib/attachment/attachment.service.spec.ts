@@ -54,6 +54,74 @@ describe('AttachmentService', () => {
     });
   });
 
+  // Table rows are plain records, so the generic scan walks them without
+  // special-casing. V1 has no `file_upload` column, so ordinary cell values
+  // must not be mistaken for attachment references (ADR 16 §3.2).
+  it('walks table rows without binding ordinary cell values as attachments', async (): Promise<void> => {
+    const attachments: AttachmentEntity[] = [];
+    const repository = createAttachmentRepository(attachments);
+    const find = jest.spyOn(repository, 'find');
+    const service = new AttachmentService(
+      repository,
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
+      createStorage(),
+    );
+
+    await service.bindFormDataAttachmentsToInstance(createManager(repository), {
+      formData: {
+        items: [
+          { name: 'Bolt', qty: 3, tags: ['a', 'b'] },
+          { name: 'Nut', qty: null },
+        ],
+      },
+      instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+    });
+
+    expect(find).not.toHaveBeenCalled();
+    expect(attachments).toHaveLength(0);
+  });
+
+  it('still finds an attachment id stored beside a table', async (): Promise<void> => {
+    const attachments: AttachmentEntity[] = [];
+    const repository = createAttachmentRepository(attachments);
+    const service = new AttachmentService(
+      repository,
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
+      createStorage(),
+    );
+
+    const attachment = await service.uploadAttachment({
+      checksumSha256:
+        '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+      contentBase64: Buffer.from('hello').toString('base64'),
+      filename: 'hello.pdf',
+      formFieldPath: 'form.file',
+      instanceId: null,
+      mimeType: 'application/pdf',
+      sizeBytes: 5,
+      taskId: null,
+      uploaderMemberId: 'member-001',
+    });
+
+    await service.bindFormDataAttachmentsToInstance(createManager(repository), {
+      formData: {
+        file: [attachment.id],
+        items: [{ name: 'Bolt', qty: 3 }],
+      },
+      instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+    });
+
+    expect(attachments[0]).toMatchObject({
+      instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+    });
+  });
+
   it('builds signed URLs with configured public URL, TTL, and signing secret', async (): Promise<void> => {
     jest
       .spyOn(Date, 'now')
