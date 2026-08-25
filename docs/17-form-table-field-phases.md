@@ -16,7 +16,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
-| P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFYING    |
+| P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFIED     |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
 
 ## P0 — Shared 契約與結構 lint
@@ -519,7 +519,8 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
 
 新測試：`form-data-source.service.spec.ts`（+6）、
 `form-data-source-value-resolver.service.spec.ts`（+7）、
-`FormBuilderView.spec.tsx`（+4，並把 P2 的「column 無 picker」改為「有 picker」）。
+`FormBuilderView.spec.tsx`（+3 新增、1 筆改寫——P2 的「column 無 picker」改為
+「有 picker」）。獨立驗證後再補 4 例（見下）。
 
 **Gate 結果**：`pnpm typecheck` 6 專案、`pnpm lint` 0 error、
 `nx run-many -t test --skip-nx-cache` 6 專案全綠。`docs/api-reference.md` 已同步
@@ -527,6 +528,39 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
 `FormDataSourceBindingValueKind` 的 `ROW_FIELD`、四個 client input 的
 `rowValues`、四個 service input 的 `rowValuesJson` 與 schema path、
 `BPMFormDataSourceResolveFieldInput.rowValues`。
+
+**獨立驗證（2026-08-25，未參與實作者）**：三個 gate 於驗證者環境 fresh 重跑全綠
+（57 suites / 621 tests）；ADR 16 §3.3／§3.4／§3.5／§3.6／§3.7／§3.9 與 ADR 14
+§3.7 逐條核對；63 組自備對抗性輸入實測（`fieldKey` 解析 7、`rowValuesJson` 11、
+binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結構 lint 7），
+並以 GraphQL introspection 確認四個 input 都有 `rowValuesJson`、實打
+`previewFormFieldOptions(fieldKey: "items.costCenter")` 取得權威 label。
+**單一模組不變式獲驗證者確認成立**（全 repo 只有一份 `readBindingValues`／
+`readWaitingForFieldKeys`，`rowValues` 是加在參數上；渲染端 cell 與 top-level
+共用 `renderControl` 與 `useFormDataSourceField`）。api-reference 對照無遺漏。
+**必修 1 項，已修復並複驗歸零**：
+
+- **column 的 binding 環境 lint 錯誤碼降級為 `INVALID_DESCRIPTOR`**：
+  `LINT_BINDING_LINE_PATTERN` 只認得 `schema.fields[n].dataSource.bindings `，
+  P3 新產生的 `schema.fields[n].columns[m].dataSource.bindings ` 匹配不到，於是
+  落到 fallback。使用者可見後果是 designer 明明自己漏綁參數，卻看到「請聯絡
+  系統管理員」而非「請重新確認表單內容」——而該常數上方的註解正好寫著這個
+  pattern 存在的唯一理由就是防止這件事。直接違反 ADR §3.7「與 top-level 完全
+  同一套實作」。修法：pattern 加上 optional 的 `(?:\.columns\[\d+\])?`。
+
+**一併採納的非阻擋建議**
+
+1. **參數鍵側也改 own-property 讀取**：`readBindingValues` 的 `missingParameters`
+   與 `hashBindings` 原本直接索引 `values[parameter.key]`。宿主 descriptor 若有
+   名為 `constructor` 的必要參數且無 binding 餵，會被誤判為已滿足而**帶著缺失的
+   必要參數去打 provider**。docs 先前寫的「binding 讀值一律走 own-property」原本
+   只在 formData／rowValues 側成立，宣稱範圍過大——現已兩側皆是。
+2. **`handleRemoveField` 的影響清單下探 column**：P3 開放 column 綁 top-level
+   欄位後，刪除該欄位的確認 Modal 會漏報受影響的 column，留下懸空 binding
+   直到發布才被擋。現以 `items.costCenter` 形式一併列出。
+3. **`readTableRows` 不再壓縮非 record 列**：原本 `filter(isRecord)` 會讓其後所有
+   列的 snapshot key 前移一格。實務上 `validateSubmittedFormData` 會先擋下，但
+   索引正確性不該依賴外部呼叫順序。
 
 **單一模組不變式（ADR 14 §3.7）**：search 與 submit resolve 仍共用
 `form-data-source.validation.ts` 的同一份 `readBindingValues`；`rowValues` 是加
