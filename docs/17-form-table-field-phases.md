@@ -16,7 +16,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
-| P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
+| P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFYING    |
 | P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
 
 ## P0 — Shared 契約與結構 lint
@@ -477,6 +477,97 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
   waitingForFieldKeys、cycle lint、`FIELD` 指向 table 內部被拒）。
 - 送出 resolve 的 snapshot key／bindingHash 測試（含列位移後強制重 resolve）。
 - 真實瀏覽器驗證：同列連動選單（工廠 → 成本中心）、退回編輯不丟值。
+
+**實作結果**（2026-08-25）
+
+異動檔案：
+
+- `libs/bpm-core/src/lib/form-data-source/form-data-source.validation.ts`：
+  `readBindingValues` 新增 optional `rowValues`，`ROW_FIELD` 從該列讀值；
+  `readWaitingForFieldKeys` 對 `ROW_FIELD` 回報 column key；binding 讀值一律
+  走 own-property（`constructor` 也是合法 key）。
+- `libs/bpm-core/src/lib/form-data-source/form-data-source.service.ts`：
+  `readOptionField` 接受 `<tableKey>.<columnKey>` schema path（**top-level 查表
+  優先**）、四個 input 加 optional `rowValuesJson`、`parseRowValues`、
+  `lintDefinitionSchemaEnvironment` 遞迴進 `field.columns`。
+- `libs/bpm-core/src/lib/form-data-source/form-data-source.queries.ts`：四個
+  GraphQL input 加 `rowValuesJson`（`@MaxLength(8192)`）。
+- `libs/bpm-core/src/lib/form-data-source/form-data-source-value-resolver.service.ts`：
+  `readDynamicResolutionTargets` 把 schema 攤平成「每個待 resolve 的動態值」
+  一個工作項，snapshot key 用 instance path，bindingHash 因 `rowValues` 進入
+  binding values 而自動納入同列值。
+- `libs/bpm-core/src/lib/form-data-source/form-data-source.types.ts`：
+  `BPMFormDataSourceResolveFieldInput` 加 optional `rowValues`。
+- `libs/bpm-core-client/src/lib/form/form-data-source-api.ts`：四個 input 加
+  optional `rowValues` 並序列化為 `rowValuesJson`。
+- `libs/bpm-core-client/src/lib/form/form-data-source-builder.ts`：
+  `FormDataSourceBindingValueKind` 擴充為含 `'ROW_FIELD'`、
+  `readFormDataSourceBindingValueKind` 直接回傳 kind、新增
+  `readCompatibleFormTableColumnBindingFields`；
+  `renameFormDataSourceFieldBindings` 改為會下探 table columns。
+- `libs/bpm-core-client/src/lib/form/form-data-source-state.ts`：
+  `readMissingFormDataSourceDependencies` 支援 `ROW_FIELD`。
+- `libs/bpm-core-react/src/views/forms/renderer/form-data-source-field.ts`：
+  `UseFormDataSourceFieldInput` 新增 `fieldPath`／`snapshotKey`／`row`
+  （`UseFormDataSourceFieldRow`），cell 與 top-level 共用同一個 hook 實作。
+- `libs/bpm-core-react/src/views/forms/renderer/FormRendererView.tsx`：
+  `FormTableCell` 接上 `useFormDataSourceField`（以 ephemeral row id 為
+  React key）、cell 級狀態訊息與重試、卸載時撤回送出阻擋。
+- `libs/bpm-core-react/src/views/forms/builder/FormBuilderView.tsx`：
+  `DataSourceBindingScope` 讓 binding 編輯器同時服務 top-level 與 column；
+  column 的「選項來源」下拉開放，binding 來源多一組「同列：〈欄〉」。
+
+新測試：`form-data-source.service.spec.ts`（+6）、
+`form-data-source-value-resolver.service.spec.ts`（+7）、
+`FormBuilderView.spec.tsx`（+4，並把 P2 的「column 無 picker」改為「有 picker」）。
+
+**Gate 結果**：`pnpm typecheck` 6 專案、`pnpm lint` 0 error、
+`nx run-many -t test --skip-nx-cache` 6 專案全綠。`docs/api-reference.md` 已同步
+`readCompatibleFormTableColumnBindingFields`、`UseFormDataSourceFieldRow`、
+`FormDataSourceBindingValueKind` 的 `ROW_FIELD`、四個 client input 的
+`rowValues`、四個 service input 的 `rowValuesJson` 與 schema path、
+`BPMFormDataSourceResolveFieldInput.rowValues`。
+
+**單一模組不變式（ADR 14 §3.7）**：search 與 submit resolve 仍共用
+`form-data-source.validation.ts` 的同一份 `readBindingValues`；`rowValues` 是加
+在該函式的參數上，兩條入口只是各自把值傳進去，沒有出現第二套 ROW_FIELD 讀值。
+
+**真實瀏覽器互動驗證**（cswap 專用瀏覽器，develop DB）
+
+以 `demo.cost-centers`（required `plant` 參數）建立含
+`ROW_FIELD → plant` 的動態 column 模板並發布，實際走完：
+
+1. 發起頁初始列的成本中心 cell **disabled 並顯示「請先填寫相依欄位。」** ——
+   後端 `waitingForFieldKeys` 回報的是 column key，前端正確解讀。
+2. 第 1 列選 TW01 後該 cell 立即可用，選單只列 TW01 的 9 筆。
+3. 新增第 2 列：**第 2 列回到等待狀態，第 1 列已選值不受影響**；第 2 列選 TW02
+   後只列 TW02 的 5 筆 —— 每列各自查詢、狀態互不干擾。
+4. 送出成功；DB 內 `form_data_option_snapshot` 的 key 確為
+   `items[0].costCenter`／`items[1].costCenter`，各自帶自己那列的權威 label。
+5. 另建一份可退回的模板 → 簽核者退回 → 退回編輯頁**兩列的值與 snapshot label
+   全數保留**、成本中心不需重選；新增第 3 列時只有該列進入等待狀態。
+6. 第 3 列選 TW01 → 成本中心即刻載入 → 重新送出成功，snapshot 重建為三筆
+   instance path，第 3 列拿到 `TW01 成本中心 003` 的權威 label。
+
+同時以 API 直接驗證 runtime query：帶 `rowValuesJson` 回傳該廠選項、
+不帶時回 `waitingForFieldKeys: ["plant"]`。
+
+**ADR 未載明而在 P3 自決的項目**（皆取最小、additive、可回退解）
+
+1. **`fieldKey` 解析順序**：先查 top-level 精確比對，找不到才拆
+   `<tableKey>.<columnKey>`。top-level fieldKey 不受識別字 regex 約束、可能含
+   `.`，必須維持它勝出，否則既有表單會被新語法搶走。已補 spec。
+2. **`rowValuesJson` 的「缺席」與「空物件」不同義**：缺席代表呼叫端沒送列值
+   （ROW_FIELD 視為缺值 → `waitingForFieldKeys`）；`{}` 代表列存在但該 cell 未
+   填，語意相同但保留區分，讓未來要分辨「新列」與「空列」時不需改 API。
+3. **併發上限維持 4，但改為每次送出的總預算**：先攤平成工作項再套上限，100 列
+   × 多動態欄不會放大成 100 倍突發流量（ADR §3.6 明示「整份表單的總限制」）。
+4. **binding picker 的 row 選項加 `__ROW_FIELD__:` 前綴**：column key 與
+   top-level fieldKey 可能同名（ADR §3.1 的命名空間分層），不加前綴無法還原
+   使用者選的是哪一種來源。
+5. **cell 卸載時回報 `IDLE`**：刪除某列後，該列 cell 的舊狀態不得繼續擋住送出。
+6. **column 的選項來源與選擇模式變更不彈 Modal**：沿用 P2 的決定，確認 Modal
+   只留給刪除欄與切換欄型別這兩個離散且破壞性的動作。
 
 ## P4 — E2E、demo seed、文件與發布
 
