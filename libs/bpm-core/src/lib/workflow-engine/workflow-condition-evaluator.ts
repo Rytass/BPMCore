@@ -42,6 +42,15 @@ function compareWorkflowValues(
   operator: WorkflowEdgeConditionOperator,
   expectedValue: string,
 ): boolean {
+  // A table value is a list of rows. Only IS_FILLED / IS_EMPTY (handled above,
+  // by row count) are defined for it; the designer offers nothing else, but a
+  // hand-written or imported definition can still carry a value comparison.
+  // Stringifying a row record would compare `[object Object]` and route the
+  // instance on a coincidence, so it never matches (ADR 16 §3.8).
+  if (isNonPrimitiveValue(actualValue)) {
+    return false;
+  }
+
   if (Array.isArray(actualValue)) {
     return compareArrayValue(actualValue, operator, expectedValue);
   }
@@ -110,6 +119,18 @@ function compareOrderedValue(
   }
 
   return false;
+}
+
+/**
+ * True for a row record, or for a list holding any of them. Multi-select values
+ * (`readonly string[]`) stay comparable.
+ */
+function isNonPrimitiveValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => isNonPrimitiveValue(entry));
+  }
+
+  return typeof value === 'object' && value !== null;
 }
 
 function isEmptyWorkflowValue(value: unknown): boolean {

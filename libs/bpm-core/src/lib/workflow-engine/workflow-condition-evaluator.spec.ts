@@ -49,11 +49,27 @@ describe('evaluateWorkflowEdgeCondition', () => {
     ).toBe(false);
   });
 
+  // The designer only offers IS_FILLED / IS_EMPTY for a table, but an imported
+  // or hand-edited definition can still carry a value comparison. Stringifying
+  // a row record would match `[object Object]` and route the instance on a
+  // coincidence.
   it('never matches a value comparison against table rows', (): void => {
     expect(
       evaluateWorkflowEdgeCondition(createEdge('items', 'EQUALS', 'Bolt'), {
         formData: { items: [{ name: 'Bolt', qty: 1 }] },
       }),
+    ).toBe(false);
+    expect(
+      evaluateWorkflowEdgeCondition(
+        createEdge('items', 'EQUALS', '[object Object]'),
+        { formData: { items: [{ name: 'Bolt', qty: 1 }] } },
+      ),
+    ).toBe(false);
+    expect(
+      evaluateWorkflowEdgeCondition(
+        createEdge('items', 'NOT_EQUALS', '[object Object]'),
+        { formData: { items: [{ name: 'Bolt', qty: 1 }] } },
+      ),
     ).toBe(false);
     expect(
       evaluateWorkflowEdgeCondition(
