@@ -8,6 +8,7 @@ import {
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
 } from '@rytass/bpm-core-shared/form';
+import { referencesTableInternals } from './form-table-reference';
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'boolean',
@@ -323,18 +324,6 @@ function lintConditionTableReferences(
           `${path}.${conditionKey} must not reference table field internals: ${tableKey}`,
       );
   });
-}
-
-function referencesTableInternals(
-  expression: string,
-  tableKey: string,
-): boolean {
-  const escapedKey = tableKey.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-
-  return [
-    new RegExp(`form\\.${escapedKey}\\s*(?:\\.|\\[)`, 'u'),
-    new RegExp(`form\\[\\s*["']${escapedKey}["']\\s*\\]\\s*(?:\\.|\\[)`, 'u'),
-  ].some((pattern) => pattern.test(expression));
 }
 
 function lintTextField(

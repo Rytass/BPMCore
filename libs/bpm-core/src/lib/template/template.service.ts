@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
+import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import {
   EntityManager,
@@ -17,6 +18,11 @@ import {
   Repository,
 } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import {
+  isTableInternalFieldKey,
+  readTableFieldKeys,
+  referencesTableInternals,
+} from '../form/form-table-reference';
 import { FormDefinitionEntity } from '../form/form-definition.entity';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
@@ -931,7 +937,16 @@ export class TemplateService {
         ],
       },
     );
-    const errors = [...workflowResult.errors, ...conditionErrors];
+    const tableReferenceErrors = lintWorkflowTableReferences(
+      version.workflowDefinition,
+      version.initiatorPolicyCel,
+      formVersion.schema,
+    );
+    const errors = [
+      ...workflowResult.errors,
+      ...conditionErrors,
+      ...tableReferenceErrors,
+    ];
 
     if (errors.length) {
       throw new BadRequestException(errors.join('; '));
@@ -1221,6 +1236,55 @@ function createApprovalTemplateCategoryWhere(
     { ...statusWhere, name: ILike(searchPattern) },
     { ...statusWhere, description: ILike(searchPattern) },
   ];
+}
+
+/**
+ * The workflow half of the "conditions must not address table internals" ban
+ * (ADR 16 §3.8). The form schema half — `visibleWhen` and friends — is enforced
+ * by the form schema lint; this covers the structured edge condition, which
+ * carries a plain field key, and every CEL expression the workflow can hold.
+ *
+ * Neither the CEL root-identifier lint nor the structured evaluator would
+ * report these on its own: `form.items[0].qty` has a legal root identifier and
+ * a `conditionFieldKey` of `items.qty` simply resolves to `undefined` at
+ * runtime. Both would fail silently rather than loudly.
+ */
+function lintWorkflowTableReferences(
+  definition: WorkflowDefinition,
+  initiatorPolicyCel: string | null,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const tableFieldKeys = readTableFieldKeys(schema);
+
+  if (!tableFieldKeys.size) {
+    return [];
+  }
+
+  const expressionErrors = readConditionExpressions(
+    definition,
+    initiatorPolicyCel,
+  ).flatMap(({ expression, label }) =>
+    typeof expression === 'string'
+      ? [...tableFieldKeys]
+          .filter((tableKey) => referencesTableInternals(expression, tableKey))
+          .map(
+            (tableKey) =>
+              `${label} must not reference table field internals: ${tableKey}`,
+          )
+      : [],
+  );
+  const structuredErrors = definition.edges
+    .filter(
+      (edge) =>
+        typeof edge.data.conditionFieldKey === 'string' &&
+        isTableInternalFieldKey(edge.data.conditionFieldKey, tableFieldKeys),
+    )
+    .map(
+      (edge) =>
+        `workflow.edges.${edge.id}.data.conditionFieldKey must not reference table field internals: ${edge.data.conditionFieldKey}`,
+    );
+
+  return [...expressionErrors, ...structuredErrors];
 }
 
 function readConditionExpressions(

@@ -661,6 +661,68 @@ describe('TemplateService', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects publishing an edge CEL expression that reaches into a table', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      condition: 'form.items[0].qty > 3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'workflow.edges.edge_start_end.data.condition must not reference table field internals: items',
+    );
+  });
+
+  it('rejects publishing a structured edge condition that names a table column', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      conditionFieldKey: 'items.qty',
+      conditionOperator: 'GREATER_THAN',
+      conditionValue: '3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'workflow.edges.edge_start_end.data.conditionFieldKey must not reference table field internals: items.qty',
+    );
+  });
+
+  it('rejects publishing a structured edge condition that indexes a table row', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      conditionFieldKey: 'items[0].qty',
+      conditionOperator: 'GREATER_THAN',
+      conditionValue: '3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('must not reference table field internals: items[0].qty');
+  });
+
+  it('rejects publishing an initiator policy that reaches into a table', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      initiatorPolicyCel: 'form.items[0].qty > 3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'initiatorPolicyCel must not reference table field internals: items',
+    );
+  });
+
+  it('publishes a condition that only asks a table for its row count', async (): Promise<void> => {
+    // The row-count form is exactly what IS_FILLED / IS_EMPTY compile to, so
+    // banning table internals must not ban the table itself.
+    const service = createTableConditionPublishService({
+      condition: 'form.items != null && size(form.items) > 0',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).resolves.toMatchObject({ id: 'template-version-1' });
+  });
+
   it('refuses to delete a category that templates still reference', async (): Promise<void> => {
     // This used to succeed and quietly deactivate the category instead, so the
     // caller was told the delete happened while `isActive` was flipped behind
@@ -1101,6 +1163,166 @@ const VALID_WORKFLOW_DEFINITION = {
     },
   ],
 };
+
+const TABLE_FORM_SCHEMA = {
+  fields: [
+    {
+      columns: [
+        { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+        { fieldKey: 'qty', label: '數量', required: true, type: 'number' },
+      ],
+      fieldKey: 'items',
+      label: '請購明細',
+      required: true,
+      type: 'table',
+    },
+  ],
+  schemaVersion: 1,
+};
+
+/**
+ * A publishable draft bound to a form whose only field is a table, with the
+ * given condition data on the single start → end edge. Used to prove both
+ * halves of the table-internals ban: the CEL expressions and the structured
+ * `conditionFieldKey`.
+ */
+function createTableConditionPublishService({
+  condition,
+  conditionFieldKey,
+  conditionOperator,
+  conditionValue,
+  initiatorPolicyCel = null,
+}: {
+  readonly condition?: string;
+  readonly conditionFieldKey?: string;
+  readonly conditionOperator?: string;
+  readonly conditionValue?: string;
+  readonly initiatorPolicyCel?: string | null;
+}): TemplateService {
+  const draftVersion = Object.assign(new ApprovalTemplateVersionEntity(), {
+    archivedAt: null,
+    createdAt: new Date('2026-08-20T00:00:00.000Z'),
+    formDefinitionVersionId: 'form-version-1',
+    id: 'template-version-1',
+    initiatorPolicyCel,
+    notificationConfig: null,
+    publishedAt: null,
+    publishedByMemberId: null,
+    slaDefaults: null,
+    status: ApprovalTemplateVersionStatusEnum.DRAFT,
+    templateId: 'template-1',
+    updatedAt: new Date('2026-08-20T00:00:00.000Z'),
+    version: 1,
+    workflowDefinition: {
+      edges: [
+        {
+          data: {
+            ...(condition ? { condition } : {}),
+            ...(conditionFieldKey ? { conditionFieldKey } : {}),
+            ...(conditionOperator ? { conditionOperator } : {}),
+            ...(conditionValue ? { conditionValue } : {}),
+          },
+          id: 'edge_start_end',
+          source: 'start',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    },
+  });
+  const formVersion = Object.assign(new FormDefinitionVersionEntity(), {
+    archivedAt: null,
+    createdAt: new Date('2026-08-20T00:00:00.000Z'),
+    formDefinitionId: 'form-1',
+    id: 'form-version-1',
+    publishedAt: new Date('2026-08-20T00:00:00.000Z'),
+    publishedByMemberId: 'member-admin',
+    schema: TABLE_FORM_SCHEMA,
+    status: FormDefinitionVersionStatusEnum.PUBLISHED,
+    uiSchema: { layout: [{ fieldKey: 'items', width: 'FULL' }] },
+    updatedAt: new Date('2026-08-20T00:00:00.000Z'),
+    version: 1,
+  });
+  const template = createApprovalTemplate('template-1');
+  const manager = {
+    getRepository: (target: unknown): ObjectLiteral =>
+      target === ApprovalTemplateEntity
+        ? {
+            findOne: jest.fn(
+              (): Promise<ApprovalTemplateEntity> => Promise.resolve(template),
+            ),
+            merge: jest.fn(
+              (
+                entity: ApprovalTemplateEntity,
+                patch: Partial<ApprovalTemplateEntity>,
+              ): ApprovalTemplateEntity => Object.assign(entity, patch),
+            ),
+            save: jest.fn(
+              (
+                entity: ApprovalTemplateEntity,
+              ): Promise<ApprovalTemplateEntity> => Promise.resolve(entity),
+            ),
+          }
+        : {
+            merge: jest.fn(
+              (
+                entity: ApprovalTemplateVersionEntity,
+                patch: Partial<ApprovalTemplateVersionEntity>,
+              ): ApprovalTemplateVersionEntity => Object.assign(entity, patch),
+            ),
+            save: jest.fn(
+              (
+                entity: ApprovalTemplateVersionEntity,
+              ): Promise<ApprovalTemplateVersionEntity> =>
+                Promise.resolve(entity),
+            ),
+            update: jest.fn((): Promise<void> => Promise.resolve()),
+          },
+  } as unknown as EntityManager;
+
+  return new TemplateService(
+    {
+      manager: {
+        transaction: jest.fn(
+          <TResult>(
+            operation: (txManager: EntityManager) => Promise<TResult>,
+          ): Promise<TResult> => operation(manager),
+        ),
+      },
+    } as unknown as Repository<ApprovalTemplateEntity>,
+    createRepository<ApprovalTemplateCategoryEntity>(),
+    {
+      findOne: jest.fn(
+        (): Promise<ApprovalTemplateVersionEntity | null> =>
+          Promise.resolve(draftVersion),
+      ),
+    } as unknown as Repository<ApprovalTemplateVersionEntity>,
+    {
+      findOne: jest.fn(
+        (): Promise<FormDefinitionVersionEntity | null> =>
+          Promise.resolve(formVersion),
+      ),
+    } as unknown as Repository<FormDefinitionVersionEntity>,
+    new ConditionService(),
+    {} as unknown as FormService,
+    createTemplateModuleRef(),
+  );
+}
 
 /**
  * `TemplateService` only reaches for `ModuleRef` to look up the optional
