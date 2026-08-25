@@ -36,6 +36,9 @@ interface TableRow {
   readonly urgent?: boolean;
 }
 
+// Both tests read the demo seed, and the second one pushes the seeded returned
+// case to `RUNNING`, so this file is not re-entrant: run `pnpm demo:reset`
+// before each run.
 test.describe('Seeded table field golden path', () => {
   test('fills a table row by row, submits per-cell snapshots, and renders history offline', async ({
     browser,
@@ -127,43 +130,43 @@ test.describe('Seeded table field golden path', () => {
       page.getByRole('heading', { name: '請購事由：E2E 表格請購' }),
     ).toBeVisible();
 
-    // Read-only history must render from the snapshot alone, so the whole
-    // DataSource host is taken away for this check.
-    const offlineContext = await browser.newContext({
+    // Read-only history must render every cell label from the snapshot alone.
+    // Asserting that no option query was sent is the positive proof of that;
+    // routing the host away would only prove the page survives without it.
+    const historyContext = await browser.newContext({
       baseURL: CLIENT_BASE_URL,
     });
+    const historyPage = await historyContext.newPage();
+    const runtimeOptionRequests: string[] = [];
 
     try {
-      const offlinePage = await offlineContext.newPage();
-      await offlineContext.request.post(
-        `${FEATURE_API_URL.replace(/\/$/u, '')}/auth/login`,
-        { data: { identifier: 'member-102', password: 'demo' } },
-      );
-      await routeFeatureApi(offlinePage);
-      await offlinePage.route(
-        '**/graphql',
-        async (route): Promise<void> => {
-          const body = route.request().postData() ?? '';
+      await routeFeatureApi(historyPage);
+      await authenticateFeatureMember(historyPage, 'member-102');
+      historyPage.on('request', (request): void => {
+        // Lower-cased so `resolveFormFieldOptions` and
+        // `previewFormFieldOptions` are caught too, not just the search query.
+        if (
+          request.url().includes('/graphql') &&
+          request.postData()?.toLowerCase().includes('formfieldoptions')
+        ) {
+          runtimeOptionRequests.push(request.url());
+        }
+      });
+      await historyPage.goto(`/instances/${instanceId}`);
 
-          if (body.includes('formFieldOptions')) {
-            await route.abort();
-
-            return;
-          }
-
-          await route.continue();
-        },
-      );
-      await offlinePage.goto(`${page.url()}`);
-
+      // A read-only dynamic cell renders as a disabled Select, and a Mezzanine
+      // single Select keeps its label in the trigger's `<input value>` — there
+      // is no text node to match, unlike the radio/checkbox controls the
+      // DataSource spec asserts on.
       await expect(
-        offlinePage.getByText('TW01 成本中心 001').first(),
-      ).toBeVisible();
+        readCell(historyPage, 0, 'costCenter').locator('input'),
+      ).toHaveValue('TW01 成本中心 001');
       await expect(
-        offlinePage.getByText('TW02 成本中心 001').first(),
-      ).toBeVisible();
+        readCell(historyPage, 1, 'costCenter').locator('input'),
+      ).toHaveValue('TW02 成本中心 001');
+      expect(runtimeOptionRequests).toEqual([]);
     } finally {
-      await offlineContext.close();
+      await historyContext.close();
     }
   });
 
@@ -244,7 +247,15 @@ async function openCellSelect(
     return;
   }
 
-  await trigger.locator('.mzn-select-trigger__suffix-action-icon').click();
+  const chevron = trigger.locator('.mzn-select-trigger__suffix-action-icon');
+
+  if ((await chevron.count()) > 0) {
+    await chevron.first().click();
+
+    return;
+  }
+
+  await trigger.click();
 }
 
 async function chooseCellOption(
