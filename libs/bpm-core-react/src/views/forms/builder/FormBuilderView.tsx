@@ -49,6 +49,7 @@ import {
   FileIcon,
   ListIcon,
   PlusIcon,
+  SettingIcon,
   TrashIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
@@ -56,6 +57,7 @@ import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   BooleanFieldDefinition,
   DateFieldDefinition,
+  FORM_TABLE_MAX_ROWS,
   FormDataSourceBinding,
   FormDataSourceOptionFieldDefinition,
   FileUploadFieldDefinition,
@@ -66,13 +68,18 @@ import {
   FormStaticOptionFieldDefinition,
   FormUiSchema,
   NumberFieldDefinition,
+  TableColumnDefinition,
+  TableFieldDefinition,
   TextFieldDefinition,
   isFormDataSourceFieldDefinition,
   isFormOptionFieldDefinition,
+  isTableColumnFieldType,
+  isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
   createFieldDefinition,
+  createTableColumnDefinition,
   isFormDataSourceDescriptorCompatible,
   lintFormSchema,
   listFormDataSources,
@@ -84,6 +91,7 @@ import {
   readFormDataSourceBindingValueKind,
   readFormDataSourceFieldDependencyKeys,
   renameFormDataSourceFieldBindings,
+  renameFormTableColumnBindings,
   upsertFormDataSourceFieldBinding,
   type FormDataSourceDescriptorRecord,
   type FormDataSourceParameterType,
@@ -106,6 +114,7 @@ import {
   readDefaultConditionOperator,
   readDefaultConditionValue,
   readFieldOptionAsSelectOption,
+  readFormTableRowBounds,
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
@@ -129,6 +138,16 @@ type FieldTypeOption = Readonly<{
   label: string;
   type: FieldType;
 }>;
+
+type TableColumnRow = Readonly<
+  Record<string, unknown> & {
+    fieldKey: string;
+    index: number;
+    key: string;
+    label: string;
+    type: TableColumnDefinition['type'];
+  }
+>;
 
 type ConditionRuleTarget = 'readonlyWhen' | 'requiredWhen' | 'visibleWhen';
 
@@ -171,6 +190,18 @@ type PendingBuilderConfirmation =
       impact: string;
       kind: 'replace-field';
       nextField: FormFieldDefinition;
+    }>
+  | Readonly<{
+      columnKey: string;
+      fieldKey: string;
+      kind: 'remove-column';
+    }>
+  | Readonly<{
+      columnKey: string;
+      fieldKey: string;
+      impact: string;
+      kind: 'replace-column';
+      nextColumn: TableColumnDefinition;
     }>;
 
 const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
@@ -246,7 +277,28 @@ const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
     label: '附件',
     type: 'file_upload',
   },
+  {
+    description: '多列多欄明細',
+    icon: DotGridIcon,
+    label: '表格',
+    type: 'table',
+  },
 ];
+
+/**
+ * Column types a table accepts (ADR 16 §3.10). `textarea`, `radio`, `checkbox`,
+ * `file_upload` and a nested `table` are excluded, so the picker is built from
+ * the field library minus those rather than from a second hand-kept list.
+ */
+const TABLE_COLUMN_TYPE_OPTIONS: readonly {
+  readonly id: TableColumnDefinition['type'];
+  readonly name: string;
+}[] = FIELD_TYPE_OPTIONS.filter((option) =>
+  isTableColumnFieldType(option.type),
+).map((option) => ({
+  id: option.type as TableColumnDefinition['type'],
+  name: option.label,
+}));
 
 const WORKSPACE_GRID_STYLE: CSSProperties = {
   alignItems: 'start',
@@ -470,6 +522,15 @@ const DATA_SOURCE_SUMMARY_STYLE: CSSProperties = {
   padding: 10,
 };
 
+const TABLE_COLUMN_SETTINGS_STYLE: CSSProperties = {
+  backgroundColor: 'var(--mzn-color-bg-surface-secondary)',
+  borderRadius: 6,
+  display: 'grid',
+  gap: 10,
+  gridColumn: '1 / -1',
+  padding: 12,
+};
+
 const DATA_SOURCE_PARAMETER_GRID_STYLE: CSSProperties = {
   display: 'grid',
   gap: 8,
@@ -602,6 +663,9 @@ export function FormBuilderView({
   const [dataSourceLintLoading, setDataSourceLintLoading] = useState(false);
   const [pendingBuilderConfirmation, setPendingBuilderConfirmation] =
     useState<PendingBuilderConfirmation | null>(null);
+  const [selectedColumnKey, setSelectedColumnKey] = useState<string | null>(
+    null,
+  );
 
   useEffect((): (() => void) => {
     let active = true;
@@ -683,8 +747,12 @@ export function FormBuilderView({
         ...uiSchema.layout,
         {
           fieldKey: field.fieldKey,
+          // A table must be FULL width or the publish lint rejects it
+          // (ADR 16 §3.7).
           width:
-            type === 'textarea' || type === 'file_upload' ? 'FULL' : 'HALF',
+            type === 'textarea' || type === 'file_upload' || type === 'table'
+              ? 'FULL'
+              : 'HALF',
         },
       ],
     });
@@ -848,6 +916,91 @@ export function FormBuilderView({
     updateSelectedFieldWith((): FormFieldDefinition => nextField);
   }
 
+  function updateTableField(
+    fieldKey: string,
+    updater: (field: TableFieldDefinition) => TableFieldDefinition,
+  ): void {
+    setSchema((currentSchema) => ({
+      ...currentSchema,
+      fields: currentSchema.fields.map(
+        (field): FormFieldDefinition =>
+          field.fieldKey === fieldKey && isTableFieldDefinition(field)
+            ? updater(field)
+            : field,
+      ),
+    }));
+    setAdvancedSchemaMessage(null);
+    setDataSourceLint(null);
+  }
+
+  /**
+   * Writes an edited column back into its table. Renaming a column key rewrites
+   * the sibling `ROW_FIELD` bindings that address it, exactly as a top-level
+   * key rename rewrites `FIELD` bindings (ADR 16 §3.9).
+   */
+  function commitTableColumn(
+    field: TableFieldDefinition,
+    columnIndex: number,
+    nextColumn: TableColumnDefinition,
+  ): void {
+    const previousColumnKey = field.columns[columnIndex]?.fieldKey;
+
+    updateTableField(field.fieldKey, (currentField) => {
+      const nextField: TableFieldDefinition = {
+        ...currentField,
+        columns: currentField.columns.map((column, index) =>
+          index === columnIndex ? nextColumn : column,
+        ),
+      };
+
+      return typeof previousColumnKey === 'string' &&
+        previousColumnKey !== nextColumn.fieldKey
+        ? renameFormTableColumnBindings(
+            nextField,
+            previousColumnKey,
+            nextColumn.fieldKey,
+          )
+        : nextField;
+    });
+
+    if (previousColumnKey !== nextColumn.fieldKey) {
+      setSelectedColumnKey(nextColumn.fieldKey);
+    }
+  }
+
+  function handleAddTableColumn(field: TableFieldDefinition): void {
+    const column = createTableColumnDefinition(field.columns, 'text');
+
+    updateTableField(field.fieldKey, (currentField) => ({
+      ...currentField,
+      columns: [...currentField.columns, column],
+    }));
+    setSelectedColumnKey(column.fieldKey);
+  }
+
+  function applyRemoveTableColumn(fieldKey: string, columnKey: string): void {
+    updateTableField(fieldKey, (currentField) => ({
+      ...currentField,
+      columns: currentField.columns.filter(
+        (column) => column.fieldKey !== columnKey,
+      ),
+    }));
+    setSelectedColumnKey((currentKey) =>
+      currentKey === columnKey ? null : currentKey,
+    );
+  }
+
+  function handleReorderTableColumns(
+    field: TableFieldDefinition,
+    fromIndex: number,
+    toIndex: number,
+  ): void {
+    updateTableField(field.fieldKey, (currentField) => ({
+      ...currentField,
+      columns: moveItemByIndex(currentField.columns, fromIndex, toIndex),
+    }));
+  }
+
   function handleOptionModeChange(
     field: FormOptionFieldDefinition,
     mode: 'multiple' | 'single',
@@ -970,22 +1123,48 @@ export function FormBuilderView({
       return;
     }
 
-    if (pendingBuilderConfirmation.kind === 'remove-field') {
-      applyRemoveField(pendingBuilderConfirmation.fieldKey);
-    } else {
-      setSchema({
-        ...schema,
-        fields: schema.fields.map((field) =>
-          field.fieldKey === pendingBuilderConfirmation.fieldKey
-            ? pendingBuilderConfirmation.nextField
-            : field,
-        ),
-      });
-      setAdvancedSchemaMessage(null);
-      setDataSourceLint(null);
+    applyBuilderConfirmation(pendingBuilderConfirmation);
+    setPendingBuilderConfirmation(null);
+  }
+
+  function applyBuilderConfirmation(
+    confirmation: PendingBuilderConfirmation,
+  ): void {
+    if (confirmation.kind === 'remove-field') {
+      applyRemoveField(confirmation.fieldKey);
+
+      return;
     }
 
-    setPendingBuilderConfirmation(null);
+    if (confirmation.kind === 'remove-column') {
+      applyRemoveTableColumn(confirmation.fieldKey, confirmation.columnKey);
+
+      return;
+    }
+
+    if (confirmation.kind === 'replace-column') {
+      updateTableField(confirmation.fieldKey, (currentField) => ({
+        ...currentField,
+        columns: currentField.columns.map((column) =>
+          column.fieldKey === confirmation.columnKey
+            ? confirmation.nextColumn
+            : column,
+        ),
+      }));
+
+      return;
+    }
+
+    setSchema({
+      ...schema,
+      fields: schema.fields.map((field) =>
+        field.fieldKey === confirmation.fieldKey
+          ? confirmation.nextField
+          : field,
+      ),
+    });
+    setAdvancedSchemaMessage(null);
+    setDataSourceLint(null);
   }
 
   async function handleLintDataSourceSchema(): Promise<void> {
@@ -1076,11 +1255,7 @@ export function FormBuilderView({
           open
           showModalFooter
           showModalHeader
-          title={
-            pendingBuilderConfirmation.kind === 'remove-field'
-              ? '確認移除 dependency 欄位'
-              : '確認替換選項來源'
-          }
+          title={readBuilderConfirmationTitle(pendingBuilderConfirmation)}
         >
           {pendingBuilderConfirmation.kind === 'remove-field' ? (
             <div style={COMPACT_STACK_STYLE}>
@@ -1091,6 +1266,11 @@ export function FormBuilderView({
                 {pendingBuilderConfirmation.affectedFieldKeys.join('、')}
               </Typography>
             </div>
+          ) : pendingBuilderConfirmation.kind === 'remove-column' ? (
+            <Typography variant="body">
+              移除欄「{pendingBuilderConfirmation.columnKey}
+              」後，既有案件仍保留原本的表單版本，但新版本的這一欄資料將不再被填寫。
+            </Typography>
           ) : (
             <Typography variant="body">
               {pendingBuilderConfirmation.impact}確認後才會寫入 schema。
@@ -1330,7 +1510,312 @@ export function FormBuilderView({
       return renderFileUploadFieldSettings(field, commit);
     }
 
+    if (isTableFieldDefinition(field)) {
+      return renderTableFieldSettings(field);
+    }
+
     return null;
+  }
+
+  function renderTableFieldSettings(field: TableFieldDefinition): ReactElement {
+    const bounds = readFormTableRowBounds(field);
+
+    return (
+      <>
+        {renderSettingsFormRow(
+          '最少列數',
+          'fieldMinRows',
+          renderNumberInput(
+            field.minRows,
+            (value): void =>
+              updateTableField(field.fieldKey, (currentField) => ({
+                ...currentField,
+                minRows: value,
+              })),
+            '例如：1',
+            { max: bounds.maxRows, min: 0 },
+          ),
+        )}
+        {renderSettingsFormRow(
+          '最多列數',
+          'fieldMaxRows',
+          renderNumberInput(
+            field.maxRows,
+            (value): void =>
+              updateTableField(field.fieldKey, (currentField) => ({
+                ...currentField,
+                maxRows: value,
+              })),
+            `未設定即為 ${FORM_TABLE_MAX_ROWS}`,
+            { max: FORM_TABLE_MAX_ROWS, min: Math.max(bounds.minRows, 1) },
+          ),
+        )}
+        {renderSettingsFormRow(
+          '新增列按鈕文字',
+          'fieldAddRowLabel',
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateTableField(field.fieldKey, (currentField) => ({
+                ...currentField,
+                addRowLabel: event.target.value || undefined,
+              }))
+            }
+            placeholder="預設為「新增一列」"
+            value={field.addRowLabel ?? ''}
+            variant="base"
+          />,
+        )}
+        {renderSettingsFormRow(
+          '欄',
+          'fieldColumns',
+          renderTableColumnsTable(field),
+          true,
+        )}
+        {renderSelectedTableColumnSettings(field)}
+      </>
+    );
+  }
+
+  function renderTableColumnsTable(field: TableFieldDefinition): ReactElement {
+    const columnRows: TableColumnRow[] = field.columns.map((column, index) => ({
+      fieldKey: column.fieldKey,
+      index,
+      key: `${field.fieldKey}-${column.fieldKey}`,
+      label: column.label,
+      type: column.type,
+    }));
+    const columns: TableColumn<TableColumnRow>[] = [
+      {
+        key: 'fieldKey',
+        render: (row): ReactElement => (
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commitTableColumn(field, row.index, {
+                ...readTableColumn(field, row.index),
+                fieldKey: event.target.value,
+              })
+            }
+            placeholder="例如：qty"
+            size="sub"
+            value={row.fieldKey}
+            variant="base"
+          />
+        ),
+        title: '欄位 Key',
+      },
+      {
+        key: 'label',
+        render: (row): ReactElement => (
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commitTableColumn(field, row.index, {
+                ...readTableColumn(field, row.index),
+                label: event.target.value,
+              })
+            }
+            placeholder="例如：數量"
+            size="sub"
+            value={row.label}
+            variant="base"
+          />
+        ),
+        title: '標題',
+      },
+      {
+        key: 'type',
+        render: (row): ReactElement => (
+          <Select
+            clearable={false}
+            onChange={(option): void =>
+              handleTableColumnTypeChange(field, row.index, option?.id)
+            }
+            options={[...TABLE_COLUMN_TYPE_OPTIONS]}
+            value={readSelectOption(TABLE_COLUMN_TYPE_OPTIONS, row.type)}
+          />
+        ),
+        title: '型別',
+      },
+      {
+        key: 'required',
+        render: (row): ReactElement => (
+          <Toggle
+            checked={readTableColumn(field, row.index).required === true}
+            label="必填"
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commitTableColumn(field, row.index, {
+                ...readTableColumn(field, row.index),
+                required: event.target.checked,
+              })
+            }
+            size="sub"
+          />
+        ),
+        title: '必填',
+      },
+    ];
+    const actions: TableActions<TableColumnRow> = {
+      render: (row): ReturnType<TableActions<TableColumnRow>['render']> => [
+        {
+          icon: SettingIcon,
+          iconType: 'icon-only',
+          name: '設定此欄',
+          onClick: (): void => setSelectedColumnKey(row.fieldKey),
+          variant: 'base-ghost',
+        },
+        {
+          // A table with no columns cannot be published (ADR 16 §4), so the
+          // last one stays.
+          disabled: (): boolean => field.columns.length <= 1,
+          icon: TrashIcon,
+          iconType: 'icon-only',
+          name: '移除此欄',
+          onClick: (): void =>
+            setPendingBuilderConfirmation({
+              columnKey: row.fieldKey,
+              fieldKey: field.fieldKey,
+              kind: 'remove-column',
+            }),
+          variant: 'destructive-ghost',
+        },
+      ],
+      width: 96,
+    };
+
+    return (
+      <div style={COMPACT_STACK_STYLE}>
+        <Table
+          actions={actions}
+          columns={columns}
+          dataSource={columnRows}
+          draggable={{
+            enabled: true,
+            onDragEnd: (_rows, options): void =>
+              handleReorderTableColumns(
+                field,
+                options.fromIndex,
+                options.toIndex,
+              ),
+          }}
+          showHeader
+          size="sub"
+        />
+        <div style={OPTION_ACTIONS_STYLE}>
+          <Button
+            icon={PlusIcon}
+            iconType="leading"
+            onClick={(): void => handleAddTableColumn(field)}
+            variant="base-secondary"
+          >
+            新增欄
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSelectedTableColumnSettings(
+    field: TableFieldDefinition,
+  ): ReactElement {
+    const columnIndex = field.columns.findIndex(
+      (column) => column.fieldKey === selectedColumnKey,
+    );
+    const column = field.columns[columnIndex];
+
+    if (!column) {
+      return (
+        <Typography
+          color="text-neutral"
+          style={FIELD_SETTINGS_HINT_STYLE}
+          variant="body"
+        >
+          選取上方任一欄的「設定此欄」，即可調整該欄的型別專屬設定。
+        </Typography>
+      );
+    }
+
+    return (
+      <div style={TABLE_COLUMN_SETTINGS_STYLE}>
+        <Typography component="h3" variant="label-primary">
+          欄設定：{column.label || column.fieldKey}
+        </Typography>
+        {renderSettingsFormRow(
+          '提示文字',
+          'columnPlaceholder',
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commitTableColumn(field, columnIndex, {
+                ...column,
+                placeholder: event.target.value || undefined,
+              })
+            }
+            placeholder="例如：請輸入數量"
+            value={column.placeholder ?? ''}
+            variant="base"
+          />,
+        )}
+        {renderTypeSpecificSettings(
+          column,
+          (nextColumn): void => {
+            if (isTableColumnFieldType(nextColumn.type)) {
+              commitTableColumn(
+                field,
+                columnIndex,
+                nextColumn as TableColumnDefinition,
+              );
+            }
+          },
+          // Column DataSource selection arrives in P3; until then a column can
+          // only carry static options, so a change never needs confirming.
+          (_column, nextColumn): void => {
+            if (isTableColumnFieldType(nextColumn.type)) {
+              commitTableColumn(
+                field,
+                columnIndex,
+                nextColumn as TableColumnDefinition,
+              );
+            }
+          },
+        )}
+      </div>
+    );
+  }
+
+  function handleTableColumnTypeChange(
+    field: TableFieldDefinition,
+    columnIndex: number,
+    optionId: string | undefined,
+  ): void {
+    const column = field.columns[columnIndex];
+    const nextType = TABLE_COLUMN_TYPE_OPTIONS.find(
+      (option) => option.id === optionId,
+    )?.id;
+
+    if (!column || !nextType || column.type === nextType) {
+      return;
+    }
+
+    setPendingBuilderConfirmation({
+      columnKey: column.fieldKey,
+      fieldKey: field.fieldKey,
+      impact: '變更欄型別會捨棄該欄目前的預設值、選項與數值範圍設定。',
+      kind: 'replace-column',
+      nextColumn: convertTableColumnType(column, nextType),
+    });
+  }
+
+  function readTableColumn(
+    field: TableFieldDefinition,
+    columnIndex: number,
+  ): TableColumnDefinition {
+    const column = field.columns[columnIndex];
+
+    if (!column) {
+      throw new Error(
+        `Table ${field.fieldKey} has no column at index ${columnIndex}.`,
+      );
+    }
+
+    return column;
   }
 
   function renderTextFieldSettings(
@@ -2605,6 +3090,52 @@ function readDataSourceConstantInputValue(
   }
 
   return typeof value === 'string' ? value : '';
+}
+
+function readBuilderConfirmationTitle(
+  confirmation: PendingBuilderConfirmation,
+): string {
+  if (confirmation.kind === 'remove-field') {
+    return '確認移除 dependency 欄位';
+  }
+
+  if (confirmation.kind === 'remove-column') {
+    return '確認移除表格欄';
+  }
+
+  return confirmation.kind === 'replace-column'
+    ? '確認變更欄型別'
+    : '確認替換選項來源';
+}
+
+/**
+ * Keeps identity and required-ness, drops everything the old type owned. A
+ * `number` column's `minimum` means nothing to a `date` one, and carrying it
+ * over would leave a schema the lint rejects for the wrong reason.
+ */
+function convertTableColumnType(
+  column: TableColumnDefinition,
+  type: TableColumnDefinition['type'],
+): TableColumnDefinition {
+  const base = {
+    fieldKey: column.fieldKey,
+    label: column.label,
+    required: column.required,
+    ...(column.description ? { description: column.description } : {}),
+    ...(column.placeholder ? { placeholder: column.placeholder } : {}),
+  };
+
+  return type === 'select' || type === 'autocomplete'
+    ? {
+        ...base,
+        mode: 'single' as const,
+        options: [
+          { label: '選項 A', value: 'option_a' },
+          { label: '選項 B', value: 'option_b' },
+        ],
+        type,
+      }
+    : ({ ...base, type } as TableColumnDefinition);
 }
 
 function hasConditionRules(field: FormFieldDefinition): boolean {

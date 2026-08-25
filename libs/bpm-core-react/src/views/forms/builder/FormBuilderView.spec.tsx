@@ -382,6 +382,141 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('adds a table field as a full-width field with one column', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([]));
+
+    try {
+      clickButton(harness.container, '表格');
+
+      const field = harness.readSchema().fields[0];
+
+      expect(field).toMatchObject({ minRows: 1, type: 'table' });
+      expect(
+        (field as unknown as { readonly columns: readonly unknown[] }).columns,
+      ).toHaveLength(1);
+      // A table that is not FULL width fails the publish lint (ADR 16 §3.7).
+      expect(harness.readUiSchema().layout[0]?.width).toBe('FULL');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('adds, edits and removes table columns', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      clickButton(harness.container, '新增欄');
+      expect(readColumnKeys(harness.readSchema())).toEqual(['name', 'text_2']);
+
+      typeIntoTableCell(harness.container, 'label', 1, '數量');
+      expect(readColumns(harness.readSchema())[1]).toMatchObject({
+        label: '數量',
+      });
+
+      // Removing a column is destructive, so it waits for the modal.
+      clickTableAction(harness.container, '移除此欄', 1);
+      expect(readColumnKeys(harness.readSchema())).toEqual(['name', 'text_2']);
+
+      confirmModal(harness.container);
+      expect(readColumnKeys(harness.readSchema())).toEqual(['name']);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('keeps the last column so the schema stays publishable', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      expect(
+        readTableAction(harness.container, '移除此欄', 0)?.disabled,
+      ).toBe(true);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('renames a column key and rewrites the row-scoped bindings that address it', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithRowBinding()]),
+    );
+
+    try {
+      typeIntoTableCell(harness.container, 'fieldKey', 0, 'plantCode');
+
+      const columns = readColumns(harness.readSchema());
+
+      expect(columns[0]).toMatchObject({ fieldKey: 'plantCode' });
+      expect(
+        (
+          columns[1] as unknown as {
+            readonly dataSource: {
+              readonly bindings: readonly {
+                readonly from: { readonly columnKey?: string };
+              }[];
+            };
+          }
+        ).dataSource.bindings[0]?.from.columnKey,
+      ).toBe('plantCode');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('confirms a column type change before discarding its type settings', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      selectTableCellOption(harness.container, 'type', 0, 'number');
+      expect(readColumns(harness.readSchema())[0]).toMatchObject({
+        type: 'text',
+      });
+
+      confirmModal(harness.container);
+      expect(readColumns(harness.readSchema())[0]).toEqual({
+        fieldKey: 'name',
+        label: '品項',
+        required: true,
+        type: 'number',
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('edits the row bounds and the add-row label', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      typeInto(harness.container, 'fieldMinRows', '2');
+      typeInto(harness.container, 'fieldMaxRows', '5');
+      typeInto(harness.container, 'fieldAddRowLabel', '新增品項');
+
+      expect(harness.readSchema().fields[0]).toMatchObject({
+        addRowLabel: '新增品項',
+        maxRows: 5,
+        minRows: 2,
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('edits a selected column with the shared type-specific settings', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 0);
+      typeInto(harness.container, 'fieldMaxLength', '30');
+
+      expect(readColumns(harness.readSchema())[0]).toMatchObject({
+        maxLength: 30,
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   it('renames a field key and keeps the ui schema layout aligned', async (): Promise<void> => {
     const harness = await mountBuilder(
       createSchema([
@@ -468,6 +603,107 @@ function readField(
   }
 
   return field as unknown as Readonly<Record<string, unknown>>;
+}
+
+function createTableField(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    minRows: 1,
+    required: false,
+    type: 'table',
+  };
+}
+
+function createTableFieldWithRowBinding(): unknown {
+  return {
+    columns: [
+      { fieldKey: 'plant', label: '工廠', required: true, type: 'text' },
+      {
+        dataSource: {
+          bindings: [
+            {
+              from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+              parameter: 'plant',
+            },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
+        fieldKey: 'costCenter',
+        label: '成本中心',
+        mode: 'single',
+        required: false,
+        type: 'select',
+      },
+    ],
+    fieldKey: 'items',
+    label: '請購明細',
+    required: false,
+    type: 'table',
+  };
+}
+
+function readColumns(
+  schema: FormDefinitionSchema,
+): readonly Readonly<Record<string, unknown>>[] {
+  const columns = readField(schema, 'items').columns;
+
+  if (!Array.isArray(columns)) {
+    throw new Error('The table field carries no columns.');
+  }
+
+  return columns as readonly Readonly<Record<string, unknown>>[];
+}
+
+function readColumnKeys(schema: FormDefinitionSchema): readonly string[] {
+  return readColumns(schema).map((column) => String(column.fieldKey));
+}
+
+function readTableAction(
+  container: HTMLElement,
+  actionName: string,
+  rowIndex: number,
+): HTMLButtonElement | null {
+  return container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-action="${actionName}"]`,
+  );
+}
+
+function selectTableCellOption(
+  container: HTMLElement,
+  cellKey: string,
+  rowIndex: number,
+  optionId: string,
+): void {
+  const option = container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-cell="${cellKey}"] [data-mock-select-option="${optionId}"]`,
+  ) as HTMLButtonElement | null;
+
+  if (!option) {
+    throw new Error(`Option ${optionId} in cell ${cellKey} is missing.`);
+  }
+
+  act((): void => {
+    option.click();
+  });
+}
+
+function confirmModal(container: HTMLElement): void {
+  const confirm = container.querySelector(
+    '[data-mock-modal-confirm]',
+  ) as HTMLButtonElement | null;
+
+  if (!confirm) {
+    throw new Error('No confirmation modal is open.');
+  }
+
+  act((): void => {
+    confirm.click();
+  });
 }
 
 function readOptionValues(
@@ -574,9 +810,7 @@ function clickTableAction(
   actionName: string,
   rowIndex: number,
 ): void {
-  const action = container.querySelector(
-    `[data-mock-table-row="${rowIndex}"] [data-mock-table-action="${actionName}"]`,
-  ) as HTMLButtonElement | null;
+  const action = readTableAction(container, actionName, rowIndex);
 
   if (!action) {
     throw new Error(`Table action ${actionName} row ${rowIndex} is missing.`);
