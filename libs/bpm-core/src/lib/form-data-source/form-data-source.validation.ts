@@ -61,6 +61,20 @@ export function isRecord(
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Own-property read. A binding can name `constructor` or `toString` — both are
+ * legal field and column keys — and a plain index would hand the provider an
+ * `Object` constructor pulled off the prototype chain.
+ */
+function readOwnProperty(
+  value: Readonly<Record<string, unknown>>,
+  key: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(value, key)
+    ? value[key]
+    : undefined;
+}
+
 export function isFormFieldOption(value: unknown): value is FormFieldOption {
   return (
     isRecord(value) &&
@@ -144,10 +158,19 @@ export function assertParameterValue(
   }
 }
 
+/**
+ * The cell values of the row a table column's query belongs to. Absent for a
+ * top-level field, and absent for a cell whose caller did not send them — in
+ * which case a `ROW_FIELD` binding reads as missing and is reported through
+ * `waitingForFieldKeys` rather than throwing (ADR 16 §3.5).
+ */
+export type RowFieldValues = Readonly<Record<string, unknown>>;
+
 export function readBindingValues(
   field: FormDataSourceOptionFieldDefinition,
   descriptor: BPMFormDataSourceDescriptor,
   formData: Readonly<Record<string, unknown>>,
+  rowValues?: RowFieldValues,
 ): ResolvedBindingValues {
   const parameterByKey = new Map(
     descriptor.parameters.map(
@@ -168,15 +191,20 @@ export function readBindingValues(
       );
     }
 
-    // ROW_FIELD sources read from the row the cell belongs to, which this
-    // top-level path does not carry; treating them as absent keeps them in the
-    // existing "missing parameter" branch until P3 wires row values through.
+    // A `ROW_FIELD` source reads the sibling cell of the row this query belongs
+    // to. Without row values it reads as absent, which lands it in the
+    // "missing parameter" branch and is reported as a dependency to fill in —
+    // never as an error (ADR 16 §3.5).
     const nextValue =
       binding.from.kind === 'FIELD'
-        ? readFormDataValue(formData[binding.from.fieldKey])
+        ? readFormDataValue(readOwnProperty(formData, binding.from.fieldKey))
         : binding.from.kind === 'CONSTANT'
           ? binding.from.value
-          : undefined;
+          : readFormDataValue(
+              rowValues
+                ? readOwnProperty(rowValues, binding.from.columnKey)
+                : undefined,
+            );
 
     if (typeof nextValue === 'undefined') {
       return values;
@@ -209,6 +237,10 @@ export function readBindingValues(
  * A required parameter that no binding feeds, or one fed by a constant the
  * schema left empty, is a schema defect nobody can fix by typing, so it stays
  * an `INVALID_BINDING` rather than an endless wait.
+ *
+ * A `ROW_FIELD` binding reports its column key. The renderer resolves that
+ * against the columns of the table the cell sits in, which is the only place a
+ * column key means anything (ADR 16 §3.1).
  */
 export function readWaitingForFieldKeys(
   field: FormDataSourceOptionFieldDefinition,
@@ -226,7 +258,11 @@ export function readWaitingForFieldKeys(
     waitingBindings.map((binding) => binding.parameter),
   );
   const fieldKeys = waitingBindings.flatMap((binding) =>
-    binding.from.kind === 'FIELD' ? [binding.from.fieldKey] : [],
+    binding.from.kind === 'FIELD'
+      ? [binding.from.fieldKey]
+      : binding.from.kind === 'ROW_FIELD'
+        ? [binding.from.columnKey]
+        : [],
   );
 
   if (

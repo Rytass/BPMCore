@@ -69,6 +69,158 @@ describe('FormDataSourceService', () => {
     );
   });
 
+  it('locates a table column by its schema path and feeds it the row values', async (): Promise<void> => {
+    const search = jest.fn(
+      (
+        request: BPMFormDataSourceSearchRequest,
+      ): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({
+          nextCursor: null,
+          options: [
+            {
+              label: `Cost center ${request.bindings.plant}`,
+              value: 'CC-001',
+            },
+          ],
+        }),
+    );
+    const service = createService(createSource({ search }));
+    const result = await service.previewFormFieldOptions(
+      {
+        fieldKey: 'items.costCenter',
+        formDataJson: JSON.stringify({}),
+        rowValuesJson: JSON.stringify({ plant: 'TPE' }),
+        schemaJson: JSON.stringify(createTableColumnSchema()),
+        searchText: '',
+        uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+      },
+      authContext,
+    );
+
+    expect(result.options).toEqual([
+      { label: 'Cost center TPE', value: 'CC-001' },
+    ]);
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ bindings: { plant: 'TPE' } }),
+    );
+  });
+
+  // ADR 16 §3.5: no row values is a state, not an error — the cell reports the
+  // sibling column it needs rather than failing.
+  it('waits on the sibling column when a cell query carries no row values', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(createSource({ search }));
+    const result = await service.previewFormFieldOptions(
+      {
+        fieldKey: 'items.costCenter',
+        formDataJson: JSON.stringify({}),
+        schemaJson: JSON.stringify(createTableColumnSchema()),
+        searchText: '',
+        uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+      },
+      authContext,
+    );
+
+    expect(result.waitingForFieldKeys).toEqual(['plant']);
+    expect(result.options).toEqual([]);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('waits when the row exists but the bound cell is still empty', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [] }),
+    );
+    const service = createService(createSource({ search }));
+    const result = await service.previewFormFieldOptions(
+      {
+        fieldKey: 'items.costCenter',
+        rowValuesJson: JSON.stringify({ plant: '   ' }),
+        schemaJson: JSON.stringify(createTableColumnSchema()),
+        uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+      },
+      authContext,
+    );
+
+    expect(result.waitingForFieldKeys).toEqual(['plant']);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  // A top-level key is not bound by the identifier rule and may contain a dot;
+  // it has to keep winning over a table path that spells the same thing.
+  it('prefers a top-level field key that happens to contain a dot', async (): Promise<void> => {
+    const search = jest.fn(
+      (
+        request: BPMFormDataSourceSearchRequest,
+      ): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({
+          nextCursor: null,
+          options: [{ label: String(request.bindings.plant), value: 'CC-001' }],
+        }),
+    );
+    const schema = createTableColumnSchema();
+    const service = createService(createSource({ search }));
+    const result = await service.previewFormFieldOptions(
+      {
+        fieldKey: 'items.costCenter',
+        formDataJson: JSON.stringify({ plant: 'TOP' }),
+        schemaJson: JSON.stringify({
+          ...schema,
+          fields: [
+            ...schema.fields,
+            { fieldKey: 'plant', label: 'Plant', required: false, type: 'text' },
+            {
+              dataSource: {
+                bindings: [
+                  { from: { fieldKey: 'plant', kind: 'FIELD' }, parameter: 'plant' },
+                ],
+                key: 'demo.cost-centers',
+                version: 1,
+              },
+              fieldKey: 'items.costCenter',
+              label: 'Shadow',
+              required: false,
+              type: 'select',
+            },
+          ],
+        }),
+        uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+      },
+      authContext,
+    );
+
+    expect(result.options).toEqual([{ label: 'TOP', value: 'CC-001' }]);
+  });
+
+  it('rejects row values that are not an object', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    await expect(
+      service.previewFormFieldOptions(
+        {
+          fieldKey: 'items.costCenter',
+          rowValuesJson: '["plant"]',
+          schemaJson: JSON.stringify(createTableColumnSchema()),
+          uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_INVALID_BINDING' });
+  });
+
+  it('reports an unregistered source used by a table column during environment lint', (): void => {
+    const service = createService(null);
+
+    expect(
+      service.lintDefinitionSchemaEnvironment(createTableColumnSchema()),
+    ).toEqual([
+      'schema.fields[0].columns[1].dataSource FORM_DATA_SOURCE_MISSING',
+    ]);
+  });
+
   it('names the fields it is waiting for instead of failing the query', async (): Promise<void> => {
     const search = jest.fn(
       (): Promise<BPMFormDataSourceSearchResult> =>
@@ -946,6 +1098,44 @@ function createSource(
     resolve: () => Promise.resolve([]),
     search: () => Promise.resolve({ options: [] }),
     ...overrides,
+  };
+}
+
+/**
+ * A table whose second column is DataSource-backed and reads its parameter
+ * from the sibling `plant` cell of the same row (ADR 16 §3.4).
+ */
+function createTableColumnSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        columns: [
+          { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+          {
+            dataSource: {
+              bindings: [
+                {
+                  from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+                  parameter: 'plant',
+                },
+              ],
+              key: 'demo.cost-centers',
+              version: 1,
+            },
+            fieldKey: 'costCenter',
+            label: 'Cost center',
+            mode: 'single',
+            required: false,
+            type: 'select',
+          },
+        ],
+        fieldKey: 'items',
+        label: 'Items',
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
   };
 }
 

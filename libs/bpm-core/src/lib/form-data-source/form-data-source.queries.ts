@@ -29,6 +29,9 @@ const MAX_CURSOR_LENGTH = 512;
 const MAX_FIELD_KEY_LENGTH = 256;
 const MAX_FORM_DATA_JSON_LENGTH = 65_536;
 const MAX_IDENTIFIER_LENGTH = 128;
+// One table row, not the whole form: the same ceiling the values JSON gets
+// (ADR 16 §3.5).
+const MAX_ROW_VALUES_JSON_LENGTH = 8_192;
 const MAX_SCHEMA_JSON_LENGTH = 262_144;
 const MAX_SEARCH_TEXT_LENGTH = 200;
 const MAX_VALUES_JSON_LENGTH = 8_192;
@@ -162,6 +165,12 @@ export class PreviewFormFieldOptionsInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_ROW_VALUES_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
+  rowValuesJson!: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   @MaxLength(MAX_SEARCH_TEXT_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
   searchText!: string | null;
 
@@ -200,6 +209,12 @@ export class RuntimeFormFieldOptionsInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_ROW_VALUES_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
+  rowValuesJson!: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
   @MaxLength(MAX_SEARCH_TEXT_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
   searchText!: string | null;
 
@@ -234,6 +249,12 @@ export class PreviewResolveFormFieldOptionsInput {
   @MaxLength(MAX_FORM_DATA_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
   formDataJson!: string | null;
 
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_ROW_VALUES_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
+  rowValuesJson!: string | null;
+
   @Field()
   @IsString()
   @MaxLength(MAX_VALUES_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
@@ -264,6 +285,12 @@ export class RuntimeResolveFormFieldOptionsInput {
   @IsString()
   @MaxLength(MAX_FORM_DATA_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
   formDataJson!: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_ROW_VALUES_JSON_LENGTH, { message: OVERSIZED_INPUT_MESSAGE })
+  rowValuesJson!: string | null;
 
   @Field()
   @IsString()

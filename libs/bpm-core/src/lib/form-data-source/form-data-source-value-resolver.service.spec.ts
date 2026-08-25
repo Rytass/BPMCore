@@ -427,7 +427,229 @@ describe('FormDataSourceValueResolverService', () => {
     ).resolves.toEqual({});
     expect(resolve).not.toHaveBeenCalled();
   });
+  it('snapshots each dynamic cell under its instance path', async (): Promise<void> => {
+    const resolve = jest.fn(
+      (
+        request: BPMFormDataSourceResolveRequest,
+      ): Promise<readonly FormFieldOption[]> =>
+        Promise.resolve([
+          {
+            label: `Cost center ${String(request.bindings.plant)}`,
+            value: request.values[0] as string,
+          },
+        ]),
+    );
+    const service = createService(createSource({ resolve }));
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: {
+        items: [
+          { costCenter: 'CC-001', plant: 'TPE' },
+          { costCenter: 'CC-002', plant: 'HKG' },
+        ],
+      },
+      revalidateAll: true,
+      schema: createTableSchema(),
+    });
+
+    expect(Object.keys(snapshots)).toEqual([
+      'items[0].costCenter',
+      'items[1].costCenter',
+    ]);
+    expect(snapshots['items[0].costCenter']?.options).toEqual([
+      { label: 'Cost center TPE', value: 'CC-001' },
+    ]);
+    // Each cell resolves against its own row, not the first one.
+    expect(snapshots['items[1].costCenter']?.options).toEqual([
+      { label: 'Cost center HKG', value: 'CC-002' },
+    ]);
+  });
+
+  it('hashes the row values a cell binding used', async (): Promise<void> => {
+    const service = createService(createSource());
+    const readHash = async (
+      plant: string,
+    ): Promise<string | undefined> =>
+      (
+        await service.resolveFormDataOptionSnapshots({
+          authContext,
+          formData: { items: [{ costCenter: 'CC-001', plant }] },
+          revalidateAll: true,
+          schema: createTableSchema(),
+        })
+      )['items[0].costCenter']?.bindingHash;
+
+    expect(await readHash('TPE')).not.toBe(await readHash('HKG'));
+  });
+
+  // ADR 16 §3.6: a shifted row no longer matches its old snapshot key, so the
+  // cell re-resolves rather than inheriting another row's evidence.
+  it('re-resolves a cell whose row moved', async (): Promise<void> => {
+    const resolve = jest.fn(
+      (
+        request: BPMFormDataSourceResolveRequest,
+      ): Promise<readonly FormFieldOption[]> =>
+        Promise.resolve([{ label: 'Cost center', value: request.values[0] as string }]),
+    );
+    const service = createService(createSource({ resolve }));
+    const previous = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: { items: [{ costCenter: 'CC-001', plant: 'TPE' }] },
+      revalidateAll: true,
+      schema: createTableSchema(),
+    });
+
+    resolve.mockClear();
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: {
+        items: [
+          { costCenter: 'CC-002', plant: 'HKG' },
+          { costCenter: 'CC-001', plant: 'TPE' },
+        ],
+      },
+      previousFormData: { items: [{ costCenter: 'CC-001', plant: 'TPE' }] },
+      previousSnapshots: previous,
+      schema: createTableSchema(),
+    });
+
+    expect(Object.keys(snapshots)).toEqual([
+      'items[0].costCenter',
+      'items[1].costCenter',
+    ]);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses an unchanged cell snapshot when the policy permits it', async (): Promise<void> => {
+    const resolve = jest.fn(
+      (
+        request: BPMFormDataSourceResolveRequest,
+      ): Promise<readonly FormFieldOption[]> =>
+        Promise.resolve([{ label: 'Cost center', value: request.values[0] as string }]),
+    );
+    const service = createService(createSource({ resolve }));
+    const formData = { items: [{ costCenter: 'CC-001', plant: 'TPE' }] };
+    const previous = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      revalidateAll: true,
+      schema: createTableSchema(),
+    });
+
+    resolve.mockClear();
+
+    await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      previousFormData: formData,
+      previousSnapshots: previous,
+      schema: createTableSchema(),
+    });
+
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('refuses to write a cell whose row-scoped binding is still empty', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    await expect(
+      service.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: { items: [{ costCenter: 'CC-001' }] },
+        revalidateAll: true,
+        schema: createTableSchema(),
+      }),
+    ).rejects.toMatchObject({
+      code: BPM_FORM_DATA_SOURCE_ERROR_CODES.WAITING_FOR_DEPENDENCIES,
+    });
+  });
+
+  it('ignores rows that are not records', async (): Promise<void> => {
+    const resolve = jest.fn(() => Promise.resolve([]));
+    const service = createService(createSource({ resolve }));
+
+    await expect(
+      service.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: { items: ['not-a-row', 42] },
+        revalidateAll: true,
+        schema: createTableSchema(),
+      }),
+    ).resolves.toEqual({});
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('keeps the submit-wide concurrency limit across table cells', async (): Promise<void> => {
+    let inFlight = 0;
+    let peak = 0;
+    const resolve = jest.fn(
+      async (
+        request: BPMFormDataSourceResolveRequest,
+      ): Promise<readonly FormFieldOption[]> => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolveTimer): void => {
+          setTimeout(resolveTimer, 0);
+        });
+        inFlight -= 1;
+
+        return [{ label: 'Cost center', value: request.values[0] as string }];
+      },
+    );
+    const service = createService(createSource({ resolve }));
+
+    await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: {
+        items: Array.from({ length: 12 }, (_row, index) => ({
+          costCenter: `CC-${index}`,
+          plant: 'TPE',
+        })),
+      },
+      revalidateAll: true,
+      schema: createTableSchema(),
+    });
+
+    expect(resolve).toHaveBeenCalledTimes(12);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
 });
+
+function createTableSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        columns: [
+          { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+          {
+            dataSource: {
+              bindings: [
+                {
+                  from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+                  parameter: 'plant',
+                },
+              ],
+              key: 'demo.cost-centers',
+              version: 1,
+            },
+            fieldKey: 'costCenter',
+            label: 'Cost center',
+            mode: 'single',
+            required: false,
+            type: 'select',
+          },
+        ],
+        fieldKey: 'items',
+        label: 'Items',
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
 
 function createService(
   source: BPMFormDataSource | null,

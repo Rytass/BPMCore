@@ -14,7 +14,9 @@ import {
   FormOptionFieldDefinition,
   FormDataSourceOptionFieldDefinition,
   FormDataSourceReference,
+  TableColumnDefinition,
   isFormDataSourceFieldDefinition,
+  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { Repository } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
@@ -41,6 +43,7 @@ import {
   BPMFormDataSourceSearchResult,
 } from './form-data-source.types';
 import {
+  RowFieldValues,
   assertControlSupported,
   callProvider,
   isRecord,
@@ -62,6 +65,7 @@ export interface BPMFormDataSourcePreviewInput {
   readonly cursor?: string | null;
   readonly fieldKey: string;
   readonly formDataJson?: string | null;
+  readonly rowValuesJson?: string | null;
   readonly schemaJson: string;
   readonly searchText?: string | null;
   readonly uiSchemaJson?: string | null;
@@ -72,6 +76,7 @@ export interface BPMFormDataSourceRuntimeInput {
   readonly fieldKey: string;
   readonly formDataJson?: string | null;
   readonly instanceId?: string | null;
+  readonly rowValuesJson?: string | null;
   readonly searchText?: string | null;
   readonly templateId?: string | null;
 }
@@ -79,6 +84,7 @@ export interface BPMFormDataSourceRuntimeInput {
 export interface BPMFormDataSourcePreviewResolveInput {
   readonly fieldKey: string;
   readonly formDataJson?: string | null;
+  readonly rowValuesJson?: string | null;
   readonly schemaJson: string;
   readonly uiSchemaJson?: string | null;
   readonly valuesJson: string;
@@ -88,6 +94,7 @@ export interface BPMFormDataSourceRuntimeResolveInput {
   readonly fieldKey: string;
   readonly formDataJson?: string | null;
   readonly instanceId?: string | null;
+  readonly rowValuesJson?: string | null;
   readonly templateId?: string | null;
   readonly valuesJson: string;
 }
@@ -125,36 +132,53 @@ export class FormDataSourceService {
     schema: FormDefinitionSchema,
   ): readonly string[] {
     return schema.fields.flatMap((field, index) => {
-      if (!isFormDataSourceFieldDefinition(field)) {
-        return [];
+      // A table's own columns carry DataSource references too, and a column
+      // whose source is gone must block publication exactly like a top-level
+      // one (ADR 16 §3.7).
+      if (isTableFieldDefinition(field)) {
+        return field.columns.flatMap((column, columnIndex) =>
+          this.readFieldEnvironmentErrors(
+            column,
+            `schema.fields[${index}].columns[${columnIndex}].dataSource`,
+          ),
+        );
       }
 
-      const path = `schema.fields[${index}].dataSource`;
-      const source = this.registry.get(
-        field.dataSource.key,
-        field.dataSource.version,
-      );
-
-      if (!source) {
-        return [
-          `${path} ${readMissingSourceCode(this.registry, field.dataSource.key)}`,
-        ];
-      }
-
-      const descriptorErrors = readDescriptorErrors(source.descriptor);
-      const controlErrors = this.readControlErrors(
+      return this.readFieldEnvironmentErrors(
         field,
-        source.descriptor,
-        path,
+        `schema.fields[${index}].dataSource`,
       );
-      const bindingErrors = this.readBindingEnvironmentErrors(
-        field.dataSource,
-        source.descriptor,
-        path,
-      );
-
-      return [...descriptorErrors, ...controlErrors, ...bindingErrors];
     });
+  }
+
+  private readFieldEnvironmentErrors(
+    field: FormFieldDefinition,
+    path: string,
+  ): readonly string[] {
+    if (!isFormDataSourceFieldDefinition(field)) {
+      return [];
+    }
+
+    const source = this.registry.get(
+      field.dataSource.key,
+      field.dataSource.version,
+    );
+
+    if (!source) {
+      return [
+        `${path} ${readMissingSourceCode(this.registry, field.dataSource.key)}`,
+      ];
+    }
+
+    const descriptorErrors = readDescriptorErrors(source.descriptor);
+    const controlErrors = this.readControlErrors(field, source.descriptor, path);
+    const bindingErrors = this.readBindingEnvironmentErrors(
+      field.dataSource,
+      source.descriptor,
+      path,
+    );
+
+    return [...descriptorErrors, ...controlErrors, ...bindingErrors];
   }
 
   async previewFormFieldOptions(
@@ -171,6 +195,7 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
+      rowValues: this.parseRowValues(input.rowValuesJson),
       searchText: input.searchText ?? '',
     });
   }
@@ -188,6 +213,7 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
+      rowValues: this.parseRowValues(input.rowValuesJson),
       searchText: input.searchText ?? '',
     });
   }
@@ -204,6 +230,7 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
+      rowValues: this.parseRowValues(input.rowValuesJson),
       values: this.parseValues(input.valuesJson),
     });
   }
@@ -219,6 +246,7 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
+      rowValues: this.parseRowValues(input.rowValuesJson),
       values: this.parseValues(input.valuesJson),
     });
   }
@@ -228,6 +256,7 @@ export class FormDataSourceService {
     readonly cursor: string | null;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
+    readonly rowValues?: RowFieldValues;
     readonly searchText: string;
   }): Promise<BPMFormDataSourceOptionResult> {
     const field = readDynamicOptionField(input.field);
@@ -237,6 +266,7 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
+      input.rowValues,
     );
 
     // Waiting on a dependency is a state, not a failure: the caller needs the
@@ -290,6 +320,7 @@ export class FormDataSourceService {
     readonly authContext: BPMAuthContext;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
+    readonly rowValues?: RowFieldValues;
     readonly values: readonly string[];
   }): Promise<BPMFormDataSourceResolveResult> {
     const field = readDynamicOptionField(input.field);
@@ -316,6 +347,7 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
+      input.rowValues,
     );
 
     if (bindings.missingParameters.length > 0) {
@@ -565,6 +597,34 @@ export class FormDataSourceService {
     );
   }
 
+  /**
+   * The cell values of the row a column query belongs to. Absent is legal and
+   * distinct from empty: it means the caller sent none, so a `ROW_FIELD`
+   * binding reads as missing and comes back through `waitingForFieldKeys`
+   * (ADR 16 §3.5).
+   */
+  private parseRowValues(
+    rowValuesJson: string | null | undefined,
+  ): Readonly<Record<string, unknown>> | undefined {
+    if (!rowValuesJson?.trim()) {
+      return undefined;
+    }
+
+    try {
+      const value = JSON.parse(rowValuesJson) as unknown;
+
+      if (isRecord(value)) {
+        return value;
+      }
+    } catch {
+      // The stable error below deliberately hides parser details.
+    }
+
+    throw new BPMFormDataSourceException(
+      BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+    );
+  }
+
   private parseValues(valuesJson: string): readonly string[] {
     try {
       const value = JSON.parse(valuesJson) as unknown;
@@ -581,13 +641,19 @@ export class FormDataSourceService {
     );
   }
 
+  /**
+   * Accepts a top-level field key or a `<tableKey>.<columnKey>` schema path
+   * (ADR 16 §3.3). The top-level lookup runs first: a top-level key is not
+   * bound by the identifier rule and may legitimately contain a dot, and it
+   * must keep winning over a table path that happens to spell the same thing.
+   */
   private readOptionField(
     schema: FormDefinitionSchema,
     fieldKey: string,
   ): FormOptionFieldDefinition {
-    const field = schema.fields.find(
-      (candidate) => candidate.fieldKey === fieldKey,
-    );
+    const field =
+      schema.fields.find((candidate) => candidate.fieldKey === fieldKey) ??
+      this.readTableColumnField(schema, fieldKey);
 
     if (!field || !isFormOptionField(field)) {
       throw new BPMFormDataSourceException(
@@ -596,6 +662,32 @@ export class FormDataSourceService {
     }
 
     return field;
+  }
+
+  private readTableColumnField(
+    schema: FormDefinitionSchema,
+    fieldKey: string,
+  ): TableColumnDefinition | null {
+    const separatorIndex = fieldKey.indexOf('.');
+
+    if (separatorIndex < 0) {
+      return null;
+    }
+
+    const tableKey = fieldKey.slice(0, separatorIndex);
+    const columnKey = fieldKey.slice(separatorIndex + 1);
+    const table = schema.fields.find(
+      (candidate) =>
+        candidate.fieldKey === tableKey && isTableFieldDefinition(candidate),
+    );
+
+    if (!table || !isTableFieldDefinition(table)) {
+      return null;
+    }
+
+    return (
+      table.columns.find((column) => column.fieldKey === columnKey) ?? null
+    );
   }
 
   private assertSearchRequest(

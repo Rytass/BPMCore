@@ -151,6 +151,12 @@ export interface BPMFormDataSourceResolveFieldInput {
   readonly authContext: BPMAuthContext;
   readonly field: FormOptionFieldDefinition;
   readonly formData: Readonly<Record<string, unknown>>;
+  /**
+   * The cells of the row a table column's value belongs to. Only a table cell
+   * carries this; `ROW_FIELD` bindings read their parameter from it
+   * (ADR 16 §3.5).
+   */
+  readonly rowValues?: Readonly<Record<string, unknown>>;
   readonly values: readonly string[];
 }
 

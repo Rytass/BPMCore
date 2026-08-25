@@ -6,7 +6,9 @@ import {
   FormDataSourceValueSnapshots,
   FormFieldOption,
   FormFieldValue,
+  TableFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
@@ -25,6 +27,7 @@ import {
   assertControlSupported,
   assertDescriptor,
   callProvider,
+  isRecord,
   readBindingValues,
   readDynamicOptionField,
   readMissingSourceCode,
@@ -55,29 +58,27 @@ export class FormDataSourceValueResolverService
   async resolveFormDataOptionSnapshots(
     input: BPMFormDataSourceSnapshotResolutionInput,
   ): Promise<FormDataSourceValueSnapshots> {
+    // One work item per dynamic value to resolve, top-level fields and table
+    // cells alike. Flattening first keeps the concurrency limit a per-submit
+    // budget rather than a per-field one, so a 100-row table does not turn one
+    // submit into a burst against the host (ADR 16 §3.6).
     const entries = await mapWithConcurrencyLimit(
-      input.schema.fields,
+      readDynamicResolutionTargets(input),
       MAX_CONCURRENT_PROVIDER_CALLS,
       async (
-        field,
+        target,
       ): Promise<readonly [string, FormDataSourceValueSnapshot] | null> => {
-        if (!isFormDataSourceFieldDefinition(field)) {
-          return null;
-        }
-
-        const values = readDynamicFieldValues(
-          field,
-          input.formData[field.fieldKey],
-        );
+        const { field, rowValues, snapshotKey } = target;
+        const values = readDynamicFieldValues(field, target.value);
 
         if (values.length === 0) {
           return null;
         }
 
-        const previousSnapshot = input.previousSnapshots?.[field.fieldKey];
+        const previousSnapshot = input.previousSnapshots?.[snapshotKey];
         const valueUnchanged = isSameFieldValue(
-          input.previousFormData?.[field.fieldKey],
-          input.formData[field.fieldKey],
+          target.previousValue,
+          target.value,
         );
         const source = this.registry.get(
           field.dataSource.key,
@@ -99,7 +100,7 @@ export class FormDataSourceValueResolverService
             previousSnapshot.dataSourceKey === field.dataSource.key &&
             previousSnapshot.dataSourceVersion === field.dataSource.version
           ) {
-            return [field.fieldKey, previousSnapshot];
+            return [snapshotKey, previousSnapshot];
           }
 
           throw new BPMFormDataSourceException(
@@ -110,7 +111,12 @@ export class FormDataSourceValueResolverService
         const { descriptor } = source;
         assertDescriptor(descriptor);
         assertControlSupported(field, descriptor);
-        const bindings = readBindingValues(field, descriptor, input.formData);
+        const bindings = readBindingValues(
+          field,
+          descriptor,
+          input.formData,
+          rowValues,
+        );
 
         if (bindings.missingParameters.length > 0) {
           throw new BPMFormDataSourceException(
@@ -132,7 +138,7 @@ export class FormDataSourceValueResolverService
           // snapshot written before this field existed stops being ambiguous
           // the moment it is carried forward.
           return [
-            field.fieldKey,
+            snapshotKey,
             {
               ...previousSnapshot,
               revalidationPolicy: descriptor.revalidationPolicy,
@@ -144,6 +150,7 @@ export class FormDataSourceValueResolverService
           authContext: input.authContext,
           field,
           formData: input.formData,
+          rowValues,
           values,
         });
         const snapshot: FormDataSourceValueSnapshot = {
@@ -155,7 +162,7 @@ export class FormDataSourceValueResolverService
           validatedAt: new Date().toISOString(),
         };
 
-        return [field.fieldKey, snapshot];
+        return [snapshotKey, snapshot];
       },
     );
 
@@ -187,6 +194,7 @@ export class FormDataSourceValueResolverService
       field,
       source.descriptor,
       input.formData,
+      input.rowValues,
     );
 
     if (bindings.missingParameters.length > 0) {
@@ -215,6 +223,94 @@ export class FormDataSourceValueResolverService
 
     return readOrderedResolvedOptions(options, values);
   }
+}
+
+/**
+ * One dynamic value to resolve. A top-level field and a table cell differ only
+ * in their snapshot key and whether they carry the row they belong to.
+ */
+interface DynamicResolutionTarget {
+  readonly field: FormDataSourceOptionFieldDefinition;
+  readonly previousValue: unknown;
+  readonly rowValues?: Readonly<Record<string, unknown>>;
+  readonly snapshotKey: string;
+  readonly value: unknown;
+}
+
+/**
+ * Flattens the schema into the values that need resolving. Cell snapshot keys
+ * are instance paths (`<tableKey>[<i>].<columnKey>`, ADR 16 §3.6), so inserting
+ * or deleting a row shifts the keys of everything after it and those cells
+ * re-resolve. That is deliberate: better an extra provider call than one row's
+ * snapshot vouching for another row's value.
+ */
+function readDynamicResolutionTargets(
+  input: BPMFormDataSourceSnapshotResolutionInput,
+): readonly DynamicResolutionTarget[] {
+  return input.schema.fields.flatMap(
+    (field): readonly DynamicResolutionTarget[] => {
+      if (isTableFieldDefinition(field)) {
+        return readTableResolutionTargets(field, input);
+      }
+
+      return isFormDataSourceFieldDefinition(field)
+        ? [
+            {
+              field,
+              previousValue: input.previousFormData?.[field.fieldKey],
+              snapshotKey: field.fieldKey,
+              value: input.formData[field.fieldKey],
+            },
+          ]
+        : [];
+    },
+  );
+}
+
+function readTableResolutionTargets(
+  field: TableFieldDefinition,
+  input: BPMFormDataSourceSnapshotResolutionInput,
+): readonly DynamicResolutionTarget[] {
+  // `filter` cannot narrow here — a DataSource option field is not a subtype
+  // of a table column (it also covers radio and checkbox) — so the guard runs
+  // inside a `flatMap` instead.
+  const dynamicColumns = field.columns.flatMap(
+    (column): readonly FormDataSourceOptionFieldDefinition[] =>
+      isFormDataSourceFieldDefinition(column) ? [column] : [],
+  );
+
+  if (dynamicColumns.length === 0) {
+    return [];
+  }
+
+  const rows = readTableRows(input.formData[field.fieldKey]);
+  const previousRows = readTableRows(input.previousFormData?.[field.fieldKey]);
+
+  return rows.flatMap((row, rowIndex) =>
+    dynamicColumns.map((column): DynamicResolutionTarget => ({
+      field: column,
+      previousValue: readOwnProperty(
+        previousRows[rowIndex] ?? {},
+        column.fieldKey,
+      ),
+      rowValues: row,
+      snapshotKey: `${field.fieldKey}[${rowIndex}].${column.fieldKey}`,
+      value: readOwnProperty(row, column.fieldKey),
+    })),
+  );
+}
+
+function readTableRows(
+  value: unknown,
+): readonly Readonly<Record<string, unknown>>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function readOwnProperty(
+  row: Readonly<Record<string, unknown>>,
+  key: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(row, key) ? row[key] : undefined;
 }
 
 /**
