@@ -699,6 +699,40 @@ describe('TemplateService', () => {
     ).rejects.toThrow('must not reference table field internals: items[0].qty');
   });
 
+  // cel-js parses and evaluates `form ["items"][0].qty` happily, and the
+  // root-identifier lint sees nothing wrong with it (the key hides in a string
+  // literal, `qty` follows a dot). A gap between `form` and the accessor used
+  // to walk straight through this lint.
+  it('rejects publishing a spaced bracket path into a table', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      condition: 'form ["items"][0].qty > 3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('must not reference table field internals: items');
+  });
+
+  it('rejects publishing a spaced dot path into a table', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      condition: 'form . items . qty > 3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('must not reference table field internals: items');
+  });
+
+  it('publishes a field whose key merely starts with a table key', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      condition: 'form.itemsExtra.qty > 3',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).resolves.toMatchObject({ id: 'template-version-1' });
+  });
+
   it('rejects publishing an initiator policy that reaches into a table', async (): Promise<void> => {
     const service = createTableConditionPublishService({
       initiatorPolicyCel: 'form.items[0].qty > 3',

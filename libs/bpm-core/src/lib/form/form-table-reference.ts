@@ -36,9 +36,16 @@ export function referencesTableInternals(
 ): boolean {
   const escapedKey = escapeRegExpLiteral(tableKey);
 
+  // `\s*` after `form` matters: CEL accepts `form ["items"][0].qty`, cel-js
+  // parses and evaluates it, and neither the root-identifier lint (the key sits
+  // inside a string literal, and `qty` follows a dot) nor anything else would
+  // catch it. Without the gap the whole expression walks through unblocked.
   return [
-    new RegExp(`form\\.${escapedKey}\\s*(?:\\.|\\[)`, 'u'),
-    new RegExp(`form\\[\\s*["']${escapedKey}["']\\s*\\]\\s*(?:\\.|\\[)`, 'u'),
+    new RegExp(`form\\s*\\.\\s*${escapedKey}\\s*(?:\\.|\\[)`, 'u'),
+    new RegExp(
+      `form\\s*\\[\\s*["']${escapedKey}["']\\s*\\]\\s*(?:\\.|\\[)`,
+      'u',
+    ),
   ].some((pattern) => pattern.test(expression));
 }
 
