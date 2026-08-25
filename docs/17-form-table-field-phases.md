@@ -1,6 +1,7 @@
 # 17 — 表格欄位開發 Phase
 
-- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 驗證中
+- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0–P3 VERIFIED，P4 修正中
+  （第一輪獨立驗證退回，7 項必修）
 - **規劃日期**：2026-08-24
 - **權威決策**：[16 — ADR：表格欄位架構](./16-form-table-field-adr.md)
 - **完成定義**：所有 Phase gate、demo seed 場景、repository-wide e2e 與文件同步完成
@@ -17,7 +18,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | VERIFIED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | VERIFIED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | VERIFIED     |
-| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | VERIFYING    |
+| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | IMPLEMENTING |
 
 ## P0 — Shared 契約與結構 lint
 
