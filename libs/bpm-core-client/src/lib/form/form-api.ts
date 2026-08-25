@@ -2,6 +2,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormUiSchema,
+  TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { requestGraphQl } from '../graphql-client';
 
@@ -372,7 +373,61 @@ export function createFieldDefinition(
     };
   }
 
+  if (type === 'table') {
+    return {
+      ...base,
+      // One column up front: an empty `columns` array is a publish-blocking
+      // lint error (ADR 16 §4), so a freshly added table starts valid.
+      columns: [createTableColumnDefinition([], 'text')],
+      minRows: 1,
+      type,
+    };
+  }
+
   return base as FormFieldDefinition;
+}
+
+/**
+ * A new column for a table, with a key that does not collide with the columns
+ * already there. Column keys live in their own namespace per table
+ * (ADR 16 §3.1), so only the siblings matter.
+ */
+export function createTableColumnDefinition(
+  columns: readonly TableColumnDefinition[],
+  type: TableColumnDefinition['type'],
+): TableColumnDefinition {
+  const index = columns.length + 1;
+  const fieldKey = readNextTableColumnKey(columns, type, index);
+  const base = {
+    fieldKey,
+    label: readDefaultFieldLabel(type, index),
+    required: false,
+    type,
+  };
+
+  return type === 'select' || type === 'autocomplete'
+    ? {
+        ...base,
+        mode: 'single' as const,
+        options: [
+          { label: '選項 A', value: 'option_a' },
+          { label: '選項 B', value: 'option_b' },
+        ],
+        type,
+      }
+    : (base as TableColumnDefinition);
+}
+
+function readNextTableColumnKey(
+  columns: readonly TableColumnDefinition[],
+  type: TableColumnDefinition['type'],
+  index: number,
+): string {
+  const fieldKey = `${type}_${index}`;
+
+  return columns.some((column) => column.fieldKey === fieldKey)
+    ? readNextTableColumnKey(columns, type, index + 1)
+    : fieldKey;
 }
 
 function parseVersionJson(

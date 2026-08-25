@@ -408,7 +408,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Type | `FormDefinitionListStatus` |
 | Queries | `listFormDefinitions()`, `listFormDefinitionsPage()`, `readFormBuilder()`, `lintFormSchema()`, `listFormDataSources()`, `previewFormFieldOptions()`, `readFormFieldOptions()`, `previewResolveFormFieldOptions()`, `resolveFormFieldOptions()` |
 | Mutations | `createFormDefinition(name)`, `updateFormDefinition()`, `updateFormDefinitionDraft()`, `publishFormDefinitionVersion()`, `publishFormDefinitionContent()` |
-| Factory | `createFieldDefinition()` |
+| Factory | `createFieldDefinition()`, `createTableColumnDefinition()` |
 
 ### Form DataSource records
 
@@ -463,6 +463,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readFormDataSourceBinding()` | function | Read one parameter binding from a dynamic field |
 | `upsertFormDataSourceFieldBinding()` | function | Immutably add, replace, or remove one parameter binding |
 | `renameFormDataSourceFieldBindings()` | function | Keep FIELD bindings valid when a form field key changes |
+| `renameFormTableColumnBindings()` | function | Keep a table's ROW_FIELD bindings valid when a column key changes |
 | `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
 | `readFormDataSourceBindingValue()` | function | Read a constant binding value |
 | `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator |

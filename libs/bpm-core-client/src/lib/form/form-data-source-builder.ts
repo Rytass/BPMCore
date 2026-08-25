@@ -4,6 +4,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldValue,
+  TableFieldDefinition,
   isFormDataSourceFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
@@ -136,6 +137,46 @@ export function renameFormDataSourceFieldBindings(
                     ...binding.from,
                     fieldKey: nextFieldKey,
                   },
+                }
+              : binding,
+          ),
+        },
+      };
+    }),
+  };
+}
+
+/**
+ * Column-key counterpart of {@link renameFormDataSourceFieldBindings}.
+ * `ROW_FIELD` bindings address a sibling column by key and only ever live
+ * inside the same table (ADR 16 §3.4), so a rename is contained to that field.
+ */
+export function renameFormTableColumnBindings(
+  field: TableFieldDefinition,
+  previousColumnKey: string,
+  nextColumnKey: string,
+): TableFieldDefinition {
+  if (previousColumnKey === nextColumnKey) {
+    return field;
+  }
+
+  return {
+    ...field,
+    columns: field.columns.map((column) => {
+      if (!isFormDataSourceFieldDefinition(column)) {
+        return column;
+      }
+
+      return {
+        ...column,
+        dataSource: {
+          ...column.dataSource,
+          bindings: column.dataSource.bindings.map((binding) =>
+            binding.from.kind === 'ROW_FIELD' &&
+            binding.from.columnKey === previousColumnKey
+              ? {
+                  ...binding,
+                  from: { ...binding.from, columnKey: nextColumnKey },
                 }
               : binding,
           ),
