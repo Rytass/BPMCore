@@ -177,7 +177,13 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <div data-mock-table="">
         {rows.map((row, rowIndex): ReactElement => (
-          <div data-mock-table-row={String(rowIndex)} key={rowIndex}>
+          <div
+            data-mock-table-row={String(rowIndex)}
+            // The row's own key, the way Mezzanine's Table uses it: the
+            // ephemeral row id is what keeps per-row state (from P3, each
+            // cell's DataSource state) attached to the right row.
+            key={String((row as { readonly key?: unknown }).key ?? rowIndex)}
+          >
             {columns.map((column, columnIndex): ReactElement => {
               const entry = column as {
                 readonly key: string;
