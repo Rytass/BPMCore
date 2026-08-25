@@ -1580,7 +1580,11 @@ export function FormBuilderView({
     const columnRows: TableColumnRow[] = field.columns.map((column, index) => ({
       fieldKey: column.fieldKey,
       index,
-      key: `${field.fieldKey}-${column.fieldKey}`,
+      // Keyed by position, not by column key: the key is what this row edits,
+      // so keying on it remounts the input after the first character and drops
+      // the caret. Reordering rewrites the whole array anyway, which is the
+      // same reason the static option table keys by index.
+      key: `${field.fieldKey}-column-${index}`,
       label: column.label,
       type: column.type,
     }));

@@ -144,7 +144,13 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <div data-mock-table="">
         {rows.map((row, rowIndex): ReactElement => (
-          <div data-mock-table-row={String(rowIndex)} key={rowIndex}>
+          <div
+            data-mock-table-row={String(rowIndex)}
+            // Deliberately the row's own `key`, the way Mezzanine's Table uses
+            // it: a key that changes as the row is edited remounts the inputs,
+            // and that is exactly what one of these specs guards against.
+            key={String((row as { readonly key?: unknown }).key ?? rowIndex)}
+          >
             {columns.map((column, columnIndex): ReactElement => {
               const entry = column as {
                 readonly key: string;
@@ -419,6 +425,29 @@ describe('FormBuilderView field settings', () => {
 
       confirmModal(harness.container);
       expect(readColumnKeys(harness.readSchema())).toEqual(['name']);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // Keying the row by the column key remounted the input after the first
+  // character, so only that character ever landed.
+  it('keeps the column key input mounted while the key is being typed', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([createTableField()]));
+
+    try {
+      const before = harness.container.querySelector(
+        '[data-mock-table-row="0"] [data-mock-table-cell="fieldKey"] input',
+      );
+
+      typeIntoTableCell(harness.container, 'fieldKey', 0, 'n');
+
+      const after = harness.container.querySelector(
+        '[data-mock-table-row="0"] [data-mock-table-cell="fieldKey"] input',
+      );
+
+      expect(readColumnKeys(harness.readSchema())).toEqual(['n']);
+      expect(after).toBe(before);
     } finally {
       await unmount(harness);
     }
