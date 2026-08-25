@@ -563,6 +563,41 @@ describe('FormRenderer table field', () => {
     }
   });
 
+  it('keeps the single-column cap off the table and floors its width per column', async (): Promise<void> => {
+    const tableSchema = createTableSchema({ minRows: 1 });
+    const harness = await mountRenderer({
+      maxWidth: 480,
+      schema: {
+        ...tableSchema,
+        fields: [
+          ...tableSchema.fields,
+          { fieldKey: 'purpose', label: '事由', required: false, type: 'text' },
+        ],
+      },
+      singleColumn: true,
+    });
+
+    try {
+      // Capping a table at the single-column reading width shrinks every column
+      // until each cell's control overflows its own cell and covers the next
+      // column's select chevron (docs/17 P4).
+      expect(readFieldWrapper(harness.container, 'items')?.style.maxWidth).toBe(
+        '',
+      );
+      expect(
+        readFieldWrapper(harness.container, 'purpose')?.style.maxWidth,
+      ).toBe('480px');
+      // Mezzanine's Table fills its box, so only this floor makes the
+      // surrounding `overflow-x: auto` wrapper actually scroll: two columns at
+      // 160 plus the 56 wide row-actions column.
+      expect(readTableWidthFloor(harness.container)?.style.minWidth).toBe(
+        '376px',
+      );
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
   it('hides row actions and the add button in readonly mode', async (): Promise<void> => {
     const harness = await mountRenderer({
       readonly: true,
@@ -587,12 +622,16 @@ interface RendererHarness {
 
 async function mountRenderer({
   errors,
+  maxWidth,
   readonly,
   schema,
+  singleColumn,
 }: {
   readonly errors?: Readonly<Record<string, string>>;
+  readonly maxWidth?: number;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
+  readonly singleColumn?: boolean;
 }): Promise<RendererHarness> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -603,11 +642,13 @@ async function mountRenderer({
     root.render(
       <FormRenderer
         errors={errors ?? {}}
+        {...(typeof maxWidth === 'number' ? { maxWidth } : {})}
         onChange={(nextValues): void => {
           latest = nextValues;
         }}
         readonly={readonly ?? false}
         schema={schema}
+        {...(singleColumn ? { singleColumn: true } : {})}
         uiSchema={createUiSchema()}
       />,
     );
@@ -758,6 +799,21 @@ function createDynamicField(
     required: false,
     type,
   } as FormDataSourceOptionFieldDefinition;
+}
+
+function readFieldWrapper(
+  container: HTMLElement,
+  fieldKey: string,
+): HTMLElement | null {
+  return container.querySelector<HTMLElement>(
+    `[data-form-field-key="${fieldKey}"]`,
+  );
+}
+
+function readTableWidthFloor(container: HTMLElement): HTMLElement | null {
+  const table = container.querySelector<HTMLElement>('[data-mock-table]');
+
+  return table?.parentElement ?? null;
 }
 
 function createUiSchema(): FormUiSchema {

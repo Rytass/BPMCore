@@ -203,7 +203,10 @@ export function FormRenderer({
     <div
       style={{
         ...FORM_RENDERER_GRID_STYLE,
-        ...(singleColumn ? { maxWidth, width: '100%' } : {}),
+        // `maxWidth` is applied per field rather than to the grid, so a table
+        // field can use the full content width while every other field keeps
+        // the single-column reading width (docs/17 P4).
+        ...(singleColumn ? { width: '100%' } : {}),
       }}
     >
       {visibleFields.map((field) => (
@@ -226,6 +229,9 @@ export function FormRenderer({
             gridColumn: `span ${
               singleColumn ? 12 : readFieldColumnSpan(field, uiSchema)
             }`,
+            ...(singleColumn && !isTableFieldDefinition(field)
+              ? { maxWidth }
+              : {}),
           }}
           value={values[field.fieldKey]}
           values={values}
@@ -420,6 +426,13 @@ const TABLE_SCROLLER_STYLE: CSSProperties = {
   overflowX: 'auto',
 };
 
+// Mezzanine `Table` fills whatever box it is given, so an `overflow-x: auto`
+// wrapper on its own never scrolls: the columns just keep shrinking until each
+// cell's control overflows its own `<td>` and covers the next column's select
+// chevron. The floor below is what actually makes the wrapper scroll.
+const TABLE_COLUMN_MIN_WIDTH = 160;
+const TABLE_ACTIONS_COLUMN_WIDTH = 56;
+
 const TABLE_CELL_STYLE: CSSProperties = {
   display: 'grid',
   gap: 4,
@@ -591,13 +604,21 @@ function FormTableField({
         `scroll` covered this; see docs/17).
       */}
       <div style={TABLE_SCROLLER_STYLE}>
-        <Table
-          {...(actions ? { actions } : {})}
-          columns={columns}
-          dataSource={[...dataSource]}
-          showHeader
-          size="sub"
-        />
+        <div
+          style={{
+            minWidth:
+              field.columns.length * TABLE_COLUMN_MIN_WIDTH +
+              (actions ? TABLE_ACTIONS_COLUMN_WIDTH : 0),
+          }}
+        >
+          <Table
+            {...(actions ? { actions } : {})}
+            columns={columns}
+            dataSource={[...dataSource]}
+            showHeader
+            size="sub"
+          />
+        </div>
       </div>
       {readonly ? null : (
         <div style={TABLE_FIELD_ACTIONS_STYLE}>
