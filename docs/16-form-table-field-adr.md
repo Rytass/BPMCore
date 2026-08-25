@@ -1,8 +1,9 @@
 # 16 — ADR：表格欄位（Table Field）架構
 
 - **狀態**：Accepted (implemented 2026-08-25)（2026-08-25 與產品擁有者確認，含
-  §3.10 column 型別排除項與 maxRows 100 上限；Phase P0–P4 全數 VERIFIED，交付
-  紀錄見 [17 — 表格欄位開發 Phase](./17-form-table-field-phases.md)）
+  §3.10 column 型別排除項與 maxRows 100 上限；Phase P0–P3 VERIFIED，P4 交付內容
+  已完成、驗證狀態以 [17 — 表格欄位開發 Phase](./17-form-table-field-phases.md)
+  的 Phase 總覽為準）
 - **決策日期**：2026-08-24（規劃日）
 - **適用範圍**：Form Definition Schema、Form Builder、FormRenderer、案件發起／退回編輯／
   重新送出、workflow 條件、DataSource 整合
@@ -160,9 +161,13 @@ endpoint**，input 做 additive 擴充：
   檢查、錯誤碼（`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` 等）完全沿用 ADR 14 §3.7。
 - Provider 呼叫併發上限 4 是**整份表單**的總限制，表格列數不放大突發流量；一張
   100 列 × 多動態欄的表單送出耗時會上升，屬接受的成本（見 §6）。
-- 列插入／刪除造成 index 位移時，位移列的 snapshot key 對不上舊 snapshot，重送
-  會觸發該列重新 resolve。這是刻意的 fail-safe：寧可多打 provider，也不把 A 列
-  的 snapshot 拿去背書 B 列的值。
+- 列插入／刪除造成 index 位移時，位移列的 snapshot key 會**落在原本屬於別列的
+  key 上**（key 本身仍相符，不是保護）。真正觸發重新 resolve 的是重用條件的另
+  外兩項：舊值取自 `previousFormData` **同索引**那一列，binding hash 以該列當下
+  的值重算，位移後兩者都與「原本在該位置的列」不符。只有值與 binding 全等時才
+  沿用，此時沿用與重打 provider 等價。這是刻意的 fail-safe：寧可多打 provider，
+  也不把 A 列的 snapshot 拿去背書 B 列的值——因此**不得**以「key 帶列索引」為由
+  移除舊值或 hash 比對。
 - 唯讀歷史顯示一律讀 snapshot，不打外部 API（同 ADR 14 §3.8）。
 
 ### 3.7 驗證分層
@@ -245,8 +250,13 @@ errors key 用 instance path，`firstInvalidFieldKey` 可為 cell path，聚焦�
 - 效能邊界：cell hook 數 = 列數 × 動態 column 數，上限 100 列由 lint 保證；
   不另做虛擬化（V1）。**實作期更正**：Mezzanine `TableScroll` 只有 `virtualized`
   與 `y`（垂直），沒有水平捲動選項，因此超寬表格改由外層 `overflow-x: auto`
-  容器承接，不覆寫元件本身任何樣式。若日後需要凍結欄或元件層級的水平捲動，
-  需 Mezzanine 端支援（見 §9）。
+  容器承接，不覆寫元件本身任何樣式。**P4 補正**：只有容器不夠——Mezzanine
+  `Table` 會撐滿容器，於是容器永遠不會真的捲動，欄寬被一路壓縮到 cell 內的控制項
+  溢出自己的儲存格、蓋住隔壁欄的下拉箭頭（P4 e2e 實測）。因此再加兩件事：表格
+  欄位不套用單欄版面的閱讀寬度上限，且捲動容器內側給表格一個「欄數 × 160px
+  （＋列動作欄 56px）」的寬度下限，容器才會真的捲動。表格仍受 Mezzanine
+  `.mzn-form-field__data-entry` 自身的 640px 上限限制，該上限不覆寫。若日後需要
+  元件層級的水平捲動或凍結欄，見 §9。
 
 ### 3.10 相容性與版本策略
 
@@ -366,8 +376,18 @@ migration、既有讀取端全部不動；巢狀結構要改型別與所有讀�
 - 宿主要求 cell 級 `file_upload` 或跨列彙總進入 workflow 條件。
 - FormBuilderView 重構後仍無法以單一實作服務 top-level 與 column 設定。
   （P2 已達成單一實作；此條保留為日後回歸的警戒線。）
-- 需要凍結欄，或需要 Mezzanine `Table` 元件層級的水平捲動——目前由外層
-  `overflow-x` 容器承接（§3.9 實作期更正）。
-- 需要擋下 `SET_FORM_FIELD` 的 `fieldPath` 直接指向 table 欄位本身：P1 已把多段
-  與 bracket 路徑收斂為 no-op，剩下的單段整包覆寫若要擋，需新增「fieldPath 必須
-  對應 schema 欄位且不得為 table」的發布期檢查（見 docs/17 P1 待辦）。
+- 表格 cell 的內容在窄欄下會被截斷且沒有 tooltip：160px 欄寬時
+  「TW01 成本中心 001」這類 label 的 select trigger input 只有約 90px 可視寬度
+  （P4 實測 `scrollWidth` 126 > `clientWidth` 90），唯讀歷史因此讀不到完整值。
+  若宿主回報這影響判讀，需決定是加大欄寬下限、讓唯讀 cell 改以純文字渲染，還是
+  在 cell 上補 title/tooltip——三者都會動到已驗證的唯讀渲染，不在 V1 範圍。
+- 需要 Mezzanine `Table` **元件層級**的水平捲動：目前由外層 `overflow-x` 容器
+  加上依欄數推算的寬度下限承接（§3.9 實作期更正）。凍結欄本身 Mezzanine 已支援
+  （`TableColumnBase.fixed`），但其 sticky 陰影依賴 Table 自己的 scroller，因此
+  真要用凍結欄時得一併把捲動交還元件。
+- 需要擋下 `SET_FORM_FIELD` 的 `fieldPath` 直接指向 table 欄位本身：P1 已把
+  bracket 路徑一律收斂為 no-op，多段點路徑則**僅在中繼值已存在且不是 record 時**
+  才 no-op——若 `items` 尚未出現在 `formData`（非必填、`minRows: 0`），
+  `form.items.qty` 仍會寫出 `{"items":{"qty":…}}` 把 table 欄位變成物件。連同單段
+  整包覆寫，若要擋需新增「fieldPath 必須對應 schema 欄位且不得為 table」的發布期
+  檢查（見 docs/17 P1 待辦）。

@@ -290,9 +290,12 @@ record，cell 值維持與扁平欄位相同的 primitive contract。列**不落
 }
 ```
 
-因為 key 帶列索引，插入或刪除列會讓其後所有列的 key 對不上舊 snapshot，重送時那些
-cell 會重新 resolve。這是刻意的 fail-safe：寧可多打一次宿主 provider，也不讓 A 列
-的 snapshot 去背書 B 列的值。
+插入或刪除列會讓其後每個 cell 落到「原本屬於別列」的 key 上——**key 本身仍然對得
+上，不構成保護**。真正擋住誤用的是重用條件的另外兩項：舊值是從 `previousFormData`
+**同索引**的那一列讀出來的，binding hash 則以該列當下的值重算，位移後兩者都會跟
+「原本在這個位置的列」比對而不相符，於是該 cell 重新 resolve。只有值與每個 binding
+都完全相同才會沿用，那種情況下沿用與重打 provider 等價。**不要因為 key 帶了列索引
+就移除舊值或 hash 比對**——那才是 A 列 snapshot 去背書 B 列值的路徑。
 
 `title` 取值時會**跳過** table 欄位——列數不是好標題，改取第一個非表格欄位。
 

@@ -240,9 +240,15 @@ interface DynamicResolutionTarget {
 /**
  * Flattens the schema into the values that need resolving. Cell snapshot keys
  * are instance paths (`<tableKey>[<i>].<columnKey>`, ADR 16 §3.6), so inserting
- * or deleting a row shifts the keys of everything after it and those cells
- * re-resolve. That is deliberate: better an extra provider call than one row's
- * snapshot vouching for another row's value.
+ * or deleting a row shifts every later cell onto the key of the row that used
+ * to sit there. The key alone is therefore no protection — it still matches.
+ * What protects the shifted cell is that `previousValue` is read from the row
+ * at the *same index* in the previous form data and the binding hash is
+ * recomputed from the row's current values: after a shift both are compared
+ * against the row that used to be there, so they disagree and the cell
+ * re-resolves. Reuse survives only when the value and every binding are
+ * identical, which makes it indistinguishable from a fresh resolve. Do not
+ * drop either comparison on the assumption that the key is doing this work.
  */
 function readDynamicResolutionTargets(
   input: BPMFormDataSourceSnapshotResolutionInput,
