@@ -73,6 +73,7 @@ const FORM_IDS = {
   EXPENSE: '30000000-0000-4000-8000-000000000001',
   LEAVE: '30000000-0000-4000-8000-000000000002',
   PURCHASE: '30000000-0000-4000-8000-000000000005',
+  TABLE_PURCHASE: '30000000-0000-4000-8000-000000000008',
 } as const;
 
 const FORM_VERSION_IDS = {
@@ -85,6 +86,7 @@ const FORM_VERSION_IDS = {
   EXPENSE_V1: '31000000-0000-4000-8000-000000000001',
   LEAVE_V1: '31000000-0000-4000-8000-000000000002',
   PURCHASE_DRAFT: '31000000-0000-4000-8000-000000000005',
+  TABLE_PURCHASE_V1: '31000000-0000-4000-8000-000000000010',
 } as const;
 
 const TEMPLATE_IDS = {
@@ -95,6 +97,7 @@ const TEMPLATE_IDS = {
   EXPENSE: '50000000-0000-4000-8000-000000000001',
   LEAVE: '50000000-0000-4000-8000-000000000002',
   PURCHASE: '50000000-0000-4000-8000-000000000005',
+  TABLE_PURCHASE: '50000000-0000-4000-8000-000000000008',
 } as const;
 
 const TEMPLATE_VERSION_IDS = {
@@ -106,6 +109,7 @@ const TEMPLATE_VERSION_IDS = {
   EXPENSE_V1: '51000000-0000-4000-8000-000000000001',
   LEAVE_V1: '51000000-0000-4000-8000-000000000002',
   PURCHASE_DRAFT: '51000000-0000-4000-8000-000000000005',
+  TABLE_PURCHASE_V1: '51000000-0000-4000-8000-000000000010',
 } as const;
 
 const INSTANCE_IDS = {
@@ -119,6 +123,7 @@ const INSTANCE_IDS = {
   LEAVE_APPROVED: '60000000-0000-4000-8000-000000000006',
   PURCHASE_CANCELLED: '60000000-0000-4000-8000-000000000007',
   PURCHASE_RUNNING: '60000000-0000-4000-8000-000000000002',
+  TABLE_PURCHASE_RETURNED: '60000000-0000-4000-8000-000000000011',
 } as const;
 
 const TOKEN_IDS = {
@@ -132,6 +137,7 @@ const TOKEN_IDS = {
   LEAVE_APPROVED: '61000000-0000-4000-8000-000000000006',
   PURCHASE_CANCELLED: '61000000-0000-4000-8000-000000000007',
   PURCHASE_RUNNING_CEO: '61000000-0000-4000-8000-000000000002',
+  TABLE_PURCHASE_RETURNED: '61000000-0000-4000-8000-000000000011',
 } as const;
 
 const TASK_IDS = {
@@ -149,6 +155,7 @@ const TASK_IDS = {
   LEAVE_APPROVED_MANAGER: '62000000-0000-4000-8000-000000000007',
   PURCHASE_CANCELLED_MANAGER: '62000000-0000-4000-8000-000000000009',
   PURCHASE_RUNNING_CEO: '62000000-0000-4000-8000-000000000008',
+  TABLE_PURCHASE_RETURNED_MANAGER: '62000000-0000-4000-8000-000000000013',
 } as const;
 
 const MEMBERS = API_SIMULATION_MEMBER_SEEDS;
@@ -733,6 +740,111 @@ const DYNAMIC_OPTIONS_OPTIONAL_APPROVED_SNAPSHOT = {
   ),
 } as const;
 
+/**
+ * The table field scenario (ADR 16). One table mixes static columns with a
+ * DataSource-backed one whose parameter reads the sibling `plant` cell of the
+ * same row, which is the behaviour a flat form cannot express at all.
+ */
+const TABLE_PURCHASE_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'purpose',
+      label: '請購事由',
+      required: true,
+      type: 'text',
+    },
+    {
+      addRowLabel: '新增品項',
+      columns: [
+        {
+          fieldKey: 'plant',
+          label: '廠別',
+          mode: 'single',
+          options: [
+            { label: '台中廠 TW01', value: 'TW01' },
+            { label: '台北廠 TW02', value: 'TW02' },
+          ],
+          required: true,
+          type: 'select',
+        },
+        {
+          dataSource: {
+            bindings: [
+              {
+                from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+                parameter: 'plant',
+              },
+            ],
+            key: 'demo.cost-centers',
+            version: 1,
+          },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: true,
+          type: 'select',
+        },
+        { fieldKey: 'item', label: '品項', required: true, type: 'text' },
+        { fieldKey: 'quantity', label: '數量', required: true, type: 'number' },
+        { fieldKey: 'urgent', label: '急件', required: false, type: 'boolean' },
+      ],
+      fieldKey: 'items',
+      label: '請購明細',
+      maxRows: 10,
+      minRows: 1,
+      required: true,
+      type: 'table',
+    },
+  ],
+  schemaVersion: 1,
+} as const;
+
+const TABLE_PURCHASE_FORM_UI_SCHEMA = {
+  layout: [
+    { fieldKey: 'purpose', width: 'FULL' },
+    // A table is always FULL width; anything else fails the publish lint.
+    { fieldKey: 'items', width: 'FULL' },
+  ],
+  schemaVersion: 1,
+} as const;
+
+/**
+ * Two rows on different plants, so the read-only view has to show each row's
+ * own authoritative label rather than one shared list.
+ */
+const TABLE_PURCHASE_RETURNED_FORM_DATA = {
+  items: [
+    {
+      costCenter: 'CC-TW01-001',
+      item: '六角螺絲 M8',
+      plant: 'TW01',
+      quantity: 120,
+      urgent: false,
+    },
+    {
+      costCenter: 'CC-TW02-002',
+      item: '不鏽鋼墊圈',
+      plant: 'TW02',
+      quantity: 40,
+      urgent: true,
+    },
+  ],
+  purpose: '產線耗材補充',
+} as const;
+
+/**
+ * Snapshot keys are instance paths (ADR 16 §3.6), so each cell carries the
+ * label resolved for its own row.
+ */
+const TABLE_PURCHASE_RETURNED_SNAPSHOT = {
+  'items[0].costCenter': createTableCellOptionSnapshot('TW01', [
+    'CC-TW01-001',
+  ]),
+  'items[1].costCenter': createTableCellOptionSnapshot('TW02', [
+    'CC-TW02-002',
+  ]),
+} as const;
+
 interface DynamicOptionSnapshot {
   readonly bindingHash: string;
   readonly dataSourceKey: string;
@@ -815,6 +927,39 @@ function createDynamicOptionSnapshot(
       value,
     })),
     validatedAt: '2026-05-18T04:30:00.000Z',
+  };
+}
+
+/**
+ * Cell-level counterpart of {@link createDynamicOptionSnapshot}: the binding
+ * value comes from the row rather than the form, so the hash is built from the
+ * row's own plant.
+ */
+function createTableCellOptionSnapshot(
+  plant: string,
+  values: readonly string[],
+): DynamicOptionSnapshot {
+  const dataSourceKey = 'demo.cost-centers';
+  const dataSourceVersion = 1;
+
+  return {
+    bindingHash: createHash('sha256')
+      .update(
+        JSON.stringify({
+          dataSourceKey,
+          dataSourceVersion,
+          values: [['plant', plant]],
+        }),
+      )
+      .digest('hex'),
+    dataSourceKey,
+    dataSourceVersion,
+    options: values.map((value) => ({
+      label: readDynamicOptionLabel(value),
+      value,
+    })),
+    revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+    validatedAt: '2026-05-21T04:30:00.000Z',
   };
 }
 
@@ -1449,6 +1594,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         '用 optional category parameter 驗證未填相依欄位時仍可查詢選項。',
         'member-101',
       ),
+      formDefinitionRow(
+        FORM_IDS.TABLE_PURCHASE,
+        '請購明細申請單（表格）',
+        '用表格欄位逐列填寫請購明細，成本中心依同一列的廠別連動。',
+        'member-102',
+      ),
     ],
   );
 
@@ -1568,6 +1719,17 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         'member-101',
         null,
       ),
+      formVersionRow(
+        FORM_VERSION_IDS.TABLE_PURCHASE_V1,
+        FORM_IDS.TABLE_PURCHASE,
+        1,
+        'PUBLISHED',
+        TABLE_PURCHASE_FORM_SCHEMA,
+        TABLE_PURCHASE_FORM_UI_SCHEMA,
+        '2026-05-21T03:00:00.000Z',
+        'member-102',
+        null,
+      ),
     ],
   );
 
@@ -1612,6 +1774,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     'form_definitions',
     FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FORM_IDS.TABLE_PURCHASE,
+    FORM_VERSION_IDS.TABLE_PURCHASE_V1,
   );
 }
 
@@ -1733,6 +1901,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         CATEGORY_IDS.FINANCE,
         'member-101',
       ),
+      templateRow(
+        TEMPLATE_IDS.TABLE_PURCHASE,
+        '請購明細申請（表格）',
+        '用表格欄位逐列填寫請購明細，成本中心依同一列的廠別連動查詢。',
+        '採購請款',
+        CATEGORY_IDS.PROCUREMENT,
+        'member-102',
+      ),
     ],
   );
 
@@ -1844,6 +2020,17 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         'member-101',
         null,
       ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.TABLE_PURCHASE_V1,
+        TEMPLATE_IDS.TABLE_PURCHASE,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        FORM_VERSION_IDS.TABLE_PURCHASE_V1,
+        '2026-05-21T04:00:00.000Z',
+        'member-102',
+        null,
+      ),
     ],
   );
 
@@ -1888,6 +2075,12 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     'approval_templates',
     TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.TABLE_PURCHASE,
+    TEMPLATE_VERSION_IDS.TABLE_PURCHASE_V1,
   );
 }
 
@@ -1939,6 +2132,21 @@ async function seedInstances(queryRunner: QueryRunner): Promise<void> {
         '2026-05-18T04:30:00.000Z',
         null,
         DYNAMIC_OPTIONS_RETURNED_SNAPSHOT,
+      ),
+      instanceRow(
+        INSTANCE_IDS.TABLE_PURCHASE_RETURNED,
+        TEMPLATE_IDS.TABLE_PURCHASE,
+        TEMPLATE_VERSION_IDS.TABLE_PURCHASE_V1,
+        'member-102',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        TABLE_PURCHASE_FORM_SCHEMA,
+        TABLE_PURCHASE_FORM_UI_SCHEMA,
+        TABLE_PURCHASE_RETURNED_FORM_DATA,
+        'RETURNED',
+        '請購事由：產線耗材補充',
+        '2026-05-21T04:30:00.000Z',
+        null,
+        TABLE_PURCHASE_RETURNED_SNAPSHOT,
       ),
       instanceRow(
         INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
@@ -2133,6 +2341,14 @@ async function seedTokens(queryRunner: QueryRunner): Promise<void> {
         null,
       ),
       tokenRow(
+        TOKEN_IDS.TABLE_PURCHASE_RETURNED,
+        INSTANCE_IDS.TABLE_PURCHASE_RETURNED,
+        'manager_review',
+        'WAITING',
+        '2026-05-21T04:30:00.000Z',
+        null,
+      ),
+      tokenRow(
         TOKEN_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
         INSTANCE_IDS.DYNAMIC_OPTIONS_OPTIONAL_RETURNED,
         'manager_review',
@@ -2237,6 +2453,19 @@ async function seedTasks(queryRunner: QueryRunner): Promise<void> {
         'PENDING',
         '2026-05-20T04:30:00.000Z',
         '2026-05-18T04:30:00.000Z',
+        null,
+        null,
+      ),
+      taskRow(
+        TASK_IDS.TABLE_PURCHASE_RETURNED_MANAGER,
+        INSTANCE_IDS.TABLE_PURCHASE_RETURNED,
+        TOKEN_IDS.TABLE_PURCHASE_RETURNED,
+        'manager_review',
+        'member-101',
+        'member-101',
+        'PENDING',
+        '2026-05-23T04:30:00.000Z',
+        '2026-05-21T04:30:00.000Z',
         null,
         null,
       ),
