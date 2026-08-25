@@ -96,6 +96,14 @@ export interface FormRendererProps {
   readonly value?: FormRendererValues;
 }
 
+/**
+ * Controls inside a table cell take the table's own `sub` size, so a row is
+ * sized by its cells rather than by whichever control kept the default.
+ * `DatePicker` and `DateTimePicker` accept no size, so a date column stays at
+ * the default height — a Mezzanine limitation, not a choice.
+ */
+type ControlSize = 'main' | 'sub';
+
 const FORM_RENDERER_GRID_STYLE: CSSProperties = {
   alignItems: 'start',
   display: 'grid',
@@ -617,6 +625,9 @@ function FormTableField({
             {...(actions ? { actions } : {})}
             columns={columns}
             dataSource={[...dataSource]}
+            // Cells carry form controls rather than text, so the row height
+            // comes from the roomy container token, not the compact default.
+            rowHeightPreset="roomy"
             showHeader
             size="sub"
           />
@@ -738,6 +749,7 @@ function FormTableCell({
         undefined,
         dataSourceContext,
         dataSourceState,
+        'sub',
       )}
       {error ? (
         <Typography color="text-error" variant="caption">
@@ -834,6 +846,7 @@ function renderControl(
     | undefined,
   dataSourceContext: FormRendererDataSourceContext | undefined,
   dataSourceState: FormDataSourceFieldState,
+  size: ControlSize = 'main',
 ): ReactElement {
   if (isFormDataSourceFieldDefinition(field)) {
     return renderDynamicOptionControl(
@@ -843,10 +856,18 @@ function renderControl(
       onChange,
       dataSourceContext,
       dataSourceState,
+      size,
     );
   }
 
-  return renderStaticControl(field, value, readonly, onChange, onUploadAttachment);
+  return renderStaticControl(
+    field,
+    value,
+    readonly,
+    onChange,
+    onUploadAttachment,
+    size,
+  );
 }
 
 /**
@@ -865,6 +886,7 @@ function renderStaticControl(
         file: File,
       ) => Promise<{ readonly id: string }>)
     | undefined,
+  size: ControlSize = 'main',
 ): ReactElement {
   if (field.type === 'textarea') {
     return (
@@ -891,6 +913,7 @@ function renderStaticControl(
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
           onChange(field.fieldKey, event.target.checked)
         }
+        size={size}
       />
     );
   }
@@ -912,6 +935,7 @@ function renderStaticControl(
         options={options}
         placeholder={field.placeholder ?? '請選擇一或多個選項'}
         readOnly={readonly}
+        size={size}
         value={options.filter((option) =>
           readStringArrayValue(value).includes(option.id),
         )}
@@ -930,6 +954,7 @@ function renderStaticControl(
         options={options}
         placeholder={field.placeholder ?? '請選擇'}
         readOnly={readonly}
+        size={size}
         value={readSelectOption(options, readStringValue(value))}
       />
     );
@@ -1009,6 +1034,7 @@ function renderStaticControl(
         fullWidth
         max={field.maximum}
         min={field.minimum}
+        size={size}
         onChange={(event: ChangeEvent<HTMLInputElement>): void =>
           onChange(
             field.fieldKey,
@@ -1035,6 +1061,7 @@ function renderStaticControl(
       }
       placeholder={field.placeholder ?? readInputPlaceholder(field.type)}
       {...(readonly ? { readonly: true as const } : {})}
+      size={size}
       value={readStringValue(value)}
       variant="base"
     />
@@ -1048,6 +1075,7 @@ function renderDynamicOptionControl(
   onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
   dataSourceContext: FormRendererDataSourceContext | undefined,
   dataSourceState: FormDataSourceFieldState,
+  size: ControlSize = 'main',
 ): ReactElement {
   const options = dataSourceState.options.map(readFieldOptionAsSelectOption);
   const selectedOptions = readSelectedFormDataSourceOptions(
@@ -1094,6 +1122,7 @@ function renderDynamicOptionControl(
           placeholder={field.placeholder ?? '請輸入或選擇'}
           readOnly={readonly}
           searchDebounceTime={300}
+          size={size}
           value={selectedOptions}
         />
       );
@@ -1121,6 +1150,7 @@ function renderDynamicOptionControl(
         placeholder={field.placeholder ?? '請輸入或選擇'}
         readOnly={readonly}
         searchDebounceTime={300}
+        size={size}
         value={selectedOptions[0] ?? null}
       />
     );
@@ -1182,6 +1212,7 @@ function renderDynamicOptionControl(
         options={options}
         placeholder={field.placeholder ?? '請選擇一或多個選項'}
         readOnly={readonly}
+        size={size}
         value={selectedOptions}
       />
     );
@@ -1202,6 +1233,7 @@ function renderDynamicOptionControl(
       options={options}
       placeholder={field.placeholder ?? '請選擇'}
       readOnly={readonly}
+      size={size}
       value={selectedOptions[0] ?? null}
     />
   );
