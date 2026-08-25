@@ -18,26 +18,35 @@ import {
   Input,
   RadioGroup,
   Select,
+  Table,
   Textarea,
   Toggle,
   Typography,
   Upload,
 } from '@mezzanine-ui/react';
 import type { UploadFile } from '@mezzanine-ui/react/Upload';
+import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import {
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
   FormFieldValue,
+  FormTableRowValue,
   FormUiSchema,
+  TableColumnDefinition,
+  TableFieldDefinition,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isFormTableCellValue,
+  isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 import {
   buildFormRendererValues,
   clampOptionalNumber,
+  createFormTableRow,
   formatDatePickerValue,
   formatDateTimePickerValue,
   FormRendererValues,
@@ -46,6 +55,9 @@ import {
   parseOptionalNumberInput,
   readDatePickerValue,
   readFieldOptionAsSelectOption,
+  readFormTableCellPath,
+  readFormTableRowBounds,
+  readFormTableRows,
   readSelectedFormDataSourceOptions,
   readSelectOption,
   readVisibleFormRendererFields,
@@ -200,6 +212,7 @@ export function FormRenderer({
           dataSourceInitialValues={dataSourceInitialValues}
           field={field}
           error={errors[field.fieldKey] ?? null}
+          errors={errors}
           fields={schema.fields}
           key={field.fieldKey}
           onChange={updateValue}
@@ -227,6 +240,7 @@ function FormRendererField({
   dataSourceContext,
   dataSourceInitialValues,
   error,
+  errors,
   field,
   fields,
   onChange,
@@ -243,6 +257,12 @@ function FormRendererField({
   readonly dataSourceContext?: FormRendererDataSourceContext;
   readonly dataSourceInitialValues?: FormRendererValues;
   readonly error: string | null;
+  /**
+   * The whole error map, not just this field's line: a table addresses its
+   * cells by instance path, so it needs the keys of its own rows too
+   * (ADR 16 §3.3).
+   */
+  readonly errors: Readonly<Record<string, string>>;
   readonly field: FormFieldDefinition;
   readonly fields: readonly FormFieldDefinition[];
   readonly onChange: (
@@ -316,14 +336,24 @@ function FormRendererField({
         name={field.fieldKey}
         required={required}
       >
-        {renderControl(
-          field,
-          value,
-          fieldReadonly,
-          onChange,
-          onUploadAttachment,
-          dataSourceContext,
-          dataSourceState,
+        {isTableFieldDefinition(field) ? (
+          <FormTableField
+            errors={errors}
+            field={field}
+            onChange={onChange}
+            readonly={fieldReadonly}
+            value={value}
+          />
+        ) : (
+          renderControl(
+            field,
+            value,
+            fieldReadonly,
+            onChange,
+            onUploadAttachment,
+            dataSourceContext,
+            dataSourceState,
+          )
         )}
       </BPMFormField>
       {error ? (
@@ -366,6 +396,255 @@ const DATA_SOURCE_FEEDBACK_STYLE: CSSProperties = {
   gap: 8,
 };
 
+const TABLE_FIELD_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  minWidth: 0,
+  width: '100%',
+};
+
+const TABLE_FIELD_ACTIONS_STYLE: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-start',
+};
+
+const TABLE_SCROLLER_STYLE: CSSProperties = {
+  maxWidth: '100%',
+  overflowX: 'auto',
+};
+
+const TABLE_CELL_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  minWidth: 0,
+};
+
+type FormTableRowRecord = Readonly<
+  Record<string, unknown> & {
+    index: number;
+    key: string;
+  }
+>;
+
+/**
+ * Rows carry no identity in `formData` — array order is display order
+ * (ADR 16 §3.2) — so the React key and, from P3, the per-cell DataSource state
+ * key come from an ephemeral id minted here and never written to the value.
+ */
+function FormTableField({
+  errors,
+  field,
+  onChange,
+  readonly,
+  value,
+}: {
+  readonly errors: Readonly<Record<string, string>>;
+  readonly field: TableFieldDefinition;
+  readonly onChange: (
+    fieldKey: string,
+    value: FormFieldValue | undefined,
+  ) => void;
+  readonly readonly: boolean;
+  readonly value: FormFieldValue | undefined;
+}): ReactElement {
+  const rows = readFormTableRows(value);
+  const bounds = readFormTableRowBounds(field);
+  const rowIdSequenceRef = useRef(0);
+  const [rowIds, setRowIds] = useState<readonly string[]>(() =>
+    rows.map((): string => createRowId(rowIdSequenceRef)),
+  );
+
+  // The value can also change from outside (a parent reset, a returned case
+  // loading its saved rows). Re-mint ids only then, so ordinary edits keep the
+  // per-row identity stable.
+  useEffect((): void => {
+    if (rowIds.length === rows.length) {
+      return;
+    }
+
+    setRowIds(rows.map((): string => createRowId(rowIdSequenceRef)));
+  }, [rowIds.length, rows.length]);
+
+  function commitRows(nextRows: readonly FormTableRowValue[]): void {
+    onChange(field.fieldKey, nextRows);
+  }
+
+  function handleAddRow(): void {
+    setRowIds([...rowIds, createRowId(rowIdSequenceRef)]);
+    commitRows([...rows, createFormTableRow(field.columns)]);
+  }
+
+  function handleRemoveRow(rowIndex: number): void {
+    setRowIds(rowIds.filter((_, index) => index !== rowIndex));
+    commitRows(rows.filter((_, index) => index !== rowIndex));
+  }
+
+  function handleCellChange(
+    rowIndex: number,
+    columnKey: string,
+    cellValue: FormFieldValue | undefined,
+  ): void {
+    commitRows(
+      rows.map((row, index) =>
+        index === rowIndex
+          ? readNextTableRow(row, columnKey, cellValue)
+          : row,
+      ),
+    );
+  }
+
+  const dataSource: readonly FormTableRowRecord[] = rows.map((row, index) => ({
+    ...row,
+    index,
+    key: rowIds[index] ?? `row-${index}`,
+  }));
+  const columns: TableColumn<FormTableRowRecord>[] = field.columns.map(
+    (column) => ({
+      key: column.fieldKey,
+      render: (row): ReactElement => (
+        <FormTableCell
+          column={column}
+          error={
+            errors[
+              readFormTableCellPath(field.fieldKey, row.index, column.fieldKey)
+            ] ?? null
+          }
+          onChange={(cellValue): void =>
+            handleCellChange(row.index, column.fieldKey, cellValue)
+          }
+          path={readFormTableCellPath(
+            field.fieldKey,
+            row.index,
+            column.fieldKey,
+          )}
+          readonly={readonly}
+          value={readTableCellValue(rows[row.index], column.fieldKey)}
+        />
+      ),
+      title: column.label || column.fieldKey,
+    }),
+  );
+  const actions: TableActions<FormTableRowRecord> | undefined = readonly
+    ? undefined
+    : {
+        render: (row): ReturnType<TableActions<FormTableRowRecord>['render']> => [
+          {
+            disabled: (): boolean => rows.length <= bounds.minRows,
+            icon: TrashIcon,
+            iconType: 'icon-only',
+            name: '刪除此列',
+            onClick: (): void => handleRemoveRow(row.index),
+            variant: 'destructive-ghost',
+          },
+        ],
+        width: 56,
+      };
+
+  return (
+    <div style={TABLE_FIELD_STYLE}>
+      {/*
+        Mezzanine `Table`'s `scroll` is vertical only, so a wide table is kept
+        inside its own horizontal scroller rather than pushing the page sideways.
+        The wrapper adds no styling of its own to the table (ADR 16 §3.9 assumed
+        `scroll` covered this; see docs/17).
+      */}
+      <div style={TABLE_SCROLLER_STYLE}>
+        <Table
+          {...(actions ? { actions } : {})}
+          columns={columns}
+          dataSource={[...dataSource]}
+          showHeader
+          size="sub"
+        />
+      </div>
+      {readonly ? null : (
+        <div style={TABLE_FIELD_ACTIONS_STYLE}>
+          <Button
+            disabled={rows.length >= bounds.maxRows}
+            icon={PlusIcon}
+            iconType="leading"
+            onClick={handleAddRow}
+            size="sub"
+            type="button"
+            variant="base-secondary"
+          >
+            {field.addRowLabel || '新增一列'}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FormTableCell({
+  column,
+  error,
+  onChange,
+  path,
+  readonly,
+  value,
+}: {
+  readonly column: TableColumnDefinition;
+  readonly error: string | null;
+  readonly onChange: (value: FormFieldValue | undefined) => void;
+  readonly path: string;
+  readonly readonly: boolean;
+  readonly value: FormFieldValue | undefined;
+}): ReactElement {
+  return (
+    <div data-form-field-key={path} style={TABLE_CELL_STYLE}>
+      {renderStaticControl(
+        column,
+        value,
+        readonly,
+        (_columnKey, nextValue): void => onChange(nextValue),
+        undefined,
+      )}
+      {error ? (
+        <Typography color="text-error" variant="caption">
+          {error}
+        </Typography>
+      ) : null}
+    </div>
+  );
+}
+
+function createRowId(sequenceRef: { current: number }): string {
+  sequenceRef.current += 1;
+
+  return `table-row-${sequenceRef.current}`;
+}
+
+/**
+ * Clearing a cell removes the key instead of storing `undefined`: the row is
+ * serialised to JSON, where `undefined` would vanish anyway, and an absent key
+ * is what an untouched cell looks like.
+ */
+function readNextTableRow(
+  row: FormTableRowValue,
+  columnKey: string,
+  value: FormFieldValue | undefined,
+): FormTableRowValue {
+  if (typeof value === 'undefined' || !isFormTableCellValue(value)) {
+    return Object.fromEntries(
+      Object.entries(row).filter(([key]) => key !== columnKey),
+    );
+  }
+
+  return { ...row, [columnKey]: value };
+}
+
+function readTableCellValue(
+  row: FormTableRowValue | undefined,
+  columnKey: string,
+): FormFieldValue | undefined {
+  if (!row || !Object.prototype.hasOwnProperty.call(row, columnKey)) {
+    return undefined;
+  }
+
+  return row[columnKey];
+}
+
 function renderControl(
   field: FormFieldDefinition,
   value: FormFieldValue | undefined,
@@ -379,6 +658,37 @@ function renderControl(
     | undefined,
   dataSourceContext: FormRendererDataSourceContext | undefined,
   dataSourceState: FormDataSourceFieldState,
+): ReactElement {
+  if (isFormDataSourceFieldDefinition(field)) {
+    return renderDynamicOptionControl(
+      field,
+      value,
+      readonly,
+      onChange,
+      dataSourceContext,
+      dataSourceState,
+    );
+  }
+
+  return renderStaticControl(field, value, readonly, onChange, onUploadAttachment);
+}
+
+/**
+ * Every control that does not depend on a DataSource. Split out of
+ * {@link renderControl} so a table cell can reuse the same controls without
+ * carrying a field-level DataSource state it has no use for (ADR 16 §3.9).
+ */
+function renderStaticControl(
+  field: FormFieldDefinition,
+  value: FormFieldValue | undefined,
+  readonly: boolean,
+  onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
+  onUploadAttachment:
+    | ((
+        field: FormFieldDefinition,
+        file: File,
+      ) => Promise<{ readonly id: string }>)
+    | undefined,
 ): ReactElement {
   if (field.type === 'textarea') {
     return (
@@ -406,17 +716,6 @@ function renderControl(
           onChange(field.fieldKey, event.target.checked)
         }
       />
-    );
-  }
-
-  if (isFormDataSourceFieldDefinition(field)) {
-    return renderDynamicOptionControl(
-      field,
-      value,
-      readonly,
-      onChange,
-      dataSourceContext,
-      dataSourceState,
     );
   }
 

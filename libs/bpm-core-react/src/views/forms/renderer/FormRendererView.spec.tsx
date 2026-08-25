@@ -45,7 +45,16 @@ jest.mock('@mezzanine-ui/react', () => {
   function MockButton(
     props: Readonly<Record<string, unknown>>,
   ): ReactElement {
-    return <button type="button">{props.children as ReactNode}</button>;
+    return (
+      <button
+        data-mock-button={String(props.children ?? '')}
+        disabled={props.disabled === true}
+        onClick={props.onClick as never}
+        type="button"
+      >
+        {props.children as ReactNode}
+      </button>
+    );
   }
 
   function MockOptionControl(
@@ -148,6 +157,64 @@ jest.mock('@mezzanine-ui/react', () => {
     return <div>{props.children as ReactNode}</div>;
   }
 
+  function MockInput(props: Readonly<Record<string, unknown>>): ReactElement {
+    return (
+      <input
+        data-mock-input=""
+        onChange={props.onChange as never}
+        value={String(props.value ?? '')}
+      />
+    );
+  }
+
+  function MockTable(props: Readonly<Record<string, unknown>>): ReactElement {
+    const columns = Array.isArray(props.columns) ? props.columns : [];
+    const rows = Array.isArray(props.dataSource) ? props.dataSource : [];
+    const actions = props.actions as
+      | { readonly render: (row: unknown) => readonly unknown[] }
+      | undefined;
+
+    return (
+      <div data-mock-table="">
+        {rows.map((row, rowIndex): ReactElement => (
+          <div data-mock-table-row={String(rowIndex)} key={rowIndex}>
+            {columns.map((column, columnIndex): ReactElement => {
+              const entry = column as {
+                readonly key: string;
+                readonly render?: (row: unknown) => ReactNode;
+              };
+
+              return (
+                <span data-mock-table-cell={entry.key} key={columnIndex}>
+                  {entry.render ? entry.render(row) : null}
+                </span>
+              );
+            })}
+            {(actions?.render(row) ?? []).map((action, actionIndex): ReactElement => {
+              const entry = action as {
+                readonly disabled?: () => boolean;
+                readonly name: string;
+                readonly onClick: () => void;
+              };
+
+              return (
+                <button
+                  data-mock-table-action={entry.name}
+                  disabled={entry.disabled?.() === true}
+                  key={actionIndex}
+                  onClick={entry.onClick}
+                  type="button"
+                >
+                  {entry.name}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return {
     AutoComplete: (props: Readonly<Record<string, unknown>>): ReactElement =>
       MockOptionControl(props, 'AutoComplete'),
@@ -156,10 +223,11 @@ jest.mock('@mezzanine-ui/react', () => {
     DatePicker: MockBasicControl,
     DateTimePicker: MockBasicControl,
     FormField: MockFormField,
-    Input: MockBasicControl,
+    Input: MockInput,
     RadioGroup: MockRadioGroup,
     Select: (props: Readonly<Record<string, unknown>>): ReactElement =>
       MockOptionControl(props, 'Select'),
+    Table: MockTable,
     Textarea: MockBasicControl,
     Toggle: MockBasicControl,
     Typography: MockTypography,
@@ -394,6 +462,267 @@ describe('FormRenderer DataSource controls', () => {
   });
 
 });
+
+describe('FormRenderer table field', () => {
+  it('starts with minRows rows seeded from the column defaults', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTableSchema({ minRows: 2 }),
+    });
+
+    try {
+      expect(readRowCount(harness.container)).toBe(2);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('adds and removes rows within the configured bounds', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTableSchema({ maxRows: 2, minRows: 1 }),
+    });
+
+    try {
+      expect(readRowCount(harness.container)).toBe(1);
+      expect(
+        readTableAction(harness.container, '刪除此列', 0)?.disabled,
+      ).toBe(true);
+
+      clickRendererButton(harness.container, '新增一列');
+      expect(readRowCount(harness.container)).toBe(2);
+      expect(readAddRowButton(harness.container)?.disabled).toBe(true);
+      expect(
+        readTableAction(harness.container, '刪除此列', 0)?.disabled,
+      ).toBe(false);
+
+      clickTableAction(harness.container, '刪除此列', 0);
+      expect(readRowCount(harness.container)).toBe(1);
+      expect(readAddRowButton(harness.container)?.disabled).toBe(false);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('writes a cell edit into its own row only', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTableSchema({ minRows: 2 }),
+    });
+
+    try {
+      typeIntoCell(harness.container, 'name', 1, 'Bolt');
+
+      expect(harness.readValues().items).toEqual([
+        { inStock: false },
+        { inStock: false, name: 'Bolt' },
+      ]);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  // The seeded `inStock: false` surviving both edits is what proves the initial
+  // rows came from the column defaults rather than being empty records.
+  it('keeps a cleared text cell as an empty string beside its seeded siblings', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTableSchema({ minRows: 1 }),
+    });
+
+    try {
+      typeIntoCell(harness.container, 'name', 0, 'Bolt');
+      expect(harness.readValues().items).toEqual([
+        { inStock: false, name: 'Bolt' },
+      ]);
+
+      typeIntoCell(harness.container, 'name', 0, '');
+      expect(harness.readValues().items).toEqual([
+        { inStock: false, name: '' },
+      ]);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('addresses a cell error by its instance path', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      errors: { 'items[1].name': '品項為必填欄位。' },
+      schema: createTableSchema({ minRows: 2 }),
+    });
+
+    try {
+      expect(
+        harness.container.querySelector('[data-form-field-key="items[1].name"]'),
+      ).not.toBeNull();
+      expect(harness.container.textContent).toContain('品項為必填欄位。');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('hides row actions and the add button in readonly mode', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: createTableSchema({ minRows: 1 }),
+    });
+
+    try {
+      expect(readRowCount(harness.container)).toBe(1);
+      expect(readAddRowButton(harness.container)).toBeNull();
+      expect(readTableAction(harness.container, '刪除此列', 0)).toBeNull();
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
+interface RendererHarness {
+  readonly container: HTMLElement;
+  readonly readValues: () => FormRendererValues;
+  readonly root: ReturnType<typeof createRoot>;
+}
+
+async function mountRenderer({
+  errors,
+  readonly,
+  schema,
+}: {
+  readonly errors?: Readonly<Record<string, string>>;
+  readonly readonly?: boolean;
+  readonly schema: FormDefinitionSchema;
+}): Promise<RendererHarness> {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  let latest: FormRendererValues = {};
+
+  await act(async (): Promise<void> => {
+    root.render(
+      <FormRenderer
+        errors={errors ?? {}}
+        onChange={(nextValues): void => {
+          latest = nextValues;
+        }}
+        readonly={readonly ?? false}
+        schema={schema}
+        uiSchema={createUiSchema()}
+      />,
+    );
+  });
+
+  return {
+    container,
+    readValues: (): FormRendererValues => latest,
+    root,
+  };
+}
+
+async function unmountRenderer(harness: RendererHarness): Promise<void> {
+  await act(async (): Promise<void> => {
+    harness.root.unmount();
+  });
+  harness.container.remove();
+}
+
+function createTableSchema({
+  maxRows,
+  minRows,
+}: {
+  readonly maxRows?: number;
+  readonly minRows?: number;
+}): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        columns: [
+          { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+          {
+            defaultValue: false,
+            fieldKey: 'inStock',
+            label: '有庫存',
+            required: false,
+            type: 'boolean',
+          },
+        ],
+        fieldKey: 'items',
+        label: '請購明細',
+        ...(typeof maxRows === 'number' ? { maxRows } : {}),
+        ...(typeof minRows === 'number' ? { minRows } : {}),
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function readRowCount(container: HTMLElement): number {
+  return container.querySelectorAll('[data-mock-table-row]').length;
+}
+
+function readAddRowButton(container: HTMLElement): HTMLButtonElement | null {
+  return container.querySelector('[data-mock-button="新增一列"]');
+}
+
+function readTableAction(
+  container: HTMLElement,
+  actionName: string,
+  rowIndex: number,
+): HTMLButtonElement | null {
+  return container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-action="${actionName}"]`,
+  );
+}
+
+function clickRendererButton(container: HTMLElement, label: string): void {
+  const button = container.querySelector(
+    `[data-mock-button="${label}"]`,
+  ) as HTMLButtonElement | null;
+
+  if (!button) {
+    throw new Error(`Button ${label} was not rendered.`);
+  }
+
+  act((): void => {
+    button.click();
+  });
+}
+
+function clickTableAction(
+  container: HTMLElement,
+  actionName: string,
+  rowIndex: number,
+): void {
+  const action = readTableAction(container, actionName, rowIndex);
+
+  if (!action) {
+    throw new Error(`Table action ${actionName} row ${rowIndex} is missing.`);
+  }
+
+  act((): void => {
+    action.click();
+  });
+}
+
+function typeIntoCell(
+  container: HTMLElement,
+  columnKey: string,
+  rowIndex: number,
+  value: string,
+): void {
+  const input = container.querySelector(
+    `[data-mock-table-row="${rowIndex}"] [data-mock-table-cell="${columnKey}"] input`,
+  ) as HTMLInputElement | null;
+
+  if (!input) {
+    throw new Error(`Cell ${columnKey} of row ${rowIndex} was not rendered.`);
+  }
+
+  act((): void => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
 
 function createControlSchema(): FormDefinitionSchema {
   return {
