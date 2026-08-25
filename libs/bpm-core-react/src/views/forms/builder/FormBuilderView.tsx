@@ -444,10 +444,16 @@ const FIELD_SETTINGS_FORM_STYLE: CSSProperties = {
   gap: 14,
 };
 
+// `auto-fit` alone spread these settings across six columns on a wide screen,
+// so a label and its input could sit 1,500px apart while the text inputs were
+// squeezed narrower than their own placeholder. Two columns is the readable
+// shape; rows that need the full width opt in with `gridColumn: 1 / -1`.
 const FIELD_SETTINGS_SECTION_STYLE: CSSProperties = {
   display: 'grid',
   columnGap: 16,
-  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 360px))',
+  justifyContent: 'start',
+  maxWidth: 736,
   rowGap: 8,
 };
 
