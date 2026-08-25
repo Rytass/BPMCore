@@ -378,6 +378,24 @@ Validation:
    移進展開區；欄位設定 grid 從 `auto-fit` 六欄收斂為兩欄上限；必填 toggle 去掉與
    表頭重複的文字。draggable 與 expandable 實測可共存。
 
+5. **表格內輸入格尺寸**（`db79e5e`、`1928f61`）。填寫頁的 cell 控制項全部維持預設
+   `main` 尺寸，但表格本身是 `sub`，數字欄量到 38px 而鄰欄 30px。改為把 size 一路
+   傳進控制項，並用 `rowHeightPreset="roomy"` 讓列高綁 design token 而不是自訂值。
+   Builder 的欄清單同樣處理（型別 select 原本是預設尺寸）。**Mezzanine 限制**：
+   `DatePicker`／`DateTimePicker` 沒有 `size` prop，日期欄維持預設高度。
+
+6. **Codex 第二意見的採納**（`1928f61`）。codex 提的 master-detail 主結構我沒有採用
+   （理由見下），但它指出的三個具體問題是對的，已修：選取用 key 追蹤在欄 key 暫時
+   重複時會選到別列；刪除選取欄後應留鄰欄開著；必填 toggle 拿掉重複文字後失去
+   accessible name，改用 `inputProps.aria-label`。它另外查證出「表格層的提示文字是
+   空設定」（`FormTableField` 從未讀 `field.placeholder`），已在 builder 隱藏。
+
+   **未採用 master-detail 的理由**：設定面板實測寬度約 830px，左右切分後 list 與
+   detail 各約 400px——list 要塞下拖曳、選取、標題、型別、必填、刪除，detail 要塞
+   DataSource 參數綁定，兩邊都會比現在更擠。codex 的提案假設了更寬的版面。就地展開
+   則讓設定與所屬列在物理上相鄰，「在設定哪一欄」不需要任何額外訊號。codex 對展開
+   列的疑慮（選項多時很高、會把後續列推遠）成立，若日後欄數常態超過 8 欄再重新評估。
+
 ## 待辦（依痛感排序）
 
 **A. 提示與回饋**
