@@ -1,6 +1,6 @@
 # 17 — 表格欄位開發 Phase
 
-- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0 已實作，P1 可啟動
+- **狀態**：已確認（2026-08-25 ADR 16 Accepted）；P0 VERIFIED，P1 可啟動
 - **規劃日期**：2026-08-24
 - **權威決策**：[16 — ADR：表格欄位架構](./16-form-table-field-adr.md)
 - **完成定義**：所有 Phase gate、demo seed 場景、repository-wide e2e 與文件同步完成
@@ -13,7 +13,7 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 
 | Phase | 交付                                      | 相依 | 狀態        |
 | ----- | ----------------------------------------- | ---- | ----------- |
-| P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | IMPLEMENTED |
+| P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED    |
 | P1    | 後端送出驗證 + runtime 韌性               | P0   | PLANNED     |
 | P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED     |
 | P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED     |
@@ -68,8 +68,13 @@ table、`form["items"][0]` bracket 形式條件、`maxRows: 0`、無 maxRows 但
 `minRows: 500`、column defaultValue 型別錯誤、column select 無 option source 等）
 結果皆符合預期；同時確認「top-level fieldKey 與某 table 的 column key 同名」與
 「兩張 table 使用相同 column key」維持合法（ADR §3.1 的命名空間分層）。
-**狀態停在 IMPLEMENTED**：獨立 verifier 未能完成簽署，VERIFIED 待未參與實作者
-重跑核對後推進。
+**獨立驗證（2026-08-25，未參與實作者）**：ADR §4 九條逐條核對，七條有直接對應
+實作、一條（`FIELD` 指向 table 內部欄位）功能有擋但走通用訊息、一條（column
+dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form.ts` 全部
+43 個 export 零遺漏；`FormFieldValue` 讀值點全掃無 crash 風險。驗證者以獨立的
+15 組對抗性 schema 實測，結果與實作者的 12 組一致。Gate 於驗證者環境重跑亦全綠
+（55 suites / 531 tests）。**必修項：0**。兩項非阻擋發現已分別記入 P1 scope
+（`writeValueAtPath` 非 no-op）與下方建議清單。
 
 **ADR 未載明而在 P0 自決的項目**（皆取最小、additive、可回退解）
 
@@ -92,6 +97,17 @@ table、`form["items"][0]` bracket 形式條件、`maxRows: 0`、無 maxRows 但
    ROW_FIELD 回 `null`、`readStringArrayValue`／`readSelectedValues` 加元素型別檢查
    以避免把列記錄當字串處理。
 
+**獨立驗證留下的非阻擋建議**
+
+- `FIELD` binding 若寫的是某表格的 column key，目前落在通用訊息
+  「does not match a schema field」而非專屬訊息。效果正確（仍被擋），純措辭；
+  P2 做 builder binding UI 時順手改即可。另注意：column key 與某 top-level 純量
+  欄位同名時，`FIELD` 會合法解析到該 top-level 欄位——這正是 ADR §3.4「FIELD 只
+  指 top-level」的預期語意，不是漏洞。
+- 「table 未出現在 uiSchema.layout」不會被擋。查證為既有行為：lint 從來只單向
+  檢查 layout 項目必須對應到 schema 欄位，扁平欄位同樣不檢查反向覆蓋率，非本次
+  引入的缺口。
+
 ## P1 — 後端送出驗證與 runtime 韌性
 
 **Scope**
@@ -100,10 +116,15 @@ table、`form["items"][0]` bracket 形式條件、`maxRows: 0`、無 maxRows 但
   （形狀、列數、未知 column key、逐列 required；錯誤訊息用 instance path）。
 - Case title：`readFirstCaseTitleField` 跳過 table；`readFieldValueLabel` 對
   table 值顯示列數（client lib `workflow-api.ts`）。
-- Runtime 防呆驗證（unit test 實證，不改行為）：`workflow-condition-evaluator`
-  與 `readValueAtPath`／`writeValueAtPath` 遇 table 值安全 no-op；attachment
-  掃描 `readAttachmentRefsFromFormData` 對 row record 的遞迴行為確認（V1 無
-  file_upload column，需確認不誤判）。
+- Runtime 防呆驗證：`workflow-condition-evaluator` 與 `readValueAtPath` 遇 table
+  值安全回 `undefined`（P0 已核對屬實，只需補 unit test）；attachment 掃描
+  `readAttachmentRefsFromFormData` 是通用遞迴，可安全走過 row record，補測即可
+  （V1 無 file_upload column，需確認不誤判）。
+  **`writeValueAtPath` 需改行為，不只是補測**：`writeNestedValue`
+  （`workflow-engine.service.ts:5691-5717`）在中繼值不是 record 時用 `{}` 取代，
+  因此 `SET_FORM_FIELD` 路徑若指向 `items.qty`，會把整個表格的列陣列覆寫成
+  `{ qty: ... }`，不是 ADR §3.8 所述的 no-op。P0 的獨立驗證發現，lint 已擋下
+  已發布模板走到這條路徑，但縱深防禦這一層要在 P1 補上。
 - 條件 lint：發布時擋下引用 table 內部 path 的 edge structured condition
   （ADR §3.8）。form schema 側的 `visibleWhen`／`requiredWhen`／`readonlyWhen`
   已於 P0 完成，本 phase 只補 workflow 發布路徑那一半。
