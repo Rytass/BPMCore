@@ -1203,6 +1203,10 @@ export function FormBuilderView({
             : column,
         ),
       }));
+      // A new type brings its own settings — options for a select, a range for
+      // a number — so put the designer in front of them instead of leaving the
+      // panel on whichever column was selected before.
+      setSelectedColumnKey(confirmation.columnKey);
 
       return;
     }

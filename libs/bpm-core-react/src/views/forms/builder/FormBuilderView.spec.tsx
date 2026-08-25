@@ -597,6 +597,27 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  // Changing a column's type replaces its settings, so leaving the panel on
+  // another column hides the very fields the change created.
+  it('selects the column whose type was just changed', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([createTableFieldWithSelectColumn()]),
+    );
+
+    try {
+      clickTableAction(harness.container, '設定此欄', 0);
+      expect(harness.container.textContent).toContain('欄設定：品項');
+
+      selectTableCellOption(harness.container, 'type', 1, 'number');
+      confirmModal(harness.container);
+
+      expect(harness.container.textContent).toContain('欄設定：成本中心');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   // The publish lint speaks in schema paths and parameter keys; the designer is
   // looking at labels, so the builder has to translate before showing it.
   it('names the field, column and parameter when the lint rejects a binding', async (): Promise<void> => {
