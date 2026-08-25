@@ -563,6 +563,11 @@ const DATA_SOURCE_SETTINGS_STYLE: CSSProperties = {
   gridColumn: '1 / -1',
 };
 
+const DATA_SOURCE_LINT_RESULT_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 2,
+};
+
 const DATA_SOURCE_PARAMETERS_STYLE: CSSProperties = {
   display: 'grid',
   gap: 8,
@@ -2299,7 +2304,7 @@ export function FormBuilderView({
       <div style={DATA_SOURCE_SETTINGS_STYLE}>
         {dataSourceCatalogState === 'loading' ? (
           <Typography color="text-neutral" variant="body">
-            正在載入可用的 DataSource Catalog…
+            正在載入可用的選項來源…
           </Typography>
         ) : null}
         {dataSourceCatalogError ? (
@@ -2309,12 +2314,12 @@ export function FormBuilderView({
         ) : null}
         {!descriptor ? (
           <Typography color="text-warning" variant="body">
-            目前來源版本未出現在 Catalog；會保留原設定，但在環境 lint 通過前不可發布。
+            找不到目前設定的來源版本。設定會保留，但這張表單在來源恢復前無法發布。
           </Typography>
         ) : null}
         {unsupportedCurrentSource ? (
           <Typography color="text-error" variant="body">
-            目前來源不支援此控制項或超出 bounded list 限制，請選擇其他版本。
+            這個來源不支援目前的控制項，請改選其他來源。
           </Typography>
         ) : null}
         {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
@@ -2330,29 +2335,42 @@ export function FormBuilderView({
         ) : null}
         {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
           <Typography color="text-warning" variant="body">
-            沒有符合目前控制項能力的已註冊來源。
+            沒有支援目前控制項的已註冊來源。
           </Typography>
         ) : null}
         <div style={DATA_SOURCE_CHECK_ROW_STYLE}>
+          {/*
+            The handler lints the whole form, not this one source, so the label
+            says so — and the loading state stays on the button rather than
+            swapping the text and shifting everything beside it.
+          */}
           <Button
             disabled={dataSourceLintLoading}
+            loading={dataSourceLintLoading}
             onClick={(): void => void handleLintDataSourceSchema()}
             size="sub"
             type="button"
             variant="base-secondary"
           >
-            {dataSourceLintLoading ? '檢查中…' : '檢查來源設定'}
+            檢查全部動態選項設定
           </Button>
         </div>
         {dataSourceLint ? (
-          <Typography
-            color={dataSourceLint.length > 0 ? 'text-error' : 'text-success'}
-            variant="caption"
-          >
-            {dataSourceLint.length > 0
-              ? dataSourceLint.join('；')
-              : 'DataSource schema 與目前環境均通過驗證。'}
-          </Typography>
+          <div style={DATA_SOURCE_LINT_RESULT_STYLE}>
+            {dataSourceLint.length > 0 ? (
+              // One line each: joining them with a semicolon made a wall of
+              // text out of what is really a checklist.
+              dataSourceLint.map((message) => (
+                <Typography color="text-error" key={message} variant="caption">
+                  {message}
+                </Typography>
+              ))
+            ) : (
+              <Typography color="text-success" variant="caption">
+                這張表單的動態選項設定都可以使用。
+              </Typography>
+            )}
+          </div>
         ) : null}
       </div>
     );
@@ -2421,12 +2439,23 @@ export function FormBuilderView({
     return (
       <div key={parameter.key} style={DATA_SOURCE_PARAMETER_GRID_STYLE}>
         <BPMFormField
-          label={`${parameter.label ?? parameter.key}${parameter.required ? '（必填）' : '（選填）'}`}
-          // Label above, control below, explanation under the control: the
-          // three used to sit in an L with the explanation off to the right,
-          // so reading one binding meant looking in three directions.
+          hintText={readBindingHint(
+            binding,
+            parameter,
+            scope,
+            fieldOptions.length + rowFieldOptions.length,
+          )}
+          label={parameter.label ?? parameter.key}
+          // The marker renders whenever it is given, so a required parameter
+          // would read as "* 廠別（選填）" if it were passed unconditionally.
+          {...(parameter.required ? {} : { labelOptionalMarker: '（選填）' })}
+          // Label above, control below, explanation in the field's own hint
+          // slot: the three used to sit in an L with the explanation off to
+          // the right, so reading one binding meant looking three ways.
           layout={FormFieldLayout.VERTICAL}
           name={`dataSourceParameter_${parameter.key}`}
+          required={parameter.required}
+          showHintTextIcon={false}
         >
           <Select
             clearable={false}
@@ -2444,33 +2473,15 @@ export function FormBuilderView({
             value={readSelectOption(bindingOptions, bindingId)}
           />
         </BPMFormField>
-        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT' ? (
-          renderDataSourceConstantEditor(
-            field,
-            parameter.key,
-            parameter.type,
-            binding,
-            scope,
-          )
-        ) : readFormDataSourceBindingValueKind(binding) === 'FIELD' ? (
-          <Typography color="text-neutral" variant="caption">
-            選項會依表單欄位「{readBindingSourceLabel(binding, scope)}
-            」目前填的值而變動。
-          </Typography>
-        ) : readFormDataSourceBindingValueKind(binding) === 'ROW_FIELD' ? (
-          <Typography color="text-neutral" variant="caption">
-            每一列的選項會依該列「{readBindingSourceLabel(binding, scope)}
-            」欄目前填的值而變動。
-          </Typography>
-        ) : (
-          <Typography color="text-neutral" variant="caption">
-            {parameter.required
-              ? fieldOptions.length + rowFieldOptions.length > 0
-                ? '請選擇相容的欄位或固定常數。'
-                : `目前沒有型別相容的欄位可以帶入這個參數，請先新增一個${readParameterTypeLabel(parameter.type)}欄位，或改用固定常數。`
-              : '此參數可不綁定。'}
-          </Typography>
-        )}
+        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT'
+          ? renderDataSourceConstantEditor(
+              field,
+              parameter.key,
+              parameter.type,
+              binding,
+              scope,
+            )
+          : null}
       </div>
     );
   }
@@ -2479,6 +2490,39 @@ export function FormBuilderView({
     type: FormDataSourceDescriptorRecord['parameters'][number]['type'],
   ): string {
     return PARAMETER_TYPE_LABELS[type];
+  }
+
+  /**
+   * What this binding will do at filling time, in one line. Lives in the form
+   * field's own hint slot so it sits directly under the control it describes.
+   */
+  function readBindingHint(
+    binding: ReturnType<typeof readFormDataSourceBinding>,
+    parameter: FormDataSourceDescriptorRecord['parameters'][number],
+    scope: DataSourceBindingScope,
+    compatibleFieldCount: number,
+  ): string {
+    const kind = readFormDataSourceBindingValueKind(binding);
+
+    if (kind === 'CONSTANT') {
+      return '這個條件永遠使用下方填的固定值。';
+    }
+
+    if (kind === 'FIELD') {
+      return `選項會依表單欄位「${readBindingSourceLabel(binding, scope)}」目前填的值而變動。`;
+    }
+
+    if (kind === 'ROW_FIELD') {
+      return `每一列的選項會依該列「${readBindingSourceLabel(binding, scope)}」欄目前填的值而變動。`;
+    }
+
+    if (!parameter.required) {
+      return '未設定時不會帶入這項條件，來源會回傳未經此條件篩選的選項。';
+    }
+
+    return compatibleFieldCount > 0
+      ? '請選擇要帶入的表單欄位，或改用固定值。'
+      : `目前沒有型別相容的欄位可以帶入這個條件，請先新增一個${readParameterTypeLabel(parameter.type)}欄位，或改用固定值。`;
   }
 
   /**
@@ -2517,6 +2561,30 @@ export function FormBuilderView({
     binding: FormDataSourceBinding | null,
     scope: DataSourceBindingScope,
   ): ReactElement {
+    return (
+      <BPMFormField
+        label="固定值"
+        layout={FormFieldLayout.VERTICAL}
+        name={`dataSourceConstant_${parameterKey}`}
+      >
+        {renderDataSourceConstantControl(
+          field,
+          parameterKey,
+          parameterType,
+          binding,
+          scope,
+        )}
+      </BPMFormField>
+    );
+  }
+
+  function renderDataSourceConstantControl(
+    field: FormDataSourceOptionFieldDefinition,
+    parameterKey: string,
+    parameterType: FormDataSourceParameterType,
+    binding: FormDataSourceBinding | null,
+    scope: DataSourceBindingScope,
+  ): ReactElement {
     const value = readFormDataSourceBindingValue(field, parameterKey);
 
     if (parameterType === 'BOOLEAN') {
@@ -2548,7 +2616,7 @@ export function FormBuilderView({
     if (parameterType === 'STRING_ARRAY') {
       return (
         <Typography color="text-warning" variant="caption">
-          STRING_ARRAY 參數請綁定複選欄位；目前不接受固定常數。
+          這個條件要收多個值，請綁定一個複選欄位；不接受固定值。
         </Typography>
       );
     }
@@ -3384,10 +3452,12 @@ function readDataSourceTraits(
       : '不支援搜尋',
     descriptor.paginationMode === 'CURSOR'
       ? `捲動載入更多（每次 ${descriptor.pageSize} 筆）`
-      : '一次載入完整清單',
+      : `一次載入完整清單（最多 ${descriptor.maximumResultCount} 筆）`,
+    // What separates the two policies is whether a returned case can reuse the
+    // labels it already stored, so the tag says that rather than naming them.
     descriptor.revalidationPolicy === 'ALWAYS'
-      ? '每次送出都重新驗證'
-      : '值或條件變更時才重新驗證',
+      ? '退回重送時一律重新確認'
+      : '值與條件未變時沿用上次結果',
   ];
 }
 

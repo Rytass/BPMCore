@@ -60,6 +60,10 @@ jest.mock('@mezzanine-ui/react', () => {
       <div data-mock-form-field={String(props.name ?? '')}>
         <span>{String(props.label ?? '')}</span>
         {props.children as ReactNode}
+        {/* The hint slot carries the explanation of what a binding will do. */}
+        {props.hintText ? (
+          <span data-mock-form-field-hint="">{String(props.hintText)}</span>
+        ) : null}
       </div>
     );
   }
@@ -786,7 +790,7 @@ describe('FormBuilderView field settings', () => {
       expandTableRow(harness.container, 1);
 
       await act(async (): Promise<void> => {
-        clickButton(harness.container, '檢查來源設定');
+        clickButton(harness.container, '檢查全部動態選項設定');
       });
 
       expect(harness.container.textContent).toContain(
