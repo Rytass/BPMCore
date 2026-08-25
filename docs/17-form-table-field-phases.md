@@ -11,13 +11,13 @@ VERIFIED 由未參與實作的獨立 verifier 推進。
 
 ## Phase 總覽
 
-| Phase | 交付                                      | 相依 | 狀態        |
-| ----- | ----------------------------------------- | ---- | ----------- |
-| P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED    |
-| P1    | 後端送出驗證 + runtime 韌性               | P0   | PLANNED     |
-| P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED     |
-| P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED     |
-| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED     |
+| Phase | 交付                                      | 相依 | 狀態         |
+| ----- | ----------------------------------------- | ---- | ------------ |
+| P0    | Shared 契約 + 結構 lint + cel-js 驗證報告 | —    | VERIFIED     |
+| P1    | 後端送出驗證 + runtime 韌性               | P0   | IMPLEMENTED  |
+| P2    | 前端靜態表格（Builder + Renderer）        | P1   | PLANNED      |
+| P3    | Cell 層級 DataSource（全鏈路）            | P2   | PLANNED      |
+| P4    | E2E golden path + demo seed + 文件 + 發布 | P3   | PLANNED      |
 
 ## P0 — Shared 契約與結構 lint
 
@@ -137,6 +137,91 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
 - 送出／重新送出對合法與非法 table formData 的 service-level 測試
   （含 min/maxRows、未知 key、非 record 列）。
 - 既有扁平表單的送出行為 regression 全綠。
+
+**實作結果**（2026-08-25）
+
+異動檔案：
+
+- `libs/bpm-core/src/lib/workflow-engine/workflow-engine.service.ts`：
+  `validateSubmittedFormData` 把 table 從扁平的「missing required fields」清單移
+  出，改走 `validateSubmittedTableValue` 逐條回報 instance path 錯誤（形狀、列
+  數上下限、未知 column key、非 primitive cell、逐列 required）；
+  `writeNestedValue` 在中繼值已是非 record 時改為 no-op；
+  `evaluateFormConditionExpression` 對 table operand 直接回 fallback。
+- `libs/bpm-core/src/lib/form/form-table-reference.ts`（新增，內部模組、不從
+  package index 匯出）：`readTableFieldKeys`／`referencesTableInternals`／
+  `isTableInternalFieldKey`。
+- `libs/bpm-core/src/lib/form/form-schema.validator.ts`：改用上述共用 helper，
+  移除本地的 `referencesTableInternals` 副本。
+- `libs/bpm-core/src/lib/template/template.service.ts`：
+  `validatePublishableVersion` 新增 `lintWorkflowTableReferences`，對所有 CEL
+  運算式（含 `initiatorPolicyCel`、entry condition、approver expression、webhook
+  payload、SET_FORM_FIELD value）與 edge structured condition 的
+  `conditionFieldKey` 阻擋 table 內部 path。
+- `libs/bpm-core-client/src/lib/form/form-rendering.ts`：
+  `evaluateConditionExpression` 對 table operand 回 fallback（與後端同語意）。
+- `libs/bpm-core-client/src/lib/workflow/workflow-api.ts`：
+  `readFirstCaseTitleField` 跳過 table；`readFieldValueLabel` 對 table 回「N 列」。
+
+新測試：`workflow-condition-evaluator.spec.ts`（新檔，6 例），以及
+`workflow-engine.service.spec.ts`（15 例）、`template.service.spec.ts`（5 例）、
+`attachment.service.spec.ts`（2 例）、`workflow-api.spec.ts`（2 例）、
+`form-rendering.spec.ts`（3 例）的新增段落。
+
+**Gate 結果**：`pnpm typecheck` 6 專案全過、`pnpm lint` 0 error（2 個既有
+warning，非本次引入）、`nx run-many -t test --skip-nx-cache` 6 專案
+564 tests 全過（P0 為 530）。`docs/api-reference.md` 不需更新——本 phase 沒有
+新增、移除或改名任何 `libs/*/src/**` 的公開 export，`form-table-reference.ts`
+刻意不從 `lib/form/index.ts` 匯出，比照 ADR 14 §3.7 的
+`form-data-source.validation.ts`。
+
+**ADR 未載明而在 P1 自決的項目**（皆取最小、additive、可回退解）
+
+1. **table 錯誤與扁平 required 錯誤分開拋出**：扁平欄位維持既有
+   `Form data is missing required fields: <label>` 訊息一字不動（regression
+   保護），table 另以 `'; '` 串接 instance path 錯誤。同一次送出若兩者都有，
+   先報扁平那批。
+2. **列形狀錯誤優先於列數錯誤**：某列不是物件或帶了未知 column 時，先只回報
+   形狀問題，不再疊加 min/maxRows 訊息——列數在形狀壞掉時沒有意義。
+3. **required 與 minRows 取較嚴格者**：`required: true` 且 `minRows` 未設或為
+   0 時視為至少 1 列（ADR §3.1 的「至少一列」）；`minRows > 0` 但
+   `required: false` 時 minRows 仍然生效。
+4. **`writeNestedValue` 的 no-op 條件**：只在「中繼值已存在且不是 record」時
+   no-op（陣列、字串、數字、boolean）。中繼值為 `undefined` 或 `null` 時維持
+   既有的「建立巢狀物件」行為，避免動到與表格無關的既有 SET_FORM_FIELD 路徑。
+   單段寫入（`fieldPath` 直接就是 table 的 fieldKey）維持原行為不變，屬 ADR
+   未定義的範圍，記入下方待辦。
+5. **form-level 條件遇 table operand 一律回 fallback**（前後端同步）：ADR §3.8
+   只說明 lint 禁止引用 table 內部 path，未定義「條件直接以 table 欄位為
+   operand」的求值語意。原本的行為是掉進多選欄位的字串比對分支，等於用列記錄
+   跟字串比大小，會意外決定 visibility。回 fallback 表示「V1 不支援 table 作為
+   form-level 條件 operand」，與 §7「Cell 層級的 workflow 條件 operand V1 不
+   開放」同一方向。edge condition 那邊不受影響——它走 `size()` 版本的
+   IS_FILLED／IS_EMPTY，語意正確（見附錄 A）。
+6. **`readFieldValueLabel` 的 table 分支是縱深防禦**：`readFirstCaseTitleField`
+   既然已跳過 table，該分支目前沒有可達的呼叫端（全 repo 只有 case title 一個
+   caller）。仍依 ADR §3.8 實作並加註解，但不為此新增公開 export 來製造可測
+   路徑。
+
+**P1 期間確認、不改行為的項目**
+
+- `workflow-condition-evaluator` 的 `IS_FILLED`／`IS_EMPTY` 對陣列本來就是看
+  長度，table 語意天然正確；`conditionFieldKey` 是單層查表，`items.qty` 只會
+  拿到 `undefined`，不會誤中。已補 6 個 unit test 鎖住。
+- `readValueAtPath` 的 `isRecord` 已排除陣列，路徑穿過 table 值會回
+  `undefined`（DYNAMIC_FORM approver resolver 因此安全）。
+- `readAttachmentRefsFromFormData` 是通用遞迴，會安全走過列記錄；V1 無
+  `file_upload` column，一般 cell 值不會被誤判為附件。已補 2 個 test。
+  **既有限制（非本次引入）**：任何欄位若存了 UUID 形狀的字串，都會被掃描為
+  附件 ref，扁平 text 欄位一直如此；表格只是多了一個同樣形狀的位置。
+
+**待後續 phase 或 ADR 處理**
+
+- `SET_FORM_FIELD` 的 `fieldPath` 直接指向 table 欄位本身（單段路徑）時，仍會
+  用 CEL 求值結果整包覆寫該欄位的值。lint 不檢查 `fieldPath` 是否對得上
+  schema，這在扁平欄位時代就是如此。要擋需要新增「fieldPath 必須對應 schema
+  欄位且不得為 table」的發布期檢查，屬 ADR §7「`SET_FORM_FIELD` 指向 table
+  內部」條目的延伸，記入 ADR Review Triggers 候選，不在 P1 擴大實作。
 
 ## P2 — 前端靜態表格（Builder + Renderer）
 
