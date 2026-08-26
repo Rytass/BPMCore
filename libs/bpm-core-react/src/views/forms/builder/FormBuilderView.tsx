@@ -617,8 +617,11 @@ const TABLE_COLUMNS_HEADER_STYLE: CSSProperties = {
   justifyContent: 'space-between',
 };
 
+// One line: the name with a danger asterisk after it, rather than the name
+// above a word that says the same thing.
 const DATA_SOURCE_PARAMETER_NAME_STYLE: CSSProperties = {
-  display: 'grid',
+  alignItems: 'baseline',
+  display: 'flex',
   gap: 2,
 };
 
@@ -2428,24 +2431,29 @@ export function FormBuilderView({
             <Typography variant="input">
               {row.parameter.label ?? row.parameter.key}
             </Typography>
-            <Typography
-              color={row.parameter.required ? 'text-error' : 'text-neutral'}
-              variant="caption"
-            >
-              {row.parameter.required ? '必填' : '選填'}
-            </Typography>
+            {row.parameter.required ? (
+              <Typography color="text-error" variant="input">
+                *
+              </Typography>
+            ) : null}
           </div>
         ),
         title: '條件',
+        width: 100,
       },
       {
         key: 'binding',
+        // A binding reads as「同列：費用類別」or a field label, which the
+        // control's own intrinsic width clips. `minWidth` is only honoured by a
+        // resizable table, so the room has to come from `width`.
+        width: 268,
         render: (row): ReactElement =>
           renderDataSourceParameterBinding(field, row.parameter, scope),
         title: '值從哪裡來',
       },
       {
         key: 'constant',
+        width: 140,
         // Its own column rather than a second control stacked inside the
         // binding cell: a fixed value belongs beside the choice that asked
         // for it, not under it.
@@ -2492,7 +2500,6 @@ export function FormBuilderView({
           columns={columns}
           dataSource={rows}
           fullWidth
-          rowHeightPreset="roomy"
           showHeader
           size="sub"
         />
@@ -2562,10 +2569,17 @@ export function FormBuilderView({
       >
         <Select
           clearable={false}
+          // Fills the column it was given rather than its own intrinsic width,
+          // which cut a binding name short.
+          fullWidth
           // The column header names the control now that each condition is a
           // row rather than a labelled field of its own.
+          // A long field label still outruns any column width, and a single
+          // select has no overflow affordance of its own, so the full text
+          // stays reachable on hover.
           inputProps={{
             'aria-label': `${parameter.label ?? parameter.key} 的值來源`,
+            title: readSelectOption(bindingOptions, bindingId)?.name ?? '',
           }}
           onChange={(option): void =>
             handleDataSourceBindingChange(
@@ -2599,25 +2613,27 @@ export function FormBuilderView({
   ): string {
     const kind = readFormDataSourceBindingValueKind(binding);
 
+    // Kept to a line: this is a table cell, and a paragraph in every row turns
+    // the rhythm the table was introduced for back into a wall of text.
     if (kind === 'CONSTANT') {
-      return '這個條件永遠使用下方填的固定值。';
+      return '固定值，不隨填寫變動';
     }
 
     if (kind === 'FIELD') {
-      return `選項會依表單欄位「${readBindingSourceLabel(binding, scope)}」目前填的值而變動。`;
+      return `隨欄位「${readBindingSourceLabel(binding, scope)}」變動`;
     }
 
     if (kind === 'ROW_FIELD') {
-      return `每一列的選項會依該列「${readBindingSourceLabel(binding, scope)}」欄目前填的值而變動。`;
+      return `隨同列「${readBindingSourceLabel(binding, scope)}」變動`;
     }
 
     if (!parameter.required) {
-      return '未設定時不會帶入這項條件，來源會回傳未經此條件篩選的選項。';
+      return '未設定，不做這層篩選';
     }
 
     return compatibleFieldCount > 0
-      ? '請選擇要帶入的表單欄位，或改用固定值。'
-      : `目前沒有型別相容的欄位可以帶入這個條件，請先新增一個${readParameterTypeLabel(parameter.type)}欄位，或改用固定值。`;
+      ? '尚未設定，選項無法載入'
+      : `沒有相容的${readParameterTypeLabel(parameter.type)}欄位，請改用固定值`;
   }
 
   /**
@@ -2687,6 +2703,7 @@ export function FormBuilderView({
       return (
         <Select
           clearable={false}
+          fullWidth
           onChange={(option): void =>
             updateDataSourceConstant(
               field,
@@ -2696,6 +2713,7 @@ export function FormBuilderView({
             )
           }
           options={options}
+          size="sub"
           value={readSelectOption(
             options,
             value === true ? 'true' : 'false',

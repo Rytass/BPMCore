@@ -650,9 +650,7 @@ describe('FormBuilderView field settings', () => {
         ),
       ).not.toBeNull();
       // The hint names the column the designer named, not the stored key.
-      expect(harness.container.textContent).toContain(
-        '每一列的選項會依該列「工廠」欄目前填的值而變動。',
-      );
+      expect(harness.container.textContent).toContain('隨同列「工廠」變動');
     } finally {
       await unmount(harness);
     }
