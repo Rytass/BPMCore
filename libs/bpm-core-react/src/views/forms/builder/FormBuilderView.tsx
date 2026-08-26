@@ -617,10 +617,14 @@ const TABLE_COLUMNS_HEADER_STYLE: CSSProperties = {
   justifyContent: 'space-between',
 };
 
-const DATA_SOURCE_PARAMETER_GRID_STYLE: CSSProperties = {
+const DATA_SOURCE_PARAMETER_NAME_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 2,
+};
+
+const DATA_SOURCE_PARAMETER_CELL_STYLE: CSSProperties = {
   display: 'grid',
   gap: 4,
-  justifyItems: 'start',
 };
 
 function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
@@ -2323,16 +2327,9 @@ export function FormBuilderView({
           </Typography>
         ) : null}
         {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
-        {descriptor && descriptor.parameters.length > 0 ? (
-          <div style={DATA_SOURCE_PARAMETERS_STYLE}>
-            <Typography color="text-neutral" variant="label-secondary">
-              這個來源需要的條件
-            </Typography>
-            {descriptor.parameters.map((parameter) =>
-              renderDataSourceParameterBinding(field, parameter, scope),
-            )}
-          </div>
-        ) : null}
+        {descriptor && descriptor.parameters.length > 0
+          ? renderDataSourceParameterTable(field, descriptor, scope)
+          : null}
         {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
           <Typography color="text-warning" variant="body">
             沒有支援目前控制項的已註冊來源。
@@ -2401,6 +2398,100 @@ export function FormBuilderView({
     );
   }
 
+  /**
+   * Every condition on one horizontal row. Stacked label/control/explanation
+   * groups read as a list of unrelated controls once a source needs more than
+   * one condition; a row keeps the condition, where its value comes from, and
+   * what that means side by side.
+   */
+  function renderDataSourceParameterTable(
+    field: FormDataSourceOptionFieldDefinition,
+    descriptor: FormDataSourceDescriptorRecord,
+    scope: DataSourceBindingScope,
+  ): ReactElement {
+    const rows = descriptor.parameters.map((parameter, index) => ({
+      key: parameter.key,
+      index,
+      parameter,
+    }));
+    const columns: TableColumn<(typeof rows)[number]>[] = [
+      {
+        key: 'parameter',
+        render: (row): ReactElement => (
+          <div style={DATA_SOURCE_PARAMETER_NAME_STYLE}>
+            <Typography variant="input">
+              {row.parameter.label ?? row.parameter.key}
+            </Typography>
+            <Typography
+              color={row.parameter.required ? 'text-error' : 'text-neutral'}
+              variant="caption"
+            >
+              {row.parameter.required ? '必填' : '選填'}
+            </Typography>
+          </div>
+        ),
+        title: '條件',
+      },
+      {
+        key: 'binding',
+        render: (row): ReactElement =>
+          renderDataSourceParameterBinding(field, row.parameter, scope),
+        title: '值從哪裡來',
+      },
+      {
+        key: 'meaning',
+        render: (row): ReactElement => (
+          <Typography color="text-neutral" variant="caption">
+            {readBindingHint(
+              readFormDataSourceBinding(field, row.parameter.key),
+              row.parameter,
+              scope,
+              readCompatibleBindingCount(field, row.parameter, scope),
+            )}
+          </Typography>
+        ),
+        title: '填寫時的行為',
+      },
+    ];
+
+    return (
+      <div style={DATA_SOURCE_PARAMETERS_STYLE}>
+        <Typography color="text-neutral" variant="label-secondary">
+          這個來源需要的條件
+        </Typography>
+        <Table
+          columns={columns}
+          dataSource={rows}
+          fullWidth
+          rowHeightPreset="roomy"
+          showHeader
+          size="sub"
+        />
+      </div>
+    );
+  }
+
+  function readCompatibleBindingCount(
+    field: FormDataSourceOptionFieldDefinition,
+    parameter: FormDataSourceDescriptorRecord['parameters'][number],
+    scope: DataSourceBindingScope,
+  ): number {
+    return (
+      readCompatibleFormDataSourceBindingFields(
+        parameter.type,
+        schema.fields,
+        field.fieldKey,
+      ).length +
+      (scope.rowColumns
+        ? readCompatibleFormTableColumnBindingFields(
+            parameter.type,
+            scope.rowColumns,
+            field.fieldKey,
+          ).length
+        : 0)
+    );
+  }
+
   function renderDataSourceParameterBinding(
     field: FormDataSourceOptionFieldDefinition,
     parameter: FormDataSourceDescriptorRecord['parameters'][number],
@@ -2408,11 +2499,6 @@ export function FormBuilderView({
   ): ReactElement {
     const binding = readFormDataSourceBinding(field, parameter.key);
     const bindingId = readDataSourceBindingOptionId(binding);
-    const fieldOptions = readCompatibleFormDataSourceBindingFields(
-      parameter.type,
-      schema.fields,
-      field.fieldKey,
-    );
     // Sibling columns come first: inside a table, the row is the near context
     // and the form is the far one.
     const rowFieldOptions = scope.rowColumns
@@ -2430,49 +2516,42 @@ export function FormBuilderView({
         ? []
         : [{ id: UNBOUND_BINDING_ID, name: '未綁定' }]),
       ...rowFieldOptions,
-      ...fieldOptions,
+      ...readCompatibleFormDataSourceBindingFields(
+        parameter.type,
+        schema.fields,
+        field.fieldKey,
+      ),
       ...(parameter.type === 'STRING_ARRAY'
         ? []
         : [{ id: CONSTANT_BINDING_ID, name: '固定常數' }]),
     ];
 
     return (
-      <div key={parameter.key} style={DATA_SOURCE_PARAMETER_GRID_STYLE}>
-        <BPMFormField
-          hintText={readBindingHint(
-            binding,
-            parameter,
-            scope,
-            fieldOptions.length + rowFieldOptions.length,
-          )}
-          label={parameter.label ?? parameter.key}
-          // The marker renders whenever it is given, so a required parameter
-          // would read as "* 廠別（選填）" if it were passed unconditionally.
-          {...(parameter.required ? {} : { labelOptionalMarker: '（選填）' })}
-          // Label above, control below, explanation in the field's own hint
-          // slot: the three used to sit in an L with the explanation off to
-          // the right, so reading one binding meant looking three ways.
-          layout={FormFieldLayout.VERTICAL}
-          name={`dataSourceParameter_${parameter.key}`}
-          required={parameter.required}
-          showHintTextIcon={false}
-        >
-          <Select
-            clearable={false}
-            onChange={(option): void =>
-              handleDataSourceBindingChange(
-                field,
-                parameter.key,
-                parameter.type,
-                option?.id,
-                scope,
-              )
-            }
-            options={bindingOptions}
-            placeholder="選擇欄位或常數"
-            value={readSelectOption(bindingOptions, bindingId)}
-          />
-        </BPMFormField>
+      <div
+        data-data-source-parameter={parameter.key}
+        style={DATA_SOURCE_PARAMETER_CELL_STYLE}
+      >
+        <Select
+          clearable={false}
+          // The column header names the control now that each condition is a
+          // row rather than a labelled field of its own.
+          inputProps={{
+            'aria-label': `${parameter.label ?? parameter.key} 的值來源`,
+          }}
+          onChange={(option): void =>
+            handleDataSourceBindingChange(
+              field,
+              parameter.key,
+              parameter.type,
+              option?.id,
+              scope,
+            )
+          }
+          options={bindingOptions}
+          placeholder="選擇欄位或常數"
+          size="sub"
+          value={readSelectOption(bindingOptions, bindingId)}
+        />
         {readFormDataSourceBindingValueKind(binding) === 'CONSTANT'
           ? renderDataSourceConstantEditor(
               field,
@@ -2492,10 +2571,6 @@ export function FormBuilderView({
     return PARAMETER_TYPE_LABELS[type];
   }
 
-  /**
-   * What this binding will do at filling time, in one line. Lives in the form
-   * field's own hint slot so it sits directly under the control it describes.
-   */
   function readBindingHint(
     binding: ReturnType<typeof readFormDataSourceBinding>,
     parameter: FormDataSourceDescriptorRecord['parameters'][number],

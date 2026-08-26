@@ -646,7 +646,7 @@ describe('FormBuilderView field settings', () => {
 
       expect(
         harness.container.querySelector(
-          '[data-mock-form-field="dataSourceParameter_plant"] [data-mock-select-option="__ROW_FIELD__:plant"]',
+          '[data-data-source-parameter="plant"] [data-mock-select-option="__ROW_FIELD__:plant"]',
         ),
       ).not.toBeNull();
       // The hint names the column the designer named, not the stored key.
@@ -810,9 +810,9 @@ describe('FormBuilderView field settings', () => {
 
     try {
       expandTableRow(harness.container, 1);
-      selectOption(
+      selectBindingOption(
         harness.container,
-        'dataSourceParameter_plant',
+        'plant',
         '__ROW_FIELD__:plant',
       );
 
@@ -852,7 +852,7 @@ describe('FormBuilderView field settings', () => {
 
       const options = [
         ...harness.container.querySelectorAll(
-          '[data-mock-form-field="dataSourceParameter_plant"] [data-mock-select-option]',
+          '[data-data-source-parameter="plant"] [data-mock-select-option]',
         ),
       ].map((option) => option.getAttribute('data-mock-select-option'));
 
@@ -1366,6 +1366,24 @@ function setControlValue(
       value,
     );
     element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+function selectBindingOption(
+  container: HTMLElement,
+  parameterKey: string,
+  optionId: string,
+): void {
+  const option = container.querySelector(
+    `[data-data-source-parameter="${parameterKey}"] [data-mock-select-option="${optionId}"]`,
+  ) as HTMLButtonElement | null;
+
+  if (!option) {
+    throw new Error(`Binding option ${optionId} of ${parameterKey} is missing.`);
+  }
+
+  act((): void => {
+    option.click();
   });
 }
 
