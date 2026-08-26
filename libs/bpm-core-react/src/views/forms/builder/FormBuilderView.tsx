@@ -3447,8 +3447,11 @@ function readDataSourceTraits(
   descriptor: FormDataSourceDescriptorRecord,
 ): readonly string[] {
   return [
+    // The length gate only rejects a search that is non-empty and shorter than
+    // the minimum, so a minimum of 1 rejects nothing — saying「至少 1 字」there
+    // would promise a threshold the source does not have.
     descriptor.supportsSearch
-      ? `可輸入關鍵字搜尋${descriptor.minimumSearchLength > 0 ? `（至少 ${descriptor.minimumSearchLength} 字）` : ''}`
+      ? `可輸入關鍵字搜尋${descriptor.minimumSearchLength > 1 ? `（至少 ${descriptor.minimumSearchLength} 字）` : ''}`
       : '不支援搜尋',
     descriptor.paginationMode === 'CURSOR'
       ? `捲動載入更多（每次 ${descriptor.pageSize} 筆）`
