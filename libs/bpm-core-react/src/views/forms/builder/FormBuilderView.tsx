@@ -1175,10 +1175,16 @@ export function FormBuilderView({
     });
   }
 
+  /**
+   * Applies straight away, with no confirmation. Picking a source is how a
+   * designer explores what is available, and a prompt on every pick trains
+   * people to dismiss prompts. Switching away from a configured source does
+   * drop its bindings — see docs/17 for that trade.
+   */
   function handleOptionSourceChange(
     field: FormOptionFieldDefinition,
     optionId: string | undefined,
-    requestChange: OptionFieldChangeRequester,
+    commit: FieldCommit<FormOptionFieldDefinition>,
   ): void {
     if (!optionId) {
       return;
@@ -1192,7 +1198,7 @@ export function FormBuilderView({
       const { dataSource, defaultValue, ...baseField } = field;
       void dataSource;
       void defaultValue;
-      requestChange(field, {
+      commit({
         ...baseField,
         options: [],
       } as FormOptionFieldDefinition);
@@ -1216,7 +1222,7 @@ export function FormBuilderView({
         parameterKeys.has(binding.parameter),
       );
 
-      requestChange(field, {
+      commit({
         ...field,
         dataSource: {
           bindings: nextBindings,
@@ -1231,7 +1237,7 @@ export function FormBuilderView({
     const { options, defaultValue, ...baseField } = field;
     void options;
     void defaultValue;
-    requestChange(field, {
+    commit({
       ...baseField,
       dataSource: {
         bindings: [],
@@ -2273,7 +2279,7 @@ export function FormBuilderView({
               !isFormDataSourceFieldDefinition(field)
             }
             onChange={(option): void =>
-              handleOptionSourceChange(field, option?.id, requestChange)
+              handleOptionSourceChange(field, option?.id, commit)
             }
             options={sourceOptions}
             placeholder="選擇選項來源"
@@ -2439,6 +2445,29 @@ export function FormBuilderView({
         title: '值從哪裡來',
       },
       {
+        key: 'constant',
+        // Its own column rather than a second control stacked inside the
+        // binding cell: a fixed value belongs beside the choice that asked
+        // for it, not under it.
+        render: (row): ReactElement =>
+          readFormDataSourceBindingValueKind(
+            readFormDataSourceBinding(field, row.parameter.key),
+          ) === 'CONSTANT' ? (
+            renderDataSourceConstantEditor(
+              field,
+              row.parameter.key,
+              row.parameter.type,
+              readFormDataSourceBinding(field, row.parameter.key),
+              scope,
+            )
+          ) : (
+            <Typography color="text-neutral" variant="caption">
+              —
+            </Typography>
+          ),
+        title: '固定值',
+      },
+      {
         key: 'meaning',
         render: (row): ReactElement => (
           <Typography color="text-neutral" variant="caption">
@@ -2552,15 +2581,6 @@ export function FormBuilderView({
           size="sub"
           value={readSelectOption(bindingOptions, bindingId)}
         />
-        {readFormDataSourceBindingValueKind(binding) === 'CONSTANT'
-          ? renderDataSourceConstantEditor(
-              field,
-              parameter.key,
-              parameter.type,
-              binding,
-              scope,
-            )
-          : null}
       </div>
     );
   }
@@ -2637,11 +2657,7 @@ export function FormBuilderView({
     scope: DataSourceBindingScope,
   ): ReactElement {
     return (
-      <BPMFormField
-        label="固定值"
-        layout={FormFieldLayout.VERTICAL}
-        name={`dataSourceConstant_${parameterKey}`}
-      >
+      <div data-data-source-constant={parameterKey}>
         {renderDataSourceConstantControl(
           field,
           parameterKey,
@@ -2649,7 +2665,7 @@ export function FormBuilderView({
           binding,
           scope,
         )}
-      </BPMFormField>
+      </div>
     );
   }
 
@@ -3650,7 +3666,7 @@ function readBuilderConfirmationTitle(
 
   return confirmation.kind === 'replace-column'
     ? '確認變更欄型別'
-    : '確認替換選項來源';
+    : '確認變更選擇模式';
 }
 
 /**

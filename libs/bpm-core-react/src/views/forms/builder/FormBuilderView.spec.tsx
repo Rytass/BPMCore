@@ -688,6 +688,73 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  // Picking a source is how a designer explores what is available, so it must
+  // not cost a prompt each time.
+  it('switches the option source without a confirmation', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          options: [{ label: '選項 A', value: 'option_a' }],
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      selectOption(
+        harness.container,
+        'fieldOptionSource',
+        'demo.cost-centers@1',
+      );
+
+      expect(harness.container.querySelector('[data-mock-modal]')).toBeNull();
+      expect(harness.readSchema().fields[0]).toMatchObject({
+        dataSource: { key: 'demo.cost-centers', version: 1 },
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('keeps a fixed value in its own column beside the binding', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      selectBindingOption(harness.container, 'plant', '__CONSTANT__');
+
+      const binding = harness.container.querySelector(
+        '[data-data-source-parameter="plant"]',
+      );
+      const constant = harness.container.querySelector(
+        '[data-data-source-constant="plant"]',
+      );
+
+      expect(constant).not.toBeNull();
+      // Separate cells, not one stacked inside the other.
+      expect(binding?.contains(constant ?? null)).toBe(false);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   // A confirmation that warns about losing nothing only teaches people to
   // dismiss confirmations.
   it('retypes a column without confirmation when nothing is configured', async (): Promise<void> => {
