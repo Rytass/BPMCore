@@ -669,6 +669,19 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 所有 `feat`／`fix` commit，四個 package manifest 都寫入 `0.12.0`，tag 為
 `v0.12.0`。**未執行** version／tag／publish。
 
+**P4 之後補上的 e2e：設計→發布→填寫**
+
+P4 的 Scope 曾把「builder 設計／發布」界定在範圍外（見上方「範圍界定」），
+`apps/client-e2e/specs/form-table-designer-journey-real.spec.ts` 補回這一段：在
+builder 建立表格欄位、把某欄接上 `demo.cost-centers` 並以「同列：廠別」綁定參數、
+在流程設計器連出可發布的圖、發布後發起案件填兩列（不同廠別）並送出，最後直接查
+instance 驗證兩列各自 resolve、snapshot 以 instance path 逐 cell 落地、標題跳過表格。
+每次執行都發布自己的模板，可重入。
+
+實作時確認的兩件事：改變欄型別會自動展開該欄的設定（不需再點展開），以及流程圖
+若沒有 start→end 的路徑，發布會被 `workflow.nodes.end is not reachable from start`
+擋下——這條驗證確實有效。
+
 **e2e 實際執行方式（重要）**
 
 本機 Playwright 的 chromium 下載殘缺（`chromium-1217` 只有 448 KB），
