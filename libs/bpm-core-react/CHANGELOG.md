@@ -1,3 +1,43 @@
+## 0.12.0 (2026-08-27)
+
+### 🚀 Features
+
+- **form:** wire cell-level DataSources through the client and renderer ([c7561ad](https://github.com/Rytass/BPMCore/commit/c7561ad))
+- **form:** resolve table column DataSources per cell ([ca40a4c](https://github.com/Rytass/BPMCore/commit/ca40a4c))
+- **form:** design table fields in the builder ([f70ac0c](https://github.com/Rytass/BPMCore/commit/f70ac0c))
+- **form:** add table column factories and row-scoped binding rename ([0c8c07d](https://github.com/Rytass/BPMCore/commit/0c8c07d))
+- **form:** render table fields with per-row editing ([5a04d7d](https://github.com/Rytass/BPMCore/commit/5a04d7d))
+- **form:** validate and seed table values in the renderer helpers ([5c7edab](https://github.com/Rytass/BPMCore/commit/5c7edab))
+- **form:** add table field definitions to the shared contract ([5f97165](https://github.com/Rytass/BPMCore/commit/5f97165))
+
+### 🩹 Fixes
+
+- **form:** fit the condition table to what it has to show ([c89b4d1](https://github.com/Rytass/BPMCore/commit/c89b4d1))
+- **form:** drop the confirmation for changing the option source ([14ce722](https://github.com/Rytass/BPMCore/commit/14ce722))
+- **form:** put each DataSource condition on one row ([051bb43](https://github.com/Rytass/BPMCore/commit/051bb43))
+- **form:** stop promising a search threshold the source does not have ([8c8b311](https://github.com/Rytass/BPMCore/commit/8c8b311))
+- **form:** name the DataSource check for what it actually checks ([1138ef1](https://github.com/Rytass/BPMCore/commit/1138ef1))
+- **form:** make the DataSource block readable by a process designer ([fec8518](https://github.com/Rytass/BPMCore/commit/fec8518))
+- **form:** stop the DataSource parameter label breaking mid-word ([fe4c609](https://github.com/Rytass/BPMCore/commit/fe4c609))
+- **form:** only confirm a column retype when it discards something ([baf7c9b](https://github.com/Rytass/BPMCore/commit/baf7c9b))
+- **form:** line up the field settings inputs across every field type ([2d8c128](https://github.com/Rytass/BPMCore/commit/2d8c128))
+- **form:** track the open table column by index, not by key ([1928f61](https://github.com/Rytass/BPMCore/commit/1928f61))
+- **form:** size a table cell's control to the table it sits in ([db79e5e](https://github.com/Rytass/BPMCore/commit/db79e5e))
+- **form:** stop the field settings sprawling across a wide screen ([a697705](https://github.com/Rytass/BPMCore/commit/a697705))
+- **form:** select a table column after its type changes ([2a511e2](https://github.com/Rytass/BPMCore/commit/2a511e2))
+- **form:** name fields, columns and parameters in builder DataSource copy ([b9d703a](https://github.com/Rytass/BPMCore/commit/b9d703a))
+- **form:** make every table column type reachable in the builder ([b596640](https://github.com/Rytass/BPMCore/commit/b596640))
+- **form:** keep the table field out of the single-column width cap ([0ca798f](https://github.com/Rytass/BPMCore/commit/0ca798f))
+- **form:** warn about table columns bound to a field being removed ([80c7471](https://github.com/Rytass/BPMCore/commit/80c7471))
+- **form:** keep the DataSource picker out of table column settings ([cd264d0](https://github.com/Rytass/BPMCore/commit/cd264d0))
+- **form:** keep the column key input mounted while it is being typed ([5d15da8](https://github.com/Rytass/BPMCore/commit/5d15da8))
+- **form:** validate and submit the values the renderer actually shows ([0dda76a](https://github.com/Rytass/BPMCore/commit/0dda76a))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5 (1M context)
+
 ## 0.11.0 (2026-08-18)
 
 ### 🚀 Features

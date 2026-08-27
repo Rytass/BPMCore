@@ -1,3 +1,33 @@
+## 0.12.0 (2026-08-27)
+
+### 🚀 Features
+
+- **form:** wire cell-level DataSources through the client and renderer ([c7561ad](https://github.com/Rytass/BPMCore/commit/c7561ad))
+- **form:** resolve table column DataSources per cell ([ca40a4c](https://github.com/Rytass/BPMCore/commit/ca40a4c))
+- **form:** add table column factories and row-scoped binding rename ([0c8c07d](https://github.com/Rytass/BPMCore/commit/0c8c07d))
+- **form:** validate and seed table values in the renderer helpers ([5c7edab](https://github.com/Rytass/BPMCore/commit/5c7edab))
+- **template:** reject published conditions that address table internals ([04d74e3](https://github.com/Rytass/BPMCore/commit/04d74e3))
+- **form:** validate submitted table form data ([69036d1](https://github.com/Rytass/BPMCore/commit/69036d1))
+- **form:** lint table field structure before publishing ([d9e95ee](https://github.com/Rytass/BPMCore/commit/d9e95ee))
+- **condition:** compile table emptiness from the row count ([624c96d](https://github.com/Rytass/BPMCore/commit/624c96d))
+- **form:** add table field definitions to the shared contract ([5f97165](https://github.com/Rytass/BPMCore/commit/5f97165))
+
+### 🩹 Fixes
+
+- **form:** keep a table's row indexes stable past a malformed row ([21d5a57](https://github.com/Rytass/BPMCore/commit/21d5a57))
+- **form:** read required DataSource parameters as own properties ([a5895a7](https://github.com/Rytass/BPMCore/commit/a5895a7))
+- **form:** report a table column's binding lint as an actionable binding error ([ed4fed2](https://github.com/Rytass/BPMCore/commit/ed4fed2))
+- **condition:** never match an edge value comparison against row records ([58b4194](https://github.com/Rytass/BPMCore/commit/58b4194))
+- **workflow:** no-op indexed set-form-field paths and read cells as own properties ([952b7bf](https://github.com/Rytass/BPMCore/commit/952b7bf))
+- **template:** close the whitespace gap in the table-internals condition lint ([6d15d07](https://github.com/Rytass/BPMCore/commit/6d15d07))
+- **condition:** keep table values from deciding form conditions ([894ef00](https://github.com/Rytass/BPMCore/commit/894ef00))
+- **workflow:** stop nested form writes from replacing a non-record value ([336951c](https://github.com/Rytass/BPMCore/commit/336951c))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5 (1M context)
+
 ## 0.11.0 (2026-08-18)
 
 ### 🚀 Features

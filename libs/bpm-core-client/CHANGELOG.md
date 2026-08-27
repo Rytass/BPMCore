@@ -1,3 +1,25 @@
+## 0.12.0 (2026-08-27)
+
+### 🚀 Features
+
+- **form:** wire cell-level DataSources through the client and renderer ([c7561ad](https://github.com/Rytass/BPMCore/commit/c7561ad))
+- **form:** resolve table column DataSources per cell ([ca40a4c](https://github.com/Rytass/BPMCore/commit/ca40a4c))
+- **form:** add table column factories and row-scoped binding rename ([0c8c07d](https://github.com/Rytass/BPMCore/commit/0c8c07d))
+- **form:** validate and seed table values in the renderer helpers ([5c7edab](https://github.com/Rytass/BPMCore/commit/5c7edab))
+- **workflow:** keep tables out of case titles and summarise them by row count ([b5453c8](https://github.com/Rytass/BPMCore/commit/b5453c8))
+- **form:** add table field definitions to the shared contract ([5f97165](https://github.com/Rytass/BPMCore/commit/5f97165))
+
+### 🩹 Fixes
+
+- **form:** read a required cell as an own property in the renderer validator ([f20a03f](https://github.com/Rytass/BPMCore/commit/f20a03f))
+- **form:** validate and submit the values the renderer actually shows ([0dda76a](https://github.com/Rytass/BPMCore/commit/0dda76a))
+- **condition:** keep table values from deciding form conditions ([894ef00](https://github.com/Rytass/BPMCore/commit/894ef00))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5 (1M context)
+
 ## 0.11.0 (2026-08-18)
 
 ### 🚀 Features
