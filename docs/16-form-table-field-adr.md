@@ -1,9 +1,8 @@
 # 16 — ADR：表格欄位（Table Field）架構
 
 - **狀態**：Accepted (implemented 2026-08-25)（2026-08-25 與產品擁有者確認，含
-  §3.10 column 型別排除項與 maxRows 100 上限；Phase P0–P3 VERIFIED，P4 交付內容
-  已完成、驗證狀態以 [17 — 表格欄位開發 Phase](./17-form-table-field-phases.md)
-  的 Phase 總覽為準）
+  §3.10 column 型別排除項與 maxRows 100 上限；Phase P0–P4 全數 VERIFIED，交付與
+  驗證紀錄見 [17 — 表格欄位開發 Phase](./17-form-table-field-phases.md)）
 - **決策日期**：2026-08-24（規劃日）
 - **適用範圍**：Form Definition Schema、Form Builder、FormRenderer、案件發起／退回編輯／
   重新送出、workflow 條件、DataSource 整合
