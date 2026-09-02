@@ -4,7 +4,9 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+# `pnpm-workspace.yaml` carries the dependency overrides the lockfile records,
+# so a frozen install without it fails with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 RUN corepack enable pnpm
 RUN pnpm install --frozen-lockfile
