@@ -16,6 +16,18 @@ export interface BPMRootAttachmentOptions {
   readonly attachmentRoutePrefix?: string | null;
 
   /**
+   * Opt-in escape hatch that lets a `NODE_ENV=production` process boot while
+   * still signing attachment URLs with the built-in development secret.
+   *
+   * Without it, a production process that never set
+   * `attachmentSignedUrlSecret` refuses to start. Set this only for a
+   * throwaway environment that happens to run with `NODE_ENV=production` and
+   * serves no real attachments — the built-in value is published in this
+   * package, so anyone can forge a signed attachment URL against it.
+   */
+  readonly attachmentAllowInsecureSignedUrlSecret?: boolean;
+
+  /**
    * HMAC secret used to sign attachment download and preview tokens.
    */
   readonly attachmentSignedUrlSecret?: string | null;
@@ -57,13 +69,35 @@ export function resolveBPMAttachmentOptions(
     normalizeText(options.attachmentSignedUrlSecret) ??
     DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
 
-  // Warn everywhere except an explicit local development run. Gating this on
-  // `NODE_ENV === 'production'` meant a staging host that never set the variable
-  // signed attachment URLs with a constant published in this package — and said
-  // nothing about it. One extra line in a developer's console is the cheaper
-  // trade.
+  const usesBuiltInSecret =
+    resolvedSignedUrlSecret === DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
+
+  // A console warning is the wrong instrument for a published constant that
+  // makes every signed attachment URL forgeable: in a container it scrolls past
+  // with the boot log and nobody reads it again. Under `NODE_ENV=production`
+  // the process refuses to start instead, and a host that genuinely wants the
+  // development value there has to say so.
   if (
-    resolvedSignedUrlSecret === DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret &&
+    usesBuiltInSecret &&
+    process.env.NODE_ENV === 'production' &&
+    options.attachmentAllowInsecureSignedUrlSecret !== true
+  ) {
+    throw new Error(
+      [
+        '[@rytass/bpm-core-nestjs-module] attachmentSignedUrlSecret is unset, so BPM would sign attachment URLs with the built-in local development value that ships in this package — anyone could forge one.',
+        'Set BPMRootModuleOptions.attachmentSignedUrlSecret to a strong secret.',
+        'If this service never serves attachments, BPM still mounts AttachmentModule, so set attachmentAllowInsecureSignedUrlSecret: true to acknowledge that the signing key is public and boot anyway.',
+      ].join(' '),
+    );
+  }
+
+  // Outside production, still warn everywhere except an explicit local
+  // development run. Gating the warning on production alone meant a staging
+  // host that never set the variable signed attachment URLs with the published
+  // constant — and said nothing about it. One extra line in a developer's
+  // console is the cheaper trade.
+  if (
+    usesBuiltInSecret &&
     process.env.NODE_ENV !== 'development' &&
     process.env.NODE_ENV !== 'test'
   ) {
