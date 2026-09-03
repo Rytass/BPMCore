@@ -1093,11 +1093,10 @@ argument on the `notifications` / `notificationCount` queries.
 
 21 ordered migrations:
 
-1. `EnablePostgresExtensions0000000000001` — checks `pg_extension` before
-   issuing `CREATE EXTENSION`, so a least-privilege role runs clean when a DBA
-   has already installed `uuid-ossp` and `ltree`. When they are missing and the
-   role cannot create them, it fails with the SQL to run and who must run it,
-   instead of a bare `42501`.
+1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` are
+   missing and the migration role has no CREATE privilege on the database, it
+   fails with the SQL to run and who must run it, instead of a bare `42501`.
+   `down()` is a no-op: the extensions may predate BPM.
 2. `IdentityOrganizationFoundation0000000001000`
 3. `FormBuilderFoundation0000000002000`
 4. `ApprovalTemplateFoundation0000000003000`

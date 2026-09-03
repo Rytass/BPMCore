@@ -1013,6 +1013,10 @@ What you still owe them:
   so `@BPMAdminOnly()` on its resolvers has no auth context accessor to
   inject. Either import `BPMAuthModule.forRoot({ contextFactory })` alongside
   it, or use the domain **service** and publish your own GraphQL surface.
+- **Resolver metadata.** `resolverMetadataFactory` is applied by
+  `BPMRootModule`, which is not in play here. A host that needs it on this path
+  calls `applyBPMResolverMetadata(factory)` itself, once, before the
+  application starts.
 
 The domain services (`OrganizationService` and friends) are the stable part of
 this arrangement; a module's internal wiring is not. If you are here because
@@ -1053,10 +1057,15 @@ platforms, where that privilege is revoked by convention. Have a superuser,
 the database owner, or `rds_superuser` run the two statements once before the
 first migration run.
 
-If the extensions are already installed, the migration detects them and skips
-the statements, so a least-privilege role can run migrations normally. If they
-are missing and the role cannot create them, the migration stops with the SQL
-above and who needs to run it, rather than a bare `42501`.
+PostgreSQL itself returns early from `CREATE EXTENSION IF NOT EXISTS` when the
+extension is present, so a least-privilege role runs migrations fine once a DBA
+has installed them. What the migration adds is the other case: when they are
+missing and the role cannot create them, it stops with the SQL above and who
+needs to run it, rather than a bare `42501` that says nothing about needing a
+DBA.
+
+The migration's `down()` is deliberately a no-op — the extensions may predate
+BPM and other schemas in the same database may depend on them.
 
 The package exports helpers for Vault-backed TypeORM setup:
 
