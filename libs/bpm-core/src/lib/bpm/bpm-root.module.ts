@@ -11,6 +11,10 @@ import { AttachmentModule } from '../attachment/attachment.module';
 import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModule } from '../bpm-auth/bpm-auth.module';
 import {
+  applyBPMResolverMetadata,
+  BPMResolverMetadataFactory,
+} from '../bpm-auth/bpm-resolver-metadata';
+import {
   BPMAuthModuleAsyncOptions,
   BPMAuthModuleOptions,
 } from '../bpm-auth/bpm-auth.options';
@@ -101,6 +105,23 @@ export interface BPMRootModuleOptions
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
 
   /**
+   * Host-supplied factory that stamps the host's own route metadata onto every
+   * BPM GraphQL handler.
+   *
+   * Needed when the host installs a **global** guard that judges routes by
+   * metadata BPM knows nothing about. `@rytass/member-base-nestjs-module`
+   * registers a `CasbinGuard` that rejects any route without
+   * `@CheckPermission` metadata, so without this every BPM query and mutation
+   * fails with `Route has no permission metadata` before BPM's own guards run.
+   *
+   * The factory is called once per handler at module wiring time, receives the
+   * authority BPM itself requires (`admin`, `designer`, `authenticated`) plus
+   * the resolver and method names, and returns the metadata to write. See
+   * `BPMResolverMetadataFactory`.
+   */
+  readonly resolverMetadataFactory?: BPMResolverMetadataFactory;
+
+  /**
    * Host-provided dispatcher for executable workflow service tasks.
    *
    * When omitted, BPM sends WEBHOOK service tasks with the built-in `fetch`
@@ -170,6 +191,16 @@ export interface BPMRootModuleAsyncOptions extends Pick<
   readonly formDataSourceRegistryProvider?: Provider<BPMFormDataSourceRegistry>;
 
   /**
+   * Whether BPM registers its identity GraphQL queries. See
+   * `BPMRootIdentityOptions.identityRegisterResolvers`.
+   *
+   * Set at module wiring time, like `attachmentRoutePrefix`, because Nest
+   * collects resolver providers while building the schema — before the
+   * `useFactory` below has run.
+   */
+  readonly identityRegisterResolvers?: boolean;
+
+  /**
    * Providers injected into `useFactory`.
    *
    * This is typically used to read Vault-backed SMTP, webhook, and auth
@@ -185,6 +216,16 @@ export interface BPMRootModuleAsyncOptions extends Pick<
    * `@rytass/bpm-core-nestjs-module` to a specific external identity system.
    */
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
+
+  /**
+   * Host-supplied factory that stamps the host's own route metadata onto every
+   * BPM GraphQL handler. See
+   * `BPMRootModuleOptions.resolverMetadataFactory`.
+   *
+   * Read at module wiring time rather than from `useFactory`, because Nest
+   * builds the resolver metadata before any async factory has run.
+   */
+  readonly resolverMetadataFactory?: BPMResolverMetadataFactory;
 
   /**
    * Host-provided dispatcher for executable workflow service tasks.
@@ -245,6 +286,10 @@ export class BPMRootModule {
    * wiring time (no async secret loading needed).
    */
   static forRoot(options: BPMRootModuleOptions): DynamicModule {
+    if (options.resolverMetadataFactory) {
+      applyBPMResolverMetadata(options.resolverMetadataFactory);
+    }
+
     const featureModules = createBPMFeatureModules(options);
 
     return {
@@ -267,6 +312,10 @@ export class BPMRootModule {
    * during application bootstrap.
    */
   static forRootAsync(options: BPMRootModuleAsyncOptions): DynamicModule {
+    if (options.resolverMetadataFactory) {
+      applyBPMResolverMetadata(options.resolverMetadataFactory);
+    }
+
     const authOptions: BPMAuthModuleAsyncOptions = {
       imports: options.imports,
       inject: options.inject,
@@ -307,6 +356,7 @@ export class BPMRootModule {
         }),
         BPMAuthModule.forRootAsync(authOptions),
         IdentityModule.forRootAsync({
+          identityRegisterResolvers: options.identityRegisterResolvers,
           imports: options.imports,
           inject: options.inject,
           memberResolverProvider: options.memberResolverProvider,

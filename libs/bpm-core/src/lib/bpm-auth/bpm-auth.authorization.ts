@@ -8,6 +8,7 @@ import {
 import { BPMAuthContext } from './bpm-auth-context';
 import { extractBPMAuthContext } from './bpm-auth-context.extractor';
 import { BPMAuthenticatedGuard } from './bpm-auth.guard';
+import { withBPMResolverAccess } from './bpm-resolver-access.decorator';
 
 const ADMIN_PERMISSIONS = new Set([
   'bpm:*',
@@ -55,10 +56,16 @@ export class BPMDesignerGuard implements CanActivate {
 }
 
 export const BPMAdminOnly = (): ClassDecorator & MethodDecorator =>
-  UseGuards(BPMAuthenticatedGuard, BPMAdminGuard);
+  withBPMResolverAccess(
+    'admin',
+    UseGuards(BPMAuthenticatedGuard, BPMAdminGuard),
+  );
 
 export const BPMDesignerOnly = (): ClassDecorator & MethodDecorator =>
-  UseGuards(BPMAuthenticatedGuard, BPMDesignerGuard);
+  withBPMResolverAccess(
+    'designer',
+    UseGuards(BPMAuthenticatedGuard, BPMDesignerGuard),
+  );
 
 export function isBPMAdmin(authContext: BPMAuthContext): boolean {
   return (

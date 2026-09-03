@@ -5,9 +5,10 @@ import {
 } from '@nestjs/common';
 import { BPMAuthenticatedGuard } from './bpm-auth.guard';
 import { extractBPMAuthContext } from './bpm-auth-context.extractor';
+import { withBPMResolverAccess } from './bpm-resolver-access.decorator';
 
 export const BPMAuthenticated = (): ClassDecorator & MethodDecorator =>
-  UseGuards(BPMAuthenticatedGuard);
+  withBPMResolverAccess('authenticated', UseGuards(BPMAuthenticatedGuard));
 
 export const BPMCurrentAuthContext = createParamDecorator(
   (_data: unknown, context: ExecutionContext) => extractBPMAuthContext(context),
