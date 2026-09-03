@@ -14,11 +14,11 @@ export class EnablePostgresExtensions0000000000001 implements MigrationInterface
 
   async up(queryRunner: QueryRunner): Promise<void> {
     for (const extension of REQUIRED_EXTENSIONS) {
-      // `CREATE EXTENSION` needs the CREATE privilege on the database, which
-      // an application role usually does not have — and quite deliberately so
-      // on platforms that hand out least-privilege accounts. Skipping the
-      // statement when a DBA already installed the extension is what lets such
-      // a deployment run its migrations at all.
+      // PostgreSQL already returns early from `CREATE EXTENSION IF NOT
+      // EXISTS` when the extension is present, before it checks privileges, so
+      // this probe is not what makes a least-privilege role work — it makes
+      // the intent explicit and keeps the branch below reachable only in the
+      // case that actually needs explaining.
       if (await isExtensionInstalled(queryRunner, extension)) {
         continue;
       }
@@ -47,8 +47,16 @@ export class EnablePostgresExtensions0000000000001 implements MigrationInterface
     }
   }
 
-  async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query('DROP EXTENSION IF EXISTS "ltree"');
+  /**
+   * Intentionally a no-op.
+   *
+   * Extensions are a one-time, database-wide prerequisite that a privileged
+   * role may well have installed before BPM ever ran — and other schemas in
+   * the same database may depend on them. Dropping `ltree` on the way down
+   * would take something this migration did not necessarily create.
+   */
+  async down(): Promise<void> {
+    return;
   }
 }
 
