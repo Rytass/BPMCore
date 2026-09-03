@@ -5,6 +5,23 @@ export interface BPMRootIdentityOptions {
    * Member metadata cache lifetime in milliseconds.
    */
   readonly identityMemberMetadataCacheTtlMs?: number;
+
+  /**
+   * Whether BPM registers `IdentityQueries` — the `member`, `members`,
+   * `memberCount`, `searchMembers`, and `cachedMembers` GraphQL queries.
+   * Defaults to `true`.
+   *
+   * Those are common names. A host that already publishes its own member API
+   * gets `MultipleFieldsWithSameNameError` from `@nestjs/graphql` the moment
+   * `BPMRootModule` is mounted, and the application never starts. Set this to
+   * `false` to keep `IdentityService` (and everything in BPM that depends on
+   * it) while leaving the GraphQL surface entirely to the host.
+   *
+   * Read at module wiring time, not from a `forRootAsync` factory: Nest
+   * collects resolver providers while building the schema, before any async
+   * factory has run.
+   */
+  readonly identityRegisterResolvers?: boolean;
 }
 
 export interface BPMResolvedIdentityOptions {

@@ -25,6 +25,12 @@ export interface IdentityModuleAsyncOptions extends Pick<
   ModuleMetadata,
   'imports'
 > {
+  /**
+   * See `BPMRootIdentityOptions.identityRegisterResolvers`. Read here rather
+   * than from `useFactory` because Nest collects resolver providers before any
+   * async factory runs.
+   */
+  readonly identityRegisterResolvers?: boolean;
   readonly inject?: readonly InjectionToken[];
   readonly memberResolverProvider: Provider<BPMMemberResolver>;
   readonly useFactory: (
@@ -45,7 +51,7 @@ export class IdentityModule {
       ],
       module: IdentityModule,
       providers: [
-        IdentityQueries,
+        ...createIdentityGraphQLProviders(options.identityRegisterResolvers),
         IdentityService,
         ...resolverProviders,
         createIdentityOptionsProvider(options),
@@ -64,7 +70,7 @@ export class IdentityModule {
       ],
       module: IdentityModule,
       providers: [
-        IdentityQueries,
+        ...createIdentityGraphQLProviders(options.identityRegisterResolvers),
         IdentityService,
         ...resolverProviders,
         {
@@ -78,6 +84,16 @@ export class IdentityModule {
       ],
     };
   }
+}
+
+/**
+ * `IdentityQueries` is a provider like any other, so leaving it out of the
+ * providers list is what keeps its fields out of the generated schema.
+ */
+function createIdentityGraphQLProviders(
+  registerResolvers: boolean | undefined,
+): readonly Provider[] {
+  return registerResolvers === false ? [] : [IdentityQueries];
 }
 
 function createMemberResolverProviders(
