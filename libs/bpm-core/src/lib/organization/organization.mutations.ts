@@ -72,6 +72,13 @@ export class OrganizationMutations {
   }
 
   @Mutation(() => Boolean)
+  async deletePosition(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<boolean> {
+    return this.organizationService.deletePosition(id);
+  }
+
+  @Mutation(() => Boolean)
   async deleteMembership(
     @Args('id', { type: () => String }) id: string,
   ): Promise<boolean> {

@@ -11,6 +11,55 @@ import { PositionEntity } from './position.entity';
 
 const baseUpdatedAt = new Date('2026-05-12T08:00:00.000Z');
 
+/**
+ * A DataSource that reports no approval-template or workflow metadata, which
+ * is what an `OrganizationModule`-only host looks like. `deletePosition` then
+ * has nothing beyond the organization tables to check.
+ */
+function createDataSourceWithoutWorkflowArtifacts(): DataSource {
+  return {
+    hasMetadata: (): boolean => false,
+  } as unknown as DataSource;
+}
+
+/**
+ * A DataSource carrying approval-template versions and pending ad-hoc
+ * directives, so `deletePosition` can be driven against workflow artifacts
+ * that do — and do not — reference the position.
+ */
+function createDataSourceWithWorkflowArtifacts({
+  pendingAdhocDirectiveCount = 0,
+  versions = [],
+}: {
+  readonly pendingAdhocDirectiveCount?: number;
+  readonly versions?: readonly Readonly<Record<string, unknown>>[];
+} = {}): DataSource {
+  const adhocQueryBuilder = {
+    andWhere: (): unknown => adhocQueryBuilder,
+    getCount: (): Promise<number> =>
+      Promise.resolve(pendingAdhocDirectiveCount),
+    where: (): unknown => adhocQueryBuilder,
+  };
+
+  const versionQueryBuilder = {
+    andWhere: (): unknown => versionQueryBuilder,
+    getMany: (): Promise<readonly Readonly<Record<string, unknown>>[]> =>
+      Promise.resolve(versions),
+    select: (): unknown => versionQueryBuilder,
+    where: (): unknown => versionQueryBuilder,
+  };
+
+  return {
+    getRepository: (entity: { readonly name: string }): unknown => ({
+      createQueryBuilder: (): unknown =>
+        entity.name === 'AdhocDirectiveEntity'
+          ? adhocQueryBuilder
+          : versionQueryBuilder,
+    }),
+    hasMetadata: (): boolean => true,
+  } as unknown as DataSource;
+}
+
 describe('OrganizationService', () => {
   it('resolves member-scoped manager by highest priority', async (): Promise<void> => {
     const managerResolutionRepository = {
@@ -717,6 +766,368 @@ describe('OrganizationService', () => {
         type: null,
       }),
     ).rejects.toThrow('descendant');
+  });
+
+  it('keeps the current parent when updateOrgUnit omits parentId', async (): Promise<void> => {
+    const parent = {
+      code: 'ROOT',
+      createdAt: new Date(),
+      deletedAt: null,
+      id: 'org-root',
+      metadata: {},
+      name: 'Root',
+      parentId: null,
+      path: 'org.norg_root',
+      type: OrgUnitTypeEnum.COMPANY,
+      updatedAt: new Date(),
+    };
+    const existing = {
+      ...parent,
+      code: 'FIN',
+      id: 'org-fin',
+      name: 'Finance',
+      parentId: 'org-root',
+      path: 'org.norg_root.norg_fin',
+      type: OrgUnitTypeEnum.DEPARTMENT,
+    };
+    const orgUnitRepository = {
+      findOne: jest.fn(
+        (options: {
+          readonly where: { readonly id?: string };
+        }): Promise<OrgUnitEntity | null> => {
+          if (options.where.id === 'org-root') {
+            return Promise.resolve(parent);
+          }
+
+          if (options.where.id === 'org-fin') {
+            return Promise.resolve(existing);
+          }
+
+          return Promise.resolve(null);
+        },
+      ),
+      merge: jest.fn(
+        (
+          target: OrgUnitEntity,
+          patch: Partial<OrgUnitEntity>,
+        ): OrgUnitEntity => ({ ...target, ...patch }),
+      ),
+    } as unknown as Repository<OrgUnitEntity>;
+    const saved: OrgUnitEntity[] = [];
+    const dataSource = {
+      transaction: jest.fn(
+        (
+          runInTransaction: (manager: {
+            readonly getRepository: () => unknown;
+          }) => Promise<OrgUnitEntity>,
+        ): Promise<OrgUnitEntity> =>
+          runInTransaction({
+            getRepository: () => ({
+              save: (entity: OrgUnitEntity): Promise<OrgUnitEntity> => {
+                saved.push(entity);
+
+                return Promise.resolve(entity);
+              },
+            }),
+          }),
+      ),
+    } as unknown as DataSource;
+    const service = new OrganizationService(
+      dataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    // A plain rename. `parentId` is left out, which is the only way to say
+    // "do not touch the parent" — passing `null` here would move the unit and
+    // its whole subtree to the top level.
+    const result = await service.updateOrgUnit({
+      id: 'org-fin',
+      name: 'Finance & Accounting',
+    });
+
+    expect(result.parentId).toBe('org-root');
+    expect(result.path).toBe('org.norg_root.norg_fin');
+    expect(saved).toHaveLength(1);
+  });
+
+  it('moves an org unit to the top level when updateOrgUnit passes parentId null', async (): Promise<void> => {
+    const existing = {
+      code: 'FIN',
+      createdAt: new Date(),
+      deletedAt: null,
+      id: 'org-fin',
+      metadata: {},
+      name: 'Finance',
+      parentId: 'org-root',
+      path: 'org.norg_root.norg_fin',
+      type: OrgUnitTypeEnum.DEPARTMENT,
+      updatedAt: new Date(),
+    };
+    const orgUnitRepository = {
+      createQueryBuilder: jest.fn(() => ({
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn(() => Promise.resolve([])),
+        where: jest.fn().mockReturnThis(),
+      })),
+      findOne: jest.fn(
+        (options: {
+          readonly where: { readonly id?: string };
+        }): Promise<OrgUnitEntity | null> =>
+          Promise.resolve(options.where.id === 'org-fin' ? existing : null),
+      ),
+      merge: jest.fn(
+        (
+          target: OrgUnitEntity,
+          patch: Partial<OrgUnitEntity>,
+        ): OrgUnitEntity => ({ ...target, ...patch }),
+      ),
+    } as unknown as Repository<OrgUnitEntity>;
+    const dataSource = {
+      transaction: jest.fn(
+        (
+          runInTransaction: (manager: {
+            readonly getRepository: () => unknown;
+          }) => Promise<OrgUnitEntity>,
+        ): Promise<OrgUnitEntity> =>
+          runInTransaction({
+            getRepository: () => ({
+              createQueryBuilder: () => ({
+                andWhere: jest.fn().mockReturnThis(),
+                getMany: jest.fn(() => Promise.resolve([])),
+                where: jest.fn().mockReturnThis(),
+              }),
+              merge: (
+                target: OrgUnitEntity,
+                patch: Partial<OrgUnitEntity>,
+              ): OrgUnitEntity => ({ ...target, ...patch }),
+              save: (entity: OrgUnitEntity): Promise<OrgUnitEntity> =>
+                Promise.resolve(entity),
+            }),
+          }),
+      ),
+    } as unknown as DataSource;
+    const service = new OrganizationService(
+      dataSource,
+      orgUnitRepository,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    const result = await service.updateOrgUnit({
+      id: 'org-fin',
+      parentId: null,
+    });
+
+    expect(result.parentId).toBeNull();
+    expect(result.path).toBe('org.norg_fin');
+  });
+
+  it('deletes a position that nothing references', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    const membershipRepository = {
+      count: jest.fn(() => Promise.resolve(0)),
+    } as unknown as Repository<MembershipEntity>;
+    const managerResolutionRepository = {
+      count: jest.fn(() => Promise.resolve(0)),
+    } as unknown as Repository<ManagerResolutionEntity>;
+    const service = new OrganizationService(
+      createDataSourceWithoutWorkflowArtifacts(),
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      membershipRepository,
+      managerResolutionRepository,
+    );
+
+    await expect(service.deletePosition('position-1')).resolves.toBe(true);
+    expect(positionDelete).toHaveBeenCalledWith('position-1');
+  });
+
+  it('refuses to delete a position that memberships still reference', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    const membershipRepository = {
+      count: jest.fn(() => Promise.resolve(2)),
+    } as unknown as Repository<MembershipEntity>;
+    const service = new OrganizationService(
+      createDataSourceWithoutWorkflowArtifacts(),
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      membershipRepository,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(service.deletePosition('position-1')).rejects.toThrow(
+      'Position with memberships cannot be deleted',
+    );
+    expect(positionDelete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a position that manager resolutions still reference', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    const membershipRepository = {
+      count: jest.fn(() => Promise.resolve(0)),
+    } as unknown as Repository<MembershipEntity>;
+    const managerResolutionCount = jest.fn(() => Promise.resolve(1));
+    const managerResolutionRepository = {
+      count: managerResolutionCount,
+    } as unknown as Repository<ManagerResolutionEntity>;
+    const service = new OrganizationService(
+      createDataSourceWithoutWorkflowArtifacts(),
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      membershipRepository,
+      managerResolutionRepository,
+    );
+
+    await expect(service.deletePosition('position-1')).rejects.toThrow(
+      'Position with manager resolutions cannot be deleted',
+    );
+    expect(managerResolutionCount).toHaveBeenCalledWith({
+      where: {
+        scopeId: 'position-1',
+        scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+      },
+    });
+    expect(positionDelete).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a position a live approval template routes through', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    // No membership and no manager resolution: the two earlier guards let this
+    // through, which is exactly the gap a temporarily unstaffed position falls
+    // into. A template that routes approvals to it would be left pointing at a
+    // row that no longer exists.
+    const dataSource = createDataSourceWithWorkflowArtifacts({
+      versions: [
+        {
+          id: 'version-1',
+          templateId: 'template-1',
+          version: 3,
+          workflowDefinition: {
+            nodes: [
+              {
+                data: {
+                  approverResolver: {
+                    orgUnitId: 'org-1',
+                    positionId: 'position-1',
+                    type: 'ORG_UNIT_POSITION',
+                  },
+                },
+                id: 'node-1',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const service = new OrganizationService(
+      dataSource,
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(service.deletePosition('position-1')).rejects.toThrow(
+      'template-1 v3',
+    );
+    expect(positionDelete).not.toHaveBeenCalled();
+  });
+
+  it('allows deleting a position no live approval template mentions', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    const dataSource = createDataSourceWithWorkflowArtifacts({
+      versions: [
+        {
+          id: 'version-1',
+          templateId: 'template-1',
+          version: 3,
+          workflowDefinition: {
+            nodes: [
+              {
+                data: {
+                  approverResolver: {
+                    positionId: 'position-other',
+                    type: 'POSITION',
+                  },
+                },
+                id: 'node-1',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const service = new OrganizationService(
+      dataSource,
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(service.deletePosition('position-1')).resolves.toBe(true);
+    expect(positionDelete).toHaveBeenCalledWith('position-1');
+  });
+
+  it('refuses to delete a position a running instance still targets ad hoc', async (): Promise<void> => {
+    const positionDelete = jest.fn(() => Promise.resolve({ affected: 1 }));
+    const positionRepository = {
+      delete: positionDelete,
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'position-1' } as PositionEntity),
+      ),
+    } as unknown as Repository<PositionEntity>;
+    // No template mentions it, but a stage approver countersigned the whole
+    // position on a live instance and that directive has not been consumed.
+    const dataSource = createDataSourceWithWorkflowArtifacts({
+      pendingAdhocDirectiveCount: 2,
+    });
+    const service = new OrganizationService(
+      dataSource,
+      {} as Repository<OrgUnitEntity>,
+      positionRepository,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
+      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+    );
+
+    await expect(service.deletePosition('position-1')).rejects.toThrow(
+      'pending ad-hoc directive',
+    );
+    expect(positionDelete).not.toHaveBeenCalled();
   });
 
   it('formats date-only values with the BPM business timezone', (): void => {

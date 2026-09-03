@@ -18,6 +18,13 @@ import {
   Not,
   Repository,
 } from 'typeorm';
+import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
+import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
+import { AdhocDirectiveEntity } from '../workflow-engine/adhoc-directive.entity';
+import {
+  AdhocDirectiveStatusEnum,
+  AdhocTargetKindEnum,
+} from '../workflow-engine/adhoc.enums';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
@@ -58,6 +65,7 @@ const BUSINESS_TIME_ZONE = 'Asia/Taipei';
 const MAX_PAGE_SIZE = 100;
 
 const paginationLogger = new Logger('OrganizationPagination');
+const positionDeletionLogger = new Logger('OrganizationPositionDeletion');
 
 @Injectable()
 export class OrganizationService {
@@ -88,7 +96,7 @@ export class OrganizationService {
       id,
       metadata: parseMetadataJson(input.metadataJson),
       name: input.name,
-      parentId: input.parentId,
+      parentId: input.parentId ?? null,
       path,
       type: input.type,
     });
@@ -203,25 +211,28 @@ export class OrganizationService {
             throw new NotFoundException(`Org unit ${move.id} was not found`);
           }
 
-          const parent = move.parentId
-            ? orgUnitById.get(move.parentId) ?? null
+          // `CommitOrgUnitTreeDraftMoveInput.parentId` is required precisely
+          // so a move always states its destination; this coalesce is only a
+          // guard against a caller that bypassed validation. Writing
+          // `undefined` through `merge` would read as "leave the column
+          // alone", which is the one outcome a move must never produce.
+          const nextParentId = move.parentId ?? null;
+          const parent = nextParentId
+            ? orgUnitById.get(nextParentId) ?? null
             : null;
           const previousPath = existing.path;
           const nextPath = parent
             ? `${parent.path}.${this.buildPathSegment(existing.id)}`
             : `${ROOT_PATH_PREFIX}.${this.buildPathSegment(existing.id)}`;
 
-          if (
-            existing.parentId === move.parentId &&
-            existing.path === nextPath
-          ) {
+          if (existing.parentId === nextParentId && existing.path === nextPath) {
             affectedOrgUnits.set(existing.id, existing);
             continue;
           }
 
           const saved = await repository.save(
             repository.merge(existing, {
-              parentId: move.parentId,
+              parentId: nextParentId,
               path: nextPath,
             }),
           );
@@ -351,6 +362,165 @@ export class OrganizationService {
     });
 
     return this.positionRepository.save(next);
+  }
+
+  /**
+   * Removes a position, refusing while anything still points at it.
+   *
+   * `PositionEntity` carries no `deleted_at`, so this is a hard delete —
+   * unlike `deleteOrgUnit`, which soft-deletes. The referential guards below
+   * are therefore the only thing standing between a mistyped position and
+   * memberships or manager resolutions left pointing at a row that is gone.
+   */
+  async deletePosition(id: string): Promise<boolean> {
+    await this.getPositionOrThrow(id);
+
+    const membershipCount = await this.membershipRepository.count({
+      where: { positionId: id },
+    });
+
+    if (membershipCount > 0) {
+      throw new BadRequestException(
+        'Position with memberships cannot be deleted',
+      );
+    }
+
+    const managerResolutionCount = await this.managerResolutionRepository.count({
+      where: {
+        scopeId: id,
+        scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+      },
+    });
+
+    if (managerResolutionCount > 0) {
+      throw new BadRequestException(
+        'Position with manager resolutions cannot be deleted',
+      );
+    }
+
+    await this.assertPositionUnreferencedByTemplates(id);
+    await this.assertPositionUnreferencedByAdhocDirectives(id);
+
+    await this.positionRepository.delete(id);
+
+    return true;
+  }
+
+  /**
+   * Refuses to delete a position that a live approval template still routes
+   * through.
+   *
+   * A template node can resolve approvers by `POSITION` or
+   * `ORG_UNIT_POSITION`, and a node's notification override names recipients
+   * the same way. (Directives recorded on a *running* instance live in their
+   * own table and are covered separately, below.)
+   * `resolvePositionCandidates` throws `ConflictException` when
+   * the position has no active membership, so an instance that reaches such a
+   * node stops there. The membership guard above already covers a staffed
+   * position; this covers the gap where a position is temporarily unstaffed —
+   * deleting it then turns a re-staffable outage into a template that can only
+   * be repaired by editing and republishing it, because the recreated position
+   * gets a new id.
+   *
+   * Neither this reference nor the ad-hoc one below is a foreign key: both
+   * live inside `jsonb`, so nothing in the database stops the delete.
+   *
+   * `ARCHIVED` versions are excluded: nothing new runs on them.
+   */
+  private async assertPositionUnreferencedByTemplates(
+    id: string,
+  ): Promise<void> {
+    // `OrganizationModule` can be mounted on its own (see the package README,
+    // "Mounting a single domain module"), in which case the template tables
+    // are not part of the schema and there is nothing to check. Say so: a data
+    // integrity guard that disappears without a word is how a refactor turns
+    // into corrupted references.
+    if (!this.dataSource.hasMetadata(ApprovalTemplateVersionEntity)) {
+      positionDeletionLogger.warn(
+        'Approval template metadata is not registered, so deletePosition cannot check whether a template still routes approvers through this position.',
+      );
+
+      return;
+    }
+
+    // The `LIKE` is a cheap pre-filter, not the decision: a uuid that appears
+    // structurally must also appear textually, so it can only over-select.
+    // `referencesPositionId` below is what actually decides, which keeps a
+    // stray match on some unrelated field from blocking a delete.
+    const versions = await this.dataSource
+      .getRepository(ApprovalTemplateVersionEntity)
+      .createQueryBuilder('version')
+      .select([
+        'version.id',
+        'version.templateId',
+        'version.version',
+        'version.workflowDefinition',
+      ])
+      .where('version.status != :archived', {
+        archived: ApprovalTemplateVersionStatusEnum.ARCHIVED,
+      })
+      .andWhere('version.workflow_definition::text LIKE :needle', {
+        needle: `%${id}%`,
+      })
+      .getMany();
+    const referencing = versions.filter((version): boolean =>
+      referencesPositionId(version.workflowDefinition, id),
+    );
+
+    if (referencing.length) {
+      const describe = referencing
+        .slice(0, 3)
+        .map((version): string => `${version.templateId} v${version.version}`)
+        .join(', ');
+      const suffix = referencing.length > 3 ? ', …' : '';
+
+      throw new BadRequestException(
+        `Position is still used as an approver source by ${referencing.length} approval template version(s) (${describe}${suffix}) and cannot be deleted`,
+      );
+    }
+  }
+
+  /**
+   * Refuses to delete a position that a running instance still has a pending
+   * ad-hoc directive against.
+   *
+   * A stage approver can countersign or notify a whole position on the single
+   * instance they are deciding. `CONSUMED` and `CANCELLED` directives are
+   * finished and cannot resolve anyone again; a `PENDING` one still will.
+   *
+   * Unlike the template scan, `target_kind` narrows this to a handful of rows,
+   * so the `positionId` can be read straight out of the `jsonb` in SQL.
+   */
+  private async assertPositionUnreferencedByAdhocDirectives(
+    id: string,
+  ): Promise<void> {
+    if (!this.dataSource.hasMetadata(AdhocDirectiveEntity)) {
+      positionDeletionLogger.warn(
+        'Ad-hoc directive metadata is not registered, so deletePosition cannot check whether a running instance still targets this position.',
+      );
+
+      return;
+    }
+
+    const pendingCount = await this.dataSource
+      .getRepository(AdhocDirectiveEntity)
+      .createQueryBuilder('directive')
+      .where('directive.status = :status', {
+        status: AdhocDirectiveStatusEnum.PENDING,
+      })
+      .andWhere('directive.target_kind = :targetKind', {
+        targetKind: AdhocTargetKindEnum.POSITION,
+      })
+      .andWhere("directive.target_value ->> 'positionId' = :positionId", {
+        positionId: id,
+      })
+      .getCount();
+
+    if (pendingCount > 0) {
+      throw new BadRequestException(
+        `Position is still the target of ${pendingCount} pending ad-hoc directive(s) on running approval instances and cannot be deleted`,
+      );
+    }
   }
 
   async listPositions({
@@ -826,7 +996,7 @@ export class OrganizationService {
 
   private async assertMembershipDateRange(
     effectiveFrom: string,
-    effectiveTo: string | null,
+    effectiveTo: string | null | undefined,
   ): Promise<void> {
     if (effectiveTo && effectiveFrom > effectiveTo) {
       throw new BadRequestException(
@@ -1183,7 +1353,7 @@ function assertOrgUnitTreeDraftHasNoCycles(
   const parentById = new Map(
     moves.map((move): readonly [string, string | null] => [
       move.id,
-      move.parentId,
+      move.parentId ?? null,
     ]),
   );
 
@@ -1235,6 +1405,38 @@ function calculateOrgUnitTreeDraftMoveDepth(
   }
 
   return depth;
+}
+
+/**
+ * Whether any object anywhere in a workflow definition carries this
+ * `positionId`.
+ *
+ * Deliberately a structural walk rather than a read of
+ * `nodes[].data.approverResolver`: `positionId` also appears in a node's
+ * notification recipients, and a new node or resolver shape would silently
+ * escape a field-by-field reader — which is exactly the kind of miss that
+ * leaves a live template pointing at a deleted position.
+ *
+ * It recognizes the key name `positionId` and nothing else. A future shape
+ * that names the field differently — `positionIds: string[]`, say — passes
+ * straight through, so extend this walk in the same change that adds one.
+ */
+function referencesPositionId(value: unknown, positionId: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item): boolean => referencesPositionId(item, positionId));
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+
+  return entries.some(
+    ([key, entryValue]): boolean =>
+      (key === 'positionId' && entryValue === positionId) ||
+      referencesPositionId(entryValue, positionId),
+  );
 }
 
 function compareOrgUnitPath(

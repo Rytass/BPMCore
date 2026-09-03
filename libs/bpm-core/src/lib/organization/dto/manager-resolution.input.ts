@@ -43,7 +43,7 @@ export class CreateManagerResolutionInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveTo must use YYYY-MM-DD format',
   })
-  effectiveTo!: string | null;
+  effectiveTo?: string | null;
 }
 
 @InputType()
@@ -55,23 +55,23 @@ export class UpdateManagerResolutionInput {
   @Field(() => ManagerResolutionScopeTypeEnum, { nullable: true })
   @IsOptional()
   @IsEnum(ManagerResolutionScopeTypeEnum)
-  scopeType!: ManagerResolutionScopeTypeEnum | null;
+  scopeType?: ManagerResolutionScopeTypeEnum | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  scopeId!: string | null;
+  scopeId?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  managerMemberId!: string | null;
+  managerMemberId?: string | null;
 
   @Field(() => Int, { nullable: true })
   @IsOptional()
   @IsInt()
   @Min(0)
-  priority!: number | null;
+  priority?: number | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -79,7 +79,7 @@ export class UpdateManagerResolutionInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveFrom must use YYYY-MM-DD format',
   })
-  effectiveFrom!: string | null;
+  effectiveFrom?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -87,5 +87,5 @@ export class UpdateManagerResolutionInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveTo must use YYYY-MM-DD format',
   })
-  effectiveTo!: string | null;
+  effectiveTo?: string | null;
 }

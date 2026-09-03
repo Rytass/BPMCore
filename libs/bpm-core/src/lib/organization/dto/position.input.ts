@@ -30,21 +30,21 @@ export class UpdatePositionInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  code!: string | null;
+  code?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  name!: string | null;
+  name?: string | null;
 
   @Field(() => Int, { nullable: true })
   @IsOptional()
   @IsInt()
   @Min(0)
-  level!: number | null;
+  level?: number | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  metadataJson!: string | null;
+  metadataJson?: string | null;
 }

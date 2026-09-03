@@ -1,3 +1,7 @@
+export * from './dto/manager-resolution.input';
+export * from './dto/membership.input';
+export * from './dto/org-unit.input';
+export * from './dto/position.input';
 export * from './manager-resolution.entity';
 export * from './membership.entity';
 export * from './org-unit.entity';

@@ -16,7 +16,7 @@ export class CreateMembershipInput {
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsString()
-  positionId!: string | null;
+  positionId?: string | null;
 
   @Field({ defaultValue: false })
   @IsBoolean()
@@ -35,7 +35,7 @@ export class CreateMembershipInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveTo must use YYYY-MM-DD format',
   })
-  effectiveTo!: string | null;
+  effectiveTo?: string | null;
 }
 
 @InputType()
@@ -47,17 +47,17 @@ export class UpdateMembershipInput {
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsString()
-  orgUnitId!: string | null;
+  orgUnitId?: string | null;
 
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsString()
-  positionId!: string | null;
+  positionId?: string | null;
 
   @Field(() => Boolean, { nullable: true })
   @IsOptional()
   @IsBoolean()
-  isPrimary!: boolean | null;
+  isPrimary?: boolean | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -65,7 +65,7 @@ export class UpdateMembershipInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveFrom must use YYYY-MM-DD format',
   })
-  effectiveFrom!: string | null;
+  effectiveFrom?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -73,5 +73,5 @@ export class UpdateMembershipInput {
   @Matches(DATE_ONLY_PATTERN, {
     message: 'effectiveTo must use YYYY-MM-DD format',
   })
-  effectiveTo!: string | null;
+  effectiveTo?: string | null;
 }
