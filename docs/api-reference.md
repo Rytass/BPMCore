@@ -2,11 +2,27 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-08-26, pending `v0.12.0`): `libs/shared@0.11.0`, `libs/bpm-core-client@0.11.0`, `libs/bpm-core@0.11.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.11.0`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) is inventoried here and resolves to `0.12.0` in `nx release --dry-run`; the manifests still read 0.11.0 because versioning happens at publish time. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it.
+Last verified against (2026-09-03, pending the release after `v0.12.0`): `libs/shared@0.12.0`, `libs/bpm-core-client@0.12.0`, `libs/bpm-core@0.12.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.12.0`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below is inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
 The 2026-08-16 DataSource audit round adds, on top of that: read-only `resolveFormFieldOptions` / `previewResolveFormFieldOptions` queries returning `BPMFormDataSourceResolveResult` (partial resolution reported through `unresolvedValues` instead of throwing, while submit/resubmit stays all-or-nothing), `waitingForFieldKeys` on both the options and resolve results as the authoritative dependency-wait signal, an optional `revalidationPolicy` on `FormDataSourceValueSnapshot`, `readFormDataSourceSelectedValues()`, a `canRetry` flag on `FormDataSourceFieldState`, per-request `AbortSignal` support on `requestGraphQl()` and every DataSource client query, and `@MaxLength` bounds on every DataSource GraphQL input field.
+
+The 2026-09-03 upstream-integration round (Meridian ERP report, BPM-1 to BPM-9)
+adds `resolverMetadataFactory` / `applyBPMResolverMetadata` /
+`listBPMResolverHandlers` / `BPMResolverMetadataFactory` /
+`BPMResolverHandlerDescriptor` / `BPMResolverAccessLevel` /
+`withBPMResolverAccess` to `@rytass/bpm-core-nestjs-module/bpm-auth`;
+`identityRegisterResolvers` to `BPMRootIdentityOptions` (and to
+`BPMRootModuleAsyncOptions`, read at wiring time);
+`attachmentAllowInsecureSignedUrlSecret` to `BPMRootAttachmentOptions`;
+`OrganizationService.deletePosition` and the `deletePosition` GraphQL mutation,
+mirrored as `deletePosition(id)` in `@rytass/bpm-core-client/organization`; and
+the organization / attachment / notification input DTOs to the package root,
+which were previously unreachable from outside. It also makes every
+GraphQL-nullable field on the organization and approval-template update inputs
+optional in TypeScript, so "leave unchanged" and "clear this" stop being the
+same call.
 
 Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
 
@@ -396,7 +412,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Records | `OrgUnitRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `ResolvedManagerRecord` |
 | Queries | `readOrganizationDashboard()`, `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()` |
 | OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit()`, `commitOrgUnitTreeDraft()` |
-| Position Mutations | `createPosition()`, `updatePosition()` |
+| Position Mutations | `createPosition()`, `updatePosition()`, `deletePosition(id)` |
 | Membership Mutations | `createMembership()`, `updateMembership()`, `deleteMembership()` |
 | ManagerResolution Mutations | `createManagerResolution()`, `updateManagerResolution()`, `deleteManagerResolution()` |
 
@@ -588,7 +604,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, plus flattened notification/attachment/signature/identity options |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `resolverMetadataFactory`, plus flattened notification/attachment/signature/identity options. `identityRegisterResolvers` and `resolverMetadataFactory` are read at wiring time on both `forRoot` and `forRootAsync` (never from `useFactory`) because Nest builds resolver metadata before any async factory runs. |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
 | `BPM_CORE_MIGRATIONS` | const | 21-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
@@ -605,6 +621,13 @@ Auth contract layer — lib does not own auth; host plugs in.
 | `BPMAuthOptions` | interface | Module options (e.g., `authContextFactory`) |
 | `@CurrentMember()`, `@CurrentMemberId()` | decorators | Inject current member in resolvers |
 | `BPMAuthAuthorization` | service | Permission service |
+| `BPMResolverAccessLevel` | type | `'admin' \| 'designer' \| 'authenticated'` — the authority BPM's own guards require for one handler |
+| `BPMResolverHandlerDescriptor` | interface | `{ access, resolverName, methodName }` describing one BPM GraphQL handler |
+| `BPMResolverMetadataFactory` | type | Host callback returning the route metadata to stamp on a handler |
+| `applyBPMResolverMetadata(factory)` | function | Replays a factory over every registered BPM handler, writing metadata onto the prototype method a guard receives as `context.getHandler()`. Called for you by `BPMRootModule` when `resolverMetadataFactory` is set. |
+| `listBPMResolverHandlers()` | function | Every handler the factory will be offered — used to build a host permission map |
+| `registerBPMResolverClassAccess`, `registerBPMResolverMethodAccess` | function | Internal registration used by BPM's own authorization decorators |
+| `withBPMResolverAccess(access, decorate)` | function | Wraps a BPM authorization decorator so the decorated class/method joins the registry |
 
 ## `@rytass/bpm-core-nestjs-module/identity`
 
@@ -613,7 +636,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 | `BPM_MEMBER_RESOLVER`, `MEMBER_RESOLVER` (deprecated alias) | injection token | Host MUST provide a resolver |
 | `BPMMemberResolver`, `MemberResolver` (deprecated alias) | interface | Resolver contract — `resolve`/`resolveMany`/`search?`/`searchPaged?` |
 | `BPMMemberSearchPage`, `BPMMemberSearchPageOptions` | interface | Paged-search result (`items` + `total`) and 1-based page request for `searchPaged?` |
-| `IdentityOptions` | interface | Identity module options |
+| `IdentityOptions` | interface | Identity module options — `identityMemberMetadataCacheTtlMs`, plus `identityRegisterResolvers` (default `true`; set `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers`, keeping `IdentityService` available without the colliding GraphQL fields) |
 | `BPMMemberBaseDirectory`, `BPMMemberBaseSearchPage` | interface | Host directory contract (incl. optional `searchMembersPaged`) and its host-shaped page |
 | `BPMMemberBaseAdapterOptions`, `BPMMemberBaseResolverProviderOptions` | interface | Field readers + provider options for the member-base adapter |
 | `BPMMemberBaseResolverAdapter` | class | Adapts a `BPMMemberBaseDirectory` into a `BPMMemberResolver` (exposes `searchPaged` only when the directory implements `searchMembersPaged`) |
@@ -626,9 +649,48 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Entities | `OrgUnitEntity`, `PositionEntity`, `MembershipEntity`, `ManagerResolutionEntity` |
 | ObjectTypes | `OrgUnitTreeCommitResult`, `OrganizationSummary`, `ResolvedManager` |
 | Enums | `OrganizationEnums` |
+| DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService` |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationQueries`, `OrganizationMutations` |
+
+> GraphQL-nullable fields on these inputs are **optional** in TypeScript
+> (`parentId?: string | null`). Exactly five of them are genuinely three-state
+> — omitting the field and passing `null` do different things:
+>
+> | Field | omitted | `null` |
+> |---|---|---|
+> | `UpdateOrgUnitInput.parentId` | keep the current parent | move to the top level |
+> | `UpdateMembershipInput.positionId` | keep the current position | clear the position |
+> | `UpdateMembershipInput.effectiveTo` | keep the current end date | clear the end date |
+> | `UpdateManagerResolutionInput.effectiveTo` | keep the current end date | clear the end date |
+> | `UpdateApprovalTemplateInput.categoryId` | keep the current category | detach the category |
+>
+> On every other field (`code`, `name`, `type`, `description`, …) the service
+> reads `input.x ?? existing.x`, so `null` and omission are equivalent — those
+> are optional only so a caller can leave out what it is not changing.
+>
+> `UpdateOrgUnitInput.metadataJson` and `UpdatePositionInput.metadataJson` are
+> a known wart rather than a contract: the service tests them for truthiness
+> (`input.metadataJson ? parse(...) : existing.metadata`), so metadata can be
+> replaced but never emptied — `'{}'` works, `''` and `null` are both read as
+> "unchanged".
+>
+> `OrganizationService.deletePosition(id)` hard-deletes a position and refuses
+> while anything still references it (`PositionEntity` has no `deleted_at`):
+>
+> 1. a membership (also a real foreign key);
+> 2. a `POSITION`-scoped manager resolution;
+> 3. a non-`ARCHIVED` approval template version whose workflow definition
+>    routes approvers through it (`POSITION` / `ORG_UNIT_POSITION`);
+> 4. a `PENDING` ad-hoc directive on a running instance whose `targetKind` is
+>    `POSITION`.
+>
+> Checks 3 and 4 read `jsonb`, where no foreign key can stand in for them, and
+> are skipped when the template / workflow tables are absent — so an
+> `OrganizationModule`-only host is unaffected. Exposed as the `deletePosition`
+> GraphQL mutation and as `deletePosition(id)` in
+> `@rytass/bpm-core-client/organization`.
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
@@ -836,6 +898,11 @@ GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`
 | `ConditionService` | Condition-expression evaluation engine |
 | `ConditionModule` | Module wrapper |
 
+> `cel-js` is loaded on first parse, not at module import. Importing anything
+> from the package root therefore no longer drags the ESM-only `cel-js` (and
+> its `chevrotain` exports map, which `jest-resolve` cannot follow) into a
+> host's jest run — consumer suites need no `moduleNameMapper` stub.
+
 ## `@rytass/bpm-core-nestjs-module/delegation`
 
 | Category | Names |
@@ -883,6 +950,7 @@ narrow, read-only service rather than from a BPM provider.
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
 | Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
+| DTOs | `UpdateNotificationPreferenceInput` |
 | Options | `NotificationOptions`, `NotificationOptionsModule` |
 | Enums | `NotificationEnums` |
 | Schedule | `isWithinQuietHours`, `resolveQuietHoursEnd`, `resolveEmailReleaseAt`, `normalizeDigestHour`, `DEFAULT_EMAIL_DIGEST_HOUR`, `DEFAULT_QUIET_HOURS_TIME_ZONE`, `NotificationQuietHours`, `EmailReleaseOptions` (pure functions behind quiet-hours / digest scheduling) |
@@ -995,8 +1063,15 @@ argument on the `notifications` / `notificationCount` queries.
 | Service | `AttachmentService` |
 | Provider | `AttachmentStorageProvider` (host injects S3 / local-FS adapter) |
 | Token | `ATTACHMENT_STORAGE` |
+| DTOs | `UploadAttachmentInput` |
 | Options | `AttachmentOptions` |
 | Module | `AttachmentModule` |
+
+> `attachmentSignedUrlSecret` is enforced under `NODE_ENV=production`:
+> `resolveBPMAttachmentOptions` throws rather than fall back to the
+> development constant published in this package. The opt-in
+> `attachmentAllowInsecureSignedUrlSecret: true` waives that for throwaway
+> environments; outside production the built-in value still only warns.
 
 ## `@rytass/bpm-core-nestjs-module/signature`
 
@@ -1018,7 +1093,11 @@ argument on the `notifications` / `notificationCount` queries.
 
 21 ordered migrations:
 
-1. `EnablePostgresExtensions0000000000001`
+1. `EnablePostgresExtensions0000000000001` — checks `pg_extension` before
+   issuing `CREATE EXTENSION`, so a least-privilege role runs clean when a DBA
+   has already installed `uuid-ossp` and `ltree`. When they are missing and the
+   role cannot create them, it fails with the SQL to run and who must run it,
+   instead of a bare `42501`.
 2. `IdentityOrganizationFoundation0000000001000`
 3. `FormBuilderFoundation0000000002000`
 4. `ApprovalTemplateFoundation0000000003000`

@@ -582,6 +582,62 @@ export class BPMAuthContextFactory {
 > module or a database table) so adding a new BPM tier in a future
 > BPMCore release becomes a one-line addition.
 
+### Coexisting with a host global guard
+
+`APP_GUARD`-registered guards run **before** BPM's own. A guard that decides
+by route metadata therefore judges BPM's resolvers by metadata BPM never
+writes — and `@rytass/member-base-nestjs-module`'s `CasbinGuard` rejects any
+route without `@CheckPermission`:
+
+```json
+{ "errors": [{ "message": "Route has no permission metadata",
+               "path": ["orgUnits"],
+               "extensions": { "code": "FORBIDDEN" } }] }
+```
+
+Every BPM query and mutation fails this way, before BPM's guards run at all.
+BPM cannot import the host's decorator, and a decorator cannot read module
+options — it runs when the class is defined. So BPM's resolvers register
+themselves, and `resolverMetadataFactory` replays your factory over them at
+module wiring time:
+
+```ts
+import { PERMISSION_METADATA_KEY } from '@rytass/member-base-nestjs-module';
+import { BPMRootModule, type BPMResolverMetadataFactory } from '@rytass/bpm-core-nestjs-module';
+
+const HOST_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
+  admin: ['bpm:admin'],
+  authenticated: ['bpm:use'],
+  designer: ['bpm:design'],
+};
+
+const resolverMetadataFactory: BPMResolverMetadataFactory = ({ access }) => ({
+  [PERMISSION_METADATA_KEY]: HOST_PERMISSIONS[access],
+});
+
+BPMRootModule.forRoot({ resolverMetadataFactory, /* ... */ });
+```
+
+The factory is called once per handler and receives `{ access, resolverName,
+methodName }`. `access` is the authority BPM's own guards require —
+`'admin'`, `'designer'`, or `'authenticated'` — so the common case is one
+lookup table rather than a per-operation list. `methodName` is also the
+GraphQL field name (`orgUnits`, `createOrgUnit`, `member`) when a handful of
+operations need finer grants. Returning `null` leaves a handler untouched.
+
+The returned record is written onto the prototype method, which is exactly
+what Nest hands a guard as `context.getHandler()`; BPM's own guards still run
+afterwards, so both permission models apply.
+
+`listBPMResolverHandlers()` prints every handler the factory will be offered,
+which is the quickest way to build the mapping table:
+
+```ts
+import { listBPMResolverHandlers } from '@rytass/bpm-core-nestjs-module';
+
+console.table([...listBPMResolverHandlers()]);
+```
+
 ## Member Resolver
 
 The package resolves display names, email addresses, and approver candidates
@@ -873,6 +929,7 @@ BPMRootModule.forRootAsync({
 | ------------------------------------------------ | ------------------------------ | -------------------------------------------------------------- |
 | `authContextFactory`                             | `undefined`                    | Reads `BPMAuthContext` from NestJS `ExecutionContext`.         |
 | `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                            |
+| `resolverMetadataFactory`                        | `undefined`                    | Stamps the host's own route metadata onto every BPM GraphQL handler. Required when the host installs a global metadata-driven guard — see "Coexisting with a host global guard". |
 | `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                      |
 | `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks. |
 | `businessCalendarProvider`                       | Monday–Friday calendar         | Host provider for `BPM_BUSINESS_CALENDAR`, used by `BUSINESS_DAY` SLAs. BPMCore ships no holiday data. |
@@ -880,9 +937,11 @@ BPMRootModule.forRootAsync({
 | `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below). |
 | `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
 | `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
-| `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens.     |
+| `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens. Under `NODE_ENV=production` BPM refuses to start while this is unset. |
+| `attachmentAllowInsecureSignedUrlSecret`         | `false`                        | Opt-in that lets a `NODE_ENV=production` process boot on the built-in development secret anyway. Only for throwaway environments — the value is published in this package. |
 | `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                     |
 | `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                     |
+| `identityRegisterResolvers`                      | `true`                         | Set to `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers` GraphQL queries. `IdentityService` stays available either way. |
 | `notificationInAppEnabled`                       | `true`                         | Enables in-app notification records.                           |
 | `notificationEmailEnabled`                       | `auto`                         | Enables email when SMTP settings are complete.                 |
 | `notificationEmailSmtpHost`                      | `null`                         | SMTP host.                                                     |
@@ -919,7 +978,85 @@ BPMRootModule.forRootAsync({
 
 Production deployments should override all local development secrets.
 
+### Mounting a single domain module
+
+`BPMRootModule` is the supported entry point and the only one that wires the
+whole product. A host that wants **one** BPM domain — most often organization
+data, with no workflow, forms, or notifications — can import that domain
+module on its own. These are self-contained: they declare their own
+`TypeOrmModule.forFeature` and their services inject nothing but `DataSource`
+and repositories.
+
+```ts
+import { Module } from '@nestjs/common';
+import { OrganizationModule, OrganizationService } from '@rytass/bpm-core-nestjs-module';
+
+@Module({ imports: [OrganizationModule] })
+export class HostOrganizationModule {}
+```
+
+| Module               | Self-contained | Notes                                                                |
+| -------------------- | -------------- | -------------------------------------------------------------------- |
+| `OrganizationModule` | yes            | Org units, positions, memberships, manager resolution. Mounted alone, `deletePosition` silently skips its approval-template and ad-hoc-directive reference checks (it logs when it does) — those tables are not in the schema. |
+| `FormModule`         | yes            | Form definitions and versions.                                        |
+| `TemplateModule`     | yes            | Approval templates, versions, categories.                             |
+| `ConditionModule`    | yes            | CEL lint and evaluation only.                                         |
+| `IdentityModule`     | no             | Needs `memberResolverProvider`; use `IdentityModule.forRoot(...)`.     |
+| `AttachmentModule`   | no             | Needs storage and signed-URL options; use `AttachmentModule.forRoot(...)`. |
+
+What you still owe them:
+
+- **Migrations.** `BPM_CORE_MIGRATIONS` is one list for the whole package; a
+  single-module host still runs all of it, and still needs the extensions in
+  "Database prerequisites" below.
+- **Auth.** A domain module imported directly does not bring `BPMAuthModule`,
+  so `@BPMAdminOnly()` on its resolvers has no auth context accessor to
+  inject. Either import `BPMAuthModule.forRoot({ contextFactory })` alongside
+  it, or use the domain **service** and publish your own GraphQL surface.
+
+The domain services (`OrganizationService` and friends) are the stable part of
+this arrangement; a module's internal wiring is not. If you are here because
+`BPMRootModule` collides with your schema, `identityRegisterResolvers` and
+`resolverMetadataFactory` usually let you keep the supported entry point.
+
+### Testing a host that depends on BPM
+
+BPM loads `cel-js` — ESM-only, with a `chevrotain` dependency whose exports
+map `jest-resolve` cannot follow — lazily, on the first CEL expression it
+parses. Importing anything from the package root does not reach it, so a host
+jest suite needs no `moduleNameMapper` entry and no stub.
+
+A suite that *does* exercise conditions (template validation, workflow
+transitions) will load `cel-js` for real. If your jest version cannot resolve
+it, map it to a stub of your own:
+
+```ts
+// jest.config.ts
+moduleNameMapper: { '^cel-js$': '<rootDir>/test/cel-js.stub.ts' },
+```
+
 ## Database Setup
+
+### Database prerequisites
+
+BPM's first migration enables two PostgreSQL extensions — `uuid-ossp` for
+`uuid_generate_v4()` defaults and `ltree` for the org unit `path` column:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "ltree";
+```
+
+`CREATE EXTENSION` needs the CREATE privilege **on the database**, which a
+least-privilege application role normally does not have — including on Rytass
+platforms, where that privilege is revoked by convention. Have a superuser,
+the database owner, or `rds_superuser` run the two statements once before the
+first migration run.
+
+If the extensions are already installed, the migration detects them and skips
+the statements, so a least-privilege role can run migrations normally. If they
+are missing and the role cannot create them, the migration stops with the SQL
+above and who needs to run it, rather than a bare `42501`.
 
 The package exports helpers for Vault-backed TypeORM setup:
 
@@ -1521,14 +1658,25 @@ npm publish --access public
 
 ## Production Notes
 
-- Replace all local fallback secrets before production.
+- **BREAKING (upgrade note).** Replace all local fallback secrets before
+  production. Under `NODE_ENV=production`, `attachmentSignedUrlSecret` is now
+  enforced: BPM refuses to start rather than sign attachment URLs with the
+  value published in this package. `BPMRootModule` mounts `AttachmentModule`
+  unconditionally, so this applies **even to a host that never serves
+  attachments** — an existing production deployment that never set the secret
+  will fail to boot after upgrading. Set the secret, or set
+  `attachmentAllowInsecureSignedUrlSecret: true` to acknowledge that the
+  signing key is public and boot anyway. Never set that flag on anything
+  serving real attachments.
 - Use a production storage adapter instead of local filesystem storage.
 - Keep old signature keys available for verification after key rotation.
 - Keep in-process schedulers disabled in API replicas unless a dedicated worker
   is not available.
 - Do not enable TypeORM `synchronize` in production.
 - Ensure GraphQL auth context is available for protected operations.
-- Run migrations before serving traffic with a new package version.
+- Run migrations before serving traffic with a new package version, and
+  install the PostgreSQL extensions listed under "Database prerequisites"
+  once, with a privileged role, before the first run.
 
 ## License
 
