@@ -16,27 +16,27 @@ export class CreateApprovalTemplateInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  description!: string | null;
+  description?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  category!: string | null;
+  category?: string | null;
 
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsUUID()
-  categoryId!: string | null;
+  categoryId?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  createdByMemberId!: string | null;
+  createdByMemberId?: string | null;
 
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsUUID()
-  formDefinitionVersionId!: string | null;
+  formDefinitionVersionId?: string | null;
 }
 
 @InputType()
@@ -48,22 +48,33 @@ export class UpdateApprovalTemplateInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  name!: string | null;
+  name?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  description!: string | null;
+  description?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  category!: string | null;
+  category?: string | null;
 
+  /**
+   * Category to attach, as a three-state value:
+   *
+   * - omitted (`undefined`) — keep the current category;
+   * - `null` — detach the template from its category;
+   * - an id — attach that category.
+   *
+   * Optional so callers can say "keep it". Declared required, the natural way
+   * to satisfy the type on an unrelated rename was to pass `null`, which
+   * quietly detached the category.
+   */
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsUUID()
-  categoryId!: string | null;
+  categoryId?: string | null;
 }
 
 @InputType()
@@ -75,17 +86,17 @@ export class CreateApprovalTemplateCategoryInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  description!: string | null;
+  description?: string | null;
 
   @Field(() => Boolean, { nullable: true })
   @IsBoolean()
   @IsOptional()
-  isActive!: boolean | null;
+  isActive?: boolean | null;
 
   @Field(() => Int, { nullable: true })
   @IsInt()
   @IsOptional()
-  sortOrder!: number | null;
+  sortOrder?: number | null;
 }
 
 @InputType()
@@ -97,22 +108,22 @@ export class UpdateApprovalTemplateCategoryInput {
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  name!: string | null;
+  name?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  description!: string | null;
+  description?: string | null;
 
   @Field(() => Boolean, { nullable: true })
   @IsBoolean()
   @IsOptional()
-  isActive!: boolean | null;
+  isActive?: boolean | null;
 
   @Field(() => Int, { nullable: true })
   @IsInt()
   @IsOptional()
-  sortOrder!: number | null;
+  sortOrder?: number | null;
 }
 
 @InputType()
@@ -128,20 +139,20 @@ export class UpdateApprovalTemplateDraftInput {
   @Field(() => ID, { nullable: true })
   @IsOptional()
   @IsUUID()
-  formDefinitionVersionId!: string | null;
+  formDefinitionVersionId?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  initiatorPolicyCel!: string | null;
+  initiatorPolicyCel?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  notificationConfigJson!: string | null;
+  notificationConfigJson?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
   @IsString()
-  slaDefaultsJson!: string | null;
+  slaDefaultsJson?: string | null;
 }
