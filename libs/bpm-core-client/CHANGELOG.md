@@ -1,3 +1,14 @@
+## 0.13.0 (2026-09-03)
+
+### 🚀 Features
+
+- **client:** add deletePosition ([2375fb2](https://github.com/Rytass/BPMCore/commit/2375fb2))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.12.0 (2026-08-27)
 
 ### 🚀 Features

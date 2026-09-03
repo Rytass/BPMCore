@@ -1,3 +1,14 @@
+## 0.13.0 (2026-09-03)
+
+### 🚀 Features
+
+- **orgs:** let an admin delete a position, and show why a delete was refused ([a9b3408](https://github.com/Rytass/BPMCore/commit/a9b3408))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.12.0 (2026-08-27)
 
 ### 🚀 Features

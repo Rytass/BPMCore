@@ -1,3 +1,40 @@
+## 0.13.0 (2026-09-03)
+
+### 🚀 Features
+
+- **bpm-auth:** let a host stamp its own route metadata on BPM resolvers ([49bedb7](https://github.com/Rytass/BPMCore/commit/49bedb7))
+- **client:** add deletePosition ([2375fb2](https://github.com/Rytass/BPMCore/commit/2375fb2))
+- **identity:** let a host turn off the identity GraphQL queries ([33630f8](https://github.com/Rytass/BPMCore/commit/33630f8))
+- **orgs:** let an admin delete a position, and show why a delete was refused ([a9b3408](https://github.com/Rytass/BPMCore/commit/a9b3408))
+
+### 🩹 Fixes
+
+- ⚠️  **attachment:** refuse to sign production attachment URLs with the public dev key ([c40ce67](https://github.com/Rytass/BPMCore/commit/c40ce67))
+- **bpm-auth:** list only real GraphQL handlers, and keep symbol metadata keys ([9cc4593](https://github.com/Rytass/BPMCore/commit/9cc4593))
+- **condition:** load cel-js on first use, not on import ([e2a64c9](https://github.com/Rytass/BPMCore/commit/e2a64c9))
+- **condition:** name the Node version when cel-js cannot be required ([2691e63](https://github.com/Rytass/BPMCore/commit/2691e63))
+- **migrations:** explain what to do when CREATE EXTENSION is denied ([a0c9c38](https://github.com/Rytass/BPMCore/commit/a0c9c38))
+- **migrations:** stop dropping extensions this migration may not have created ([88256d1](https://github.com/Rytass/BPMCore/commit/88256d1))
+- **organization:** let update inputs say "leave this alone", and allow deleting a position ([e09e012](https://github.com/Rytass/BPMCore/commit/e09e012))
+- **template:** let UpdateApprovalTemplateInput say "keep the category" ([c11c248](https://github.com/Rytass/BPMCore/commit/c11c248))
+
+### ⚠️  Breaking Changes
+
+- **attachment:** refuse to sign production attachment URLs with the public dev key  ([c40ce67](https://github.com/Rytass/BPMCore/commit/c40ce67))
+  a NODE_ENV=production process that never set
+  attachmentSignedUrlSecret no longer starts. BPMRootModule mounts
+  AttachmentModule unconditionally, so this reaches hosts that serve no
+  attachments at all. Set the secret, or set
+  attachmentAllowInsecureSignedUrlSecret: true to acknowledge that the signing
+  key is public.
+  Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  Claude-Session: https://claude.ai/code/session_016VKxnq3cFuySFMLMZhtd2E
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.12.0 (2026-08-27)
 
 ### 🚀 Features
