@@ -122,6 +122,10 @@ interface UpdatePositionMutationData {
   readonly updatePosition: PositionRecord;
 }
 
+interface DeletePositionMutationData {
+  readonly deletePosition: boolean;
+}
+
 interface CreateMembershipMutationData {
   readonly createMembership: MembershipRecord;
 }
@@ -571,6 +575,24 @@ export async function updatePosition(input: {
   );
 
   return data.updatePosition;
+}
+
+/**
+ * Removes a position.
+ *
+ * Rejects while any membership or position-scoped manager resolution still
+ * points at it — positions are hard-deleted, so the server refuses rather than
+ * leave dangling references behind.
+ */
+export async function deletePosition(id: string): Promise<boolean> {
+  const data = await requestGraphQl<DeletePositionMutationData>(
+    `mutation AdminDeletePosition($id: String!) {
+      deletePosition(id: $id)
+    }`,
+    { id },
+  );
+
+  return data.deletePosition;
 }
 
 export async function createMembership(input: {
