@@ -32,10 +32,35 @@ let celEngine: CelEngine | null = null;
  */
 function loadCelEngine(): CelEngine {
   if (celEngine === null) {
-    celEngine = require('cel-js') as CelEngine;
+    try {
+      celEngine = require('cel-js') as CelEngine;
+    } catch (error: unknown) {
+      // Deferring the load also defers this failure: it used to surface at
+      // boot as a bare ERR_REQUIRE_ESM, and would now surface as a 500 on
+      // whichever request first evaluated a condition. Name the cause where it
+      // is thrown.
+      if (isRequireEsmError(error)) {
+        throw new Error(
+          `[@rytass/bpm-core-nestjs-module] This Node version cannot require the ESM-only 'cel-js'. BPM needs Node >=20.19 or >=22.12 to evaluate CEL conditions. Original error: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+
+      throw error;
+    }
   }
 
   return celEngine;
+}
+
+function isRequireEsmError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { readonly code?: unknown }).code === 'ERR_REQUIRE_ESM'
+  );
 }
 
 interface ConditionExpression {

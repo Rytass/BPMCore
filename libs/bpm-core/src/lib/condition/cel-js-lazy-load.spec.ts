@@ -26,6 +26,18 @@ jest.mock('cel-js', () => {
 });
 
 describe('cel-js loading', () => {
+  // Declared first on purpose: the counter is file-scoped, so this is the only
+  // point at which an absolute zero is meaningful. The regression being guarded
+  // is the whole chain `index -> bpm-root -> delegation -> condition`, not one
+  // file — a consumer that imports anything from the package root must not pay
+  // for `cel-js`, and testing `condition.service` alone would still pass if
+  // some other module started importing it at module scope.
+  it('is not triggered by importing the package root', (): void => {
+    require('../../index');
+
+    expect(mockCelLoadCount).toBe(0);
+  });
+
   it('is deferred until an expression is parsed', (): void => {
     expect(mockCelLoadCount).toBe(0);
 
