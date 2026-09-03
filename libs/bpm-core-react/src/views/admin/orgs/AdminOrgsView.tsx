@@ -59,6 +59,7 @@ import {
   deleteManagerResolution,
   deleteMembership,
   deleteOrgUnit,
+  deletePosition,
   ManagerResolutionRecord,
   ManagerResolutionScopeType,
   MembershipRecord,
@@ -151,7 +152,7 @@ type DeleteConfirmationState = Readonly<{
   description: string;
   id: string;
   title: string;
-  type: 'MANAGER_RESOLUTION' | 'MEMBERSHIP' | 'ORG_UNIT';
+  type: 'MANAGER_RESOLUTION' | 'MEMBERSHIP' | 'ORG_UNIT' | 'POSITION';
 }>;
 
 type OrgUnitTypeOption = Readonly<{
@@ -238,7 +239,7 @@ const PRIMARY_OPTIONS: readonly PrimaryOption[] = [
 ];
 const ORGANIZATION_TABLE_PAGE_SIZE_OPTIONS = [10, 20, 50];
 const ORG_UNIT_TABLE_MIN_WIDTH = 1368;
-const POSITION_TABLE_MIN_WIDTH = 908;
+const POSITION_TABLE_MIN_WIDTH = 948;
 const MEMBERSHIP_TABLE_MIN_WIDTH = 1292;
 const MANAGER_TABLE_MIN_WIDTH = 1124;
 
@@ -486,9 +487,25 @@ export function AdminOrgsView(): ReactElement {
           name: '編輯',
           onClick: (): void => setPositionModal({ record, type: 'EDIT' }),
         },
+        {
+          name: '刪除',
+          onClick: (): void =>
+            // Positions are hard-deleted, and the server refuses while any
+            // membership, manager resolution, live approval template, or
+            // pending ad-hoc directive still points at this one — that
+            // rejection surfaces through the page's error banner.
+            setDeleteConfirmation({
+              confirmText: '刪除職位',
+              description: `刪除職位「${record.name}」。若仍有會員歸屬、主管解析規則、簽核範本或進行中單據的加簽對象引用它，系統會拒絕刪除並說明原因。`,
+              id: record.id,
+              title: '刪除職位',
+              type: 'POSITION',
+            }),
+          variant: 'destructive-secondary',
+        },
       ],
       variant: 'base-secondary',
-      width: 88,
+      width: 128,
     }),
     [],
   );
@@ -601,6 +618,10 @@ export function AdminOrgsView(): ReactElement {
     await runMutation(async (): Promise<void> => {
       if (deleteConfirmation.type === 'ORG_UNIT') {
         await deleteOrgUnit(deleteConfirmation.id);
+      }
+
+      if (deleteConfirmation.type === 'POSITION') {
+        await deletePosition(deleteConfirmation.id);
       }
 
       if (deleteConfirmation.type === 'MEMBERSHIP') {
@@ -914,6 +935,18 @@ export function AdminOrgsView(): ReactElement {
         <Typography color="text-neutral" variant="body">
           {visibleDeleteConfirmation?.description ?? ''}
         </Typography>
+        {/*
+          A rejected delete leaves this modal open, and the page-level error
+          line sits behind it — so without this the user sees the spinner stop
+          and nothing else. Referential guards reject often enough (a position
+          still used by a template, an org unit with children) that the reason
+          has to be readable where the decision is being made.
+        */}
+        {error ? (
+          <Typography color="text-error" variant="body">
+            {error}
+          </Typography>
+        ) : null}
       </Modal>
     </>
   );
