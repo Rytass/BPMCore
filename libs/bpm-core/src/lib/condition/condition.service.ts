@@ -1,5 +1,42 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { evaluate, parse, type Failure, type ParseResult } from 'cel-js';
+import type { Failure, ParseResult } from 'cel-js';
+
+/**
+ * The slice of `cel-js` this service uses.
+ */
+interface CelEngine {
+  readonly evaluate: (
+    cst: unknown,
+    context: Readonly<Record<string, unknown>>,
+  ) => unknown;
+  readonly parse: (expression: string) => ParseResult;
+}
+
+let celEngine: CelEngine | null = null;
+
+/**
+ * Loads `cel-js` on first use rather than when this module is imported.
+ *
+ * `cel-js` is ESM-only and its `chevrotain` dependency ships an exports map
+ * that `jest-resolve` cannot follow. While the import sat at the top of this
+ * file, the package root pulled it in through
+ * `index → bpm-root → delegation → condition`, so *any* consumer test that
+ * imported anything from `@rytass/bpm-core-nestjs-module` failed to load with
+ * `Cannot find module 'chevrotain'` — pointing deep into `node_modules`, far
+ * from the code under test. Hosts had to stub `cel-js` before they could write
+ * a single test.
+ *
+ * Deferring the load means a host that never evaluates a CEL expression never
+ * resolves the package at all. `require` (not `await import`) keeps every
+ * caller in this file synchronous.
+ */
+function loadCelEngine(): CelEngine {
+  if (celEngine === null) {
+    celEngine = require('cel-js') as CelEngine;
+  }
+
+  return celEngine;
+}
 
 interface ConditionExpression {
   readonly expression: string | null | undefined;
@@ -51,7 +88,7 @@ export class ConditionService {
       return [`${label} must be ${maxExpressionLength} characters or fewer`];
     }
 
-    const parseResult = parse(trimmedExpression);
+    const parseResult = loadCelEngine().parse(trimmedExpression);
 
     if (isParseFailure(parseResult)) {
       return parseResult.errors.map((error) => `${label}: ${error}`);
@@ -90,7 +127,8 @@ export class ConditionService {
       throw new BadRequestException(lengthErrors.join('; '));
     }
 
-    const parseResult = parse(trimmedExpression);
+    const engine = loadCelEngine();
+    const parseResult = engine.parse(trimmedExpression);
 
     if (isParseFailure(parseResult)) {
       throw new BadRequestException(
@@ -99,7 +137,7 @@ export class ConditionService {
     }
 
     try {
-      return evaluate(parseResult.cst, { ...context });
+      return engine.evaluate(parseResult.cst, { ...context });
     } catch (error: unknown) {
       throw new BadRequestException(
         error instanceof Error ? `${label}: ${error.message}` : label,
