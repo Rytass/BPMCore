@@ -1,4 +1,8 @@
 import { DataSource, Repository } from 'typeorm';
+import {
+  CommitOrgUnitTreeDraftMoveInput,
+  UpdateOrgUnitInput,
+} from './dto/org-unit.input';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
@@ -60,7 +64,31 @@ function createDataSourceWithWorkflowArtifacts({
   } as unknown as DataSource;
 }
 
+/**
+ * Compile-time half of the BPM-1 fix. The runtime tests below prove the service
+ * honours the three states; nothing but this stops someone changing
+ * `parentId?` back to `parentId!`, which would again force every caller into
+ * passing `null` for a field they did not mean to touch.
+ */
+const renameOnly: UpdateOrgUnitInput = { id: 'org-1', name: 'Finance' };
+
+/**
+ * The inverse contract, one type over: a draft move must state a destination,
+ * so leaving `parentId` out has to be a compile error rather than a silent
+ * move to the top level.
+ */
+// @ts-expect-error parentId is required on CommitOrgUnitTreeDraftMoveInput
+const moveWithoutDestination: CommitOrgUnitTreeDraftMoveInput = {
+  baseUpdatedAt: '2026-05-12T08:00:00.000Z',
+  id: 'org-1',
+};
+
 describe('OrganizationService', () => {
+  it('types a rename that leaves the parent alone, and rejects a move with no destination', (): void => {
+    expect(renameOnly.parentId).toBeUndefined();
+    expect(moveWithoutDestination.id).toBe('org-1');
+  });
+
   it('resolves member-scoped manager by highest priority', async (): Promise<void> => {
     const managerResolutionRepository = {
       find: jest.fn<Promise<readonly ManagerResolutionEntity[]>, []>(() =>
