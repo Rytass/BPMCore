@@ -42,7 +42,7 @@ export function withBPMResolverAccess(
       );
     }
 
-    applyDecorator(target, propertyKey, descriptor);
+    return applyDecorator(target, propertyKey, descriptor);
   };
 
   return decorator as unknown as BPMResolverDecorator;

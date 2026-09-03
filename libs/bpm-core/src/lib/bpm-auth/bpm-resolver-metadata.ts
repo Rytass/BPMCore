@@ -16,6 +16,8 @@
  * any of this metadata, which it only does per request.
  */
 
+import { RESOLVER_TYPE_METADATA } from '@nestjs/graphql';
+
 const ACCESS_BY_RESOLVER = new Map<object, BPMResolverAccessRegistration>();
 
 /**
@@ -53,7 +55,7 @@ export interface BPMResolverHandlerDescriptor {
  */
 export type BPMResolverMetadataFactory = (
   handler: BPMResolverHandlerDescriptor,
-) => Readonly<Record<string, unknown>> | null | undefined;
+) => Readonly<Record<string | symbol, unknown>> | null | undefined;
 
 interface BPMResolverAccessRegistration {
   readonly accessByMethod: Map<string, BPMResolverAccessLevel>;
@@ -123,8 +125,15 @@ export function applyBPMResolverMetadata(
 
       const handler = prototype[methodName];
 
-      for (const [key, value] of Object.entries(metadata)) {
-        Reflect.defineMetadata(key, value, handler as object);
+      // `Reflect.ownKeys`, not `Object.entries`: several Nest ecosystem guards
+      // key their metadata by symbol, and dropping those silently would look
+      // to a host exactly like the factory never ran.
+      for (const key of Reflect.ownKeys(metadata)) {
+        Reflect.defineMetadata(
+          key,
+          (metadata as Record<string | symbol, unknown>)[key],
+          handler as object,
+        );
       }
     }
   }
@@ -201,12 +210,44 @@ function readResolverName(resolverClass: object): string {
   return typeof name === 'string' ? name : '';
 }
 
+/**
+ * The GraphQL handlers on a resolver prototype and everything it inherits.
+ *
+ * Two things this must not do. It must not list a plain helper method: a host
+ * builds its permission map from `listBPMResolverHandlers()`, and a private
+ * helper would show up there as a GraphQL field that does not exist. And it
+ * must not stop at the class's own prototype: a handler inherited from a base
+ * resolver would then get no metadata at all, which a host sees only as an
+ * unexplained 403.
+ *
+ * `@Query` / `@Mutation` / `@ResolveField` each stamp
+ * `RESOLVER_TYPE_METADATA` on the method, so that is the test.
+ */
 function listHandlerMethodNames(
   prototype: Record<string, unknown>,
 ): readonly string[] {
-  return Object.getOwnPropertyNames(prototype).filter(
-    (methodName): boolean =>
-      methodName !== 'constructor' &&
-      typeof prototype[methodName] === 'function',
-  );
+  const methodNames = new Set<string>();
+
+  for (
+    let current: object | null = prototype;
+    current !== null && current !== Object.prototype;
+    current = Object.getPrototypeOf(current) as object | null
+  ) {
+    for (const methodName of Object.getOwnPropertyNames(current)) {
+      if (methodName === 'constructor') {
+        continue;
+      }
+
+      const member = (current as Record<string, unknown>)[methodName];
+
+      if (
+        typeof member === 'function' &&
+        Reflect.getMetadata(RESOLVER_TYPE_METADATA, member) !== undefined
+      ) {
+        methodNames.add(methodName);
+      }
+    }
+  }
+
+  return [...methodNames];
 }

@@ -1,4 +1,9 @@
 import 'reflect-metadata';
+import { Query, Resolver } from '@nestjs/graphql';
+// The package root, so the registry holds every BPM resolver rather than the
+// three this file names — which is what makes the count assertion meaningful.
+import '../../index';
+import { BPMAdminOnly } from './bpm-auth.authorization';
 import { IdentityQueries } from '../identity/identity.queries';
 import { OrganizationMutations } from '../organization/organization.mutations';
 import { OrganizationQueries } from '../organization/organization.queries';
@@ -9,6 +14,25 @@ import {
 } from './bpm-resolver-metadata';
 
 const HOST_PERMISSION_KEY = 'host:permission';
+
+/**
+ * Stands in for a resolver that grew a private helper. The listing must offer
+ * `listThings` and never `buildThingFilter`: a host turns this listing into
+ * permission rules, and a helper appearing there is a rule for a GraphQL field
+ * that does not exist.
+ */
+@Resolver()
+@BPMAdminOnly()
+class ProbeResolver {
+  @Query(() => String)
+  listThings(): string {
+    return this.buildThingFilter();
+  }
+
+  buildThingFilter(): string {
+    return '';
+  }
+}
 
 describe('BPM resolver metadata', () => {
   it('lists every guarded BPM handler with the authority BPM requires', (): void => {
@@ -31,6 +55,13 @@ describe('BPM resolver metadata', () => {
     // override: the narrower method decorator has to win.
     expect(find('IdentityQueries', 'member')?.access).toBe('authenticated');
     expect(find('IdentityQueries', 'cachedMembers')?.access).toBe('admin');
+
+    // A filter that stopped matching would leave this near zero, and a host
+    // would silently get a permission map covering nothing.
+    expect(handlers.length).toBeGreaterThan(100);
+
+    expect(find('ProbeResolver', 'listThings')?.access).toBe('admin');
+    expect(find('ProbeResolver', 'buildThingFilter')).toBeUndefined();
   });
 
   it('stamps host metadata onto the prototype method a guard receives', (): void => {
