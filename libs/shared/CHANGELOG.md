@@ -1,3 +1,7 @@
+## 0.13.3 (2026-09-04)
+
+This was a version bump only for shared to align it with other projects, there were no code changes.
+
 ## 0.13.2 (2026-09-04)
 
 ### 🩹 Fixes

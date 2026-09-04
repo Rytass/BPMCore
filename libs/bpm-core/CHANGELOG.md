@@ -1,3 +1,14 @@
+## 0.13.3 (2026-09-04)
+
+### 🩹 Fixes
+
+- **attachment:** validate the signing secret at bootstrap, not at import ([d07f996](https://github.com/Rytass/BPMCore/commit/d07f996))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.13.2 (2026-09-04)
 
 ### 🩹 Fixes
