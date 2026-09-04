@@ -75,6 +75,11 @@
         "production",
         "^production"
       ]
+    },
+    "nx-release-publish": {
+      "dependsOn": [
+        "build"
+      ]
     }
   },
   "release": {
@@ -93,6 +98,7 @@
     },
     "version": {
       "preVersionCommand": "pnpm nx run-many -t prepublish-check -p shared,bpm-core,bpm-core-client,bpm-core-react --parallel 1",
+      "adjustSemverBumpsForZeroMajorVersion": true,
       "conventionalCommits": true,
       "fallbackCurrentVersionResolver": "disk",
       "preserveMatchingDependencyRanges": false,

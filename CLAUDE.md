@@ -34,14 +34,36 @@ Before adding new exports, check the file first — likely something close alrea
 releases for **all four** published packages:
 
 ```bash
-npx nx release --dry-run       # review first
-npx nx release --skip-publish  # version + changelog + commit + tag
-npx nx release publish         # publishes every package from the right dir
+npx nx release --dry-run       # review the resolved version and changelog
+npx nx release --otp=<6 digits>  # the whole release, in one command
 ```
+
+One command runs the lot in order: `prepublish-check` → version → changelogs →
+commit → tag → `git push --follow-tags` → GitHub release → build → publish. Add
+`--yes` for an unattended run; the interactive form prompts before publishing.
 
 A manual bump skips the changelog generation, so a release ships with a
 `CHANGELOG.md` that still ends at the previous version. That has happened; do
 not repeat it.
+
+**`targetDefaults."nx-release-publish".dependsOn = ["build"]` is what makes the
+one-command form correct — do not remove it.** Three of the four packages
+publish from `dist/libs/*`, and the only build in the pipeline used to be the
+one inside `prepublish-check`, which runs as `preVersionCommand` — i.e. *before*
+the version is written. So `dist` always carried the previous version, and
+`nx release publish` skipped those three with "vX already exists in the
+registry". `bpm-core-react` was unaffected only because its package root is the
+source directory. Verified by reading `nx/dist/src/utils/package-json.js`
+(targetDefaults are *merged into* the implicit target, so nx's own
+`^nx-release-publish` ordering survives) and by watching the build run ahead of
+publish in `nx release --dry-run`.
+
+**Never pass `--projects` or `--groups` to a release.** `publish.js` turns on
+`excludeTaskDependencies` whenever either is set, which silently drops that
+build step. nx's own "OTP expired, re-run this" hint is of that shape
+(`nx release publish --projects=… --otp=…`); it is safe only because `dist` is
+already current by then. Building by hand first is the rule if you ever narrow a
+release.
 
 **All four packages are one fixed version set** — `shared`, `bpm-core`,
 `bpm-core-client` and `bpm-core-react` share a version number, a `v{version}`
@@ -74,8 +96,29 @@ to `minor`.
 Still read the resolved version in the dry run, and override when needed:
 
 ```bash
-npx nx release minor --skip-publish   # or patch / major / an exact version
+npx nx release minor --otp=<6 digits>   # or patch / an exact version
 ```
+
+**`release.version.adjustSemverBumpsForZeroMajorVersion` is `true` — the 0.x
+convention.** Without it a `BREAKING CHANGE:` footer resolves to a major bump,
+which on 0.x means 1.0.0; v0.13.0 had to be named by hand for exactly that
+reason. With it on, every level shifts down one while the major is still 0:
+
+| commit                          | resolves to |
+| ------------------------------- | ----------- |
+| `fix:`                          | patch       |
+| `feat:`                         | patch       |
+| `BREAKING CHANGE:` footer       | minor       |
+
+Both rows were verified against the v0.13.0 tag on a throwaway branch: a
+breaking commit resolved to 0.14.0 (not 1.0.0) and a `feat:` commit to 0.13.1.
+
+The cost is real and was accepted deliberately: `feat:` no longer earns a minor
+bump. That does **not** make `useCommitScope: false` pointless — it still
+decides whether a commit counts toward the bump at all, and without it a
+domain-scoped `feat(template)` would be treated as an indirect change. The flag
+only lowers the level a counted commit produces. Once the packages reach 1.0.0
+the shifting stops on its own and normal semver resumes.
 
 The 0.9.0 release had to be given explicitly (`npx nx release 0.9.0`) because
 aligning the version set meant clearing `bpm-core-react`'s already-published

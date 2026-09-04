@@ -72,9 +72,18 @@ still ends at the previous version.
 
 ```bash
 # Determines each group's bump from Conventional Commits since its last tag,
-# writes CHANGELOGs, commits and tags. Add --dry-run first to review.
-npx nx release --skip-publish
+# writes CHANGELOGs, commits, tags, pushes, creates the GitHub release, builds
+# and publishes — in that order, in one process. Add --dry-run first to review.
+npx nx release --otp=<6 digits>
 ```
+
+`--yes` makes it unattended; without it the interactive run prompts before
+publishing.
+
+While the packages are on 0.x, `version.adjustSemverBumpsForZeroMajorVersion`
+is `true`, so bumps follow the 0.x convention: `BREAKING CHANGE:` resolves to a
+minor bump rather than 1.0.0, and `feat:` to a patch. See CLAUDE.md →
+Releasing for the trade-off that was accepted.
 
 All four packages form **one fixed version set**: a shared version number, a
 `v{version}` tag, one workspace `CHANGELOG.md`, one GitHub release, and a
@@ -101,11 +110,24 @@ release resolve to `patch`. Do not remove it.
 ### Publishing — one command for all four
 
 ```bash
-npx nx release publish        # add --dry-run first
+npx nx release publish        # only to retry a failed publish; add --dry-run first
 ```
 
+The full `nx release` above already publishes. Reach for this form only when
+publishing failed on its own (an expired OTP, a registry 5xx) and versioning,
+tagging and pushing are already done.
+
 Each project declares its own `nx-release-publish.packageRoot`, so this publishes
-every package from the correct directory. The two builders still emit to
+every package from the correct directory. `targetDefaults` adds
+`dependsOn: ["build"]` to that target, so `dist` is rebuilt from the *new*
+version before anything is pushed to the registry — without it the three
+`dist`-based packages publish the previous build, because the only other build
+in the pipeline is `prepublish-check`, which runs before versioning. nx merges
+`targetDefaults` into the implicit publish target rather than replacing it, so
+its own `^nx-release-publish` topological ordering is preserved.
+
+Passing `--projects` or `--groups` sets `excludeTaskDependencies`, which drops
+that rebuild. Build by hand first if you ever narrow a publish. The two builders still emit to
 different places, and that difference is now expressed in config rather than in
 two hand-run procedures — mixing them up by hand has already caused a broken
 0.1.3 release that had to be deprecated.
@@ -125,6 +147,13 @@ directory ships only `.ts`, so the tarball is non-functional. `bpm-core-react` i
 the opposite: Vite emits into `libs/bpm-core-react/dist/` and its in-tree
 manifest already has `files` and `main` pointing there, so the lib directory *is*
 the package root.
+
+The two `packageRoot` shapes are deliberate, not an inconsistency to tidy up.
+Unifying on `dist` would mean rewriting the 40-plus `./dist/...` entries in
+`bpm-core-react`'s `exports` map and adding a step to copy its manifest and
+CHANGELOG into the output — reintroducing exactly the "metadata in the output
+directory has to be kept in sync" problem that made stale-`dist` publishes
+possible in the first place.
 
 There is no post-build manifest fixup step. `tools/publish/finalize-dist-package.mjs`
 used to inject `"type": "commonjs"` into the dist manifest; as of nx 22.7.1
