@@ -21,6 +21,7 @@ import { AttachmentStorage } from './attachment-storage.token';
 import { AttachmentService } from './attachment.service';
 import {
   BPM_ATTACHMENT_OPTIONS,
+  BPMResolvedAttachmentOptions,
   BPMRootAttachmentOptions,
   resolveAttachmentControllerPath,
   resolveBPMAttachmentOptions,
@@ -139,11 +140,27 @@ export class AttachmentModule {
   }
 }
 
+/**
+ * Resolves the attachment options lazily.
+ *
+ * A `useValue` here would run `resolveBPMAttachmentOptions` while the `@Module`
+ * decorator argument above is being evaluated — that is, when this file is
+ * *imported*. The production secret check would then fire at `require()` time,
+ * before any host could pass a secret through `forRoot` / `forRootAsync`, and
+ * even for a host that never mounts attachments at all. That is exactly what
+ * made 0.13.2 impossible to load under `NODE_ENV=production`.
+ *
+ * As a factory the check happens when Nest instantiates the provider, i.e. at
+ * application bootstrap — still fail-fast, but after the host has had its say.
+ * When `forRoot` / `forRootAsync` registers the same token, this provider is
+ * replaced and never instantiated.
+ */
 function createAttachmentOptionsProvider(
   options: BPMRootAttachmentOptions = {},
 ): Provider {
   return {
     provide: BPM_ATTACHMENT_OPTIONS,
-    useValue: resolveBPMAttachmentOptions(options),
+    useFactory: (): BPMResolvedAttachmentOptions =>
+      resolveBPMAttachmentOptions(options),
   };
 }
