@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-09-03, pending the release after `v0.12.0`): `libs/shared@0.12.0`, `libs/bpm-core-client@0.12.0`, `libs/bpm-core@0.12.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.12.0`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below is inventoried here but not yet released; `nx release` sets the next number at publish time.
+Last verified against (2026-09-04, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10) is inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
@@ -1120,7 +1120,7 @@ argument on the `notifications` / `notificationCount` queries.
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-21 ordered migrations:
+23 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` are
    missing and the migration role has no CREATE privilege on the database, it
@@ -1147,6 +1147,16 @@ argument on the `notifications` / `notificationCount` queries.
 20. `ApprovalTemplateActivation0000000019000` (adds `approval_templates.is_active` + index)
 21. `FormDataOptionSnapshots0000000020000` (adds `approval_instances.form_data_option_snapshot`, default `{}`)
 22. `NotificationSilenced0000000021000` (adds `notifications.silenced`, `NOT NULL DEFAULT false`; existing rows were announced by definition)
+23. `OrgUnitCodeActiveUnique0000000022000` — drops the global `UNIQUE` on
+    `org_units.code` and replaces it with a partial unique index over
+    `deleted_at IS NULL`. `deleteOrgUnit` soft-deletes and
+    `assertOrgUnitCodeAvailable` ignores soft-deleted rows, so the old
+    constraint disagreed with the service: recreating a closed department under
+    its original code was cleared by BPM and then rejected by the driver with a
+    raw `duplicate key value violates unique constraint "org_units_code_key"`,
+    naming a row no query returns. Safe on an existing database (the dropped
+    constraint already guaranteed the live rows do not collide); `down()`
+    refuses if any code has since been reused.
 
 ---
 

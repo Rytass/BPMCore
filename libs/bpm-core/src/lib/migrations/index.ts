@@ -21,6 +21,7 @@ import { NotificationArchive0000000018000 } from './0000000018000-notification-a
 import { ApprovalTemplateActivation0000000019000 } from './0000000019000-approval-template-activation';
 import { FormDataOptionSnapshots0000000020000 } from './0000000020000-form-data-option-snapshots';
 import { NotificationSilenced0000000021000 } from './0000000021000-notification-silenced';
+import { OrgUnitCodeActiveUnique0000000022000 } from './0000000022000-org-unit-code-active-unique';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -45,6 +46,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   ApprovalTemplateActivation0000000019000,
   FormDataOptionSnapshots0000000020000,
   NotificationSilenced0000000021000,
+  OrgUnitCodeActiveUnique0000000022000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -69,3 +71,4 @@ export * from './0000000018000-notification-archive';
 export * from './0000000019000-approval-template-activation';
 export * from './0000000020000-form-data-option-snapshots';
 export * from './0000000021000-notification-silenced';
+export * from './0000000022000-org-unit-code-active-unique';
