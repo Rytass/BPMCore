@@ -1,3 +1,14 @@
+## 0.13.1 (2026-09-04)
+
+### 🩹 Fixes
+
+- **release:** build before publishing, and follow the 0.x bump convention ([a41932a](https://github.com/Rytass/BPMCore/commit/a41932a))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.13.0 (2026-09-03)
 
 ### 🚀 Features
