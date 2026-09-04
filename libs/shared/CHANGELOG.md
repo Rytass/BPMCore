@@ -1,3 +1,14 @@
+## 0.13.2 (2026-09-04)
+
+### 🩹 Fixes
+
+- **organization:** stop a deleted org unit from burning its code forever ([0f6897f](https://github.com/Rytass/BPMCore/commit/0f6897f))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.13.1 (2026-09-04)
 
 ### 🩹 Fixes
