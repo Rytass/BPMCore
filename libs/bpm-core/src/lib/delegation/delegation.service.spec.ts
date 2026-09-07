@@ -238,6 +238,56 @@ describe('DelegationService', () => {
     ).rejects.toThrow('Delegation cycle detected');
   });
 
+  // `save` here returns exactly what it was handed, which is what real TypeORM
+  // does — so these two assertions genuinely check the shape the service
+  // passed in. A row spread into a plain object loses the prototype, and with
+  // it any getter-backed `@Field` the entity grows later; both of these rows
+  // are the return value of a mutation.
+  it('hands back an entity when a rule is updated', async (): Promise<void> => {
+    const repository = createDelegationRuleRepository({
+      find: jest.fn((): Promise<readonly DelegationRuleEntity[]> =>
+        Promise.resolve([]),
+      ),
+      findOne: jest.fn(() =>
+        Promise.resolve(createDelegationRule({ id: 'delegation-rule-1' })),
+      ),
+      save: jest.fn((rule: DelegationRuleEntity) => Promise.resolve(rule)),
+    });
+    const service = new DelegationService(repository, new ConditionService());
+
+    const updatedRule = await service.updateDelegationRule({
+      agentMemberId: 'member-102',
+      endAt: null,
+      id: 'delegation-rule-1',
+      priority: 50,
+      requiresConfirmation: false,
+      scopeConditionCel: null,
+      scopeTemplateIds: [],
+      scopeType: DelegationScopeTypeEnum.ALL,
+      startAt: null,
+    });
+
+    expect(updatedRule.agentMemberId).toBe('member-102');
+    expect(updatedRule).toBeInstanceOf(DelegationRuleEntity);
+  });
+
+  it('hands back an entity when a rule is revoked', async (): Promise<void> => {
+    const repository = createDelegationRuleRepository({
+      findOne: jest.fn(() => Promise.resolve(createDelegationRule({}))),
+      save: jest.fn((rule: DelegationRuleEntity) => Promise.resolve(rule)),
+    });
+    const service = new DelegationService(repository, new ConditionService());
+
+    const revokedRule = await service.revokeDelegationRule({
+      id: 'delegation-rule-1',
+      revokedByMemberId: 'member-001',
+    });
+
+    expect(revokedRule.status).toBe(DelegationRuleStatusEnum.REVOKED);
+    expect(revokedRule.revokedByMemberId).toBe('member-001');
+    expect(revokedRule).toBeInstanceOf(DelegationRuleEntity);
+  });
+
   it('validates delegation datetime inputs as ISO strings with timezone', (): void => {
     const input = Object.assign(new CreateDelegationRuleInput(), {
       agentMemberId: 'member-101',

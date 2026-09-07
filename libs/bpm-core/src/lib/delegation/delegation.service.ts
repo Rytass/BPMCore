@@ -134,10 +134,13 @@ export class DelegationService {
       currentRule.id,
     );
 
-    return this.delegationRuleRepository.save({
-      ...currentRule,
-      ...normalizedRule,
-    });
+    // Assigning onto a fresh entity keeps the prototype. `DelegationRuleEntity`
+    // has no getter-backed `@Field` today, but this row is the return value of
+    // the `updateDelegationRule` mutation, so adding one to a plain object
+    // would fail the mutation after the write had already been committed.
+    return this.delegationRuleRepository.save(
+      Object.assign(new DelegationRuleEntity(), currentRule, normalizedRule),
+    );
   }
 
   async getDelegationRule(id: string): Promise<DelegationRuleEntity> {
@@ -157,12 +160,13 @@ export class DelegationService {
       return rule;
     }
 
-    return this.delegationRuleRepository.save({
-      ...rule,
-      revokedAt: new Date(),
-      revokedByMemberId: revokedByMemberId?.trim() || null,
-      status: DelegationRuleStatusEnum.REVOKED,
-    });
+    return this.delegationRuleRepository.save(
+      Object.assign(new DelegationRuleEntity(), rule, {
+        revokedAt: new Date(),
+        revokedByMemberId: revokedByMemberId?.trim() || null,
+        status: DelegationRuleStatusEnum.REVOKED,
+      }),
+    );
   }
 
   async resolveAssignee(
