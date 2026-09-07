@@ -82,7 +82,17 @@ describe('WorkflowEngineService', () => {
       title: null,
     });
 
-    expect(instance.state).toBe(ApprovalInstanceStateEnum.RUNNING);
+    // The fixture template is `start → end` with no user task, so the flow
+    // runs to completion inside the same transaction. What the mutation
+    // returns has to agree with what was committed: this asserted `RUNNING`
+    // with a null `completedAt` for as long as the completion saved a *copy*
+    // of the instance instead of the object the caller holds, which showed the
+    // initiator a case still awaiting approval until they reloaded.
+    expect(instance.state).toBe(ApprovalInstanceStateEnum.APPROVED);
+    expect(instance.completedAt).not.toBeNull();
+    expect(fixture.savedInstance?.state).toBe(
+      ApprovalInstanceStateEnum.APPROVED,
+    );
     expect(instance.workflowSnapshot.nodes[0]?.id).toBe('start');
     expect(instance.formDefinitionSnapshot).toMatchObject({
       formDefinitionVersionId: 'form-version-1',

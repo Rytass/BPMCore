@@ -3009,13 +3009,21 @@ export class WorkflowEngineService {
     }
 
     const completedAt = new Date();
+    // Update the tracked entity in place instead of saving a copy of it. The
+    // caller still holds this object and may return it — `submitApprovalInstance`
+    // hands it straight back to the resolver — so writing a copy left the
+    // mutation reporting `RUNNING` with a null `completedAt` on a case the same
+    // transaction had already committed as `APPROVED`. Assigning onto the
+    // entity also keeps its prototype, so the getter-backed `*Json` GraphQL
+    // fields survive on the row passed to the notification services below.
     const completedInstance = await manager
       .getRepository(ApprovalInstanceEntity)
-      .save({
-        ...instance,
-        completedAt,
-        state: ApprovalInstanceStateEnum.APPROVED,
-      });
+      .save(
+        Object.assign(instance, {
+          completedAt,
+          state: ApprovalInstanceStateEnum.APPROVED,
+        }),
+      );
 
     await this.notificationService.createInstanceCompletedNotification({
       instance: completedInstance,
