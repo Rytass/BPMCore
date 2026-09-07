@@ -67,7 +67,6 @@ export type MemberOption = Readonly<{
 
 export type ActivityStepDescriptionPart =
   | Readonly<{ text: string; type: 'text' }>
-  | Readonly<{ text: string; type: 'dangerText' }>
   | Readonly<{
       email: string | null;
       label: string;
@@ -466,12 +465,6 @@ export function readTextDescriptionPart(
   text: string | null,
 ): ActivityStepDescriptionPart | null {
   return isPresentText(text) ? { text, type: 'text' } : null;
-}
-
-export function readDangerTextDescriptionPart(
-  text: string | null,
-): ActivityStepDescriptionPart | null {
-  return isPresentText(text) ? { text, type: 'dangerText' } : null;
 }
 
 export function readCommentDescriptionPart(

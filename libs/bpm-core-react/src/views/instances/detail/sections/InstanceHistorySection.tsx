@@ -40,15 +40,16 @@ const HISTORY_MEMBER_NAME_STYLE: CSSProperties = {
   textUnderlineOffset: 3,
 };
 
-const HISTORY_DANGER_TEXT_STYLE: CSSProperties = {
-  color: 'var(--mzn-color-text-error)',
-};
-
 // An approval comment is the one part of a timeline entry a person wrote, so
 // it gets its own line and a readable size instead of being appended to the
 // metadata run.
+// The border is written as longhands so the danger tone can override only its
+// colour; mixing `borderLeft` with a `borderLeftColor` override in one style
+// object makes the result depend on key order and warns in React dev mode.
 const HISTORY_COMMENT_STYLE: CSSProperties = {
-  borderLeft: '2px solid var(--mzn-color-border)',
+  borderLeftColor: 'var(--mzn-color-border)',
+  borderLeftStyle: 'solid',
+  borderLeftWidth: 2,
   marginTop: 4,
   paddingLeft: 8,
   whiteSpace: 'pre-wrap',
@@ -56,12 +57,15 @@ const HISTORY_COMMENT_STYLE: CSSProperties = {
 
 const HISTORY_COMMENT_LABEL_STYLE: CSSProperties = {
   color: 'var(--mzn-color-text-secondary)',
-  marginRight: 4,
 };
 
+// A rejection reason has to read as a rejection, so it carries the error colour
+// itself — label included, which is why the label drops its own colour in this
+// tone.
 const HISTORY_COMMENT_DANGER_STYLE: CSSProperties = {
   ...HISTORY_COMMENT_STYLE,
   borderLeftColor: 'var(--mzn-color-text-error)',
+  color: 'var(--mzn-color-text-error)',
 };
 
 function joinClassNames(
@@ -165,7 +169,13 @@ const ActivityHistoryStep = forwardRef<
             }
             variant="body"
           >
-            <span style={HISTORY_COMMENT_LABEL_STYLE}>{part.label}</span>
+            <span
+              style={
+                part.tone === 'danger' ? undefined : HISTORY_COMMENT_LABEL_STYLE
+              }
+            >
+              {part.label}：
+            </span>
             {part.text}
           </Typography>
         ))}
@@ -181,10 +191,6 @@ function renderActivityDescriptionPart(
 ): ReactElement | string {
   if (part.type === 'text') {
     return part.text;
-  }
-
-  if (part.type === 'dangerText') {
-    return <span style={HISTORY_DANGER_TEXT_STYLE}>{part.text}</span>;
   }
 
   if (!part.email) {
