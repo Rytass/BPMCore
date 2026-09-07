@@ -3189,6 +3189,47 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('returns a cancelled ad-hoc directive that still resolves its GraphQL getters', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          createdByMemberId: 'member-finance',
+          id: 'directive-cancel-1',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetValue: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-x'],
+          },
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const cancelled = await fixture.service.cancelAdhocDirective({
+      cancelledByMemberId: 'member-finance',
+      directiveId: 'directive-cancel-1',
+    });
+
+    expect(cancelled.status).toBe(AdhocDirectiveStatusEnum.CANCELLED);
+    // `targetValueJson` is a non-nullable GraphQL field backed by a prototype
+    // getter, so the resolver only survives if the saved value is still an
+    // entity instance. Spreading the row into a plain object drops the getter
+    // and the mutation fails with an opaque INTERNAL_SERVER_ERROR *after* the
+    // cancellation has already been written, which reads to the approver as
+    // "the withdraw failed" even though it succeeded.
+    expect(cancelled).toBeInstanceOf(AdhocDirectiveEntity);
+    expect(cancelled.targetValueJson).toBe(
+      JSON.stringify({
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-x'],
+      }),
+    );
+  });
+
   it('dispatches ad-hoc completion notifications on reject and cancels pending flow directives', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
