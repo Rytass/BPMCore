@@ -44,6 +44,26 @@ const HISTORY_DANGER_TEXT_STYLE: CSSProperties = {
   color: 'var(--mzn-color-text-error)',
 };
 
+// An approval comment is the one part of a timeline entry a person wrote, so
+// it gets its own line and a readable size instead of being appended to the
+// metadata run.
+const HISTORY_COMMENT_STYLE: CSSProperties = {
+  borderLeft: '2px solid var(--mzn-color-border)',
+  marginTop: 4,
+  paddingLeft: 8,
+  whiteSpace: 'pre-wrap',
+};
+
+const HISTORY_COMMENT_LABEL_STYLE: CSSProperties = {
+  color: 'var(--mzn-color-text-secondary)',
+  marginRight: 4,
+};
+
+const HISTORY_COMMENT_DANGER_STYLE: CSSProperties = {
+  ...HISTORY_COMMENT_STYLE,
+  borderLeftColor: 'var(--mzn-color-text-error)',
+};
+
 function joinClassNames(
   ...classNames: readonly (string | null | undefined)[]
 ): string {
@@ -78,6 +98,14 @@ const ActivityHistoryStep = forwardRef<
   ref,
 ): ReactElement {
   const displayStatus = forcePending ? 'pending' : status;
+  const inlineDescriptionParts = descriptionParts.filter(
+    (part): part is Exclude<ActivityStepDescriptionPart, { type: 'comment' }> =>
+      part.type !== 'comment',
+  );
+  const commentDescriptionParts = descriptionParts.filter(
+    (part): part is Extract<ActivityStepDescriptionPart, { type: 'comment' }> =>
+      part.type === 'comment',
+  );
 
   return (
     <div
@@ -117,9 +145,9 @@ const ActivityHistoryStep = forwardRef<
           {title}
           <span className={stepClasses.titleConnectLine} />
         </Typography>
-        {descriptionParts.length > 0 ? (
+        {inlineDescriptionParts.length > 0 ? (
           <Typography className={stepClasses.description} variant="caption">
-            {descriptionParts.map((part, partIndex) => (
+            {inlineDescriptionParts.map((part, partIndex) => (
               <Fragment key={`${part.type}-${partIndex}`}>
                 {partIndex > 0 ? ' · ' : null}
                 {renderActivityDescriptionPart(part)}
@@ -127,13 +155,29 @@ const ActivityHistoryStep = forwardRef<
             ))}
           </Typography>
         ) : null}
+        {commentDescriptionParts.map((part, partIndex) => (
+          <Typography
+            key={`comment-${partIndex}`}
+            style={
+              part.tone === 'danger'
+                ? HISTORY_COMMENT_DANGER_STYLE
+                : HISTORY_COMMENT_STYLE
+            }
+            variant="body"
+          >
+            <span style={HISTORY_COMMENT_LABEL_STYLE}>{part.label}</span>
+            {part.text}
+          </Typography>
+        ))}
       </div>
     </div>
   );
 });
 
+// Comment parts are rendered on their own line by the caller, so they never
+// reach this inline renderer.
 function renderActivityDescriptionPart(
-  part: ActivityStepDescriptionPart,
+  part: Exclude<ActivityStepDescriptionPart, { type: 'comment' }>,
 ): ReactElement | string {
   if (part.type === 'text') {
     return part.text;

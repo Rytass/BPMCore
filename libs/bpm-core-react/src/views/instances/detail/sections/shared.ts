@@ -74,6 +74,17 @@ export type ActivityStepDescriptionPart =
       memberId: string | null;
       prefix: string;
       type: 'member';
+    }>
+  /**
+   * What an approver actually wrote. Kept apart from the `text` parts so the
+   * timeline can give it its own line instead of burying it mid-sentence
+   * between the node, the actor, the timestamp and the signature hash.
+   */
+  | Readonly<{
+      label: string;
+      text: string;
+      tone: 'danger' | 'neutral';
+      type: 'comment';
     }>;
 
 export interface ActivityStepRecord {
@@ -417,6 +428,14 @@ export function readDangerTextDescriptionPart(
   return isPresentText(text) ? { text, type: 'dangerText' } : null;
 }
 
+export function readCommentDescriptionPart(
+  label: string,
+  text: string | null,
+  tone: 'danger' | 'neutral' = 'neutral',
+): ActivityStepDescriptionPart | null {
+  return isPresentText(text) ? { label, text, tone, type: 'comment' } : null;
+}
+
 export function readMemberDescriptionPart(
   prefix: string,
   memberId: string | null,
@@ -664,13 +683,13 @@ export function readActivityDetailParts(
   return [
     readTextDescriptionPart(decisionLabel),
     action === 'REJECTED'
-      ? readDangerTextDescriptionPart(`拒絕原因：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('拒絕原因', comment ?? '-', 'danger')
       : null,
-    action === 'APPROVED' && comment
-      ? readTextDescriptionPart(`同意說明：${comment}`)
+    action === 'APPROVED'
+      ? readCommentDescriptionPart('同意說明', comment)
       : null,
     action === 'RETURNED'
-      ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('退回說明', comment ?? '-')
       : null,
     action === 'TRANSFERRED'
       ? readTextDescriptionPart(
@@ -681,7 +700,7 @@ export function readActivityDetailParts(
         )
       : null,
     action === 'TRANSFERRED'
-      ? readTextDescriptionPart(`轉派說明：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('轉派說明', comment ?? '-')
       : null,
     signature
       ? readTextDescriptionPart(
