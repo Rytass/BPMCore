@@ -1,4 +1,4 @@
-import type { ActivityLogRecord } from '@rytass/bpm-core-client';
+import type { ActivityLogRecord } from '@rytass/bpm-core-client/workflow';
 
 import { readActivityDetailParts, readAdhocTargetDraft } from './shared';
 
