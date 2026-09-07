@@ -3013,9 +3013,11 @@ export class WorkflowEngineService {
     // caller still holds this object and may return it — `submitApprovalInstance`
     // hands it straight back to the resolver — so writing a copy left the
     // mutation reporting `RUNNING` with a null `completedAt` on a case the same
-    // transaction had already committed as `APPROVED`. Assigning onto the
-    // entity also keeps its prototype, so the getter-backed `*Json` GraphQL
-    // fields survive on the row passed to the notification services below.
+    // transaction had already committed as `APPROVED`. Assigning in place also
+    // preserves whatever the caller handed in, so an entity stays an entity
+    // and its getter-backed `*Json` fields survive. It cannot upgrade a plain
+    // object, and the resubmit and return paths do pass a plain copy of their
+    // own — a separate problem this does not fix.
     const completedInstance = await manager
       .getRepository(ApprovalInstanceEntity)
       .save(
@@ -3435,11 +3437,16 @@ export class WorkflowEngineService {
     );
 
     if (!hasOpenToken) {
-      const completedInstance = await instanceRepository.save({
-        ...instance,
-        completedAt,
-        state: instanceState,
-      });
+      // Update the tracked entity in place. Saving a copy left the caller's
+      // `instance.state` on `RUNNING`, so the `state !== RUNNING` guard in
+      // `completeInstanceIfNoOpenRuntimeState` did not short-circuit and a
+      // *second* completion ran on the way out of `processRunningInstance`:
+      // a duplicate completion notification on every approved case, and — far
+      // worse — an `endState: 'REJECTED'` row overwritten with `APPROVED`
+      // immediately after it had been committed.
+      const completedInstance = await instanceRepository.save(
+        Object.assign(instance, { completedAt, state: instanceState }),
+      );
 
       if (instanceState === ApprovalInstanceStateEnum.APPROVED) {
         await this.notificationService.createInstanceCompletedNotification({

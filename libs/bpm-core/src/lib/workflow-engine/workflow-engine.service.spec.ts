@@ -82,12 +82,14 @@ describe('WorkflowEngineService', () => {
       title: null,
     });
 
-    // The fixture template is `start → end` with no user task, so the flow
-    // runs to completion inside the same transaction. What the mutation
-    // returns has to agree with what was committed: this asserted `RUNNING`
-    // with a null `completedAt` for as long as the completion saved a *copy*
-    // of the instance instead of the object the caller holds, which showed the
-    // initiator a case still awaiting approval until they reloaded.
+    // This fixture leaves `processWorkflowSnapshot` unset, so the token
+    // repository tracks nothing and `processRunningInstance` finds no active
+    // token on its first pass: the case completes through the empty-token
+    // branch, in the same transaction as the submit. What the mutation returns
+    // has to agree with what was committed — this asserted `RUNNING` with a
+    // null `completedAt` for as long as the completion saved a *copy* of the
+    // instance instead of the object the caller holds, showing the initiator a
+    // case still awaiting approval until they reloaded.
     expect(instance.state).toBe(ApprovalInstanceStateEnum.APPROVED);
     expect(instance.completedAt).not.toBeNull();
     expect(fixture.savedInstance?.state).toBe(
@@ -1829,6 +1831,13 @@ describe('WorkflowEngineService', () => {
         }),
       }),
     );
+    // Exactly once. The end node used to save a copy of the instance, leaving
+    // the caller's `state` on RUNNING, so the completion guard on the way out
+    // of `processRunningInstance` did not short-circuit and completed the case
+    // a second time — notifying the initiator twice.
+    expect(
+      fixture.notificationService.createInstanceCompletedNotification,
+    ).toHaveBeenCalledTimes(1);
     expect(
       fixture.notificationService.resolveTaskNotifications,
     ).toHaveBeenCalledWith(
@@ -3240,6 +3249,31 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('keeps a rejected end state instead of completing the case again', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createRejectingEndEventWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    // The end node commits REJECTED. While it saved a *copy* of the instance
+    // the caller's `state` stayed on RUNNING, so the guard in
+    // `completeInstanceIfNoOpenRuntimeState` did not short-circuit and a
+    // second completion overwrote the committed row with APPROVED — a
+    // rejected case silently became an approved one.
+    expect(fixture.savedInstance?.state).toBe(
+      ApprovalInstanceStateEnum.REJECTED,
+    );
+    // A rejected case sends no completion notification at all; the second
+    // completion sent one, because it always ran as an approval.
+    expect(
+      fixture.notificationService.createInstanceCompletedNotification,
+    ).not.toHaveBeenCalled();
+  });
+
   it('returns a cancelled instance that still resolves its GraphQL getters', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -3790,8 +3824,25 @@ function createServiceFixture({
         return Promise.resolve(entityOrEntities);
       },
     ),
-    find: jest.fn(() =>
-      Promise.resolve([...processTokens].sort(compareTokenCreatedAt)),
+    // `where.status` is honoured: ignoring it made every `find` look like it
+    // had open tokens, which silently short-circuited
+    // `completeInstanceIfNoOpenRuntimeState` and hid a double completion that
+    // a real database would have run.
+    find: jest.fn(
+      (
+        options?: Readonly<{
+          where?: Readonly<{ status?: WorkflowTokenStatusEnum }>;
+        }>,
+      ) =>
+        Promise.resolve(
+          [...processTokens]
+            .filter(
+              (token) =>
+                !options?.where?.status ||
+                token.status === options.where.status,
+            )
+            .sort(compareTokenCreatedAt),
+        ),
     ),
     findOne: jest.fn(
       (
@@ -4679,6 +4730,35 @@ function createLinearUserTaskWorkflow({
       },
       {
         data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function createRejectingEndEventWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_end',
+        source: 'start',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { endState: 'REJECTED', label: '否決' },
         id: 'end',
         position: { x: 520, y: 160 },
         type: 'endEvent',
