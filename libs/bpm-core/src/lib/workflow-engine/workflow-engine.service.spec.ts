@@ -3230,6 +3230,31 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('returns a cancelled instance that still resolves its GraphQL getters', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const cancelled = await fixture.service.cancelApprovalInstance({
+      cancelledByMemberId: 'member-001',
+      comment: null,
+      instanceId: 'instance-1',
+    });
+
+    expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+    // `ApprovalInstance` exposes five getter-backed JSON fields, all of them
+    // non-nullable. Spreading the row into a plain object drops every one, so
+    // the withdrawal is committed and the mutation still fails with an opaque
+    // INTERNAL_SERVER_ERROR — the initiator sees "cancel failed" on a case
+    // that is already cancelled.
+    expect(cancelled).toBeInstanceOf(ApprovalInstanceEntity);
+    expect(cancelled.formDataJson).toBe(JSON.stringify({ amount: 1200 }));
+  });
+
   it('dispatches ad-hoc completion notifications on reject and cancels pending flow directives', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -3664,19 +3689,35 @@ function createServiceFixture({
       ),
       findOne: jest.fn(() =>
         Promise.resolve(
-          savedInstance ??
-            createApprovalInstance({
-              formData: processFormData,
-              formDataOptionSnapshot: processOptionSnapshot,
-              formDefinitionSnapshot: processFormDefinitionSnapshot,
-              state: instanceState,
-              updatedAt: transactionalInstanceUpdatedAt,
-              workflowSnapshot: processWorkflowSnapshot,
-            }),
+          // A row read back from the database is an entity whatever shape the
+          // caller last handed to `save`, so it is rehydrated here. Only
+          // `save` reports the shape it was actually given.
+          savedInstance
+            ? Object.assign(createApprovalInstance(), savedInstance)
+            : createApprovalInstance({
+                formData: processFormData,
+                formDataOptionSnapshot: processOptionSnapshot,
+                formDefinitionSnapshot: processFormDefinitionSnapshot,
+                state: instanceState,
+                updatedAt: transactionalInstanceUpdatedAt,
+                workflowSnapshot: processWorkflowSnapshot,
+              }),
         ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
-        savedInstance = Object.assign(createApprovalInstance(), entity);
+        // The saved row keeps the prototype it arrived with. Rebuilding it as
+        // `Object.assign(createApprovalInstance(), entity)` handed back an
+        // entity even when the caller had spread the row into a plain object,
+        // which hid exactly the regression the cancel paths guard against:
+        // the getter-backed `*Json` fields the GraphQL schema exposes live on
+        // the prototype, so a plain object fails the mutation at resolve time.
+        savedInstance = Object.assign(
+          Object.create(
+            Object.getPrototypeOf(entity) as object,
+          ) as ApprovalInstanceEntity,
+          createApprovalInstance(),
+          entity,
+        );
 
         return Promise.resolve(savedInstance);
       }),
