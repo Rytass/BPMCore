@@ -379,6 +379,52 @@ export function readMemberOption(profile: MemberProfileRecord): MemberOption {
   };
 }
 
+/**
+ * The target an ad-hoc directive is sent to, or the reason it cannot be built
+ * yet. Kept out of the component so the "which shape do we send" decision is
+ * testable on its own — it is the part that changed when the member picker
+ * went from one selection to many.
+ */
+export type AdhocTargetDraft =
+  | Readonly<{
+      target:
+        | Readonly<{ kind: 'MEMBER'; memberIds: readonly string[] }>
+        | Readonly<{ kind: 'WEBHOOK'; webhookUrl: string }>;
+      valid: true;
+    }>
+  | Readonly<{ error: string; valid: false }>;
+
+export function readAdhocTargetDraft({
+  memberIds,
+  useWebhookTarget,
+  webhookUrl,
+}: {
+  readonly memberIds: readonly string[];
+  readonly useWebhookTarget: boolean;
+  readonly webhookUrl: string;
+}): AdhocTargetDraft {
+  if (useWebhookTarget) {
+    const trimmedWebhookUrl = webhookUrl.trim();
+
+    return trimmedWebhookUrl
+      ? {
+          target: { kind: 'WEBHOOK', webhookUrl: trimmedWebhookUrl },
+          valid: true,
+        }
+      : { error: '請輸入 Webhook URL', valid: false };
+  }
+
+  return memberIds.length > 0
+    ? { target: { kind: 'MEMBER', memberIds }, valid: true }
+    : { error: '請選擇對象成員', valid: false };
+}
+
+export function isPresentMemberOption(
+  option: MemberOption | null,
+): option is MemberOption {
+  return Boolean(option);
+}
+
 export function readMemberOptionFromValue(value: unknown): MemberOption | null {
   if (!isRecord(value)) {
     return null;

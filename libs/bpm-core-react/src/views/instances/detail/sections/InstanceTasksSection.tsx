@@ -43,6 +43,8 @@ import {
   readErrorMessage,
   readMemberDisplayText,
   readMemberOption,
+  isPresentMemberOption,
+  readAdhocTargetDraft,
   readMemberOptionFromValue,
   readNodeDisplayLabel,
   readReturnTargetOptions,
@@ -228,7 +230,9 @@ export const InstanceTasksSection = forwardRef<
 
   // Ad-hoc modal (countersign / pre-approval / stage & completion notify)
   const [adhocComment, setAdhocComment] = useState('');
-  const [adhocMember, setAdhocMember] = useState<MemberOption | null>(null);
+  const [adhocMembers, setAdhocMembers] = useState<readonly MemberOption[]>(
+    [],
+  );
   const [adhocMemberLoading, setAdhocMemberLoading] = useState(false);
   const [adhocMemberOptions, setAdhocMemberOptions] = useState<
     readonly MemberOption[]
@@ -665,7 +669,7 @@ export const InstanceTasksSection = forwardRef<
 
   function resetAdhocModalState(): void {
     setAdhocComment('');
-    setAdhocMember(null);
+    setAdhocMembers([]);
     setAdhocOnReject('REJECT_INSTANCE');
     setAdhocTargetKind('MEMBER');
     setAdhocWebhookUrl('');
@@ -709,25 +713,19 @@ export const InstanceTasksSection = forwardRef<
     const isNotifyMode =
       adhocMode === 'STAGE_NOTIFY' || adhocMode === 'COMPLETION_NOTIFY';
     const useWebhookTarget = isNotifyMode && adhocTargetKind === 'WEBHOOK';
-    const trimmedWebhookUrl = adhocWebhookUrl.trim();
-    const selectedMember = adhocMember;
+    const targetDraft = readAdhocTargetDraft({
+      memberIds: adhocMembers.map((member) => member.id),
+      useWebhookTarget,
+      webhookUrl: adhocWebhookUrl,
+    });
 
-    if (useWebhookTarget && !trimmedWebhookUrl) {
-      setError('請輸入 Webhook URL');
-
-      return;
-    }
-
-    if (!useWebhookTarget && !selectedMember) {
-      setError('請選擇對象成員');
+    if (!targetDraft.valid) {
+      setError(targetDraft.error);
 
       return;
     }
 
-    const target =
-      useWebhookTarget || !selectedMember
-        ? { kind: 'WEBHOOK' as const, webhookUrl: trimmedWebhookUrl }
-        : { kind: 'MEMBER' as const, memberIds: [selectedMember.id] };
+    const { target } = targetDraft;
     const trimmedAdhocComment = adhocComment.trim() || null;
 
     setAdhocSubmitting(true);
@@ -816,7 +814,7 @@ export const InstanceTasksSection = forwardRef<
   const adhocConfirmDisabled =
     isAdhocNotifyMode && adhocTargetKind === 'WEBHOOK'
       ? !adhocWebhookUrl.trim()
-      : !adhocMember;
+      : adhocMembers.length === 0;
   const selectedAdhocOnRejectOption =
     ADHOC_ON_REJECT_OPTIONS.find((option) => option.id === adhocOnReject) ??
     ADHOC_ON_REJECT_OPTIONS[0];
@@ -1160,25 +1158,26 @@ export const InstanceTasksSection = forwardRef<
                 }}
                 loading={adhocMemberLoading}
                 loadingText="搜尋成員中..."
-                mode="single"
-                onChange={(option): void =>
-                  setAdhocMember(readMemberOptionFromValue(option))
-                }
-                onSearch={handleSearchAdhocMembers}
-                onSearchTextChange={(searchText): void =>
-                  setAdhocMember(
-                    readUniqueMemberOption(searchText, adhocMemberOptions),
+                menuMaxHeight={320}
+                mode="multiple"
+                onChange={(options): void =>
+                  setAdhocMembers(
+                    options
+                      .map(readMemberOptionFromValue)
+                      .filter(isPresentMemberOption),
                   )
                 }
+                onSearch={handleSearchAdhocMembers}
                 onVisibilityChange={(open): void => {
                   if (open) {
                     void handleSearchAdhocMembers('');
                   }
                 }}
                 options={[...adhocMemberOptions]}
-                placeholder="搜尋姓名或信箱"
+                overflowStrategy="wrap"
+                placeholder="搜尋姓名或信箱，可加入多位"
                 searchDebounceTime={300}
-                value={adhocMember}
+                value={[...adhocMembers]}
               />
             </BPMFormField>
           )}

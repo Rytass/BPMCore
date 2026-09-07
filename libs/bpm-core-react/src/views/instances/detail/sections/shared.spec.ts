@@ -1,6 +1,6 @@
 import type { ActivityLogRecord } from '@rytass/bpm-core-client';
 
-import { readActivityDetailParts } from './shared';
+import { readActivityDetailParts, readAdhocTargetDraft } from './shared';
 
 function createDecisionActivityLog(): ActivityLogRecord {
   return {
@@ -78,6 +78,70 @@ describe('readActivityDetailParts', () => {
       text: '-',
       tone: 'danger',
       type: 'comment',
+    });
+  });
+});
+
+describe('readAdhocTargetDraft', () => {
+  it('sends every selected member, not just the first', () => {
+    expect(
+      readAdhocTargetDraft({
+        memberIds: ['member-a', 'member-b', 'member-c'],
+        useWebhookTarget: false,
+        webhookUrl: '',
+      }),
+    ).toEqual({
+      target: {
+        kind: 'MEMBER',
+        memberIds: ['member-a', 'member-b', 'member-c'],
+      },
+      valid: true,
+    });
+  });
+
+  it('refuses an empty member selection', () => {
+    expect(
+      readAdhocTargetDraft({
+        memberIds: [],
+        useWebhookTarget: false,
+        webhookUrl: '',
+      }),
+    ).toEqual({ error: '請選擇對象成員', valid: false });
+  });
+
+  it('trims a webhook url', () => {
+    expect(
+      readAdhocTargetDraft({
+        memberIds: [],
+        useWebhookTarget: true,
+        webhookUrl: '  https://example.com/hook  ',
+      }),
+    ).toEqual({
+      target: { kind: 'WEBHOOK', webhookUrl: 'https://example.com/hook' },
+      valid: true,
+    });
+  });
+
+  it('refuses a blank webhook url', () => {
+    expect(
+      readAdhocTargetDraft({
+        memberIds: ['member-a'],
+        useWebhookTarget: true,
+        webhookUrl: '   ',
+      }),
+    ).toEqual({ error: '請輸入 Webhook URL', valid: false });
+  });
+
+  it('ignores selected members once the webhook target is chosen', () => {
+    expect(
+      readAdhocTargetDraft({
+        memberIds: ['member-a'],
+        useWebhookTarget: true,
+        webhookUrl: 'https://example.com/hook',
+      }),
+    ).toEqual({
+      target: { kind: 'WEBHOOK', webhookUrl: 'https://example.com/hook' },
+      valid: true,
     });
   });
 });
