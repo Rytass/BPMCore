@@ -939,11 +939,15 @@ export class WorkflowEngineService {
           instanceId: instance.id,
           manager,
         });
-        const cancelledInstance = await instanceRepository.save({
-          ...instance,
-          completedAt: cancelledAt,
-          state: ApprovalInstanceStateEnum.CANCELLED,
-        });
+        // Same prototype-preserving reason as `cancelAdhocDirective`: this
+        // entity is returned to the resolver and `ApprovalInstance` exposes
+        // five getter-backed JSON fields.
+        const cancelledInstance = await instanceRepository.save(
+          Object.assign(new ApprovalInstanceEntity(), instance, {
+            completedAt: cancelledAt,
+            state: ApprovalInstanceStateEnum.CANCELLED,
+          }),
+        );
 
         await this.dispatchAdhocCompletionNotifications(
           manager,
@@ -1317,10 +1321,16 @@ export class WorkflowEngineService {
           );
         }
 
-        const cancelledDirective = await directiveRepository.save({
-          ...directive,
-          status: AdhocDirectiveStatusEnum.CANCELLED,
-        });
+        // Assigning onto a fresh entity keeps the prototype, so the row handed
+        // back to the resolver still carries the getters the GraphQL schema
+        // exposes (e.g. `targetValueJson`). Spreading it into a plain object
+        // drops them, and the mutation then fails with an opaque
+        // INTERNAL_SERVER_ERROR *after* the cancellation has been committed.
+        const cancelledDirective = await directiveRepository.save(
+          Object.assign(new AdhocDirectiveEntity(), directive, {
+            status: AdhocDirectiveStatusEnum.CANCELLED,
+          }),
+        );
 
         await this.recordAdhocDirectiveActivity(
           manager,
