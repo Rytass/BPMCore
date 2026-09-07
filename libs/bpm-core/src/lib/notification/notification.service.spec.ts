@@ -433,6 +433,43 @@ describe('NotificationService', () => {
     });
   });
 
+  // `save` returns exactly what it was handed, as real TypeORM does, so this
+  // checks the shape the service passed in. The row is the return value of the
+  // `updateNotificationPreference` mutation: spreading it into a plain object
+  // drops the prototype, and with it any getter-backed `@Field` the entity
+  // grows later.
+  it('hands back an entity when a preference is updated', async (): Promise<void> => {
+    const service = new NotificationService(
+      createRepository<NotificationEntity>(),
+      {
+        findOne: (): Promise<NotificationPreferenceEntity | null> =>
+          Promise.resolve(null),
+        save: (
+          preference: NotificationPreferenceEntity,
+        ): Promise<NotificationPreferenceEntity> => Promise.resolve(preference),
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    const preference = await service.updatePreference({
+      emailDigestMode: NotificationDigestModeEnum.DAILY,
+      emailEnabled: false,
+      inAppEnabled: true,
+      memberId: 'member-001',
+      quietHoursEnd: '  08:00  ',
+      quietHoursStart: '22:00',
+    });
+
+    expect(preference.quietHoursEnd).toBe('08:00');
+    expect(preference.emailDigestMode).toBe(NotificationDigestModeEnum.DAILY);
+    expect(preference).toBeInstanceOf(NotificationPreferenceEntity);
+  });
+
   it('stores the task rejection policy in assigned notification payloads', async (): Promise<void> => {
     const savedNotifications: NotificationEntity[] = [];
     const notificationRepository = {

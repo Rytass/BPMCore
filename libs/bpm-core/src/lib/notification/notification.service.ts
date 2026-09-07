@@ -363,15 +363,18 @@ export class NotificationService {
   ): Promise<NotificationPreferenceEntity> {
     const currentPreference = await this.getPreference(input.memberId);
 
-    return this.notificationPreferenceRepository.save({
-      ...currentPreference,
-      emailDigestMode: input.emailDigestMode,
-      emailEnabled: input.emailEnabled,
-      inAppEnabled: input.inAppEnabled,
-      memberId: input.memberId,
-      quietHoursEnd: normalizeTimeInput(input.quietHoursEnd),
-      quietHoursStart: normalizeTimeInput(input.quietHoursStart),
-    });
+    // Same prototype-preserving reason as the delegation rules: this row is
+    // the `updateNotificationPreference` mutation's return value.
+    return this.notificationPreferenceRepository.save(
+      Object.assign(new NotificationPreferenceEntity(), currentPreference, {
+        emailDigestMode: input.emailDigestMode,
+        emailEnabled: input.emailEnabled,
+        inAppEnabled: input.inAppEnabled,
+        memberId: input.memberId,
+        quietHoursEnd: normalizeTimeInput(input.quietHoursEnd),
+        quietHoursStart: normalizeTimeInput(input.quietHoursStart),
+      }),
+    );
   }
 
   async createTaskAssignedNotification({
