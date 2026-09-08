@@ -2711,29 +2711,33 @@ export class WorkflowEngineService {
           },
         })
       : [];
+    const openTasks = uniqueTasksById([...directTasks, ...candidateTasks]);
     // Deciding on a group task writes the decider into `assigneeMemberId`, so
     // a task that stays open for the others — a `PARALLEL_ALL` countersign —
     // keeps matching `directTasks` for somebody who has already voted. Their
-    // own candidate row is the authority: once it is COMPLETED or TRANSFERRED
-    // the task is no longer theirs to act on, and opening it again only raises
-    // "was already decided by this member".
-    const settledCandidateRows = await this.taskCandidateRepository.find({
-      where: {
-        memberId: assigneeMemberId,
-        status: In([
-          TaskCandidateStatusEnum.COMPLETED,
-          TaskCandidateStatusEnum.TRANSFERRED,
-        ]),
-      },
-    });
+    // own candidate row is the authority: once it is COMPLETED the task is no
+    // longer theirs to act on, and opening it again only raises "was already
+    // decided by this member".
+    //
+    // Scoped to the tasks already in hand: unscoped it would load every row
+    // this member has ever settled, on every inbox load. TRANSFERRED is not
+    // among the statuses because transferring sets the task itself to
+    // TRANSFERRED, which both queries above already exclude.
+    const settledCandidateRows = openTasks.length
+      ? await this.taskCandidateRepository.find({
+          where: {
+            memberId: assigneeMemberId,
+            status: TaskCandidateStatusEnum.COMPLETED,
+            taskId: In(openTasks.map((task) => task.id)),
+          },
+        })
+      : [];
     const settledTaskIds = new Set(
       settledCandidateRows.map((candidate) => candidate.taskId),
     );
 
     return this.attachTaskCandidateSummaries(
-      uniqueTasksById([...directTasks, ...candidateTasks]).filter(
-        (task) => !settledTaskIds.has(task.id),
-      ),
+      openTasks.filter((task) => !settledTaskIds.has(task.id)),
     );
   }
 
@@ -2751,13 +2755,17 @@ export class WorkflowEngineService {
         status: TaskCandidateStatusEnum.COMPLETED,
       },
     });
+    // No status filter on this branch: the candidate row is already COMPLETED,
+    // which means this member has cast their decision. Requiring the task
+    // itself to be COMPLETED hid their own vote for as long as a multi-person
+    // countersign waited on somebody else — and the inbox has, correctly,
+    // stopped showing it to them by then, so it appeared nowhere at all.
     const candidateTasks = candidateRows.length
       ? await this.taskRepository.find({
           order: { completedAt: 'DESC', createdAt: 'DESC' },
           take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
           where: {
             id: In(candidateRows.map((candidate) => candidate.taskId)),
-            status: TaskStatusEnum.COMPLETED,
           },
         })
       : [];

@@ -2239,6 +2239,55 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('lets a cast vote reach history before the countersign finishes', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: [
+        createTaskCandidate({
+          id: 'candidate-d',
+          memberId: 'member-d',
+          status: TaskCandidateStatusEnum.COMPLETED,
+          taskId: 'task-90',
+        }),
+      ],
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    // The root task query is a plain stub, so it is given the matcher here:
+    // asserting on rows is only meaningful if the stub actually answers the
+    // question it was asked.
+    fixture.rootTaskFind.mockImplementation((options) =>
+      Promise.resolve(
+        [
+          createTask({
+            assigneeMemberId: 'member-d',
+            assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+            candidateMemberIds: ['member-d', 'member-e'],
+            decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+            id: 'task-90',
+            status: TaskStatusEnum.IN_PROGRESS,
+          }),
+        ].filter((task) =>
+          matchesFindWhere(
+            task,
+            options.where as Readonly<Record<string, unknown>>,
+          ),
+        ),
+      ),
+    );
+
+    // The task is still open for member-e, so the direct branch — which asks
+    // for COMPLETED tasks assigned to this member — returns nothing. Only the
+    // candidate branch can surface it, and it does so because the member's own
+    // candidate row is COMPLETED. Requiring the task itself to be COMPLETED
+    // hid their vote for as long as the countersign waited on somebody else,
+    // by which time the inbox has correctly stopped showing it to them.
+    await expect(
+      fixture.service.listApprovalHistoryTasks('member-d'),
+    ).resolves.toMatchObject([{ id: 'task-90' }]);
+  });
+
   it('drops a task from the inbox once this member has decided it', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -3524,6 +3573,28 @@ describe('WorkflowEngineService', () => {
         kind: AdhocTargetKindEnum.MEMBER,
         memberIds: ['member-x'],
       }),
+    );
+  });
+
+  it('does not complete a case while a token still waits on a task', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    // A token parked on a user task is WAITING, not ACTIVE, and the completion
+    // has to see it as open — otherwise a case nobody has approved is approved
+    // the moment the engine next runs over it.
+    expect(fixture.savedInstance?.state).not.toBe(
+      ApprovalInstanceStateEnum.APPROVED,
     );
   });
 
