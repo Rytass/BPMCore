@@ -9,7 +9,7 @@ import {
   ReturnBehavior,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
-import { ObjectLiteral } from 'typeorm';
+import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -4497,17 +4497,30 @@ function createServiceFixture({
  * end node completing a case twice — overwriting a committed REJECTED row
  * with APPROVED.
  *
- * `FindOperator` values (`In([...])`, `Not(...)`, …) are treated as match-all;
- * a mock that half-implements them would be its own trap.
+ * `In` and `IsNull` are implemented for real because this service leans on
+ * them for the inbox, history and open-task queries; treating those as
+ * match-all would leave the very queries a user sees unguarded. Any other
+ * operator stays match-all rather than being half-implemented.
  */
 function matchesFindWhere<TEntity extends ObjectLiteral>(
   row: TEntity,
   where?: Readonly<Record<string, unknown>>,
 ): boolean {
-  return Object.entries(where ?? {}).every(
-    ([key, value]) =>
-      (typeof value === 'object' && value !== null) || row[key] === value,
-  );
+  return Object.entries(where ?? {}).every(([key, value]) => {
+    if (value instanceof FindOperator) {
+      if (value.type === 'in') {
+        return (value.value as readonly unknown[]).includes(row[key]);
+      }
+
+      if (value.type === 'isNull') {
+        return row[key] === null || row[key] === undefined;
+      }
+
+      return true;
+    }
+
+    return row[key] === value;
+  });
 }
 
 function createRepository<TEntity extends ObjectLiteral>(

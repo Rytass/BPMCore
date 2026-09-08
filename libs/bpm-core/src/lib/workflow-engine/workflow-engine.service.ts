@@ -3012,17 +3012,15 @@ export class WorkflowEngineService {
     // ACTIVE token remains, so the extra status changes no current behaviour —
     // but nothing enforces that invariant, and a second caller arriving
     // without it would complete a case while somebody still had a task open.
-    // Filtering in JS rather than with `In([...])` matches how the rest of
-    // this file queries tokens.
-    const openTokens = (
-      await manager.getRepository(WorkflowTokenEntity).find({
-        where: { instanceId: instance.id },
-      })
-    ).filter(
-      (token) =>
-        token.status === WorkflowTokenStatusEnum.ACTIVE ||
-        token.status === WorkflowTokenStatusEnum.WAITING,
-    );
+    const openTokens = await manager.getRepository(WorkflowTokenEntity).find({
+      where: {
+        instanceId: instance.id,
+        status: In([
+          WorkflowTokenStatusEnum.ACTIVE,
+          WorkflowTokenStatusEnum.WAITING,
+        ]),
+      },
+    });
 
     if (openTokens.length > 0) {
       return;
