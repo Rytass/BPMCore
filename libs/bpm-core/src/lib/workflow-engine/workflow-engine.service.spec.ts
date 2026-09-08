@@ -2239,6 +2239,51 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('drops a task from the inbox once this member has decided it', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: [
+        createTaskCandidate({
+          id: 'candidate-d',
+          memberId: 'member-d',
+          status: TaskCandidateStatusEnum.COMPLETED,
+          taskId: 'task-90',
+        }),
+        createTaskCandidate({
+          id: 'candidate-e',
+          memberId: 'member-e',
+          status: TaskCandidateStatusEnum.PENDING,
+          taskId: 'task-90',
+        }),
+      ],
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({
+        // Deciding on a group task writes the decider here, which is what kept
+        // the task in their inbox after they had already voted.
+        assigneeMemberId: 'member-d',
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: ['member-d', 'member-e'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        id: 'task-90',
+        status: TaskStatusEnum.IN_PROGRESS,
+      }),
+    ]);
+
+    // member-d has voted and cannot act again — opening it raises "was already
+    // decided by this member" — while the task is legitimately still open for
+    // member-e.
+    await expect(fixture.service.listInboxTasks('member-d')).resolves.toEqual(
+      [],
+    );
+    await expect(
+      fixture.service.listInboxTasks('member-e'),
+    ).resolves.toMatchObject([{ id: 'task-90' }]);
+  });
+
   it('lists pending inbox tasks by assignee', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -3831,7 +3876,16 @@ function createServiceFixture({
     find: rootTaskFind,
   });
   const taskCandidateRepository = createRepository<TaskCandidateEntity>({
-    find: jest.fn(() => Promise.resolve([])),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly TaskCandidateEntity[]> =>
+        Promise.resolve(
+          processTaskCandidateRows.filter((candidate) =>
+            matchesFindWhere(candidate, options?.where),
+          ),
+        ),
+    ),
   });
   const taskDecisionRepository = createRepository<TaskDecisionEntity>({
     find: jest.fn(() => Promise.resolve([])),

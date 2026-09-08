@@ -2711,9 +2711,29 @@ export class WorkflowEngineService {
           },
         })
       : [];
+    // Deciding on a group task writes the decider into `assigneeMemberId`, so
+    // a task that stays open for the others — a `PARALLEL_ALL` countersign —
+    // keeps matching `directTasks` for somebody who has already voted. Their
+    // own candidate row is the authority: once it is COMPLETED or TRANSFERRED
+    // the task is no longer theirs to act on, and opening it again only raises
+    // "was already decided by this member".
+    const settledCandidateRows = await this.taskCandidateRepository.find({
+      where: {
+        memberId: assigneeMemberId,
+        status: In([
+          TaskCandidateStatusEnum.COMPLETED,
+          TaskCandidateStatusEnum.TRANSFERRED,
+        ]),
+      },
+    });
+    const settledTaskIds = new Set(
+      settledCandidateRows.map((candidate) => candidate.taskId),
+    );
 
     return this.attachTaskCandidateSummaries(
-      uniqueTasksById([...directTasks, ...candidateTasks]),
+      uniqueTasksById([...directTasks, ...candidateTasks]).filter(
+        (task) => !settledTaskIds.has(task.id),
+      ),
     );
   }
 
