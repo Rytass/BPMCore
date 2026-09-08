@@ -2995,16 +2995,24 @@ export class WorkflowEngineService {
       return;
     }
 
-    const waitingTokens = await manager
-      .getRepository(WorkflowTokenEntity)
-      .find({
-        where: {
-          instanceId: instance.id,
-          status: WorkflowTokenStatusEnum.WAITING,
-        },
-      });
+    // Both open statuses, not just WAITING. Today this is reached only from
+    // `processRunningInstance`, whose loop has already established that no
+    // ACTIVE token remains, so the extra status changes no current behaviour —
+    // but nothing enforces that invariant, and a second caller arriving
+    // without it would complete a case while somebody still had a task open.
+    // Filtering in JS rather than with `In([...])` matches how the rest of
+    // this file queries tokens.
+    const openTokens = (
+      await manager.getRepository(WorkflowTokenEntity).find({
+        where: { instanceId: instance.id },
+      })
+    ).filter(
+      (token) =>
+        token.status === WorkflowTokenStatusEnum.ACTIVE ||
+        token.status === WorkflowTokenStatusEnum.WAITING,
+    );
 
-    if (waitingTokens.length > 0) {
+    if (openTokens.length > 0) {
       return;
     }
 
