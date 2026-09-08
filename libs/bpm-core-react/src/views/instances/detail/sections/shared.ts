@@ -67,13 +67,23 @@ export type MemberOption = Readonly<{
 
 export type ActivityStepDescriptionPart =
   | Readonly<{ text: string; type: 'text' }>
-  | Readonly<{ text: string; type: 'dangerText' }>
   | Readonly<{
       email: string | null;
       label: string;
       memberId: string | null;
       prefix: string;
       type: 'member';
+    }>
+  /**
+   * What an approver actually wrote. Kept apart from the `text` parts so the
+   * timeline can give it its own line instead of burying it mid-sentence
+   * between the node, the actor, the timestamp and the signature hash.
+   */
+  | Readonly<{
+      label: string;
+      text: string;
+      tone: 'danger' | 'neutral';
+      type: 'comment';
     }>;
 
 export interface ActivityStepRecord {
@@ -368,6 +378,52 @@ export function readMemberOption(profile: MemberProfileRecord): MemberOption {
   };
 }
 
+/**
+ * The target an ad-hoc directive is sent to, or the reason it cannot be built
+ * yet. Kept out of the component so the "which shape do we send" decision is
+ * testable on its own — it is the part that changed when the member picker
+ * went from one selection to many.
+ */
+export type AdhocTargetDraft =
+  | Readonly<{
+      target:
+        | Readonly<{ kind: 'MEMBER'; memberIds: readonly string[] }>
+        | Readonly<{ kind: 'WEBHOOK'; webhookUrl: string }>;
+      valid: true;
+    }>
+  | Readonly<{ error: string; valid: false }>;
+
+export function readAdhocTargetDraft({
+  memberIds,
+  useWebhookTarget,
+  webhookUrl,
+}: {
+  readonly memberIds: readonly string[];
+  readonly useWebhookTarget: boolean;
+  readonly webhookUrl: string;
+}): AdhocTargetDraft {
+  if (useWebhookTarget) {
+    const trimmedWebhookUrl = webhookUrl.trim();
+
+    return trimmedWebhookUrl
+      ? {
+          target: { kind: 'WEBHOOK', webhookUrl: trimmedWebhookUrl },
+          valid: true,
+        }
+      : { error: '請輸入 Webhook URL', valid: false };
+  }
+
+  return memberIds.length > 0
+    ? { target: { kind: 'MEMBER', memberIds }, valid: true }
+    : { error: '請選擇對象成員', valid: false };
+}
+
+export function isPresentMemberOption(
+  option: MemberOption | null,
+): option is MemberOption {
+  return Boolean(option);
+}
+
 export function readMemberOptionFromValue(value: unknown): MemberOption | null {
   if (!isRecord(value)) {
     return null;
@@ -411,10 +467,12 @@ export function readTextDescriptionPart(
   return isPresentText(text) ? { text, type: 'text' } : null;
 }
 
-export function readDangerTextDescriptionPart(
+export function readCommentDescriptionPart(
+  label: string,
   text: string | null,
+  tone: 'danger' | 'neutral' = 'neutral',
 ): ActivityStepDescriptionPart | null {
-  return isPresentText(text) ? { text, type: 'dangerText' } : null;
+  return isPresentText(text) ? { label, text, tone, type: 'comment' } : null;
 }
 
 export function readMemberDescriptionPart(
@@ -664,13 +722,13 @@ export function readActivityDetailParts(
   return [
     readTextDescriptionPart(decisionLabel),
     action === 'REJECTED'
-      ? readDangerTextDescriptionPart(`拒絕原因：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('拒絕原因', comment ?? '-', 'danger')
       : null,
-    action === 'APPROVED' && comment
-      ? readTextDescriptionPart(`同意說明：${comment}`)
+    action === 'APPROVED'
+      ? readCommentDescriptionPart('同意說明', comment)
       : null,
     action === 'RETURNED'
-      ? readTextDescriptionPart(`退回說明：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('退回說明', comment ?? '-')
       : null,
     action === 'TRANSFERRED'
       ? readTextDescriptionPart(
@@ -681,7 +739,7 @@ export function readActivityDetailParts(
         )
       : null,
     action === 'TRANSFERRED'
-      ? readTextDescriptionPart(`轉派說明：${comment ?? '-'}`)
+      ? readCommentDescriptionPart('轉派說明', comment ?? '-')
       : null,
     signature
       ? readTextDescriptionPart(
