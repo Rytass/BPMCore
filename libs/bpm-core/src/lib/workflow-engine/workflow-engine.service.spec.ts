@@ -3610,7 +3610,19 @@ function createServiceFixture({
   ];
   let directiveSequence = 0;
   const adhocDirectiveRepository = createRepository<AdhocDirectiveEntity>({
-    find: jest.fn(() => Promise.resolve(processAdhocDirectiveRows)),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly AdhocDirectiveEntity[]> =>
+        Promise.resolve(
+          processAdhocDirectiveRows
+            .filter((directive) => matchesFindWhere(directive, options?.where))
+            .sort(
+              (left, right) =>
+                left.createdAt.getTime() - right.createdAt.getTime(),
+            ),
+        ),
+    ),
   });
   const transactionalAdhocDirectiveRepository =
     createRepository<AdhocDirectiveEntity>({
@@ -3626,13 +3638,7 @@ function createServiceFixture({
         ): Promise<readonly AdhocDirectiveEntity[]> =>
           Promise.resolve(
             processAdhocDirectiveRows.filter((directive) =>
-              Object.entries(options?.where ?? {}).every(
-                ([key, value]) =>
-                  // FindOperator values (e.g. In([...])) are treated as
-                  // match-all to keep the mock simple.
-                  typeof value === 'object' ||
-                  directive[key as keyof AdhocDirectiveEntity] === value,
-              ),
+              matchesFindWhere(directive, options?.where),
             ),
           ),
       ),
@@ -3824,23 +3830,13 @@ function createServiceFixture({
         return Promise.resolve(entityOrEntities);
       },
     ),
-    // `where.status` is honoured: ignoring it made every `find` look like it
-    // had open tokens, which silently short-circuited
-    // `completeInstanceIfNoOpenRuntimeState` and hid a double completion that
-    // a real database would have run.
     find: jest.fn(
       (
-        options?: Readonly<{
-          where?: Readonly<{ status?: WorkflowTokenStatusEnum }>;
-        }>,
-      ) =>
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly WorkflowTokenEntity[]> =>
         Promise.resolve(
-          [...processTokens]
-            .filter(
-              (token) =>
-                !options?.where?.status ||
-                token.status === options.where.status,
-            )
+          processTokens
+            .filter((token) => matchesFindWhere(token, options?.where))
             .sort(compareTokenCreatedAt),
         ),
     ),
@@ -3890,7 +3886,14 @@ function createServiceFixture({
           tokenId: entity.tokenId ?? 'token-1',
         }),
     ),
-    find: jest.fn(() => Promise.resolve(processTasks)),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly TaskEntity[]> =>
+        Promise.resolve(
+          processTasks.filter((task) => matchesFindWhere(task, options?.where)),
+        ),
+    ),
     findOne: jest.fn(
       (
         options?: Readonly<{
@@ -4046,11 +4049,29 @@ function createServiceFixture({
     ),
   });
   const transactionalMembershipRepository = createRepository<MembershipEntity>({
-    find: jest.fn(() => Promise.resolve(processMemberships)),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly MembershipEntity[]> =>
+        Promise.resolve(
+          processMemberships.filter((membership) =>
+            matchesFindWhere(membership, options?.where),
+          ),
+        ),
+    ),
   });
   const transactionalManagerResolutionRepository =
     createRepository<ManagerResolutionEntity>({
-      find: jest.fn(() => Promise.resolve(processManagerResolutions)),
+      find: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+        ): Promise<readonly ManagerResolutionEntity[]> =>
+          Promise.resolve(
+            processManagerResolutions.filter((resolution) =>
+              matchesFindWhere(resolution, options?.where),
+            ),
+          ),
+      ),
     });
   const orgUnitQueryBuilder = {
     andWhere: jest.fn().mockReturnThis(),
@@ -4059,7 +4080,16 @@ function createServiceFixture({
   };
   const transactionalOrgUnitRepository = createRepository<OrgUnitEntity>({
     createQueryBuilder: jest.fn(() => orgUnitQueryBuilder),
-    find: jest.fn(() => Promise.resolve(processOrgUnits)),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly OrgUnitEntity[]> =>
+        Promise.resolve(
+          processOrgUnits.filter((orgUnit) =>
+            matchesFindWhere(orgUnit, options?.where),
+          ),
+        ),
+    ),
   });
   const managerQuery = jest.fn<Promise<unknown>, [string, readonly unknown[]]>(
     () => Promise.resolve([]),
@@ -4195,6 +4225,28 @@ function createServiceFixture({
     ),
     notificationService,
   };
+}
+
+/**
+ * Applies a `find({ where })` clause the way the database would.
+ *
+ * A mock that ignores `where` answers questions it was never asked, and the
+ * caller believes it. That is not hypothetical: the token repository's `find`
+ * used to return consumed tokens to a query for WAITING ones, which hid an
+ * end node completing a case twice — overwriting a committed REJECTED row
+ * with APPROVED.
+ *
+ * `FindOperator` values (`In([...])`, `Not(...)`, …) are treated as match-all;
+ * a mock that half-implements them would be its own trap.
+ */
+function matchesFindWhere<TEntity extends ObjectLiteral>(
+  row: TEntity,
+  where?: Readonly<Record<string, unknown>>,
+): boolean {
+  return Object.entries(where ?? {}).every(
+    ([key, value]) =>
+      (typeof value === 'object' && value !== null) || row[key] === value,
+  );
 }
 
 function createRepository<TEntity extends ObjectLiteral>(
