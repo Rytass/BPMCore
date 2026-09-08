@@ -1526,7 +1526,19 @@ export class WorkflowEngineService {
             : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        decisionPolicySnapshot: { type: 'SINGLE' },
+        // One resolved person is `SINGLE`, which is what this has always been.
+        // Several mean a countersign in the sense the UI promises — 下一層需
+        // 所有人都完成才會繼續 — so every candidate has to decide before the
+        // task closes. Until now a multi-person target produced a single
+        // `SINGLE` task, and whoever opened it first decided for the whole
+        // group while the task vanished from everybody else's inbox.
+        // Rejection is unaffected: `shouldCompleteTaskAfterDecision` closes
+        // the task on any non-approval whatever the policy, and that rejection
+        // then rejects the instance.
+        decisionPolicySnapshot:
+          candidates.length === 1
+            ? { type: 'SINGLE' }
+            : { type: 'PARALLEL_ALL' },
         delegationChain:
           candidates.length === 1 ? primaryCandidate.delegationChain : [],
         instanceId: instance.id,

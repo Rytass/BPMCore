@@ -3033,6 +3033,239 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('needs every candidate of a multi-person ad-hoc countersign', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'start',
+        status: WorkflowTokenStatusEnum.ACTIVE,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-seed-1',
+          originNodeId: 'task_origin',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetValue: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-d', 'member-e'],
+          },
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    const countersignTask = fixture.savedTasks.find(
+      (task) =>
+        task.isAdhoc && task.adhocType === AdhocDirectiveTypeEnum.COUNTERSIGN,
+    );
+
+    // The picker offers several people and the UI promises 下一層需所有人都完
+    // 成才會繼續. On a `SINGLE` policy the first person to open the task
+    // decided for the whole group and it vanished from the other inboxes.
+    expect(countersignTask).toMatchObject({
+      assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+      decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+    });
+    expect(
+      fixture.savedTaskCandidates
+        .filter((candidate) => candidate.taskId === countersignTask?.id)
+        .map((candidate) => candidate.memberId)
+        .sort(),
+    ).toEqual(['member-d', 'member-e']);
+  });
+
+  it('leaves a one-person ad-hoc countersign on the single-decision policy', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'start',
+        status: WorkflowTokenStatusEnum.ACTIVE,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-seed-1',
+          originNodeId: 'task_origin',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetValue: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-d'],
+          },
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    // One person is the pre-existing behaviour and stays untouched: there is
+    // nobody else for `PARALLEL_ALL` to wait for.
+    expect(
+      fixture.savedTasks.find(
+        (task) =>
+          task.isAdhoc && task.adhocType === AdhocDirectiveTypeEnum.COUNTERSIGN,
+      ),
+    ).toMatchObject({
+      assigneeMemberId: 'member-d',
+      assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+      decisionPolicySnapshot: { type: 'SINGLE' },
+    });
+  });
+
+  it('keeps a multi-person countersign open until the last candidate approves', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          id: 'task-1',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        adhocDirectiveId: 'directive-seed-1',
+        adhocOriginTaskId: 'task-1',
+        adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: ['member-d', 'member-e'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        id: 'task-90',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: null,
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: [
+        createTaskCandidate({
+          id: 'candidate-d',
+          memberId: 'member-d',
+          taskId: 'task-90',
+        }),
+        createTaskCandidate({
+          id: 'candidate-e',
+          memberId: 'member-e',
+          taskId: 'task-90',
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: '第一位同意',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    // The task stays open and member-e's candidate row is untouched: this is
+    // the whole point of the policy. Under `SINGLE` the task closed here and
+    // disappeared from member-e's inbox without them ever seeing it.
+    expect(
+      fixture.savedTasks.filter((task) => task.id === 'task-90').pop()?.status,
+    ).toBe(TaskStatusEnum.IN_PROGRESS);
+    expect(
+      fixture.savedTaskCandidates
+        .filter((candidate) => candidate.id === 'candidate-e')
+        .pop()?.status,
+    ).not.toBe(TaskCandidateStatusEnum.CANCELLED);
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: '第二位同意',
+      decidedByMemberId: 'member-e',
+      taskId: 'task-90',
+    });
+
+    expect(
+      fixture.savedTasks.filter((task) => task.id === 'task-90').pop()?.status,
+    ).toBe(TaskStatusEnum.COMPLETED);
+  });
+
+  it('rejects the whole case when one countersigner rejects', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          id: 'task-1',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        adhocDirectiveId: 'directive-seed-1',
+        adhocOriginTaskId: 'task-1',
+        adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: ['member-d', 'member-e'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        id: 'task-90',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: null,
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: [
+        createTaskCandidate({
+          id: 'candidate-d',
+          memberId: 'member-d',
+          taskId: 'task-90',
+        }),
+        createTaskCandidate({
+          id: 'candidate-e',
+          memberId: 'member-e',
+          taskId: 'task-90',
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '金額有誤',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    // A rejection closes the task whatever the policy says, and the instance
+    // follows it down. Waiting for the other countersigners would leave a case
+    // that has already been refused sitting in their inboxes.
+    expect(
+      fixture.savedTasks.filter((task) => task.id === 'task-90').pop()?.status,
+    ).toBe(TaskStatusEnum.COMPLETED);
+    expect(fixture.savedInstance?.state).toBe(
+      ApprovalInstanceStateEnum.REJECTED,
+    );
+  });
+
   it('returns a rejected ad-hoc pre-approval to the origin approver without rejecting the instance', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [
@@ -3490,6 +3723,7 @@ function createServiceFixture({
   instanceState,
   latestReturnActivity,
   processAdhocDirectives = [],
+  processTaskCandidates = [],
   processFormData,
   processFormDefinitionSnapshot,
   processOptionSnapshot,
@@ -3514,6 +3748,7 @@ function createServiceFixture({
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processTaskCandidates?: readonly TaskCandidateEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
@@ -3553,6 +3788,10 @@ function createServiceFixture({
   let savedSingleActivityLogs: readonly ActivityLogEntity[] = [];
   let savedTasks: readonly TaskEntity[] = [];
   let savedTaskCandidates: readonly TaskCandidateEntity[] = [];
+  let processTaskCandidateRows: readonly TaskCandidateEntity[] = [
+    ...processTaskCandidates,
+  ];
+  let taskCandidateSequence = 0;
   const template = createTemplate(currentVersionId, templateIsActive);
   const templateVersion = createTemplateVersion(templateVersionStatus);
   const formVersion = createFormVersion(formVersionStatus, formSchema);
@@ -3965,7 +4204,10 @@ function createServiceFixture({
             createdAt: entity.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
             decidedAt: entity.decidedAt ?? null,
             delegationChain: entity.delegationChain ?? [],
-            id: entity.id ?? 'task-candidate-1',
+            // A per-row id, not a constant: a multi-candidate task compares
+            // candidates by id when it marks one decided, so a shared id would
+            // make every candidate look like the one that just decided.
+            id: entity.id ?? `task-candidate-${(taskCandidateSequence += 1)}`,
             memberId: entity.memberId ?? 'member-finance',
             originalMemberId: entity.originalMemberId ?? 'member-finance',
             sourceType: entity.sourceType ?? 'DIRECT',
@@ -3973,16 +4215,35 @@ function createServiceFixture({
             taskId: entity.taskId ?? 'task-1',
           }),
       ),
-      find: jest.fn(() => Promise.resolve([])),
+      find: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+        ): Promise<readonly TaskCandidateEntity[]> =>
+          Promise.resolve(
+            processTaskCandidateRows.filter((candidate) =>
+              matchesFindWhere(candidate, options?.where),
+            ),
+          ),
+      ),
       save: jest.fn(
         (
           entityOrEntities: TaskCandidateEntity | TaskCandidateEntity[],
         ): Promise<TaskCandidateEntity | TaskCandidateEntity[]> => {
-          savedTaskCandidates = [
-            ...savedTaskCandidates,
-            ...(Array.isArray(entityOrEntities)
-              ? entityOrEntities
-              : [entityOrEntities]),
+          const entities = Array.isArray(entityOrEntities)
+            ? entityOrEntities
+            : [entityOrEntities];
+
+          savedTaskCandidates = [...savedTaskCandidates, ...entities];
+
+          const writtenIds = new Set(entities.map((entity) => entity.id));
+
+          // Saved rows are readable again, so a second decision on the same
+          // task sees what the first one wrote.
+          processTaskCandidateRows = [
+            ...processTaskCandidateRows.filter(
+              (candidate) => !writtenIds.has(candidate.id),
+            ),
+            ...entities,
           ];
 
           return Promise.resolve(entityOrEntities);
@@ -4612,12 +4873,36 @@ function createWorkflowToken(
   };
 }
 
+function createTaskCandidate(
+  value: Partial<TaskCandidateEntity>,
+): TaskCandidateEntity {
+  return Object.assign(new TaskCandidateEntity(), {
+    claimedAt: value.claimedAt ?? null,
+    createdAt: value.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
+    decidedAt: value.decidedAt ?? null,
+    delegationChain: value.delegationChain ?? [],
+    id: value.id ?? 'task-candidate-seed-1',
+    memberId: value.memberId ?? 'member-finance',
+    originalMemberId: value.originalMemberId ?? value.memberId ?? 'member-finance',
+    sourceType: value.sourceType ?? 'DIRECT',
+    status: value.status ?? TaskCandidateStatusEnum.PENDING,
+    taskId: value.taskId ?? 'task-1',
+  });
+}
+
 function createTask(value: Partial<TaskEntity>): TaskEntity {
   return Object.assign(new TaskEntity(), {
     adhocDirectiveId: value.adhocDirectiveId ?? null,
     adhocOriginTaskId: value.adhocOriginTaskId ?? null,
     adhocType: value.adhocType ?? null,
-    assigneeMemberId: value.assigneeMemberId ?? 'member-finance',
+    assigneeMemberId:
+      value.assigneeMemberId === null
+        ? null
+        : (value.assigneeMemberId ?? 'member-finance'),
+    assignmentType:
+      value.assignmentType ?? TaskAssignmentTypeEnum.DIRECT_MEMBER,
+    candidateMemberIds: value.candidateMemberIds ?? [],
+    decisionPolicySnapshot: value.decisionPolicySnapshot ?? { type: 'SINGLE' },
     completedAt: value.completedAt ?? null,
     createdAt: value.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
     delegationChain: value.delegationChain ?? [],
@@ -4627,7 +4912,9 @@ function createTask(value: Partial<TaskEntity>): TaskEntity {
     nodeId: value.nodeId ?? 'task_finance',
     openedAt: value.openedAt ?? null,
     originalAssigneeMemberId:
-      value.originalAssigneeMemberId ?? 'member-finance',
+      value.originalAssigneeMemberId === null
+        ? null
+        : (value.originalAssigneeMemberId ?? 'member-finance'),
     slaDueAt: value.slaDueAt ?? null,
     status: value.status ?? TaskStatusEnum.PENDING,
     tokenId: value.tokenId ?? 'token-1',
