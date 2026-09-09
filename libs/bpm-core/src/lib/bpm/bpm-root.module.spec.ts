@@ -1,5 +1,14 @@
-import { DynamicModule, Module, Provider } from '@nestjs/common';
+import { DynamicModule, InjectionToken, Module, Provider } from '@nestjs/common';
+import { BPM_ROOT_OPTIONS, BPMRootOptionsModule } from './bpm-root-options';
 import { BPMRootModule } from './bpm-root.module';
+import { PATH_METADATA } from '@nestjs/common/constants';
+import { BPM_ATTACHMENT_OPTIONS } from '../attachment/attachment-options';
+import { AttachmentController } from '../attachment/attachment.controller';
+import { BPM_AUTH_MODULE_OPTIONS } from '../bpm-auth/bpm-auth-context';
+import { BPM_IDENTITY_OPTIONS } from '../identity/identity-options';
+import { defaultMemberResolverProvider } from '../identity/default-member-resolver';
+import { BPM_NOTIFICATION_OPTIONS } from '../notification/notification-options';
+import { BPM_SIGNATURE_OPTIONS } from '../signature/signature-options';
 import {
   BPM_MEMBER_RESOLVER,
   BPMMemberResolver,
@@ -336,3 +345,122 @@ function findFormDataSourceModule(
       importedModule.module === FormDataSourceModule,
   );
 }
+
+describe('BPMRootModule zero-configuration wiring', (): void => {
+  const OPTION_TOKENS: readonly InjectionToken[] = [
+    BPM_ATTACHMENT_OPTIONS,
+    BPM_AUTH_MODULE_OPTIONS,
+    BPM_IDENTITY_OPTIONS,
+    BPM_NOTIFICATION_OPTIONS,
+    BPM_SIGNATURE_OPTIONS,
+  ];
+
+  it.each([
+    { build: (): DynamicModule => BPMRootModule.forRoot(), label: 'forRoot' },
+    {
+      build: (): DynamicModule => BPMRootModule.forRootAsync(),
+      label: 'forRootAsync',
+    },
+  ])('$label boots with no options at all', ({ build }): void => {
+    const module = build();
+
+    expect(findDynamicModule(module, BPMRootOptionsModule)).toBeDefined();
+    expect(collectProviders(module)).toContain(defaultMemberResolverProvider);
+  });
+
+  it.each([
+    { build: (): DynamicModule => BPMRootModule.forRoot(), label: 'forRoot' },
+    {
+      build: (): DynamicModule =>
+        BPMRootModule.forRootAsync({
+          useFactory: (): Record<string, never> => ({}),
+        }),
+      label: 'forRootAsync',
+    },
+  ])(
+    '$label resolves every option token from the single BPM_ROOT_OPTIONS token',
+    ({ build }): void => {
+      // Each of these used to call the host factory itself, so a factory that
+      // constructed a member resolver handed a different instance to each
+      // consumer. Injecting one shared token is what makes it resolve once.
+      const optionProviders = collectProviders(build()).filter(
+        (provider): provider is Extract<Provider, { provide: unknown }> =>
+          typeof provider === 'object' &&
+          provider !== null &&
+          'provide' in provider &&
+          OPTION_TOKENS.includes(provider.provide as InjectionToken),
+      );
+
+      expect(optionProviders).toHaveLength(OPTION_TOKENS.length);
+      optionProviders.forEach((provider): void => {
+        expect((provider as { readonly inject?: unknown }).inject).toEqual([
+          BPM_ROOT_OPTIONS,
+        ]);
+      });
+    },
+  );
+});
+
+function collectProviders(module: DynamicModule): readonly Provider[] {
+  return (module.imports ?? []).flatMap((importedModule): readonly Provider[] =>
+    typeof importedModule === 'object' &&
+    importedModule !== null &&
+    'providers' in importedModule
+      ? [...(importedModule.providers ?? [])]
+      : [],
+  );
+}
+
+function findDynamicModule(
+  module: DynamicModule,
+  target: unknown,
+): DynamicModule | undefined {
+  return (module.imports ?? []).find(
+    (importedModule): importedModule is DynamicModule =>
+      typeof importedModule === 'object' &&
+      importedModule !== null &&
+      'module' in importedModule &&
+      importedModule.module === target,
+  );
+}
+
+describe('BPMRootModule attachment route prefix', (): void => {
+  afterEach((): void => {
+    // The prefix is process-wide controller metadata, so leave the default
+    // behind for whatever spec runs next.
+    BPMRootModule.forRoot();
+  });
+
+  it.each([
+    {
+      build: (): void => {
+        BPMRootModule.forRoot({ attachmentRoutePrefix: '/api/attachments' });
+      },
+      label: 'forRoot',
+    },
+    {
+      build: (): void => {
+        BPMRootModule.forRootAsync({
+          attachmentRoutePrefix: '/api/attachments',
+        });
+      },
+      label: 'forRootAsync',
+    },
+  ])('$label mounts the attachment controller at the host prefix', ({
+    build,
+  }): void => {
+    build();
+
+    expect(
+      Reflect.getMetadata(PATH_METADATA, AttachmentController),
+    ).toBe('api/attachments');
+  });
+
+  it('falls back to the default prefix when the host sets none', (): void => {
+    BPMRootModule.forRoot();
+
+    expect(
+      Reflect.getMetadata(PATH_METADATA, AttachmentController),
+    ).toBe('attachments');
+  });
+});
