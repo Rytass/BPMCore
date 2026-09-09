@@ -76,6 +76,6 @@
     "@rytass/bpm-core-shared": "^0.13.3"
   },
   "dependencies": {
-    "tslib": "^2.3.0"
+    "tslib": "^2.8.1"
   }
 }

@@ -184,12 +184,40 @@ place. That is not hypothetical: `axios@1.15.2`, `postcss@8.5.10`,
 and accounted for 29 of the repository's open alerts before being converted to
 ranges.
 
-Some overrides exist to force a **single copy** rather than to raise a floor —
-currently `typeorm` and `next`. Two copies of either break typechecking rather
-than security: `@nestjs/typeorm` ends up with two unrelated
-`TypeOrmModuleOptions` types, and `bpm-core-react`'s `next` peer can resolve
-against the older copy the eslint config pulls in. Keep those, and keep the
-whole `@nx/*` set on the same version as `nx`.
+Some overrides exist to force a **single copy** rather than to raise a floor.
+Keep them, and keep the whole `@nx/*` set on the same version as `nx`.
+
+The mechanism to understand before running `pnpm update`: the published libs
+declare deliberately **open** peer ranges (`@nestjs/core: >=10.0.0`,
+`graphql: >=16.0.0`, `reflect-metadata: >=0.1.13`, `ai: >=6.0.0`,
+`@mezzanine-ui/react: >=1.0.0`, `pdfjs-dist: ^5.4.296`) so hosts on a range of
+versions can consume them — and `autoInstallPeers: true` resolves every one of
+those peers to whatever is **newest**. A `pnpm update` therefore installs a
+second copy of anything whose latest release has moved past the version the
+workspace itself picked. Each single-copy override below exists because that
+happened:
+
+| package | what two copies broke |
+| ------------------------- | ---------------------------------------------- |
+| `typeorm` | two unrelated `TypeOrmModuleOptions` types |
+| `next` | `bpm-core-react`'s peer resolved against the eslint config's older copy |
+| `reflect-metadata` | 0.1.14 + 0.2.2 gave `@nestjs/core` two snapshots, so two `ModuleRef` classes — every module injecting one failed to resolve it |
+| `@nestjs/*` | Nest 12 installed beside the workspace's 11 |
+| `graphql` | 17 installed while every `@nestjs/graphql` plugin still expects 16 |
+| `pdfjs-dist` | `PDFDocumentProxy` and react-pdf's `DocumentCallback` became unrelated types, and two PDF workers would ship |
+| `@mezzanine-ui/*` | two React contexts and two stylesheets; providers stop matching the components under them |
+| `ai` / `@ai-sdk/*` | ai 7 / @ai-sdk 4 installed beside the assistant's 6 / 3 |
+| `@rytass/secret-adapter-vault-nestjs` | two `VaultService` classes; `apps/api` injects one into `TypeOrmModule.forRootAsync` and gets the other tree's |
+
+Only `pdfjs-dist` and `@mezzanine-ui/*` are exact pins, and they mirror pins the
+app already makes deliberately — react-pdf itself depends on `pdfjs-dist`
+exactly. Move those with the app's own pins, never on their own.
+
+**After any `pnpm update`, check for new copies, not just that it built.**
+Typechecking passes through some of these; the Nest one only showed up because
+`bpm-root.module.boot.spec.ts` instantiates the whole module graph. Compare
+`git show HEAD:pnpm-lock.yaml` against the new one for packages that gained a
+version.
 
 CI reports `pnpm audit` on every run and fails only on `critical`. A blocking
 `high` gate would be permanently red — `image-size`, reached through
