@@ -9,7 +9,6 @@ import {
   BPM_MEMBER_RESOLVER,
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
-import { BPM_WORKFLOW_SERVICE_TASK_DISPATCHER } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import { BPMRootModule } from './bpm-root.module';
 
 // The built-in local storage fallback reaches `@rytass/storages-adapter-local`
@@ -63,7 +62,6 @@ describe('BPMRootModule bootstrap', (): void => {
       expect(moduleRef.get(BPM_BUSINESS_CALENDAR)).toBeDefined();
       expect(moduleRef.get(ATTACHMENT_STORAGE)).toBeDefined();
       expect(moduleRef.get(BPM_FORM_DATA_SOURCE_REGISTRY)).toBeDefined();
-      expect(moduleRef.get(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)).toBeDefined();
     } finally {
       await moduleRef.close();
     }

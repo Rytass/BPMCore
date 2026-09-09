@@ -110,6 +110,10 @@ import {
   DefaultWorkflowServiceTaskDispatcher,
 } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
+import {
+  BPM_ROOT_OPTIONS,
+  BPMRootRuntimeOptions,
+} from '../bpm/bpm-root-options';
 
 /**
  * `initiatorMemberId` is optional on the GraphQL inputs because the resolver
@@ -266,11 +270,31 @@ export class WorkflowEngineService {
     private readonly slaScheduleService: BPMSlaScheduleService,
     @Optional()
     @Inject(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)
-    private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = new DefaultWorkflowServiceTaskDispatcher(),
+    injectedServiceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher,
     @Optional()
     @Inject(BPM_FORM_DATA_SOURCE_VALUE_RESOLVER)
     private readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver,
-  ) {}
+    @Optional()
+    @Inject(BPM_ROOT_OPTIONS)
+    rootOptions?: BPMRootRuntimeOptions,
+  ) {
+    // A binding under the token wins: that is either the host's own provider
+    // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
+    // runtime instance from `BPMRootModule`'s async factory comes next.
+    //
+    // Resolving it here rather than registering a default provider is what
+    // keeps a host that binds the token from its own global module working —
+    // a module-local default would shadow that binding, silently sending
+    // WEBHOOK service tasks through the built-in `fetch` dispatcher instead of
+    // the host's signing or queueing one. It also reaches every copy of this
+    // service, which a provider registered on one module does not.
+    this.serviceTaskDispatcher =
+      injectedServiceTaskDispatcher ??
+      rootOptions?.workflowServiceTaskDispatcher ??
+      new DefaultWorkflowServiceTaskDispatcher();
+  }
+
+  private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
   async submitApprovalInstance(
     input: SubmitApprovalInstanceCommand,

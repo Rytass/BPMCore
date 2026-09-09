@@ -20,6 +20,5 @@ export * from './workflow-engine.enums';
 export * from './workflow-engine.module';
 export * from './workflow-engine.service';
 export * from './workflow-engine.tokens';
-export * from './workflow-service-task-dispatcher.provider';
 export * from './workflow-service-task-dispatcher.token';
 export * from './workflow-token.entity';

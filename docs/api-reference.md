@@ -15,9 +15,8 @@ ready instances: `memberResolver`, `attachmentStorage`, `businessCalendar`,
 `formDataSourceRegistry`, `workflowServiceTaskDispatcher`), the
 `BPM_ROOT_OPTIONS` token and `BPMRootOptionsModule` /
 `BPMRootOptionsModuleAsyncOptions` that publish it once per application,
-`DefaultBPMMemberResolver` / `defaultMemberResolverProvider`,
-`defaultFormDataSourceRegistryProvider` and
-`defaultWorkflowServiceTaskDispatcherProvider`. `memberResolverProvider` and
+`DefaultBPMMemberResolver` / `defaultMemberResolverProvider` and
+`defaultFormDataSourceRegistryProvider`. `memberResolverProvider` and
 `useFactory` became optional, so `BPMRootModule.forRoot()` and
 `BPMRootModule.forRootAsync()` now boot with no arguments;
 `BPMRootModuleAsyncFactoryOptions` survives as a deprecated alias of
@@ -938,9 +937,26 @@ Workflow execution engine — the heaviest module.
 | Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
 | Tokens | `WorkflowEngineTokens`, `BPM_WORKFLOW_ENGINE_SERVICE`, `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
-| Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based), `defaultWorkflowServiceTaskDispatcherProvider` (prefers a `workflowServiceTaskDispatcher` instance from `BPM_ROOT_OPTIONS`) |
+| Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
 | Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
 | Module | `WorkflowEngineModule`, `WorkflowEngineModuleOptions` |
+
+`WorkflowEngineService` picks its dispatcher rather than reading a registered
+default: a binding under `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` first (the
+host's own provider, or `workflowServiceTaskDispatcherProvider`), then the
+`workflowServiceTaskDispatcher` runtime value, then the built-in `fetch`
+dispatcher. `WorkflowEngineModule.forRoot` deliberately registers nothing when
+the host passes no provider — a module-local default would shadow a token the
+host bound from its own global module, silently sending WEBHOOK service tasks
+through `fetch` instead of the host's signing or queueing dispatcher.
+
+Note that Nest builds **two** `WorkflowEngineService` instances:
+`FormDataSourceModule` imports the plain `WorkflowEngineModule` class while
+`BPMRootModule` imports `WorkflowEngineModule.forRoot(...)`, and a dynamic
+module gets its own instance. `workflowServiceTaskDispatcherProvider` therefore
+configures only the copy it is registered on; the `workflowServiceTaskDispatcher`
+runtime value reaches both, because the service resolves it from the global
+`BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
 

@@ -22,7 +22,6 @@ import { WorkflowEngineMutations } from './workflow-engine.mutations';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { BPM_WORKFLOW_ENGINE_SERVICE } from './workflow-engine.tokens';
-import { defaultWorkflowServiceTaskDispatcherProvider } from './workflow-service-task-dispatcher.provider';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -70,10 +69,12 @@ export class WorkflowEngineModule {
     return {
       imports: options.imports ? [...options.imports] : [],
       module: WorkflowEngineModule,
-      providers: [
-        options.serviceTaskDispatcherProvider ??
-          defaultWorkflowServiceTaskDispatcherProvider,
-      ],
+      // Deliberately registers nothing when the host passes no provider: a
+      // module-local default would shadow a token the host bound from its own
+      // global module. `WorkflowEngineService` picks the dispatcher instead.
+      providers: options.serviceTaskDispatcherProvider
+        ? [options.serviceTaskDispatcherProvider]
+        : [],
     };
   }
 }

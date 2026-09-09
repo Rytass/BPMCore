@@ -36,12 +36,7 @@ import {
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
 import { NotificationOptionsModule } from '../notification/notification-options.module';
-import { defaultWorkflowServiceTaskDispatcherProvider } from '../workflow-engine/workflow-service-task-dispatcher.provider';
-import {
-  BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
-  BPMWorkflowServiceTaskDispatcher,
-  DefaultWorkflowServiceTaskDispatcher,
-} from '../workflow-engine/workflow-service-task-dispatcher.token';
+import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import {
   BPM_ROOT_OPTIONS,
   BPMRootOptionsModule,
@@ -53,7 +48,6 @@ const DEFAULT_PROVIDERS = [
   defaultBusinessCalendarProvider,
   defaultFormDataSourceRegistryProvider,
   defaultMemberResolverProvider,
-  defaultWorkflowServiceTaskDispatcherProvider,
 ];
 
 function createHostRuntimeOptions(): BPMRootRuntimeOptions {
@@ -87,13 +81,12 @@ describe('BPMRootOptionsModule', (): void => {
       providers: [...DEFAULT_PROVIDERS],
     }).compile();
 
-    // Every default provider below injects BPM_ROOT_OPTIONS, so resolving all
-    // five is what would have re-run a per-module factory five times.
+    // Every default provider below injects BPM_ROOT_OPTIONS, so resolving them
+    // all is what would have re-run a per-module factory once each.
     testingModule.get(ATTACHMENT_STORAGE);
     testingModule.get(BPM_BUSINESS_CALENDAR);
     testingModule.get(BPM_FORM_DATA_SOURCE_REGISTRY);
     testingModule.get(BPM_MEMBER_RESOLVER);
-    testingModule.get(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER);
 
     expect(useFactory).toHaveBeenCalledTimes(1);
   });
@@ -122,9 +115,6 @@ describe('BPMRootOptionsModule', (): void => {
     expect(testingModule.get(BPM_MEMBER_RESOLVER)).toBe(
       hostOptions.memberResolver,
     );
-    expect(testingModule.get(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)).toBe(
-      hostOptions.workflowServiceTaskDispatcher,
-    );
   });
 
   it('falls back to built-in defaults when the factory is omitted entirely', async (): Promise<void> => {
@@ -139,9 +129,6 @@ describe('BPMRootOptionsModule', (): void => {
     expect(testingModule.get(BPM_ROOT_OPTIONS)).toEqual({});
     expect(testingModule.get(BPM_MEMBER_RESOLVER)).toBeInstanceOf(
       DefaultBPMMemberResolver,
-    );
-    expect(testingModule.get(BPM_WORKFLOW_SERVICE_TASK_DISPATCHER)).toBeInstanceOf(
-      DefaultWorkflowServiceTaskDispatcher,
     );
     expect(testingModule.get(BPM_FORM_DATA_SOURCE_REGISTRY)).toBeInstanceOf(
       EmptyBPMFormDataSourceRegistry,
