@@ -74,14 +74,16 @@ of the local development fallback.
 ## Backend Embedding Contract
 
 External NestJS systems should consume `@rytass/bpm-core-nestjs-module` and
-import `BPMRootModule` in their root module. The host system is responsible for:
+import `BPMRootModule` in their root module. Every `BPMRootModule` option has a
+default — `BPMRootModule.forRoot()` boots — so the list below is what a real
+deployment opts into, not a list of required arguments:
 
 - GraphQL module setup.
 - TypeORM connection setup.
 - Vault/secret configuration.
 - Login/session/JWT handling.
 - `BPMAuthContext` creation.
-- `BPM_MEMBER_RESOLVER` provider implementation.
+- A member resolver, as the `memberResolver` runtime value or a `BPM_MEMBER_RESOLVER` provider. Without one BPM resolves each member to its own id.
 - Versioned form option DataSource registry/provider through
   `BPM_FORM_DATA_SOURCE_REGISTRY`; the host owns provider authorization and source data.
 - Attachment storage, public signed URL prefix, and signing secrets.
