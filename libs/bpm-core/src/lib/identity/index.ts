@@ -1,3 +1,4 @@
+export * from './default-member-resolver';
 export * from './identity-options';
 export * from './member-base.adapter';
 export * from './member-not-found.exception';

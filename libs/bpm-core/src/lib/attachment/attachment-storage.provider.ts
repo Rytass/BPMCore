@@ -2,6 +2,10 @@ import { Provider } from '@nestjs/common';
 import { mkdir } from 'fs/promises';
 import { dirname, resolve } from 'path';
 import {
+  BPM_ROOT_OPTIONS,
+  BPMRootRuntimeOptions,
+} from '../bpm/bpm-root-options';
+import {
   ATTACHMENT_STORAGE,
   AttachmentStorage,
 } from './attachment-storage.token';
@@ -17,9 +21,24 @@ interface LocalStorageModule {
   readonly LocalStorage: LocalStorageConstructor;
 }
 
+/**
+ * Default attachment storage used when the host registers none.
+ *
+ * Prefers a storage adapter handed to `BPMRootModule` as a runtime value
+ * (`attachmentStorage`, which a `forRootAsync` factory can build once its
+ * credentials are in hand) and otherwise writes to `.storage/attachments`
+ * through `@rytass/storages-adapter-local`.
+ *
+ * `BPM_ROOT_OPTIONS` is injected optionally so `AttachmentModule` still
+ * resolves when it is used on its own, outside `BPMRootModule`.
+ */
 export const attachmentStorageProvider: Provider<AttachmentStorage> = {
+  inject: [{ optional: true, token: BPM_ROOT_OPTIONS }],
   provide: ATTACHMENT_STORAGE,
-  useFactory: (): AttachmentStorage =>
+  useFactory: (
+    rootOptions: BPMRootRuntimeOptions | undefined,
+  ): AttachmentStorage =>
+    rootOptions?.attachmentStorage ??
     createLocalAttachmentStorage(
       resolve(process.cwd(), '.storage', 'attachments'),
     ),

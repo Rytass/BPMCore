@@ -147,7 +147,12 @@ export interface BPMMemberResolver {
 }
 ```
 
-宿主系統必須提供 `BPM_MEMBER_RESOLVER` provider。BPMCore 不再提供 mock fallback；
+宿主系統應提供 member resolver——`BPMRootModule` 的 `memberResolver` 執行期值，或
+`BPM_MEMBER_RESOLVER` provider。兩者都沒有時 BPM 不會開不起來，而是退回
+`DefaultBPMMemberResolver`：每個 member 解析成自身 id（顯示名稱是原始 id、email 為空），
+並在 `development` / `test` 以外發出警告。那是讓新宿主先跑起來的佔位實作，不是識別系統。
+
+BPMCore 不再提供 mock fallback；
 本 repo 的測試帳號資料由 wrapper app `apps/api` 建立於資料庫
 `api_test_members`，用來模擬外部系統的 member-base adapter。完整 staging/demo
 情境 seed 也屬於 `apps/api/tools/reset-demo-data.ts`，不屬於

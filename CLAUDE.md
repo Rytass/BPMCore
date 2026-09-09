@@ -130,10 +130,17 @@ different directories, are in `docs/api-reference.md` → "Publish Procedure".
 
 ## Auth Model
 
-BPMCore does not own login, token issuance, or a user table. The host app must provide:
+BPMCore does not own login, token issuance, or a user table. The host app is
+expected to provide:
 
-- a `BPMAuthContext` source through GraphQL/HTTP context or `BPMRootModule` `authContextFactory`
-- a `BPM_MEMBER_RESOLVER` provider
+- a `BPMAuthContext` source through GraphQL/HTTP context or `BPMRootModule` `authContextFactory` — without one, every authenticated BPM operation answers 401
+- a member resolver, either as the `memberResolver` runtime value or the `BPM_MEMBER_RESOLVER` provider
+
+Neither is *required* to boot: since the zero-configuration round every
+`BPMRootModule` option has a default, and an unresolved member falls back to
+`DefaultBPMMemberResolver`, which answers with the member's own id (raw ids as
+display names, empty emails) and warns outside `development` / `test`. That is
+a placeholder to keep a new host booting, not an identity system.
 
 There is no mock auth fallback in `@rytass/bpm-core-nestjs-module`. The test accounts in `apps/api` are DB-backed wrapper-app simulation data in `api_test_members`, seeded by `pnpm demo:reset` / `pnpm staging:reset`, and are not part of the reusable BPM module.
 

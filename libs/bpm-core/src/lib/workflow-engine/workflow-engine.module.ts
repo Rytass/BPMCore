@@ -69,6 +69,9 @@ export class WorkflowEngineModule {
     return {
       imports: options.imports ? [...options.imports] : [],
       module: WorkflowEngineModule,
+      // Deliberately registers nothing when the host passes no provider: a
+      // module-local default would shadow a token the host bound from its own
+      // global module. `WorkflowEngineService` picks the dispatcher instead.
       providers: options.serviceTaskDispatcherProvider
         ? [options.serviceTaskDispatcherProvider]
         : [],

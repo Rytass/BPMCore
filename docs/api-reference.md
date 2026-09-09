@@ -2,11 +2,27 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-09-04, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10) is inventoried here but not yet released; `nx release` sets the next number at publish time.
+Last verified against (2026-09-09, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10) is inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
 The 2026-08-16 DataSource audit round adds, on top of that: read-only `resolveFormFieldOptions` / `previewResolveFormFieldOptions` queries returning `BPMFormDataSourceResolveResult` (partial resolution reported through `unresolvedValues` instead of throwing, while submit/resubmit stays all-or-nothing), `waitingForFieldKeys` on both the options and resolve results as the authoritative dependency-wait signal, an optional `revalidationPolicy` on `FormDataSourceValueSnapshot`, `readFormDataSourceSelectedValues()`, a `canRetry` flag on `FormDataSourceFieldState`, per-request `AbortSignal` support on `requestGraphQl()` and every DataSource client query, and `@MaxLength` bounds on every DataSource GraphQL input field.
+
+The 2026-09-09 zero-configuration round makes every `BPMRootModule` option
+optional and every runtime option settable from `forRootAsync`. It adds
+`BPMRootRuntimeOptions` (the flat object a `useFactory` returns, now including
+ready instances: `memberResolver`, `attachmentStorage`, `businessCalendar`,
+`formDataSourceRegistry`, `workflowServiceTaskDispatcher`), the
+`BPM_ROOT_OPTIONS` token and `BPMRootOptionsModule` /
+`BPMRootOptionsModuleAsyncOptions` that publish it once per application,
+`DefaultBPMMemberResolver` / `defaultMemberResolverProvider` and
+`defaultFormDataSourceRegistryProvider`. `memberResolverProvider` and
+`useFactory` became optional, so `BPMRootModule.forRoot()` and
+`BPMRootModule.forRootAsync()` now boot with no arguments;
+`BPMRootModuleAsyncFactoryOptions` survives as a deprecated alias of
+`BPMRootRuntimeOptions`. The host factory is also resolved **once** rather than
+once per consuming sub-module, which is what makes an instance-returning
+factory safe.
 
 The 2026-09-03 upstream-integration round (Meridian ERP report, BPM-1 to BPM-9)
 adds `resolverMetadataFactory` / `applyBPMResolverMetadata` /
@@ -633,7 +649,11 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring: `memberResolverProvider`, `authContextFactory`, `attachmentStorageProvider`, `workflowServiceTaskDispatcherProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `resolverMetadataFactory`, plus flattened notification/attachment/signature/identity options. `identityRegisterResolvers` and `resolverMetadataFactory` are read at wiring time on both `forRoot` and `forRootAsync` (never from `useFactory`) because Nest builds resolver metadata before any async factory runs. |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
+| `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
+| `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
 | `BPM_CORE_MIGRATIONS` | const | 21-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
@@ -662,7 +682,9 @@ Auth contract layer — lib does not own auth; host plugs in.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPM_MEMBER_RESOLVER`, `MEMBER_RESOLVER` (deprecated alias) | injection token | Host MUST provide a resolver |
+| `BPM_MEMBER_RESOLVER`, `MEMBER_RESOLVER` (deprecated alias) | injection token | Host identity source. Optional since the zero-configuration round — BPM registers `defaultMemberResolverProvider` when the host supplies neither `memberResolver` nor `memberResolverProvider` |
+| `DefaultBPMMemberResolver` | class | Built-in fallback resolving every member to its own id, so BPM boots without a directory. Names are raw ids and emails are empty, so email notifications through it go nowhere; it warns once at construction outside `development` / `test` |
+| `defaultMemberResolverProvider` | provider | Registers `BPM_MEMBER_RESOLVER`, preferring a `memberResolver` instance published under `BPM_ROOT_OPTIONS` and otherwise `DefaultBPMMemberResolver` |
 | `BPMMemberResolver`, `MemberResolver` (deprecated alias) | interface | Resolver contract — `resolve`/`resolveMany`/`search?`/`searchPaged?` |
 | `BPMMemberSearchPage`, `BPMMemberSearchPageOptions` | interface | Paged-search result (`items` + `total`) and 1-based page request for `searchPaged?` |
 | `IdentityOptions` | interface | Identity module options — `identityMemberMetadataCacheTtlMs`, plus `identityRegisterResolvers` (default `true`; set `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers`, keeping `IdentityService` available without the colliding GraphQL fields) |
@@ -752,7 +774,7 @@ Versioned host registry and guarded runtime boundary for dynamic form options.
 |---|---|
 | Contract | `BPMFormDataSource`, `BPMFormDataSourceDescriptor`, `BPMFormDataSourceParameter`, `BPMFormDataSourceParameterType`, `BPMFormDataSourceControl`, `BPMFormDataSourceRevalidationPolicy` |
 | Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput` (optional `rowValues` for a table cell), `BPMFormDataSourceSnapshotResolutionInput` |
-| Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry` |
+| Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry`, `defaultFormDataSourceRegistryProvider` (prefers a `formDataSourceRegistry` instance from `BPM_ROOT_OPTIONS`, else an empty catalog) |
 | Snapshot resolver | `BPMFormDataSourceValueResolver`, `BPM_FORM_DATA_SOURCE_VALUE_RESOLVER` |
 | Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
 | Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult`, `BPMFormDataSourceResolveResult` |
@@ -914,9 +936,27 @@ Workflow execution engine — the heaviest module.
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
 | Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
-| Tokens | `WorkflowEngineTokens`, `WORKFLOW_SERVICE_TASK_DISPATCHER` |
+| Tokens | `WorkflowEngineTokens`, `BPM_WORKFLOW_ENGINE_SERVICE`, `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
+| Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
 | Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
-| Module | `WorkflowEngineModule` |
+| Module | `WorkflowEngineModule`, `WorkflowEngineModuleOptions` |
+
+`WorkflowEngineService` picks its dispatcher rather than reading a registered
+default: a binding under `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` first (the
+host's own provider, or `workflowServiceTaskDispatcherProvider`), then the
+`workflowServiceTaskDispatcher` runtime value, then the built-in `fetch`
+dispatcher. `WorkflowEngineModule.forRoot` deliberately registers nothing when
+the host passes no provider — a module-local default would shadow a token the
+host bound from its own global module, silently sending WEBHOOK service tasks
+through `fetch` instead of the host's signing or queueing dispatcher.
+
+Note that Nest builds **two** `WorkflowEngineService` instances:
+`FormDataSourceModule` imports the plain `WorkflowEngineModule` class while
+`BPMRootModule` imports `WorkflowEngineModule.forRoot(...)`, and a dynamic
+module gets its own instance. `workflowServiceTaskDispatcherProvider` therefore
+configures only the copy it is registered on; the `workflowServiceTaskDispatcher`
+runtime value reaches both, because the service resolves it from the global
+`BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
 
@@ -951,7 +991,7 @@ Business-day SLA scheduling. BPMCore ships **no** national holiday data — host
 | Service | `BPMSlaScheduleService` (`resolveTaskSlaDueAt({ node, now })`) |
 | Contract | `BPMBusinessCalendar` (`timeZone` + `isBusinessDay(localDate)`) |
 | Token | `BPM_BUSINESS_CALENDAR` (host injects the calendar source) |
-| Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` (Mon–Fri, no holidays) |
+| Default | `BPMWeekdayBusinessCalendar`, `defaultBusinessCalendarProvider` — prefers a `businessCalendar` instance from `BPM_ROOT_OPTIONS`, else Mon–Fri with no holidays. Supplying the instance instead of `businessCalendarProvider` also sidesteps the DI cycle described below, because the host's own factory builds it |
 | Module | `CalendarModule`, `CalendarModuleOptions` (global; wired by `BPMRootModule`). Options now extend `Pick<ModuleMetadata, 'imports'>`, and `BPMRootModule` threads its own `imports` through, so a `useClass` / `useFactory` `businessCalendarProvider` can depend on host repositories or config services without a host-side `@Global()` module |
 
 `SlaConfig.calendar: 'BUSINESS_DAY'` advances only the duration's **day** component across business days; an hour/minute component is added afterwards as plain elapsed time (the template linter warns when both are combined). Omitting `calendar` keeps the pre-0.7.0 elapsed-time behaviour.
@@ -1090,7 +1130,7 @@ argument on the `notifications` / `notificationCount` queries.
 | Category | Names |
 |---|---|
 | Service | `AttachmentService` |
-| Provider | `AttachmentStorageProvider` (host injects S3 / local-FS adapter) |
+| Provider | `AttachmentStorageProvider` (host injects S3 / local-FS adapter), `attachmentStorageProvider` (default — prefers an `attachmentStorage` instance from `BPM_ROOT_OPTIONS`, else `@rytass/storages-adapter-local` under `.storage/attachments`) |
 | Token | `ATTACHMENT_STORAGE` |
 | DTOs | `UploadAttachmentInput` |
 | Options | `AttachmentOptions` |

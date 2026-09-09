@@ -136,6 +136,63 @@ async function readBPMAuthContextFromRequest(
 }
 ```
 
+### 2a. 最小設定與非同步設定
+
+`BPMRootModule` 的每一個選項都有預設值，所以最小可運作的接法是 **完全不帶參數**：
+
+```typescript
+BPMRootModule.forRoot(); // 或 BPMRootModule.forRootAsync();
+```
+
+這樣會得到：本機檔案系統附件儲存、把 member 解析成自身 id 的 `DefaultBPMMemberResolver`、
+週一～週五行事曆、空的表單 DataSource 目錄、`fetch` webhook dispatcher，站內通知開啟，
+email／webhook／兩個排程器關閉。功能一律由 host 自行 opt-in。
+
+上面 2. 的寫法只是「一次把常用項目都填好」的樣子，不是必填清單。實務上要補的通常只有兩件：
+`bpmAuthContext`（沒有的話所有需登入的操作都會 401）與正式環境的
+`attachmentSignedUrlSecret`（`NODE_ENV=production` 未設會直接讓程式起不來）。
+
+祕密要從 Vault／KMS 讀時用 `forRootAsync`。**除了必須在 wiring 期決定的少數幾個之外，
+所有選項都能從 `useFactory` 回傳**，包含直接回傳做好的實例：
+
+```typescript
+BPMRootModule.forRootAsync({
+  imports: [VaultModule],
+  inject: [VaultService],
+  useFactory: async (vault: VaultService) => ({
+    attachmentPublicBaseUrl: await vault.get('BPM_API_PUBLIC_URL'),
+    attachmentSignedUrlSecret: await vault.get('BPM_ATTACHMENT_SIGNING_SECRET'),
+    authContextFactory: buildHostBPMAuthContext,
+
+    // 直接給實例，不必自己組 Nest provider —— 祕密此時已經在手上。
+    memberResolver: new HostMemberResolver(await vault.get('DIRECTORY_URL')),
+    attachmentStorage: new S3Storage({ key: await vault.get('S3_KEY') }),
+    businessCalendar: new HostBusinessCalendar(),
+    formDataSourceRegistry: new HostFormDataSourceRegistry(),
+    workflowServiceTaskDispatcher: new HostWebhookDispatcher(
+      await vault.get('WEBHOOK_SIGNING_KEY'),
+    ),
+  }),
+});
+```
+
+`useFactory` 本身也是選用的——只要 defaults 就夠，`forRootAsync()` 可以完全不帶參數。
+
+BPM 會把 `useFactory` **求值一次**，結果發布在 `BPM_ROOT_OPTIONS` token 上供所有 BPM
+子模組共用。這正是上面能安全回傳實例的原因：先前每個子模組各自呼叫 host 工廠（一次開機五次），
+一個會 `new` 東西的工廠會讓每個消費端拿到不同實例。
+
+只有這些不能放進 `useFactory`，因為 Nest 在工廠執行前就已讀取它們來建立路由、schema 與
+handler metadata：
+
+| 選項 | 為什麼是 wiring 期 |
+| --- | --- |
+| `attachmentRoutePrefix` | Nest 開機時同步讀 controller path metadata |
+| `identityRegisterResolvers` | Nest 在建 schema 時就收集 resolver provider |
+| `resolverMetadataFactory` | handler metadata 在任何工廠執行前就寫好 |
+| `imports` / `inject` | 建構 module graph 本身所需 |
+| 各 `*Provider`（`memberResolverProvider` 等） | Nest provider 定義；需要祕密時改用上表的實例版本 |
+
 ### 2b. 工作日 SLA 行事曆（選用）
 
 節點 SLA 設 `calendar: 'BUSINESS_DAY'` 時，期限的「日」只會跨工作日。工作日由 host 決定
@@ -180,6 +237,9 @@ BPMRootModule.forRoot({
 
 `forRootAsync` 用同一個 key；此 provider 於 module wiring 時決定，需要祕密或 repository 時
 在 provider 內用 `useFactory` / `inject`。
+
+需要祕密時更建議改回傳實例（`businessCalendar`，見 2a）：實例由 host 自己的工廠建構，
+連帶避開下面那個 provider 版本才有的 DI 循環陷阱。
 
 `BPMRootModule` 的 `imports` 會一併傳進 `CalendarModule`，所以 calendar provider 的相依
 不需要靠 host 端的 `@Global()` module 才解析得到。

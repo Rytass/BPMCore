@@ -9,6 +9,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { IdentityQueries } from './identity.queries';
 import { IdentityService } from './identity.service';
 import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
+import { defaultMemberResolverProvider } from './default-member-resolver';
 import { BPMMemberResolver } from './member-resolver.interface';
 import {
   BPM_IDENTITY_OPTIONS,
@@ -18,7 +19,13 @@ import {
 
 export interface IdentityModuleOptions extends BPMRootIdentityOptions {
   readonly imports?: ModuleMetadata['imports'];
-  readonly memberResolverProvider: Provider<BPMMemberResolver>;
+  /**
+   * Host identity source. Optional — when omitted BPM registers
+   * {@link defaultMemberResolverProvider}, which prefers a `memberResolver`
+   * instance published under `BPM_ROOT_OPTIONS` and otherwise resolves every
+   * member to its own id.
+   */
+  readonly memberResolverProvider?: Provider<BPMMemberResolver>;
 }
 
 export interface IdentityModuleAsyncOptions extends Pick<
@@ -32,7 +39,11 @@ export interface IdentityModuleAsyncOptions extends Pick<
    */
   readonly identityRegisterResolvers?: boolean;
   readonly inject?: readonly InjectionToken[];
-  readonly memberResolverProvider: Provider<BPMMemberResolver>;
+  /**
+   * Host identity source. Optional — see
+   * {@link IdentityModuleOptions.memberResolverProvider}.
+   */
+  readonly memberResolverProvider?: Provider<BPMMemberResolver>;
   readonly useFactory: (
     ...args: readonly unknown[]
   ) => BPMRootIdentityOptions | Promise<BPMRootIdentityOptions>;
@@ -97,9 +108,9 @@ function createIdentityGraphQLProviders(
 }
 
 function createMemberResolverProviders(
-  options: IdentityModuleOptions,
+  options: Pick<IdentityModuleOptions, 'memberResolverProvider'>,
 ): readonly Provider[] {
-  return [options.memberResolverProvider];
+  return [options.memberResolverProvider ?? defaultMemberResolverProvider];
 }
 
 function createIdentityOptionsProvider(
