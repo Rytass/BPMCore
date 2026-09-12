@@ -795,11 +795,13 @@ function MemberNameWithEmailTooltip({
 
   return (
     <Tooltip title={email}>
-      {({ onMouseEnter, onMouseLeave, ref }): ReactElement => (
+      {({ ref, ...tooltipProps }): ReactElement => (
+        // Spread the whole payload, as `TooltipProps` asks: picking only the
+        // mouse handlers drops `aria-describedby`, so assistive tech never
+        // learns the open tooltip describes this name.
         <span
+          {...tooltipProps}
           className={styles.memberNameWithTooltip}
-          onMouseEnter={onMouseEnter}
-          onMouseLeave={onMouseLeave}
           ref={ref as RefCallback<HTMLSpanElement>}
         >
           {name}

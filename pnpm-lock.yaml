@@ -11,8 +11,8 @@ overrides:
   '@babel/core': ^7.29.6
   '@babel/plugin-transform-modules-systemjs': ^7.29.4
   '@xhmikosr/decompress': ^11.1.3
-  '@mezzanine-ui/core': 1.0.4
-  '@mezzanine-ui/react': 1.1.0
+  '@mezzanine-ui/core': 1.2.1
+  '@mezzanine-ui/react': 1.5.1
   '@nestjs/apollo': ^13.4.5
   '@nestjs/common': ^11.2.3
   '@nestjs/core': ^11.2.3
@@ -20,7 +20,7 @@ overrides:
   '@nestjs/platform-express': ^11.2.3
   '@nestjs/testing': ^11.2.3
   '@nestjs/typeorm': ^11.0.3
-  '@rytass/secret-adapter-vault-nestjs': ^0.4.5
+  '@rytass/secret-adapter-vault-nestjs': ^0.6.0
   '@vitest/mocker': ^4.1.11
   adm-zip: ^0.6.0
   ai: ^6.0.278
@@ -92,14 +92,14 @@ importers:
         specifier: 18.0.1
         version: 18.0.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@mezzanine-ui/core':
-        specifier: 1.0.4
-        version: 1.0.4(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
+        specifier: 1.2.1
+        version: 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
       '@mezzanine-ui/icons':
         specifier: 1.0.2
         version: 1.0.2
       '@mezzanine-ui/react':
-        specifier: 1.1.0
-        version: 1.1.0(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 1.5.1
+        version: 1.5.1(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@mezzanine-ui/system':
         specifier: 1.0.2
         version: 1.0.2
@@ -125,8 +125,8 @@ importers:
         specifier: ^11.0.3
         version: 11.0.3(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/core@11.2.3)(reflect-metadata@0.1.14)(rxjs@7.8.2)(typeorm@0.3.31(babel-plugin-macros@3.1.0)(pg@8.23.0)(ts-node@10.9.1(@swc/core@1.15.47(@swc/helpers@0.5.23))(@types/node@20.19.9)(typescript@5.9.3)))
       '@rytass/secret-adapter-vault-nestjs':
-        specifier: ^0.4.5
-        version: 0.4.5(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))(reflect-metadata@0.1.14)
+        specifier: ^0.6.0
+        version: 0.6.0(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))
       '@rytass/storages':
         specifier: ^0.2.7
         version: 0.2.7
@@ -408,8 +408,8 @@ importers:
         specifier: ^0.13.3
         version: link:../shared
       '@rytass/secret-adapter-vault-nestjs':
-        specifier: ^0.4.5
-        version: 0.4.5(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))(reflect-metadata@0.1.14)
+        specifier: ^0.6.0
+        version: 0.6.0(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))
       '@rytass/storages':
         specifier: ^0.2.7
         version: 0.2.7
@@ -474,14 +474,14 @@ importers:
         specifier: '>=18.0.0'
         version: 18.0.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@mezzanine-ui/core':
-        specifier: 1.0.4
-        version: 1.0.4(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
+        specifier: 1.2.1
+        version: 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
       '@mezzanine-ui/icons':
         specifier: '>=1.0.0'
         version: 1.0.2
       '@mezzanine-ui/react':
-        specifier: 1.1.0
-        version: 1.1.0(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 1.5.1
+        version: 1.5.1(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@rytass/bpm-core-client':
         specifier: ^0.13.3
         version: link:../bpm-core-client
@@ -2172,14 +2172,17 @@ packages:
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
 
-  '@mezzanine-ui/core@1.0.4':
-    resolution: {integrity: sha512-b18CMXTw5VrJotC27hA8mRSab9CUQCEV0BhdL5zb3RbfwjFyNCqt+3pzJNkiWDbWgOL9VeIWMnBvpOhHKIHvGA==}
+  '@mezzanine-ui/core@1.2.1':
+    resolution: {integrity: sha512-V1/1/av2lSqpp1MsS/bsOkPxdqmcDMguEHkREjsTtjUC+xaj42bIlu//u7yqTZg85qu9ZvBUTqAZdCDJ7fKxgA==}
     peerDependencies:
+      '@js-temporal/polyfill': '>=0.5'
       dayjs: '>=1'
       lodash: '>=4'
       luxon: '>=3'
       moment: '>=2'
     peerDependenciesMeta:
+      '@js-temporal/polyfill':
+        optional: true
       dayjs:
         optional: true
       luxon:
@@ -2190,8 +2193,8 @@ packages:
   '@mezzanine-ui/icons@1.0.2':
     resolution: {integrity: sha512-LaoW1PRlyFXBQl//VdE0rKBtP50aoeqXmk2mOWrbMiDqDE/uY7IqTH3vCK1dFQ24nOZo1gpGnq7MeRMOZxW1rg==}
 
-  '@mezzanine-ui/react@1.1.0':
-    resolution: {integrity: sha512-CGe7ly9oClkVqXaijzTQlX2qb+ymtIN/9V6dxLdQJyR4RXRC9FVkeJuF5EFEn/QBcPaLCZXHqYCM+usWC0Qw8A==}
+  '@mezzanine-ui/react@1.5.1':
+    resolution: {integrity: sha512-PRPpdjWpUvxlKFpa+9uUauMAKifYX619TeGYIJmry4RYkVjPPcyCudxQQhfpn/VByFQ13vhjbl9Ken0jfFvLjg==}
     peerDependencies:
       lodash: '>=4'
       react: '>=18'
@@ -3558,18 +3561,20 @@ packages:
   '@rytass/file-converter@0.1.5':
     resolution: {integrity: sha512-r5S4+lwkjwBs/3DGFXPpithxY0aFTCcUIbMpYI9zNcjKhIjFHMwiOy5BK2EhXMlcoGqAtJE6xS45u3H6kwUIKQ==}
 
-  '@rytass/secret-adapter-vault-nestjs@0.4.5':
-    resolution: {integrity: sha512-Vt6j7x3/7qADtz5cKooiCyYAu7oBarEobc/JMwAzrLpUlh114HzFCczE0xPpO1koK3oAfuKHWD3c622CEGCYAw==}
+  '@rytass/secret-adapter-vault-nestjs@0.6.0':
+    resolution: {integrity: sha512-6lHMPLTJCKm3djCGtjX+55WRioRc28vesQaWy4dZqbzHs8rbY6039BNlMSM/f8XXaDfCRM4ry6E1tJ9TZyCFMg==}
+    engines: {node: '>=20.19.0'}
     peerDependencies:
       '@nestjs/common': ^11.2.3
-      '@nestjs/config': '*'
-      reflect-metadata: ^0.1.14
+      '@nestjs/config': '>=4'
 
-  '@rytass/secret-adapter-vault@0.4.6':
-    resolution: {integrity: sha512-p0/OH6vfkMxGCjN3tfjcMJ3FOKWfNRlL6dCMpGVyb6/zQFop6q4FYcxwnzPACj2ajC+Ln9zJ4zxdvAMc1I0TVQ==}
+  '@rytass/secret-adapter-vault@0.5.0':
+    resolution: {integrity: sha512-SgJYrOGPPQ3nA8usiR/nnaBnKAWo+P8l0Brt5Y+0NIEv5jmCOrG2szYl1TGDgk757E3i2xBW5Sjjr6j1BBK+1g==}
+    engines: {node: '>=20.19.0'}
 
-  '@rytass/secret@0.1.3':
-    resolution: {integrity: sha512-cb3WyGpMAF/iamCdWDvs+m/qrzNlbSwyxe0WQPgoQvxZsh7EFUou3FZR3ffHmkDgMnwOpmvPcPwLeAMKm9B54A==}
+  '@rytass/secret@0.2.0':
+    resolution: {integrity: sha512-CS+qktkHHAz4x3wfmgnPUsT4tUvw7hHT18G0qJxkO9SfeYV2Ddw5aUvrJRt4hFsuHVNWkw6+HtTK7Karw783kg==}
+    engines: {node: '>=20.19.0'}
 
   '@rytass/storages-adapter-local@0.2.10':
     resolution: {integrity: sha512-J9sjLTxmmAalHVjYT6JLIPzyLK4KsVRnb13eDtdcyCV+Z1zWoZhxYBnUB9sjfOTBrJ4ons/surv/BdIEUPPUpg==}
@@ -12212,8 +12217,9 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.4': {}
 
-  '@mezzanine-ui/core@1.0.4(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)':
+  '@mezzanine-ui/core@1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)':
     dependencies:
+      '@floating-ui/dom': 1.8.0
       '@mezzanine-ui/icons': 1.0.2
       '@mezzanine-ui/system': 1.0.2
       lodash: 4.18.1
@@ -12225,12 +12231,12 @@ snapshots:
 
   '@mezzanine-ui/icons@1.0.2': {}
 
-  '@mezzanine-ui/react@1.1.0(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@mezzanine-ui/react@1.5.1(@types/react@19.2.18)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@floating-ui/dom': 1.8.0
       '@floating-ui/react-dom': 2.1.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@hello-pangea/dnd': 18.0.1(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@mezzanine-ui/core': 1.0.4(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
+      '@mezzanine-ui/core': 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.30.1)
       '@mezzanine-ui/icons': 1.0.2
       '@mezzanine-ui/system': 1.0.2
       '@tanstack/react-virtual': 3.14.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -12245,6 +12251,7 @@ snapshots:
       react-transition-group: 4.4.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       tslib: 2.8.1
     transitivePeerDependencies:
+      - '@js-temporal/polyfill'
       - '@types/react'
       - dayjs
       - luxon
@@ -13807,26 +13814,25 @@ snapshots:
 
   '@rytass/file-converter@0.1.5': {}
 
-  '@rytass/secret-adapter-vault-nestjs@0.4.5(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))(reflect-metadata@0.1.14)':
+  '@rytass/secret-adapter-vault-nestjs@0.6.0(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(@nestjs/config@4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2))':
     dependencies:
       '@nestjs/common': 11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2)
       '@nestjs/config': 4.0.4(@nestjs/common@11.2.3(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.1.14)(rxjs@7.8.2))(rxjs@7.8.2)
-      '@rytass/secret-adapter-vault': 0.4.6
-      reflect-metadata: 0.1.14
+      '@rytass/secret-adapter-vault': 0.5.0
       regenerator-runtime: 0.14.1
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@rytass/secret-adapter-vault@0.4.6':
+  '@rytass/secret-adapter-vault@0.5.0':
     dependencies:
-      '@rytass/secret': 0.1.3
+      '@rytass/secret': 0.2.0
       axios: 1.20.0
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@rytass/secret@0.1.3': {}
+  '@rytass/secret@0.2.0': {}
 
   '@rytass/storages-adapter-local@0.2.10':
     dependencies:

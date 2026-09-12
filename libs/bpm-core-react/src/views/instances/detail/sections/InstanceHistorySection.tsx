@@ -201,13 +201,15 @@ function renderActivityDescriptionPart(
     <>
       {part.prefix}：
       <Tooltip title={part.email}>
-        {({ onMouseEnter, onMouseLeave, ref }): ReactElement => (
+        {({ ref, ...tooltipProps }): ReactElement => (
+          // Spread the whole payload, as `TooltipProps` asks: picking only the
+          // mouse handlers drops `aria-describedby`, so assistive tech never
+          // learns the open tooltip describes this name.
           <span
+            {...tooltipProps}
             data-testid={
               part.memberId ? `member-tooltip-${part.memberId}` : undefined
             }
-            onMouseEnter={onMouseEnter}
-            onMouseLeave={onMouseLeave}
             ref={ref as RefCallback<HTMLSpanElement>}
             style={HISTORY_MEMBER_NAME_STYLE}
           >
