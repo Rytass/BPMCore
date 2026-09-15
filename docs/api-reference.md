@@ -580,6 +580,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
 | Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
+| Webhook catalog | `listWorkflowWebhookEndpoints({ includeDeprecated? })` (designer-only; no URL, header or secret), `WorkflowWebhookEndpointRecord`, `WorkflowWebhookParameterRecord`, `WorkflowWebhookEndpointSource` |
 
 ## `@rytass/bpm-core-client/workflow`
 
