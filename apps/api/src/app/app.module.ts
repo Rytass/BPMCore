@@ -20,6 +20,11 @@ import { ApiMemberResolver } from './api-member.resolver';
 import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 import { ApiFormDataSourceRegistry } from './api-form-data-source';
+import { ApiDemoWebhookSinkController } from './api-demo-webhook-sink.controller';
+import {
+  ApiDemoWebhookSinkStore,
+  createApiDemoWebhookRegistry,
+} from './api-demo-webhooks';
 
 @Module({
   imports: [
@@ -87,11 +92,13 @@ import { ApiFormDataSourceRegistry } from './api-form-data-source';
         provide: BPM_MEMBER_RESOLVER,
         useExisting: ApiMemberResolver,
       },
+      // Demo endpoints for the NOTIFY webhook feature; empty in production.
+      workflowWebhookRegistry: createApiDemoWebhookRegistry(),
     }),
   ],
-  controllers: [AppController],
+  controllers: [ApiDemoWebhookSinkController, AppController],
   // `businessCalendarProvider` uses `useClass`, so BPM instantiates the
   // calendar inside its own module context; it needs no provider entry here.
-  providers: [AppService, ApiSimulationSeedService],
+  providers: [ApiDemoWebhookSinkStore, AppService, ApiSimulationSeedService],
 })
 export class AppModule {}
