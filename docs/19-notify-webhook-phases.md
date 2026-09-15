@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0、P1、P2、P3 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0–P4 VERIFIED（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -17,7 +17,7 @@
 | P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED |
 | P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | VERIFIED |
 | P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | VERIFIED |
-| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED  |
+| P4    | 設計器知會節點 Webhook 面板                               | P1     | VERIFIED |
 | P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
 | P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
 
@@ -556,6 +556,70 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 - UI 自查：各區塊使用正確的 Mezzanine 元件（`Section`、`Select`、`Table`、`Button`
   配置），不自建元件。
 
+**實作結果**（2026-09-15）
+
+- Shared：`readNotifyWebhookTargetCatalogIssues`（對照 catalog 與表單的發布規則，回傳 issue code）
+  與 `readNotifyWebhookCatalogIssueMessage`（設計器用語）。後端 `lintWorkflowWebhookTargets`
+  改用同一套規則，訊息逐字不變；前後端不再各寫一份。
+- Client：`listWorkflowWebhookEndpoints({ includeDeprecated })`（`@rytass/bpm-core-client/template`）。
+- 設計器（`views/templates/designer/`）：
+  - 知會對象改為非必填；`onChange` 只更新 `recipients`，`channels`、`template`、`webhooks`
+    不再被重建。知會對象為執行時期解析的類型時，提示目前類型。
+  - `NotifyWebhookTargetsEditor`：端點 `Select`（只列未停用端點；已停用或已下架的端點以名稱
+    顯示並提示，不會清掉）、每個參數一列（來源：表單欄位／固定值／案件資訊；必填參數不能選
+    「不傳送」；表單欄位只列型別相容者；數字參數沒有「案件資訊」、文字清單只能用表單欄位）、
+    上限 10 個；切換端點保留 target id 與仍相容的綁定。catalog 載入失敗且節點沒有 webhook 時
+    不顯示區塊。
+  - catalog 以 `includeDeprecated: true` 在設計器載入時讀取一次（比照 DataSource catalog 的
+    元件內狀態做法）。
+  - 發布前檢查：catalog 規則的問題只擋「發布」，不擋「儲存草稿」與「試跑」，並顯示第一則
+    訊息；結構問題仍由既有檢查擋下儲存。
+  - 節點卡片：成員名稱或執行時期解析類型，加上「Webhook N 個」一行；卡片高度同步計算。
+  - 試跑：知會節點步驟列出「將送出 Webhook：<端點名稱>」。
+- 後端試跑：知會節點是非同步分支、不允許出線，原本試跑遇到任何知會節點都回
+  `has no outgoing edge`（既有缺陷）。改為比照執行期，在知會節點結束該分支，訊息為「將發送
+  知會，此分支不會繼續往下。」。
+
+**P4 自決的項目**
+
+1. 卡片沿用既有「每位成員一行」的呈現，另加「Webhook N 個」一行，而不是改成「知會 N 人 ·
+   Webhook M 個」單行摘要：避免改變既有使用者已熟悉的卡片內容。
+2. 參數以「每個宣告參數一列」呈現，而非自由新增綁定列；未宣告的舊綁定以警告列出並可移除。
+3. catalog 規則只擋發布：設定到一半也能先存草稿。
+4. 修正後端試跑對知會節點的處理（Gate 需要試跑能列出 webhook）。
+
+**真實環境驗證（2026-09-15，`apps/client` + `apps/api` + develop 資料庫，模板 `8b9259e6`）**
+
+| 情境 | 結果 |
+| --- | --- |
+| 開啟含 3 個 webhook 知會節點的模板 | 卡片顯示「Webhook 1 個」；面板讀出端點、`金額`＝表單欄位「申請金額」、`案件標題`＝案件資訊「案件主旨」 |
+| 加入知會對象 → 再移除 | 卡片依序為「林總經理／Webhook 1 個」→「Webhook 1 個」；面板 webhook 設定始終保留（覆寫問題回歸測試） |
+| 新增 Webhook、必填參數未綁定 | 顯示「發布前需修正：知會節點「通知 ERP」的第 2 個 Webhook（示範：採購核准通知 ERP）的必填參數「amount」尚未設定。」；「保存並發布」停用、「儲存草稿」可用 |
+| `number` 參數 | 來源只有「表單欄位」「固定值」；欄位下拉只列「申請金額（amount）」，不列文字欄位「申請主旨」 |
+| 移除未完成的 Webhook 後發布 | 暫時啟用模板後「發布草稿」成功（只有 webhook、沒有知會對象的知會節點通過後端發布 lint），隨即停用回原狀 |
+| 用「知會節點」工具新增節點並只加 Webhook | 無流程問題、可發布（未實際發布） |
+| AI 助理：「把通知 ERP 的知會對象設定為林總經理」 | 助理呼叫 `set_service_action`；卡片變為「直屬主管／Webhook 1 個」，webhook 與綁定保留 |
+| 試跑（畫布含知會節點） | 修正前回 `has no outgoing edge`；修正後步驟為「將發送知會，此分支不會繼續往下。」＋「將送出 Webhook：示範：採購核准通知 ERP」 |
+
+AI 助理那次回覆說已設定為林總經理，實際寫入的是「直屬主管」解析器，與 webhook 無關，記入 backlog。
+
+**獨立驗證（2026-09-15）**：結論 PASS WITH FIXES。後端 lint 重構逐條比對與 HEAD 等價。採納並修正：
+
+| 等級 | 發現 | 修正 |
+| --- | --- | --- |
+| major | 數字固定值輸入 `1.5` 時，`1.` 被解析回 `1`，受控 `Input` 立刻吃掉小數點；`0x1f` 會變 31 | 輸入框保留原始文字，只有純十進位才轉成數字；補測試並在瀏覽器逐字輸入 `1.5`、`-0.5` 確認 |
+| minor | 表單草稿「套用」後，欄位清單與發布檢查仍用已發布的 schema | 有未儲存表單草稿時改用草稿 schema |
+| minor | 沒有相容欄位時選「表單欄位」會存入空 key，連草稿都無法儲存 | 沒有相容欄位時不提供該來源 |
+| minor | 以 API 存入格式錯誤的 `webhooks`（如 `[null]`）會讓設計器拋錯 | 無法渲染時顯示警告與「清除 Webhook 設定」；試跑標籤略過 |
+| minor | Target 卡片使用不存在的 `--mzn-color-border` 與寫死數值 | 改用 `--mzn-color-border-neutral`、`--mzn-spacing-gap-base`、`--mzn-spacing-padding-horizontal-base`、`--mzn-radius-base` |
+| minor | 進入條件不成立而略過的試跑步驟仍列出「將送出 Webhook」 | `SKIPPED` 步驟不列出 |
+| nit | 綁定的欄位已不存在時 Select 看似未設定；布林固定值為 null 時顯示「否」 | 保留「（找不到相容欄位）」現值選項；null 顯示未選取 |
+| nit | 非 NOTIFY 動作也顯示「可只設定 Webhook」提示 | 只在 NOTIFY 顯示 |
+| nit | catalog 未載入時由後端擋下發布，錯誤訊息只有英文路徑 | 錯誤前加上「Webhook 設定未通過發布檢查：」 |
+
+卡片摘要格式與 Scope 文字不同一項，維持自決項目 1 的做法。嵌入式建立精靈的發布不參考設計器
+的 webhook 檢查，與它原本就不參考 `workflowIssue` 一致，由後端把關。
+
 ## P5 — Wrapper host、demo seed、E2E、文件與發布
 
 **Scope**
@@ -684,3 +748,6 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
 13. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
     投遞在 P2。P0 與 P1 至少要同一個 release 發出，release note 需註明 webhook 要到
     P2 才會實際送出。
+14. **AI 助理指定知會對象時選錯解析器**（P4 實測發現）：要求「知會對象設定為林總經理」，
+    助理回覆已設定，但寫入的是 `ORG_MANAGER`（直屬主管）。屬於提示詞／工具說明問題，與
+    webhook 無關。
