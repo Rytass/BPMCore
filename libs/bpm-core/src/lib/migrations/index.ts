@@ -22,6 +22,7 @@ import { ApprovalTemplateActivation0000000019000 } from './0000000019000-approva
 import { FormDataOptionSnapshots0000000020000 } from './0000000020000-form-data-option-snapshots';
 import { NotificationSilenced0000000021000 } from './0000000021000-notification-silenced';
 import { OrgUnitCodeActiveUnique0000000022000 } from './0000000022000-org-unit-code-active-unique';
+import { WorkflowWebhookDeliveries0000000023000 } from './0000000023000-workflow-webhook-deliveries';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -47,6 +48,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   FormDataOptionSnapshots0000000020000,
   NotificationSilenced0000000021000,
   OrgUnitCodeActiveUnique0000000022000,
+  WorkflowWebhookDeliveries0000000023000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -72,3 +74,4 @@ export * from './0000000019000-approval-template-activation';
 export * from './0000000020000-form-data-option-snapshots';
 export * from './0000000021000-notification-silenced';
 export * from './0000000022000-org-unit-code-active-unique';
+export * from './0000000023000-workflow-webhook-deliveries';

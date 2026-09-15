@@ -27,6 +27,7 @@ import {
   isNotifyRecipientsEmpty,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
+import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import {
   BadRequestException,
   ConflictException,
@@ -281,6 +282,8 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_ROOT_OPTIONS)
     rootOptions?: BPMRootRuntimeOptions,
+    @Optional()
+    private readonly webhookDeliveryService?: WorkflowWebhookDeliveryService,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -4568,6 +4571,33 @@ export class WorkflowEngineService {
       node,
       recipientMemberIds,
     });
+
+    // Queued in this transaction and sent only after it commits (ADR 18
+    // §3.5). Without the webhook module there is nothing to queue into; the
+    // publish lint already refuses a template that references an endpoint
+    // in that case.
+    const webhookDeliveryIds =
+      this.webhookDeliveryService &&
+      readNotifyWebhookTargets(action).length > 0
+        ? await this.webhookDeliveryService.enqueueNotifyWebhooks(
+            manager,
+            {
+              instance: {
+                formData: instance.formData,
+                id: instance.id,
+                initiatorMemberId: instance.initiatorMemberId,
+                templateId: instance.templateId,
+                templateVersionId: instance.templateVersionId,
+                title: instance.title,
+              },
+              node: { id: node.id, label: node.data.label },
+              occurredAt: new Date(),
+              tokenId: token.id,
+            },
+            action.webhooks,
+          )
+        : [];
+
     await manager.getRepository(WorkflowTokenEntity).save({
       ...token,
       consumedAt: new Date(),
@@ -4583,6 +4613,7 @@ export class WorkflowEngineService {
           action: 'NOTIFY',
           recipientMemberIds,
           tokenId: token.id,
+          ...(webhookDeliveryIds.length ? { webhookDeliveryIds } : {}),
         },
         taskId: null,
       }),

@@ -41,10 +41,58 @@ export interface BPMRootWorkflowWebhookOptions {
    * store; 32 bytes, hex or base64.
    */
   readonly workflowWebhookSecretEncryptionKey?: string;
+
+  /**
+   * Runs the background scan that retries and releases queued deliveries.
+   * Omitted: on whenever at least one endpoint is registered, because without
+   * it a failed delivery would never be retried. Always off under
+   * `NODE_ENV=test`.
+   */
+  readonly workflowWebhookDeliverySchedulerEnabled?: boolean;
+
+  /** How often the scheduler scans for due deliveries. Default 15 000 ms. */
+  readonly workflowWebhookDeliveryScanIntervalMs?: number;
+
+  /** Deliveries claimed per scan. Default 25. */
+  readonly workflowWebhookDeliveryBatchSize?: number;
+
+  /** Attempts before a retryable failure becomes `FAILED`. Default 6. */
+  readonly workflowWebhookDeliveryMaxAttempts?: number;
+
+  /**
+   * First retry delay; each further attempt doubles it, with ±20 % jitter.
+   * Default 30 000 ms.
+   */
+  readonly workflowWebhookDeliveryRetryBaseDelayMs?: number;
+
+  /** Ceiling for a single retry delay. Default 3 600 000 ms (1 hour). */
+  readonly workflowWebhookDeliveryMaxRetryDelayMs?: number;
+
+  /**
+   * Request timeout when the endpoint does not set one. Default 10 000 ms.
+   * An endpoint's own `timeoutMs` is capped at
+   * {@link WORKFLOW_WEBHOOK_MAX_TIMEOUT_MS}.
+   */
+  readonly workflowWebhookDeliveryDefaultTimeoutMs?: number;
+}
+
+/** No single request may hold a delivery longer than this (ADR 18 §3.6). */
+export const WORKFLOW_WEBHOOK_MAX_TIMEOUT_MS = 30_000;
+
+export interface BPMResolvedWorkflowWebhookDeliveryOptions {
+  readonly batchSize: number;
+  readonly defaultTimeoutMs: number;
+  readonly maxAttempts: number;
+  readonly maxRetryDelayMs: number;
+  readonly retryBaseDelayMs: number;
+  readonly scanIntervalMs: number;
+  /** `null` means "decide from the catalog at boot". */
+  readonly schedulerEnabled: boolean | null;
 }
 
 export interface BPMResolvedWorkflowWebhookOptions {
   readonly allowedUrlPatterns: readonly ParsedWorkflowWebhookUrlPattern[];
+  readonly delivery: BPMResolvedWorkflowWebhookDeliveryOptions;
   readonly enforceAllowlistForRegistry: boolean;
   readonly secretEncryptionKey: string | null;
   readonly targetSources: readonly BPMWorkflowWebhookEndpointSourceKind[];
@@ -56,6 +104,15 @@ export const BPM_WORKFLOW_WEBHOOK_OPTIONS: InjectionToken<BPMResolvedWorkflowWeb
 export const DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS: BPMResolvedWorkflowWebhookOptions =
   {
     allowedUrlPatterns: [],
+    delivery: {
+      batchSize: 25,
+      defaultTimeoutMs: 10_000,
+      maxAttempts: 6,
+      maxRetryDelayMs: 3_600_000,
+      retryBaseDelayMs: 30_000,
+      scanIntervalMs: 15_000,
+      schedulerEnabled: null,
+    },
     enforceAllowlistForRegistry: false,
     secretEncryptionKey: null,
     targetSources: ['REGISTRY'],
@@ -78,8 +135,43 @@ export function resolveBPMWorkflowWebhookOptions(
   const secretEncryptionKey =
     options.workflowWebhookSecretEncryptionKey?.trim() || null;
 
+  const defaults = DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS.delivery;
+
   return {
     allowedUrlPatterns: patterns,
+    delivery: {
+      batchSize: readPositiveInteger(
+        options.workflowWebhookDeliveryBatchSize,
+        defaults.batchSize,
+      ),
+      defaultTimeoutMs: Math.min(
+        readPositiveInteger(
+          options.workflowWebhookDeliveryDefaultTimeoutMs,
+          defaults.defaultTimeoutMs,
+        ),
+        WORKFLOW_WEBHOOK_MAX_TIMEOUT_MS,
+      ),
+      maxAttempts: readPositiveInteger(
+        options.workflowWebhookDeliveryMaxAttempts,
+        defaults.maxAttempts,
+      ),
+      maxRetryDelayMs: readPositiveInteger(
+        options.workflowWebhookDeliveryMaxRetryDelayMs,
+        defaults.maxRetryDelayMs,
+      ),
+      retryBaseDelayMs: readPositiveInteger(
+        options.workflowWebhookDeliveryRetryBaseDelayMs,
+        defaults.retryBaseDelayMs,
+      ),
+      scanIntervalMs: readPositiveInteger(
+        options.workflowWebhookDeliveryScanIntervalMs,
+        defaults.scanIntervalMs,
+      ),
+      schedulerEnabled:
+        typeof options.workflowWebhookDeliverySchedulerEnabled === 'boolean'
+          ? options.workflowWebhookDeliverySchedulerEnabled
+          : null,
+    },
     enforceAllowlistForRegistry: Boolean(
       options.workflowWebhookEnforceAllowlistForRegistry,
     ),
@@ -132,4 +224,13 @@ export function readDisabledWorkflowWebhookSourceReason(
   ];
 
   return `DATABASE webhook endpoints are disabled: ${missing.join(' and ')} must be set`;
+}
+
+function readPositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
 }

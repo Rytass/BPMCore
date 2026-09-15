@@ -10,6 +10,8 @@ import {
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
 import { BPMRootModule } from './bpm-root.module';
+import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
+import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import {
   BPM_WORKFLOW_WEBHOOK_REGISTRY,
@@ -202,6 +204,46 @@ describe('BPMRootModule bootstrap', (): void => {
     } finally {
       // Closing a context whose init failed re-runs the failing hook.
       await moduleRef.close().catch((): void => undefined);
+    }
+  });
+
+  it('hands every WorkflowEngineService copy the same webhook delivery service', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+    }).compile();
+
+    try {
+      // Nest builds more than one engine (FormDataSourceModule imports the
+      // plain class, BPMRootModule the dynamic module). Each must enqueue into
+      // the one delivery service, or a NOTIFY node reached through the other
+      // copy would silently queue nothing.
+      const container = (
+        moduleRef as unknown as {
+          readonly container: {
+            getModules(): Map<
+              string,
+              { readonly providers: Map<unknown, { readonly instance: unknown }> }
+            >;
+          };
+        }
+      ).container;
+      const engines = [...container.getModules().values()].flatMap((module) => {
+        const wrapper = module.providers.get(WorkflowEngineService);
+
+        return wrapper?.instance ? [wrapper.instance] : [];
+      });
+      const deliveryService = moduleRef.get(WorkflowWebhookDeliveryService, {
+        strict: false,
+      });
+
+      expect(engines.length).toBeGreaterThanOrEqual(2);
+      engines.forEach((engine) => {
+        expect(Reflect.get(engine as object, 'webhookDeliveryService')).toBe(
+          deliveryService,
+        );
+      });
+    } finally {
+      await moduleRef.close();
     }
   });
 });

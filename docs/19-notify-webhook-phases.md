@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0、P1 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0、P1、P2 VERIFIED（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -11,15 +11,15 @@
 
 ## Phase 總覽
 
-| Phase | 交付                                                      | 相依   | 狀態        |
-| ----- | --------------------------------------------------------- | ------ | ----------- |
-| P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED    |
-| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED    |
-| P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | PLANNED     |
-| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED     |
-| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED     |
-| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED     |
-| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED     |
+| Phase | 交付                                                      | 相依   | 狀態     |
+| ----- | --------------------------------------------------------- | ------ | -------- |
+| P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED |
+| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED |
+| P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | VERIFIED |
+| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED  |
+| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED  |
+| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
+| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
 
 ```
  P0 ──▶ P1 ──┬──▶ P2 ──▶ P3 ──┐
@@ -309,6 +309,137 @@ union 一致。追加採納三項非阻擋建議：
   發現引擎有兩份實例的既有狀況）。
 - 以接收端延遲 60 秒實測：簽核請求本身不被拖慢，delivery 以 `WEBHOOK_TIMEOUT` 重試。
 
+**實作結果**（2026-09-15）
+
+新增：`migrations/0000000023000-workflow-webhook-deliveries.ts`、`common/outbox.ts`（自
+`notification-delivery.service.ts` 抽出 `readClaimedIds` 與 `withDispatchTimeout`，通知投遞
+行為不變）、`workflow-webhook/` 下的 `workflow-webhook-delivery.entity.ts`、
+`-delivery.enums.ts`、`-enqueue.ts`、`-delivery.service.ts`、`-delivery.subscriber.ts`、
+`-delivery-scheduler.service.ts`。異動：`workflow-webhook-options.ts`（投遞設定）、
+`workflow-webhook.module.ts`（註冊 entity、服務、subscriber、排程器）、
+`workflow-engine.service.ts`（NOTIFY 分支入列並記錄 `webhookDeliveryIds`）、
+`notification-delivery.service.ts`、`migrations/index.ts`、`docs/api-reference.md`。
+
+新測試：`workflow-webhook-enqueue.spec.ts`（7）、`workflow-webhook-delivery.service.spec.ts`
+（25，含 9 種 HTTP 狀態分類、opaque redirect、逾時、網路錯誤、`buildRequest` 例外、端點移除、
+非 http(s) URL、白名單三情境、簽章可獨立驗證且宿主無法覆寫 `x-bpm-*`、耗盡轉 `FAILED`、
+活動紀錄不含 URL 與回應 body、退避上下界、不 claim 終局或未到期的紀錄、入列時寫入預先
+失敗的終局紀錄）、`workflow-webhook-delivery.subscriber.spec.ts`（6：commit 才觸發、rollback
+丟棄、交易彼此隔離、非交易立即觸發、`FAILED` 不觸發、觸發失敗被吞掉）、
+`workflow-webhook-delivery-scheduler.service.spec.ts`（4），`workflow-engine.service.spec.ts`
+新增 2 個入列案例，`bpm-root.module.boot.spec.ts` 新增「每一份 `WorkflowEngineService`
+都拿到同一個投遞服務」。
+
+**驗證狀態**：`pnpm typecheck`（6 專案）、改動檔 eslint 無問題、`pnpm test`（bpm-core 604、
+shared 97、bpm-core-react 69、bpm-core-client 66、api 19）全綠。
+
+**獨立驗證第一輪（2026-09-15，未參與實作者）**：結論 NOT VERIFIED。Outbox 核心保證（交易內
+不發 HTTP、commit 後才觸發、rollback 不留紀錄）以真實 TypeORM Broadcaster 實測成立，驗證者並
+讀 `typeorm@0.3.31` 原始碼確認 `afterInsert` 時 id 已產生、commit／rollback 事件拿到同一個
+query runner、初始化後加入的 subscriber 仍有效。必修 3 項，已全部修正：
+
+- **必修 1**：一批 claim 的紀錄逐筆送出時，排在後面的紀錄會被另一個 worker 當成過期回收而重複
+  投遞，回寫也不帶條件，後寫者會把 `SENT` 蓋掉。修正：每筆在自己的嘗試開始時以條件式 UPDATE
+  重新蓋時間戳（不符即讓出），回寫也以該時間戳為條件、影響 0 列就放棄且不寫活動紀錄。
+- **必修 2**：`buildRequest()` 同步丟例外或回傳 `undefined` 時，紀錄永久卡在
+  `DELIVERY_IN_PROGRESS`。修正：以 `Promise.resolve().then()` 包裝、驗證回傳值形狀；端點查詢
+  丟例外改為可重試的 `WEBHOOK_ENDPOINT_LOOKUP_FAILED`；其餘非預期錯誤記為
+  `WEBHOOK_INTERNAL_ERROR` 重試，不再讓紀錄卡住。
+- **必修 3**：`x-bpm-timestamp` 與 `nextRetryAt` 用的是 claim 時間。修正：簽章取送出當下、
+  重試時間取該次結束當下（`readCurrentTime()`）。
+
+採納的非阻擋建議（已修正）：巢狀交易時 subscriber 只在最外層 COMMIT／ROLLBACK 後才處理
+（依 TypeORM 在廣播前清除 `isTransactionActive` 的行為）；URL 帶帳密與不允許的 method 直接
+`INVALID_REQUEST`；錯誤細節不存可能含 URL／secret 的訊息；jitter 不超過上限；成功與 redirect
+時丟棄 body、失敗時最多讀 4 KB；入列時清單層級的格式問題記 warn、registry 查詢丟例外記為
+`FAILED` 而不回滾簽核；排程器開機時無法列出端點仍啟用；migration 補回 `instance_id` 外鍵
+（`ON DELETE CASCADE`，ADR §3.5 表格原本就有）。
+
+未採納、記錄於此：
+
+- `(token_id, target_id)` 重複 insert 會丟 unique violation 讓整筆簽核回滾，而不是冪等略過。
+  在 advisory lock 與同交易 consume token 的前提下不會發生；Gate「只產生一筆」是由唯一鍵
+  保證、以回滾呈現。
+- 排程器是否啟用只在開機時判斷；P6 的 `DATABASE` 來源若開機時為空，需在 P6 改為動態判斷
+  （已列入 P6 scope）。
+
+**獨立驗證第二輪（2026-09-15，同一位未參與實作者）**：第一輪 3 項必修逐條重跑確認已修正，
+包含在真實 Postgres 語意下的時間戳等值比對（pg 寫入帶毫秒與時區、`postgres-date` 讀回，
+0–999 ms 全數往返一致）、`repository.update` 的 `affected` 來自 `rowCount`、READ COMMITTED
+下被併發改動的列回寫得到 0 列；巢狀 savepoint 情境以真實 Broadcaster 實測正確。新增必修
+1 項，已修正：
+
+- **R2-1**：接收端錯誤 body 含 NUL（0x00）時，PostgreSQL `text` 拒寫，`record()` 每次失敗，
+  紀錄停在 `DELIVERY_IN_PROGRESS` 約 90 秒被回收重送，沒有上限。修正：寫入前移除 NUL，並補
+  測試。
+
+採納的非阻擋建議：ADR §3.6 表格補齊所有錯誤碼、「多個 worker」段改寫為精確語意（遲到結果
+不覆寫；超過回收窗或時鐘偏差時仍可能重送，屬 at-least-once）；活動紀錄寫入失敗時不再誤報為
+「結果未記錄」。未採納：入列時查詢失敗改寫 `PENDING`（沒有可凍結的參數，理由寫入 ADR）；
+外鍵 `ON DELETE CASCADE` 與既有外鍵慣例不同，但沒有刪除案件的路徑，且已套用到 develop，
+維持不變。
+
+**獨立驗證第三輪（2026-09-15）**：結論 VERIFIED（程式碼範圍）。R2-1 以真實 socket 回 `61 00 62`
+重跑確認；追加採納：所有 detail 來源集中在回寫時清除 NUL（宿主錯誤 `name` 含 NUL 也會卡住，
+驗證者實測）、ADR 放錯段落的句子、api-reference 補述。
+
+**真實環境驗證（2026-09-15，wrapper host `apps/api` + develop 資料庫）**
+
+依使用者同意：在 develop 資料庫套用 `0000000023000`，並把 P5 的最小接收端與示範端點提前
+加入 `apps/api`（`api-demo-webhooks.ts`、`api-demo-webhook-sink.controller.ts`，僅非
+production 註冊）：`demo.purchase-approved`（回 200）、`demo.flaky`（每個 delivery 先回 503
+兩次）、`demo.slow`（延遲 15 秒，超過預設逾時）。接收端以 `x-bpm-timestamp` 與重新序列化的
+body 驗 HMAC，依 `deliveryId` 記錄每次收到的請求。
+
+| 情境                                        | 結果                                                                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 發起含三個 webhook 知會節點的案件           | 送出 740 ms、案件 APPROVED，三個節點活動紀錄帶 `webhookDeliveryIds`                                              |
+| 正常端點                                    | 1.5 秒內送達、簽章有效，參數 `amount: 1200`（FIELD）與 `caseTitle`（CONTEXT）正確                                |
+| 慢端點                                      | `WEBHOOK_TIMEOUT` 後排定重試，不影響送出耗時與其他端點                                                           |
+| flaky 端點                                  | 503（立即）→ 503（+36 s）→ 200（+60 s），三次 `deliveryId` 相同、簽章皆有效，終局活動紀錄恰好 1 筆 `attempts: 3` |
+| 交易內入列後丟錯（真實 Postgres + TypeORM） | 資料表 0 筆、未觸發投遞                                                                                          |
+| 正常 commit                                 | commit 前 0 次觸發、commit 後觸發 1 次，觸發 id 與寫入 id 相同                                                   |
+| 同一 token 同一 target 重複入列             | 被 `UQ_workflow_webhook_deliveries_token_target` 拒絕                                                            |
+| 兩條獨立連線、批量 3 同時掃描               | A 7 筆、B 6 筆，每個 delivery 接收端只收到 1 次，全數 `SENT`                                                     |
+
+**真實環境驗證發現並修正**：同一批依序投遞時，`demo.slow` 排在前面，讓同批的正常端點晚
+10 秒才送出（隊頭阻塞；排程器一批 25 筆時最壞延遲數分鐘）。先改為一批最多 5 筆並行，修正後
+正常端點 1.5 秒內送達。
+
+**獨立驗證第四輪（並行差異）**：結論 VERIFIED。並行後所有權語意不變、同批內不會兩個 worker
+取到同一列、單列丟例外不影響其他列、所有 detail 來源都經過 NUL 清除。驗證者指出：一次
+claim 25 筆、5 筆並行時，排在後面的列持有 claim 排隊，第 11 列起排隊超過 90 秒會被其他
+worker 接手（實測 25 列 A 送 10、B 接手 15，無重送），ADR「排隊的紀錄不會被誤判過期」因此
+不成立。依其建議改為**分段 claim**：一次最多 claim 5 筆、送完再 claim 下一段，直到達批量
+上限或沒有到期紀錄；被 claim 的列一定正在嘗試，回收窗只需涵蓋單次嘗試。補上「任何時刻持有
+claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上限」「重複 id 只送一次」測試，並以
+反向驗證（上限改為 6 時峰值測試失敗）確認。分段 claim 本身是驗證者提出的修法，未再送第五輪
+程式碼審查。
+
+**驗證過程的注意事項**：直接對共用資料庫呼叫 `deliverDue()` 的腳本，會一併 claim 資料庫中
+其他已到期的紀錄（本次誤取 2 筆情境 A 的重試並送到錯誤的接收端）；flaky 的乾淨驗證因此
+另開案件重做。之後的驗證腳本只用帶 id 的 `deliverByIds()`。
+
+**Gate 狀態**：交易回滾不留紀錄、唯一鍵、503 兩次後成功且 `deliveryId` 不變、接收端延遲時
+送出不被拖慢，皆已在真實環境完成（見上表）。「兩個 API 實例同時掃描」是以同一程序內兩條
+獨立資料庫連線、各自的投遞服務實例模擬，驗證的是 `FOR UPDATE SKIP LOCKED` 的 claim 行為，
+並非兩個獨立 API 程序。
+
+**ADR 未載明而在 P2 自決的項目**
+
+1. commit 後立即觸發改用 TypeORM subscriber（`afterInsert` 依 query runner 暫存、
+   `afterTransactionCommit` 觸發、`afterTransactionRollback` 丟棄），而不是在每個引擎入口
+   手動收集 id；ADR §3.5 已同步改寫。
+2. 事件信封加入 `initiator.memberId`（ADR §3.4 已補），並額外送 `x-bpm-event` header。
+3. 宿主在 `buildRequest()` 回傳的 `x-bpm-*` header 一律丟棄，確保接收端能信任 BPM 設定的值。
+4. 入列時就能判定無法投遞的情況（端點已下架、參數在執行時期型別不符或 required 為空）
+   直接寫成 `FAILED` 並同交易寫終局活動紀錄，不丟例外、不回滾簽核。
+5. 逾時未回寫的 `DELIVERY_IN_PROGRESS` 在 90 秒（單次上限 30 秒 × 3）後可被重新 claim。
+6. 排程器預設「有任何端點才啟用」，由 `workflowWebhookDeliverySchedulerEnabled` 明確覆寫；
+   同一實例內掃描不重疊。
+7. `WorkflowWebhookDeliveryEntity` 不是 GraphQL 型別；管理查詢在 P3 以專用物件輸出，避免
+   `lastErrorDetail` 被一般使用者讀到。
+
 ## P3 — 管理查詢、重送與案件詳情
 
 **Scope**
@@ -406,6 +537,8 @@ union 一致。追加採納三項非阻擋建議：
 - `libs/bpm-core-client` typed API 與 `libs/bpm-core-react`「Webhook 端點」管理頁
   （Mezzanine `Section` + `Table` + `Modal`，rowActions 放停用與輪替）。
 - 設計器 catalog 顯示來源標籤，讓設計者分得出程式註冊與後台維護的端點。
+- 投遞排程器改為動態判斷是否啟用：開機時沒有端點、之後在後台新增的端點也要有重試（P2
+  驗證發現排程器只在開機時判斷）。
 
 **Gate**
 
@@ -478,6 +611,10 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
 11. **發布路徑對形狀錯誤草稿的既有崩潰**（P1 驗證發現，`0deffad` 之前即存在）：`serviceTask`
     缺 `data`、`action: null`、`nodes` 不是陣列時，發布會先在 `readConditionExpressions` 或
     `definition.nodes.flatMap` 丟 TypeError（500）。存草稿只做 `JSON.parse` 不驗結構是根因。
-12. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
+12. **投遞沒有程序層級的並行上限**（P2 第四輪驗證建議）：每次 commit 觸發的投遞與排程器各自
+    最多 5 筆並行，大量簽核同時 commit 時對外 HTTP 連線與資料庫連線池的壓力會放大。不在
+    P2 加程序層級 semaphore，因為已 claim 的列若在 semaphore 前排隊，會重新引入「持有 claim
+    排隊」的問題；需要時應改為先取得名額再 claim。
+13. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
     投遞在 P2。P0 與 P1 至少要同一個 release 發出，release note 需註明 webhook 要到
     P2 才會實際送出。

@@ -10,6 +10,7 @@ import {
   ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
+import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
@@ -1043,6 +1044,70 @@ describe('WorkflowEngineService', () => {
         recipientMemberIds: ['member-finance', 'member-admin'],
       }),
     });
+  });
+
+  it('queues notify webhooks in the engine transaction and records their ids', async (): Promise<void> => {
+    const enqueueNotifyWebhooks = jest.fn(
+      async (): Promise<readonly string[]> => ['delivery-1'],
+    );
+    const webhooks = [
+      {
+        bindings: [],
+        endpoint: { key: 'erp.purchase-approved', version: 1 },
+        id: 'webhook_erp',
+      },
+    ];
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+        recipients: { memberIds: [], type: 'DIRECT' },
+        webhooks,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      webhookDeliveryService: {
+        enqueueNotifyWebhooks,
+      } as unknown as WorkflowWebhookDeliveryService,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(enqueueNotifyWebhooks).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        instance: expect.objectContaining({ id: 'instance-1' }),
+        node: { id: 'notify_finance', label: '財務知會' },
+        tokenId: expect.any(String),
+      }),
+      webhooks,
+    );
+    expect(fixture.savedSingleActivityLogs.at(-1)).toMatchObject({
+      eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+      payload: expect.objectContaining({
+        action: 'NOTIFY',
+        webhookDeliveryIds: ['delivery-1'],
+      }),
+    });
+  });
+
+  it('does not touch webhook delivery for a notify node without webhooks', async (): Promise<void> => {
+    const enqueueNotifyWebhooks = jest.fn();
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createNotifyServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      webhookDeliveryService: {
+        enqueueNotifyWebhooks,
+      } as unknown as WorkflowWebhookDeliveryService,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(enqueueNotifyWebhooks).not.toHaveBeenCalled();
+    expect(fixture.savedSingleActivityLogs.at(-1)?.payload).not.toHaveProperty(
+      'webhookDeliveryIds',
+    );
   });
 
   it('skips member resolution for a webhook-only notify node', async (): Promise<void> => {
@@ -3903,6 +3968,7 @@ function createServiceFixture({
   templateIsActive = true,
   templateVersionStatus,
   transactionalInstanceUpdatedAt,
+  webhookDeliveryService,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
   readonly currentVersionId: string | null;
@@ -3923,6 +3989,7 @@ function createServiceFixture({
   readonly processOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly processOrgUnits?: readonly OrgUnitEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
+  readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
   readonly rootInstanceUpdatedAt?: Date;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
   readonly templateIsActive?: boolean;
@@ -4658,6 +4725,8 @@ function createServiceFixture({
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
       formDataSourceValueResolver,
+      undefined,
+      webhookDeliveryService,
     ),
     notificationService,
   };

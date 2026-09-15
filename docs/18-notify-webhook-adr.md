@@ -236,6 +236,7 @@ export interface BPMWorkflowWebhookEvent {
   readonly parameters: Readonly<Record<string, unknown>>;
   /** 本次投遞是第幾次嘗試，從 1 開始。僅供宿主參考，不影響冪等。 */
   readonly attempt: number;
+  readonly initiator: { readonly memberId: string };
 }
 ```
 
@@ -308,8 +309,9 @@ export interface BPMWorkflowWebhookEvent {
 退回後以 `RESTART` 重新送出會產生新的 token，因此會再送一次；這是預期行為，事件本來
 就又發生了一次。
 
-**低延遲**：引擎在交易 commit 後收集本次新增的 delivery id，立即觸發一次投遞（不等待、
-失敗吞掉）。**兜底**：`WorkflowWebhookDeliverySchedulerService` 以 `SKIP LOCKED` 定期
+**低延遲**：以 TypeORM subscriber 追蹤每個 query runner 在交易內新增的 delivery id，
+交易 commit 後立即觸發一次投遞（不等待、失敗吞掉），rollback 則丟棄。這樣不必在每個
+引擎入口各自記得觸發。**兜底**：`WorkflowWebhookDeliverySchedulerService` 以 `SKIP LOCKED` 定期
 掃描 `PENDING` 與逾時未完成的 `DELIVERY_IN_PROGRESS`，多個 API 實例同時執行也不會重複
 claim。排程器在 registry 至少有一個 endpoint 時預設啟用（與通知排程器預設關閉不同，
 因為沒有排程器時失敗的 webhook 永遠不會重試）。
@@ -323,22 +325,47 @@ claim。排程器在 registry 至少有一個 endpoint 時預設啟用（與通�
   宿主 URL 被導向內網。
 - **重試分類**：
 
-| 結果                        | 處理                  | `last_error_code`                    |
-| --------------------------- | --------------------- | ------------------------------------ |
-| 2xx                         | `SENT`                | —                                    |
-| 408、429、5xx               | 退避後重試            | `WEBHOOK_HTTP_<status>`              |
-| 其他 4xx                    | 立即 `FAILED`，不重試 | `WEBHOOK_HTTP_<status>`              |
-| 3xx                         | 立即 `FAILED`         | `WEBHOOK_REDIRECT`                   |
-| 逾時／連線錯誤              | 退避後重試            | `WEBHOOK_TIMEOUT`／`WEBHOOK_NETWORK` |
-| `buildRequest()` 丟出例外   | 退避後重試            | `WEBHOOK_BUILD_REQUEST_FAILED`       |
-| endpoint 已從 registry 移除 | 立即 `FAILED`         | `WEBHOOK_ENDPOINT_MISSING`           |
+| 結果                         | 處理                  | `last_error_code`                    |
+| ---------------------------- | --------------------- | ------------------------------------ |
+| 2xx                          | `SENT`                | —                                    |
+| 408、429、5xx                | 退避後重試            | `WEBHOOK_HTTP_<status>`              |
+| 其他 4xx                     | 立即 `FAILED`，不重試 | `WEBHOOK_HTTP_<status>`              |
+| 3xx                          | 立即 `FAILED`         | `WEBHOOK_REDIRECT`                   |
+| 逾時／連線錯誤               | 退避後重試            | `WEBHOOK_TIMEOUT`／`WEBHOOK_NETWORK` |
+| `buildRequest()` 丟出例外    | 退避後重試            | `WEBHOOK_BUILD_REQUEST_FAILED`       |
+| endpoint 已從 registry 移除  | 立即 `FAILED`         | `WEBHOOK_ENDPOINT_MISSING`           |
+| 端點來源查詢丟出例外         | 退避後重試            | `WEBHOOK_ENDPOINT_LOOKUP_FAILED`     |
+| URL 不在白名單               | 立即 `FAILED`         | `WEBHOOK_URL_NOT_ALLOWED`            |
+| 請求不合法（見下）           | 立即 `FAILED`         | `WEBHOOK_INVALID_REQUEST`            |
+| BPM 內部非預期錯誤           | 退避後重試            | `WEBHOOK_INTERNAL_ERROR`             |
+| 入列時參數型別不符或必填為空 | 入列即 `FAILED`       | `WEBHOOK_PARAMETER_INVALID`          |
+| 入列時端點來源查詢丟出例外   | 入列即 `FAILED`       | `WEBHOOK_ENDPOINT_LOOKUP_FAILED`     |
 
-- **退避**：指數退避加 jitter，`base * 2^(attempt-1)`，預設 base 30 秒、上限 1 小時、
-  最多 6 次（約涵蓋 30 分鐘的對方停機）。以 `BPMRootModule` 選項
+入列時查詢失敗之所以直接 `FAILED` 而非 `PENDING`：參數要依端點宣告的型別解析並凍結，查詢
+失敗時沒有可凍結的事件；投遞時的查詢失敗則會重試。
+
+- **退避**：指數退避加 ±20% jitter，`base * 2^(attempt-1)`，套用 jitter 後再取上限，所以
+  任何一次延遲都不超過上限；預設 base 30 秒、上限 1 小時、最多 6 次（約涵蓋 30 分鐘的對方
+  停機）。重試時間從該次嘗試結束的時間起算。以 `BPMRootModule` 選項
   `workflowWebhookDelivery*` 調整。
+- **拒絕送出的請求**：URL 非 http(s) 或帶帳密、method 不是 `POST`／`PUT`／`PATCH`、
+  `buildRequest()` 回傳值沒有字串 `url`，一律 `WEBHOOK_INVALID_REQUEST` 直接失敗。
+- **錯誤細節**：只保留宿主錯誤的種類與網路錯誤的系統代碼（如 `ECONNREFUSED`），不存可能
+  含 URL 或 secret 的錯誤訊息；失敗回應 body 最多讀 4 KB、保留 500 字。
+- **多個 worker**：每筆紀錄在自己的嘗試開始時重新蓋時間戳，回寫時以該時間戳為條件。
+  遲到的結果不會覆寫已記錄的結果（例如 `SENT`）。
+  單次嘗試超過 90 秒回收窗、或各實例時鐘偏差很大時，同一筆仍可能被送兩次——這是
+  at-least-once 允許的範圍，接收端以 `deliveryId` 冪等。時間戳由應用端產生、精度到毫秒；
+  若日後改用資料庫 `now()`（微秒精度），等值比對方式要一併調整。
+- **可儲存性**：所有寫入 `last_error_detail` 的字串（回應 body、宿主錯誤種類、網路錯誤代碼）
+  都先移除 NUL 字元，避免 PostgreSQL 拒寫導致紀錄無法記錄結果而被無限回收重送。
+- **分段 claim 與並行**：一次最多 claim 5 筆並同時嘗試，這一段送完才 claim 下一段，直到
+  累計達批量上限（預設 25）或沒有到期的紀錄。被 claim 的紀錄一定正在嘗試，不會持有 claim
+  排隊，所以 90 秒回收窗只需涵蓋單次嘗試。一個逾時的接收端最多拖慢同一段的另外 4 筆，
+  而不是整批（wrapper host 實測：逐筆投遞時，逾時 10 秒的端點曾讓同批的正常端點晚 10 秒送出）。
 - **簽章**：`buildRequest()` 回傳 `signingSecret` 時，BPM 加上：
   - `x-bpm-delivery-id`：`deliveryId`
-  - `x-bpm-timestamp`：送出時的 Unix 秒數
+  - `x-bpm-timestamp`：送出當下（不是 claim 當下）的 Unix 秒數
   - `x-bpm-signature-sha256`：`HMAC-SHA256(secret, "<timestamp>.<body>")` 的 hex
 
   簽入 timestamp 讓接收端能拒絕過舊的請求以防重放。這與路徑 B 只簽 body 不同，差異寫入
