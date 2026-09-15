@@ -1,4 +1,10 @@
-import { listWorkflowWebhookEndpoints } from './workflow-webhook-endpoint-api';
+import {
+  createWorkflowWebhookEndpoint,
+  listWorkflowWebhookEndpoints,
+  listWorkflowWebhookManagedEndpoints,
+  rotateWorkflowWebhookEndpointSecret,
+  testWorkflowWebhookEndpoint,
+} from './workflow-webhook-endpoint-api';
 
 interface CapturedRequest {
   readonly query: string;
@@ -44,6 +50,7 @@ describe('@rytass/bpm-core-client/template webhook endpoint catalog', () => {
     const endpoint = {
       deprecated: false,
       description: null,
+      disabled: false,
       key: 'erp.po',
       label: 'ERP',
       parameters: [
@@ -82,6 +89,81 @@ describe('@rytass/bpm-core-client/template webhook endpoint catalog', () => {
       expect(harness.capture().variables).toEqual({ includeDeprecated: true });
     } finally {
       harness.restore();
+    }
+  });
+
+  it('never asks the managed endpoint queries for header values or the secret', async (): Promise<void> => {
+    const harness = installFetchMock({ workflowWebhookManagedEndpoints: [] });
+
+    try {
+      await listWorkflowWebhookManagedEndpoints();
+      const request = harness.capture();
+
+      expect(request.query).toContain('headerNames');
+      expect(request.query).toContain('hasSigningSecret');
+      expect(request.query).not.toMatch(/encrypted|signingSecret\b(?!\))/);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('sends write-only values as mutation variables', async (): Promise<void> => {
+    const harness = installFetchMock({
+      createWorkflowWebhookEndpoint: { id: 'endpoint-1' },
+    });
+
+    try {
+      await createWorkflowWebhookEndpoint({
+        headers: [{ name: 'Authorization', value: 'Bearer x' }],
+        key: 'crm.lead',
+        label: 'CRM',
+        parameters: [],
+        signingSecret: 'secret',
+        url: 'https://crm.example.com/hooks',
+        version: 1,
+      });
+
+      expect(harness.capture().variables).toMatchObject({
+        input: {
+          signingSecret: 'secret',
+          url: 'https://crm.example.com/hooks',
+        },
+      });
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('rotates to no secret and runs a test send', async (): Promise<void> => {
+    const rotate = installFetchMock({
+      rotateWorkflowWebhookEndpointSecret: { id: 'endpoint-1' },
+    });
+
+    try {
+      await rotateWorkflowWebhookEndpointSecret('endpoint-1', null);
+      expect(rotate.capture().variables).toEqual({
+        id: 'endpoint-1',
+        signingSecret: null,
+      });
+    } finally {
+      rotate.restore();
+    }
+
+    const test = installFetchMock({
+      testWorkflowWebhookEndpoint: {
+        errorCode: null,
+        errorDetail: null,
+        ok: true,
+        status: 200,
+      },
+    });
+
+    try {
+      await expect(
+        testWorkflowWebhookEndpoint('endpoint-1'),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      test.restore();
     }
   });
 });
