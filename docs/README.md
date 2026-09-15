@@ -24,7 +24,7 @@
 | 16  | [表格欄位 ADR](./16-form-table-field-adr.md)                             | 多行多欄表格欄位、column schema 與 cell DataSource |
 | 17  | [表格欄位開發 Phase](./17-form-table-field-phases.md)                    | 表格欄位 P0–P4 分階段交付與 gate                   |
 | 18  | [知會節點 Webhook ADR](./18-notify-webhook-adr.md)                       | 宿主註冊 endpoint、參數綁定、outbox 投遞與重試     |
-| 19  | [知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)             | P0–P5 分階段交付、gate 與 E2E matrix               |
+| 19  | [知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)             | P0–P6 分階段交付、gate 與 E2E matrix               |
 | ★   | [Public API Reference](./api-reference.md)                               | 4 個 lib 套件所有 export 的完整清冊（必維護）      |
 
 ## Stack

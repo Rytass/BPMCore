@@ -3,6 +3,7 @@ import {
   ParsedWorkflowWebhookUrlPattern,
   parseWorkflowWebhookUrlPatterns,
 } from './workflow-webhook-allowlist';
+import { parseWorkflowWebhookSecretKey } from './workflow-webhook-secret-cipher';
 import { BPMWorkflowWebhookEndpointSourceKind } from './workflow-webhook.types';
 
 /**
@@ -134,6 +135,12 @@ export function resolveBPMWorkflowWebhookOptions(
     DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS.targetSources;
   const secretEncryptionKey =
     options.workflowWebhookSecretEncryptionKey?.trim() || null;
+
+  // A key that is set but unusable fails the boot, like an invalid pattern:
+  // encrypting with it would lock the values away for good.
+  if (secretEncryptionKey) {
+    parseWorkflowWebhookSecretKey(secretEncryptionKey);
+  }
 
   const defaults = DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS.delivery;
 

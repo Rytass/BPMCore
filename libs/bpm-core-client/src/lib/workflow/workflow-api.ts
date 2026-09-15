@@ -2119,7 +2119,9 @@ export async function listWorkflowWebhookDeliveries(
     { instanceId },
   );
 
-  return data.workflowWebhookDeliveries;
+  // Tolerate hosts (and test mocks) whose GraphQL layer answers without the
+  // field, as listAdhocDirectives does: the caller renders straight from it.
+  return data.workflowWebhookDeliveries ?? [];
 }
 
 /**

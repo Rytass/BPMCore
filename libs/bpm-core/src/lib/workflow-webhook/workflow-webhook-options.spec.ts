@@ -45,16 +45,24 @@ describe('resolveBPMWorkflowWebhookOptions', () => {
   it('keeps the database source once the allowlist and key are set', () => {
     const options = {
       workflowWebhookAllowedUrlPatterns: ['https://erp.example.com/*'],
-      workflowWebhookSecretEncryptionKey: ' key ',
+      workflowWebhookSecretEncryptionKey: ` ${'a'.repeat(64)} `,
       workflowWebhookTargetSources: ['DATABASE', 'REGISTRY', 'DATABASE'],
     } as const;
     const resolved = resolveBPMWorkflowWebhookOptions(options);
 
     expect(resolved.targetSources).toEqual(['DATABASE', 'REGISTRY']);
-    expect(resolved.secretEncryptionKey).toBe('key');
+    expect(resolved.secretEncryptionKey).toBe('a'.repeat(64));
     expect(
       readDisabledWorkflowWebhookSourceReason(options, resolved),
     ).toBeNull();
+  });
+
+  it('refuses to boot with a key that is not 32 bytes', () => {
+    expect(() =>
+      resolveBPMWorkflowWebhookOptions({
+        workflowWebhookSecretEncryptionKey: 'not-a-real-key',
+      }),
+    ).toThrow(/must be 32 bytes/);
   });
 
   it('names only the missing guard', () => {

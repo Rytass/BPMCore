@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0、P1、P2、P3 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0–P6 VERIFIED（ADR 18 於 2026-09-15 Accepted；發布待使用者執行）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -17,9 +17,9 @@
 | P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED |
 | P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | VERIFIED |
 | P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | VERIFIED |
-| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED  |
-| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
-| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
+| P4    | 設計器知會節點 Webhook 面板                               | P1     | VERIFIED |
+| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | VERIFIED |
+| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | VERIFIED |
 
 ```
  P0 ──▶ P1 ──┬──▶ P2 ──▶ P3 ──┐
@@ -556,6 +556,70 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 - UI 自查：各區塊使用正確的 Mezzanine 元件（`Section`、`Select`、`Table`、`Button`
   配置），不自建元件。
 
+**實作結果**（2026-09-15）
+
+- Shared：`readNotifyWebhookTargetCatalogIssues`（對照 catalog 與表單的發布規則，回傳 issue code）
+  與 `readNotifyWebhookCatalogIssueMessage`（設計器用語）。後端 `lintWorkflowWebhookTargets`
+  改用同一套規則，訊息逐字不變；前後端不再各寫一份。
+- Client：`listWorkflowWebhookEndpoints({ includeDeprecated })`（`@rytass/bpm-core-client/template`）。
+- 設計器（`views/templates/designer/`）：
+  - 知會對象改為非必填；`onChange` 只更新 `recipients`，`channels`、`template`、`webhooks`
+    不再被重建。知會對象為執行時期解析的類型時，提示目前類型。
+  - `NotifyWebhookTargetsEditor`：端點 `Select`（只列未停用端點；已停用或已下架的端點以名稱
+    顯示並提示，不會清掉）、每個參數一列（來源：表單欄位／固定值／案件資訊；必填參數不能選
+    「不傳送」；表單欄位只列型別相容者；數字參數沒有「案件資訊」、文字清單只能用表單欄位）、
+    上限 10 個；切換端點保留 target id 與仍相容的綁定。catalog 載入失敗且節點沒有 webhook 時
+    不顯示區塊。
+  - catalog 以 `includeDeprecated: true` 在設計器載入時讀取一次（比照 DataSource catalog 的
+    元件內狀態做法）。
+  - 發布前檢查：catalog 規則的問題只擋「發布」，不擋「儲存草稿」與「試跑」，並顯示第一則
+    訊息；結構問題仍由既有檢查擋下儲存。
+  - 節點卡片：成員名稱或執行時期解析類型，加上「Webhook N 個」一行；卡片高度同步計算。
+  - 試跑：知會節點步驟列出「將送出 Webhook：<端點名稱>」。
+- 後端試跑：知會節點是非同步分支、不允許出線，原本試跑遇到任何知會節點都回
+  `has no outgoing edge`（既有缺陷）。改為比照執行期，在知會節點結束該分支，訊息為「將發送
+  知會，此分支不會繼續往下。」。
+
+**P4 自決的項目**
+
+1. 卡片沿用既有「每位成員一行」的呈現，另加「Webhook N 個」一行，而不是改成「知會 N 人 ·
+   Webhook M 個」單行摘要：避免改變既有使用者已熟悉的卡片內容。
+2. 參數以「每個宣告參數一列」呈現，而非自由新增綁定列；未宣告的舊綁定以警告列出並可移除。
+3. catalog 規則只擋發布：設定到一半也能先存草稿。
+4. 修正後端試跑對知會節點的處理（Gate 需要試跑能列出 webhook）。
+
+**真實環境驗證（2026-09-15，`apps/client` + `apps/api` + develop 資料庫，模板 `8b9259e6`）**
+
+| 情境                                             | 結果                                                                                                                                                      |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 開啟含 3 個 webhook 知會節點的模板               | 卡片顯示「Webhook 1 個」；面板讀出端點、`金額`＝表單欄位「申請金額」、`案件標題`＝案件資訊「案件主旨」                                                    |
+| 加入知會對象 → 再移除                            | 卡片依序為「林總經理／Webhook 1 個」→「Webhook 1 個」；面板 webhook 設定始終保留（覆寫問題回歸測試）                                                      |
+| 新增 Webhook、必填參數未綁定                     | 顯示「發布前需修正：知會節點「通知 ERP」的第 2 個 Webhook（示範：採購核准通知 ERP）的必填參數「amount」尚未設定。」；「保存並發布」停用、「儲存草稿」可用 |
+| `number` 參數                                    | 來源只有「表單欄位」「固定值」；欄位下拉只列「申請金額（amount）」，不列文字欄位「申請主旨」                                                              |
+| 移除未完成的 Webhook 後發布                      | 暫時啟用模板後「發布草稿」成功（只有 webhook、沒有知會對象的知會節點通過後端發布 lint），隨即停用回原狀                                                   |
+| 用「知會節點」工具新增節點並只加 Webhook         | 無流程問題、可發布（未實際發布）                                                                                                                          |
+| AI 助理：「把通知 ERP 的知會對象設定為林總經理」 | 助理呼叫 `set_service_action`；卡片變為「直屬主管／Webhook 1 個」，webhook 與綁定保留                                                                     |
+| 試跑（畫布含知會節點）                           | 修正前回 `has no outgoing edge`；修正後步驟為「將發送知會，此分支不會繼續往下。」＋「將送出 Webhook：示範：採購核准通知 ERP」                             |
+
+AI 助理那次回覆說已設定為林總經理，實際寫入的是「直屬主管」解析器，與 webhook 無關，記入 backlog。
+
+**獨立驗證（2026-09-15）**：結論 PASS WITH FIXES。後端 lint 重構逐條比對與 HEAD 等價。採納並修正：
+
+| 等級  | 發現                                                                                    | 修正                                                                                                                      |
+| ----- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| major | 數字固定值輸入 `1.5` 時，`1.` 被解析回 `1`，受控 `Input` 立刻吃掉小數點；`0x1f` 會變 31 | 輸入框保留原始文字，只有純十進位才轉成數字；補測試並在瀏覽器逐字輸入 `1.5`、`-0.5` 確認                                   |
+| minor | 表單草稿「套用」後，欄位清單與發布檢查仍用已發布的 schema                               | 有未儲存表單草稿時改用草稿 schema                                                                                         |
+| minor | 沒有相容欄位時選「表單欄位」會存入空 key，連草稿都無法儲存                              | 沒有相容欄位時不提供該來源                                                                                                |
+| minor | 以 API 存入格式錯誤的 `webhooks`（如 `[null]`）會讓設計器拋錯                           | 無法渲染時顯示警告與「清除 Webhook 設定」；試跑標籤略過                                                                   |
+| minor | Target 卡片使用不存在的 `--mzn-color-border` 與寫死數值                                 | 改用 `--mzn-color-border-neutral`、`--mzn-spacing-gap-base`、`--mzn-spacing-padding-horizontal-base`、`--mzn-radius-base` |
+| minor | 進入條件不成立而略過的試跑步驟仍列出「將送出 Webhook」                                  | `SKIPPED` 步驟不列出                                                                                                      |
+| nit   | 綁定的欄位已不存在時 Select 看似未設定；布林固定值為 null 時顯示「否」                  | 保留「（找不到相容欄位）」現值選項；null 顯示未選取                                                                       |
+| nit   | 非 NOTIFY 動作也顯示「可只設定 Webhook」提示                                            | 只在 NOTIFY 顯示                                                                                                          |
+| nit   | catalog 未載入時由後端擋下發布，錯誤訊息只有英文路徑                                    | 錯誤前加上「Webhook 設定未通過發布檢查：」                                                                                |
+
+卡片摘要格式與 Scope 文字不同一項，維持自決項目 1 的做法。嵌入式建立精靈的發布不參考設計器
+的 webhook 檢查，與它原本就不參考 `workflowIssue` 一致，由後端把關。
+
 ## P5 — Wrapper host、demo seed、E2E、文件與發布
 
 **Scope**
@@ -583,6 +647,93 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 
 - `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`、`pnpm e2e:client` 全綠。
 - 獨立 verifier 逐條核對 ADR 18 §3、§4，並在瀏覽器重跑 golden path。
+
+**實作結果**（2026-09-15）
+
+- `apps/api`：
+  - `ApiDemoWebhookModule`：接收端、store 與 `ApiDemoWebhookSigningSecret`（依序讀 Vault
+    `BPM_DEMO_WEBHOOK_SIGNING_SECRET` → 環境變數 → 本機預設，每次呼叫時讀）。registry 改由
+    `workflowWebhookRegistryProvider` 注入金鑰讀取器。
+  - Demo 端點：`demo.purchase-approved`、`demo.leave-submitted`（假別／開始日期／結束日期／
+    申請人）、`demo.flaky`、`demo.slow`、`demo.switchable`（回應可切換，供永久失敗情境）。
+  - 接收端：驗簽、依 `deliveryId` 記錄（最多 500 筆，最舊的先丟）；`?status=&delayMs=`
+    單次模擬、`PUT /demo/webhook-sink/modes/:mode` 持續模擬；簽章不合法立即 401，不套用
+    模擬、不記錄。全部只在 `NODE_ENV !== 'production'`。
+- `demo:reset` seed：「請假申請（同步人資系統）」（知會對象 + webhook）與「供應商請款（通知
+  ERP）」（只有 webhook）。`staging:reset`（`VAULT_PATH=bpm_core/staging`）預設不 seed 這兩個
+  範本，因為 staging 以 `NODE_ENV=production` 執行、沒有 demo 端點；`BPM_SEED_WEBHOOK_DEMOS`
+  可覆寫。seed 內容以離線方式驗證（兩個流程的流程檢查、結構與 catalog 檢查皆無問題）；
+  **未實際執行 `demo:reset`**，因為它會清空 develop 資料庫的所有資料，留待使用者決定。
+- E2E：`apps/client-e2e/specs/notify-webhook-real.spec.ts`，自行建立表單與模板、不依賴
+  seed 案件（仍使用 seed 的測試會員）。
+- 文件：`11-consumer-quickstart.md` §2c（註冊端點、事件、驗簽、冪等、重試、排程、發布檢查、
+  白名單）、`08-frontend-schema.md`、`07-workflow-execution.md`、`integration-guide.md`、
+  `infrastructure.md`，修正 `01`／`03` 的「schema 預留」過期敘述，`README.md` 索引。
+
+**E2E 矩陣涵蓋**
+
+| Journey             | 對應測試                                                                                                                               | 結果 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| Designer            | 綁定表單欄位／固定值／案件資訊、缺必填參數擋發布、發布後逐一驗證寫入內容                                                               | ✅   |
+| Designer 回歸       | 移除知會對象後 webhook 仍在，發布內容的知會對象為空                                                                                    | ✅   |
+| Runtime golden path | 送出 → 初審同意 → 接收端 1.5 秒內收到、簽章有效、參數 `{ amount, caseTitle }` 正確                                                     | ✅   |
+| Runtime 重試        | flaky：503 → 503 → 200，`attemptCount` 3、同一個 id、終局活動紀錄 1 筆                                                                 | ✅   |
+| Runtime 永久失敗    | switchable 回 400 → `FAILED`／`WEBHOOK_HTTP_400` → 恢復 → 管理者在案件頁重送 → 區塊自動顯示已送達                                      | ✅   |
+| Runtime 不阻斷      | 同意決定 < 8 秒完成、案件照常前進；slow 以 `WEBHOOK_TIMEOUT` 回到 `PENDING` 等重試                                                     | ✅   |
+| 退回重送            | 複審退回 → RESTART 重送 → 初審同意 → 知會節點再產生 4 筆新投遞，金額為新值                                                             | ✅   |
+| 權限                | 一般使用者：deliveries 查詢、重送、catalog 皆 `FORBIDDEN`；案件頁無投遞區塊、無錯誤碼，時間軸有「已通知外部系統」                      | ✅   |
+| 安全                | 模板版本、案件快照、catalog、活動紀錄皆無 `http(s)://`、sink 路徑、預設金鑰與 `signingSecret`／`x-bpm-signature`／`authorization` 鍵名 | ✅   |
+
+AI 助理修改知會節點後保留 webhook：E2E 需要真的呼叫 LLM、結果不穩定，改由
+`workflow-toolset.spec.ts`／`workflow-command.spec.ts` 單元測試涵蓋，並已在 P4 以瀏覽器
+手動實測一次。
+
+**Gate 結果**
+
+- `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`：通過。
+- `pnpm e2e:client`（整套 72 個）：本機未安裝 Playwright 自帶瀏覽器，以
+  `PLAYWRIGHT_EXECUTABLE_PATH` 指向系統 Chrome 執行。webhook spec 單獨與 4 worker 平行負載下
+  皆全數通過。整套中 2 個失敗與本功能無關、屬 develop 資料狀態：
+  `form-table-field-real`「Seeded table field golden path」需要的 seed 案件
+  `60000000-…-000000000011` 早在 2026-08-27 已被重新送出（狀態 RUNNING），
+  `workspace-routes-seeded` 因累積的 E2E 資料出現重複文字（strict mode 比對到 2 個元素）；
+  兩者都需要 `demo:reset` 才會恢復。
+
+**整套 E2E 發現並修正的回歸（P3 引入、已在 main）**：`listWorkflowWebhookDeliveries` 在宿主
+（或測試 mock）的回應不含該欄位時回傳 `undefined`，案件詳情頁在 render 時對它呼叫 `.some()`
+拋錯、反覆重掛，使 `workflow-linear-w5`、`delegation-transfer-w8`、`workflow-branching-w6`、
+`workflow-candidate-approvers` 等 10 個以 mock GraphQL 開啟案件頁的測試失敗。改為比照
+`listAdhocDirectives` 回傳 `?? []`，補測試，10 個測試恢復通過。
+
+**P5 自決的項目**
+
+1. 新增 `demo.switchable` 與模式切換 API，讓「永久失敗 → 管理者重送 → 成功」能在同一個投遞
+   上重現。
+2. `demo.leave-submitted` 的參數改為假別／開始日期／結束日期／申請人，配合 seed 請假表單實際
+   有的欄位（原規劃的「天數」表單沒有）。
+3. E2E 不依賴 seed 案件，也不執行 `demo:reset`。
+
+**獨立驗證（2026-09-15）**：結論 PASS WITH FIXES，ADR 18 §3／§4 逐條對照除 P6 範圍外皆已
+落實（§3.1／§4-2 的錯誤碼差異已於 ADR 補註）。採納並修正：
+
+| 等級  | 發現                                                                                            | 修正                                                                                       |
+| ----- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| major | `staging:reset` 會 seed 兩個在 staging（`NODE_ENV=production`、無 demo 端點）永遠投遞失敗的範本 | staging 預設不 seed，`BPM_SEED_WEBHOOK_DEMOS` 可覆寫；infrastructure 文件改為 develop only |
+| minor | 未驗簽的請求仍會套用延遲並寫入 store                                                            | 簽章不合法立即 401、不延遲不記錄；store 上限 500 筆；補測試                                |
+| minor | 「不阻斷」測試未證明逾時中斷有效                                                                | 追加斷言 slow 以 `WEBHOOK_TIMEOUT` 回到 `PENDING`                                          |
+| minor | 安全測試只比對預設金鑰字串                                                                      | 追加鍵名比對並註明前提                                                                     |
+| minor | 設計器 E2E 未斷言知會對象已清空、FIELD 綁定最後被改掉、停用範本不在 finally                     | 改為三種來源各留一個並驗證發布內容、斷言知會對象為空、清理移進 finally                     |
+| minor | AI 助理情境未在 E2E                                                                             | 矩陣註明由單元測試涵蓋                                                                     |
+| minor | 07 pseudo-code 讓所有 serviceTask 都不前進                                                      | 依動作類型分支                                                                             |
+| minor | §2c 把全域白名單開關寫成可針對個別端點，漏了萬用字元不比對內網位址                              | 改寫並補規則                                                                               |
+| minor | 整合指南寫錯投遞區塊的顯示條件                                                                  | 改為管理者且案件有投遞，並提 `showWebhookDeliveries`                                       |
+| minor | ADR／docs/19 狀態未同步；ADR §3.1 錯誤碼與 P1 決策 #6 不一致                                    | 本次同步並補註                                                                             |
+| nit   | 「最多 6 次」、`content-type` 預設、只能重送嘗試過的投遞                                        | §2c 補述                                                                                   |
+
+未採納的 nit：demo 端點用 literal registry 而非 `StaticBPMWorkflowWebhookRegistry`（為避免 api
+spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM 的寫法。
+
+**發布**：`npx nx release --dry-run`（2026-09-15）解析目前版本為 `v0.13.3`，四個套件（固定版本組）將一起升為 **0.13.4**（0.x 期間 `feat` 只算 patch）。P0–P5 已可一起發布（backlog #13：P0 不可單獨發版的限制已解除）。實際發布 `npx nx release --otp=<6 digits>` 由使用者執行；若希望這批功能以 minor 發布，改用 `npx nx release minor --otp=<6 digits>`。
 
 ## P6 — DB 管理端點、加密欄位與管理頁
 
@@ -617,20 +768,105 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
   `WEBHOOK_URL_NOT_ALLOWED` 失敗。
 - 測試送出：頻率限制生效，送出的是 sample event 而非真實案件資料。
 
+**實作結果**（2026-09-16）
+
+- 資料表（migration `0000000024000`）：`workflow_webhook_endpoints`（`(key, version)` 唯一、
+  `is_active` 索引、`encrypted_headers`／`encrypted_signing_secret` 只存加密信封）與
+  `workflow_webhook_endpoint_audits`（動作、欄位名稱、操作者、時間，不存值）。develop 資料庫已
+  套用。
+- 加密：`WorkflowWebhookSecretCipher`，AES-256-GCM，信封 `v1:<base64(iv|tag|ciphertext)>`；
+  金鑰 32 bytes（64 hex 或 base64），格式錯誤開機失敗；開機時試解一筆已存值，解不開記錄錯誤。
+- `DatabaseWorkflowWebhookEndpointSource`：每次查詢讀資料庫，每次嘗試解密 header 與金鑰；停用
+  的列回傳 `disabled`（同時 `deprecated`）；可帶交易的 `EntityManager`，入列時沿用引擎交易的
+  連線。`WorkflowWebhookService` 依 `workflowWebhookTargetSources` 組合來源（同 key 時程式註冊
+  者優先）。
+- 停用語意：設計器不再列出；發布 lint 回 `WORKFLOW_WEBHOOK_ENDPOINT_DISABLED`；入列與每次嘗試
+  回 `WEBHOOK_ENDPOINT_DISABLED`。
+- 白名單三個時機：儲存（admin service）、發布（`isEndpointUrlAllowedAtPublish`，只針對後台
+  端點）、每次投遞前（既有）。
+- 管理 GraphQL（`@BPMAdminOnly()`）：`workflowWebhookEndpointManagement`（是否啟用、白名單樣式）、
+  `workflowWebhookManagedEndpoints`、`workflowWebhookEndpointAudits`、`createWorkflowWebhookEndpoint`、
+  `updateWorkflowWebhookEndpoint`、`setWorkflowWebhookEndpointActive`、
+  `rotateWorkflowWebhookEndpointSecret`、`testWorkflowWebhookEndpoint`。回應只有 header 名稱與
+  `hasSigningSecret`；逐欄映射。
+- 儲存驗證：key 格式、版本 1..int32 且必須大於同 key 既有最大版本、key 不得與程式註冊端點相同、
+  參數鍵唯一與型別合法、同版本參數契約（鍵／型別／必填）不可變更、URL http(s) 不含帳密且在白名單、
+  method、逾時上限 30 秒、header 名稱合法且非 `x-bpm-*`／hop-by-hop、header 值限 fetch 可接受
+  字元、金鑰長度；URL 改到其他主機時必須同時重新輸入 headers。錯誤訊息只帶欄位或 header 名稱。
+- 測試送出：範例事件（佔位 id、每種型別的範例值），走一般投遞的拒絕檢查、白名單、逾時、redirect
+  與簽章，不寫投遞紀錄；每個端點每 10 秒一次、10 分鐘最多 5 次（每個程序各自計算）。
+- 排程器：啟用資料庫來源時一律啟用，後台之後新增的端點也有重試。
+- Client：`@rytass/bpm-core-client/template` 的端點管理 API；catalog 記錄加 `disabled`。
+- React：`AdminWebhookEndpointsView`（`views/admin/webhook-endpoints`、
+  `pages/admin/webhook-endpoints`，路由 `adminWebhookEndpoints`）：列表、新增、編輯、建立新版本、
+  測試送出、輪替金鑰、停用／啟用、異動紀錄；金鑰與 header 值輸入框 `autoComplete="new-password"`，
+  其他欄位 `off`（實測瀏覽器原本會把登入帳密自動填進去）；編輯時契約欄位唯讀。設計器端點選項
+  標示「後台維護」「已停用」「不建議使用」。
+- `apps/api`：`workflowWebhookTargetSources: ['REGISTRY', 'DATABASE']`；白名單讀
+  `BPM_WEBHOOK_ALLOWED_URL_PATTERNS`、金鑰讀 `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY`，非 production
+  才有預設（本機 demo 接收端與固定開發金鑰）；GraphQL `formatError` 遮蔽變數型別錯誤中回吐的值。
+
+**P6 自決的項目**
+
+1. 停用以 `disabled` 旗標呈現，同時設 `deprecated`，讓 catalog 與設計器既有的過濾不必改；
+   發布 lint 另有 `ENDPOINT_DISABLED` 碼。
+2. 金鑰與 header 值只寫不讀：輪替金鑰由管理者輸入新值，伺服器不產生、不回傳。
+3. 參數契約以「鍵、型別、必填」判定；名稱與說明可在同版本修改。
+4. 稽核用獨立資料表，而非 `activity_logs`（後者綁定案件）。
+5. 發布時的白名單比對只針對後台端點，避免發布時呼叫宿主程式碼；程式註冊端點在開啟強制比對時
+   仍於每次投遞前檢查。
+6. 測試送出的頻率限制為程序內記憶體，不跨 replica。
+
+**真實環境驗證（2026-09-16，develop 資料庫 + `apps/api` + `apps/client`）**
+
+| 情境                                                                | 結果                                                                                                       |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 管理 query                                                          | `enabled: true`、白名單 `http://localhost:17603/demo/webhook-sink/*`                                       |
+| 管理頁新增端點，URL 為 `https://evil.example.com/hook`              | 顯示「URL 不在伺服器允許的白名單內。」                                                                     |
+| 新增端點（header `Authorization`、簽章金鑰、參數 `amount: number`） | 列表顯示「已設定簽章金鑰」「Header：Authorization」；managed list、稽核、catalog 回應皆不含 token 與金鑰   |
+| catalog                                                             | `source: DATABASE`；設計器選項顯示「（v1，後台維護）」                                                     |
+| 測試送出                                                            | 「測試送出成功：… HTTP 200」；立即再按顯示「測試送出太頻繁」                                               |
+| 一般使用者查詢 managed list                                         | `FORBIDDEN`                                                                                                |
+| 以此端點發布模板 → 發起 → 同意                                      | 接收端收到事件、簽章有效（金鑰解密正確）、參數 `{ amount: 321 }`                                           |
+| 停用端點 → 新案件                                                   | 投遞 `FAILED`／`WEBHOOK_ENDPOINT_DISABLED`；以該端點發布新模板被 `WORKFLOW_WEBHOOK_ENDPOINT_DISABLED` 擋下 |
+| 未登入送出型別錯誤的 input（header 多一欄、金鑰傳數字）             | 錯誤訊息只剩 `got invalid value at "i.headers[0]"`，不含值                                                 |
+
+以上自動化於 `notify-webhook-real.spec.ts`「database-managed webhook endpoints」，整支 spec 8 個
+測試通過。「先存好再收緊白名單，投遞以 `WEBHOOK_URL_NOT_ALLOWED` 失敗」需要重啟 API 換環境變數，
+由單元測試涵蓋（投遞前每次比對、發布時比對）。
+
+**獨立驗證（2026-09-16）**：結論 PASS WITH FIXES，schema 與回應、log、稽核皆無秘密外洩。採納並修正：
+
+| 等級  | 發現                                                                                       | 修正                                                                                                             |
+| ----- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| major | ADR 規則 3 的「發布時比對白名單」未實作                                                    | 發布 lint 對後台端點比對目前 URL，回 `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`；補測試                                  |
+| major | 只改 URL 不必重填 header：把 URL 改到自己的主機再測試送出即可取回 header 值                | URL 改到其他主機時必須同一請求重新輸入 headers；管理頁強制開啟「取代 headers」；補測試                           |
+| minor | jsonb 不保留 key 順序，每次編輯都誤記參數變更                                              | 以與順序無關的描述比對；補測試                                                                                   |
+| minor | header 值只擋 CR/LF，中文或 NUL 會讓每次投遞以可重試的網路錯誤失敗；hop-by-hop header 可存 | 值限 fetch 可接受字元；保留 `connection`、`keep-alive`、`upgrade`、`expect`、`te`、`trailer`、`proxy-connection` |
+| minor | GraphQL 變數型別錯誤時回吐送出的 header 值或金鑰                                           | `formatError` 遮蔽值與原因，保留欄位路徑；實測確認                                                               |
+| minor | 入列在引擎交易內另取連線查資料庫端點，併發時可能耗盡連線池                                 | 來源查詢可帶交易的 `EntityManager`，入列沿用                                                                     |
+| minor | 整列 `save` 會把並行寫入（例如剛輪替的金鑰）蓋回舊值                                       | 更新、停用、輪替改為只寫變更欄位的 `update`                                                                      |
+| minor | 同 key 同版本併發建立回 500                                                                | 唯一鍵衝突轉為 `ENDPOINT_INVALID`「version 已存在」；補測試                                                      |
+| minor | 換錯金鑰時無聲失敗、沒有換金鑰程序                                                         | 開機試解一筆並記錄錯誤；`infrastructure.md` 補換金鑰程序；修正誤導註解                                           |
+| nit   | 停用端點在發布 lint 寫成 deprecated                                                        | 新增 `ENDPOINT_DISABLED` 碼與訊息                                                                                |
+
+未採納（記入 backlog）：信封 key id 與多把金鑰解密（#15）、以 AAD 綁定端點與欄位（#16）、管理頁
+顯示最近投遞狀態（#17，ADR §3.13 提及、P6 Scope 未列）。
+
 ## E2E Suite Matrix
 
-| Journey             | 情境                                                                  |
-| ------------------- | --------------------------------------------------------------------- |
-| Designer            | 設定 webhook、綁定三種來源、只有 webhook 可發布、缺必填參數不可發布   |
-| Designer 回歸       | 增刪知會對象與 AI 助理編輯後 webhook 設定保留                         |
-| Runtime golden path | 發起 → 簽核 → 知會節點 → sink 收到簽章正確、參數正確的事件            |
-| Runtime 重試        | sink 回 503 兩次後成功，`deliveryId` 不變、只記錄一次                 |
-| Runtime 永久失敗    | sink 回 400 → `FAILED` → 管理者重送 → `SENT`                          |
-| Runtime 不阻斷      | sink 延遲超過逾時，簽核操作正常完成、案件照常前進                     |
-| 退回重送            | `RESTART` 後再次經過知會節點產生新 delivery                           |
-| 權限                | 非管理者看不到 delivery 區塊與錯誤 detail；非 designer 查不到 catalog |
-| 安全                | 模板 JSON、案件快照、catalog 回應、活動紀錄皆不含 URL 與 secret       |
-| 端點管理（P6）      | 後台新增端點 → 設計器可選 → 投遞成功；白名單擋下不合法 URL            |
+| Journey             | 情境                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| Designer            | 設定 webhook、綁定三種來源、只有 webhook 可發布、缺必填參數不可發布                  |
+| Designer 回歸       | 增刪知會對象後 webhook 設定保留（AI 助理路徑由單元測試涵蓋，見下）                   |
+| Runtime golden path | 發起 → 簽核 → 知會節點 → sink 收到簽章正確、參數正確的事件                           |
+| Runtime 重試        | sink 回 503 兩次後成功，`deliveryId` 不變、只記錄一次                                |
+| Runtime 永久失敗    | sink 回 400 → `FAILED` → 管理者重送 → `SENT`                                         |
+| Runtime 不阻斷      | sink 延遲超過逾時，簽核操作正常完成、案件照常前進                                    |
+| 退回重送            | `RESTART` 後再次經過知會節點產生新 delivery                                          |
+| 權限                | 非管理者看不到 delivery 區塊與錯誤 detail；非 designer 查不到 catalog                |
+| 安全                | 模板 JSON、案件快照、catalog 回應、活動紀錄皆不含 URL 與 secret                      |
+| 端點管理（P6）      | 後台新增端點 → 設計器可選 → 投遞成功；白名單擋下不合法 URL；停用後投遞失敗且無法發布 |
 
 ## 預設值
 
@@ -684,3 +920,13 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
 13. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
     投遞在 P2。P0 與 P1 至少要同一個 release 發出，release note 需註明 webhook 要到
     P2 才會實際送出。
+14. **AI 助理指定知會對象時選錯解析器**（P4 實測發現）：要求「知會對象設定為林總經理」，
+    助理回覆已設定，但寫入的是 `ORG_MANAGER`（直屬主管）。屬於提示詞／工具說明問題，與
+    webhook 無關。
+15. **Webhook 加密金鑰輪替只能重新輸入**（P6 驗證）：信封沒有 key id，BPM 只接受一把金鑰；換金鑰
+    需依 `infrastructure.md` 程序重新輸入所有後台端點的 header 與金鑰。支援多把金鑰解密（新值用新
+    金鑰、舊值讀舊金鑰）可讓輪替不中斷投遞。
+16. **加密信封未綁定端點與欄位**（P6 驗證）：AES-GCM 沒有設 AAD，能直接寫資料庫的人可以把 A 端點
+    的信封搬到 B 端點。以 `endpointId:column` 作為 AAD 可擋下，但需要 id 在寫入前產生並遷移既有值。
+17. **Webhook 端點管理頁沒有「最近投遞狀態」**（P6 驗證）：ADR §3.13 提到，P6 Scope 未列。目前只能
+    在案件頁看投遞；可加每個端點最近 N 筆投遞與失敗率。

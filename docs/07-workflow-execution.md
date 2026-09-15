@@ -126,8 +126,15 @@ async function processInstance(instanceId: string): Promise<void> {
           break;
 
         case 'serviceTask':
-          await executeServiceAction(node, token); // 目前只執行 NOTIFY
-          advanceTokenToNext(token);
+          await executeServiceAction(node, token);
+          if (node.data.action.type === 'NOTIFY') {
+            // 站內／email 通知 + 在同一交易寫入 webhook outbox，commit 後才投遞；
+            // 知會節點是非同步分支，consume token 不往下走。
+            consumeToken(token);
+          } else {
+            // 系統節點的 WEBHOOK／SET_FORM_FIELD 動作執行完照常前進。
+            advanceTokenToNext(token);
+          }
           break;
 
         case 'exclusiveGateway':

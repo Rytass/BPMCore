@@ -39,11 +39,11 @@ Token 是 BPMN 執行語意的核心。把它想像成一顆 **沿著流程線�
 
 ## 2. 節點類型（Activity）
 
-| 節點             | 圖形                | 在我們系統的對應                                                                 |
-| ---------------- | ------------------- | -------------------------------------------------------------------------------- |
-| **User Task**    | 圓角矩形 + 人形圖示 | **簽核節點**（需要人決策）                                                       |
-| **Service Task** | 圓角矩形 + 齒輪圖示 | **知會節點**（目前 runtime 只執行 `NOTIFY`；webhook / set-field 為 schema 預留） |
-| **Script Task**  | 圓角矩形 + 紙捲圖示 | 跑表達式（MVP 不用）                                                             |
+| 節點             | 圖形                | 在我們系統的對應                                                                                                                                                |
+| ---------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **User Task**    | 圓角矩形 + 人形圖示 | **簽核節點**（需要人決策）                                                                                                                                      |
+| **Service Task** | 圓角矩形 + 齒輪圖示 | **知會節點**（`NOTIFY`：站內／email 通知與宿主註冊端點的 webhook，見 ADR 18；系統節點的 `WEBHOOK`／`SET_FORM_FIELD` 動作可由 API 設定並執行，設計器未提供介面） |
+| **Script Task**  | 圓角矩形 + 紙捲圖示 | 跑表達式（MVP 不用）                                                                                                                                            |
 
 每個 task 的規則：token 進來 → 執行任務 → 任務完成 → token 出去到下個節點。
 
@@ -224,19 +224,19 @@ AND Join 等永遠不會到的 token：
 
 ## 7. MVP 採用清單（重申）
 
-| 元素                     | MVP | 備註                                      |
-| ------------------------ | --- | ----------------------------------------- |
-| Start / End Event        | ✅  | 必要                                      |
-| User Task                | ✅  | 簽核核心；一節點一位主要簽核責任人        |
-| Service Task             | ✅  | 目前執行 `NOTIFY`；系統動作為 schema 預留 |
-| Exclusive Gateway        | ✅  | 條件分流；條件設定在線上                  |
-| Parallel Gateway         | ❌  | UI 不提供；用多 outgoing + `triggerMode`  |
-| Inclusive Gateway        | ❌  | 用 XOR + 節點前置條件組合                 |
-| Boundary Timer Event     | ✅  | SLA 逾時                                  |
-| Sub-Process              | ❌  | 後期擴充                                  |
-| Pool / Lane              | ❌  | 由 Approver Resolver 取代                 |
-| Intermediate Catch Event | ❌  | 後期擴充                                  |
-| Compensation Event       | ❌  | 後期擴充                                  |
+| 元素                     | MVP | 備註                                                                            |
+| ------------------------ | --- | ------------------------------------------------------------------------------- |
+| Start / End Event        | ✅  | 必要                                                                            |
+| User Task                | ✅  | 簽核核心；一節點一位主要簽核責任人                                              |
+| Service Task             | ✅  | 知會節點 `NOTIFY`（含 webhook，ADR 18）；`WEBHOOK`／`SET_FORM_FIELD` 動作僅 API |
+| Exclusive Gateway        | ✅  | 條件分流；條件設定在線上                                                        |
+| Parallel Gateway         | ❌  | UI 不提供；用多 outgoing + `triggerMode`                                        |
+| Inclusive Gateway        | ❌  | 用 XOR + 節點前置條件組合                                                       |
+| Boundary Timer Event     | ✅  | SLA 逾時                                                                        |
+| Sub-Process              | ❌  | 後期擴充                                                                        |
+| Pool / Lane              | ❌  | 由 Approver Resolver 取代                                                       |
+| Intermediate Catch Event | ❌  | 後期擴充                                                                        |
+| Compensation Event       | ❌  | 後期擴充                                                                        |
 
 ---
 

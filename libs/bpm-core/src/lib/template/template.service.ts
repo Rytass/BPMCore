@@ -984,6 +984,9 @@ export class TemplateService {
       definition,
       formSchema,
       hasEndpointSources: Boolean(webhookService?.hasEndpointSources()),
+      isEndpointUrlAllowed: webhookService
+        ? (entry) => webhookService.isEndpointUrlAllowedAtPublish(entry)
+        : undefined,
       resolveEndpoint: async (key, version) =>
         webhookService ? webhookService.getEndpoint(key, version) : null,
     });

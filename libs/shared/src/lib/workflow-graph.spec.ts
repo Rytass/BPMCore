@@ -12,7 +12,9 @@ import {
   readDesignTimeApproverCount,
   readFallbackWorkflowDefinition,
   readNotifyServiceTaskIssue,
+  readNotifyWebhookCatalogIssueMessage,
   readNotifyWebhookStructureIssues,
+  readNotifyWebhookTargetCatalogIssues,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
 import { FormFieldDefinition } from './form';
@@ -748,5 +750,131 @@ describe('notify webhook hardening', () => {
       'node.id',
       'node.label',
     ]);
+  });
+});
+
+describe('readNotifyWebhookTargetCatalogIssues', () => {
+  const endpoint = {
+    parameters: [
+      { key: 'amount', required: true, type: 'number' as const },
+      { key: 'title', required: false, type: 'string' as const },
+      { key: 'urgent', required: false, type: 'boolean' as const },
+    ],
+  };
+  const formFields = [
+    field('money', { fieldKey: 'total' }),
+    field('text', { fieldKey: 'note' }),
+  ];
+
+  function target(
+    bindings: NotifyWebhookTarget['bindings'],
+  ): NotifyWebhookTarget {
+    return { bindings, endpoint: { key: 'erp.po', version: 1 }, id: 'wh' };
+  }
+
+  it('reports only the endpoint when it is missing or deprecated', () => {
+    const bindings: NotifyWebhookTarget['bindings'] = [
+      { from: { kind: 'CONSTANT', value: 'x' }, parameter: 'nope' },
+    ];
+
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint: null,
+        formFields,
+        target: target(bindings),
+      }).map((issue) => issue.code),
+    ).toEqual(['ENDPOINT_MISSING']);
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint: { ...endpoint, deprecated: true },
+        formFields,
+        target: target(bindings),
+      }).map((issue) => issue.code),
+    ).toEqual(['ENDPOINT_DEPRECATED']);
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint: { ...endpoint, deprecated: true, disabled: true },
+        formFields,
+        target: target(bindings),
+      }).map((issue) => issue.code),
+    ).toEqual(['ENDPOINT_DISABLED']);
+  });
+
+  it('passes a target whose bindings fit the endpoint and the form', () => {
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint,
+        formFields,
+        target: target([
+          { from: { fieldKey: 'total', kind: 'FIELD' }, parameter: 'amount' },
+          {
+            from: { kind: 'CONTEXT', path: 'instance.title' },
+            parameter: 'title',
+          },
+          { from: { kind: 'CONSTANT', value: true }, parameter: 'urgent' },
+        ]),
+      }),
+    ).toEqual([]);
+  });
+
+  it('reports each rule the backend publish lint enforces', () => {
+    const codes = (
+      bindings: NotifyWebhookTarget['bindings'],
+    ): readonly string[] =>
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint,
+        formFields,
+        target: target(bindings),
+      }).map((issue) => issue.code);
+
+    expect(codes([])).toEqual(['PARAMETER_REQUIRED']);
+    expect(
+      codes([
+        { from: { fieldKey: 'total', kind: 'FIELD' }, parameter: 'amount' },
+        { from: { kind: 'CONSTANT', value: 1 }, parameter: 'ghost' },
+      ]),
+    ).toEqual(['PARAMETER_UNKNOWN']);
+    expect(
+      codes([
+        { from: { fieldKey: 'gone', kind: 'FIELD' }, parameter: 'amount' },
+      ]),
+    ).toEqual(['FIELD_MISSING']);
+    expect(
+      codes([
+        { from: { fieldKey: 'note', kind: 'FIELD' }, parameter: 'amount' },
+      ]),
+    ).toEqual(['FIELD_INCOMPATIBLE']);
+    expect(
+      codes([{ from: { kind: 'CONSTANT', value: null }, parameter: 'amount' }]),
+    ).toEqual(['CONSTANT_REQUIRED_NULL']);
+    expect(
+      codes([
+        { from: { kind: 'CONSTANT', value: 'many' }, parameter: 'amount' },
+      ]),
+    ).toEqual(['CONSTANT_INCOMPATIBLE']);
+    expect(
+      codes([
+        { from: { kind: 'CONTEXT', path: 'instance.id' }, parameter: 'amount' },
+      ]),
+    ).toEqual(['CONTEXT_INCOMPATIBLE']);
+  });
+
+  it('words an issue for the designer with the node, position and endpoint', () => {
+    const [issue] = readNotifyWebhookTargetCatalogIssues({
+      endpoint,
+      formFields,
+      target: target([]),
+    });
+
+    expect(
+      readNotifyWebhookCatalogIssueMessage({
+        endpointLabel: 'ERP 採購單',
+        issue: issue as NonNullable<typeof issue>,
+        nodeLabel: '通知 ERP',
+        targetIndex: 1,
+      }),
+    ).toBe(
+      '知會節點「通知 ERP」的第 2 個 Webhook（ERP 採購單）的必填參數「amount」尚未設定。',
+    );
   });
 });

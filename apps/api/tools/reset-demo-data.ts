@@ -98,6 +98,8 @@ const TEMPLATE_IDS = {
   LEAVE: '50000000-0000-4000-8000-000000000002',
   PURCHASE: '50000000-0000-4000-8000-000000000005',
   TABLE_PURCHASE: '50000000-0000-4000-8000-000000000008',
+  WEBHOOK_EXPENSE: '50000000-0000-4000-8000-000000000010',
+  WEBHOOK_LEAVE: '50000000-0000-4000-8000-000000000009',
 } as const;
 
 const TEMPLATE_VERSION_IDS = {
@@ -110,6 +112,8 @@ const TEMPLATE_VERSION_IDS = {
   LEAVE_V1: '51000000-0000-4000-8000-000000000002',
   PURCHASE_DRAFT: '51000000-0000-4000-8000-000000000005',
   TABLE_PURCHASE_V1: '51000000-0000-4000-8000-000000000010',
+  WEBHOOK_EXPENSE_V1: '51000000-0000-4000-8000-000000000012',
+  WEBHOOK_LEAVE_V1: '51000000-0000-4000-8000-000000000011',
 } as const;
 
 const INSTANCE_IDS = {
@@ -1025,6 +1029,106 @@ const LEAVE_WORKFLOW = createWorkflowDefinition({
   ],
 });
 
+// NOTIFY webhook demos (ADR 18). The endpoints are registered by
+// `apps/api/src/app/api-demo-webhooks.ts` only outside production; the notify
+// node is an asynchronous branch off the approval, as the designer draws it.
+//
+// Staging runs `NODE_ENV=production`, where no demo endpoint exists, so the
+// same script run as `staging:reset` must not publish templates that could
+// only ever fail to deliver. `BPM_SEED_WEBHOOK_DEMOS=true|false` overrides.
+const SEED_WEBHOOK_DEMOS =
+  process.env.BPM_SEED_WEBHOOK_DEMOS === undefined
+    ? process.env.VAULT_PATH !== 'bpm_core/staging'
+    : process.env.BPM_SEED_WEBHOOK_DEMOS === 'true';
+const LEAVE_WEBHOOK_WORKFLOW = withNotifyBranch(
+  createWorkflowDefinition({
+    approvalNodes: [
+      {
+        id: 'manager_review',
+        label: '主管簽核',
+        resolver: {
+          baseFromInitiator: true,
+          fallback: { memberId: 'member-201', type: 'DIRECT' },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        x: 220,
+        y: 0,
+      },
+    ],
+  }),
+  {
+    afterNodeId: 'manager_review',
+    id: 'notify_hr_system',
+    label: '通知人資與人資系統',
+    // Recipients and a webhook on one node.
+    recipients: { memberIds: ['member-201'], type: 'DIRECT' },
+    webhooks: [
+      {
+        bindings: [
+          {
+            from: { fieldKey: 'leaveType', kind: 'FIELD' },
+            parameter: 'leaveType',
+          },
+          {
+            from: { fieldKey: 'startDate', kind: 'FIELD' },
+            parameter: 'startDate',
+          },
+          {
+            from: { fieldKey: 'endDate', kind: 'FIELD' },
+            parameter: 'endDate',
+          },
+          {
+            from: { kind: 'CONTEXT', path: 'initiator.memberId' },
+            parameter: 'applicantId',
+          },
+        ],
+        endpoint: { key: 'demo.leave-submitted', version: 1 },
+        id: 'webhook_seed_leave_hr_system',
+      },
+    ],
+  },
+);
+
+const EXPENSE_WEBHOOK_WORKFLOW = withNotifyBranch(
+  createWorkflowDefinition({
+    approvalNodes: [
+      {
+        id: 'manager_review',
+        label: '直屬主管簽核',
+        resolver: {
+          baseFromInitiator: true,
+          fallback: { memberId: 'member-001', type: 'DIRECT' },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        x: 220,
+        y: 0,
+      },
+    ],
+  }),
+  {
+    afterNodeId: 'manager_review',
+    id: 'notify_erp',
+    label: '通知 ERP 付款系統',
+    // Webhook only: nobody is notified in the app.
+    recipients: { memberIds: [], type: 'DIRECT' },
+    webhooks: [
+      {
+        bindings: [
+          { from: { fieldKey: 'amount', kind: 'FIELD' }, parameter: 'amount' },
+          {
+            from: { kind: 'CONTEXT', path: 'instance.title' },
+            parameter: 'caseTitle',
+          },
+        ],
+        endpoint: { key: 'demo.purchase-approved', version: 1 },
+        id: 'webhook_seed_expense_erp',
+      },
+    ],
+  },
+);
+
 const ACCESS_WORKFLOW = createWorkflowDefinition({
   approvalNodes: [
     {
@@ -1163,6 +1267,7 @@ async function resetAndSeed(
 async function truncateDemoTables(queryRunner: QueryRunner): Promise<void> {
   await queryRunner.query(`
     TRUNCATE TABLE
+      workflow_webhook_deliveries,
       attachments,
       notifications,
       notification_preferences,
@@ -1861,6 +1966,24 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         CATEGORY_IDS.HR,
         'member-201',
       ),
+      ...readWebhookDemoRows([
+      templateRow(
+        TEMPLATE_IDS.WEBHOOK_LEAVE,
+        '請假申請（同步人資系統）',
+        '主管簽核後通知人資，並以 Webhook 將假別與日期送到人資系統。',
+        '人資行政',
+        CATEGORY_IDS.HR,
+        'member-201',
+      ),
+      templateRow(
+        TEMPLATE_IDS.WEBHOOK_EXPENSE,
+        '供應商請款（通知 ERP）',
+        '主管簽核後以 Webhook 將請款金額送到 ERP 付款系統，不另行站內通知。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
+      ]),
       templateRow(
         TEMPLATE_IDS.ACCESS,
         'ERP / MES 權限申請',
@@ -1965,6 +2088,30 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         'member-201',
         null,
       ),
+      ...readWebhookDemoRows([
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.WEBHOOK_LEAVE_V1,
+        TEMPLATE_IDS.WEBHOOK_LEAVE,
+        1,
+        'PUBLISHED',
+        LEAVE_WEBHOOK_WORKFLOW,
+        FORM_VERSION_IDS.LEAVE_V1,
+        '2026-09-15T05:00:00.000Z',
+        'member-201',
+        null,
+      ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.WEBHOOK_EXPENSE_V1,
+        TEMPLATE_IDS.WEBHOOK_EXPENSE,
+        1,
+        'PUBLISHED',
+        EXPENSE_WEBHOOK_WORKFLOW,
+        FORM_VERSION_IDS.EXPENSE_V1,
+        '2026-09-15T05:00:00.000Z',
+        'member-101',
+        null,
+      ),
+      ]),
       templateVersionRow(
         TEMPLATE_VERSION_IDS.ACCESS_V1,
         TEMPLATE_IDS.ACCESS,
@@ -2046,6 +2193,20 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     TEMPLATE_IDS.LEAVE,
     TEMPLATE_VERSION_IDS.LEAVE_V1,
   );
+  if (SEED_WEBHOOK_DEMOS) {
+    await updateCurrentVersion(
+      queryRunner,
+      'approval_templates',
+      TEMPLATE_IDS.WEBHOOK_LEAVE,
+      TEMPLATE_VERSION_IDS.WEBHOOK_LEAVE_V1,
+    );
+    await updateCurrentVersion(
+      queryRunner,
+      'approval_templates',
+      TEMPLATE_IDS.WEBHOOK_EXPENSE,
+      TEMPLATE_VERSION_IDS.WEBHOOK_EXPENSE_V1,
+    );
+  }
   await updateCurrentVersion(
     queryRunner,
     'approval_templates',
@@ -3182,6 +3343,70 @@ function createWorkflowDefinition({
     edges,
     meta: { diagramVersion: 'manufacturing-seed-2026-05-18', schemaVersion: 1 },
     nodes,
+  };
+}
+
+function readWebhookDemoRows(rows: readonly SeedRow[]): readonly SeedRow[] {
+  return SEED_WEBHOOK_DEMOS ? rows : [];
+}
+
+/**
+ * Adds a NOTIFY node as an asynchronous branch off `afterNodeId`: the
+ * approval still flows on to its next node, and the notify node, which may
+ * not have outgoing edges, ends its own branch.
+ */
+function withNotifyBranch(
+  workflow: Readonly<Record<string, unknown>>,
+  notify: {
+    readonly afterNodeId: string;
+    readonly id: string;
+    readonly label: string;
+    readonly recipients: Readonly<Record<string, unknown>>;
+    readonly webhooks: readonly Readonly<Record<string, unknown>>[];
+  },
+): Readonly<Record<string, unknown>> {
+  const nodes = workflow['nodes'] as readonly Readonly<
+    Record<string, unknown>
+  >[];
+  const edges = workflow['edges'] as readonly Readonly<
+    Record<string, unknown>
+  >[];
+  const anchor = nodes.find((node) => node['id'] === notify.afterNodeId);
+  const anchorPosition = (anchor?.['position'] ?? { x: 0, y: 0 }) as {
+    readonly x: number;
+    readonly y: number;
+  };
+
+  return {
+    ...workflow,
+    edges: [
+      ...edges,
+      {
+        data: {},
+        id: `edge-${notify.afterNodeId}-${notify.id}`,
+        source: notify.afterNodeId,
+        target: notify.id,
+        type: 'smoothstep',
+      },
+    ],
+    nodes: [
+      ...nodes,
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: notify.recipients,
+            type: 'NOTIFY',
+            webhooks: notify.webhooks,
+          },
+          label: notify.label,
+          triggerMode: 'AND',
+        },
+        id: notify.id,
+        position: { x: anchorPosition.x + 120, y: anchorPosition.y + 160 },
+        type: 'serviceTask',
+      },
+    ],
   };
 }
 

@@ -14,6 +14,7 @@ import {
 import {
   FolderIcon,
   HomeIcon,
+  LinkIcon,
   ListIcon,
   LogoutIcon,
   MailIcon,
@@ -79,6 +80,7 @@ function createNavigationGroups(routes: BPMRoutes): readonly NavigationGroup[] {
         { href: routes.adminOrgs(), icon: SystemIcon, label: '組織管理', requiresAdmin: true },
         { href: routes.adminUsers(), icon: UserIcon, label: '會員對照', requiresAdmin: true },
         { href: routes.adminDelegations(), icon: ShareIcon, label: '代理設定', requiresAdmin: true },
+        { href: routes.adminWebhookEndpoints(), icon: LinkIcon, label: 'Webhook 端點', requiresAdmin: true },
       ],
     },
   ];

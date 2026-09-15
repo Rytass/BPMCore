@@ -81,7 +81,7 @@ BPM used to ship internally — feel free to remap, omit, or add groups.
 | 我的工作 | 工作台 (`routes.dashboard`) · 我的待簽 (`routes.inbox`) · 我發起的 (`routes.sent`) · 抄送給我 (`routes.cc`) | Per-member workflow |
 | 查詢與代理 | 搜尋 (`routes.search`) · 個人代理 (`routes.delegations`) | Cross-instance + personal delegation |
 | 簽核設計 | 簽核模板 (`routes.templates`) · 模板分類 (`routes.templateCategories`) | Admin-only |
-| 系統管理 | 組織管理 (`routes.adminOrgs`) · 會員對照 (`routes.adminUsers`) · 代理設定 (`routes.adminDelegations`) | Admin-only |
+| 系統管理 | 組織管理 (`routes.adminOrgs`) · 會員對照 (`routes.adminUsers`) · 代理設定 (`routes.adminDelegations`) · Webhook 端點 (`routes.adminWebhookEndpoints`) | Admin-only; Webhook 端點 only does something when the backend enables database-managed endpoints |
 
 ### Reference implementation
 
@@ -188,6 +188,16 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/templates/design
 
 The full list of shims lives in `docs/api-reference.md` under
 `@rytass/bpm-core-react` → `Pages (Next.js Server Component shims)`.
+
+> **Notify node webhooks.** The designer's webhook panel and the case
+> page's "外部系統通知" section need nothing from the frontend host. The
+> panel appears when the backend host registers at least one endpoint; the
+> section appears only to BPM administrators, and only on a case that queued
+> deliveries (turn it off with `InstanceDetailView`'s
+> `showWebhookDeliveries={false}`). What the host does own — registering
+> endpoints, keeping URLs and secrets server-side, verifying signatures and
+> de-duplicating on `deliveryId` at the receiver — is in
+> [`11-consumer-quickstart.md` §2c](./11-consumer-quickstart.md).
 
 Hosts that want finer control over a single page (custom `metadata`,
 extra wrapping, etc.) can skip the shim and import the `View` directly:

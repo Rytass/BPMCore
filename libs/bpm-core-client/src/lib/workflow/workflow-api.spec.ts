@@ -223,6 +223,17 @@ describe('@rytass/bpm-core-client/workflow', () => {
       }
     });
 
+    it('answers an empty list when the host omits the field', async (): Promise<void> => {
+      const harness = installFetchMock({});
+      try {
+        await expect(
+          listWorkflowWebhookDeliveries('instance-1'),
+        ).resolves.toEqual([]);
+      } finally {
+        harness.restore();
+      }
+    });
+
     it('retries a delivery and returns the re-queued row', async (): Promise<void> => {
       const queued = { ...delivery, attemptCount: 0, status: 'PENDING' };
       const harness = installFetchMock({

@@ -24,6 +24,7 @@ import {
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  isAsyncNotifyServiceTask,
   isNotifyRecipientsEmpty,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -2230,6 +2231,13 @@ export class WorkflowEngineService {
         stepIndex: input.steps.length,
       }),
     ];
+
+    // A NOTIFY node is an asynchronous branch: at runtime it consumes its
+    // token and never advances, so its branch ends here rather than failing
+    // for want of an outgoing edge it is not allowed to have.
+    if (isAsyncNotifyServiceTask(node)) {
+      return nextSteps;
+    }
 
     if (!entryConditionMet || node.type === 'endEvent') {
       if (node.type === 'endEvent') {
@@ -6835,6 +6843,10 @@ function readDryRunStepMessage(
 
   if (node.type === 'endEvent') {
     return `流程結束：${node.data.endState ?? 'APPROVED'}`;
+  }
+
+  if (isAsyncNotifyServiceTask(node)) {
+    return '將發送知會，此分支不會繼續往下。';
   }
 
   return '節點條件通過。';

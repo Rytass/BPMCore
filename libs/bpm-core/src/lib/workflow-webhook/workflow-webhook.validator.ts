@@ -1,21 +1,17 @@
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
-  NotifyWebhookBinding,
   NotifyWebhookTarget,
   WorkflowDefinition,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
-  isFormFieldCompatibleWithWebhookParameter,
-  isNotifyWebhookValueCompatibleWithParameter,
+  NotifyWebhookCatalogIssue,
   readNotifyWebhookStructureIssues,
+  readNotifyWebhookTargetCatalogIssues,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { BPM_WORKFLOW_WEBHOOK_ERROR_CODES } from './workflow-webhook.errors';
-import {
-  BPMWorkflowWebhookEndpointEntry,
-  BPMWorkflowWebhookParameter,
-} from './workflow-webhook.types';
+import { BPMWorkflowWebhookEndpointEntry } from './workflow-webhook.types';
 
 export interface LintWorkflowWebhookTargetsInput {
   readonly definition: WorkflowDefinition;
@@ -25,6 +21,13 @@ export interface LintWorkflowWebhookTargetsInput {
     key: string,
     version: number,
   ) => Promise<BPMWorkflowWebhookEndpointEntry | null>;
+  /**
+   * Whether an endpoint's current URL is inside the allowlist (ADR 18 §3.13
+   * rule 3). Omitted: not checked at publish, only before each delivery.
+   */
+  readonly isEndpointUrlAllowed?: (
+    entry: BPMWorkflowWebhookEndpointEntry,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -77,6 +80,7 @@ export async function lintWorkflowWebhookTargets(
             : [
                 lintTarget({
                   formSchema: input.formSchema,
+                  isEndpointUrlAllowed: input.isEndpointUrlAllowed,
                   nodeId: node.id,
                   resolveEndpoint: input.resolveEndpoint,
                   target,
@@ -92,126 +96,79 @@ export async function lintWorkflowWebhookTargets(
 
 async function lintTarget({
   formSchema,
+  isEndpointUrlAllowed,
   nodeId,
   resolveEndpoint,
   target,
   targetIndex,
 }: {
   readonly formSchema: FormDefinitionSchema;
+  readonly isEndpointUrlAllowed?: LintWorkflowWebhookTargetsInput['isEndpointUrlAllowed'];
   readonly nodeId: string;
   readonly resolveEndpoint: LintWorkflowWebhookTargetsInput['resolveEndpoint'];
   readonly target: NotifyWebhookTarget;
   readonly targetIndex: number;
 }): Promise<readonly string[]> {
-  const path = `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`;
   const entry = await resolveEndpoint(
     target.endpoint.key,
     target.endpoint.version,
   );
 
-  if (!entry) {
-    return [
-      `${path}.endpoint ${target.endpoint.key}@${target.endpoint.version} is not registered (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.ENDPOINT_MISSING})`,
-    ];
-  }
+  const path = `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`;
+  const catalogIssues = readNotifyWebhookTargetCatalogIssues({
+    endpoint: entry?.endpoint.descriptor ?? null,
+    formFields: formSchema.fields,
+    target,
+  }).map((issue) => readCatalogIssueMessage(issue, target, path));
 
-  const descriptor = entry.endpoint.descriptor;
-
-  if (descriptor.deprecated) {
-    return [
-      `${path}.endpoint ${target.endpoint.key}@${target.endpoint.version} is deprecated (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.ENDPOINT_DEPRECATED})`,
-    ];
-  }
-
-  const boundParameters = new Set(
-    target.bindings.map((binding) => binding.parameter),
-  );
+  // A saved endpoint whose URL a tightened allowlist no longer covers would
+  // fail every delivery; say so now rather than after the case runs.
+  const urlAllowed =
+    !entry || catalogIssues.length || !isEndpointUrlAllowed
+      ? true
+      : await isEndpointUrlAllowed(entry);
 
   return [
-    ...descriptor.parameters.flatMap((parameter) =>
-      parameter.required && !boundParameters.has(parameter.key)
-        ? [
-            `${path}.bindings is missing required parameter "${parameter.key}" (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.PARAMETER_REQUIRED})`,
-          ]
-        : [],
-    ),
-    ...target.bindings.flatMap((binding, bindingIndex) =>
-      lintBinding({
-        binding,
-        bindingIndex,
-        formSchema,
-        parameters: descriptor.parameters,
-        path,
-      }),
-    ),
+    ...catalogIssues,
+    ...(urlAllowed
+      ? []
+      : [
+          `${path}.endpoint ${target.endpoint.key}@${target.endpoint.version} calls a URL outside workflowWebhookAllowedUrlPatterns (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.URL_NOT_ALLOWED})`,
+        ]),
   ];
 }
 
-function lintBinding({
-  binding,
-  bindingIndex,
-  formSchema,
-  parameters,
-  path,
-}: {
-  readonly binding: NotifyWebhookBinding;
-  readonly bindingIndex: number;
-  readonly formSchema: FormDefinitionSchema;
-  readonly parameters: readonly BPMWorkflowWebhookParameter[];
-  readonly path: string;
-}): readonly string[] {
-  const bindingPath = `${path}.bindings[${bindingIndex}]`;
-  const from = binding.from;
-  const parameter = parameters.find(
-    (candidate) => candidate.key === binding.parameter,
-  );
+/** The developer-facing, path-style wording of the shared catalog rules. */
+function readCatalogIssueMessage(
+  issue: NotifyWebhookCatalogIssue,
+  target: NotifyWebhookTarget,
+  path: string,
+): string {
+  const endpoint = `${target.endpoint.key}@${target.endpoint.version}`;
+  const bindingPath = `${path}.bindings[${issue.bindingIndex ?? 0}]`;
+  const parameter = issue.parameter ?? '';
+  const codes = BPM_WORKFLOW_WEBHOOK_ERROR_CODES;
 
-  if (!parameter) {
-    return [
-      `${bindingPath}.parameter "${binding.parameter}" is not declared by the endpoint (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.PARAMETER_UNKNOWN})`,
-    ];
+  switch (issue.code) {
+    case 'ENDPOINT_MISSING':
+      return `${path}.endpoint ${endpoint} is not registered (${codes.ENDPOINT_MISSING})`;
+    case 'ENDPOINT_DEPRECATED':
+      return `${path}.endpoint ${endpoint} is deprecated (${codes.ENDPOINT_DEPRECATED})`;
+    case 'ENDPOINT_DISABLED':
+      return `${path}.endpoint ${endpoint} is disabled (${codes.ENDPOINT_DISABLED})`;
+    case 'PARAMETER_REQUIRED':
+      return `${path}.bindings is missing required parameter "${parameter}" (${codes.PARAMETER_REQUIRED})`;
+    case 'PARAMETER_UNKNOWN':
+      return `${bindingPath}.parameter "${parameter}" is not declared by the endpoint (${codes.PARAMETER_UNKNOWN})`;
+    case 'FIELD_MISSING':
+      return `${bindingPath}.from.fieldKey "${issue.fieldKey ?? ''}" does not match a schema field (${codes.BINDING_INCOMPATIBLE})`;
+    case 'FIELD_INCOMPATIBLE':
+      return `${bindingPath}.from.fieldKey "${issue.fieldKey ?? ''}" (${issue.fieldType ?? ''}) cannot fill parameter "${parameter}" (${issue.parameterType ?? ''}) (${codes.BINDING_INCOMPATIBLE})`;
+    case 'CONSTANT_REQUIRED_NULL':
+      return `${bindingPath}.from.value cannot be null for required parameter "${parameter}" (${codes.BINDING_INCOMPATIBLE})`;
+    case 'CONSTANT_INCOMPATIBLE':
+      return `${bindingPath}.from.value does not fit parameter "${parameter}" (${issue.parameterType ?? ''}) (${codes.BINDING_INCOMPATIBLE})`;
+    case 'CONTEXT_INCOMPATIBLE':
+      return `${bindingPath}.from.path is a string and cannot fill parameter "${parameter}" (${issue.parameterType ?? ''}) (${codes.BINDING_INCOMPATIBLE})`;
   }
-
-  if (from.kind === 'FIELD') {
-    const field = formSchema.fields.find(
-      (candidate) => candidate.fieldKey === from.fieldKey,
-    );
-
-    if (!field) {
-      return [
-        `${bindingPath}.from.fieldKey "${from.fieldKey}" does not match a schema field (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
-      ];
-    }
-
-    return isFormFieldCompatibleWithWebhookParameter(field, parameter.type)
-      ? []
-      : [
-          `${bindingPath}.from.fieldKey "${from.fieldKey}" (${field.type}) cannot fill parameter "${parameter.key}" (${parameter.type}) (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
-        ];
-  }
-
-  if (from.kind === 'CONSTANT') {
-    if (from.value === null && parameter.required) {
-      return [
-        `${bindingPath}.from.value cannot be null for required parameter "${parameter.key}" (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
-      ];
-    }
-
-    return isNotifyWebhookValueCompatibleWithParameter(
-      from.value,
-      parameter.type,
-    )
-      ? []
-      : [
-          `${bindingPath}.from.value does not fit parameter "${parameter.key}" (${parameter.type}) (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
-        ];
-  }
-
-  // Every CONTEXT path resolves to a string, so anything but a string or an
-  // opaque json parameter is a mistake the author should see at publish.
-  return parameter.type === 'string' || parameter.type === 'json'
-    ? []
-    : [
-        `${bindingPath}.from.path is a string and cannot fill parameter "${parameter.key}" (${parameter.type}) (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
-      ];
 }

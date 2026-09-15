@@ -57,6 +57,7 @@ describe('WorkflowWebhookQueries', () => {
       {
         deprecated: false,
         description: 'Creates the purchase order',
+        disabled: false,
         key: 'erp.purchase-approved',
         label: 'ERP purchase order',
         parameters: [

@@ -63,12 +63,14 @@ interface Harness {
   readonly requests: { readonly init: RequestInit; readonly url: string }[];
   readonly service: WorkflowWebhookDeliveryService;
   readonly store: Map<string, WorkflowWebhookDeliveryEntity>;
+  readonly webhookService: WorkflowWebhookService;
 }
 
 function createHarness({
   buildRequest = async (): Promise<BPMWorkflowWebhookRequest> => ({
     url: 'https://erp.example.com/hooks/bpm',
   }),
+  endpointDisabled = false,
   endpointMissing = false,
   options = resolveBPMWorkflowWebhookOptions(),
   respond = async (): Promise<Response> => new Response('ok', { status: 200 }),
@@ -76,6 +78,7 @@ function createHarness({
   source = 'REGISTRY',
 }: {
   readonly buildRequest?: BPMWorkflowWebhookEndpointEntry['endpoint']['buildRequest'];
+  readonly endpointDisabled?: boolean;
   readonly endpointMissing?: boolean;
   readonly options?: BPMResolvedWorkflowWebhookOptions;
   readonly respond?: WorkflowWebhookFetch;
@@ -178,6 +181,7 @@ function createHarness({
             endpoint: {
               buildRequest,
               descriptor: {
+                disabled: endpointDisabled,
                 key: 'erp.po',
                 label: 'ERP',
                 parameters: [],
@@ -203,7 +207,7 @@ function createHarness({
 
   jest.spyOn(service, 'readCurrentTime').mockReturnValue(NOW);
 
-  return { activities, requests, service, store };
+  return { activities, requests, service, store, webhookService };
 }
 
 function withDelivery(
@@ -515,6 +519,50 @@ describe('WorkflowWebhookDeliveryService', () => {
         lastErrorCode: 'WEBHOOK_ENDPOINT_MISSING',
         status: WorkflowWebhookDeliveryStatusEnum.FAILED,
       });
+    });
+
+    it('fails a queued delivery without sending once the endpoint is disabled', async () => {
+      const harness = createHarness({
+        endpointDisabled: true,
+        source: 'DATABASE',
+      });
+
+      await harness.service.deliverByIds(['delivery-1'], NOW);
+
+      expect(harness.requests).toHaveLength(0);
+      expect(harness.store.get('delivery-1')).toMatchObject({
+        lastErrorCode: 'WEBHOOK_ENDPOINT_DISABLED',
+        status: WorkflowWebhookDeliveryStatusEnum.FAILED,
+      });
+    });
+
+    it('test-sends through the same checks without writing a delivery', async () => {
+      const harness = createHarness({
+        buildRequest: async () => ({
+          signingSecret: 'secret',
+          url: 'https://erp.example.com/hooks/bpm',
+        }),
+        source: 'DATABASE',
+      });
+      const entry = await harness.webhookService.getEndpoint('erp.po', 1);
+      const outcome = await harness.service.sendTestEvent(
+        entry as BPMWorkflowWebhookEndpointEntry,
+        {
+          ...createRow().event,
+          attempt: 1,
+          deliveryId: 'test-1',
+          eventType: 'workflow.notify',
+        },
+      );
+
+      // A DATABASE endpoint is held to the allowlist, which is empty here.
+      expect(outcome).toEqual({
+        errorCode: 'WEBHOOK_URL_NOT_ALLOWED',
+        errorDetail: null,
+        ok: false,
+        status: null,
+      });
+      expect(harness.requests).toHaveLength(0);
     });
 
     it('refuses a URL that is not http(s)', async () => {

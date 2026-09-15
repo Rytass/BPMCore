@@ -18,6 +18,8 @@ registerEnumType(WorkflowWebhookDeliveryStatusEnum, {
  */
 export const WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES = {
   BUILD_REQUEST_FAILED: 'WEBHOOK_BUILD_REQUEST_FAILED',
+  /** An administrator disabled the (database) endpoint. */
+  ENDPOINT_DISABLED: 'WEBHOOK_ENDPOINT_DISABLED',
   /** The endpoint source threw while looking the endpoint up. */
   ENDPOINT_LOOKUP_FAILED: 'WEBHOOK_ENDPOINT_LOOKUP_FAILED',
   ENDPOINT_MISSING: 'WEBHOOK_ENDPOINT_MISSING',
