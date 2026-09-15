@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0–P4 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0–P5 VERIFIED（ADR 18 於 2026-09-15 Accepted；發布待使用者執行）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -18,7 +18,7 @@
 | P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | VERIFIED |
 | P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | VERIFIED |
 | P4    | 設計器知會節點 Webhook 面板                               | P1     | VERIFIED |
-| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
+| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | VERIFIED |
 | P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
 
 ```
@@ -590,32 +590,32 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 
 **真實環境驗證（2026-09-15，`apps/client` + `apps/api` + develop 資料庫，模板 `8b9259e6`）**
 
-| 情境 | 結果 |
-| --- | --- |
-| 開啟含 3 個 webhook 知會節點的模板 | 卡片顯示「Webhook 1 個」；面板讀出端點、`金額`＝表單欄位「申請金額」、`案件標題`＝案件資訊「案件主旨」 |
-| 加入知會對象 → 再移除 | 卡片依序為「林總經理／Webhook 1 個」→「Webhook 1 個」；面板 webhook 設定始終保留（覆寫問題回歸測試） |
-| 新增 Webhook、必填參數未綁定 | 顯示「發布前需修正：知會節點「通知 ERP」的第 2 個 Webhook（示範：採購核准通知 ERP）的必填參數「amount」尚未設定。」；「保存並發布」停用、「儲存草稿」可用 |
-| `number` 參數 | 來源只有「表單欄位」「固定值」；欄位下拉只列「申請金額（amount）」，不列文字欄位「申請主旨」 |
-| 移除未完成的 Webhook 後發布 | 暫時啟用模板後「發布草稿」成功（只有 webhook、沒有知會對象的知會節點通過後端發布 lint），隨即停用回原狀 |
-| 用「知會節點」工具新增節點並只加 Webhook | 無流程問題、可發布（未實際發布） |
-| AI 助理：「把通知 ERP 的知會對象設定為林總經理」 | 助理呼叫 `set_service_action`；卡片變為「直屬主管／Webhook 1 個」，webhook 與綁定保留 |
-| 試跑（畫布含知會節點） | 修正前回 `has no outgoing edge`；修正後步驟為「將發送知會，此分支不會繼續往下。」＋「將送出 Webhook：示範：採購核准通知 ERP」 |
+| 情境                                             | 結果                                                                                                                                                      |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 開啟含 3 個 webhook 知會節點的模板               | 卡片顯示「Webhook 1 個」；面板讀出端點、`金額`＝表單欄位「申請金額」、`案件標題`＝案件資訊「案件主旨」                                                    |
+| 加入知會對象 → 再移除                            | 卡片依序為「林總經理／Webhook 1 個」→「Webhook 1 個」；面板 webhook 設定始終保留（覆寫問題回歸測試）                                                      |
+| 新增 Webhook、必填參數未綁定                     | 顯示「發布前需修正：知會節點「通知 ERP」的第 2 個 Webhook（示範：採購核准通知 ERP）的必填參數「amount」尚未設定。」；「保存並發布」停用、「儲存草稿」可用 |
+| `number` 參數                                    | 來源只有「表單欄位」「固定值」；欄位下拉只列「申請金額（amount）」，不列文字欄位「申請主旨」                                                              |
+| 移除未完成的 Webhook 後發布                      | 暫時啟用模板後「發布草稿」成功（只有 webhook、沒有知會對象的知會節點通過後端發布 lint），隨即停用回原狀                                                   |
+| 用「知會節點」工具新增節點並只加 Webhook         | 無流程問題、可發布（未實際發布）                                                                                                                          |
+| AI 助理：「把通知 ERP 的知會對象設定為林總經理」 | 助理呼叫 `set_service_action`；卡片變為「直屬主管／Webhook 1 個」，webhook 與綁定保留                                                                     |
+| 試跑（畫布含知會節點）                           | 修正前回 `has no outgoing edge`；修正後步驟為「將發送知會，此分支不會繼續往下。」＋「將送出 Webhook：示範：採購核准通知 ERP」                             |
 
 AI 助理那次回覆說已設定為林總經理，實際寫入的是「直屬主管」解析器，與 webhook 無關，記入 backlog。
 
 **獨立驗證（2026-09-15）**：結論 PASS WITH FIXES。後端 lint 重構逐條比對與 HEAD 等價。採納並修正：
 
-| 等級 | 發現 | 修正 |
-| --- | --- | --- |
-| major | 數字固定值輸入 `1.5` 時，`1.` 被解析回 `1`，受控 `Input` 立刻吃掉小數點；`0x1f` 會變 31 | 輸入框保留原始文字，只有純十進位才轉成數字；補測試並在瀏覽器逐字輸入 `1.5`、`-0.5` 確認 |
-| minor | 表單草稿「套用」後，欄位清單與發布檢查仍用已發布的 schema | 有未儲存表單草稿時改用草稿 schema |
-| minor | 沒有相容欄位時選「表單欄位」會存入空 key，連草稿都無法儲存 | 沒有相容欄位時不提供該來源 |
-| minor | 以 API 存入格式錯誤的 `webhooks`（如 `[null]`）會讓設計器拋錯 | 無法渲染時顯示警告與「清除 Webhook 設定」；試跑標籤略過 |
-| minor | Target 卡片使用不存在的 `--mzn-color-border` 與寫死數值 | 改用 `--mzn-color-border-neutral`、`--mzn-spacing-gap-base`、`--mzn-spacing-padding-horizontal-base`、`--mzn-radius-base` |
-| minor | 進入條件不成立而略過的試跑步驟仍列出「將送出 Webhook」 | `SKIPPED` 步驟不列出 |
-| nit | 綁定的欄位已不存在時 Select 看似未設定；布林固定值為 null 時顯示「否」 | 保留「（找不到相容欄位）」現值選項；null 顯示未選取 |
-| nit | 非 NOTIFY 動作也顯示「可只設定 Webhook」提示 | 只在 NOTIFY 顯示 |
-| nit | catalog 未載入時由後端擋下發布，錯誤訊息只有英文路徑 | 錯誤前加上「Webhook 設定未通過發布檢查：」 |
+| 等級  | 發現                                                                                    | 修正                                                                                                                      |
+| ----- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| major | 數字固定值輸入 `1.5` 時，`1.` 被解析回 `1`，受控 `Input` 立刻吃掉小數點；`0x1f` 會變 31 | 輸入框保留原始文字，只有純十進位才轉成數字；補測試並在瀏覽器逐字輸入 `1.5`、`-0.5` 確認                                   |
+| minor | 表單草稿「套用」後，欄位清單與發布檢查仍用已發布的 schema                               | 有未儲存表單草稿時改用草稿 schema                                                                                         |
+| minor | 沒有相容欄位時選「表單欄位」會存入空 key，連草稿都無法儲存                              | 沒有相容欄位時不提供該來源                                                                                                |
+| minor | 以 API 存入格式錯誤的 `webhooks`（如 `[null]`）會讓設計器拋錯                           | 無法渲染時顯示警告與「清除 Webhook 設定」；試跑標籤略過                                                                   |
+| minor | Target 卡片使用不存在的 `--mzn-color-border` 與寫死數值                                 | 改用 `--mzn-color-border-neutral`、`--mzn-spacing-gap-base`、`--mzn-spacing-padding-horizontal-base`、`--mzn-radius-base` |
+| minor | 進入條件不成立而略過的試跑步驟仍列出「將送出 Webhook」                                  | `SKIPPED` 步驟不列出                                                                                                      |
+| nit   | 綁定的欄位已不存在時 Select 看似未設定；布林固定值為 null 時顯示「否」                  | 保留「（找不到相容欄位）」現值選項；null 顯示未選取                                                                       |
+| nit   | 非 NOTIFY 動作也顯示「可只設定 Webhook」提示                                            | 只在 NOTIFY 顯示                                                                                                          |
+| nit   | catalog 未載入時由後端擋下發布，錯誤訊息只有英文路徑                                    | 錯誤前加上「Webhook 設定未通過發布檢查：」                                                                                |
 
 卡片摘要格式與 Scope 文字不同一項，維持自決項目 1 的做法。嵌入式建立精靈的發布不參考設計器
 的 webhook 檢查，與它原本就不參考 `workflowIssue` 一致，由後端把關。
@@ -647,6 +647,93 @@ AI 助理那次回覆說已設定為林總經理，實際寫入的是「直屬�
 
 - `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`、`pnpm e2e:client` 全綠。
 - 獨立 verifier 逐條核對 ADR 18 §3、§4，並在瀏覽器重跑 golden path。
+
+**實作結果**（2026-09-15）
+
+- `apps/api`：
+  - `ApiDemoWebhookModule`：接收端、store 與 `ApiDemoWebhookSigningSecret`（依序讀 Vault
+    `BPM_DEMO_WEBHOOK_SIGNING_SECRET` → 環境變數 → 本機預設，每次呼叫時讀）。registry 改由
+    `workflowWebhookRegistryProvider` 注入金鑰讀取器。
+  - Demo 端點：`demo.purchase-approved`、`demo.leave-submitted`（假別／開始日期／結束日期／
+    申請人）、`demo.flaky`、`demo.slow`、`demo.switchable`（回應可切換，供永久失敗情境）。
+  - 接收端：驗簽、依 `deliveryId` 記錄（最多 500 筆，最舊的先丟）；`?status=&delayMs=`
+    單次模擬、`PUT /demo/webhook-sink/modes/:mode` 持續模擬；簽章不合法立即 401，不套用
+    模擬、不記錄。全部只在 `NODE_ENV !== 'production'`。
+- `demo:reset` seed：「請假申請（同步人資系統）」（知會對象 + webhook）與「供應商請款（通知
+  ERP）」（只有 webhook）。`staging:reset`（`VAULT_PATH=bpm_core/staging`）預設不 seed 這兩個
+  範本，因為 staging 以 `NODE_ENV=production` 執行、沒有 demo 端點；`BPM_SEED_WEBHOOK_DEMOS`
+  可覆寫。seed 內容以離線方式驗證（兩個流程的流程檢查、結構與 catalog 檢查皆無問題）；
+  **未實際執行 `demo:reset`**，因為它會清空 develop 資料庫的所有資料，留待使用者決定。
+- E2E：`apps/client-e2e/specs/notify-webhook-real.spec.ts`，自行建立表單與模板、不依賴
+  seed 案件（仍使用 seed 的測試會員）。
+- 文件：`11-consumer-quickstart.md` §2c（註冊端點、事件、驗簽、冪等、重試、排程、發布檢查、
+  白名單）、`08-frontend-schema.md`、`07-workflow-execution.md`、`integration-guide.md`、
+  `infrastructure.md`，修正 `01`／`03` 的「schema 預留」過期敘述，`README.md` 索引。
+
+**E2E 矩陣涵蓋**
+
+| Journey             | 對應測試                                                                                                                               | 結果 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| Designer            | 綁定表單欄位／固定值／案件資訊、缺必填參數擋發布、發布後逐一驗證寫入內容                                                               | ✅   |
+| Designer 回歸       | 移除知會對象後 webhook 仍在，發布內容的知會對象為空                                                                                    | ✅   |
+| Runtime golden path | 送出 → 初審同意 → 接收端 1.5 秒內收到、簽章有效、參數 `{ amount, caseTitle }` 正確                                                     | ✅   |
+| Runtime 重試        | flaky：503 → 503 → 200，`attemptCount` 3、同一個 id、終局活動紀錄 1 筆                                                                 | ✅   |
+| Runtime 永久失敗    | switchable 回 400 → `FAILED`／`WEBHOOK_HTTP_400` → 恢復 → 管理者在案件頁重送 → 區塊自動顯示已送達                                      | ✅   |
+| Runtime 不阻斷      | 同意決定 < 8 秒完成、案件照常前進；slow 以 `WEBHOOK_TIMEOUT` 回到 `PENDING` 等重試                                                     | ✅   |
+| 退回重送            | 複審退回 → RESTART 重送 → 初審同意 → 知會節點再產生 4 筆新投遞，金額為新值                                                             | ✅   |
+| 權限                | 一般使用者：deliveries 查詢、重送、catalog 皆 `FORBIDDEN`；案件頁無投遞區塊、無錯誤碼，時間軸有「已通知外部系統」                      | ✅   |
+| 安全                | 模板版本、案件快照、catalog、活動紀錄皆無 `http(s)://`、sink 路徑、預設金鑰與 `signingSecret`／`x-bpm-signature`／`authorization` 鍵名 | ✅   |
+
+AI 助理修改知會節點後保留 webhook：E2E 需要真的呼叫 LLM、結果不穩定，改由
+`workflow-toolset.spec.ts`／`workflow-command.spec.ts` 單元測試涵蓋，並已在 P4 以瀏覽器
+手動實測一次。
+
+**Gate 結果**
+
+- `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`：通過。
+- `pnpm e2e:client`（整套 72 個）：本機未安裝 Playwright 自帶瀏覽器，以
+  `PLAYWRIGHT_EXECUTABLE_PATH` 指向系統 Chrome 執行。webhook spec 單獨與 4 worker 平行負載下
+  皆全數通過。整套中 2 個失敗與本功能無關、屬 develop 資料狀態：
+  `form-table-field-real`「Seeded table field golden path」需要的 seed 案件
+  `60000000-…-000000000011` 早在 2026-08-27 已被重新送出（狀態 RUNNING），
+  `workspace-routes-seeded` 因累積的 E2E 資料出現重複文字（strict mode 比對到 2 個元素）；
+  兩者都需要 `demo:reset` 才會恢復。
+
+**整套 E2E 發現並修正的回歸（P3 引入、已在 main）**：`listWorkflowWebhookDeliveries` 在宿主
+（或測試 mock）的回應不含該欄位時回傳 `undefined`，案件詳情頁在 render 時對它呼叫 `.some()`
+拋錯、反覆重掛，使 `workflow-linear-w5`、`delegation-transfer-w8`、`workflow-branching-w6`、
+`workflow-candidate-approvers` 等 10 個以 mock GraphQL 開啟案件頁的測試失敗。改為比照
+`listAdhocDirectives` 回傳 `?? []`，補測試，10 個測試恢復通過。
+
+**P5 自決的項目**
+
+1. 新增 `demo.switchable` 與模式切換 API，讓「永久失敗 → 管理者重送 → 成功」能在同一個投遞
+   上重現。
+2. `demo.leave-submitted` 的參數改為假別／開始日期／結束日期／申請人，配合 seed 請假表單實際
+   有的欄位（原規劃的「天數」表單沒有）。
+3. E2E 不依賴 seed 案件，也不執行 `demo:reset`。
+
+**獨立驗證（2026-09-15）**：結論 PASS WITH FIXES，ADR 18 §3／§4 逐條對照除 P6 範圍外皆已
+落實（§3.1／§4-2 的錯誤碼差異已於 ADR 補註）。採納並修正：
+
+| 等級  | 發現                                                                                            | 修正                                                                                       |
+| ----- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| major | `staging:reset` 會 seed 兩個在 staging（`NODE_ENV=production`、無 demo 端點）永遠投遞失敗的範本 | staging 預設不 seed，`BPM_SEED_WEBHOOK_DEMOS` 可覆寫；infrastructure 文件改為 develop only |
+| minor | 未驗簽的請求仍會套用延遲並寫入 store                                                            | 簽章不合法立即 401、不延遲不記錄；store 上限 500 筆；補測試                                |
+| minor | 「不阻斷」測試未證明逾時中斷有效                                                                | 追加斷言 slow 以 `WEBHOOK_TIMEOUT` 回到 `PENDING`                                          |
+| minor | 安全測試只比對預設金鑰字串                                                                      | 追加鍵名比對並註明前提                                                                     |
+| minor | 設計器 E2E 未斷言知會對象已清空、FIELD 綁定最後被改掉、停用範本不在 finally                     | 改為三種來源各留一個並驗證發布內容、斷言知會對象為空、清理移進 finally                     |
+| minor | AI 助理情境未在 E2E                                                                             | 矩陣註明由單元測試涵蓋                                                                     |
+| minor | 07 pseudo-code 讓所有 serviceTask 都不前進                                                      | 依動作類型分支                                                                             |
+| minor | §2c 把全域白名單開關寫成可針對個別端點，漏了萬用字元不比對內網位址                              | 改寫並補規則                                                                               |
+| minor | 整合指南寫錯投遞區塊的顯示條件                                                                  | 改為管理者且案件有投遞，並提 `showWebhookDeliveries`                                       |
+| minor | ADR／docs/19 狀態未同步；ADR §3.1 錯誤碼與 P1 決策 #6 不一致                                    | 本次同步並補註                                                                             |
+| nit   | 「最多 6 次」、`content-type` 預設、只能重送嘗試過的投遞                                        | §2c 補述                                                                                   |
+
+未採納的 nit：demo 端點用 literal registry 而非 `StaticBPMWorkflowWebhookRegistry`（為避免 api
+spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM 的寫法。
+
+**發布**：`npx nx release --dry-run`（2026-09-15）解析目前版本為 `v0.13.3`，四個套件（固定版本組）將一起升為 **0.13.4**（0.x 期間 `feat` 只算 patch）。P0–P5 已可一起發布（backlog #13：P0 不可單獨發版的限制已解除）。實際發布 `npx nx release --otp=<6 digits>` 由使用者執行；若希望這批功能以 minor 發布，改用 `npx nx release minor --otp=<6 digits>`。
 
 ## P6 — DB 管理端點、加密欄位與管理頁
 
@@ -686,7 +773,7 @@ AI 助理那次回覆說已設定為林總經理，實際寫入的是「直屬�
 | Journey             | 情境                                                                  |
 | ------------------- | --------------------------------------------------------------------- |
 | Designer            | 設定 webhook、綁定三種來源、只有 webhook 可發布、缺必填參數不可發布   |
-| Designer 回歸       | 增刪知會對象與 AI 助理編輯後 webhook 設定保留                         |
+| Designer 回歸       | 增刪知會對象後 webhook 設定保留（AI 助理路徑由單元測試涵蓋，見下）    |
 | Runtime golden path | 發起 → 簽核 → 知會節點 → sink 收到簽章正確、參數正確的事件            |
 | Runtime 重試        | sink 回 503 兩次後成功，`deliveryId` 不變、只記錄一次                 |
 | Runtime 永久失敗    | sink 回 400 → `FAILED` → 管理者重送 → `SENT`                          |

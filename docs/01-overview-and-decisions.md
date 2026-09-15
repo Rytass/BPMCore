@@ -54,17 +54,17 @@
 
 ## BPMN 子集
 
-| 元素                    | 採用 | 替代方案                                                       |
-| ----------------------- | ---- | -------------------------------------------------------------- |
-| Start / End Event       | ✅   | —                                                              |
-| User Task               | ✅   | 簽核                                                           |
-| Service Task            | ✅   | 目前 runtime 執行 `NOTIFY`；webhook / set-field 為 schema 預留 |
-| Exclusive Gateway (XOR) | ✅   | —                                                              |
-| Parallel Gateway (AND)  | ✅   | —                                                              |
-| Inclusive Gateway (OR)  | ❌   | AND + 各分支內 XOR                                             |
-| Boundary Timer Event    | ✅   | SLA 逾時                                                       |
-| Sub-Process             | ❌   | 後期再加                                                       |
-| Pool / Lane             | ❌   | 由 Approver Resolver 取代                                      |
+| 元素                    | 採用 | 替代方案                                                                                                                                 |
+| ----------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Start / End Event       | ✅   | —                                                                                                                                        |
+| User Task               | ✅   | 簽核                                                                                                                                     |
+| Service Task            | ✅   | 知會節點 `NOTIFY`（站內／email 與宿主註冊端點的 webhook，ADR 18）；`WEBHOOK`／`SET_FORM_FIELD` 動作可由 API 設定並執行，設計器未提供介面 |
+| Exclusive Gateway (XOR) | ✅   | —                                                                                                                                        |
+| Parallel Gateway (AND)  | ✅   | —                                                                                                                                        |
+| Inclusive Gateway (OR)  | ❌   | AND + 各分支內 XOR                                                                                                                       |
+| Boundary Timer Event    | ✅   | SLA 逾時                                                                                                                                 |
+| Sub-Process             | ❌   | 後期再加                                                                                                                                 |
+| Pool / Lane             | ❌   | 由 Approver Resolver 取代                                                                                                                |
 
 詳見 [03 — BPMN 引擎](./03-bpmn-engine.md)。
 

@@ -51,13 +51,14 @@ The wrapper API host also reads Kubernetes environment variables from
 `vault-secret` for runtime-only settings that are not part of the reusable BPM
 module:
 
-| Variable                        | Used by                          | Purpose                                           |
-| ------------------------------- | -------------------------------- | ------------------------------------------------- |
-| `API_SESSION_SECRET`            | `apps/api`                       | HMAC secret for the signed login cookie.          |
-| `BPM_API_PUBLIC_URL`            | `apps/api`                       | Public origin for signed attachment URLs.         |
-| `BPM_ATTACHMENT_SIGNING_SECRET` | `libs/bpm-core` via host options | HMAC secret for attachment download/preview URLs. |
-| `OPENAI_API_KEY`                | `apps/client`                    | Designer AI assistant LLM key (optional).         |
-| `BPM_AI_ASSISTANT_ENABLED`      | `apps/client`                    | `'true'` to show the designer AI assistant.       |
+| Variable                          | Used by                          | Purpose                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `API_SESSION_SECRET`              | `apps/api`                       | HMAC secret for the signed login cookie.                                                                                                                                                                                                                                                                             |
+| `BPM_API_PUBLIC_URL`              | `apps/api`                       | Public origin for signed attachment URLs.                                                                                                                                                                                                                                                                            |
+| `BPM_ATTACHMENT_SIGNING_SECRET`   | `libs/bpm-core` via host options | HMAC secret for attachment download/preview URLs.                                                                                                                                                                                                                                                                    |
+| `BPM_DEMO_WEBHOOK_SIGNING_SECRET` | `apps/api` (develop only)        | Signing secret shared by the demo notify webhook endpoints and their receiver; read from the Vault path first, then this variable, then a local default. Not needed on staging, which runs `NODE_ENV=production` where the demo endpoints are not registered (and `staging:reset` skips the webhook demo templates). |
+| `OPENAI_API_KEY`                  | `apps/client`                    | Designer AI assistant LLM key (optional).                                                                                                                                                                                                                                                                            |
+| `BPM_AI_ASSISTANT_ENABLED`        | `apps/client`                    | `'true'` to show the designer AI assistant.                                                                                                                                                                                                                                                                          |
 
 ## Staging Deployment
 

@@ -244,6 +244,124 @@ BPMRootModule.forRoot({
 `BPMRootModule` 的 `imports` 會一併傳進 `CalendarModule`，所以 calendar provider 的相依
 不需要靠 host 端的 `@Global()` module 才解析得到。
 
+### 2c. 知會節點 Webhook 端點（選用）
+
+知會節點除了站內通知，還能把指定的表單欄位與案件資訊送到外部系統（ADR 18）。設計者在流程
+設計器裡只能**選擇宿主註冊的端點**並綁定參數，不會看到、也不能輸入 URL、header 或金鑰；
+這些都留在宿主程式碼裡。
+
+**1. 註冊端點。** `BPMWorkflowWebhookRegistry` 是同步的 `get` / `list`，可以直接是一份清單
+（或用 `StaticBPMWorkflowWebhookRegistry`）：
+
+```typescript
+import { BPM_WORKFLOW_WEBHOOK_REGISTRY, BPMWorkflowWebhookEndpoint, StaticBPMWorkflowWebhookRegistry } from '@rytass/bpm-core-nestjs-module';
+
+function createErpPurchaseEndpoint(vault: VaultService): BPMWorkflowWebhookEndpoint {
+  return {
+    descriptor: {
+      key: 'erp.purchase-approved', // 模板以 key + version 引用
+      version: 1, // 參數契約改變時才升版；舊版本留著，讓進行中的案件照常投遞
+      label: '採購核准通知 ERP', // 設計器、案件時間軸顯示的名稱
+      parameters: [
+        { key: 'amount', label: '金額', required: true, type: 'number' },
+        { key: 'caseTitle', label: '案件標題', required: false, type: 'string' },
+      ],
+    },
+    // 每次嘗試都呼叫一次：輪替後的金鑰或搬家後的 URL 對已排隊的投遞也會生效。
+    buildRequest: async (event) => ({
+      url: 'https://erp.example.com/hooks/bpm/purchase-approved',
+      headers: { authorization: `Bearer ${await vault.get('ERP_TOKEN')}` },
+      signingSecret: await vault.get('ERP_WEBHOOK_SIGNING_SECRET'),
+      // body 省略時 BPM 送 JSON.stringify(event)；method 省略時 POST；timeoutMs 上限 30 秒。
+    }),
+  };
+}
+
+BPMRootModule.forRoot({
+  imports: [VaultModule],
+  workflowWebhookRegistryProvider: {
+    provide: BPM_WORKFLOW_WEBHOOK_REGISTRY,
+    inject: [VaultService],
+    useFactory: (vault: VaultService) => new StaticBPMWorkflowWebhookRegistry([createErpPurchaseEndpoint(vault)]),
+  },
+});
+```
+
+不需要注入時可直接給實例：`workflowWebhookRegistry: new StaticBPMWorkflowWebhookRegistry([...])`
+（`forRootAsync` 的 `useFactory` 也能回傳）。開機時 BPM 會檢查每個 descriptor（key、版本、參數
+格式），不合法會直接讓程式起不來。
+
+**2. 事件內容。** `buildRequest(event)` 拿到、也是預設 body 的事件：
+
+```json
+{
+  "eventType": "workflow.notify",
+  "deliveryId": "3f0c…",
+  "attempt": 1,
+  "endpoint": { "key": "erp.purchase-approved", "version": 1 },
+  "instance": { "id": "…", "templateId": "…", "templateVersionId": "…", "title": "採購申請" },
+  "initiator": { "memberId": "member-102" },
+  "node": { "id": "notify_erp", "label": "通知 ERP" },
+  "occurredAt": "2026-09-15T10:00:00.000Z",
+  "parameters": { "amount": 1200, "caseTitle": "採購申請" }
+}
+```
+
+`parameters` 只包含模板明確綁定的參數，不會送出整份表單。參數在知會節點抵達時就解析並凍結，
+所有重試送出的內容相同。
+
+BPM 固定加上 `x-bpm-delivery-id`、`x-bpm-event`；有 `signingSecret` 時再加上
+`x-bpm-timestamp`（送出當下的 Unix 秒）與
+`x-bpm-signature-sha256 = hex(HMAC-SHA256(secret, "<timestamp>.<body>"))`。宿主回傳的
+`x-bpm-*` header 一律被丟棄。
+
+**3. 接收端要做的事。**
+
+```typescript
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+function isBPMWebhookSignatureValid(rawBody: string, headers: Headers, secret: string): boolean {
+  const timestamp = headers.get('x-bpm-timestamp');
+  const signature = headers.get('x-bpm-signature-sha256');
+
+  if (!timestamp || !signature) return false;
+  // 拒絕太舊的請求以防重放，例如 5 分鐘
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+
+  const expected = Buffer.from(createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex'));
+  const received = Buffer.from(signature);
+
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
+```
+
+- **用原始 body 驗簽**，不要先 parse 再 stringify（自訂 `body` 時兩者不一定相同）。
+- **以 `deliveryId` 冪等**：重試、管理者重送都沿用同一個 id，接收端必須把重複的 id 當成已處理。
+- 2xx 表示收到。`408`、`429`、`5xx`、逾時與網路錯誤會以指數退避重試（預設 30 秒起、±20%
+  抖動、單次上限 1 小時、總共最多嘗試 6 次，即首次加 5 次重試）；其他 `4xx`、`3xx`（BPM 不
+  跟隨 redirect）直接失敗。至少嘗試過一次而失敗的投遞，可由 BPM 管理者在案件詳情的「外部系統
+  通知」區塊重送；入列時就失敗的（端點不存在、參數不合法）不能重送。
+- 請求沒有自訂 `content-type` 時，BPM 補上 `content-type: application/json`。
+
+**4. 投遞與排程。** 投遞一律在簽核交易 commit 之後進行，外部系統變慢或失敗都不會拖慢或回滾
+簽核。重試由排程器處理：有註冊任何端點時預設啟用，可用 `workflowWebhookDeliverySchedulerEnabled`
+明確開關（多個 API replica 同時掃描是安全的，claim 使用 `FOR UPDATE SKIP LOCKED`）。其餘可調
+選項：`workflowWebhookDeliveryScanIntervalMs`、`workflowWebhookDeliveryBatchSize`、
+`workflowWebhookDeliveryMaxAttempts`、`workflowWebhookDeliveryRetryBaseDelayMs`、
+`workflowWebhookDeliveryMaxRetryDelayMs`、`workflowWebhookDeliveryDefaultTimeoutMs`。
+
+**5. 發布檢查。** 發布模板時 BPM 會檢查每個 webhook：端點存在且未停用、必填參數都有綁定、
+綁定的表單欄位存在且型別相容。設計器在發布前會顯示同一套規則的訊息。沒有註冊任何端點來源的
+宿主，含 webhook 的模板無法發布。
+
+程式註冊的端點預設不比對白名單，因為 URL 已經過程式碼審查。若要一併限制，設定
+`workflowWebhookAllowedUrlPatterns`（例如 `https://*.example.com/hooks/**`）並開啟
+`workflowWebhookEnforceAllowlistForRegistry`：這是全域開關，會套用到**所有**程式註冊的
+端點，每次嘗試前比對，不符合的以 `WEBHOOK_URL_NOT_ALLOWED` 失敗。規則：`*` 比對單一 host
+層級、`**` 比對多層（含頂層網域本身）、單獨一個 `*` 等於任何公開的 https 位址；**含萬用字元的
+host 永遠不會比對到 loopback、私有網段或內部 IP**，內網或 localhost 端點必須在樣式中寫出明確的
+host 才會放行，開啟前請先確認既有端點都在清單內。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts
@@ -565,6 +683,7 @@ const authContext: BPMAuthContext = {
 - [ ] `BPMAuthContext` 在 GraphQL context 內可被 `authContextFactory` 取到
 - [ ] member resolver 不再回傳預設假資料
 - [ ] 若要寄 email / webhook，設了 SMTP / webhook secret
+- [ ] 知會節點 webhook：端點 `buildRequest()` 從祕密管理讀 URL／token／`signingSecret`，接收端以原始 body 驗簽並以 `deliveryId` 冪等
 - [ ] notification & SLA scheduler 只在單一 dedicated worker process 開（API replica 預設關閉）
 
 更詳細的 contract 細節見 [`docs/10-bpm-embedding-auth.md`](./10-bpm-embedding-auth.md)。

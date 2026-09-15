@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-09-15（2026-09-15 確認 Accepted，§預設值與「新增端點需改宿主程式」成本一併確認）
-- **實作狀態**：P0–P4 VERIFIED（2026-09-15，皆含真實 wrapper host 驗證）；P5 起未開始
+- **實作狀態**：P0–P5 VERIFIED（2026-09-15，皆含真實 wrapper host 驗證）；P6 進行中
 - **適用範圍**：知會節點（`serviceTask` + `NOTIFY`）、Template Designer、Workflow Engine、
   BPM 宿主整合、案件詳情
 - **交付規劃**：[19 — 知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)
@@ -110,7 +110,10 @@ export const BPM_WORKFLOW_WEBHOOK_REGISTRY = Symbol('BPM_WORKFLOW_WEBHOOK_REGIST
 `BPMRootModule` 新增 `workflowWebhookRegistryProvider`（wiring time）與
 `workflowWebhookRegistry`（runtime value）兩個 optional 選項，解析順序比照
 `formDataSourceRegistry`。未註冊 registry 的宿主：Designer Catalog 為空、知會節點不顯示
-Webhook 區塊，含 webhook 的模板不得發布（`WORKFLOW_WEBHOOK_REGISTRY_MISSING`）。
+Webhook 區塊，含 webhook 的模板不得發布。（實作註記：BPM 在宿主沒註冊時會注入空 registry，
+視為「有來源但沒有端點」，因此發布時實際回報的是每個 target 的
+`WORKFLOW_WEBHOOK_ENDPOINT_MISSING`；`WORKFLOW_WEBHOOK_REGISTRY_MISSING` 只在
+`workflowWebhookTargetSources` 設為不含任何可用來源時出現。見 docs/19 P1 決策 #6。）
 
 模板只保存 endpoint `key`、精確 `version` 與參數 bindings；**不得**保存 URL、HTTP
 method、headers、token、簽章金鑰或任何可執行的請求模板。

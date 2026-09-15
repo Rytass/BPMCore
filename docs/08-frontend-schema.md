@@ -173,6 +173,8 @@ type ServiceAction =
       readonly recipients: ApproverResolver;
       readonly template?: string;
       readonly type: 'NOTIFY';
+      /** 呼叫宿主註冊的端點（ADR 18）；最多 10 個。 */
+      readonly webhooks?: readonly NotifyWebhookTarget[];
     }
   | {
       readonly headers?: Readonly<Record<string, string>>;
@@ -193,6 +195,31 @@ dispatch，且可由宿主透過 `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` 替換�
 queue 或 integration bus。Designer 目前只建立 `NOTIFY` + `DIRECT` members，
 channel 固定為 `IN_APP`；`WEBHOOK` 與 `SET_FORM_FIELD` 目前仍屬於 schema/API
 能力，尚未提供 designer 表單介面。
+
+#### 知會節點 Webhook（ADR 18）
+
+```ts
+interface NotifyWebhookTarget {
+  readonly id: string; // 穩定 id，投遞以 (token, target id) 去重，勿重新產生
+  readonly endpoint: { readonly key: string; readonly version: number };
+  readonly bindings: readonly {
+    readonly parameter: string;
+    readonly from: { readonly kind: 'FIELD'; readonly fieldKey: string } | { readonly kind: 'CONSTANT'; readonly value: boolean | number | string | null } | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath };
+  }[];
+}
+```
+
+- 模板只存端點 key／version 與參數綁定，**不存 URL、header 或金鑰**；結構 lint 會拒絕
+  target 或 binding 上的任何未知欄位（`url`、`headers`、`secret` 等）。
+- `CONTEXT` 路徑：`instance.id`、`instance.title`、`instance.templateId`、
+  `instance.templateVersionId`、`initiator.memberId`、`node.id`、`node.label`，一律為字串。
+- 知會對象可為空（`DIRECT` 且 `memberIds: []`），前提是至少有一個 webhook。
+- 設計器：知會節點面板的「Webhook」區塊從 `workflowWebhookEndpoints` catalog 選端點，
+  每個宣告的參數一列，來源可選表單欄位（只列型別相容者）、固定值、案件資訊；已停用或
+  已下架的端點會保留並警告。卡片顯示「Webhook N 個」，試跑會列出將送出的 webhook。
+- 設計器與後端發布檢查共用 `readNotifyWebhookStructureIssues`（結構）與
+  `readNotifyWebhookTargetCatalogIssues`（對照 catalog 與表單）；catalog 規則只擋發布，
+  不擋儲存草稿。
 
 ### Gateway
 
@@ -263,15 +290,15 @@ apps/client/src/app/templates/[id]/designer
 
 模板發布前目前會檢查：
 
-| 規則              | 目前行為                                                    |
-| ----------------- | ----------------------------------------------------------- |
-| Start             | 必須恰有一個 `startEvent`。                                 |
-| End               | 必須至少有一個 `endEvent`。                                 |
-| 連通性            | 從 Start 可達節點與必要連線會被檢查。                       |
-| User Task         | resolver 必要欄位必須存在。                                 |
-| Service Task      | `NOTIFY` 必須有知會對象；其他 action shape 僅 schema 預留。 |
-| Exclusive Gateway | split 需要 default outgoing edge；條件 edge 會做 CEL lint。 |
-| CEL               | 目前做 parse/lint，不做 context schema 靜態型別推導。       |
+| 規則              | 目前行為                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| Start             | 必須恰有一個 `startEvent`。                                                                               |
+| End               | 必須至少有一個 `endEvent`。                                                                               |
+| 連通性            | 從 Start 可達節點與必要連線會被檢查。                                                                     |
+| User Task         | resolver 必要欄位必須存在。                                                                               |
+| Service Task      | `NOTIFY` 需要知會對象或至少一個 webhook；webhook 端點必須存在且未停用、必填參數有綁定、綁定欄位型別相容。 |
+| Exclusive Gateway | split 需要 default outgoing edge；條件 edge 會做 CEL lint。                                               |
+| CEL               | 目前做 parse/lint，不做 context schema 靜態型別推導。                                                     |
 
 目前尚未實作 cycle detector、XOR 至少兩條出邊檢查、resolver id 存在性查詢、或
 frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補 validator 與測試後
