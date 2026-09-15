@@ -362,6 +362,40 @@ function isBPMWebhookSignatureValid(rawBody: string, headers: Headers, secret: s
 host 永遠不會比對到 loopback、私有網段或內部 IP**，內網或 localhost 端點必須在樣式中寫出明確的
 host 才會放行，開啟前請先確認既有端點都在清單內。
 
+**6. 後台維護的端點（選用）。** 不想每新增一個端點就改程式、重新部署時，可以讓 BPM 管理者在
+「Webhook 端點」管理頁（`/admin/webhook-endpoints`，`@rytass/bpm-core-react/pages/admin/webhook-endpoints`）
+維護端點。這個來源預設關閉，必須三項同時設定才會啟用，缺任何一項時開機會記錄原因並維持關閉：
+
+```typescript
+BPMRootModule.forRootAsync({
+  imports: [VaultModule],
+  inject: [VaultService],
+  useFactory: async (vault: VaultService) => ({
+    workflowWebhookTargetSources: ['REGISTRY', 'DATABASE'], // 同 key 時程式註冊者優先
+    // 後台端點的 URL 一律比對白名單（儲存時與每次投遞前）；空清單代表不啟用
+    workflowWebhookAllowedUrlPatterns: ['https://*.partner.example.com/hooks/**'],
+    // 32 bytes，64 個 hex 字元或 base64；格式錯誤開機失敗
+    workflowWebhookSecretEncryptionKey: await vault.get('BPM_WEBHOOK_SECRET_ENCRYPTION_KEY'),
+  }),
+});
+```
+
+- 要跑 migration `0000000024000`（新增 `workflow_webhook_endpoints` 與
+  `workflow_webhook_endpoint_audits`）。
+- header 值與簽章金鑰以 AES-256-GCM 加密存放，**只寫不讀**：管理頁與 GraphQL 只回 header 名稱
+  與「是否已設定金鑰」。遺失加密金鑰等於遺失這些值，請與資料庫分開備份；更換金鑰需重新輸入
+  所有端點的 header 與金鑰。
+- 白名單在三個時機比對：儲存端點時、發布引用它的模板時、每次投遞前；收緊白名單後，不符的端點
+  會讓發布被擋、已排隊的投遞以 `WEBHOOK_URL_NOT_ALLOWED` 失敗。
+- URL 改到其他主機時必須同時重新輸入 headers，避免既有 header 值被送往新主機。
+- 規則：key 不能與程式註冊的端點相同；同一版本的參數契約（鍵、型別、必填）不能修改，要改請
+  「建立新版本」；停用的端點不會再出現在設計器，既有模板的投遞以 `WEBHOOK_ENDPOINT_DISABLED`
+  失敗，含它的模板無法再發布。
+- 測試送出使用範例事件（不含任何真實案件資料），每個端點每 10 秒一次、10 分鐘最多 5 次；限制是
+  每個 API 程序各自計算。
+- 每次建立、更新、停用／啟用、輪替金鑰、測試送出都寫入稽核紀錄，只記錄欄位名稱與操作者。
+- 有啟用資料庫來源時，重試排程器一律啟用，後台之後新增的端點也會被重試。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts

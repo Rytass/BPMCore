@@ -51,14 +51,40 @@ The wrapper API host also reads Kubernetes environment variables from
 `vault-secret` for runtime-only settings that are not part of the reusable BPM
 module:
 
-| Variable                          | Used by                          | Purpose                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `API_SESSION_SECRET`              | `apps/api`                       | HMAC secret for the signed login cookie.                                                                                                                                                                                                                                                                             |
-| `BPM_API_PUBLIC_URL`              | `apps/api`                       | Public origin for signed attachment URLs.                                                                                                                                                                                                                                                                            |
-| `BPM_ATTACHMENT_SIGNING_SECRET`   | `libs/bpm-core` via host options | HMAC secret for attachment download/preview URLs.                                                                                                                                                                                                                                                                    |
-| `BPM_DEMO_WEBHOOK_SIGNING_SECRET` | `apps/api` (develop only)        | Signing secret shared by the demo notify webhook endpoints and their receiver; read from the Vault path first, then this variable, then a local default. Not needed on staging, which runs `NODE_ENV=production` where the demo endpoints are not registered (and `staging:reset` skips the webhook demo templates). |
-| `OPENAI_API_KEY`                  | `apps/client`                    | Designer AI assistant LLM key (optional).                                                                                                                                                                                                                                                                            |
-| `BPM_AI_ASSISTANT_ENABLED`        | `apps/client`                    | `'true'` to show the designer AI assistant.                                                                                                                                                                                                                                                                          |
+| Variable                            | Used by                          | Purpose                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `API_SESSION_SECRET`                | `apps/api`                       | HMAC secret for the signed login cookie.                                                                                                                                                                                                                                                                             |
+| `BPM_API_PUBLIC_URL`                | `apps/api`                       | Public origin for signed attachment URLs.                                                                                                                                                                                                                                                                            |
+| `BPM_ATTACHMENT_SIGNING_SECRET`     | `libs/bpm-core` via host options | HMAC secret for attachment download/preview URLs.                                                                                                                                                                                                                                                                    |
+| `BPM_DEMO_WEBHOOK_SIGNING_SECRET`   | `apps/api` (develop only)        | Signing secret shared by the demo notify webhook endpoints and their receiver; read from the Vault path first, then this variable, then a local default. Not needed on staging, which runs `NODE_ENV=production` where the demo endpoints are not registered (and `staging:reset` skips the webhook demo templates). |
+| `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY` | `libs/bpm-core` via host options | 32-byte key (64 hex or base64) that encrypts header values and signing secrets of database-managed webhook endpoints. Required outside develop to enable them; back it up separately from the database.                                                                                                              |
+| `BPM_WEBHOOK_ALLOWED_URL_PATTERNS`  | `libs/bpm-core` via host options | Comma-separated URL patterns database-managed webhook endpoints may call. Empty in production means those endpoints stay disabled; develop defaults to the local demo receiver.                                                                                                                                      |
+| `OPENAI_API_KEY`                    | `apps/client`                    | Designer AI assistant LLM key (optional).                                                                                                                                                                                                                                                                            |
+| `BPM_AI_ASSISTANT_ENABLED`          | `apps/client`                    | `'true'` to show the designer AI assistant.                                                                                                                                                                                                                                                                          |
+
+### Rotating `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY`
+
+The key encrypts every database-managed webhook endpoint's header values and
+signing secret, and BPM keeps no second key to fall back on. Losing it loses
+those values; replacing it without re-entering them makes every database
+endpoint delivery fail to build its request. At boot BPM decrypts one stored
+value and logs an error if the configured key cannot, so a wrong key shows up
+in the log at once rather than as failed deliveries.
+
+To rotate:
+
+1. Store the new key next to the old one in Vault; do not delete the old one.
+2. In the "Webhook 端點" admin page, note which endpoints have headers or a
+   signing secret (the list shows header names and whether a secret is set).
+3. Deploy with the new key. Those endpoints now fail with
+   `WEBHOOK_BUILD_REQUEST_FAILED` until step 4, so do this in a quiet window.
+4. For each endpoint, edit it with "取代 headers" to re-enter the header values
+   and use "輪替金鑰" to re-enter the signing secret, then run "測試送出".
+5. Resend any delivery that failed in between from the case page, then remove
+   the old key.
+
+Back the key up separately from database backups: a database dump alone
+cannot recover the values, and one copy of both is a copy of everything.
 
 ## Staging Deployment
 

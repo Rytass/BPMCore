@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-09-15（2026-09-15 確認 Accepted，§預設值與「新增端點需改宿主程式」成本一併確認）
-- **實作狀態**：P0–P5 VERIFIED（2026-09-15，皆含真實 wrapper host 驗證）；P6 進行中
+- **實作狀態**：P0–P6 VERIFIED（2026-09-15～16，皆含真實 wrapper host 驗證；P6 自決項目與未採納建議見 docs/19）
 - **適用範圍**：知會節點（`serviceTask` + `NOTIFY`）、Template Designer、Workflow Engine、
   BPM 宿主整合、案件詳情
 - **交付規劃**：[19 — 知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)

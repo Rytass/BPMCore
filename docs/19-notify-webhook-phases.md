@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0–P5 VERIFIED（ADR 18 於 2026-09-15 Accepted；發布待使用者執行）
+- **狀態**：P0–P6 VERIFIED（ADR 18 於 2026-09-15 Accepted；發布待使用者執行）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -19,7 +19,7 @@
 | P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | VERIFIED |
 | P4    | 設計器知會節點 Webhook 面板                               | P1     | VERIFIED |
 | P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | VERIFIED |
-| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
+| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | VERIFIED |
 
 ```
  P0 ──▶ P1 ──┬──▶ P2 ──▶ P3 ──┐
@@ -768,20 +768,105 @@ spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM �
   `WEBHOOK_URL_NOT_ALLOWED` 失敗。
 - 測試送出：頻率限制生效，送出的是 sample event 而非真實案件資料。
 
+**實作結果**（2026-09-16）
+
+- 資料表（migration `0000000024000`）：`workflow_webhook_endpoints`（`(key, version)` 唯一、
+  `is_active` 索引、`encrypted_headers`／`encrypted_signing_secret` 只存加密信封）與
+  `workflow_webhook_endpoint_audits`（動作、欄位名稱、操作者、時間，不存值）。develop 資料庫已
+  套用。
+- 加密：`WorkflowWebhookSecretCipher`，AES-256-GCM，信封 `v1:<base64(iv|tag|ciphertext)>`；
+  金鑰 32 bytes（64 hex 或 base64），格式錯誤開機失敗；開機時試解一筆已存值，解不開記錄錯誤。
+- `DatabaseWorkflowWebhookEndpointSource`：每次查詢讀資料庫，每次嘗試解密 header 與金鑰；停用
+  的列回傳 `disabled`（同時 `deprecated`）；可帶交易的 `EntityManager`，入列時沿用引擎交易的
+  連線。`WorkflowWebhookService` 依 `workflowWebhookTargetSources` 組合來源（同 key 時程式註冊
+  者優先）。
+- 停用語意：設計器不再列出；發布 lint 回 `WORKFLOW_WEBHOOK_ENDPOINT_DISABLED`；入列與每次嘗試
+  回 `WEBHOOK_ENDPOINT_DISABLED`。
+- 白名單三個時機：儲存（admin service）、發布（`isEndpointUrlAllowedAtPublish`，只針對後台
+  端點）、每次投遞前（既有）。
+- 管理 GraphQL（`@BPMAdminOnly()`）：`workflowWebhookEndpointManagement`（是否啟用、白名單樣式）、
+  `workflowWebhookManagedEndpoints`、`workflowWebhookEndpointAudits`、`createWorkflowWebhookEndpoint`、
+  `updateWorkflowWebhookEndpoint`、`setWorkflowWebhookEndpointActive`、
+  `rotateWorkflowWebhookEndpointSecret`、`testWorkflowWebhookEndpoint`。回應只有 header 名稱與
+  `hasSigningSecret`；逐欄映射。
+- 儲存驗證：key 格式、版本 1..int32 且必須大於同 key 既有最大版本、key 不得與程式註冊端點相同、
+  參數鍵唯一與型別合法、同版本參數契約（鍵／型別／必填）不可變更、URL http(s) 不含帳密且在白名單、
+  method、逾時上限 30 秒、header 名稱合法且非 `x-bpm-*`／hop-by-hop、header 值限 fetch 可接受
+  字元、金鑰長度；URL 改到其他主機時必須同時重新輸入 headers。錯誤訊息只帶欄位或 header 名稱。
+- 測試送出：範例事件（佔位 id、每種型別的範例值），走一般投遞的拒絕檢查、白名單、逾時、redirect
+  與簽章，不寫投遞紀錄；每個端點每 10 秒一次、10 分鐘最多 5 次（每個程序各自計算）。
+- 排程器：啟用資料庫來源時一律啟用，後台之後新增的端點也有重試。
+- Client：`@rytass/bpm-core-client/template` 的端點管理 API；catalog 記錄加 `disabled`。
+- React：`AdminWebhookEndpointsView`（`views/admin/webhook-endpoints`、
+  `pages/admin/webhook-endpoints`，路由 `adminWebhookEndpoints`）：列表、新增、編輯、建立新版本、
+  測試送出、輪替金鑰、停用／啟用、異動紀錄；金鑰與 header 值輸入框 `autoComplete="new-password"`，
+  其他欄位 `off`（實測瀏覽器原本會把登入帳密自動填進去）；編輯時契約欄位唯讀。設計器端點選項
+  標示「後台維護」「已停用」「不建議使用」。
+- `apps/api`：`workflowWebhookTargetSources: ['REGISTRY', 'DATABASE']`；白名單讀
+  `BPM_WEBHOOK_ALLOWED_URL_PATTERNS`、金鑰讀 `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY`，非 production
+  才有預設（本機 demo 接收端與固定開發金鑰）；GraphQL `formatError` 遮蔽變數型別錯誤中回吐的值。
+
+**P6 自決的項目**
+
+1. 停用以 `disabled` 旗標呈現，同時設 `deprecated`，讓 catalog 與設計器既有的過濾不必改；
+   發布 lint 另有 `ENDPOINT_DISABLED` 碼。
+2. 金鑰與 header 值只寫不讀：輪替金鑰由管理者輸入新值，伺服器不產生、不回傳。
+3. 參數契約以「鍵、型別、必填」判定；名稱與說明可在同版本修改。
+4. 稽核用獨立資料表，而非 `activity_logs`（後者綁定案件）。
+5. 發布時的白名單比對只針對後台端點，避免發布時呼叫宿主程式碼；程式註冊端點在開啟強制比對時
+   仍於每次投遞前檢查。
+6. 測試送出的頻率限制為程序內記憶體，不跨 replica。
+
+**真實環境驗證（2026-09-16，develop 資料庫 + `apps/api` + `apps/client`）**
+
+| 情境                                                                | 結果                                                                                                       |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 管理 query                                                          | `enabled: true`、白名單 `http://localhost:17603/demo/webhook-sink/*`                                       |
+| 管理頁新增端點，URL 為 `https://evil.example.com/hook`              | 顯示「URL 不在伺服器允許的白名單內。」                                                                     |
+| 新增端點（header `Authorization`、簽章金鑰、參數 `amount: number`） | 列表顯示「已設定簽章金鑰」「Header：Authorization」；managed list、稽核、catalog 回應皆不含 token 與金鑰   |
+| catalog                                                             | `source: DATABASE`；設計器選項顯示「（v1，後台維護）」                                                     |
+| 測試送出                                                            | 「測試送出成功：… HTTP 200」；立即再按顯示「測試送出太頻繁」                                               |
+| 一般使用者查詢 managed list                                         | `FORBIDDEN`                                                                                                |
+| 以此端點發布模板 → 發起 → 同意                                      | 接收端收到事件、簽章有效（金鑰解密正確）、參數 `{ amount: 321 }`                                           |
+| 停用端點 → 新案件                                                   | 投遞 `FAILED`／`WEBHOOK_ENDPOINT_DISABLED`；以該端點發布新模板被 `WORKFLOW_WEBHOOK_ENDPOINT_DISABLED` 擋下 |
+| 未登入送出型別錯誤的 input（header 多一欄、金鑰傳數字）             | 錯誤訊息只剩 `got invalid value at "i.headers[0]"`，不含值                                                 |
+
+以上自動化於 `notify-webhook-real.spec.ts`「database-managed webhook endpoints」，整支 spec 8 個
+測試通過。「先存好再收緊白名單，投遞以 `WEBHOOK_URL_NOT_ALLOWED` 失敗」需要重啟 API 換環境變數，
+由單元測試涵蓋（投遞前每次比對、發布時比對）。
+
+**獨立驗證（2026-09-16）**：結論 PASS WITH FIXES，schema 與回應、log、稽核皆無秘密外洩。採納並修正：
+
+| 等級  | 發現                                                                                       | 修正                                                                                                             |
+| ----- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| major | ADR 規則 3 的「發布時比對白名單」未實作                                                    | 發布 lint 對後台端點比對目前 URL，回 `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`；補測試                                  |
+| major | 只改 URL 不必重填 header：把 URL 改到自己的主機再測試送出即可取回 header 值                | URL 改到其他主機時必須同一請求重新輸入 headers；管理頁強制開啟「取代 headers」；補測試                           |
+| minor | jsonb 不保留 key 順序，每次編輯都誤記參數變更                                              | 以與順序無關的描述比對；補測試                                                                                   |
+| minor | header 值只擋 CR/LF，中文或 NUL 會讓每次投遞以可重試的網路錯誤失敗；hop-by-hop header 可存 | 值限 fetch 可接受字元；保留 `connection`、`keep-alive`、`upgrade`、`expect`、`te`、`trailer`、`proxy-connection` |
+| minor | GraphQL 變數型別錯誤時回吐送出的 header 值或金鑰                                           | `formatError` 遮蔽值與原因，保留欄位路徑；實測確認                                                               |
+| minor | 入列在引擎交易內另取連線查資料庫端點，併發時可能耗盡連線池                                 | 來源查詢可帶交易的 `EntityManager`，入列沿用                                                                     |
+| minor | 整列 `save` 會把並行寫入（例如剛輪替的金鑰）蓋回舊值                                       | 更新、停用、輪替改為只寫變更欄位的 `update`                                                                      |
+| minor | 同 key 同版本併發建立回 500                                                                | 唯一鍵衝突轉為 `ENDPOINT_INVALID`「version 已存在」；補測試                                                      |
+| minor | 換錯金鑰時無聲失敗、沒有換金鑰程序                                                         | 開機試解一筆並記錄錯誤；`infrastructure.md` 補換金鑰程序；修正誤導註解                                           |
+| nit   | 停用端點在發布 lint 寫成 deprecated                                                        | 新增 `ENDPOINT_DISABLED` 碼與訊息                                                                                |
+
+未採納（記入 backlog）：信封 key id 與多把金鑰解密（#15）、以 AAD 綁定端點與欄位（#16）、管理頁
+顯示最近投遞狀態（#17，ADR §3.13 提及、P6 Scope 未列）。
+
 ## E2E Suite Matrix
 
-| Journey             | 情境                                                                  |
-| ------------------- | --------------------------------------------------------------------- |
-| Designer            | 設定 webhook、綁定三種來源、只有 webhook 可發布、缺必填參數不可發布   |
-| Designer 回歸       | 增刪知會對象後 webhook 設定保留（AI 助理路徑由單元測試涵蓋，見下）    |
-| Runtime golden path | 發起 → 簽核 → 知會節點 → sink 收到簽章正確、參數正確的事件            |
-| Runtime 重試        | sink 回 503 兩次後成功，`deliveryId` 不變、只記錄一次                 |
-| Runtime 永久失敗    | sink 回 400 → `FAILED` → 管理者重送 → `SENT`                          |
-| Runtime 不阻斷      | sink 延遲超過逾時，簽核操作正常完成、案件照常前進                     |
-| 退回重送            | `RESTART` 後再次經過知會節點產生新 delivery                           |
-| 權限                | 非管理者看不到 delivery 區塊與錯誤 detail；非 designer 查不到 catalog |
-| 安全                | 模板 JSON、案件快照、catalog 回應、活動紀錄皆不含 URL 與 secret       |
-| 端點管理（P6）      | 後台新增端點 → 設計器可選 → 投遞成功；白名單擋下不合法 URL            |
+| Journey             | 情境                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| Designer            | 設定 webhook、綁定三種來源、只有 webhook 可發布、缺必填參數不可發布                  |
+| Designer 回歸       | 增刪知會對象後 webhook 設定保留（AI 助理路徑由單元測試涵蓋，見下）                   |
+| Runtime golden path | 發起 → 簽核 → 知會節點 → sink 收到簽章正確、參數正確的事件                           |
+| Runtime 重試        | sink 回 503 兩次後成功，`deliveryId` 不變、只記錄一次                                |
+| Runtime 永久失敗    | sink 回 400 → `FAILED` → 管理者重送 → `SENT`                                         |
+| Runtime 不阻斷      | sink 延遲超過逾時，簽核操作正常完成、案件照常前進                                    |
+| 退回重送            | `RESTART` 後再次經過知會節點產生新 delivery                                          |
+| 權限                | 非管理者看不到 delivery 區塊與錯誤 detail；非 designer 查不到 catalog                |
+| 安全                | 模板 JSON、案件快照、catalog 回應、活動紀錄皆不含 URL 與 secret                      |
+| 端點管理（P6）      | 後台新增端點 → 設計器可選 → 投遞成功；白名單擋下不合法 URL；停用後投遞失敗且無法發布 |
 
 ## 預設值
 
@@ -838,3 +923,10 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
 14. **AI 助理指定知會對象時選錯解析器**（P4 實測發現）：要求「知會對象設定為林總經理」，
     助理回覆已設定，但寫入的是 `ORG_MANAGER`（直屬主管）。屬於提示詞／工具說明問題，與
     webhook 無關。
+15. **Webhook 加密金鑰輪替只能重新輸入**（P6 驗證）：信封沒有 key id，BPM 只接受一把金鑰；換金鑰
+    需依 `infrastructure.md` 程序重新輸入所有後台端點的 header 與金鑰。支援多把金鑰解密（新值用新
+    金鑰、舊值讀舊金鑰）可讓輪替不中斷投遞。
+16. **加密信封未綁定端點與欄位**（P6 驗證）：AES-GCM 沒有設 AAD，能直接寫資料庫的人可以把 A 端點
+    的信封搬到 B 端點。以 `endpointId:column` 作為 AAD 可擋下，但需要 id 在寫入前產生並遷移既有值。
+17. **Webhook 端點管理頁沒有「最近投遞狀態」**（P6 驗證）：ADR §3.13 提到，P6 Scope 未列。目前只能
+    在案件頁看投遞；可加每個端點最近 N 筆投遞與失敗率。
