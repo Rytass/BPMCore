@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0 VERIFIED、P1 IMPLEMENTED（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -11,15 +11,15 @@
 
 ## Phase 總覽
 
-| Phase | 交付                                                      | 相依   | 狀態     |
-| ----- | --------------------------------------------------------- | ------ | -------- |
-| P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED |
-| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | PLANNED  |
-| P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | PLANNED  |
-| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED  |
-| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED  |
-| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
-| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
+| Phase | 交付                                                      | 相依   | 狀態        |
+| ----- | --------------------------------------------------------- | ------ | ----------- |
+| P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED    |
+| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | IMPLEMENTED |
+| P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | PLANNED     |
+| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED     |
+| P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED     |
+| P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED     |
+| P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED     |
 
 ```
  P0 ──▶ P1 ──┬──▶ P2 ──▶ P3 ──┐
@@ -182,6 +182,46 @@ GraphQL（暫時模板 `TMP ADR18 P0 驗證`，驗證後已停用）：
 - `bpm-root.module.boot.spec.ts` 覆蓋有／無 registry 兩種 boot。
 - 以 GraphQL 實際查詢 catalog，確認回應中不存在 URL 或 header 相關欄位。
 - `docs/api-reference.md` 同 commit 更新。
+
+**實作結果**（2026-09-15）
+
+新增 `libs/bpm-core/src/lib/workflow-webhook/`：`workflow-webhook.types.ts`（端點契約、
+來源抽象、Empty／Static registry）、`workflow-webhook-allowlist.ts`（樣式解析與比對）、
+`workflow-webhook-options.ts` 與 `-options.module.ts`（扁平選項、來源啟用規則）、
+`workflow-webhook.service.ts`（多來源合併、開機時檢查 descriptor）、
+`workflow-webhook.queries.ts`（designer-only catalog）、`workflow-webhook.validator.ts`
+（需要 catalog 的發布規則）、`workflow-webhook.provider.ts`、`workflow-webhook.module.ts`、
+`workflow-webhook.errors.ts`、`index.ts`。異動：`bpm-root-options.ts`、`bpm-root.module.ts`
+（新增 `workflowWebhookRegistry` 與 `workflowWebhookRegistryProvider`，掛上兩個模組）、
+`template.service.ts`（發布時串接 webhook lint）、`libs/bpm-core/src/index.ts`、
+`libs/bpm-core/package.json` 與 `tsconfig.base.json`（新增 `/workflow-webhook` 子路徑）、
+`docs/api-reference.md`。
+
+新測試：`workflow-webhook-allowlist.spec.ts`（11）、`workflow-webhook-options.spec.ts`（6）、
+`workflow-webhook.service.spec.ts`（8）、`workflow-webhook.validator.spec.ts`（10）、
+`workflow-webhook.queries.spec.ts`（4），以及 `template.service.spec.ts` 的 5 個發布案例與
+`bpm-root.module.boot.spec.ts` 的 registry 案例。
+
+**驗證狀態**：`pnpm typecheck`（6 專案）、`pnpm lint`（0 error，5 個既有 warning）、
+`pnpm test`（bpm-core 549、shared 97、bpm-core-react 69、bpm-core-client 66、api 19）、
+`pnpm build`（6 專案）全綠。真實 wrapper host 驗證留到 P5（`apps/api` 目前還沒註冊
+endpoint，屬 P5 scope）。
+
+**ADR 未載明而在 P1 自決的項目**
+
+1. 宿主面向的 `BPMWorkflowWebhookRegistry` 維持同步 `get`／`list`（宿主可直接給字面
+   清單），非同步的 `BPMWorkflowWebhookEndpointSource` 只在內部使用，P6 的 DB 來源接在
+   這一層。
+2. 端點來源衝突以「來源順序先者勝」解決，避免 DB 端點蓋掉程式註冊的同名端點；P6 另在
+   儲存時直接擋下衝突的 key。
+3. `DATABASE` 缺白名單或缺金鑰時，從解析後的來源清單中移除而不是讓應用開不起來，並用
+   `readDisabledWorkflowWebhookSourceReason` 產生原因字串給 log。
+4. `TemplateService` 透過 `ModuleRef` 取得 `WorkflowWebhookService`，而不是建構子注入：
+   `TemplateModule` 仍可獨立於 `BPMRootModule` 啟動，沒有 webhook 模組時視為「沒有端點
+   來源」，引用端點的模板即被擋下。
+5. `CONTEXT` binding 只允許填 `string` 或 `json` 參數（所有 context path 都解析為字串）。
+6. 空的 registry 仍算「有來源」：發布時得到 `ENDPOINT_MISSING` 而不是
+   `REGISTRY_MISSING`，兩者語意不同。
 
 ## P2 — Outbox、引擎入列與投遞
 
