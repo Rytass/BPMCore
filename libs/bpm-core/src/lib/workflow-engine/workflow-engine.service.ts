@@ -24,6 +24,10 @@ import {
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  isNotifyRecipientsEmpty,
+  readNotifyWebhookTargets,
+} from '@rytass/bpm-core-shared/workflow-graph';
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -4541,12 +4545,19 @@ export class WorkflowEngineService {
       return;
     }
 
-    const recipients = await this.resolveApproverResolver(
-      manager,
-      instance,
-      action.recipients,
-      `知會節點「${node.data.label}」`,
-    );
+    // A webhook-only NOTIFY node names nobody. Resolving its empty DIRECT
+    // resolver would throw and roll back the submit or decision that reached
+    // it, so skip member resolution; webhooks are delivered separately.
+    const recipients =
+      isNotifyRecipientsEmpty(action.recipients) &&
+      readNotifyWebhookTargets(action).length > 0
+        ? []
+        : await this.resolveApproverResolver(
+            manager,
+            instance,
+            action.recipients,
+            `知會節點「${node.data.label}」`,
+          );
     const recipientMemberIds = uniqueTexts(
       recipients.map((recipient) => recipient.memberId),
     );

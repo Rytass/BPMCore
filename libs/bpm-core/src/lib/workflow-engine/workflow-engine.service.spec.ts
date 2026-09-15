@@ -7,6 +7,7 @@ import {
 import {
   ApproverResolver,
   ReturnBehavior,
+  ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
 import { FindOperator, ObjectLiteral } from 'typeorm';
@@ -1042,6 +1043,55 @@ describe('WorkflowEngineService', () => {
         recipientMemberIds: ['member-finance', 'member-admin'],
       }),
     });
+  });
+
+  it('skips member resolution for a webhook-only notify node', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+        recipients: { memberIds: [], type: 'DIRECT' },
+        webhooks: [
+          {
+            bindings: [],
+            endpoint: { key: 'erp.purchase-approved', version: 1 },
+            id: 'webhook_erp',
+          },
+        ],
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.notificationService.createServiceTaskNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientMemberIds: [] }),
+    );
+    expect(fixture.savedSingleActivityLogs.at(-1)).toMatchObject({
+      eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+      payload: expect.objectContaining({
+        action: 'NOTIFY',
+        recipientMemberIds: [],
+      }),
+    });
+  });
+
+  it('still fails a notify node that names nobody and has no webhooks', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+        recipients: { memberIds: [], type: 'DIRECT' },
+        webhooks: [],
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.processInstance('instance-1'),
+    ).rejects.toThrow('did not resolve to a member id');
   });
 
   it('records webhook failures and continues processing', async (): Promise<void> => {
@@ -5244,7 +5294,11 @@ function createRejectingEndEventWorkflow(): WorkflowDefinition {
   };
 }
 
-function createNotifyServiceTaskWorkflow(): WorkflowDefinition {
+function createNotifyServiceTaskWorkflow(
+  actionOverride: Partial<
+    Extract<ServiceAction, { readonly type: 'NOTIFY' }>
+  > = {},
+): WorkflowDefinition {
   return {
     edges: [
       {
@@ -5273,6 +5327,7 @@ function createNotifyServiceTaskWorkflow(): WorkflowDefinition {
             },
             template: '請留意案件 {{instanceTitle}}。',
             type: 'NOTIFY',
+            ...actionOverride,
           },
           label: '財務知會',
         },
