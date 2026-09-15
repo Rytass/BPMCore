@@ -79,6 +79,7 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   DecisionPolicy,
+  NotifyWebhookTarget,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -105,6 +106,7 @@ import {
   readApproverResolverIssue,
   readDesignTimeApproverCount,
   readNotifyServiceTaskIssue,
+  readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import {
@@ -137,11 +139,23 @@ import {
   PublishedFormVersionOption,
   readTemplateDesigner,
   resolveMemberOptions,
+  listWorkflowWebhookEndpoints,
   searchMemberOptions,
   searchPublishedFormVersionOptions,
   TemplateDesignerRecord,
   updateApprovalTemplateDraft,
+  WorkflowWebhookEndpointRecord,
 } from '@rytass/bpm-core-client/template';
+import {
+  NotifyWebhookCatalogState,
+  NotifyWebhookTargetsEditor,
+} from './NotifyWebhookTargetsEditor';
+import {
+  findNotifyWebhookEndpoint,
+  isNotifyWebhookListEditable,
+  readNotifyWebhookDesignerIssues,
+  readNotifyWebhookEndpointOptionId,
+} from './notify-webhook-designer';
 
 type FlowNodeData = Readonly<{
   approverLines: readonly string[] | null;
@@ -908,6 +922,11 @@ export function TemplateDesignerView({
   const [dryRunResult, setDryRunResult] =
     useState<WorkflowDryRunResultRecord | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [webhookCatalog, setWebhookCatalog] = useState<
+    readonly WorkflowWebhookEndpointRecord[]
+  >([]);
+  const [webhookCatalogState, setWebhookCatalogState] =
+    useState<NotifyWebhookCatalogState>('loading');
   const [chatOpen, setChatOpen] = useState(false);
   const [formEditOpen, setFormEditOpen] = useState(false);
   const [formDraft, setFormDraft] = useState<FormDraft | null>(null);
@@ -1119,6 +1138,48 @@ export function TemplateDesignerView({
   const workflowIssue = useMemo(
     (): string | null => readWorkflowDefinitionIssue(workflowDefinition),
     [workflowDefinition],
+  );
+
+  // Deprecated endpoints are loaded too: a draft that already points at one
+  // must still show its name. The editor only offers active ones.
+  useEffect((): (() => void) => {
+    let active = true;
+
+    listWorkflowWebhookEndpoints({ includeDeprecated: true })
+      .then((endpoints): void => {
+        if (active) {
+          setWebhookCatalog(endpoints);
+          setWebhookCatalogState('ready');
+        }
+      })
+      .catch((): void => {
+        if (active) {
+          setWebhookCatalogState('unavailable');
+        }
+      });
+
+    return (): void => {
+      active = false;
+    };
+  }, []);
+
+  // An applied but unsaved form edit is what publish sends, so webhook field
+  // choices and the publish check read that schema rather than the bound one.
+  const webhookFormSchema: FormDefinitionSchema | null =
+    formDraftDirty && formDraft ? formDraft.schema : effectiveFormSchema;
+
+  // Publish-only: an incomplete webhook can be saved as a draft, but the
+  // backend would refuse to publish it (ADR 18 §4).
+  const webhookPublishIssue = useMemo(
+    (): string | null =>
+      webhookCatalogState === 'ready'
+        ? (readNotifyWebhookDesignerIssues({
+            definition: workflowDefinition,
+            endpoints: webhookCatalog,
+            formFields: webhookFormSchema?.fields ?? [],
+          })[0] ?? null)
+        : null,
+    [webhookCatalog, webhookCatalogState, webhookFormSchema, workflowDefinition],
   );
   const formVersionBindingLocked = useMemo(
     (): boolean => hasConfiguredConditionEdges(workflowDefinition),
@@ -1339,9 +1400,11 @@ export function TemplateDesignerView({
     try {
       const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
       const policyIssue = readInitiatorPolicyIssue(initiatorPolicyDraft);
+      const publishIssue = publish ? webhookPublishIssue : null;
 
-      if (validationIssue || policyIssue) {
-        const issue = validationIssue ?? policyIssue ?? '流程設定未完成';
+      if (validationIssue || policyIssue || publishIssue) {
+        const issue =
+          validationIssue ?? policyIssue ?? publishIssue ?? '流程設定未完成';
 
         setError(issue);
         throw new Error(issue);
@@ -1806,7 +1869,8 @@ export function TemplateDesignerView({
                   saving ||
                   (!draft && !hasUnsavedChanges && !formDraftDirty) ||
                   Boolean(workflowIssue) ||
-                  Boolean(initiatorPolicyIssue)
+                  Boolean(initiatorPolicyIssue) ||
+                  Boolean(webhookPublishIssue)
                 }
                 icon={CheckedIcon}
                 iconType="leading"
@@ -1849,6 +1913,11 @@ export function TemplateDesignerView({
               {initiatorPolicyIssue ? (
                 <Typography color="text-error" variant="body">
                   {initiatorPolicyIssue}
+                </Typography>
+              ) : null}
+              {!workflowIssue && webhookPublishIssue ? (
+                <Typography color="text-error" variant="body">
+                  發布前需修正：{webhookPublishIssue}
                 </Typography>
               ) : null}
               {!embedded ? (
@@ -2186,6 +2255,22 @@ export function TemplateDesignerView({
                   <Typography color="text-neutral" variant="body">
                     {step.message}
                   </Typography>
+                  {(step.status === 'SKIPPED'
+                    ? []
+                    : readDryRunWebhookLabels(
+                        workflowDefinition,
+                        step.nodeId,
+                        webhookCatalog,
+                      )
+                  ).map((webhookLabel) => (
+                    <Typography
+                      color="text-neutral"
+                      key={webhookLabel.key}
+                      variant="caption"
+                    >
+                      將送出 Webhook：{webhookLabel.label}
+                    </Typography>
+                  ))}
                 </div>
               ))}
             </div>
@@ -3111,50 +3196,114 @@ export function TemplateDesignerView({
   function renderServiceTaskPanel(
     node: Extract<WorkflowNode, { type: 'serviceTask' }>,
   ): ReactElement {
-    const selectedMembers = readServiceTaskMemberIds(node.data.action).map(
+    const action = node.data.action;
+    const selectedMembers = readServiceTaskMemberIds(action).map(
       (memberId) => readMemberSelectOption(memberOptions, memberId),
     );
+    const runtimeRecipients =
+      action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
+        ? readApproverResolverSummary(
+            action.recipients,
+            memberOptions,
+            orgUnits,
+            positions,
+          )
+        : null;
+
+    function updateNotifyRecipients(memberIds: readonly string[]): void {
+      const recipients: ApproverResolver = {
+        memberIds: [...memberIds],
+        type: 'DIRECT',
+      };
+
+      // Only the recipients change: channels, template and webhooks belong
+      // to the same action and must survive a member being added or removed.
+      updateServiceAction(
+        action.type === 'NOTIFY'
+          ? { ...action, recipients }
+          : { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+      );
+    }
+
+    function updateNotifyWebhooks(
+      webhooks: readonly NotifyWebhookTarget[],
+    ): void {
+      if (action.type === 'NOTIFY') {
+        updateServiceAction({ ...action, webhooks });
+      }
+    }
 
     return (
-      <BPMFormField label="知會對象" name="notifyMemberIds" required>
-        <AutoComplete
-          asyncData
-          disabledOptionsFilter
-          emptyText="沒有符合的成員"
-          loading={memberLoading}
-          loadingText="搜尋成員中..."
-          mode="multiple"
-          onChange={(options): void =>
-            updateServiceAction({
-              channels: ['IN_APP'],
-              recipients: {
-                memberIds: options.map((option) => option.id),
-                type: 'DIRECT',
-              },
-              type: 'NOTIFY',
-            })
+      <>
+        <BPMFormField
+          hintText={
+            runtimeRecipients
+              ? `目前知會對象為「${runtimeRecipients}」；在此選擇成員會改為指定成員。`
+              : action.type === 'NOTIFY'
+                ? '可只設定 Webhook，不指定知會對象。'
+                : undefined
           }
-          onSearch={handleSearchMembers}
-          onVisibilityChange={(open): void => {
-            if (open) {
-              // Clear synchronously so the window between opening and the
-              // fetch landing never shows a different node's stale results.
-              setMemberSearchResults([]);
-              void handleSearchMembers('');
+          label="知會對象"
+          name="notifyMemberIds"
+        >
+          <AutoComplete
+            asyncData
+            disabledOptionsFilter
+            emptyText="沒有符合的成員"
+            loading={memberLoading}
+            loadingText="搜尋成員中..."
+            mode="multiple"
+            onChange={(options): void =>
+              updateNotifyRecipients(options.map((option) => option.id))
             }
-          }}
-          // As in the approver picker: merged so an already-picked member can
-          // still be unticked from the dropdown, which AutoComplete resolves
-          // through `options`.
-          options={[
-            ...mergeMemberOptions(selectedMembers, memberSearchResults),
-          ]}
-          overflowStrategy="wrap"
-          placeholder="搜尋姓名或信箱"
-          searchDebounceTime={300}
-          value={[...selectedMembers]}
-        />
-      </BPMFormField>
+            onSearch={handleSearchMembers}
+            onVisibilityChange={(open): void => {
+              if (open) {
+                // Clear synchronously so the window between opening and the
+                // fetch landing never shows a different node's stale results.
+                setMemberSearchResults([]);
+                void handleSearchMembers('');
+              }
+            }}
+            // As in the approver picker: merged so an already-picked member can
+            // still be unticked from the dropdown, which AutoComplete resolves
+            // through `options`.
+            options={[
+              ...mergeMemberOptions(selectedMembers, memberSearchResults),
+            ]}
+            overflowStrategy="wrap"
+            placeholder="搜尋姓名或信箱"
+            searchDebounceTime={300}
+            value={[...selectedMembers]}
+          />
+        </BPMFormField>
+        {action.type === 'NOTIFY' &&
+        !isNotifyWebhookListEditable(action.webhooks) ? (
+          <div style={FORM_STACK_STYLE}>
+            <Typography color="text-warning" variant="body">
+              這個節點的 Webhook 設定格式錯誤，無法在此編輯。清除後可重新新增。
+            </Typography>
+            <div>
+              <Button
+                onClick={(): void => updateNotifyWebhooks([])}
+                variant="destructive-secondary"
+              >
+                清除 Webhook 設定
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {action.type === 'NOTIFY' &&
+        isNotifyWebhookListEditable(action.webhooks) ? (
+          <NotifyWebhookTargetsEditor
+            catalog={webhookCatalog}
+            catalogState={webhookCatalogState}
+            formFields={webhookFormSchema?.fields ?? null}
+            onChange={updateNotifyWebhooks}
+            targets={readNotifyWebhookTargets(action)}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -3555,7 +3704,12 @@ function readFlowNode(
 
   return {
     data: {
-      approverLines: readNodeApproverLines(node, memberOptions),
+      approverLines: readNodeApproverLines(
+        node,
+        memberOptions,
+        orgUnits,
+        positions,
+      ),
       approverSummary: readNodeApproverSummary(
         node,
         memberOptions,
@@ -3600,15 +3754,12 @@ function readWorkflowNodeDimensions(
   }
 
   if (node.type === 'serviceTask') {
-    const memberCount = Math.max(
-      1,
-      readServiceTaskMemberIds(node.data.action).length,
-    );
+    const lineCount = readServiceTaskLineCount(node.data.action);
 
     return {
       height:
         FLOW_NODE_INITIAL_HEIGHT +
-        (memberCount - 1) * FLOW_NODE_ADDITIONAL_LINE_HEIGHT,
+        (lineCount - 1) * FLOW_NODE_ADDITIONAL_LINE_HEIGHT,
       width: FLOW_NODE_INITIAL_WIDTH,
     };
   }
@@ -4924,18 +5075,64 @@ function readApproverResolverSummary(
 function readNodeApproverLines(
   node: WorkflowNode,
   memberOptions: readonly MemberSelectOption[],
+  orgUnits: readonly OrgUnitRecord[],
+  positions: readonly PositionRecord[],
 ): readonly string[] | null {
   if (node.type !== 'serviceTask') {
     return null;
   }
 
-  const memberIds = readServiceTaskMemberIds(node.data.action);
+  const action = node.data.action;
+  const recipientLines =
+    action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
+      ? [
+          readApproverResolverSummary(
+            action.recipients,
+            memberOptions,
+            orgUnits,
+            positions,
+          ),
+        ]
+      : readServiceTaskMemberIds(action).map(
+          (memberId) => readMemberSelectOption(memberOptions, memberId).name,
+        );
+  const webhookCount = readNotifyWebhookTargets(action).length;
+  const lines = [
+    ...recipientLines,
+    ...(webhookCount ? [`Webhook ${webhookCount} 個`] : []),
+  ];
 
-  return memberIds.length === 0
-    ? ['未指定知會對象']
-    : memberIds.map(
-        (memberId) => readMemberSelectOption(memberOptions, memberId).name,
-      );
+  return lines.length ? lines : ['未指定知會對象'];
+}
+
+/** Must match the line count {@link readNodeApproverLines} produces. */
+function readServiceTaskLineCount(action: ServiceAction): number {
+  const recipientLines =
+    action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
+      ? 1
+      : readServiceTaskMemberIds(action).length;
+  const webhookLines = readNotifyWebhookTargets(action).length ? 1 : 0;
+
+  return Math.max(1, recipientLines + webhookLines);
+}
+
+function readDryRunWebhookLabels(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  endpoints: readonly WorkflowWebhookEndpointRecord[],
+): readonly Readonly<{ key: string; label: string }>[] {
+  const node = definition.nodes.find((candidate) => candidate.id === nodeId);
+
+  return node?.type === 'serviceTask' &&
+    node.data.action.type === 'NOTIFY' &&
+    isNotifyWebhookListEditable(node.data.action.webhooks)
+    ? readNotifyWebhookTargets(node.data.action).map((target) => ({
+        key: target.id,
+        label:
+          findNotifyWebhookEndpoint(endpoints, target.endpoint)?.label ??
+          readNotifyWebhookEndpointOptionId(target.endpoint),
+      }))
+    : [];
 }
 
 function readMemberEmailSummary(
@@ -5204,7 +5401,14 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
 function readErrorMessage(error: unknown): string {
   // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
   // readable copy and leave every other message untouched.
-  return error instanceof Error
-    ? readFormSchemaLintMessage(error.message)
-    : '發生未知錯誤';
+  if (!(error instanceof Error)) {
+    return '發生未知錯誤';
+  }
+
+  // The backend publish lint speaks in paths and codes; say what failed
+  // before it, since the designer's own check only runs once the catalog
+  // has loaded.
+  return error.message.includes('WORKFLOW_WEBHOOK_')
+    ? `Webhook 設定未通過發布檢查：${error.message}`
+    : readFormSchemaLintMessage(error.message);
 }
