@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted
 - **決策日期**：2026-09-15（2026-09-15 確認 Accepted，§預設值與「新增端點需改宿主程式」成本一併確認）
-- **實作狀態**：P0 VERIFIED（2026-09-15，含真實 wrapper host 驗證）；P1 起未開始
+- **實作狀態**：P0–P3 VERIFIED（2026-09-15，皆含真實 wrapper host 驗證）；P4 起未開始
 - **適用範圍**：知會節點（`serviceTask` + `NOTIFY`）、Template Designer、Workflow Engine、
   BPM 宿主整合、案件詳情
 - **交付規劃**：[19 — 知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)
@@ -461,9 +461,16 @@ errorCode }`。**不含 URL 與回應 body**，因為活動紀錄對能讀案件
   - `workflowWebhookDeliveries(instanceId)`（`@BPMAdminOnly()`）：列出 delivery 狀態、
     嘗試次數、最後錯誤碼與 detail。
   - `retryWorkflowWebhookDelivery(id)`（`@BPMAdminOnly()`）：將 `FAILED` 重設為
-    `PENDING`、`attempt_count` 歸零；`deliveryId` 不變，接收端仍能冪等。
-- 案件詳情：管理者看到「Webhook 投遞」區塊（狀態、嘗試次數、錯誤、重試按鈕）；一般
-  使用者只在時間軸看到「已通知外部系統：<label>」或「通知外部系統失敗」。
+    `PENDING`、`attempt_count` 歸零；`deliveryId` 不變，接收端仍能冪等。只接受至少嘗試過
+    一次的列：入列時就失敗（端點下架、查詢失敗、參數不合法）的列凍結的事件沒有通過參數
+    檢查，重送會送出不符端點契約的內容，因此拒絕。
+- 案件詳情：管理者看到「外部系統通知」區塊（狀態、嘗試次數、錯誤、重試按鈕）；一般
+  使用者只在時間軸看到「已通知外部系統：<label>」或「通知外部系統失敗：<label>」。
+  終局與重送活動紀錄的 payload 帶 `endpointLabel`（寫入當下的端點名稱，端點已下架時為
+  `null`，前端改顯示 key），讓無權查 deliveries 的讀者也看得到名稱；錯誤碼不在時間軸顯示。
+- 管理者重送另寫 `WEBHOOK_DELIVERY_RETRIED` 活動紀錄（操作者為該管理者，payload 帶
+  前次錯誤碼），與狀態重設同一交易；時間軸顯示為「管理者重新傳送外部系統通知：<label>」
+  （只表示已重新排入，結果仍以後續的「已通知／失敗」為準）。
 
 ### 3.11 安全
 

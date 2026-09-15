@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0、P1、P2 VERIFIED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0、P1、P2、P3 VERIFIED（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -16,7 +16,7 @@
 | P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED |
 | P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED |
 | P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | VERIFIED |
-| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED  |
+| P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | VERIFIED |
 | P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED  |
 | P5    | Wrapper host、demo seed、E2E、文件與發布                  | P3、P4 | PLANNED  |
 | P6    | DB 管理端點、加密欄位、管理頁、測試送出                   | P5     | PLANNED  |
@@ -450,7 +450,7 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 - `libs/bpm-core-react`：
   - 案件詳情新增「Webhook 投遞」區塊（僅管理者），顯示 endpoint label、狀態、嘗試次數、
     最後錯誤碼與 detail、`FAILED` 列的重送按鈕。以 Mezzanine `Section` + `Table`
-    （rowActions 放重送）組合。
+    （`actions` 放重送）組合。
   - 時間軸將 `NOTIFY_WEBHOOK` 活動紀錄轉為「已通知外部系統：<label>」／
     「通知外部系統失敗：<label>」。
 
@@ -461,6 +461,72 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
   出現對應紀錄。
 - 重送後 `deliveryId` 不變。
 - `docs/api-reference.md` 同 commit 更新。
+
+**實作結果**（2026-09-15）
+
+- 後端（`libs/bpm-core/src/lib/workflow-webhook/`）：
+  - `WorkflowWebhookDeliveryResolver`（整個 resolver `@BPMAdminOnly()`）提供
+    `workflowWebhookDeliveries(instanceId)` 與 `retryWorkflowWebhookDelivery(id)`。
+  - `WorkflowWebhookDeliveryObject`（GraphQL `BPMWorkflowWebhookDelivery`）逐欄映射，
+    不含凍結的 event、參數與 token id；`endpointLabel` 由目前的 registry 查詢。
+  - `retryFailedDelivery`：同一交易內以 `status = FAILED AND attemptCount > 0` 為條件
+    更新成 `PENDING`、`attemptCount` 0、`nextRetryAt` null，並寫 `WEBHOOK_DELIVERY_RETRIED`
+    活動紀錄；其他狀態與入列時就失敗的列回 400、不存在回 404；label 在交易前查詢；
+    commit 後 `setImmediate` 立即嘗試一次。
+  - 終局活動紀錄與重送紀錄的 payload 加上 `endpointLabel`（`readEndpointLabel`，registry
+    丟例外時為 `null`）。
+- Client：`WorkflowWebhookDeliveryRecord`、`listWorkflowWebhookDeliveries`、
+  `retryWorkflowWebhookDelivery`。
+- React：
+  - `isBPMAdminMember`（與後端 `isBPMAdmin` 同規則），`apps/client` 的 host layout 改用它，
+    移除自己的副本。
+  - `InstanceWebhookDeliveriesSection`：`Table` + `Badge`，嘗試過的 `FAILED` 列才有
+    「重新傳送」，先開 `Modal` 確認；錯誤訊息顯示在區塊內。
+  - `InstanceDetailView` 新增 `showWebhookDeliveries`；只有管理者才查 deliveries，查詢失敗
+    （宿主未掛 webhook、權限判定不同）視為沒有資料，不影響頁面；沒有 delivery 時不顯示區塊。
+    有 `PENDING`／`DELIVERY_IN_PROGRESS` 的列時每 3 秒只重讀 deliveries（最多 40 次），
+    全部結束後整頁重新整理一次，讓時間軸帶出結果。
+  - 時間軸：`NOTIFY_WEBHOOK` 的 `SERVICE_TASK_EXECUTED`／`SERVICE_TASK_FAILED` 與
+    `WEBHOOK_DELIVERY_RETRIED` 列入歷程，失敗標為錯誤，不顯示錯誤碼。
+
+**P3 自決的項目**
+
+1. 區塊標題用「外部系統通知」而非「Webhook 投遞」，與時間軸用語一致。
+2. 重送前以 Modal 確認：重送會對外部系統產生副作用。
+3. 活動紀錄帶 `endpointLabel`，而不是前端再查 catalog：catalog 限設計者，一般讀者無權查。
+4. 重送的時間軸標題為「管理者重新傳送外部系統通知：<label>」，只描述動作，不暗示已送達。
+
+**真實環境驗證（2026-09-15，wrapper host `apps/api` + `apps/client` + develop 資料庫）**
+
+| 情境                                          | 結果                                                                                                                                                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 管理者（member-001）開 P2 案件 `58511d6a`     | 區塊列出 3 筆：flaky／slow `失敗`（6 次、錯誤碼與 detail）、ok `已送達`；只有失敗列有「重新傳送」                                                                                              |
+| 按重新傳送 → Modal 確認                       | 立即嘗試、狀態回 `等待傳送` 並顯示下次重試時間                                                                                                                                                 |
+| 接收端                                        | 同一 `deliveryId` 收到 503（21:00:57）→ 503（21:01:39）→ 200（21:02:39），簽章皆有效                                                                                                           |
+| 送達後                                        | 區塊顯示 `已送達`、3 次、錯誤清空、按鈕消失；時間軸新增重送紀錄（操作者為管理者；修正後標題為「管理者重新傳送外部系統通知：示範：先失敗兩次的接收端」）與「已通知外部系統：…」（操作者為系統） |
+| P3 之前寫入的活動紀錄                         | 沒有 `endpointLabel`，時間軸改顯示 key（`demo.flaky`），失敗紅色標示                                                                                                                           |
+| 審查修正後，重送 slow 失敗列、不重新整理      | 區塊自動由 `傳送中`（0 次）→ `等待傳送`（1 次、下次重試時間），時間軸出現「管理者重新傳送外部系統通知：示範：超過逾時的接收端」                                                                |
+| 重送已送達的列（API）                         | `BAD_REQUEST`：`... is SENT; only FAILED deliveries can be retried`                                                                                                                            |
+| 一般使用者（member-102）API                   | 查詢與重送皆 `FORBIDDEN`                                                                                                                                                                       |
+| 一般使用者瀏覽器，開自己發起的案件 `79f7d293` | 不出現區塊與任何錯誤碼、前端未送出 deliveries 查詢；時間軸顯示「已通知外部系統：示範：採購核准通知 ERP」                                                                                       |
+
+驗證用的 `79f7d293` 由 member-102 以同一個模板發起：暫時啟用模板、送出後立即停用回原狀。
+
+**獨立驗證（2026-09-15）**：結論 PASS WITH FIXES，全部採納後修正：
+
+| 等級  | 發現                                                                                                | 修正                                                                  |
+| ----- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| major | 入列時就失敗的列可被重送，缺參數／參數不合法的凍結事件會真的送出並變 `SENT`（驗證者以暫存測試重現） | 重送條件加 `attemptCount > 0`，並回明確的 400；前端不顯示按鈕；補測試 |
+| minor | 「已重新通知外部系統」在重送當下並不成立，且不在 ADR 列出的兩種訊息內                               | 改為「管理者重新傳送外部系統通知」，ADR 補記                          |
+| minor | `isBPMAdminMember` 少了 `?? []`，宿主 `/auth/me` 缺欄位時案件詳情整頁崩潰                           | 補回防禦                                                              |
+| minor | 重送後畫面停在等待傳送，要手動重新整理                                                              | 有限次數輪詢                                                          |
+| minor | 重送交易內查 label，DATABASE 來源時可能多占連線                                                     | 移到交易前                                                            |
+| nit   | `readEndpointLabel` 在 fulfill handler 內丟例外時接不到                                             | 全段防禦，非字串一律 `null`；補測試                                   |
+
+入列時就失敗的列被拒絕重送由單元測試涵蓋；develop 資料庫沒有現成的此類紀錄，未另做真實環境驗證。
+
+未採納：非 UUID 參數回 Postgres 錯誤（整個 codebase 的 resolver 都未使用 `ParseUUIDPipe`，
+維持一致）；後端英文錯誤訊息直接顯示給管理者（與其他管理頁一致）。
 
 ## P4 — 設計器知會節點 Webhook 面板
 
