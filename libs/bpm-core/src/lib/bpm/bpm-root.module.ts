@@ -27,6 +27,12 @@ import { IdentityModule } from '../identity/identity.module';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { NotificationModule } from '../notification/notification.module';
 import { NotificationOptionsModule } from '../notification/notification-options.module';
+import { WorkflowWebhookOptionsModule } from '../workflow-webhook/workflow-webhook-options.module';
+import {
+  WorkflowWebhookModule,
+  WorkflowWebhookModuleOptions,
+} from '../workflow-webhook/workflow-webhook.module';
+import { BPMWorkflowWebhookRegistry } from '../workflow-webhook/workflow-webhook.types';
 import { OrganizationModule } from '../organization/organization.module';
 import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
@@ -83,6 +89,15 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * neither is given, BPM exposes an empty catalog.
    */
   readonly formDataSourceRegistryProvider?: Provider<BPMFormDataSourceRegistry>;
+
+  /**
+   * Host-registered NOTIFY webhook endpoint catalog, as a Nest provider.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.workflowWebhookRegistry}. When
+   * both are given this provider wins, as `formDataSourceRegistryProvider`
+   * does; when neither is given, the catalog is empty.
+   */
+  readonly workflowWebhookRegistryProvider?: Provider<BPMWorkflowWebhookRegistry>;
 
   /**
    * Host-provided member resolver, as a Nest provider.
@@ -300,6 +315,7 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
   return [
     wiring.optionsModule,
     NotificationOptionsModule.forRootAsync({ inject, useFactory }),
+    WorkflowWebhookOptionsModule.forRootAsync({ inject, useFactory }),
     CalendarModule.forRoot({
       businessCalendarProvider: wiring.businessCalendarProvider,
       imports: wiring.imports,
@@ -338,5 +354,9 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
       imports: wiring.imports,
       serviceTaskDispatcherProvider: wiring.workflowServiceTaskDispatcherProvider,
     }),
+    WorkflowWebhookModule.forRoot({
+      imports: wiring.imports,
+      registryProvider: wiring.workflowWebhookRegistryProvider,
+    } satisfies WorkflowWebhookModuleOptions),
   ];
 }

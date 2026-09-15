@@ -1,15 +1,26 @@
 import {
+  NOTIFY_WEBHOOK_CONTEXT_PATHS,
+  NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
+  NOTIFY_WEBHOOK_TARGET_LIMIT,
+  createNotifyWebhookTarget,
   isDecisionPolicyUnsatisfiable,
+  isFormFieldCompatibleWithWebhookParameter,
+  isNotifyRecipientsEmpty,
+  isNotifyWebhookValueCompatibleWithParameter,
   readConditionExpression,
   readConditionOperatorIds,
   readDesignTimeApproverCount,
   readFallbackWorkflowDefinition,
+  readNotifyServiceTaskIssue,
+  readNotifyWebhookStructureIssues,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
 import { FormFieldDefinition } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
+  NotifyWebhookTarget,
+  ServiceAction,
   WorkflowDefinition,
 } from './workflow';
 
@@ -175,5 +186,567 @@ describe('table field conditions', () => {
 
   it('refuses to compile value operators against a table', () => {
     expect(readConditionExpression(TABLE_FIELD, 'EQUALS', '1')).toBeUndefined();
+  });
+});
+
+const NOBODY: ApproverResolver = { memberIds: [], type: 'DIRECT' };
+
+const ERP_WEBHOOK: NotifyWebhookTarget = {
+  bindings: [
+    { from: { fieldKey: 'amount', kind: 'FIELD' }, parameter: 'amount' },
+    { from: { kind: 'CONSTANT', value: 'PO' }, parameter: 'documentType' },
+    { from: { kind: 'CONTEXT', path: 'instance.id' }, parameter: 'caseId' },
+  ],
+  endpoint: { key: 'erp.purchase-approved', version: 1 },
+  id: 'webhook_erp',
+};
+
+function notifyAction(
+  recipients: ApproverResolver,
+  webhooks?: readonly NotifyWebhookTarget[],
+): ServiceAction {
+  return {
+    channels: ['IN_APP'],
+    recipients,
+    type: 'NOTIFY',
+    ...(webhooks ? { webhooks } : {}),
+  };
+}
+
+function definitionWithNotify(action: ServiceAction): WorkflowDefinition {
+  const fallback = readFallbackWorkflowDefinition();
+
+  return {
+    ...fallback,
+    nodes: [
+      ...fallback.nodes,
+      {
+        data: { action, label: '通知 ERP', triggerMode: 'AND' },
+        id: 'notify',
+        position: { x: 300, y: 320 },
+        type: 'serviceTask',
+      },
+    ],
+  };
+}
+
+function field(
+  type: FormFieldDefinition['type'],
+  extra: Readonly<Record<string, unknown>> = {},
+): FormFieldDefinition {
+  return {
+    fieldKey: 'f',
+    label: 'F',
+    required: false,
+    type,
+    ...extra,
+  } as FormFieldDefinition;
+}
+
+describe('readWorkflowDefinitionIssue — NOTIFY nodes', () => {
+  it('requires a recipient or a webhook', () => {
+    expect(
+      readWorkflowDefinitionIssue(definitionWithNotify(notifyAction(NOBODY))),
+    ).toBe('知會節點需要至少一位知會對象或一個 Webhook。');
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(notifyAction(NOBODY, [])),
+      ),
+    ).toBe('知會節點需要至少一位知會對象或一個 Webhook。');
+  });
+
+  it('accepts a webhook-only node', () => {
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(notifyAction(NOBODY, [ERP_WEBHOOK])),
+      ),
+    ).toBeNull();
+  });
+
+  it('accepts a member-only node, as before', () => {
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(notifyAction(THREE_MEMBERS)),
+      ),
+    ).toBeNull();
+  });
+
+  it('no longer reports a configured runtime resolver as missing recipients', () => {
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(
+          notifyAction({ positionId: 'p1', type: 'POSITION' }),
+        ),
+      ),
+    ).toBeNull();
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(
+          notifyAction({ orgUnitId: 'ou1', type: 'ORG_UNIT_MEMBER' }),
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it('still reports a half-configured runtime resolver, webhooks or not', () => {
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(
+          notifyAction({ positionId: ' ', type: 'POSITION' }, [ERP_WEBHOOK]),
+        ),
+      ),
+    ).toBe('知會節點需要指定職位。');
+  });
+
+  it('names the node and the webhook position for a webhook problem', () => {
+    const issue = readWorkflowDefinitionIssue(
+      definitionWithNotify(
+        notifyAction(THREE_MEMBERS, [
+          ERP_WEBHOOK,
+          {
+            ...ERP_WEBHOOK,
+            endpoint: { key: '', version: 1 },
+            id: 'webhook_2',
+          },
+        ]),
+      ),
+    );
+
+    expect(issue).toBe('知會節點「通知 ERP」的第 2 個 Webhook需要選擇端點。');
+  });
+});
+
+describe('readNotifyWebhookStructureIssues', () => {
+  function codes(webhooks: unknown): readonly string[] {
+    return readNotifyWebhookStructureIssues(webhooks).map(
+      (issue) => issue.code,
+    );
+  }
+
+  it('accepts a missing list, an empty list and a well-formed target', () => {
+    expect(codes(undefined)).toEqual([]);
+    expect(codes([])).toEqual([]);
+    expect(codes([ERP_WEBHOOK])).toEqual([]);
+  });
+
+  it('rejects a non-array list and non-object targets', () => {
+    expect(codes({})).toEqual(['WEBHOOKS_NOT_ARRAY']);
+    expect(codes(null)).toEqual(['WEBHOOKS_NOT_ARRAY']);
+    expect(codes(['x'])).toEqual(['TARGET_INVALID']);
+  });
+
+  it('caps the number of targets per node', () => {
+    const targets = Array.from(
+      { length: NOTIFY_WEBHOOK_TARGET_LIMIT + 1 },
+      (_, index) => ({ ...ERP_WEBHOOK, id: `webhook_${index}` }),
+    );
+
+    expect(codes(targets)).toEqual(['TARGET_LIMIT_EXCEEDED']);
+    expect(codes(targets.slice(1))).toEqual([]);
+  });
+
+  it('requires a unique, non-blank target id', () => {
+    expect(codes([{ ...ERP_WEBHOOK, id: ' ' }])).toEqual([
+      'TARGET_ID_REQUIRED',
+    ]);
+    expect(codes([ERP_WEBHOOK, ERP_WEBHOOK])).toEqual(['TARGET_ID_DUPLICATE']);
+    expect(
+      readNotifyWebhookStructureIssues([ERP_WEBHOOK, ERP_WEBHOOK])[0]
+        ?.targetIndex,
+    ).toBe(1);
+  });
+
+  it('requires an endpoint key and a positive integer version', () => {
+    expect(
+      codes([{ ...ERP_WEBHOOK, endpoint: { key: '', version: 1 } }]),
+    ).toEqual(['ENDPOINT_KEY_REQUIRED']);
+    [0, -1, 1.5, '1', undefined].forEach((version) => {
+      expect(
+        codes([{ ...ERP_WEBHOOK, endpoint: { key: 'erp', version } }]),
+      ).toEqual(['ENDPOINT_VERSION_INVALID']);
+    });
+    expect(codes([{ ...ERP_WEBHOOK, endpoint: null }])).toEqual([
+      'ENDPOINT_KEY_REQUIRED',
+      'ENDPOINT_VERSION_INVALID',
+    ]);
+  });
+
+  it('requires bindings to be a list of objects with a unique parameter', () => {
+    expect(codes([{ ...ERP_WEBHOOK, bindings: {} }])).toEqual([
+      'BINDINGS_NOT_ARRAY',
+    ]);
+    expect(codes([{ ...ERP_WEBHOOK, bindings: [1] }])).toEqual([
+      'BINDING_INVALID',
+    ]);
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          bindings: [{ from: { kind: 'CONSTANT', value: 1 }, parameter: '' }],
+        },
+      ]),
+    ).toEqual(['BINDING_PARAMETER_REQUIRED']);
+
+    const duplicate = readNotifyWebhookStructureIssues([
+      {
+        ...ERP_WEBHOOK,
+        bindings: [ERP_WEBHOOK.bindings[0], ERP_WEBHOOK.bindings[0]],
+      },
+    ]);
+
+    expect(duplicate).toEqual([
+      {
+        bindingIndex: 1,
+        code: 'BINDING_PARAMETER_DUPLICATE',
+        parameter: 'amount',
+        property: null,
+        targetIndex: 0,
+      },
+    ]);
+  });
+
+  it('validates each binding source kind', () => {
+    function sourceCodes(from: unknown): readonly string[] {
+      return codes([{ ...ERP_WEBHOOK, bindings: [{ from, parameter: 'p' }] }]);
+    }
+
+    expect(sourceCodes({ fieldKey: ' ', kind: 'FIELD' })).toEqual([
+      'BINDING_FIELD_KEY_REQUIRED',
+    ]);
+    expect(sourceCodes({ kind: 'CONTEXT', path: 'instance.formData' })).toEqual(
+      ['BINDING_CONTEXT_PATH_INVALID'],
+    );
+    expect(sourceCodes({ kind: 'CONSTANT', value: { nested: true } })).toEqual([
+      'BINDING_CONSTANT_INVALID',
+    ]);
+    expect(sourceCodes({ kind: 'CONSTANT', value: Number.NaN })).toEqual([
+      'BINDING_CONSTANT_INVALID',
+    ]);
+    expect(sourceCodes({ kind: 'CONSTANT' })).toEqual([
+      'BINDING_CONSTANT_INVALID',
+    ]);
+    expect(sourceCodes({ kind: 'CEL', expression: 'form.amount' })).toEqual([
+      'BINDING_SOURCE_INVALID',
+    ]);
+    expect(sourceCodes(null)).toEqual(['BINDING_SOURCE_INVALID']);
+    expect(sourceCodes({ kind: 'CONSTANT', value: null })).toEqual([]);
+    expect(sourceCodes({ kind: 'CONSTANT', value: false })).toEqual([]);
+  });
+});
+
+describe('isFormFieldCompatibleWithWebhookParameter', () => {
+  it('matches each parameter type to the fields whose value fits it', () => {
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('text'), 'string'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('datetime'), 'string'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('radio', { options: [] }),
+        'string',
+      ),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('select', { options: [] }),
+        'string',
+      ),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('number'), 'string'),
+    ).toBe(false);
+
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('money'), 'number'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('text'), 'number'),
+    ).toBe(false);
+
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('boolean'), 'boolean'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('checkbox', { options: [] }),
+        'boolean',
+      ),
+    ).toBe(false);
+  });
+
+  it('follows the selection mode of option fields', () => {
+    const multiSelect = field('select', { mode: 'multiple', options: [] });
+    const checkbox = field('checkbox', { options: [] });
+
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(multiSelect, 'stringArray'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(checkbox, 'stringArray'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(multiSelect, 'string'),
+    ).toBe(false);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('autocomplete', { options: [] }),
+        'stringArray',
+      ),
+    ).toBe(false);
+  });
+
+  it('lets json take any field, including tables and uploads', () => {
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('table', { columns: [] }),
+        'json',
+      ),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(field('file_upload'), 'json'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(
+        field('table', { columns: [] }),
+        'string',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('isNotifyWebhookValueCompatibleWithParameter', () => {
+  it('checks primitive types strictly and lets null through', () => {
+    expect(isNotifyWebhookValueCompatibleWithParameter('a', 'string')).toBe(
+      true,
+    );
+    expect(isNotifyWebhookValueCompatibleWithParameter(1, 'string')).toBe(
+      false,
+    );
+    expect(isNotifyWebhookValueCompatibleWithParameter(1, 'number')).toBe(true);
+    expect(
+      isNotifyWebhookValueCompatibleWithParameter(Infinity, 'number'),
+    ).toBe(false);
+    expect(isNotifyWebhookValueCompatibleWithParameter(true, 'boolean')).toBe(
+      true,
+    );
+    expect(
+      isNotifyWebhookValueCompatibleWithParameter(['a'], 'stringArray'),
+    ).toBe(true);
+    expect(
+      isNotifyWebhookValueCompatibleWithParameter(['a', 1], 'stringArray'),
+    ).toBe(false);
+    expect(isNotifyWebhookValueCompatibleWithParameter({ a: 1 }, 'json')).toBe(
+      true,
+    );
+    expect(isNotifyWebhookValueCompatibleWithParameter(null, 'number')).toBe(
+      true,
+    );
+  });
+});
+
+describe('notify webhook helpers', () => {
+  it('creates an empty target with an injected id', () => {
+    expect(
+      createNotifyWebhookTarget(
+        { key: 'erp', version: 2 },
+        () => 'webhook_fixed',
+      ),
+    ).toEqual({
+      bindings: [],
+      endpoint: { key: 'erp', version: 2 },
+      id: 'webhook_fixed',
+    });
+  });
+
+  it('generates distinct default ids', () => {
+    const first = createNotifyWebhookTarget({ key: 'erp', version: 1 });
+    const second = createNotifyWebhookTarget({ key: 'erp', version: 1 });
+
+    expect(first.id).toMatch(/^webhook_/);
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it('treats only a DIRECT resolver without members as empty', () => {
+    expect(isNotifyRecipientsEmpty(NOBODY)).toBe(true);
+    expect(isNotifyRecipientsEmpty(THREE_MEMBERS)).toBe(false);
+    expect(isNotifyRecipientsEmpty(ONE_MANAGER)).toBe(false);
+    expect(isNotifyRecipientsEmpty(undefined)).toBe(false);
+  });
+});
+
+describe('notify webhook hardening', () => {
+  function codes(webhooks: unknown): readonly string[] {
+    return readNotifyWebhookStructureIssues(webhooks).map(
+      (issue) => issue.code,
+    );
+  }
+
+  it('rejects a URL, headers or any other key the template must not carry', () => {
+    const issues = readNotifyWebhookStructureIssues([
+      {
+        ...ERP_WEBHOOK,
+        bindings: [
+          {
+            from: {
+              expression: 'form.amount',
+              fieldKey: 'amount',
+              kind: 'FIELD',
+            },
+            label: 'Amount',
+            parameter: 'amount',
+          },
+        ],
+        endpoint: { key: 'erp', secret: 's3cr3t', version: 1 },
+        headers: { Authorization: 'Bearer x' },
+        url: 'https://erp.example.com/hook',
+      },
+    ]);
+
+    expect(
+      issues.map((issue) => [issue.code, issue.bindingIndex, issue.property]),
+    ).toEqual([
+      ['UNKNOWN_PROPERTY', null, 'headers'],
+      ['UNKNOWN_PROPERTY', null, 'url'],
+      ['UNKNOWN_PROPERTY', null, 'endpoint.secret'],
+      ['UNKNOWN_PROPERTY', 0, 'label'],
+      ['UNKNOWN_PROPERTY', 0, 'from.expression'],
+    ]);
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithNotify(
+          notifyAction(THREE_MEMBERS, [
+            {
+              ...ERP_WEBHOOK,
+              url: 'https://erp.example.com/hook',
+            } as NotifyWebhookTarget,
+          ]),
+        ),
+      ),
+    ).toBe(
+      '知會節點「通知 ERP」的第 1 個 Webhook包含不支援的設定「url」，請移除後重新新增。',
+    );
+  });
+
+  it('only checks source keys against the kind actually declared', () => {
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          bindings: [{ from: { kind: 'CONSTANT', value: 1 }, parameter: 'p' }],
+        },
+      ]),
+    ).toEqual([]);
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          bindings: [
+            {
+              from: { fieldKey: 'a', kind: 'CONSTANT', value: 1 },
+              parameter: 'p',
+            },
+          ],
+        },
+      ]),
+    ).toEqual(['UNKNOWN_PROPERTY']);
+  });
+
+  it('caps the endpoint version at the outbox column range', () => {
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          endpoint: {
+            key: 'erp',
+            version: NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
+          },
+        },
+      ]),
+    ).toEqual([]);
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          endpoint: {
+            key: 'erp',
+            version: NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX + 1,
+          },
+        },
+      ]),
+    ).toEqual(['ENDPOINT_VERSION_INVALID']);
+  });
+
+  it('compares target ids and parameters after trimming', () => {
+    expect(
+      codes([ERP_WEBHOOK, { ...ERP_WEBHOOK, id: ' webhook_erp ' }]),
+    ).toEqual(['TARGET_ID_DUPLICATE']);
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          bindings: [
+            { from: { kind: 'CONSTANT', value: 1 }, parameter: 'amount' },
+            { from: { kind: 'CONSTANT', value: 2 }, parameter: 'amount ' },
+          ],
+        },
+      ]),
+    ).toEqual(['BINDING_PARAMETER_DUPLICATE']);
+  });
+
+  it('ignores keys holding undefined, which JSON drops anyway', () => {
+    expect(
+      codes([
+        {
+          ...ERP_WEBHOOK,
+          endpoint: { ...ERP_WEBHOOK.endpoint, secret: undefined },
+          url: undefined,
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('calls out a malformed recipient resolver on a node that has webhooks', () => {
+    const action = {
+      channels: ['IN_APP'],
+      recipients: null,
+      type: 'NOTIFY',
+      webhooks: [ERP_WEBHOOK],
+    } as unknown as ServiceAction;
+
+    expect(readWorkflowDefinitionIssue(definitionWithNotify(action))).toBe(
+      '知會節點的知會對象設定格式錯誤。',
+    );
+  });
+
+  it('reports missing recipients instead of throwing', () => {
+    const action = {
+      channels: ['IN_APP'],
+      recipients: null,
+      type: 'NOTIFY',
+    } as unknown as ServiceAction;
+
+    expect(readWorkflowDefinitionIssue(definitionWithNotify(action))).toBe(
+      '知會節點需要至少一位知會對象或一個 Webhook。',
+    );
+  });
+
+  it('ignores nodes that are not NOTIFY service tasks', () => {
+    const [start] = readFallbackWorkflowDefinition().nodes;
+
+    expect(start && readNotifyServiceTaskIssue(start)).toBeNull();
+  });
+
+  it('lists every context path exactly once', () => {
+    expect([...NOTIFY_WEBHOOK_CONTEXT_PATHS].sort()).toEqual([
+      'initiator.memberId',
+      'instance.id',
+      'instance.templateId',
+      'instance.templateVersionId',
+      'instance.title',
+      'node.id',
+      'node.label',
+    ]);
   });
 });

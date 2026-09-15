@@ -1,6 +1,12 @@
 import type { ActivityLogRecord } from '@rytass/bpm-core-client/workflow';
 
-import { readActivityDetailParts, readAdhocTargetDraft } from './shared';
+import {
+  isActivityError,
+  isUserMeaningfulActivity,
+  readActivityDetailParts,
+  readActivityEventLabel,
+  readAdhocTargetDraft,
+} from './shared';
 
 function createDecisionActivityLog(): ActivityLogRecord {
   return {
@@ -143,5 +149,84 @@ describe('readAdhocTargetDraft', () => {
       target: { kind: 'WEBHOOK', webhookUrl: 'https://example.com/hook' },
       valid: true,
     });
+  });
+});
+
+describe('notify webhook timeline entries', () => {
+  function webhookLog(
+    eventType: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord {
+    return {
+      actorMemberId: null,
+      createdAt: '2026-09-15T10:00:00.000Z',
+      eventType,
+      id: `log-${eventType}`,
+      instanceId: 'instance-1',
+      nodeId: 'notify',
+      payloadJson: JSON.stringify(payload),
+      taskId: null,
+    } as unknown as ActivityLogRecord;
+  }
+
+  const sent = {
+    action: 'NOTIFY_WEBHOOK',
+    endpointKey: 'demo.ok',
+    endpointLabel: '示範：採購核准',
+    errorCode: null,
+  };
+
+  it('puts webhook outcomes and retries on the timeline, but no other service task', () => {
+    expect(
+      isUserMeaningfulActivity(webhookLog('SERVICE_TASK_EXECUTED', sent)),
+    ).toBe(true);
+    expect(
+      isUserMeaningfulActivity(
+        webhookLog('WEBHOOK_DELIVERY_RETRIED', { ...sent }),
+      ),
+    ).toBe(true);
+    expect(
+      isUserMeaningfulActivity(
+        webhookLog('SERVICE_TASK_EXECUTED', { action: 'WEBHOOK' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('names the endpoint, falling back to its key on logs written without a label', () => {
+    expect(readActivityEventLabel('SERVICE_TASK_EXECUTED', sent)).toBe(
+      '已通知外部系統：示範：採購核准',
+    );
+    expect(
+      readActivityEventLabel('SERVICE_TASK_FAILED', {
+        action: 'NOTIFY_WEBHOOK',
+        endpointKey: 'demo.flaky',
+      }),
+    ).toBe('通知外部系統失敗：demo.flaky');
+    expect(readActivityEventLabel('WEBHOOK_DELIVERY_RETRIED', sent)).toBe(
+      '管理者重新傳送外部系統通知：示範：採購核准',
+    );
+  });
+
+  it('marks a failed delivery as an error without exposing its error code', () => {
+    const failed = { ...sent, errorCode: 'WEBHOOK_HTTP_503' };
+    const log = webhookLog('SERVICE_TASK_FAILED', failed);
+
+    expect(isActivityError(log, failed)).toBe(true);
+    expect(
+      isActivityError(webhookLog('SERVICE_TASK_EXECUTED', sent), sent),
+    ).toBe(false);
+    expect(
+      JSON.stringify(
+        readActivityDetailParts(
+          log,
+          failed,
+          null,
+          new Map(),
+          new Map(),
+          null,
+          new Map(),
+        ),
+      ),
+    ).not.toContain('WEBHOOK_HTTP_503');
   });
 });

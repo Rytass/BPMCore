@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-09-09, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10) is inventoried here but not yet released; `nx release` sets the next number at publish time.
+Last verified against (2026-09-15, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10), the NOTIFY webhook shared contract (ADR 18 P0) the endpoint registry/catalog (ADR 18 P1), the delivery outbox (ADR 18 P2) and delivery observability (ADR 18 P3) are inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
@@ -334,7 +334,11 @@ Form-schema definitions.
 | `FieldPermission` | interface | Per-node read/write permission |
 | `NotificationOverride` | interface | Node-level notification overrides |
 | `NotificationChannel` | type | `'IN_APP' \| 'EMAIL' \| 'WEBHOOK'` |
-| `ServiceAction` | type | Action runnable by a serviceTask |
+| `ServiceAction` | type | Action runnable by a serviceTask; `NOTIFY` may carry optional `webhooks` (ADR 18) |
+| `NotifyWebhookTarget` / `NotifyWebhookEndpointReference` | interface | One host-registered webhook endpoint (`key` + exact `version`) a NOTIFY node calls, with a stable node-local `id` |
+| `NotifyWebhookBinding` / `NotifyWebhookBindingSource` | interface/type | Parameter binding from a form field (`FIELD`), a constant (`CONSTANT`) or case context (`CONTEXT`) |
+| `NotifyWebhookContextPath` | type | Case/node values a `CONTEXT` binding may read |
+| `NotifyWebhookParameterType` | type | `'boolean' \| 'json' \| 'number' \| 'string' \| 'stringArray'` |
 | `GatewayDirection` | type | `'split' \| 'join'` |
 | `WorkflowEdge` / `WorkflowEdgeData` | interface | Edge with optional condition |
 | `WorkflowEdgeConditionOperator` | type | Edge condition operators |
@@ -371,6 +375,13 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `isWorkflowConnectionValid` / `isWorkflowNodeRemovable` / `isWorkflowNodeInputConnectable` / `isWorkflowNodeOutputConnectable` / `isAsyncNotifyServiceTask` | function | Connection rules |
 | `isExclusiveGatewaySourceEdge` / `isParallelGatewaySourceEdge` / `toggleSelectedEdgeId` | function | Gateway/edge helpers |
 | `readWorkflowDefinitionIssue` / `readApproverResolverIssue` / `hasConfiguredConditionEdges` / `readServiceTaskMemberIds` | function | Validation |
+| `NOTIFY_WEBHOOK_TARGET_LIMIT` / `NOTIFY_WEBHOOK_CONTEXT_PATHS` / `NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX` | const | Per-node webhook cap (10), the allowed `CONTEXT` binding paths, and the endpoint version ceiling (int32) |
+| `NotifyWebhookTargetIdFactory` / `NotifyWebhookStructureIssue` / `NotifyWebhookStructureIssueCode` | type/interface | Injectable target-id generator; registry-independent webhook shape issue as a code (formatted separately by the designer and the backend lint), located by `targetIndex` / `bindingIndex` / `parameter`, plus `property` for `UNKNOWN_PROPERTY` (a key outside the contract, relative to the target or binding) |
+| `defaultNotifyWebhookTargetId` / `createNotifyWebhookTarget` / `readNotifyWebhookTargets` | function | NOTIFY webhook target factory and reader |
+| `isNotifyRecipientsEmpty` / `readNotifyRecipientsIssue` | function | Empty `DIRECT` recipients (allowed only with webhooks) vs a misconfigured recipient resolver |
+| `readNotifyServiceTaskIssue` | function | zh-TW issue for one NOTIFY node (recipients + webhooks); used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
+| `readNotifyWebhookStructureIssues` / `isNotifyWebhookContextPath` | function | Structural webhook checks shared by the designer and `lintWorkflowDefinition`, including rejection of unknown keys (no URL/header/secret may be stored) |
+| `isFormFieldCompatibleWithWebhookParameter` / `isNotifyWebhookValueCompatibleWithParameter` | function | Whether a form field or a concrete value can feed a webhook parameter type |
 | `readConditionField` / `readConditionOperator` / `readConditionOperatorIds` / `readConditionValueOptions` / `readNextConditionOperator` / `readNextConditionValue` / `shouldConditionOperatorUseValue` / `readConditionLabel` / `readConditionOperatorLabel` / `readConditionValueLabel` / `readFormFieldOption` / `readConditionExpression` / `readFormFieldReference` / `readConditionExpressionOperator` / `readConditionExpressionValue` | function | Condition compilation (UI state → CEL) |
 
 ## `@rytass/bpm-core-shared/workflow-command`
@@ -577,6 +588,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
 | Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
 | Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
+| Webhook delivery | `WorkflowWebhookDeliveryStatus`, `WorkflowWebhookDeliveryRecord` (no URL, header or payload; `endpointLabel` is `null` once the endpoint is unregistered) |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
@@ -603,6 +615,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readAttachmentDownloadUrl / PreviewUrl({ ... })` | Signed download/preview URLs |
 | `readInstanceSignatures(id)` | Signature/verification records |
 | `listAdhocDirectives(instanceId)` | Ad-hoc directives recorded on one instance |
+| `listWorkflowWebhookDeliveries(instanceId)` | Notify-node webhook deliveries of one instance, oldest first (administrator-only) |
 
 ### Mutations
 
@@ -618,6 +631,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `configureAdhocStageNotification({ taskId, target, channels? })` | Notify targets when the current stage ends (any outcome) |
 | `configureAdhocCompletionNotification({ taskId, target, channels? })` | Notify targets when the instance reaches a terminal state |
 | `cancelAdhocDirective(directiveId)` | Withdraw a still-pending ad-hoc directive |
+| `retryWorkflowWebhookDelivery(id)` | Re-queue an attempted `FAILED` webhook delivery under the same id (administrator-only) |
 
 ### Member helpers (in workflow subpath)
 
@@ -649,8 +663,8 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -960,6 +974,34 @@ runtime value reaches both, because the service resolves it from the global
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
 
+## `@rytass/bpm-core-nestjs-module/workflow-webhook`
+
+NOTIFY webhook endpoints (ADR 18): the host-facing catalog, the designer query, the URL allowlist, the publish rules that need the catalog, and the delivery outbox.
+
+| Category | Names |
+|---|---|
+| Registry | `BPMWorkflowWebhookRegistry`, `BPM_WORKFLOW_WEBHOOK_REGISTRY`, `EmptyBPMWorkflowWebhookRegistry`, `StaticBPMWorkflowWebhookRegistry`, `defaultWorkflowWebhookRegistryProvider` (prefers a `workflowWebhookRegistry` instance from `BPM_ROOT_OPTIONS`, else an empty catalog) |
+| Endpoint contract | `BPMWorkflowWebhookEndpoint` (`descriptor` + `buildRequest`), `BPMWorkflowWebhookEndpointDescriptor`, `BPMWorkflowWebhookParameter`, `BPMWorkflowWebhookRequest`, `BPMWorkflowWebhookEvent`, `readWorkflowWebhookEndpointKey` |
+| Sources | `BPMWorkflowWebhookEndpointSource`, `BPMWorkflowWebhookEndpointSourceKind` (`'REGISTRY' \| 'DATABASE'`), `BPMWorkflowWebhookEndpointEntry` |
+| Service | `WorkflowWebhookService` (`hasEndpointSources` / `listEndpoints` / `getEndpoint` / `readOptions`), `ListWorkflowWebhookEndpointsOptions`, `readRegistryDescriptorErrors` |
+| Options | `BPMRootWorkflowWebhookOptions`, `BPMResolvedWorkflowWebhookOptions`, `BPM_WORKFLOW_WEBHOOK_OPTIONS`, `DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS`, `resolveBPMWorkflowWebhookOptions`, `readDisabledWorkflowWebhookSourceReason`, `resolveAndReportWorkflowWebhookOptions` (resolves and logs why a requested `DATABASE` source was dropped; used by `WorkflowWebhookOptionsModule`) |
+| Allowlist | `parseWorkflowWebhookUrlPattern`, `parseWorkflowWebhookUrlPatterns`, `isWorkflowWebhookUrlAllowed`, `isInternalHostname`, `ParsedWorkflowWebhookUrlPattern`, `WorkflowWebhookUrlPatternParseResult`, `WorkflowWebhookUrlScheme` |
+| Publish lint | `lintWorkflowWebhookTargets`, `LintWorkflowWebhookTargetsInput` |
+| Errors | `BPM_WORKFLOW_WEBHOOK_ERROR_CODES`, `BPMWorkflowWebhookErrorCode`, `BPMWorkflowWebhookException` |
+| GraphQL | `WorkflowWebhookQueries` (`workflowWebhookEndpoints(includeDeprecated)`, designer-only), `WorkflowWebhookEndpointObject`, `WorkflowWebhookParameterObject`, `WorkflowWebhookEndpointSourceEnum` (GraphQL enum `BPMWorkflowWebhookEndpointSource`), `WorkflowWebhookParameterTypeEnum` (GraphQL enum `BPMWorkflowWebhookParameterType`) |
+| Delivery | `WorkflowWebhookDeliveryService` (`enqueueNotifyWebhooks` inside the engine transaction, `deliverDue` for the scheduler, `deliverByIds` after commit, `listInstanceDeliveries`, `retryFailedDelivery` (an attempted `FAILED` row → `PENDING` with `attemptCount` 0; a row that failed while being queued is refused, a `WEBHOOK_DELIVERY_RETRIED` activity log in the same transaction, then an immediate attempt after commit), `readEndpointLabel`, `readRetryDelay`, `readCurrentTime`), `WorkflowWebhookDeliverySubscriber` (TypeORM subscriber that releases queued ids on commit and drops them on rollback), `WorkflowWebhookDeliverySchedulerService`, `BPM_WORKFLOW_WEBHOOK_FETCH` / `WorkflowWebhookFetch` (HTTP client, defaults to global `fetch`) |
+| Observability | `WorkflowWebhookDeliveryResolver` (administrator-only `workflowWebhookDeliveries(instanceId)` and `retryWorkflowWebhookDelivery(id)`), `WorkflowWebhookDeliveryObject` (GraphQL `BPMWorkflowWebhookDelivery`; no frozen event, parameters or token id) |
+| Outbox record | `WorkflowWebhookDeliveryEntity` (table `workflow_webhook_deliveries`, not a GraphQL type), `WorkflowWebhookFrozenEvent`, `WorkflowWebhookDeliveryStatusEnum` (GraphQL enum `BPMWorkflowWebhookDeliveryStatus`), `WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES`, `WorkflowWebhookDeliveryErrorCode` |
+| Enqueue | `buildWorkflowWebhookDeliveryDrafts`, `WorkflowWebhookEnqueueContext`, `WorkflowWebhookDeliveryDraft` |
+| Delivery options | `BPMResolvedWorkflowWebhookDeliveryOptions`, `WORKFLOW_WEBHOOK_MAX_TIMEOUT_MS` (30 s cap on any single request) |
+| Module | `WorkflowWebhookModule`, `WorkflowWebhookModuleOptions`, `WorkflowWebhookOptionsModule`, `WorkflowWebhookOptionsModuleAsyncOptions` |
+
+The catalog carries **no URL, header or secret**, whichever source an endpoint came from: the browser only ever sees key, version, label, description, parameters and source. `buildRequest()` is called once per delivery attempt rather than at enqueue time, so a rotated credential reaches deliveries that are already queued.
+
+Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` writes `PENDING` rows (or `FAILED` ones, with their terminal activity log, when the endpoint is gone, its lookup threw, or a parameter no longer fits); the subscriber kicks `deliverByIds` once that transaction commits, and the scheduler (on by default whenever an endpoint is registered; `workflowWebhookDeliverySchedulerEnabled` overrides) retries the rest. Each attempt calls `buildRequest()`, refuses non-http(s) URLs and — for `DATABASE` endpoints, or all endpoints under `workflowWebhookEnforceAllowlistForRegistry` — URLs outside the allowlist, refuses a URL carrying credentials, a method other than `POST`/`PUT`/`PATCH` and a `buildRequest()` result without a string `url`, then sends with `redirect: 'manual'` and a timeout. Each row is re-stamped as its own attempt starts and written back only while that stamp still matches, so a row another worker reclaimed is never sent twice by this one nor overwritten by its late result. `2xx` is `SENT`; `408`/`429`/`5xx`, timeouts, network errors, a throwing `buildRequest()` and a throwing endpoint lookup retry with `base·2^(n−1)` backoff (±20 % jitter, never above the cap); other `4xx`, `3xx`, a missing endpoint and a refused URL fail at once. Rows are claimed at most five at a time and attempted together, the next five only once those finish, so a claimed row is always a row in flight and one receiver running into its timeout delays at most the other four in its group. Error details keep a host error's kind and a network error's system code, never a message that could quote the URL or a secret; at most 500 characters of a failing response body are kept, read from a 4 KB prefix, and NUL is stripped from every stored detail. An unexpected error inside BPM is recorded as `WEBHOOK_INTERNAL_ERROR` and retried. BPM sets `x-bpm-delivery-id`, `x-bpm-event` and, with a `signingSecret`, `x-bpm-timestamp` (the time of sending) and `x-bpm-signature-sha256 = HMAC-SHA256(secret, "<timestamp>.<body>")`; a host header cannot override any `x-bpm-*` header. Only the terminal outcome reaches the activity log (`SERVICE_TASK_EXECUTED` / `SERVICE_TASK_FAILED` with `action: 'NOTIFY_WEBHOOK'`, the endpoint key, version and label), and never the URL or response body. An administrator's retry adds `WEBHOOK_DELIVERY_RETRIED` (`ActivityLogEventTypeEnum`), carrying the acting member and the previous error code.
+
+`workflowWebhookTargetSources` defaults to `['REGISTRY']`. `'DATABASE'` (P6) is dropped from the resolved list unless both `workflowWebhookAllowedUrlPatterns` and `workflowWebhookSecretEncryptionKey` are set; the module logs a warning naming whichever is missing (`resolveAndReportWorkflowWebhookOptions`). An invalid URL pattern throws while options resolve, so it fails the boot rather than silently allowing or denying everything.
+
 ## `@rytass/bpm-core-nestjs-module/condition`
 
 | Name | Purpose |
@@ -1197,6 +1239,7 @@ argument on the `notifications` / `notificationCount` queries.
     naming a row no query returns. Safe on an existing database (the dropped
     constraint already guaranteed the live rows do not collide); `down()`
     refuses if any code has since been reused.
+24. `WorkflowWebhookDeliveries0000000023000` (creates `workflow_webhook_deliveries`, the NOTIFY webhook outbox: unique `(token_id, target_id)` so a token cannot queue the same target twice, plus indexes for the pending scan and per-instance listing)
 
 ---
 
@@ -1217,6 +1260,7 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
 | `useBPMMember()` | hook | Host-facing alias of `useAuth().member` — current `ApiMember \| null` |
+| `isBPMAdminMember(member)` | function | Mirrors the server's `@BPMAdminOnly()` rule (`BPM_ADMIN` role or `bpm:*` / `bpm:admin` / `bpm.admin` / `bpm:admin:*`) for showing administrator-only UI |
 | `useBPMLogout()` | hook | Host-facing alias of `useAuth().logout` — `() => Promise<void>`, runs `logoutApi()` + redirect to `loginPath` |
 | `RouterAdapter` | interface | Framework-agnostic router contract (pathname / push / replace / back / searchParams) |
 | `RouterAdapterProvider` | Component | Inject host's RouterAdapter |
@@ -1315,7 +1359,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
-| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
+| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory` / `showWebhookDeliveries`; the webhook section is only ever shown to administrators, and only when the instance queued deliveries), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection`, `InstanceWebhookDeliveriesSection` (status, attempts, last error and a confirmed retry for attempted `FAILED` rows) and their `*Props` | `@xyflow/react`, `dagre` |
 | `views/instances/new` | `InstanceNewView` | medium |
 | `views/templates/compose` | `TemplateComposeWizardView`, `TemplateComposeWizardViewProps` (opt-in `showAiAssistant` / `aiAssistantAvailable` surface the Step 1 embedded-designer AI assistant), `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |

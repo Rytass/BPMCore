@@ -3,11 +3,18 @@ import {
   FormFieldDefinition,
   FormFieldOption,
   isFormIdentifierKey,
+  isFormOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  readFormFieldSelectionMode,
 } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
+  NotifyWebhookBindingSource,
+  NotifyWebhookContextPath,
+  NotifyWebhookEndpointReference,
+  NotifyWebhookParameterType,
+  NotifyWebhookTarget,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -769,12 +776,10 @@ export function readWorkflowDefinitionIssue(
         node.data.approverResolver,
       ),
   );
-  const incompleteNotifyNode = definition.nodes.find(
-    (node) =>
-      node.type === 'serviceTask' &&
-      node.data.action.type === 'NOTIFY' &&
-      readServiceTaskMemberIds(node.data.action).length === 0,
-  );
+  const notifyNodeIssue =
+    definition.nodes
+      .map((node) => readNotifyServiceTaskIssue(node))
+      .find((issue): issue is string => issue !== null) ?? null;
   const incompleteConditionEdge = definition.edges.find(
     (edge) =>
       isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
@@ -814,8 +819,8 @@ export function readWorkflowDefinitionIssue(
     );
   }
 
-  if (incompleteNotifyNode) {
-    return '知會節點需要至少一位知會對象。';
+  if (notifyNodeIssue) {
+    return notifyNodeIssue;
   }
 
   if (incompleteConditionEdge) {
@@ -827,6 +832,39 @@ export function readWorkflowDefinitionIssue(
   }
 
   return null;
+}
+
+/**
+ * The designer-facing issue for one NOTIFY service task, or `null` for any
+ * other node. Exported so every validation entry point (this module's
+ * {@link readWorkflowDefinitionIssue} and the template designer's own
+ * pre-save check) applies the same NOTIFY rule.
+ */
+export function readNotifyServiceTaskIssue(node: WorkflowNode): string | null {
+  if (node.type !== 'serviceTask' || node.data.action.type !== 'NOTIFY') {
+    return null;
+  }
+
+  const action = node.data.action;
+  const structureIssue = readNotifyWebhookStructureIssues(action.webhooks)[0];
+
+  if (structureIssue) {
+    return readNotifyWebhookIssueMessage(structureIssue, node.data.label);
+  }
+
+  if (!action.recipients?.type) {
+    return readNotifyWebhookTargets(action).length > 0
+      ? '知會節點的知會對象設定格式錯誤。'
+      : '知會節點需要至少一位知會對象或一個 Webhook。';
+  }
+
+  if (isNotifyRecipientsEmpty(action.recipients)) {
+    return readNotifyWebhookTargets(action).length > 0
+      ? null
+      : '知會節點需要至少一位知會對象或一個 Webhook。';
+  }
+
+  return readNotifyRecipientsIssue(action.recipients);
 }
 
 export function readApproverResolverIssue(
@@ -891,6 +929,478 @@ export function readServiceTaskMemberIds(
   return action.type === 'NOTIFY' && action.recipients.type === 'DIRECT'
     ? action.recipients.memberIds
     : [];
+}
+
+// ── NOTIFY webhooks (ADR 18) ───────────────────────────────────────────────
+
+export const NOTIFY_WEBHOOK_TARGET_LIMIT = 10;
+
+/** Upper bound for `endpoint.version`, matching the outbox's `int` column. */
+export const NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX = 2_147_483_647;
+
+// A Record rather than a bare array so adding a member to
+// `NotifyWebhookContextPath` fails to compile until it is listed here.
+const NOTIFY_WEBHOOK_CONTEXT_PATH_SET: Readonly<
+  Record<NotifyWebhookContextPath, true>
+> = {
+  'initiator.memberId': true,
+  'instance.id': true,
+  'instance.templateId': true,
+  'instance.templateVersionId': true,
+  'instance.title': true,
+  'node.id': true,
+  'node.label': true,
+};
+
+export const NOTIFY_WEBHOOK_CONTEXT_PATHS: readonly NotifyWebhookContextPath[] =
+  Object.keys(NOTIFY_WEBHOOK_CONTEXT_PATH_SET) as NotifyWebhookContextPath[];
+
+export type NotifyWebhookTargetIdFactory = () => string;
+
+export type NotifyWebhookStructureIssueCode =
+  | 'BINDING_CONSTANT_INVALID'
+  | 'BINDING_CONTEXT_PATH_INVALID'
+  | 'BINDING_FIELD_KEY_REQUIRED'
+  | 'BINDING_INVALID'
+  | 'BINDING_PARAMETER_DUPLICATE'
+  | 'BINDING_PARAMETER_REQUIRED'
+  | 'BINDING_SOURCE_INVALID'
+  | 'BINDINGS_NOT_ARRAY'
+  | 'ENDPOINT_KEY_REQUIRED'
+  | 'ENDPOINT_VERSION_INVALID'
+  | 'TARGET_ID_DUPLICATE'
+  | 'TARGET_ID_REQUIRED'
+  | 'TARGET_INVALID'
+  | 'TARGET_LIMIT_EXCEEDED'
+  | 'UNKNOWN_PROPERTY'
+  | 'WEBHOOKS_NOT_ARRAY';
+
+/**
+ * A registry-independent shape problem in a NOTIFY node's `webhooks`.
+ *
+ * Returned as a code rather than a message so the designer (zh-TW, user
+ * facing) and the backend publish lint (path-style, developer facing) share
+ * one rule set and can never drift apart.
+ */
+export interface NotifyWebhookStructureIssue {
+  readonly bindingIndex: number | null;
+  readonly code: NotifyWebhookStructureIssueCode;
+  readonly parameter: string | null;
+  /**
+   * For `UNKNOWN_PROPERTY`: the offending key, relative to the target when
+   * `bindingIndex` is `null` (`url`, `endpoint.secret`) and to the binding
+   * otherwise (`label`, `from.expression`). `null` for every other code.
+   */
+  readonly property: string | null;
+  readonly targetIndex: number | null;
+}
+
+export function defaultNotifyWebhookTargetId(): string {
+  return `webhook_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function createNotifyWebhookTarget(
+  endpoint: NotifyWebhookEndpointReference,
+  createId: NotifyWebhookTargetIdFactory = defaultNotifyWebhookTargetId,
+): NotifyWebhookTarget {
+  return {
+    bindings: [],
+    endpoint: { key: endpoint.key, version: endpoint.version },
+    id: createId(),
+  };
+}
+
+export function readNotifyWebhookTargets(
+  action: ServiceAction,
+): readonly NotifyWebhookTarget[] {
+  return action.type === 'NOTIFY' && Array.isArray(action.webhooks)
+    ? action.webhooks
+    : [];
+}
+
+/**
+ * `true` for the one recipient shape that names nobody: a `DIRECT` resolver
+ * with no member ids. Every other resolver picks members at runtime, so it is
+ * "configured" or "misconfigured" (see {@link readNotifyRecipientsIssue}) but
+ * never empty.
+ */
+export function isNotifyRecipientsEmpty(
+  recipients: ApproverResolver | null | undefined,
+): boolean {
+  return (
+    recipients?.type === 'DIRECT' &&
+    (!Array.isArray(recipients.memberIds) || recipients.memberIds.length === 0)
+  );
+}
+
+/**
+ * Misconfiguration of a non-empty NOTIFY recipient resolver. Mirrors the
+ * backend publish lint (`lintNotifyRecipients`) rule for rule; an empty
+ * `DIRECT` resolver is not reported here because whether it is allowed
+ * depends on the node's webhooks.
+ */
+export function readNotifyRecipientsIssue(
+  recipients: ApproverResolver,
+): string | null {
+  if (recipients.type === 'POSITION' && !recipients.positionId.trim()) {
+    return '知會節點需要指定職位。';
+  }
+
+  if (recipients.type === 'ORG_UNIT_MEMBER' && !recipients.orgUnitId.trim()) {
+    return '知會節點需要指定組織。';
+  }
+
+  if (
+    recipients.type === 'ORG_UNIT_POSITION' &&
+    (!recipients.orgUnitId.trim() || !recipients.positionId.trim())
+  ) {
+    return '知會節點需要指定組織與職位。';
+  }
+
+  if (recipients.type === 'DYNAMIC_FORM' && !recipients.formPath.trim()) {
+    return '知會節點需要指定知會對象的表單欄位。';
+  }
+
+  if (recipients.type === 'EXPRESSION' && !recipients.expression.trim()) {
+    return '知會節點需要指定知會對象的運算式。';
+  }
+
+  return null;
+}
+
+/**
+ * Structural checks that need neither the host webhook registry nor the form
+ * schema. Reads defensively: on the backend the definition is parsed JSON
+ * that no DTO has validated.
+ */
+export function readNotifyWebhookStructureIssues(
+  webhooks: unknown,
+): readonly NotifyWebhookStructureIssue[] {
+  if (webhooks === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(webhooks)) {
+    return [createNotifyWebhookIssue('WEBHOOKS_NOT_ARRAY')];
+  }
+
+  const limitIssues =
+    webhooks.length > NOTIFY_WEBHOOK_TARGET_LIMIT
+      ? [createNotifyWebhookIssue('TARGET_LIMIT_EXCEEDED')]
+      : [];
+  const targetIssues = webhooks.flatMap((target: unknown, targetIndex) =>
+    readNotifyWebhookTargetIssues(target, targetIndex, webhooks),
+  );
+
+  return [...limitIssues, ...targetIssues];
+}
+
+export function isNotifyWebhookContextPath(
+  value: unknown,
+): value is NotifyWebhookContextPath {
+  return (
+    typeof value === 'string' &&
+    NOTIFY_WEBHOOK_CONTEXT_PATHS.some((path) => path === value)
+  );
+}
+
+/**
+ * Whether a form field's stored value can feed a webhook parameter of `type`
+ * through a `FIELD` binding (ADR 18 §4).
+ */
+export function isFormFieldCompatibleWithWebhookParameter(
+  field: FormFieldDefinition,
+  type: NotifyWebhookParameterType,
+): boolean {
+  if (type === 'json') {
+    return true;
+  }
+
+  if (type === 'number') {
+    return field.type === 'number' || field.type === 'money';
+  }
+
+  if (type === 'boolean') {
+    return field.type === 'boolean';
+  }
+
+  const selectionMode = isFormOptionFieldDefinition(field)
+    ? readFormFieldSelectionMode(field)
+    : null;
+
+  if (type === 'stringArray') {
+    return selectionMode === 'multiple';
+  }
+
+  return (
+    field.type === 'text' ||
+    field.type === 'textarea' ||
+    field.type === 'date' ||
+    field.type === 'datetime' ||
+    selectionMode === 'single'
+  );
+}
+
+/**
+ * Whether a concrete value fits a webhook parameter of `type`. Used for
+ * `CONSTANT` bindings at publish and for resolved values at runtime. `null`
+ * fits every type; whether a required parameter may be `null` is decided by
+ * the caller.
+ */
+export function isNotifyWebhookValueCompatibleWithParameter(
+  value: unknown,
+  type: NotifyWebhookParameterType,
+): boolean {
+  if (value === null || type === 'json') {
+    return true;
+  }
+
+  if (type === 'string') {
+    return typeof value === 'string';
+  }
+
+  if (type === 'number') {
+    return typeof value === 'number' && Number.isFinite(value);
+  }
+
+  if (type === 'boolean') {
+    return typeof value === 'boolean';
+  }
+
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
+}
+
+function readNotifyWebhookTargetIssues(
+  target: unknown,
+  targetIndex: number,
+  targets: readonly unknown[],
+): readonly NotifyWebhookStructureIssue[] {
+  if (!isPlainRecord(target)) {
+    return [createNotifyWebhookIssue('TARGET_INVALID', { targetIndex })];
+  }
+
+  const targetId = target['id'];
+  const idIssues =
+    typeof targetId !== 'string' || !targetId.trim()
+      ? [createNotifyWebhookIssue('TARGET_ID_REQUIRED', { targetIndex })]
+      : targets.findIndex(
+            (candidate) =>
+              isPlainRecord(candidate) &&
+              typeof candidate['id'] === 'string' &&
+              candidate['id'].trim() === targetId.trim(),
+          ) !== targetIndex
+        ? [createNotifyWebhookIssue('TARGET_ID_DUPLICATE', { targetIndex })]
+        : [];
+  const endpoint = target['endpoint'];
+  const endpointKey = isPlainRecord(endpoint) ? endpoint['key'] : undefined;
+  const endpointVersion = isPlainRecord(endpoint)
+    ? endpoint['version']
+    : undefined;
+  const endpointIssues = [
+    ...(typeof endpointKey !== 'string' || !endpointKey.trim()
+      ? [createNotifyWebhookIssue('ENDPOINT_KEY_REQUIRED', { targetIndex })]
+      : []),
+    ...(typeof endpointVersion !== 'number' ||
+    !Number.isInteger(endpointVersion) ||
+    endpointVersion < 1 ||
+    endpointVersion > NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX
+      ? [createNotifyWebhookIssue('ENDPOINT_VERSION_INVALID', { targetIndex })]
+      : []),
+  ];
+  // The template must never carry a URL, header or secret (ADR 18 §3.1), so
+  // anything beyond the reference and bindings is rejected, not ignored.
+  const unknownPropertyIssues = [
+    ...readUnknownProperties(target, TARGET_PROPERTIES, ''),
+    ...(isPlainRecord(endpoint)
+      ? readUnknownProperties(endpoint, ENDPOINT_PROPERTIES, 'endpoint.')
+      : []),
+  ].map((property) =>
+    createNotifyWebhookIssue('UNKNOWN_PROPERTY', { property, targetIndex }),
+  );
+  const bindings = target['bindings'];
+  const bindingIssues = Array.isArray(bindings)
+    ? bindings.flatMap((binding: unknown, bindingIndex) =>
+        readNotifyWebhookBindingIssues(
+          binding,
+          targetIndex,
+          bindingIndex,
+          bindings,
+        ),
+      )
+    : [createNotifyWebhookIssue('BINDINGS_NOT_ARRAY', { targetIndex })];
+
+  return [
+    ...idIssues,
+    ...endpointIssues,
+    ...unknownPropertyIssues,
+    ...bindingIssues,
+  ];
+}
+
+function readNotifyWebhookBindingIssues(
+  binding: unknown,
+  targetIndex: number,
+  bindingIndex: number,
+  bindings: readonly unknown[],
+): readonly NotifyWebhookStructureIssue[] {
+  if (!isPlainRecord(binding)) {
+    return [
+      createNotifyWebhookIssue('BINDING_INVALID', {
+        bindingIndex,
+        targetIndex,
+      }),
+    ];
+  }
+
+  const parameterValue = binding['parameter'];
+  const parameter =
+    typeof parameterValue === 'string' && parameterValue.trim()
+      ? parameterValue
+      : null;
+  const location = { bindingIndex, parameter, targetIndex };
+  const parameterIssues = !parameter
+    ? [createNotifyWebhookIssue('BINDING_PARAMETER_REQUIRED', location)]
+    : bindings.findIndex(
+          (candidate) =>
+            isPlainRecord(candidate) &&
+            typeof candidate['parameter'] === 'string' &&
+            candidate['parameter'].trim() === parameter.trim(),
+        ) !== bindingIndex
+      ? [createNotifyWebhookIssue('BINDING_PARAMETER_DUPLICATE', location)]
+      : [];
+  const from = binding['from'];
+  const unknownPropertyIssues = [
+    ...readUnknownProperties(binding, BINDING_PROPERTIES, ''),
+    ...(isPlainRecord(from) && isNotifyWebhookSourceKind(from['kind'])
+      ? readUnknownProperties(from, SOURCE_PROPERTIES[from['kind']], 'from.')
+      : []),
+  ].map((property) =>
+    createNotifyWebhookIssue('UNKNOWN_PROPERTY', { ...location, property }),
+  );
+
+  return [
+    ...parameterIssues,
+    ...readNotifyWebhookSourceIssues(from, location),
+    ...unknownPropertyIssues,
+  ];
+}
+
+const TARGET_PROPERTIES: readonly string[] = ['bindings', 'endpoint', 'id'];
+const ENDPOINT_PROPERTIES: readonly string[] = ['key', 'version'];
+const BINDING_PROPERTIES: readonly string[] = ['from', 'parameter'];
+const SOURCE_PROPERTIES: Readonly<
+  Record<NotifyWebhookBindingSource['kind'], readonly string[]>
+> = {
+  CONSTANT: ['kind', 'value'],
+  CONTEXT: ['kind', 'path'],
+  FIELD: ['fieldKey', 'kind'],
+};
+
+function isNotifyWebhookSourceKind(
+  value: unknown,
+): value is NotifyWebhookBindingSource['kind'] {
+  return value === 'CONSTANT' || value === 'CONTEXT' || value === 'FIELD';
+}
+
+function readUnknownProperties(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+  prefix: string,
+): readonly string[] {
+  // A key holding `undefined` disappears in JSON, so the backend never sees
+  // it; counting it here would make the designer stricter than publish.
+  return Object.keys(value)
+    .filter((key) => value[key] !== undefined && !allowed.includes(key))
+    .map((key) => `${prefix}${key}`);
+}
+
+function readNotifyWebhookSourceIssues(
+  source: unknown,
+  location: Partial<Omit<NotifyWebhookStructureIssue, 'code'>>,
+): readonly NotifyWebhookStructureIssue[] {
+  if (!isPlainRecord(source)) {
+    return [createNotifyWebhookIssue('BINDING_SOURCE_INVALID', location)];
+  }
+
+  if (source['kind'] === 'FIELD') {
+    const fieldKey = source['fieldKey'];
+
+    return typeof fieldKey === 'string' && fieldKey.trim()
+      ? []
+      : [createNotifyWebhookIssue('BINDING_FIELD_KEY_REQUIRED', location)];
+  }
+
+  if (source['kind'] === 'CONTEXT') {
+    return isNotifyWebhookContextPath(source['path'])
+      ? []
+      : [createNotifyWebhookIssue('BINDING_CONTEXT_PATH_INVALID', location)];
+  }
+
+  if (source['kind'] === 'CONSTANT') {
+    const value = source['value'];
+
+    return value === null ||
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+      ? []
+      : [createNotifyWebhookIssue('BINDING_CONSTANT_INVALID', location)];
+  }
+
+  return [createNotifyWebhookIssue('BINDING_SOURCE_INVALID', location)];
+}
+
+function createNotifyWebhookIssue(
+  code: NotifyWebhookStructureIssueCode,
+  location: Partial<Omit<NotifyWebhookStructureIssue, 'code'>> = {},
+): NotifyWebhookStructureIssue {
+  return {
+    bindingIndex: location.bindingIndex ?? null,
+    code,
+    parameter: location.parameter ?? null,
+    property: location.property ?? null,
+    targetIndex: location.targetIndex ?? null,
+  };
+}
+
+function isPlainRecord(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNotifyWebhookIssueMessage(
+  issue: NotifyWebhookStructureIssue,
+  nodeLabel: string,
+): string {
+  const target =
+    issue.targetIndex === null
+      ? `知會節點「${nodeLabel}」`
+      : `知會節點「${nodeLabel}」的第 ${issue.targetIndex + 1} 個 Webhook`;
+
+  switch (issue.code) {
+    case 'TARGET_LIMIT_EXCEEDED':
+      return `知會節點「${nodeLabel}」最多只能設定 ${NOTIFY_WEBHOOK_TARGET_LIMIT} 個 Webhook。`;
+    case 'ENDPOINT_KEY_REQUIRED':
+    case 'ENDPOINT_VERSION_INVALID':
+      return `${target}需要選擇端點。`;
+    case 'BINDING_PARAMETER_REQUIRED':
+      return `${target}有未指定參數的綁定。`;
+    case 'BINDING_PARAMETER_DUPLICATE':
+      return `${target}的參數「${issue.parameter ?? ''}」重複綁定。`;
+    case 'BINDING_FIELD_KEY_REQUIRED':
+      return `${target}的參數「${issue.parameter ?? ''}」需要選擇表單欄位。`;
+    case 'BINDING_CONTEXT_PATH_INVALID':
+      return `${target}的參數「${issue.parameter ?? ''}」需要選擇案件資訊。`;
+    case 'BINDING_CONSTANT_INVALID':
+      return `${target}的參數「${issue.parameter ?? ''}」固定值格式錯誤。`;
+    case 'UNKNOWN_PROPERTY':
+      return `${target}包含不支援的設定「${issue.property ?? ''}」，請移除後重新新增。`;
+    default:
+      return `${target}設定格式錯誤，請移除後重新新增。`;
+  }
 }
 
 // ── Condition compilation ──────────────────────────────────────────────────

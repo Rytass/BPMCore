@@ -516,7 +516,43 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
   return (
     activityLog.eventType === 'INSTANCE_STARTED' ||
     activityLog.eventType === 'TASK_DECIDED' ||
-    activityLog.eventType === 'SLA_TRIGGERED'
+    activityLog.eventType === 'SLA_TRIGGERED' ||
+    isNotifyWebhookActivity(
+      activityLog.eventType,
+      readActivityPayload(activityLog),
+    )
+  );
+}
+
+const NOTIFY_WEBHOOK_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'SERVICE_TASK_EXECUTED',
+  'SERVICE_TASK_FAILED',
+  'WEBHOOK_DELIVERY_RETRIED',
+]);
+
+/**
+ * A notify node's webhook outcome, or an administrator re-sending one (ADR 18
+ * §3.10). Only the final word about a delivery is logged, so each is worth a
+ * timeline entry; other service-task logs stay off it as before.
+ */
+function isNotifyWebhookActivity(
+  eventType: string,
+  payload: Readonly<Record<string, unknown>>,
+): boolean {
+  return (
+    NOTIFY_WEBHOOK_EVENT_TYPES.has(eventType) &&
+    readStringField(payload, 'action') === 'NOTIFY_WEBHOOK'
+  );
+}
+
+/** Logs written before the label was recorded only carry the endpoint key. */
+function readNotifyWebhookEndpointLabel(
+  payload: Readonly<Record<string, unknown>>,
+): string {
+  return (
+    readStringField(payload, 'endpointLabel') ??
+    readStringField(payload, 'endpointKey') ??
+    '外部系統'
   );
 }
 
@@ -542,6 +578,17 @@ export function readActivityEventLabel(
     return readTaskDecisionEventLabel(readStringField(payload, 'action'));
   }
   if (eventType === 'SLA_TRIGGERED') return '時限提醒已觸發';
+  if (isNotifyWebhookActivity(eventType, payload)) {
+    const endpointLabel = readNotifyWebhookEndpointLabel(payload);
+
+    if (eventType === 'SERVICE_TASK_EXECUTED') {
+      return `已通知外部系統：${endpointLabel}`;
+    }
+
+    return eventType === 'SERVICE_TASK_FAILED'
+      ? `通知外部系統失敗：${endpointLabel}`
+      : `管理者重新傳送外部系統通知：${endpointLabel}`;
+  }
 
   return eventType;
 }
@@ -564,6 +611,8 @@ export function isActivityError(
 ): boolean {
   return (
     activityLog.eventType === 'SLA_TRIGGERED' ||
+    (activityLog.eventType === 'SERVICE_TASK_FAILED' &&
+      isNotifyWebhookActivity(activityLog.eventType, payload)) ||
     readStringField(payload, 'action') === 'REJECTED' ||
     readStringField(payload, 'instanceState') === 'REJECTED'
   );

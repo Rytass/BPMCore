@@ -55,6 +55,9 @@
       "@rytass/bpm-core-nestjs-module/workflow-engine": [
         "./libs/bpm-core/src/lib/workflow-engine/index.ts"
       ],
+      "@rytass/bpm-core-nestjs-module/workflow-webhook": [
+        "./libs/bpm-core/src/lib/workflow-webhook/index.ts"
+      ],
       "@rytass/bpm-core-client": ["./libs/bpm-core-client/src/index.ts"],
       "@rytass/bpm-core-client/organization": [
         "./libs/bpm-core-client/src/lib/organization/index.ts"

@@ -546,3 +546,63 @@ describe('set_user_task_decision_policy', () => {
     expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
   });
 });
+
+describe('set_service_action — NOTIFY webhooks', () => {
+  it('keeps webhooks configured in the designer when the assistant edits recipients', async () => {
+    const webhooks = [
+      {
+        bindings: [],
+        endpoint: { key: 'erp.purchase-approved', version: 1 },
+        id: 'webhook_erp',
+      },
+    ] as const;
+    const state = initialState();
+    const withNotify: WorkflowDesignerState = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: [
+          ...state.definition.nodes,
+          {
+            data: {
+              action: {
+                channels: ['IN_APP'],
+                recipients: { memberIds: [], type: 'DIRECT' },
+                type: 'NOTIFY',
+                webhooks,
+              },
+              label: '通知',
+              triggerMode: 'AND',
+            },
+            id: 'notify',
+            position: { x: 300, y: 320 },
+            type: 'serviceTask',
+          },
+        ],
+      },
+    };
+
+    const result = await executeWorkflowTool(withNotify, 'set_service_action', {
+      action: {
+        recipients: { positionId: 'pos-1', type: 'POSITION' },
+        type: 'NOTIFY',
+      },
+      nodeId: 'notify',
+    });
+
+    const node =
+      result.ok && result.kind === 'mutation'
+        ? result.result.state.definition.nodes.find(
+            (item) => item.id === 'notify',
+          )
+        : undefined;
+
+    expect(result).toMatchObject({ kind: 'mutation', ok: true });
+    expect(node?.type === 'serviceTask' && node.data.action).toEqual({
+      channels: ['IN_APP'],
+      recipients: { positionId: 'pos-1', type: 'POSITION' },
+      type: 'NOTIFY',
+      webhooks,
+    });
+  });
+});

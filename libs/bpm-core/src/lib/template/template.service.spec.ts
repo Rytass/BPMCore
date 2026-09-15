@@ -24,6 +24,14 @@ import {
 } from './template.enums';
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
+import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import { NotifyWebhookTarget } from '@rytass/bpm-core-shared/workflow';
+import { resolveBPMWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
+import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
+import {
+  BPMWorkflowWebhookParameter,
+  StaticBPMWorkflowWebhookRegistry,
+} from '../workflow-webhook/workflow-webhook.types';
 
 describe('TemplateService', () => {
   it('applies backend pagination when listing approval templates and counts active records', async (): Promise<void> => {
@@ -685,6 +693,78 @@ describe('TemplateService', () => {
     ).rejects.toThrow(
       'workflow.edges.edge_start_end.data.conditionFieldKey must not reference table field internals: items.qty',
     );
+  });
+
+  it('rejects publishing a webhook whose endpoint is not registered', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      new WorkflowWebhookService(
+        new StaticBPMWorkflowWebhookRegistry([]),
+        resolveBPMWorkflowWebhookOptions(),
+      ),
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('WORKFLOW_WEBHOOK_ENDPOINT_MISSING');
+  });
+
+  it('rejects publishing a binding the endpoint never declared', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      createWebhookService([
+        { key: 'other', label: 'Other', required: false, type: 'string' },
+      ]),
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('WORKFLOW_WEBHOOK_PARAMETER_UNKNOWN');
+  });
+
+  it('rejects publishing a webhook with no endpoint source at all', async (): Promise<void> => {
+    const service = createWebhookPublishService();
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('WORKFLOW_WEBHOOK_REGISTRY_MISSING');
+  });
+
+  it('rejects publishing a webhook binding that does not fit the parameter', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      createWebhookService([
+        { key: 'amount', label: 'Amount', required: true, type: 'stringArray' },
+      ]),
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow('WORKFLOW_WEBHOOK_BINDING_INCOMPATIBLE');
+  });
+
+  it('reports malformed webhook JSON as a publish error instead of crashing', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      createWebhookService([
+        { key: 'amount', label: 'Amount', required: true, type: 'number' },
+      ]),
+      [{ bindings: 'x', endpoint: { key: 'erp.purchase-approved', version: 1 }, id: 'w' }],
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'workflow.nodes.notify_erp.action.webhooks[0].bindings must be an array',
+    );
+  });
+
+  it('publishes a webhook whose endpoint and bindings check out', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      createWebhookService([
+        { key: 'amount', label: 'Amount', required: true, type: 'number' },
+      ]),
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).resolves.toMatchObject({ status: ApprovalTemplateVersionStatusEnum.PUBLISHED });
   });
 
   it('rejects publishing a structured edge condition that indexes a table row', async (): Promise<void> => {
@@ -1363,16 +1443,211 @@ function createTableConditionPublishService({
  * `BPM_TEMPLATE_OBSERVER`; throwing is how "no host observer registered" is
  * expressed, which is the default these tests run under.
  */
-function createTemplateModuleRef(observer?: BPMTemplateObserver): ModuleRef {
+function createTemplateModuleRef(
+  observer?: BPMTemplateObserver,
+  webhookService?: WorkflowWebhookService,
+): ModuleRef {
   return {
-    get: (token: unknown): BPMTemplateObserver => {
+    get: (token: unknown): BPMTemplateObserver | WorkflowWebhookService => {
       if (observer && token === BPM_TEMPLATE_OBSERVER) {
         return observer;
       }
 
+      if (webhookService && token === WorkflowWebhookService) {
+        return webhookService;
+      }
+
+      // Mirrors a host without that module: `TemplateService` catches the
+      // throw and treats the feature as absent.
       throw new Error('Unexpected ModuleRef lookup');
     },
   } as unknown as ModuleRef;
+}
+
+const WEBHOOK_FORM_SCHEMA: FormDefinitionSchema = {
+  fields: [
+    { fieldKey: 'amount', label: 'Amount', required: true, type: 'money' },
+  ],
+  schemaVersion: 1,
+};
+
+/**
+ * A publishable draft whose NOTIFY node calls one webhook endpoint, so the
+ * publish path can be exercised against a real `WorkflowWebhookService`.
+ */
+function createWebhookPublishService(
+  webhookService?: WorkflowWebhookService,
+  webhooksOverride?: unknown,
+): TemplateService {
+  const draftVersion = Object.assign(new ApprovalTemplateVersionEntity(), {
+    archivedAt: null,
+    createdAt: new Date('2026-09-15T00:00:00.000Z'),
+    formDefinitionVersionId: 'form-version-1',
+    id: 'template-version-1',
+    initiatorPolicyCel: null,
+    notificationConfig: null,
+    publishedAt: null,
+    publishedByMemberId: null,
+    slaDefaults: null,
+    status: ApprovalTemplateVersionStatusEnum.DRAFT,
+    templateId: 'template-1',
+    updatedAt: new Date('2026-09-15T00:00:00.000Z'),
+    version: 1,
+    workflowDefinition: {
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_end',
+          source: 'start',
+          target: 'end',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_start_notify',
+          source: 'start',
+          target: 'notify_erp',
+          type: 'smoothstep',
+        },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+        {
+          data: {
+            action: {
+              channels: ['IN_APP'],
+              recipients: { memberIds: [], type: 'DIRECT' },
+              type: 'NOTIFY',
+              webhooks: (webhooksOverride ?? [
+                {
+                  bindings: [
+                    {
+                      from: { fieldKey: 'amount', kind: 'FIELD' },
+                      parameter: 'amount',
+                    },
+                  ],
+                  endpoint: { key: 'erp.purchase-approved', version: 1 },
+                  id: 'webhook_erp',
+                },
+              ]) as NotifyWebhookTarget[],
+            },
+            label: '通知 ERP',
+          },
+          id: 'notify_erp',
+          position: { x: 300, y: 320 },
+          type: 'serviceTask',
+        },
+      ],
+    },
+  });
+  const formVersion = Object.assign(new FormDefinitionVersionEntity(), {
+    archivedAt: null,
+    createdAt: new Date('2026-09-15T00:00:00.000Z'),
+    formDefinitionId: 'form-1',
+    id: 'form-version-1',
+    publishedAt: new Date('2026-09-15T00:00:00.000Z'),
+    publishedByMemberId: 'member-admin',
+    schema: WEBHOOK_FORM_SCHEMA,
+    status: FormDefinitionVersionStatusEnum.PUBLISHED,
+    uiSchema: { layout: [{ fieldKey: 'amount', width: 'FULL' }] },
+    updatedAt: new Date('2026-09-15T00:00:00.000Z'),
+    version: 1,
+  });
+  const template = createApprovalTemplate('template-1');
+  const manager = {
+    getRepository: (target: unknown): ObjectLiteral =>
+      target === ApprovalTemplateEntity
+        ? {
+            findOne: jest.fn(
+              (): Promise<ApprovalTemplateEntity> => Promise.resolve(template),
+            ),
+            merge: jest.fn(
+              (
+                entity: ApprovalTemplateEntity,
+                patch: Partial<ApprovalTemplateEntity>,
+              ): ApprovalTemplateEntity => Object.assign(entity, patch),
+            ),
+            save: jest.fn(
+              (
+                entity: ApprovalTemplateEntity,
+              ): Promise<ApprovalTemplateEntity> => Promise.resolve(entity),
+            ),
+          }
+        : {
+            merge: jest.fn(
+              (
+                entity: ApprovalTemplateVersionEntity,
+                patch: Partial<ApprovalTemplateVersionEntity>,
+              ): ApprovalTemplateVersionEntity => Object.assign(entity, patch),
+            ),
+            save: jest.fn(
+              (
+                entity: ApprovalTemplateVersionEntity,
+              ): Promise<ApprovalTemplateVersionEntity> =>
+                Promise.resolve(entity),
+            ),
+            update: jest.fn((): Promise<void> => Promise.resolve()),
+          },
+  } as unknown as EntityManager;
+
+  return new TemplateService(
+    {
+      manager: {
+        transaction: jest.fn(
+          <TResult>(
+            operation: (txManager: EntityManager) => Promise<TResult>,
+          ): Promise<TResult> => operation(manager),
+        ),
+      },
+    } as unknown as Repository<ApprovalTemplateEntity>,
+    createRepository<ApprovalTemplateCategoryEntity>(),
+    {
+      findOne: jest.fn(
+        (): Promise<ApprovalTemplateVersionEntity | null> =>
+          Promise.resolve(draftVersion),
+      ),
+    } as unknown as Repository<ApprovalTemplateVersionEntity>,
+    {
+      findOne: jest.fn(
+        (): Promise<FormDefinitionVersionEntity | null> =>
+          Promise.resolve(formVersion),
+      ),
+    } as unknown as Repository<FormDefinitionVersionEntity>,
+    new ConditionService(),
+    {} as unknown as FormService,
+    createTemplateModuleRef(undefined, webhookService),
+  );
+}
+
+function createWebhookService(
+  parameters: readonly BPMWorkflowWebhookParameter[],
+): WorkflowWebhookService {
+  return new WorkflowWebhookService(
+    new StaticBPMWorkflowWebhookRegistry([
+      {
+        buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+        descriptor: {
+          key: 'erp.purchase-approved',
+          label: 'ERP purchase order',
+          parameters,
+          version: 1,
+        },
+      },
+    ]),
+    resolveBPMWorkflowWebhookOptions(),
+  );
 }
 
 /**

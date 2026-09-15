@@ -67,16 +67,20 @@ import {
   readAttachmentDownloadUrl,
   readAttachmentPreviewUrl,
   readInstanceSignatures,
+  listWorkflowWebhookDeliveries,
   resubmitApprovalInstance,
+  retryWorkflowWebhookDelivery,
   TaskDecisionRecord,
   TaskRecord,
   WorkflowFormData,
   WorkflowTokenRecord,
+  WorkflowWebhookDeliveryRecord,
   uploadAttachment,
 } from '@rytass/bpm-core-client/workflow';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
+import { isBPMAdminMember } from '../../../lib/use-bpm-member';
 import { PDFPreview } from '../../../components/pdf-preview';
 import {
   canMemberActOnTask,
@@ -95,10 +99,18 @@ import {
 } from './sections/InstanceTasksSection';
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
 import { InstanceHistorySection } from './sections/InstanceHistorySection';
+import { InstanceWebhookDeliveriesSection } from './sections/InstanceWebhookDeliveriesSection';
+import { readNodeDisplayLabel } from './sections/shared';
 import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
+
+// While a webhook delivery is queued or in flight the section re-reads the
+// list, so a retry is seen landing without a manual reload. Bounded: backoff
+// can push the next attempt far beyond what anyone watches the page for.
+const WEBHOOK_DELIVERY_POLL_INTERVAL_MS = 3000;
+const WEBHOOK_DELIVERY_POLL_LIMIT = 40;
 
 const FLOW_NODE_LAYOUT_WIDTH = 184;
 const FLOW_NODE_LAYOUT_HEIGHT = 96;
@@ -214,6 +226,11 @@ export interface InstanceDetailViewProps {
   readonly showSignatures?: boolean;
   /** Show the history section (default: true). */
   readonly showHistory?: boolean;
+  /**
+   * Show the notify-node webhook deliveries section (default: true). Only
+   * administrators ever see it, and only when the instance queued any.
+   */
+  readonly showWebhookDeliveries?: boolean;
 }
 
 /**
@@ -229,9 +246,12 @@ export function InstanceDetailView({
   showHistory = true,
   showSignatures = true,
   showTasks = true,
+  showWebhookDeliveries = true,
 }: InstanceDetailViewProps): ReactElement {
   const { member } = useAuth();
   const currentMemberId = member?.memberId ?? null;
+  const canViewWebhookDeliveries =
+    showWebhookDeliveries && isBPMAdminMember(member);
   const [activityLogs, setActivityLogs] = useState<
     readonly ActivityLogRecord[]
   >([]);
@@ -243,6 +263,9 @@ export function InstanceDetailView({
     [],
   );
   const [signatures, setSignatures] = useState<readonly SignatureRecord[]>([]);
+  const [webhookDeliveries, setWebhookDeliveries] = useState<
+    readonly WorkflowWebhookDeliveryRecord[]
+  >([]);
   const [signatureVerification, setSignatureVerification] =
     useState<SignatureVerificationRecord | null>(null);
   const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
@@ -280,10 +303,33 @@ export function InstanceDetailView({
 
   // Ref to the TasksSection imperative handle, used by PageHeader buttons.
   const tasksSectionRef = useRef<InstanceTasksSectionHandle>(null);
+  const webhookDeliveryPollCountRef = useRef(0);
+  const hasInFlightWebhookDelivery = webhookDeliveries.some(
+    (delivery) =>
+      delivery.status === 'PENDING' ||
+      delivery.status === 'DELIVERY_IN_PROGRESS',
+  );
 
   useEffect((): void => {
     void refreshInstance();
   }, [currentMemberId, instanceId]);
+
+  useEffect((): (() => void) | undefined => {
+    if (
+      !canViewWebhookDeliveries ||
+      !hasInFlightWebhookDelivery ||
+      webhookDeliveryPollCountRef.current >= WEBHOOK_DELIVERY_POLL_LIMIT
+    ) {
+      return undefined;
+    }
+
+    const timer = setTimeout((): void => {
+      webhookDeliveryPollCountRef.current += 1;
+      void pollWebhookDeliveries();
+    }, WEBHOOK_DELIVERY_POLL_INTERVAL_MS);
+
+    return (): void => clearTimeout(timer);
+  }, [canViewWebhookDeliveries, hasInFlightWebhookDelivery, webhookDeliveries]);
 
   useEffect((): void => {
     setResubmitFormData(instance?.formData ?? {});
@@ -427,6 +473,7 @@ export function InstanceDetailView({
         nextMemberProfiles,
         nextAttachments,
         nextSignatures,
+        nextWebhookDeliveries,
       ] = await Promise.all([
         readTaskDecisionsForTasks(nextRecord.tasks),
         readMemberProfilesForTimeline({
@@ -435,6 +482,7 @@ export function InstanceDetailView({
         }),
         listAttachments(nextRecord.instance.id),
         readInstanceSignatures(nextRecord.instance.id),
+        readWebhookDeliveries(nextRecord.instance.id),
       ]);
       setTaskDecisions(nextTaskDecisions);
       setMemberProfiles(nextMemberProfiles);
@@ -442,11 +490,54 @@ export function InstanceDetailView({
       setSignatures(nextSignatures.signatures);
       setSignatureVerification(nextSignatures.verification);
       setAdhocDirectives(nextAdhocDirectives);
+      setWebhookDeliveries(nextWebhookDeliveries);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
       setLoading(false);
     }
+  }
+
+  async function readWebhookDeliveries(
+    targetInstanceId: string,
+  ): Promise<readonly WorkflowWebhookDeliveryRecord[]> {
+    if (!canViewWebhookDeliveries) {
+      return [];
+    }
+
+    // An administrator-only extra: a host without the webhook module, or a
+    // role the server judges differently, must not take the page down.
+    return listWorkflowWebhookDeliveries(targetInstanceId).catch(
+      (): readonly WorkflowWebhookDeliveryRecord[] => [],
+    );
+  }
+
+  async function handleRetryWebhookDelivery(
+    delivery: WorkflowWebhookDeliveryRecord,
+  ): Promise<void> {
+    await retryWorkflowWebhookDelivery(delivery.id);
+    webhookDeliveryPollCountRef.current = 0;
+    await refreshInstance();
+  }
+
+  /**
+   * Re-reads only the deliveries while any is in flight; once none is, the
+   * whole instance is refreshed so the timeline picks up the outcome.
+   */
+  async function pollWebhookDeliveries(): Promise<void> {
+    const next = await readWebhookDeliveries(instanceId);
+    const settled = !next.some(
+      (delivery) =>
+        delivery.status === 'PENDING' ||
+        delivery.status === 'DELIVERY_IN_PROGRESS',
+    );
+
+    if (settled) {
+      await refreshInstance();
+      return;
+    }
+
+    setWebhookDeliveries(next);
   }
 
   async function handleUploadAttachment(
@@ -787,6 +878,18 @@ export function InstanceDetailView({
             <InstanceSignaturesSection
               signatureVerification={signatureVerification}
               signatures={signatures}
+            />
+          </Section>
+        ) : null}
+
+        {canViewWebhookDeliveries && webhookDeliveries.length > 0 ? (
+          <Section>
+            <InstanceWebhookDeliveriesSection
+              deliveries={webhookDeliveries}
+              onRetry={handleRetryWebhookDelivery}
+              readNodeLabel={(nodeId): string =>
+                readNodeDisplayLabel(nodeId, instance?.workflowSnapshot ?? null)
+              }
             />
           </Section>
         ) : null}

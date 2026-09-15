@@ -9,7 +9,13 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import {
   isDecisionPolicyUnsatisfiable,
+  isNotifyRecipientsEmpty,
+  NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
+  NOTIFY_WEBHOOK_TARGET_LIMIT,
+  NotifyWebhookStructureIssue,
   readDesignTimeApproverCount,
+  readNotifyWebhookStructureIssues,
+  readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { parseIsoDurationParts } from '../common/iso-duration';
 
@@ -401,10 +407,78 @@ function lintServiceAction(
   }
 
   if (action.type === 'NOTIFY') {
-    return lintNotifyRecipients(action.recipients, nodeId);
+    return lintNotifyAction(action, nodeId);
   }
 
   return [];
+}
+
+function lintNotifyAction(
+  action: Extract<ServiceAction, { readonly type: 'NOTIFY' }>,
+  nodeId: string,
+): readonly string[] {
+  const webhookErrors = readNotifyWebhookStructureIssues(action.webhooks).map(
+    (issue) => formatNotifyWebhookIssue(issue, nodeId),
+  );
+  // A node may notify only external systems: an empty DIRECT resolver is
+  // accepted once at least one webhook target is configured (ADR 18 §3.2).
+  const recipientErrors =
+    isNotifyRecipientsEmpty(action.recipients) &&
+    readNotifyWebhookTargets(action).length > 0
+      ? []
+      : lintNotifyRecipients(action.recipients, nodeId);
+
+  return [...recipientErrors, ...webhookErrors];
+}
+
+function formatNotifyWebhookIssue(
+  issue: NotifyWebhookStructureIssue,
+  nodeId: string,
+): string {
+  const webhooksPath = `workflow.nodes.${nodeId}.action.webhooks`;
+  const targetPath =
+    issue.targetIndex === null
+      ? webhooksPath
+      : `${webhooksPath}[${issue.targetIndex}]`;
+  const bindingPath =
+    issue.bindingIndex === null
+      ? `${targetPath}.bindings`
+      : `${targetPath}.bindings[${issue.bindingIndex}]`;
+
+  switch (issue.code) {
+    case 'WEBHOOKS_NOT_ARRAY':
+      return `${webhooksPath} must be an array`;
+    case 'TARGET_LIMIT_EXCEEDED':
+      return `${webhooksPath} exceeds the limit of ${NOTIFY_WEBHOOK_TARGET_LIMIT} targets`;
+    case 'TARGET_INVALID':
+      return `${targetPath} must be an object`;
+    case 'TARGET_ID_REQUIRED':
+      return `${targetPath}.id is required`;
+    case 'TARGET_ID_DUPLICATE':
+      return `${targetPath}.id must be unique within the node`;
+    case 'ENDPOINT_KEY_REQUIRED':
+      return `${targetPath}.endpoint.key is required`;
+    case 'ENDPOINT_VERSION_INVALID':
+      return `${targetPath}.endpoint.version must be an integer between 1 and ${NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX}`;
+    case 'BINDINGS_NOT_ARRAY':
+      return `${targetPath}.bindings must be an array`;
+    case 'BINDING_INVALID':
+      return `${bindingPath} must be an object`;
+    case 'BINDING_PARAMETER_REQUIRED':
+      return `${bindingPath}.parameter is required`;
+    case 'BINDING_PARAMETER_DUPLICATE':
+      return `${bindingPath}.parameter "${issue.parameter ?? ''}" is bound more than once`;
+    case 'BINDING_SOURCE_INVALID':
+      return `${bindingPath}.from.kind must be FIELD, CONSTANT or CONTEXT`;
+    case 'BINDING_FIELD_KEY_REQUIRED':
+      return `${bindingPath}.from.fieldKey is required`;
+    case 'BINDING_CONTEXT_PATH_INVALID':
+      return `${bindingPath}.from.path is not a supported context path`;
+    case 'BINDING_CONSTANT_INVALID':
+      return `${bindingPath}.from.value must be a string, finite number, boolean or null`;
+    case 'UNKNOWN_PROPERTY':
+      return `${issue.bindingIndex === null ? targetPath : bindingPath}.${issue.property ?? ''} is not allowed`;
+  }
 }
 
 function lintNotifyRecipients(

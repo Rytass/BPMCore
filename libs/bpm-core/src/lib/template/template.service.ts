@@ -27,6 +27,8 @@ import { FormDefinitionEntity } from '../form/form-definition.entity';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { FormService } from '../form/form.service';
+import { lintWorkflowWebhookTargets } from '../workflow-webhook/workflow-webhook.validator';
+import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
 import { ComposeApprovalTemplateWithFormObject } from './compose-approval-template.object';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
@@ -942,15 +944,49 @@ export class TemplateService {
       version.initiatorPolicyCel,
       formVersion.schema,
     );
+    const webhookErrors = await this.lintWorkflowWebhooks(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
     const errors = [
       ...workflowResult.errors,
       ...conditionErrors,
       ...tableReferenceErrors,
+      ...webhookErrors,
     ];
 
     if (errors.length) {
       throw new BadRequestException(errors.join('; '));
     }
+  }
+
+  /**
+   * Publish rules that need the webhook endpoint catalog (ADR 18 §4).
+   *
+   * Resolved through `ModuleRef` rather than injected so `TemplateModule`
+   * still boots on its own, outside `BPMRootModule`; a host without the
+   * webhook module simply has no endpoint source, which the lint reports as
+   * such for any template that references one.
+   */
+  private async lintWorkflowWebhooks(
+    definition: WorkflowDefinition,
+    formSchema: FormDefinitionSchema,
+  ): Promise<readonly string[]> {
+    const webhookService = ((): WorkflowWebhookService | null => {
+      try {
+        return this.moduleRef.get(WorkflowWebhookService, { strict: false });
+      } catch {
+        return null;
+      }
+    })();
+
+    return lintWorkflowWebhookTargets({
+      definition,
+      formSchema,
+      hasEndpointSources: Boolean(webhookService?.hasEndpointSources()),
+      resolveEndpoint: async (key, version) =>
+        webhookService ? webhookService.getEndpoint(key, version) : null,
+    });
   }
 
   private async validateOptionalFormDefinitionVersion(

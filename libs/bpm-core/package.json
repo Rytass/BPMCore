@@ -80,6 +80,9 @@
       ],
       "workflow-engine": [
         "./src/lib/workflow-engine/index.d.ts"
+      ],
+      "workflow-webhook": [
+        "./src/lib/workflow-webhook/index.d.ts"
       ]
     }
   },
@@ -148,6 +151,10 @@
     "./workflow-engine": {
       "types": "./src/lib/workflow-engine/index.d.ts",
       "default": "./src/lib/workflow-engine/index.js"
+    },
+    "./workflow-webhook": {
+      "types": "./src/lib/workflow-webhook/index.d.ts",
+      "default": "./src/lib/workflow-webhook/index.js"
     }
   },
   "peerDependencies": {

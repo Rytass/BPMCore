@@ -177,9 +177,19 @@ export type ServiceTaskNode = BaseWorkflowNode<
 export type ServiceAction =
   | {
       readonly channels: readonly Exclude<NotificationChannel, 'WEBHOOK'>[];
+      /**
+       * An empty `DIRECT` resolver is allowed only when `webhooks` is
+       * non-empty: the node then notifies external systems and no member.
+       */
       readonly recipients: ApproverResolver;
       readonly template?: string;
       readonly type: 'NOTIFY';
+      /**
+       * Host-registered webhook endpoints to call when the node runs (ADR 18).
+       * Stores only the endpoint reference and parameter bindings — never a
+       * URL, header or secret.
+       */
+      readonly webhooks?: readonly NotifyWebhookTarget[];
     }
   | {
       readonly headers?: Readonly<Record<string, string>>;
@@ -192,6 +202,50 @@ export type ServiceAction =
       readonly type: 'SET_FORM_FIELD';
       readonly value: string;
     };
+
+export interface NotifyWebhookTarget {
+  readonly bindings: readonly NotifyWebhookBinding[];
+  readonly endpoint: NotifyWebhookEndpointReference;
+  /**
+   * Stable within the node: generated once, never regenerated. The delivery
+   * outbox keys idempotency on it, so editing a target must keep its id.
+   */
+  readonly id: string;
+}
+
+export interface NotifyWebhookEndpointReference {
+  readonly key: string;
+  readonly version: number;
+}
+
+export interface NotifyWebhookBinding {
+  readonly from: NotifyWebhookBindingSource;
+  readonly parameter: string;
+}
+
+export type NotifyWebhookBindingSource =
+  | { readonly fieldKey: string; readonly kind: 'FIELD' }
+  | {
+      readonly kind: 'CONSTANT';
+      readonly value: boolean | number | string | null;
+    }
+  | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath };
+
+export type NotifyWebhookContextPath =
+  | 'initiator.memberId'
+  | 'instance.id'
+  | 'instance.templateId'
+  | 'instance.templateVersionId'
+  | 'instance.title'
+  | 'node.id'
+  | 'node.label';
+
+export type NotifyWebhookParameterType =
+  | 'boolean'
+  | 'json'
+  | 'number'
+  | 'string'
+  | 'stringArray';
 
 export type ExclusiveGatewayNode = BaseWorkflowNode<
   'exclusiveGateway',

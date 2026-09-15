@@ -4,6 +4,8 @@ import {
   listInboxTasks,
   readApprovalInstance,
   readFormDataCaseTitle,
+  retryWorkflowWebhookDelivery,
+  listWorkflowWebhookDeliveries,
 } from './workflow-api';
 
 interface CapturedRequest {
@@ -183,4 +185,61 @@ describe('@rytass/bpm-core-client/workflow', () => {
     });
   });
 
+  describe('workflow webhook deliveries', () => {
+    const delivery = {
+      attemptCount: 6,
+      createdAt: '2026-09-15T10:00:00.000Z',
+      endpointKey: 'demo.flaky',
+      endpointLabel: '示範：不穩定',
+      endpointVersion: 1,
+      id: 'delivery-1',
+      instanceId: 'instance-1',
+      lastAttemptAt: '2026-09-15T10:05:00.000Z',
+      lastErrorCode: 'WEBHOOK_HTTP_503',
+      lastErrorDetail: 'unavailable',
+      lastResponseStatus: 503,
+      nextRetryAt: null,
+      nodeId: 'notify',
+      sentAt: null,
+      status: 'FAILED',
+      targetId: 'wh',
+      updatedAt: '2026-09-15T10:05:00.000Z',
+    };
+
+    it("lists an instance's deliveries by id", async (): Promise<void> => {
+      const harness = installFetchMock({
+        workflowWebhookDeliveries: [delivery],
+      });
+      try {
+        const deliveries = await listWorkflowWebhookDeliveries('instance-1');
+        const request = harness.capture();
+
+        expect(request.query).toContain('query WorkflowWebhookDeliveries');
+        expect(request.query).toContain('endpointLabel');
+        expect(request.variables).toEqual({ instanceId: 'instance-1' });
+        expect(deliveries).toEqual([delivery]);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('retries a delivery and returns the re-queued row', async (): Promise<void> => {
+      const queued = { ...delivery, attemptCount: 0, status: 'PENDING' };
+      const harness = installFetchMock({
+        retryWorkflowWebhookDelivery: queued,
+      });
+      try {
+        const result = await retryWorkflowWebhookDelivery('delivery-1');
+        const request = harness.capture();
+
+        expect(request.query).toContain(
+          'mutation RetryWorkflowWebhookDelivery',
+        );
+        expect(request.variables).toEqual({ id: 'delivery-1' });
+        expect(result).toEqual(queued);
+      } finally {
+        harness.restore();
+      }
+    });
+  });
 });

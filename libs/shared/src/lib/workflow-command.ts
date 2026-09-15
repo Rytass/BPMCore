@@ -691,7 +691,13 @@ function applySetServiceAction(
     command.nodeId,
     (node) =>
       node.type === 'serviceTask'
-        ? { ...node, data: { ...node.data, action: command.action } }
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              action: readNextServiceAction(node.data.action, command.action),
+            },
+          }
         : node,
     'serviceTask',
   );
@@ -711,6 +717,30 @@ function applySetServiceAction(
     true,
     NO_EFFECTS,
   );
+}
+
+/**
+ * A NOTIFY action whose `webhooks` is `undefined` — absent, or spread in as
+ * `undefined` — keeps the node's existing ones. Both callers of
+ * `setServiceAction` build the action from scratch — the designer's recipient
+ * picker and the AI toolset's `set_service_action` — so replacing wholesale
+ * would silently drop configured webhooks whenever someone edits the
+ * recipients. Only an explicit list (`[]` included) replaces them.
+ */
+function readNextServiceAction(
+  current: ServiceAction,
+  next: ServiceAction,
+): ServiceAction {
+  if (
+    next.type !== 'NOTIFY' ||
+    current.type !== 'NOTIFY' ||
+    next.webhooks !== undefined ||
+    current.webhooks === undefined
+  ) {
+    return next;
+  }
+
+  return { ...next, webhooks: current.webhooks };
 }
 
 function applySetEndState(

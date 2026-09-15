@@ -24,6 +24,11 @@ import {
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  isNotifyRecipientsEmpty,
+  readNotifyWebhookTargets,
+} from '@rytass/bpm-core-shared/workflow-graph';
+import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -277,6 +282,8 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_ROOT_OPTIONS)
     rootOptions?: BPMRootRuntimeOptions,
+    @Optional()
+    private readonly webhookDeliveryService?: WorkflowWebhookDeliveryService,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -4541,12 +4548,19 @@ export class WorkflowEngineService {
       return;
     }
 
-    const recipients = await this.resolveApproverResolver(
-      manager,
-      instance,
-      action.recipients,
-      `知會節點「${node.data.label}」`,
-    );
+    // A webhook-only NOTIFY node names nobody. Resolving its empty DIRECT
+    // resolver would throw and roll back the submit or decision that reached
+    // it, so skip member resolution; webhooks are delivered separately.
+    const recipients =
+      isNotifyRecipientsEmpty(action.recipients) &&
+      readNotifyWebhookTargets(action).length > 0
+        ? []
+        : await this.resolveApproverResolver(
+            manager,
+            instance,
+            action.recipients,
+            `知會節點「${node.data.label}」`,
+          );
     const recipientMemberIds = uniqueTexts(
       recipients.map((recipient) => recipient.memberId),
     );
@@ -4557,6 +4571,33 @@ export class WorkflowEngineService {
       node,
       recipientMemberIds,
     });
+
+    // Queued in this transaction and sent only after it commits (ADR 18
+    // §3.5). Without the webhook module there is nothing to queue into; the
+    // publish lint already refuses a template that references an endpoint
+    // in that case.
+    const webhookDeliveryIds =
+      this.webhookDeliveryService &&
+      readNotifyWebhookTargets(action).length > 0
+        ? await this.webhookDeliveryService.enqueueNotifyWebhooks(
+            manager,
+            {
+              instance: {
+                formData: instance.formData,
+                id: instance.id,
+                initiatorMemberId: instance.initiatorMemberId,
+                templateId: instance.templateId,
+                templateVersionId: instance.templateVersionId,
+                title: instance.title,
+              },
+              node: { id: node.id, label: node.data.label },
+              occurredAt: new Date(),
+              tokenId: token.id,
+            },
+            action.webhooks,
+          )
+        : [];
+
     await manager.getRepository(WorkflowTokenEntity).save({
       ...token,
       consumedAt: new Date(),
@@ -4572,6 +4613,7 @@ export class WorkflowEngineService {
           action: 'NOTIFY',
           recipientMemberIds,
           tokenId: token.id,
+          ...(webhookDeliveryIds.length ? { webhookDeliveryIds } : {}),
         },
         taskId: null,
       }),

@@ -5,6 +5,8 @@ import {
 import {
   ApproverResolver,
   DecisionPolicy,
+  NotifyWebhookTarget,
+  ServiceAction,
   WorkflowDefinition,
 } from './workflow';
 import {
@@ -465,5 +467,109 @@ describe('user task return and SLA commands', () => {
         { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
       ),
     ).toEqual({ threshold: 9, thresholdType: 'COUNT', type: 'QUORUM' });
+  });
+});
+
+describe('setServiceAction — NOTIFY webhooks', () => {
+  const WEBHOOK: NotifyWebhookTarget = {
+    bindings: [
+      { from: { kind: 'CONTEXT', path: 'instance.id' }, parameter: 'caseId' },
+    ],
+    endpoint: { key: 'erp.purchase-approved', version: 1 },
+    id: 'webhook_erp',
+  };
+
+  function stateWithNotify(action: ServiceAction): WorkflowDesignerState {
+    const state = initialState();
+
+    return {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: [
+          ...state.definition.nodes,
+          {
+            data: { action, label: '通知', triggerMode: 'AND' },
+            id: 'notify',
+            position: { x: 300, y: 320 },
+            type: 'serviceTask',
+          },
+        ],
+      },
+    };
+  }
+
+  function readAction(state: WorkflowDesignerState): ServiceAction | null {
+    const node = state.definition.nodes.find((item) => item.id === 'notify');
+
+    return node?.type === 'serviceTask' ? node.data.action : null;
+  }
+
+  const WITH_WEBHOOK: ServiceAction = {
+    channels: ['IN_APP'],
+    recipients: { memberIds: ['m1'], type: 'DIRECT' },
+    type: 'NOTIFY',
+    webhooks: [WEBHOOK],
+  };
+
+  it('keeps existing webhooks when the new action does not mention them', () => {
+    const result = applyWorkflowCommand(stateWithNotify(WITH_WEBHOOK), {
+      action: {
+        channels: ['IN_APP'],
+        recipients: { memberIds: ['m1', 'm2'], type: 'DIRECT' },
+        type: 'NOTIFY',
+      },
+      nodeId: 'notify',
+      type: 'setServiceAction',
+    });
+
+    expect(readAction(result.state)).toEqual({
+      channels: ['IN_APP'],
+      recipients: { memberIds: ['m1', 'm2'], type: 'DIRECT' },
+      type: 'NOTIFY',
+      webhooks: [WEBHOOK],
+    });
+  });
+
+  it('treats webhooks spread in as undefined like an absent key', () => {
+    const result = applyWorkflowCommand(stateWithNotify(WITH_WEBHOOK), {
+      action: {
+        channels: ['IN_APP'],
+        recipients: { memberIds: ['m2'], type: 'DIRECT' },
+        type: 'NOTIFY',
+        webhooks: undefined,
+      },
+      nodeId: 'notify',
+      type: 'setServiceAction',
+    });
+
+    expect(readAction(result.state)).toEqual({
+      ...WITH_WEBHOOK,
+      recipients: { memberIds: ['m2'], type: 'DIRECT' },
+    });
+  });
+
+  it('clears webhooks only when given an explicit empty list', () => {
+    const result = applyWorkflowCommand(stateWithNotify(WITH_WEBHOOK), {
+      action: { ...WITH_WEBHOOK, webhooks: [] },
+      nodeId: 'notify',
+      type: 'setServiceAction',
+    });
+
+    expect(readAction(result.state)).toEqual({ ...WITH_WEBHOOK, webhooks: [] });
+  });
+
+  it('does not carry webhooks into a different action type', () => {
+    const result = applyWorkflowCommand(stateWithNotify(WITH_WEBHOOK), {
+      action: { fieldPath: 'status', type: 'SET_FORM_FIELD', value: '"done"' },
+      nodeId: 'notify',
+      type: 'setServiceAction',
+    });
+
+    expect(readAction(result.state)).toEqual({
+      fieldPath: 'status',
+      type: 'SET_FORM_FIELD',
+      value: '"done"',
+    });
   });
 });
