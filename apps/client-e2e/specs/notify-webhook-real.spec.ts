@@ -671,6 +671,273 @@ test.describe('notify webhooks in the designer (real backend)', () => {
   });
 });
 
+test.describe('database-managed webhook endpoints (real backend)', () => {
+  test('manages an endpoint in the back office, delivers through it and stops when disabled', async ({
+    browser,
+  }): Promise<void> => {
+    test.setTimeout(180_000);
+
+    const runId = `${Date.now()}`;
+    const key = `e2e.db-${runId}`;
+    const token = `Bearer e2e-token-${runId}`;
+    const admin = await createAuthenticatedPage(browser, ADMIN);
+    const requester = await createAuthenticatedPage(browser, REQUESTER);
+    const templateIds: string[] = [];
+
+    try {
+      const management = await gql<{
+        readonly workflowWebhookEndpointManagement: {
+          readonly enabled: boolean;
+        };
+      }>(admin, `{ workflowWebhookEndpointManagement { enabled } }`, {});
+
+      test.skip(
+        !management.workflowWebhookEndpointManagement.enabled,
+        'the host does not enable database webhook endpoints',
+      );
+
+      await admin.goto('/admin/webhook-endpoints');
+      await admin.getByRole('button', { name: '新增端點' }).click();
+
+      const dialog = admin.getByRole('dialog');
+
+      // A URL outside the allowlist cannot be saved.
+      await dialog.getByPlaceholder('例如 crm.lead-created').fill(`${key}-bad`);
+      await dialog.getByPlaceholder('例如 CRM 建立名單').fill('E2E 不合法');
+      await dialog
+        .getByPlaceholder('https://')
+        .fill('https://evil.example.com/hook');
+      await dialog.getByRole('button', { name: '建立' }).click();
+      await expect(
+        admin.getByText('URL 不在伺服器允許的白名單內。'),
+      ).toBeVisible();
+
+      await dialog.getByPlaceholder('例如 crm.lead-created').fill(key);
+      await dialog
+        .getByPlaceholder('例如 CRM 建立名單')
+        .fill(`E2E 後台端點 ${runId}`);
+      await dialog
+        .getByPlaceholder('https://')
+        .fill(`${API_URL}/demo/webhook-sink/ok`);
+      await dialog
+        .getByPlaceholder('選填，儲存後不再顯示')
+        .fill(DEMO_SIGNING_SECRET);
+      await dialog.getByRole('button', { name: '新增 header' }).click();
+      await dialog
+        .getByPlaceholder('名稱，例如 Authorization')
+        .fill('Authorization');
+      await dialog.getByPlaceholder('值').fill(token);
+      await dialog.getByRole('button', { name: '新增參數' }).click();
+      await dialog.getByPlaceholder('參數鍵').fill('amount');
+      await dialog.getByPlaceholder('顯示名稱').fill('金額');
+      await dialog.locator('input[value="文字"]').click();
+      await admin.getByRole('option', { name: '數字' }).dispatchEvent('click');
+      await dialog.getByRole('button', { name: '建立' }).click();
+      await expect(admin.getByText(/已建立「E2E 後台端點/)).toBeVisible();
+
+      const row = admin.locator('tr', { hasText: `${key}@1` });
+
+      await expect(row).toContainText('已設定簽章金鑰');
+      await expect(row).toContainText('Header：Authorization');
+
+      // Masked everywhere an administrator can read it.
+      const managed = await gql<{
+        readonly workflowWebhookManagedEndpoints: readonly {
+          readonly id: string;
+          readonly key: string;
+        }[];
+      }>(
+        admin,
+        `{ workflowWebhookManagedEndpoints { id key label url method headerNames hasSigningSecret parameters { key type } } }`,
+        {},
+      );
+      const endpointId =
+        managed.workflowWebhookManagedEndpoints.find(
+          (endpoint) => endpoint.key === key,
+        )?.id ?? '';
+      const audits = await gql(
+        admin,
+        `query($id: ID!) { workflowWebhookEndpointAudits(endpointId: $id) { action changedFields actorMemberId } }`,
+        { id: endpointId },
+      );
+      const catalog = await gql<{
+        readonly workflowWebhookEndpoints: readonly {
+          readonly key: string;
+          readonly source: string;
+        }[];
+      }>(
+        admin,
+        `{ workflowWebhookEndpoints(includeDeprecated: true) { key source label } }`,
+        {},
+      );
+
+      for (const payload of [managed, audits, catalog]) {
+        expect(JSON.stringify(payload)).not.toContain(token);
+        expect(JSON.stringify(payload)).not.toContain(DEMO_SIGNING_SECRET);
+      }
+
+      expect(
+        catalog.workflowWebhookEndpoints.find(
+          (endpoint) => endpoint.key === key,
+        )?.source,
+      ).toBe('DATABASE');
+
+      // Test send: a sample event reaches the receiver; a second one is too soon.
+      await row.getByRole('button', { name: '測試送出' }).click();
+      await expect(admin.getByText(/測試送出成功：.*HTTP 200/)).toBeVisible({
+        timeout: 20_000,
+      });
+      await row.getByRole('button', { name: '測試送出' }).click();
+      await expect(
+        admin.getByText('測試送出太頻繁', { exact: false }),
+      ).toBeVisible();
+
+      const forbidden = await gqlRaw(
+        requester,
+        `{ workflowWebhookManagedEndpoints { id } }`,
+        {},
+      );
+
+      expect(forbidden.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
+      // Usable by designers straight away, labelled as back-office maintained.
+      const formVersionId = await createPublishedForm(admin, runId);
+      const templateId = await createPublishedTemplate(admin, {
+        formVersionId,
+        name: `E2E 後台端點流程 ${runId}`,
+        workflow: readDatabaseEndpointWorkflow(key),
+      });
+
+      templateIds.push(templateId);
+      await admin.goto(`/templates/${templateId}/designer`);
+      await admin
+        .locator('.react-flow__node')
+        .filter({ hasText: '通知後台端點' })
+        .click();
+      await expect(
+        admin.locator(`input[value*="E2E 後台端點 ${runId}（v1，後台維護）"]`),
+      ).toHaveCount(1);
+
+      const instanceId = await submit(
+        requester,
+        templateId,
+        `E2E 後台端點案件 ${runId}`,
+        321,
+      );
+
+      await decide(admin, instanceId, 'review_first', 'APPROVED');
+
+      const sent = await waitForDelivery(
+        admin,
+        instanceId,
+        (delivery) =>
+          delivery.endpointKey === key && delivery.status === 'SENT',
+        30_000,
+      );
+      const sink = await waitForSink(admin, sent.id, 1, 10_000);
+
+      expect(sink.receipts[0]?.signatureValid).toBe(true);
+      expect(sink.event.parameters).toEqual({ amount: 321 });
+
+      // Disabled: new deliveries fail without sending, and publishing refuses it.
+      await admin.goto('/admin/webhook-endpoints');
+      await admin
+        .locator('tr', { hasText: `${key}@1` })
+        .getByRole('button', { name: '停用' })
+        .click();
+      await expect(admin.getByText(/已停用「E2E 後台端點/)).toBeVisible();
+
+      const disabledInstanceId = await submit(
+        requester,
+        templateId,
+        `E2E 停用端點案件 ${runId}`,
+        99,
+      );
+
+      await decide(admin, disabledInstanceId, 'review_first', 'APPROVED');
+      await waitForDelivery(
+        admin,
+        disabledInstanceId,
+        (delivery) =>
+          delivery.endpointKey === key &&
+          delivery.status === 'FAILED' &&
+          delivery.lastErrorCode === 'WEBHOOK_ENDPOINT_DISABLED',
+        30_000,
+      );
+      await expect(
+        createPublishedTemplate(admin, {
+          formVersionId,
+          name: `E2E 停用端點流程 ${runId}`,
+          workflow: readDatabaseEndpointWorkflow(key),
+        }),
+      ).rejects.toThrow(/WORKFLOW_WEBHOOK_ENDPOINT_DISABLED/);
+    } finally {
+      for (const templateId of templateIds) {
+        await gql(
+          admin,
+          `mutation($id: String!) { deactivateApprovalTemplate(id: $id) { id } }`,
+          { id: templateId },
+        ).catch(() => undefined);
+      }
+
+      await admin.context().close();
+      await requester.context().close();
+    }
+  });
+});
+
+function readDatabaseEndpointWorkflow(key: string): Json {
+  return {
+    edges: [
+      edge('start', 'review_first'),
+      edge('review_first', 'end'),
+      edge('review_first', 'notify_database'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 0 },
+        type: 'startEvent',
+      },
+      userTask('review_first', '初審', 260),
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: { memberIds: [], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: [
+              {
+                bindings: [
+                  {
+                    from: { fieldKey: 'amount', kind: 'FIELD' },
+                    parameter: 'amount',
+                  },
+                ],
+                endpoint: { key, version: 1 },
+                id: 'webhook_database',
+              },
+            ],
+          },
+          label: '通知後台端點',
+          triggerMode: 'AND',
+        },
+        id: 'notify_database',
+        position: { x: 260, y: 220 },
+        type: 'serviceTask',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 0 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
 async function createAuthenticatedPage(
   browser: Browser,
   memberId: string,
