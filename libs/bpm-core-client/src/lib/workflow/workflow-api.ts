@@ -2039,6 +2039,110 @@ export async function listAdhocDirectives(
   return data.adhocDirectives ?? [];
 }
 
+/**
+ * Where one notify-node webhook delivery stands (ADR 18 §3.10). `SENT` and
+ * `FAILED` are final; a `FAILED` row can be sent again with
+ * {@link retryWorkflowWebhookDelivery}.
+ */
+export type WorkflowWebhookDeliveryStatus =
+  | 'DELIVERY_IN_PROGRESS'
+  | 'FAILED'
+  | 'PENDING'
+  | 'SENT';
+
+/**
+ * One queued webhook call from a notify node. Carries no URL, header or
+ * payload: those stay on the server. `endpointLabel` is `null` once the host
+ * no longer registers the endpoint.
+ */
+export interface WorkflowWebhookDeliveryRecord {
+  readonly attemptCount: number;
+  readonly createdAt: string;
+  readonly endpointKey: string;
+  readonly endpointLabel: string | null;
+  readonly endpointVersion: number;
+  readonly id: string;
+  readonly instanceId: string;
+  readonly lastAttemptAt: string | null;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorDetail: string | null;
+  readonly lastResponseStatus: number | null;
+  readonly nextRetryAt: string | null;
+  readonly nodeId: string;
+  readonly sentAt: string | null;
+  readonly status: WorkflowWebhookDeliveryStatus;
+  readonly targetId: string;
+  readonly updatedAt: string;
+}
+
+const WORKFLOW_WEBHOOK_DELIVERY_FIELDS = `
+  attemptCount
+  createdAt
+  endpointKey
+  endpointLabel
+  endpointVersion
+  id
+  instanceId
+  lastAttemptAt
+  lastErrorCode
+  lastErrorDetail
+  lastResponseStatus
+  nextRetryAt
+  nodeId
+  sentAt
+  status
+  targetId
+  updatedAt
+`;
+
+interface WorkflowWebhookDeliveriesQueryData {
+  readonly workflowWebhookDeliveries: readonly WorkflowWebhookDeliveryRecord[];
+}
+
+interface RetryWorkflowWebhookDeliveryMutationData {
+  readonly retryWorkflowWebhookDelivery: WorkflowWebhookDeliveryRecord;
+}
+
+/**
+ * The webhook deliveries an instance's notify nodes queued, oldest first.
+ * Administrator-only: the server answers `FORBIDDEN` to anyone else.
+ */
+export async function listWorkflowWebhookDeliveries(
+  instanceId: string,
+): Promise<readonly WorkflowWebhookDeliveryRecord[]> {
+  const data = await requestGraphQl<WorkflowWebhookDeliveriesQueryData>(
+    `query WorkflowWebhookDeliveries($instanceId: ID!) {
+      workflowWebhookDeliveries(instanceId: $instanceId) {
+        ${WORKFLOW_WEBHOOK_DELIVERY_FIELDS}
+      }
+    }`,
+    { instanceId },
+  );
+
+  return data.workflowWebhookDeliveries;
+}
+
+/**
+ * Queues a `FAILED` delivery again under the same id, so a receiver that
+ * de-duplicates on `deliveryId` still sees one event. Administrator-only;
+ * any other status is refused. Resolves with the row as queued — the send
+ * itself happens in the background.
+ */
+export async function retryWorkflowWebhookDelivery(
+  id: string,
+): Promise<WorkflowWebhookDeliveryRecord> {
+  const data = await requestGraphQl<RetryWorkflowWebhookDeliveryMutationData>(
+    `mutation RetryWorkflowWebhookDelivery($id: ID!) {
+      retryWorkflowWebhookDelivery(id: $id) {
+        ${WORKFLOW_WEBHOOK_DELIVERY_FIELDS}
+      }
+    }`,
+    { id },
+  );
+
+  return data.retryWorkflowWebhookDelivery;
+}
+
 export function readApprovalInstanceCaseTitle(
   instance: ApprovalInstanceRecord,
 ): string {

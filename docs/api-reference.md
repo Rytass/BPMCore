@@ -588,6 +588,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
 | Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId`), `TaskCandidateRecord`, `TaskDecisionRecord`, `WorkflowTokenRecord` |
 | Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
+| Webhook delivery | `WorkflowWebhookDeliveryStatus`, `WorkflowWebhookDeliveryRecord` (no URL, header or payload; `endpointLabel` is `null` once the endpoint is unregistered) |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
 | Activity | `ActivityLogRecord` |
 | Member | `MemberProfileRecord`, `MemberDirectoryPage` |
@@ -614,6 +615,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readAttachmentDownloadUrl / PreviewUrl({ ... })` | Signed download/preview URLs |
 | `readInstanceSignatures(id)` | Signature/verification records |
 | `listAdhocDirectives(instanceId)` | Ad-hoc directives recorded on one instance |
+| `listWorkflowWebhookDeliveries(instanceId)` | Notify-node webhook deliveries of one instance, oldest first (administrator-only) |
 
 ### Mutations
 
@@ -629,6 +631,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `configureAdhocStageNotification({ taskId, target, channels? })` | Notify targets when the current stage ends (any outcome) |
 | `configureAdhocCompletionNotification({ taskId, target, channels? })` | Notify targets when the instance reaches a terminal state |
 | `cancelAdhocDirective(directiveId)` | Withdraw a still-pending ad-hoc directive |
+| `retryWorkflowWebhookDelivery(id)` | Re-queue an attempted `FAILED` webhook delivery under the same id (administrator-only) |
 
 ### Member helpers (in workflow subpath)
 
