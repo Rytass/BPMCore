@@ -118,13 +118,15 @@ export function createNotifyWebhookBindingSource(
     return { kind: 'CONTEXT', path: 'instance.title' };
   }
 
+  // A number starts empty rather than at 0, so typing does not append to a
+  // value nobody chose; a required one is flagged until it is filled in.
   return {
     kind: 'CONSTANT',
     value:
       parameter.type === 'boolean'
         ? true
         : parameter.type === 'number'
-          ? 0
+          ? null
           : '',
   };
 }

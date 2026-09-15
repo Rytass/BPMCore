@@ -108,6 +108,16 @@ describe('notify webhook designer helpers', () => {
     ).toEqual({ fieldKey: 'amount', kind: 'FIELD' });
   });
 
+  it('starts a number constant empty instead of at zero', () => {
+    expect(
+      createNotifyWebhookBindingSource(
+        'CONSTANT',
+        ERP.parameters[0] as never,
+        FORM_FIELDS,
+      ),
+    ).toEqual({ kind: 'CONSTANT', value: null });
+  });
+
   it('reads a number constant but keeps unparsable text for the check to flag', () => {
     expect(readNotifyWebhookConstantValue('number', ' 12.5 ')).toBe(12.5);
     expect(readNotifyWebhookConstantValue('number', '')).toBeNull();
