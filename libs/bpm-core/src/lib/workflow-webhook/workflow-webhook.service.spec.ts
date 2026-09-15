@@ -142,7 +142,7 @@ describe('WorkflowWebhookService', () => {
     );
 
     expect(() => badVersion.onModuleInit()).toThrow(
-      /positive integer version/u,
+      /integer version between 1 and/u,
     );
   });
 
@@ -159,5 +159,73 @@ describe('WorkflowWebhookService', () => {
     );
 
     expect(() => instance.onModuleInit()).not.toThrow();
+  });
+
+  it('rejects a version the GraphQL Int cannot carry', () => {
+    const instance = service(
+      new StaticBPMWorkflowWebhookRegistry([
+        endpoint({ key: 'erp.po', version: 2_147_483_648 }),
+      ]),
+    );
+
+    expect(() => instance.onModuleInit()).toThrow(
+      /integer version between 1 and 2147483647/u,
+    );
+  });
+
+  it('rejects malformed parameter declarations with a readable message', () => {
+    const cases: readonly [unknown, RegExp][] = [
+      [null, /must declare parameters as an array/u],
+      [
+        [{ key: 'amount', label: 'Amount', required: true, type: 'date' }],
+        /unsupported type "date"/u,
+      ],
+      [
+        [{ key: ' amount', label: 'Amount', required: true, type: 'number' }],
+        /must not have surrounding whitespace/u,
+      ],
+      [
+        [
+          { key: 'amount', label: 'A', required: true, type: 'number' },
+          { key: 'amount ', label: 'B', required: true, type: 'number' },
+        ],
+        /duplicate parameter keys/u,
+      ],
+    ];
+
+    cases.forEach(([parameters, message]) => {
+      const instance = service(
+        new StaticBPMWorkflowWebhookRegistry([
+          endpoint({
+            key: 'erp.po',
+            parameters:
+              parameters as BPMWorkflowWebhookEndpointDescriptor['parameters'],
+          }),
+        ]),
+      );
+
+      expect(() => instance.onModuleInit()).toThrow(message);
+    });
+  });
+
+  it('explains a descriptor that is missing or mistyped instead of throwing a TypeError', () => {
+    const registry = {
+      get: () => null,
+      list: () =>
+        [
+          {
+            buildRequest: async () => ({ url: 'https://x.test' }),
+            descriptor: null,
+          },
+          {
+            buildRequest: async () => ({ url: 'https://x.test' }),
+            descriptor: { key: 42, label: 'L', parameters: [], version: 1 },
+          },
+        ] as unknown as readonly BPMWorkflowWebhookEndpoint[],
+    };
+
+    expect(() => service(registry).onModuleInit()).toThrow(
+      'Invalid BPM webhook endpoint registry: endpoint #0 has no descriptor; endpoint #1 must have a string key and label',
+    );
   });
 });

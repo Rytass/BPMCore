@@ -498,14 +498,21 @@ readable through GraphQL:
 https://erp.example.com/hooks/bpm     完全比對
 https://erp.example.com/hooks/*       路徑前綴，* 比對其餘任意字元
 https://*.example.com/hooks/*         單層子網域（* 不跨 "."）
-https://**.example.com/*              多層子網域
+https://**.example.com/*              任意層子網域，也含 example.com 本身
 http://localhost:17603/*              明寫才允許的本機目的地
+*                                     任何公開 https 主機（等同 https://**/*）
 ```
 
 規則：
 
 1. 未寫 scheme 視為 `https`；`http` 只有在樣式明寫 `http://` 時才允許。
-2. 預設拒絕 loopback、私有網段與 link-local 位址，除非樣式明確寫出該 host。
+2. 預設拒絕以下位址，除非樣式明確寫出該 host；萬用字元 host（含單獨的 `*`）一律到不了：
+   - IPv4：`0/8`、`10/8`、`127/8`、`100.64/10`、`169.254/16`、`172.16/12`、`192.0.0/24`、
+     `192.0.2/24`、`192.168/16`、`198.18/15`、`198.51.100/24`、`203.0.113/24`、`224/4` 以上。
+   - IPv6：`::`、`::1`、`fc00::/7`、`fe80::/10`、`fec0::/10`、`ff00::/8`。
+   - 夾帶 IPv4 的 IPv6（`::ffff:0:0/96`、`::ffff:0:0:0/96`、`::/96`、`64:ff9b::/96`）依其
+     內含的 IPv4 位址判斷。
+   - `localhost` 與 `*.localhost`。
 3. 比對發生在三個時機：儲存 DB 端點時、發布引用該端點的模板時、**每一次投遞前**。
    最後一道讓「端點存進去之後白名單才收緊」或 DB 被繞過直接改動的情況仍然擋得住。
 4. `DATABASE` 來源必須設定非空白名單，否則該來源不啟用（fail closed）。

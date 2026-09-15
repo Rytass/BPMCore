@@ -1,4 +1,12 @@
-import { Args, Field, Int, ObjectType, Query, Resolver } from '@nestjs/graphql';
+import {
+  Args,
+  Field,
+  Int,
+  ObjectType,
+  Query,
+  registerEnumType,
+  Resolver,
+} from '@nestjs/graphql';
 import { NotifyWebhookParameterType } from '@rytass/bpm-core-shared/workflow';
 import { BPMDesignerOnly } from '../bpm-auth';
 import { WorkflowWebhookService } from './workflow-webhook.service';
@@ -6,6 +14,34 @@ import {
   BPMWorkflowWebhookEndpointEntry,
   BPMWorkflowWebhookEndpointSourceKind,
 } from './workflow-webhook.types';
+
+export const WorkflowWebhookEndpointSourceEnum: Readonly<
+  Record<
+    BPMWorkflowWebhookEndpointSourceKind,
+    BPMWorkflowWebhookEndpointSourceKind
+  >
+> = {
+  DATABASE: 'DATABASE',
+  REGISTRY: 'REGISTRY',
+};
+
+registerEnumType(WorkflowWebhookEndpointSourceEnum, {
+  name: 'BPMWorkflowWebhookEndpointSource',
+});
+
+export const WorkflowWebhookParameterTypeEnum: Readonly<
+  Record<NotifyWebhookParameterType, NotifyWebhookParameterType>
+> = {
+  boolean: 'boolean',
+  json: 'json',
+  number: 'number',
+  string: 'string',
+  stringArray: 'stringArray',
+};
+
+registerEnumType(WorkflowWebhookParameterTypeEnum, {
+  name: 'BPMWorkflowWebhookParameterType',
+});
 
 @ObjectType('BPMWorkflowWebhookParameter')
 export class WorkflowWebhookParameterObject {
@@ -21,7 +57,7 @@ export class WorkflowWebhookParameterObject {
   @Field()
   required!: boolean;
 
-  @Field()
+  @Field(() => WorkflowWebhookParameterTypeEnum)
   type!: NotifyWebhookParameterType;
 }
 
@@ -47,7 +83,7 @@ export class WorkflowWebhookEndpointObject {
   @Field(() => [WorkflowWebhookParameterObject])
   parameters!: readonly WorkflowWebhookParameterObject[];
 
-  @Field()
+  @Field(() => WorkflowWebhookEndpointSourceEnum)
   source!: BPMWorkflowWebhookEndpointSourceKind;
 
   @Field(() => Int)

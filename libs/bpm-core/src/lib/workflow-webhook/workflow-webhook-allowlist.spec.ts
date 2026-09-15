@@ -141,8 +141,36 @@ describe('workflow webhook URL allowlist', () => {
       '[::1]',
       'api.localhost',
     ].forEach((hostname) => expect(isInternalHostname(hostname)).toBe(true));
-    ['erp.example.com', '8.8.8.8', '172.32.0.1', '11.0.0.1'].forEach(
-      (hostname) => expect(isInternalHostname(hostname)).toBe(false),
-    );
+    [
+      '[::ffff:127.0.0.1]',
+      '[0:0:0:0:0:ffff:7f00:1]',
+      '[::7f00:1]',
+      '[64:ff9b::7f00:1]',
+      '[::ffff:0:7f00:1]',
+      '[fec0::1]',
+      '[ff02::1]',
+      '[::]',
+      '192.0.2.10',
+      '198.51.100.10',
+      '203.0.113.10',
+      '[not:an:address]',
+      '[::ffff:7f00:1]',
+      '[::ffff:a9fe:a9fe]',
+      '169.254.169.254',
+      '100.64.0.1',
+      '192.0.0.8',
+      '198.18.0.1',
+      '224.0.0.1',
+      '255.255.255.255',
+    ].forEach((hostname) => expect(isInternalHostname(hostname)).toBe(true));
+    [
+      'erp.example.com',
+      '8.8.8.8',
+      '172.32.0.1',
+      '11.0.0.1',
+      '[::ffff:808:808]',
+      '[2001:4860:4860::8888]',
+      '[64:ff9b::808:808]',
+    ].forEach((hostname) => expect(isInternalHostname(hostname)).toBe(false));
   });
 });

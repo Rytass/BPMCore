@@ -1,10 +1,39 @@
-import { DynamicModule, Global, InjectionToken, Module } from '@nestjs/common';
+import {
+  DynamicModule,
+  Global,
+  InjectionToken,
+  Logger,
+  Module,
+} from '@nestjs/common';
 import { ModuleMetadata } from '@nestjs/common/interfaces';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
+  BPMResolvedWorkflowWebhookOptions,
   BPMRootWorkflowWebhookOptions,
+  readDisabledWorkflowWebhookSourceReason,
   resolveBPMWorkflowWebhookOptions,
 } from './workflow-webhook-options';
+
+const logger = new Logger('WorkflowWebhookOptions');
+
+/**
+ * Resolves the options and says why a requested `DATABASE` source was
+ * dropped. The reason needs the raw input as well as the resolved result, so
+ * this is the one place both exist; without it the source would vanish
+ * silently and publish would only report that no source is configured.
+ */
+export function resolveAndReportWorkflowWebhookOptions(
+  options: BPMRootWorkflowWebhookOptions,
+): BPMResolvedWorkflowWebhookOptions {
+  const resolved = resolveBPMWorkflowWebhookOptions(options);
+  const reason = readDisabledWorkflowWebhookSourceReason(options, resolved);
+
+  if (reason) {
+    logger.warn(reason);
+  }
+
+  return resolved;
+}
 
 export interface WorkflowWebhookOptionsModuleAsyncOptions extends Pick<
   ModuleMetadata,
@@ -26,7 +55,7 @@ export class WorkflowWebhookOptionsModule {
       providers: [
         {
           provide: BPM_WORKFLOW_WEBHOOK_OPTIONS,
-          useValue: resolveBPMWorkflowWebhookOptions(options),
+          useValue: resolveAndReportWorkflowWebhookOptions(options),
         },
       ],
     };
@@ -45,8 +74,10 @@ export class WorkflowWebhookOptionsModule {
           provide: BPM_WORKFLOW_WEBHOOK_OPTIONS,
           useFactory: async (
             ...args: readonly unknown[]
-          ): Promise<ReturnType<typeof resolveBPMWorkflowWebhookOptions>> =>
-            resolveBPMWorkflowWebhookOptions(await options.useFactory(...args)),
+          ): Promise<BPMResolvedWorkflowWebhookOptions> =>
+            resolveAndReportWorkflowWebhookOptions(
+              await options.useFactory(...args),
+            ),
         },
       ],
     };

@@ -94,7 +94,8 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * Host-registered NOTIFY webhook endpoint catalog, as a Nest provider.
    *
    * Runtime twin: {@link BPMRootRuntimeOptions.workflowWebhookRegistry}. When
-   * neither is given, the catalog is empty.
+   * both are given this provider wins, as `formDataSourceRegistryProvider`
+   * does; when neither is given, the catalog is empty.
    */
   readonly workflowWebhookRegistryProvider?: Provider<BPMWorkflowWebhookRegistry>;
 

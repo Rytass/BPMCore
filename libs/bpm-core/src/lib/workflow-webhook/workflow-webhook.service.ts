@@ -1,10 +1,6 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnModuleInit,
-  Optional,
-} from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit, Optional } from '@nestjs/common';
+import { NotifyWebhookParameterType } from '@rytass/bpm-core-shared/workflow';
+import { NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX } from '@rytass/bpm-core-shared/workflow-graph';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,
@@ -48,7 +44,6 @@ export interface ListWorkflowWebhookEndpointsOptions {
 
 @Injectable()
 export class WorkflowWebhookService implements OnModuleInit {
-  private readonly logger = new Logger(WorkflowWebhookService.name);
   private readonly sources: readonly BPMWorkflowWebhookEndpointSource[];
 
   constructor(
@@ -138,13 +133,15 @@ export class WorkflowWebhookService implements OnModuleInit {
   readOptions(): BPMResolvedWorkflowWebhookOptions {
     return this.options;
   }
-
-  logDisabledSource(reason: string | null): void {
-    if (reason) {
-      this.logger.warn(reason);
-    }
-  }
 }
+
+const PARAMETER_TYPES: readonly NotifyWebhookParameterType[] = [
+  'boolean',
+  'json',
+  'number',
+  'string',
+  'stringArray',
+];
 
 export function readRegistryDescriptorErrors(
   registry: BPMWorkflowWebhookRegistry | undefined,
@@ -156,30 +153,72 @@ export function readRegistryDescriptorErrors(
   const endpoints = registry.list();
   const seen = new Set<string>();
 
-  return endpoints.flatMap((endpoint) => {
-    const descriptor = endpoint.descriptor;
+  return endpoints.flatMap((endpoint, index) => {
+    const descriptor = endpoint?.descriptor;
+
+    // A host-code mistake should fail the boot with a sentence, not with
+    // "cannot read properties of undefined".
+    if (!descriptor || typeof descriptor !== 'object') {
+      return [`endpoint #${index} has no descriptor`];
+    }
+
+    if (
+      typeof descriptor.key !== 'string' ||
+      typeof descriptor.label !== 'string'
+    ) {
+      return [`endpoint #${index} must have a string key and label`];
+    }
+
     const id = readWorkflowWebhookEndpointKey(descriptor);
     const duplicate = seen.has(id);
 
     seen.add(id);
 
-    const parameterKeys = descriptor.parameters.map(
-      (parameter) => parameter.key,
+    if (!Array.isArray(descriptor.parameters)) {
+      return [`${id} must declare parameters as an array`];
+    }
+
+    // Compared trimmed, like the template-side structural lint, so " a" and
+    // "a" cannot both be declared and then collide in a binding.
+    const parameterKeys = descriptor.parameters.map((parameter) =>
+      typeof parameter?.key === 'string' ? parameter.key.trim() : '',
     );
 
     return [
       ...(descriptor.key?.trim() ? [] : ['an endpoint has an empty key']),
-      ...(Number.isInteger(descriptor.version) && descriptor.version >= 1
+      ...(descriptor.key !== descriptor.key?.trim()
+        ? [`${id} key must not have surrounding whitespace`]
+        : []),
+      // The catalog exposes `version` as a GraphQL Int: one value past the
+      // int32 range fails the whole query, not just this endpoint.
+      ...(Number.isInteger(descriptor.version) &&
+      descriptor.version >= 1 &&
+      descriptor.version <= NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX
         ? []
-        : [`${id} must have a positive integer version`]),
+        : [
+            `${id} must have an integer version between 1 and ${NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX}`,
+          ]),
       ...(descriptor.label?.trim() ? [] : [`${id} must have a label`]),
       ...(duplicate ? [`${id} is registered more than once`] : []),
       ...(new Set(parameterKeys).size === parameterKeys.length
         ? []
         : [`${id} has duplicate parameter keys`]),
-      ...parameterKeys.flatMap((parameterKey) =>
-        parameterKey?.trim() ? [] : [`${id} has a parameter with an empty key`],
-      ),
+      ...descriptor.parameters.flatMap((parameter, index) => [
+        ...(parameterKeys[index]
+          ? []
+          : [`${id} has a parameter with an empty key`]),
+        ...(typeof parameter?.key === 'string' &&
+        parameter.key !== parameter.key.trim()
+          ? [
+              `${id} parameter "${parameter.key}" must not have surrounding whitespace`,
+            ]
+          : []),
+        ...(PARAMETER_TYPES.includes(parameter?.type)
+          ? []
+          : [
+              `${id} parameter "${parameterKeys[index]}" has unsupported type "${String(parameter?.type)}"`,
+            ]),
+      ]),
     ];
   });
 }

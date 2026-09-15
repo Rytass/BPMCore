@@ -210,4 +210,118 @@ describe('lintWorkflowWebhookTargets', () => {
       'workflow.nodes.notify_erp.action.webhooks[0].bindings[0].from.path is a string and cannot fill parameter "amount" (number) (WORKFLOW_WEBHOOK_BINDING_INCOMPATIBLE)',
     ]);
   });
+
+  it('rejects a null constant for a required parameter', async () => {
+    expect(
+      await lint([
+        { from: { kind: 'CONSTANT', value: null }, parameter: 'amount' },
+      ]),
+    ).toEqual([
+      'workflow.nodes.notify_erp.action.webhooks[0].bindings[0].from.value cannot be null for required parameter "amount" (WORKFLOW_WEBHOOK_BINDING_INCOMPATIBLE)',
+    ]);
+    expect(
+      await lint([
+        AMOUNT_BINDING,
+        { from: { kind: 'CONSTANT', value: null }, parameter: 'caseId' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('leaves malformed webhook JSON to the structural lint instead of throwing', async () => {
+    const malformed: readonly unknown[] = [
+      [42],
+      [null],
+      [{ bindings: 'x', endpoint: { key: 'erp.po', version: 1 }, id: 'w' }],
+      [
+        {
+          bindings: [{ parameter: 'amount' }],
+          endpoint: { key: 'erp.po', version: 1 },
+          id: 'w',
+        },
+      ],
+      [{ bindings: [], id: 'w' }],
+    ];
+
+    for (const webhooks of malformed) {
+      const malformedDefinition = {
+        edges: [],
+        meta: { schemaVersion: 1 },
+        nodes: [
+          {
+            data: {
+              action: {
+                channels: ['IN_APP'],
+                recipients: { memberIds: [], type: 'DIRECT' },
+                type: 'NOTIFY',
+                webhooks,
+              },
+              label: '通知 ERP',
+            },
+            id: 'notify_erp',
+            position: { x: 0, y: 0 },
+            type: 'serviceTask',
+          },
+        ],
+      } as unknown as WorkflowDefinition;
+
+      await expect(
+        lintWorkflowWebhookTargets({
+          definition: malformedDefinition,
+          formSchema: FORM_SCHEMA,
+          hasEndpointSources: true,
+          resolveEndpoint: async () => entry(),
+        }),
+      ).resolves.toEqual([]);
+    }
+  });
+
+  it('still lints the well-formed targets of a node that has a malformed one', async () => {
+    const malformedDefinition = {
+      edges: [],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: {
+            action: {
+              channels: ['IN_APP'],
+              recipients: { memberIds: [], type: 'DIRECT' },
+              type: 'NOTIFY',
+              webhooks: [
+                {
+                  bindings: 'x',
+                  endpoint: { key: 'erp.po', version: 1 },
+                  id: 'bad',
+                },
+                {
+                  bindings: [
+                    {
+                      from: { fieldKey: 'subject', kind: 'FIELD' },
+                      parameter: 'amount',
+                    },
+                  ],
+                  endpoint: { key: 'erp.po', version: 1 },
+                  id: 'good',
+                },
+              ],
+            },
+            label: '通知 ERP',
+          },
+          id: 'notify_erp',
+          position: { x: 0, y: 0 },
+          type: 'serviceTask',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      await lintWorkflowWebhookTargets({
+        definition: malformedDefinition,
+        formSchema: FORM_SCHEMA,
+        hasEndpointSources: true,
+        resolveEndpoint: async () => entry(),
+      }),
+    ).toEqual([
+      'workflow.nodes.notify_erp.action.webhooks[1].bindings[0].from.fieldKey "subject" (text) cannot fill parameter "amount" (number) (WORKFLOW_WEBHOOK_BINDING_INCOMPATIBLE)',
+    ]);
+  });
 });

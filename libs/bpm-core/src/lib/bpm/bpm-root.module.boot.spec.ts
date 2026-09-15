@@ -70,9 +70,9 @@ describe('BPMRootModule bootstrap', (): void => {
       expect(moduleRef.get(BPM_WORKFLOW_WEBHOOK_REGISTRY)).toBeDefined();
       // An empty catalog is still a source: publish refuses an unknown
       // endpoint rather than "no webhooks configured at all".
-      expect(
-        moduleRef.get(WorkflowWebhookService).hasEndpointSources(),
-      ).toBe(true);
+      expect(moduleRef.get(WorkflowWebhookService).hasEndpointSources()).toBe(
+        true,
+      );
     } finally {
       await moduleRef.close();
     }
@@ -104,7 +104,9 @@ describe('BPMRootModule bootstrap', (): void => {
   it('takes a webhook endpoint registry from the async factory', async (): Promise<void> => {
     const registry = new StaticBPMWorkflowWebhookRegistry([
       {
-        buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+        buildRequest: async () => ({
+          url: 'https://erp.example.com/hooks/bpm',
+        }),
         descriptor: {
           key: 'erp.purchase-approved',
           label: 'ERP purchase order',
@@ -118,7 +120,9 @@ describe('BPMRootModule bootstrap', (): void => {
         FakeDataSourceModule,
         BPMRootModule.forRootAsync({
           useFactory: () => ({
-            workflowWebhookAllowedUrlPatterns: ['https://*.example.com/hooks/*'],
+            workflowWebhookAllowedUrlPatterns: [
+              'https://*.example.com/hooks/*',
+            ],
             workflowWebhookRegistry: registry,
           }),
         }),
@@ -130,11 +134,75 @@ describe('BPMRootModule bootstrap', (): void => {
 
       expect(moduleRef.get(BPM_WORKFLOW_WEBHOOK_REGISTRY)).toBe(registry);
       expect(
-        (await service.listEndpoints()).map((entry) => entry.endpoint.descriptor.key),
+        (await service.listEndpoints()).map(
+          (entry) => entry.endpoint.descriptor.key,
+        ),
       ).toEqual(['erp.purchase-approved']);
       expect(service.readOptions().allowedUrlPatterns).toHaveLength(1);
     } finally {
       await moduleRef.close();
     }
   });
+
+  it('lets the wiring-time registry provider win over the runtime instance', async (): Promise<void> => {
+    const endpointFor = (key: string) => ({
+      buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+      descriptor: { key, label: key, parameters: [], version: 1 },
+    });
+    const fromProvider = new StaticBPMWorkflowWebhookRegistry([
+      endpointFor('from-provider'),
+    ]);
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRoot({
+          workflowWebhookRegistry: new StaticBPMWorkflowWebhookRegistry([
+            endpointFor('from-runtime'),
+          ]),
+          workflowWebhookRegistryProvider: {
+            provide: BPM_WORKFLOW_WEBHOOK_REGISTRY,
+            useValue: fromProvider,
+          },
+        }),
+      ],
+    }).compile();
+
+    try {
+      expect(
+        (await moduleRef.get(WorkflowWebhookService).listEndpoints()).map(
+          (entry) => entry.endpoint.descriptor.key,
+        ),
+      ).toEqual(['from-provider']);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('refuses to boot with a webhook registry that contradicts itself', async (): Promise<void> => {
+    const duplicate = {
+      buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+      descriptor: { key: 'erp.po', label: 'PO', parameters: [], version: 1 },
+    };
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRoot({
+          workflowWebhookRegistry: new StaticBPMWorkflowWebhookRegistry([
+            duplicate,
+            duplicate,
+          ]),
+        }),
+      ],
+    }).compile();
+
+    try {
+      await expect(moduleRef.init()).rejects.toThrow(
+        /erp\.po@1 is registered more than once/u,
+      );
+    } finally {
+      // Closing a context whose init failed re-runs the failing hook.
+      await moduleRef.close().catch((): void => undefined);
+    }
+  });
 });
+

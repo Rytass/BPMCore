@@ -8,6 +8,7 @@ import {
 import {
   isFormFieldCompatibleWithWebhookParameter,
   isNotifyWebhookValueCompatibleWithParameter,
+  readNotifyWebhookStructureIssues,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { BPM_WORKFLOW_WEBHOOK_ERROR_CODES } from './workflow-webhook.errors';
@@ -52,17 +53,38 @@ export async function lintWorkflowWebhookTargets(
   }
 
   const results = await Promise.all(
-    nodes.flatMap((node) =>
-      readNotifyWebhookTargets(node.data.action).map((target, targetIndex) =>
-        lintTarget({
-          formSchema: input.formSchema,
-          nodeId: node.id,
-          resolveEndpoint: input.resolveEndpoint,
-          target,
-          targetIndex,
-        }),
-      ),
-    ),
+    nodes.flatMap((node) => {
+      const webhooks =
+        node.data.action.type === 'NOTIFY' ? node.data.action.webhooks : [];
+      const issues = readNotifyWebhookStructureIssues(webhooks);
+
+      // A list-level problem (not an array, over the limit) leaves no target
+      // worth resolving. Otherwise only the malformed targets are skipped:
+      // the shared structural lint already reports them, and reading parsed
+      // JSON nobody validated would throw instead of adding to that list.
+      if (issues.some((issue) => issue.targetIndex === null)) {
+        return [];
+      }
+
+      const malformedTargets = new Set(
+        issues.map((issue) => issue.targetIndex),
+      );
+
+      return readNotifyWebhookTargets(node.data.action).flatMap(
+        (target, targetIndex) =>
+          malformedTargets.has(targetIndex)
+            ? []
+            : [
+                lintTarget({
+                  formSchema: input.formSchema,
+                  nodeId: node.id,
+                  resolveEndpoint: input.resolveEndpoint,
+                  target,
+                  targetIndex,
+                }),
+              ],
+      );
+    }),
   );
 
   return results.flat();
@@ -169,6 +191,12 @@ function lintBinding({
   }
 
   if (from.kind === 'CONSTANT') {
+    if (from.value === null && parameter.required) {
+      return [
+        `${bindingPath}.from.value cannot be null for required parameter "${parameter.key}" (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.BINDING_INCOMPATIBLE})`,
+      ];
+    }
+
     return isNotifyWebhookValueCompatibleWithParameter(
       from.value,
       parameter.type,

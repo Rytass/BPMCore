@@ -25,6 +25,7 @@ import {
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import { NotifyWebhookTarget } from '@rytass/bpm-core-shared/workflow';
 import { resolveBPMWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import {
@@ -737,6 +738,21 @@ describe('TemplateService', () => {
     await expect(
       service.publishApprovalTemplateVersion('template-version-1'),
     ).rejects.toThrow('WORKFLOW_WEBHOOK_BINDING_INCOMPATIBLE');
+  });
+
+  it('reports malformed webhook JSON as a publish error instead of crashing', async (): Promise<void> => {
+    const service = createWebhookPublishService(
+      createWebhookService([
+        { key: 'amount', label: 'Amount', required: true, type: 'number' },
+      ]),
+      [{ bindings: 'x', endpoint: { key: 'erp.purchase-approved', version: 1 }, id: 'w' }],
+    );
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'workflow.nodes.notify_erp.action.webhooks[0].bindings must be an array',
+    );
   });
 
   it('publishes a webhook whose endpoint and bindings check out', async (): Promise<void> => {
@@ -1461,6 +1477,7 @@ const WEBHOOK_FORM_SCHEMA: FormDefinitionSchema = {
  */
 function createWebhookPublishService(
   webhookService?: WorkflowWebhookService,
+  webhooksOverride?: unknown,
 ): TemplateService {
   const draftVersion = Object.assign(new ApprovalTemplateVersionEntity(), {
     archivedAt: null,
@@ -1513,7 +1530,7 @@ function createWebhookPublishService(
               channels: ['IN_APP'],
               recipients: { memberIds: [], type: 'DIRECT' },
               type: 'NOTIFY',
-              webhooks: [
+              webhooks: (webhooksOverride ?? [
                 {
                   bindings: [
                     {
@@ -1524,7 +1541,7 @@ function createWebhookPublishService(
                   endpoint: { key: 'erp.purchase-approved', version: 1 },
                   id: 'webhook_erp',
                 },
-              ],
+              ]) as NotifyWebhookTarget[],
             },
             label: '通知 ERP',
           },

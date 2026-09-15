@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0 VERIFIED、P1 IMPLEMENTED（ADR 18 於 2026-09-15 Accepted）
+- **狀態**：P0、P1 VERIFIED（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -14,7 +14,7 @@
 | Phase | 交付                                                      | 相依   | 狀態        |
 | ----- | --------------------------------------------------------- | ------ | ----------- |
 | P0    | Shared 契約、結構 lint、既有覆寫 action 問題修正          | —      | VERIFIED    |
-| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | IMPLEMENTED |
+| P1    | Registry contract、Root 選項、Designer Catalog、發布 lint | P0     | VERIFIED    |
 | P2    | Outbox、引擎入列、投遞服務、排程器                        | P1     | PLANNED     |
 | P3    | 管理查詢／重送、client SDK、案件詳情呈現                  | P2     | PLANNED     |
 | P4    | 設計器知會節點 Webhook 面板                               | P1     | PLANNED     |
@@ -223,6 +223,43 @@ endpoint，屬 P5 scope）。
 6. 空的 registry 仍算「有來源」：發布時得到 `ENDPOINT_MISSING` 而不是
    `REGISTRY_MISSING`，兩者語意不同。
 
+**獨立驗證第一輪（2026-09-15，未參與實作者）**：結論 NOT VERIFIED。catalog 不外洩（以真實
+Apollo 驗 SDL、刻意查 `url`／`headers` 被 validation 拒絕）、designer 權限（未登入 401、
+非 designer 403）、53 例白名單對抗輸入（十進位／十六進位／八進位 IPv4 經 WHATWG URL 正規化
+後皆被擋）、38 例發布 lint、真實 `BPMRootModule` 圖中 `onModuleInit` 執行且服務只有一個
+實例，皆確認無誤；必修 3 項，已全部修正：
+
+- **必修 1**：草稿中格式錯誤的 `webhooks`（例如 `[42]`、`bindings: "x"`、缺 `from`）讓發布 lint
+  丟 `TypeError`（500），連 P0 結構錯誤清單也被吞掉。修正：結構 lint 已回報問題的節點不再進入
+  需要 catalog 的 lint；真實發布路徑補測試，確認得到 `BadRequestException` 與結構錯誤訊息。
+- **必修 2**：`logDisabledSource` 沒有任何呼叫處，`DATABASE` 被移除時毫無 log。修正：移除該方法，
+  改由 `WorkflowWebhookOptionsModule` 在解析選項時呼叫 `resolveAndReportWorkflowWebhookOptions`
+  記錄原因（這裡同時拿得到原始輸入與解析結果）。
+- **必修 3**：開機檢查只擋 `version >= 1`，`2147483648` 會讓整個 catalog 查詢因 GraphQL `Int`
+  溢位而失敗。修正：上限改用 `NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX`。
+
+採納的非阻擋建議（已修正）：required 參數不接受 `null` 常數；`isInternalHostname` 補上
+IPv4-mapped IPv6、`192.0.0.0/24`、`198.18.0.0/15`、多播與保留網段（P2 會直接用到）；開機檢查補上
+`parameters` 非陣列、不支援的參數型別、key 前後空白（與結構 lint 一致以 trim 比對）；GraphQL
+`source`／`type` 改為註冊 enum；ADR 補寫單獨 `*` 與 `**` 含 apex 的語意；JSDoc 與 boot spec
+補上「provider 優先於 runtime value」；boot spec 補上錯誤 registry 讓 `init()` 失敗。
+
+移到 P2 gate：兩份 `WorkflowEngineService` 取得同一個投遞服務／registry 的 boot spec（驗證者
+實測圖中確實有兩份引擎，P1 引擎尚未使用 registry）。
+
+**獨立驗證第二輪（2026-09-15，同一位未參與實作者）**：結論 VERIFIED。3 項必修以第一輪的對抗
+輸入在真實 `BPMRootModule` 圖重測皆已修正；`forRoot`／`forRootAsync` 在 6 種來源設定下 warn
+次數正確；59 例白名單矩陣全數符合；GraphQL enum 以真實 Apollo 內省確認為 `ENUM` 且值與 TS
+union 一致。追加採納三項非阻擋建議：
+
+1. 發布 lint 改以 **target** 為單位跳過格式錯誤者，同節點其他 target 的型別錯誤不再被遮住。
+2. `isInternalHostname` 改以完整解析 IPv6 後判斷：補上 IPv4-compatible `::/96`、SIIT
+   `::ffff:0:0:0/96`、NAT64 `64:ff9b::/96`、site-local `fec0::/10`、多播 `ff00::/8`、無法解析
+   的 IPv6 字面值，以及 TEST-NET 三段；ADR §3.13 規則 2 改為明列網段。
+3. 開機檢查遇到缺 descriptor、key 或 label 不是字串時回報可讀訊息，不再丟 TypeError。
+
+未採納：`127.0.0.1.nip.io` 這類 DNS rebinding（ADR §3.13 規則 6 明訂不在 V1）。
+
 ## P2 — Outbox、引擎入列與投遞
 
 **Scope**
@@ -268,6 +305,8 @@ endpoint，屬 P5 scope）。
 - 以本機接收端（見 P5 sink）實測：接收端先回 503 兩次再回 200，最終 `SENT` 且
   `deliveryId` 三次相同。
 - 以兩個 API 實例同時跑排程器，確認同一 delivery 不會被重複投遞。
+- boot spec：模組圖中兩份 `WorkflowEngineService` 都拿到同一個投遞服務與 registry（P1 驗證
+  發現引擎有兩份實例的既有狀況）。
 - 以接收端延遲 60 秒實測：簽核請求本身不被拖慢，delivery 以 `WEBHOOK_TIMEOUT` 重試。
 
 ## P3 — 管理查詢、重送與案件詳情
@@ -436,6 +475,9 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
     且只有純文字沒有 HTML，要完全自訂必須由宿主提供 `BPM_NOTIFICATION_DISPATCHER` 接管
     寄送；站內通知沒有即時推播，前端無 SSE／WebSocket，未讀數只在載入與切換登入者時抓
     一次，宿主可用 `BPM_NOTIFICATION_OBSERVER` 自建 realtime 通道。
-11. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
+11. **發布路徑對形狀錯誤草稿的既有崩潰**（P1 驗證發現，`0deffad` 之前即存在）：`serviceTask`
+    缺 `data`、`action: null`、`nodes` 不是陣列時，發布會先在 `readConditionExpressions` 或
+    `definition.nodes.flatMap` 丟 TypeError（500）。存草稿只做 `JSON.parse` 不驗結構是根因。
+12. **P0 不可單獨發版**：P0 已允許發布含 webhook target 的模板，但 registry 檢查在 P1、
     投遞在 P2。P0 與 P1 至少要同一個 release 發出，release note 需註明 webhook 要到
     P2 才會實際送出。

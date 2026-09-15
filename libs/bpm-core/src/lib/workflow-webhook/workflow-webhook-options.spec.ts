@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+import { resolveAndReportWorkflowWebhookOptions } from './workflow-webhook-options.module';
 import {
   DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS,
   readDisabledWorkflowWebhookSourceReason,
@@ -69,5 +71,25 @@ describe('resolveBPMWorkflowWebhookOptions', () => {
     ).toBe(
       'DATABASE webhook endpoints are disabled: workflowWebhookSecretEncryptionKey must be set',
     );
+  });
+
+  it('logs why a requested database source was dropped', () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation((): void => undefined);
+
+    try {
+      resolveAndReportWorkflowWebhookOptions({
+        workflowWebhookTargetSources: ['DATABASE'],
+      });
+      resolveAndReportWorkflowWebhookOptions({});
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'DATABASE webhook endpoints are disabled: workflowWebhookAllowedUrlPatterns and workflowWebhookSecretEncryptionKey must be set',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
