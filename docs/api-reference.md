@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-09-15, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10) and the NOTIFY webhook shared contract (ADR 18 P0) are inventoried here but not yet released; `nx release` sets the next number at publish time.
+Last verified against (2026-09-15, pending the release after `v0.13.1`): `libs/shared@0.13.1`, `libs/bpm-core-client@0.13.1`, `libs/bpm-core@0.13.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.1`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10), the NOTIFY webhook shared contract (ADR 18 P0) and the endpoint registry/catalog (ADR 18 P1) are inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
@@ -660,8 +660,8 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -970,6 +970,27 @@ runtime value reaches both, because the service resolves it from the global
 `BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
+
+## `@rytass/bpm-core-nestjs-module/workflow-webhook`
+
+NOTIFY webhook endpoints (ADR 18): the host-facing catalog, the designer query, the URL allowlist, and the publish rules that need the catalog. Delivery itself lands in P2.
+
+| Category | Names |
+|---|---|
+| Registry | `BPMWorkflowWebhookRegistry`, `BPM_WORKFLOW_WEBHOOK_REGISTRY`, `EmptyBPMWorkflowWebhookRegistry`, `StaticBPMWorkflowWebhookRegistry`, `defaultWorkflowWebhookRegistryProvider` (prefers a `workflowWebhookRegistry` instance from `BPM_ROOT_OPTIONS`, else an empty catalog) |
+| Endpoint contract | `BPMWorkflowWebhookEndpoint` (`descriptor` + `buildRequest`), `BPMWorkflowWebhookEndpointDescriptor`, `BPMWorkflowWebhookParameter`, `BPMWorkflowWebhookRequest`, `BPMWorkflowWebhookEvent`, `readWorkflowWebhookEndpointKey` |
+| Sources | `BPMWorkflowWebhookEndpointSource`, `BPMWorkflowWebhookEndpointSourceKind` (`'REGISTRY' \| 'DATABASE'`), `BPMWorkflowWebhookEndpointEntry` |
+| Service | `WorkflowWebhookService` (`hasEndpointSources` / `listEndpoints` / `getEndpoint` / `readOptions`), `ListWorkflowWebhookEndpointsOptions`, `readRegistryDescriptorErrors` |
+| Options | `BPMRootWorkflowWebhookOptions`, `BPMResolvedWorkflowWebhookOptions`, `BPM_WORKFLOW_WEBHOOK_OPTIONS`, `DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS`, `resolveBPMWorkflowWebhookOptions`, `readDisabledWorkflowWebhookSourceReason` |
+| Allowlist | `parseWorkflowWebhookUrlPattern`, `parseWorkflowWebhookUrlPatterns`, `isWorkflowWebhookUrlAllowed`, `isInternalHostname`, `ParsedWorkflowWebhookUrlPattern`, `WorkflowWebhookUrlPatternParseResult`, `WorkflowWebhookUrlScheme` |
+| Publish lint | `lintWorkflowWebhookTargets`, `LintWorkflowWebhookTargetsInput` |
+| Errors | `BPM_WORKFLOW_WEBHOOK_ERROR_CODES`, `BPMWorkflowWebhookErrorCode`, `BPMWorkflowWebhookException` |
+| GraphQL | `WorkflowWebhookQueries` (`workflowWebhookEndpoints(includeDeprecated)`, designer-only), `WorkflowWebhookEndpointObject`, `WorkflowWebhookParameterObject` |
+| Module | `WorkflowWebhookModule`, `WorkflowWebhookModuleOptions`, `WorkflowWebhookOptionsModule`, `WorkflowWebhookOptionsModuleAsyncOptions` |
+
+The catalog carries **no URL, header or secret**, whichever source an endpoint came from: the browser only ever sees key, version, label, description, parameters and source. `buildRequest()` is called once per delivery attempt rather than at enqueue time, so a rotated credential reaches deliveries that are already queued.
+
+`workflowWebhookTargetSources` defaults to `['REGISTRY']`. `'DATABASE'` (P6) is dropped from the resolved list unless both `workflowWebhookAllowedUrlPatterns` and `workflowWebhookSecretEncryptionKey` are set; `readDisabledWorkflowWebhookSourceReason` explains which one is missing. An invalid URL pattern throws while options resolve, so it fails the boot rather than silently allowing or denying everything.
 
 ## `@rytass/bpm-core-nestjs-module/condition`
 
