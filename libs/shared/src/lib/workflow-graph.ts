@@ -1172,6 +1172,194 @@ export function isNotifyWebhookValueCompatibleWithParameter(
   );
 }
 
+/** The part of an endpoint descriptor the catalog lint reads. */
+export interface NotifyWebhookEndpointContract {
+  readonly deprecated?: boolean;
+  readonly parameters: readonly {
+    readonly key: string;
+    readonly required: boolean;
+    readonly type: NotifyWebhookParameterType;
+  }[];
+}
+
+export type NotifyWebhookCatalogIssueCode =
+  | 'CONSTANT_INCOMPATIBLE'
+  | 'CONSTANT_REQUIRED_NULL'
+  | 'CONTEXT_INCOMPATIBLE'
+  | 'ENDPOINT_DEPRECATED'
+  | 'ENDPOINT_MISSING'
+  | 'FIELD_INCOMPATIBLE'
+  | 'FIELD_MISSING'
+  | 'PARAMETER_REQUIRED'
+  | 'PARAMETER_UNKNOWN';
+
+/**
+ * A publish problem in one well-formed webhook target that needs the endpoint
+ * catalog and the bound form (ADR 18 §4, items 2 and 5–8). A code, like
+ * {@link NotifyWebhookStructureIssue}, so the designer and the backend publish
+ * lint share the rules and only differ in wording.
+ */
+export interface NotifyWebhookCatalogIssue {
+  readonly bindingIndex: number | null;
+  readonly code: NotifyWebhookCatalogIssueCode;
+  readonly fieldKey: string | null;
+  readonly fieldType: string | null;
+  readonly parameter: string | null;
+  readonly parameterType: NotifyWebhookParameterType | null;
+}
+
+/**
+ * Checks a structurally valid target against its endpoint and the form.
+ * `endpoint` is `null` when the catalog does not list the target's key and
+ * version. A missing or deprecated endpoint is the only issue reported for
+ * that target: its parameters are no longer a contract worth checking.
+ */
+export function readNotifyWebhookTargetCatalogIssues({
+  endpoint,
+  formFields,
+  target,
+}: {
+  readonly endpoint: NotifyWebhookEndpointContract | null;
+  readonly formFields: readonly FormFieldDefinition[];
+  readonly target: NotifyWebhookTarget;
+}): readonly NotifyWebhookCatalogIssue[] {
+  if (!endpoint) {
+    return [createNotifyWebhookCatalogIssue('ENDPOINT_MISSING')];
+  }
+
+  if (endpoint.deprecated) {
+    return [createNotifyWebhookCatalogIssue('ENDPOINT_DEPRECATED')];
+  }
+
+  const boundParameters = new Set(
+    target.bindings.map((binding) => binding.parameter),
+  );
+  const requiredIssues = endpoint.parameters.flatMap((parameter) =>
+    parameter.required && !boundParameters.has(parameter.key)
+      ? [
+          createNotifyWebhookCatalogIssue('PARAMETER_REQUIRED', {
+            parameter: parameter.key,
+            parameterType: parameter.type,
+          }),
+        ]
+      : [],
+  );
+  const bindingIssues = target.bindings.flatMap(
+    (binding, bindingIndex): readonly NotifyWebhookCatalogIssue[] => {
+      const parameter = endpoint.parameters.find(
+        (candidate) => candidate.key === binding.parameter,
+      );
+      const location = { bindingIndex, parameter: binding.parameter };
+
+      if (!parameter) {
+        return [createNotifyWebhookCatalogIssue('PARAMETER_UNKNOWN', location)];
+      }
+
+      const typed = { ...location, parameterType: parameter.type };
+      const from = binding.from;
+
+      if (from.kind === 'FIELD') {
+        const field = formFields.find(
+          (candidate) => candidate.fieldKey === from.fieldKey,
+        );
+
+        if (!field) {
+          return [
+            createNotifyWebhookCatalogIssue('FIELD_MISSING', {
+              ...typed,
+              fieldKey: from.fieldKey,
+            }),
+          ];
+        }
+
+        return isFormFieldCompatibleWithWebhookParameter(field, parameter.type)
+          ? []
+          : [
+              createNotifyWebhookCatalogIssue('FIELD_INCOMPATIBLE', {
+                ...typed,
+                fieldKey: from.fieldKey,
+                fieldType: field.type,
+              }),
+            ];
+      }
+
+      if (from.kind === 'CONSTANT') {
+        if (from.value === null && parameter.required) {
+          return [
+            createNotifyWebhookCatalogIssue('CONSTANT_REQUIRED_NULL', typed),
+          ];
+        }
+
+        return isNotifyWebhookValueCompatibleWithParameter(
+          from.value,
+          parameter.type,
+        )
+          ? []
+          : [createNotifyWebhookCatalogIssue('CONSTANT_INCOMPATIBLE', typed)];
+      }
+
+      // Every CONTEXT path resolves to a string, so anything but a string or
+      // an opaque json parameter is a mistake the author should see.
+      return parameter.type === 'string' || parameter.type === 'json'
+        ? []
+        : [createNotifyWebhookCatalogIssue('CONTEXT_INCOMPATIBLE', typed)];
+    },
+  );
+
+  return [...requiredIssues, ...bindingIssues];
+}
+
+/** The designer's wording for {@link NotifyWebhookCatalogIssue}. */
+export function readNotifyWebhookCatalogIssueMessage({
+  endpointLabel,
+  issue,
+  nodeLabel,
+  targetIndex,
+}: {
+  readonly endpointLabel: string;
+  readonly issue: NotifyWebhookCatalogIssue;
+  readonly nodeLabel: string;
+  readonly targetIndex: number;
+}): string {
+  const target = `知會節點「${nodeLabel}」的第 ${targetIndex + 1} 個 Webhook（${endpointLabel}）`;
+  const parameter = `參數「${issue.parameter ?? ''}」`;
+
+  switch (issue.code) {
+    case 'ENDPOINT_MISSING':
+      return `${target}的端點已不存在，請移除或改選其他端點。`;
+    case 'ENDPOINT_DEPRECATED':
+      return `${target}的端點已停用，請改選其他端點。`;
+    case 'PARAMETER_REQUIRED':
+      return `${target}的必填${parameter}尚未設定。`;
+    case 'PARAMETER_UNKNOWN':
+      return `${target}的${parameter}已不在端點定義中，請移除此設定。`;
+    case 'FIELD_MISSING':
+      return `${target}的${parameter}綁定的表單欄位「${issue.fieldKey ?? ''}」不存在。`;
+    case 'FIELD_INCOMPATIBLE':
+      return `${target}的${parameter}綁定的表單欄位「${issue.fieldKey ?? ''}」型別不相容。`;
+    case 'CONSTANT_REQUIRED_NULL':
+      return `${target}的必填${parameter}固定值不可為空。`;
+    case 'CONSTANT_INCOMPATIBLE':
+      return `${target}的${parameter}固定值型別不相容。`;
+    case 'CONTEXT_INCOMPATIBLE':
+      return `${target}的${parameter}無法使用案件資訊（案件資訊皆為文字）。`;
+  }
+}
+
+function createNotifyWebhookCatalogIssue(
+  code: NotifyWebhookCatalogIssueCode,
+  location: Partial<Omit<NotifyWebhookCatalogIssue, 'code'>> = {},
+): NotifyWebhookCatalogIssue {
+  return {
+    bindingIndex: location.bindingIndex ?? null,
+    code,
+    fieldKey: location.fieldKey ?? null,
+    fieldType: location.fieldType ?? null,
+    parameter: location.parameter ?? null,
+    parameterType: location.parameterType ?? null,
+  };
+}
+
 function readNotifyWebhookTargetIssues(
   target: unknown,
   targetIndex: number,
