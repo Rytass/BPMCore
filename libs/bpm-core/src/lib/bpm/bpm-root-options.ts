@@ -10,6 +10,8 @@ import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { BPMRootNotificationOptions } from '../notification/notification-options';
 import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
+import { BPMRootWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
+import { BPMWorkflowWebhookRegistry } from '../workflow-webhook/workflow-webhook.types';
 
 /**
  * Every BPM setting that can be decided at **runtime**, i.e. after the host's
@@ -35,7 +37,8 @@ export interface BPMRootRuntimeOptions
     BPMRootAttachmentOptions,
     BPMRootIdentityOptions,
     BPMRootNotificationOptions,
-    BPMRootSignatureOptions {
+    BPMRootSignatureOptions,
+    BPMRootWorkflowWebhookOptions {
   /**
    * Storage adapter for BPM attachments, as a ready instance.
    *
@@ -93,6 +96,13 @@ export interface BPMRootRuntimeOptions
    * signing, retry queues, or an outbound integration bus.
    */
   readonly workflowServiceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
+
+  /**
+   * Catalog of NOTIFY webhook endpoints registered by host code, as a ready
+   * instance (ADR 18 §3.1). When omitted, BPM exposes an empty catalog and a
+   * template that references any endpoint cannot be published.
+   */
+  readonly workflowWebhookRegistry?: BPMWorkflowWebhookRegistry;
 }
 
 /**

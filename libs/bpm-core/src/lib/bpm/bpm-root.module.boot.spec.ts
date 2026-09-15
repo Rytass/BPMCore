@@ -10,6 +10,11 @@ import {
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
 import { BPMRootModule } from './bpm-root.module';
+import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
+import {
+  BPM_WORKFLOW_WEBHOOK_REGISTRY,
+  StaticBPMWorkflowWebhookRegistry,
+} from '../workflow-webhook/workflow-webhook.types';
 
 // The built-in local storage fallback reaches `@rytass/storages-adapter-local`
 // through `require`, which Jest cannot load as ESM.
@@ -62,6 +67,12 @@ describe('BPMRootModule bootstrap', (): void => {
       expect(moduleRef.get(BPM_BUSINESS_CALENDAR)).toBeDefined();
       expect(moduleRef.get(ATTACHMENT_STORAGE)).toBeDefined();
       expect(moduleRef.get(BPM_FORM_DATA_SOURCE_REGISTRY)).toBeDefined();
+      expect(moduleRef.get(BPM_WORKFLOW_WEBHOOK_REGISTRY)).toBeDefined();
+      // An empty catalog is still a source: publish refuses an unknown
+      // endpoint rather than "no webhooks configured at all".
+      expect(
+        moduleRef.get(WorkflowWebhookService).hasEndpointSources(),
+      ).toBe(true);
     } finally {
       await moduleRef.close();
     }
@@ -85,6 +96,43 @@ describe('BPMRootModule bootstrap', (): void => {
     try {
       expect(moduleRef.get(BPM_MEMBER_RESOLVER)).toBe(memberResolver);
       expect(useFactory).toHaveBeenCalledTimes(1);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('takes a webhook endpoint registry from the async factory', async (): Promise<void> => {
+    const registry = new StaticBPMWorkflowWebhookRegistry([
+      {
+        buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+        descriptor: {
+          key: 'erp.purchase-approved',
+          label: 'ERP purchase order',
+          parameters: [],
+          version: 1,
+        },
+      },
+    ]);
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({
+            workflowWebhookAllowedUrlPatterns: ['https://*.example.com/hooks/*'],
+            workflowWebhookRegistry: registry,
+          }),
+        }),
+      ],
+    }).compile();
+
+    try {
+      const service = moduleRef.get(WorkflowWebhookService);
+
+      expect(moduleRef.get(BPM_WORKFLOW_WEBHOOK_REGISTRY)).toBe(registry);
+      expect(
+        (await service.listEndpoints()).map((entry) => entry.endpoint.descriptor.key),
+      ).toEqual(['erp.purchase-approved']);
+      expect(service.readOptions().allowedUrlPatterns).toHaveLength(1);
     } finally {
       await moduleRef.close();
     }
