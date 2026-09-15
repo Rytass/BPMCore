@@ -226,17 +226,17 @@ function NotifyWebhookTargetEditor({
   const endpointOptions: readonly SelectOption[] = [
     ...activeEndpoints.map((candidate) => ({
       id: readNotifyWebhookEndpointOptionId(candidate),
-      name: `${candidate.label}（v${candidate.version}）`,
+      name: readEndpointOptionName(candidate),
     })),
-    // Kept selectable-as-shown so a deprecated or removed endpoint is named
-    // rather than the Select silently looking empty.
+    // Kept selectable-as-shown so a deprecated, disabled or removed endpoint
+    // is named rather than the Select silently looking empty.
     ...(endpoint && !endpoint.deprecated
       ? []
       : [
           {
             id: currentOptionId,
             name: endpoint
-              ? `${endpoint.label}（v${endpoint.version}，已停用）`
+              ? readEndpointOptionName(endpoint)
               : `${currentOptionId}（找不到端點）`,
           },
         ]),
@@ -292,9 +292,13 @@ function NotifyWebhookTargetEditor({
           找不到這個端點，設定會保留；請改選其他端點或移除，否則無法發布。
         </Typography>
       ) : null}
-      {endpoint?.deprecated ? (
+      {endpoint?.disabled ? (
         <Typography color="text-warning" variant="body">
-          這個端點已停用，設定會保留；請改選其他端點，否則無法發布。
+          這個端點已被管理者停用，不會再送出；設定會保留，請改選其他端點，否則無法發布。
+        </Typography>
+      ) : endpoint?.deprecated ? (
+        <Typography color="text-warning" variant="body">
+          這個端點不建議再使用，設定會保留；請改選其他端點，否則無法發布。
         </Typography>
       ) : null}
       {endpoint?.description ? (
@@ -561,6 +565,22 @@ function NotifyWebhookConstantInput({
       variant="base"
     />
   );
+}
+
+function readEndpointOptionName(
+  endpoint: NotifyWebhookDesignerEndpoint,
+): string {
+  const notes = [
+    `v${endpoint.version}`,
+    ...(endpoint.source === 'DATABASE' ? ['後台維護'] : []),
+    ...(endpoint.disabled
+      ? ['已停用']
+      : endpoint.deprecated
+        ? ['不建議使用']
+        : []),
+  ];
+
+  return `${endpoint.label}（${notes.join('，')}）`;
 }
 
 function readBindingKind(id: string | null): NotifyWebhookBindingKind | null {

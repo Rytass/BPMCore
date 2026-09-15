@@ -45,10 +45,13 @@ const PLANNED_ENTRIES: Readonly<Record<string, string>> = {
   'views/templates/versions/index': 'src/views/templates/versions/index.ts',
   'views/forms/builder/index': 'src/views/forms/builder/index.ts',
   'views/forms/renderer/index': 'src/views/forms/renderer/index.ts',
-  'views/settings/notifications/index': 'src/views/settings/notifications/index.ts',
+  'views/settings/notifications/index':
+    'src/views/settings/notifications/index.ts',
   'views/admin/users/index': 'src/views/admin/users/index.ts',
   'views/admin/orgs/index': 'src/views/admin/orgs/index.ts',
   'views/admin/delegations/index': 'src/views/admin/delegations/index.ts',
+  'views/admin/webhook-endpoints/index':
+    'src/views/admin/webhook-endpoints/index.ts',
 
   // Next.js Server Component shims (export `{ default, metadata }`).
   'pages/root/index': 'src/pages/root/index.tsx',
@@ -62,14 +65,18 @@ const PLANNED_ENTRIES: Readonly<Record<string, string>> = {
   'pages/instances/detail/index': 'src/pages/instances/detail/index.tsx',
   'pages/instances/new/index': 'src/pages/instances/new/index.tsx',
   'pages/templates/index': 'src/pages/templates/index.tsx',
-  'pages/templates/categories/index': 'src/pages/templates/categories/index.tsx',
+  'pages/templates/categories/index':
+    'src/pages/templates/categories/index.tsx',
   'pages/templates/compose/index': 'src/pages/templates/compose/index.tsx',
   'pages/templates/designer/index': 'src/pages/templates/designer/index.tsx',
   'pages/templates/versions/index': 'src/pages/templates/versions/index.tsx',
-  'pages/settings/notifications/index': 'src/pages/settings/notifications/index.tsx',
+  'pages/settings/notifications/index':
+    'src/pages/settings/notifications/index.tsx',
   'pages/admin/users/index': 'src/pages/admin/users/index.tsx',
   'pages/admin/orgs/index': 'src/pages/admin/orgs/index.tsx',
   'pages/admin/delegations/index': 'src/pages/admin/delegations/index.tsx',
+  'pages/admin/webhook-endpoints/index':
+    'src/pages/admin/webhook-endpoints/index.tsx',
 };
 
 const entries: Record<string, string> = Object.fromEntries(
@@ -137,7 +144,9 @@ export default defineConfig({
           entryFileNames: '[name].js',
           chunkFileNames: 'chunks/[name]-[hash].js',
           assetFileNames: (asset): string =>
-            asset.name?.endsWith('.css') ? '[name][extname]' : 'assets/[name][extname]',
+            asset.name?.endsWith('.css')
+              ? '[name][extname]'
+              : 'assets/[name][extname]',
           exports: 'named',
           preserveModules: false,
         },
@@ -146,7 +155,9 @@ export default defineConfig({
           entryFileNames: '[name].cjs',
           chunkFileNames: 'chunks/[name]-[hash].cjs',
           assetFileNames: (asset): string =>
-            asset.name?.endsWith('.css') ? '[name][extname]' : 'assets/[name][extname]',
+            asset.name?.endsWith('.css')
+              ? '[name][extname]'
+              : 'assets/[name][extname]',
           exports: 'named',
           preserveModules: false,
         },

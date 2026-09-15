@@ -21,6 +21,8 @@ export type NotifyWebhookBindingKind = NotifyWebhookBindingSource['kind'];
 export interface NotifyWebhookDesignerEndpoint extends NotifyWebhookEndpointContract {
   readonly deprecated: boolean;
   readonly description: string | null;
+  /** Switched off by an administrator (database endpoints). */
+  readonly disabled?: boolean;
   readonly key: string;
   readonly label: string;
   readonly parameters: readonly {
@@ -30,6 +32,8 @@ export interface NotifyWebhookDesignerEndpoint extends NotifyWebhookEndpointCont
     readonly required: boolean;
     readonly type: NotifyWebhookParameterType;
   }[];
+  /** `DATABASE` endpoints are maintained in the back office. */
+  readonly source?: 'DATABASE' | 'REGISTRY';
   readonly version: number;
 }
 

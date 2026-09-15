@@ -91,6 +91,8 @@ export interface BPMRoutes {
   adminUsers(): string;
   /** Admin: delegation rule management. */
   adminDelegations(): string;
+  /** Admin: database-managed notify webhook endpoints (ADR 18). */
+  adminWebhookEndpoints(): string;
 }
 
 /**
@@ -125,6 +127,7 @@ export function createDefaultBPMRoutes(): BPMRoutes {
     adminOrgs: () => '/admin/orgs',
     adminUsers: () => '/admin/users',
     adminDelegations: () => '/admin/delegations',
+    adminWebhookEndpoints: () => '/admin/webhook-endpoints',
   };
 }
 

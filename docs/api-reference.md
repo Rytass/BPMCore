@@ -1276,7 +1276,7 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `RouterAdapterProviderProps` | interface | Provider props |
 | `useRouterAdapter()` | hook | Read current adapter |
 | `defaultBrowserSearchParams()` | function | Fallback reader from `window.location.search` |
-| `BPMRoutes` | interface | Path mapping every BPM view uses (dashboard / inbox / caseDetail / templates / admin / …) |
+| `BPMRoutes` | interface | Path mapping every BPM view uses (dashboard / inbox / caseDetail / templates / admin / …; P6 adds `adminWebhookEndpoints`) |
 | `BPMRoutesProvider` | Component | Override host BPM internal paths |
 | `BPMRoutesProviderProps` | interface | `{ value?, children }` |
 | `createDefaultBPMRoutes()` | function | Factory returning the default `BPMRoutes` literal map |
@@ -1338,7 +1338,7 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/instances` | `InstanceNewView` (detail stays isolated due to weight) |
 | `views/templates` | `TemplatesView`, `TemplateCategoriesView`, `TemplateVersionsView` (designer isolated) |
 | `views/settings` | `SettingsNotificationsView` |
-| `views/admin` | `AdminUsersView`, `AdminOrgsView`, `AdminDelegationsView` |
+| `views/admin` | `AdminUsersView`, `AdminOrgsView`, `AdminDelegationsView`, `AdminWebhookEndpointsView` |
 
 ### Leaf subpaths (one view each)
 
@@ -1377,6 +1377,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 | `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
 | `views/forms/renderer` | `FormRenderer`, `FormRendererView`, `FormRendererProps`, `FormRendererDataSourceContext`, `FormDataSourceFieldState` (now carries `canRetry`, false when there is no query to re-issue), `UseFormDataSourceFieldInput` (adds the table-cell inputs `fieldPath`, `snapshotKey` and `row`), `UseFormDataSourceFieldRow`, `useFormDataSourceField()`, `readFormDataSourceFieldStatusMessage()`, `isFormDataSourceFieldSubmissionBlocked()`, `readFormDataSourceSubmissionBlockMessage()` (picks wait-vs-fix copy for a refused submission) | normal |
 | `views/admin/users` / `orgs` / `delegations` | `AdminUsersView` / `AdminOrgsView` / `AdminDelegationsView` | orgs carries `OrgUnitTreeDraftEditor` |
+| `views/admin/webhook-endpoints` | `AdminWebhookEndpointsView` (database-managed notify webhook endpoints: create / edit / new version / disable / rotate secret / test send / change history; values write-only) | — |
 | `views/settings/notifications` | `SettingsNotificationsView` | normal |
 
 ## Pages (Next.js Server Component shims)
@@ -1408,6 +1409,7 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
 | `pages/admin/users` | `/admin/users` | No | — |
 | `pages/admin/orgs` | `/admin/orgs` | No | — |
 | `pages/admin/delegations` | `/admin/delegations` | No | — |
+| `pages/admin/webhook-endpoints` | `/admin/webhook-endpoints` | No | — |
 
 ---
 

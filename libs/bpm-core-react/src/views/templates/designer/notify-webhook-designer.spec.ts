@@ -239,7 +239,7 @@ describe('notify webhook designer helpers', () => {
         formFields: FORM_FIELDS,
       }),
     ).toEqual([
-      '知會節點「通知 ERP」的第 1 個 Webhook（端點 erp.po）的端點已停用，請改選其他端點。',
+      '知會節點「通知 ERP」的第 1 個 Webhook（端點 erp.po）的端點不建議再使用，請改選其他端點。',
     ]);
   });
 });

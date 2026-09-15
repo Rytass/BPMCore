@@ -181,6 +181,11 @@
       "import": "./dist/views/admin/delegations/index.js",
       "require": "./dist/views/admin/delegations/index.cjs"
     },
+    "./views/admin/webhook-endpoints": {
+      "types": "./dist/views/admin/webhook-endpoints/index.d.ts",
+      "import": "./dist/views/admin/webhook-endpoints/index.js",
+      "require": "./dist/views/admin/webhook-endpoints/index.cjs"
+    },
     "./pages/root": {
       "types": "./dist/pages/root/index.d.ts",
       "import": "./dist/pages/root/index.js",
@@ -275,6 +280,11 @@
       "types": "./dist/pages/admin/delegations/index.d.ts",
       "import": "./dist/pages/admin/delegations/index.js",
       "require": "./dist/pages/admin/delegations/index.cjs"
+    },
+    "./pages/admin/webhook-endpoints": {
+      "types": "./dist/pages/admin/webhook-endpoints/index.d.ts",
+      "import": "./dist/pages/admin/webhook-endpoints/index.js",
+      "require": "./dist/pages/admin/webhook-endpoints/index.cjs"
     }
   },
   "peerDependencies": {
