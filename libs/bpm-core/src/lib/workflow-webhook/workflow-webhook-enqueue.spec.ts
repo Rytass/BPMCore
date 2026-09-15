@@ -128,6 +128,27 @@ describe('buildWorkflowWebhookDeliveryDrafts', () => {
     });
   });
 
+  it('queues an already-failed row when an administrator disabled the endpoint', async () => {
+    const disabled = entry([]);
+    const [draft] = await buildWorkflowWebhookDeliveryDrafts({
+      context: CONTEXT,
+      resolveEndpoint: async () => ({
+        ...disabled,
+        endpoint: {
+          ...disabled.endpoint,
+          descriptor: { ...disabled.endpoint.descriptor, disabled: true },
+        },
+        source: 'DATABASE',
+      }),
+      targets: [target([])],
+    });
+
+    expect(draft).toMatchObject({
+      lastErrorCode: 'WEBHOOK_ENDPOINT_DISABLED',
+      status: WorkflowWebhookDeliveryStatusEnum.FAILED,
+    });
+  });
+
   it('fails a required parameter that resolved to nothing instead of throwing', async () => {
     const [draft] = await buildWorkflowWebhookDeliveryDrafts({
       context: { ...CONTEXT, instance: { ...CONTEXT.instance, formData: {} } },

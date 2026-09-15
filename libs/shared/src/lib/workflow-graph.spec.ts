@@ -791,6 +791,13 @@ describe('readNotifyWebhookTargetCatalogIssues', () => {
         target: target(bindings),
       }).map((issue) => issue.code),
     ).toEqual(['ENDPOINT_DEPRECATED']);
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint: { ...endpoint, deprecated: true, disabled: true },
+        formFields,
+        target: target(bindings),
+      }).map((issue) => issue.code),
+    ).toEqual(['ENDPOINT_DISABLED']);
   });
 
   it('passes a target whose bindings fit the endpoint and the form', () => {

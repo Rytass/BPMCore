@@ -1,4 +1,5 @@
 import { InjectionToken } from '@nestjs/common';
+import type { EntityManager } from 'typeorm';
 import { NotifyWebhookParameterType } from '@rytass/bpm-core-shared/workflow';
 
 /**
@@ -27,6 +28,12 @@ export interface BPMWorkflowWebhookEndpointDescriptor {
    */
   readonly deprecated?: boolean;
   readonly description?: string;
+  /**
+   * Switched off by an administrator (database endpoints, P6). Unlike
+   * `deprecated`, nothing is delivered any more: queued and new deliveries
+   * fail with `WEBHOOK_ENDPOINT_DISABLED`, and templates cannot publish it.
+   */
+  readonly disabled?: boolean;
   readonly key: string;
   readonly label: string;
   readonly parameters: readonly BPMWorkflowWebhookParameter[];
@@ -119,7 +126,11 @@ export interface BPMWorkflowWebhookEndpointEntry {
 export interface BPMWorkflowWebhookEndpointSource {
   readonly kind: BPMWorkflowWebhookEndpointSourceKind;
 
-  get(key: string, version: number): Promise<BPMWorkflowWebhookEndpoint | null>;
+  get(
+    key: string,
+    version: number,
+    manager?: EntityManager,
+  ): Promise<BPMWorkflowWebhookEndpoint | null>;
   list(): Promise<readonly BPMWorkflowWebhookEndpoint[]>;
 }
 

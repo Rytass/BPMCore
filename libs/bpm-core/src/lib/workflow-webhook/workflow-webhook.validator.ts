@@ -21,6 +21,13 @@ export interface LintWorkflowWebhookTargetsInput {
     key: string,
     version: number,
   ) => Promise<BPMWorkflowWebhookEndpointEntry | null>;
+  /**
+   * Whether an endpoint's current URL is inside the allowlist (ADR 18 §3.13
+   * rule 3). Omitted: not checked at publish, only before each delivery.
+   */
+  readonly isEndpointUrlAllowed?: (
+    entry: BPMWorkflowWebhookEndpointEntry,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -73,6 +80,7 @@ export async function lintWorkflowWebhookTargets(
             : [
                 lintTarget({
                   formSchema: input.formSchema,
+                  isEndpointUrlAllowed: input.isEndpointUrlAllowed,
                   nodeId: node.id,
                   resolveEndpoint: input.resolveEndpoint,
                   target,
@@ -88,12 +96,14 @@ export async function lintWorkflowWebhookTargets(
 
 async function lintTarget({
   formSchema,
+  isEndpointUrlAllowed,
   nodeId,
   resolveEndpoint,
   target,
   targetIndex,
 }: {
   readonly formSchema: FormDefinitionSchema;
+  readonly isEndpointUrlAllowed?: LintWorkflowWebhookTargetsInput['isEndpointUrlAllowed'];
   readonly nodeId: string;
   readonly resolveEndpoint: LintWorkflowWebhookTargetsInput['resolveEndpoint'];
   readonly target: NotifyWebhookTarget;
@@ -104,17 +114,28 @@ async function lintTarget({
     target.endpoint.version,
   );
 
-  return readNotifyWebhookTargetCatalogIssues({
+  const path = `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`;
+  const catalogIssues = readNotifyWebhookTargetCatalogIssues({
     endpoint: entry?.endpoint.descriptor ?? null,
     formFields: formSchema.fields,
     target,
-  }).map((issue) =>
-    readCatalogIssueMessage(
-      issue,
-      target,
-      `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`,
-    ),
-  );
+  }).map((issue) => readCatalogIssueMessage(issue, target, path));
+
+  // A saved endpoint whose URL a tightened allowlist no longer covers would
+  // fail every delivery; say so now rather than after the case runs.
+  const urlAllowed =
+    !entry || catalogIssues.length || !isEndpointUrlAllowed
+      ? true
+      : await isEndpointUrlAllowed(entry);
+
+  return [
+    ...catalogIssues,
+    ...(urlAllowed
+      ? []
+      : [
+          `${path}.endpoint ${target.endpoint.key}@${target.endpoint.version} calls a URL outside workflowWebhookAllowedUrlPatterns (${BPM_WORKFLOW_WEBHOOK_ERROR_CODES.URL_NOT_ALLOWED})`,
+        ]),
+  ];
 }
 
 /** The developer-facing, path-style wording of the shared catalog rules. */
@@ -133,6 +154,8 @@ function readCatalogIssueMessage(
       return `${path}.endpoint ${endpoint} is not registered (${codes.ENDPOINT_MISSING})`;
     case 'ENDPOINT_DEPRECATED':
       return `${path}.endpoint ${endpoint} is deprecated (${codes.ENDPOINT_DEPRECATED})`;
+    case 'ENDPOINT_DISABLED':
+      return `${path}.endpoint ${endpoint} is disabled (${codes.ENDPOINT_DISABLED})`;
     case 'PARAMETER_REQUIRED':
       return `${path}.bindings is missing required parameter "${parameter}" (${codes.PARAMETER_REQUIRED})`;
     case 'PARAMETER_UNKNOWN':

@@ -62,6 +62,12 @@ export class WorkflowWebhookDeliverySchedulerService
       return false;
     }
 
+    // Endpoints can be added in the database at any time, so an empty list
+    // at boot says nothing about tomorrow; a scan with nothing due is cheap.
+    if (this.webhookService.hasDatabaseSource()) {
+      return true;
+    }
+
     try {
       return (
         (await this.webhookService.listEndpoints({ includeDeprecated: true }))

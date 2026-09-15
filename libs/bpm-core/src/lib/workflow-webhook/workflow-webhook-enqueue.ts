@@ -114,12 +114,17 @@ export async function buildWorkflowWebhookDeliveryDrafts({
               code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.ENDPOINT_MISSING,
               detail: `${target.endpoint.key}@${target.endpoint.version} is not registered`,
             }
-          : parameters.issue
+          : entry.endpoint.descriptor.disabled
             ? {
-                code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.PARAMETER_INVALID,
-                detail: parameters.issue,
+                code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.ENDPOINT_DISABLED,
+                detail: `${target.endpoint.key}@${target.endpoint.version} is disabled`,
               }
-            : null;
+            : parameters.issue
+              ? {
+                  code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.PARAMETER_INVALID,
+                  detail: parameters.issue,
+                }
+              : null;
 
       return {
         endpointKey: target.endpoint.key,

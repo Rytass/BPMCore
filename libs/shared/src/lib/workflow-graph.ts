@@ -1175,6 +1175,8 @@ export function isNotifyWebhookValueCompatibleWithParameter(
 /** The part of an endpoint descriptor the catalog lint reads. */
 export interface NotifyWebhookEndpointContract {
   readonly deprecated?: boolean;
+  /** Switched off by an administrator; nothing is delivered any more. */
+  readonly disabled?: boolean;
   readonly parameters: readonly {
     readonly key: string;
     readonly required: boolean;
@@ -1187,6 +1189,7 @@ export type NotifyWebhookCatalogIssueCode =
   | 'CONSTANT_REQUIRED_NULL'
   | 'CONTEXT_INCOMPATIBLE'
   | 'ENDPOINT_DEPRECATED'
+  | 'ENDPOINT_DISABLED'
   | 'ENDPOINT_MISSING'
   | 'FIELD_INCOMPATIBLE'
   | 'FIELD_MISSING'
@@ -1225,6 +1228,10 @@ export function readNotifyWebhookTargetCatalogIssues({
 }): readonly NotifyWebhookCatalogIssue[] {
   if (!endpoint) {
     return [createNotifyWebhookCatalogIssue('ENDPOINT_MISSING')];
+  }
+
+  if (endpoint.disabled) {
+    return [createNotifyWebhookCatalogIssue('ENDPOINT_DISABLED')];
   }
 
   if (endpoint.deprecated) {
@@ -1328,7 +1335,9 @@ export function readNotifyWebhookCatalogIssueMessage({
     case 'ENDPOINT_MISSING':
       return `${target}的端點已不存在，請移除或改選其他端點。`;
     case 'ENDPOINT_DEPRECATED':
-      return `${target}的端點已停用，請改選其他端點。`;
+      return `${target}的端點不建議再使用，請改選其他端點。`;
+    case 'ENDPOINT_DISABLED':
+      return `${target}的端點已被管理者停用，請改選其他端點。`;
     case 'PARAMETER_REQUIRED':
       return `${target}的必填${parameter}尚未設定。`;
     case 'PARAMETER_UNKNOWN':

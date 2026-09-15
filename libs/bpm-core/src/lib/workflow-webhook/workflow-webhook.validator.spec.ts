@@ -116,6 +116,43 @@ describe('lintWorkflowWebhookTargets', () => {
     ).toEqual([]);
   });
 
+  it('refuses a disabled database endpoint with its own code', async () => {
+    const disabled = entry();
+
+    expect(
+      await lint([AMOUNT_BINDING], {
+        resolved: {
+          ...disabled,
+          endpoint: {
+            ...disabled.endpoint,
+            descriptor: {
+              ...disabled.endpoint.descriptor,
+              deprecated: true,
+              disabled: true,
+            },
+          },
+          source: 'DATABASE',
+        },
+      }),
+    ).toEqual([
+      'workflow.nodes.notify_erp.action.webhooks[0].endpoint erp.po@1 is disabled (WORKFLOW_WEBHOOK_ENDPOINT_DISABLED)',
+    ]);
+  });
+
+  it('refuses an endpoint whose URL the allowlist no longer covers, when asked to check', async () => {
+    const messages = await lintWorkflowWebhookTargets({
+      definition: definition([AMOUNT_BINDING]),
+      formSchema: FORM_SCHEMA,
+      hasEndpointSources: true,
+      isEndpointUrlAllowed: async () => false,
+      resolveEndpoint: async () => entry(),
+    });
+
+    expect(messages).toEqual([
+      'workflow.nodes.notify_erp.action.webhooks[0].endpoint erp.po@1 calls a URL outside workflowWebhookAllowedUrlPatterns (WORKFLOW_WEBHOOK_URL_NOT_ALLOWED)',
+    ]);
+  });
+
   it('says nothing about a workflow with no webhooks', async () => {
     expect(
       await lintWorkflowWebhookTargets({

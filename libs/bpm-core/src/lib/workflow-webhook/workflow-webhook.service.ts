@@ -1,6 +1,9 @@
 import { Inject, Injectable, OnModuleInit, Optional } from '@nestjs/common';
+import { EntityManager } from 'typeorm';
+import { isWorkflowWebhookUrlAllowed } from './workflow-webhook-allowlist';
 import { NotifyWebhookParameterType } from '@rytass/bpm-core-shared/workflow';
 import { NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX } from '@rytass/bpm-core-shared/workflow-graph';
+import { DatabaseWorkflowWebhookEndpointSource } from './workflow-webhook-database-source';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,
@@ -11,6 +14,7 @@ import {
   BPMWorkflowWebhookEndpoint,
   BPMWorkflowWebhookEndpointEntry,
   BPMWorkflowWebhookEndpointSource,
+  BPMWorkflowWebhookEvent,
   BPMWorkflowWebhookRegistry,
   readWorkflowWebhookEndpointKey,
 } from './workflow-webhook.types';
@@ -53,12 +57,34 @@ export class WorkflowWebhookService implements OnModuleInit {
     @Optional()
     @Inject(BPM_WORKFLOW_WEBHOOK_OPTIONS)
     private readonly options: BPMResolvedWorkflowWebhookOptions = DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS,
+    @Optional()
+    private readonly databaseSource?: DatabaseWorkflowWebhookEndpointSource,
   ) {
-    this.sources = this.options.targetSources.flatMap((kind) =>
-      kind === 'REGISTRY' && this.registry
-        ? [new RegistryWorkflowWebhookEndpointSource(this.registry)]
-        : [],
+    this.sources = this.options.targetSources.flatMap(
+      (kind): readonly BPMWorkflowWebhookEndpointSource[] => {
+        if (kind === 'REGISTRY') {
+          return this.registry
+            ? [new RegistryWorkflowWebhookEndpointSource(this.registry)]
+            : [];
+        }
+
+        return this.databaseSource ? [this.databaseSource] : [];
+      },
     );
+  }
+
+  /**
+   * Whether administrators can manage endpoints in the database: requested
+   * in `workflowWebhookTargetSources` and guarded by an allowlist and an
+   * encryption key (otherwise the options resolution dropped it).
+   */
+  hasDatabaseSource(): boolean {
+    return this.sources.some((source) => source.kind === 'DATABASE');
+  }
+
+  /** Registered endpoints only; used to keep database keys from colliding. */
+  listRegistryEndpoints(): readonly BPMWorkflowWebhookEndpoint[] {
+    return this.registry?.list() ?? [];
   }
 
   /**
@@ -115,12 +141,18 @@ export class WorkflowWebhookService implements OnModuleInit {
       );
   }
 
+  /**
+   * `manager` lets a caller already inside a transaction (the engine's
+   * enqueue) look endpoints up on its own connection, instead of waiting on
+   * a second one from a pool its peers may have exhausted.
+   */
   async getEndpoint(
     key: string,
     version: number,
+    manager?: EntityManager,
   ): Promise<BPMWorkflowWebhookEndpointEntry | null> {
     for (const source of this.sources) {
-      const endpoint = await source.get(key, version);
+      const endpoint = await source.get(key, version, manager);
 
       if (endpoint) {
         return { endpoint, source: source.kind };
@@ -133,7 +165,52 @@ export class WorkflowWebhookService implements OnModuleInit {
   readOptions(): BPMResolvedWorkflowWebhookOptions {
     return this.options;
   }
+
+  /**
+   * The publish-time allowlist check (ADR 18 §3.13 rule 3). Database
+   * endpoints only: calling host code while publishing would be a surprise,
+   * and registry URLs are checked before each delivery when enforcement is
+   * on. A URL that cannot be read here is left to the delivery path.
+   */
+  async isEndpointUrlAllowedAtPublish(
+    entry: BPMWorkflowWebhookEndpointEntry,
+  ): Promise<boolean> {
+    if (entry.source !== 'DATABASE') {
+      return true;
+    }
+
+    const url = await Promise.resolve()
+      .then(() => entry.endpoint.buildRequest(PUBLISH_CHECK_EVENT))
+      .then(
+        (request): string | null =>
+          typeof request?.url === 'string' ? request.url : null,
+        (): null => null,
+      );
+
+    return (
+      url === null ||
+      isWorkflowWebhookUrlAllowed(url, this.options.allowedUrlPatterns)
+    );
+  }
 }
+
+/** Only used to read a database endpoint's URL; never sent anywhere. */
+const PUBLISH_CHECK_EVENT: BPMWorkflowWebhookEvent = {
+  attempt: 0,
+  deliveryId: 'publish-check',
+  endpoint: { key: 'publish-check', version: 1 },
+  eventType: 'workflow.notify',
+  initiator: { memberId: 'publish-check' },
+  instance: {
+    id: 'publish-check',
+    templateId: 'publish-check',
+    templateVersionId: 'publish-check',
+    title: 'publish-check',
+  },
+  node: { id: 'publish-check', label: 'publish-check' },
+  occurredAt: new Date(0).toISOString(),
+  parameters: {},
+};
 
 const PARAMETER_TYPES: readonly NotifyWebhookParameterType[] = [
   'boolean',

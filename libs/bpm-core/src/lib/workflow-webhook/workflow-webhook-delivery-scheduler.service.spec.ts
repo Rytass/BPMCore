@@ -5,10 +5,12 @@ import { WorkflowWebhookService } from './workflow-webhook.service';
 
 function scheduler({
   endpoints,
+  hasDatabase = false,
   hasSources = true,
   schedulerEnabled,
 }: {
   readonly endpoints: number;
+  readonly hasDatabase?: boolean;
   readonly hasSources?: boolean;
   readonly schedulerEnabled?: boolean;
 }): {
@@ -25,6 +27,7 @@ function scheduler({
     service: new WorkflowWebhookDeliverySchedulerService(
       { deliverDue } as unknown as WorkflowWebhookDeliveryService,
       {
+        hasDatabaseSource: () => hasDatabase,
         hasEndpointSources: () => hasSources,
         listEndpoints: async () => Array.from({ length: endpoints }),
         readOptions: () => options,
@@ -39,6 +42,20 @@ describe('WorkflowWebhookDeliverySchedulerService', () => {
     expect(await scheduler({ endpoints: 0 }).service.isEnabled()).toBe(false);
     expect(
       await scheduler({ endpoints: 1, hasSources: false }).service.isEnabled(),
+    ).toBe(false);
+  });
+
+  it('stays on with a database source even when nothing is registered yet', async () => {
+    // An endpoint added in the back office after boot still needs retries.
+    expect(
+      await scheduler({ endpoints: 0, hasDatabase: true }).service.isEnabled(),
+    ).toBe(true);
+    expect(
+      await scheduler({
+        endpoints: 0,
+        hasDatabase: true,
+        schedulerEnabled: false,
+      }).service.isEnabled(),
     ).toBe(false);
   });
 
@@ -94,6 +111,7 @@ describe('WorkflowWebhookDeliverySchedulerService', () => {
     const service = new WorkflowWebhookDeliverySchedulerService(
       { deliverDue: jest.fn() } as unknown as WorkflowWebhookDeliveryService,
       {
+        hasDatabaseSource: () => false,
         hasEndpointSources: () => true,
         listEndpoints: async () => {
           throw new Error('db down');

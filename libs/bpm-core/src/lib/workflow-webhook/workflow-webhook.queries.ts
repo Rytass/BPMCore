@@ -74,6 +74,10 @@ export class WorkflowWebhookEndpointObject {
   @Field(() => String, { nullable: true })
   description!: string | null;
 
+  /** Switched off by an administrator; also reported as `deprecated`. */
+  @Field()
+  disabled!: boolean;
+
   @Field()
   key!: string;
 
@@ -121,6 +125,7 @@ function toEndpointObject(
   return Object.assign(new WorkflowWebhookEndpointObject(), {
     deprecated: Boolean(descriptor.deprecated),
     description: descriptor.description ?? null,
+    disabled: Boolean(descriptor.disabled),
     key: descriptor.key,
     label: descriptor.label,
     parameters: descriptor.parameters.map((parameter) =>

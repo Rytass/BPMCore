@@ -81,6 +81,15 @@ type DeliveryOutcomeColumns = Pick<
 > &
   Partial<Pick<WorkflowWebhookDeliveryEntity, 'sentAt'>>;
 
+/** What an administrator's test send came back with. */
+export interface WorkflowWebhookTestOutcome {
+  readonly errorCode: string | null;
+  /** Error kind, network code or a truncated response body; never the URL. */
+  readonly errorDetail: string | null;
+  readonly ok: boolean;
+  readonly status: number | null;
+}
+
 type AttemptOutcome =
   | { readonly kind: 'SENT'; readonly status: number }
   | {
@@ -147,7 +156,7 @@ export class WorkflowWebhookDeliveryService {
     const drafts = await buildWorkflowWebhookDeliveryDrafts({
       context,
       resolveEndpoint: (key, version) =>
-        this.webhookService.getEndpoint(key, version),
+        this.webhookService.getEndpoint(key, version, manager),
       targets,
     });
 
@@ -169,7 +178,10 @@ export class WorkflowWebhookDeliveryService {
       const activities = await Promise.all(
         failed.map(async (row) =>
           activityRepository.create(
-            this.createTerminalActivity(row, await this.readEndpointLabel(row)),
+            this.createTerminalActivity(
+              row,
+              await this.readEndpointLabel(row, manager),
+            ),
           ),
         ),
       );
@@ -478,20 +490,57 @@ export class WorkflowWebhookDeliveryService {
       };
     }
 
-    return this.send(row, lookup.entry, attempt);
-  }
+    // Checked per attempt: disabling an endpoint stops what is already queued.
+    if (lookup.entry.endpoint.descriptor.disabled) {
+      return {
+        code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.ENDPOINT_DISABLED,
+        detail: `${row.endpointKey}@${row.endpointVersion} is disabled`,
+        kind: 'FAIL',
+        status: null,
+      };
+    }
 
-  private async send(
-    row: WorkflowWebhookDeliveryEntity,
-    entry: BPMWorkflowWebhookEndpointEntry,
-    attempt: number,
-  ): Promise<AttemptOutcome> {
-    const event: BPMWorkflowWebhookEvent = {
+    return this.sendEvent(lookup.entry, {
       ...row.event,
       attempt,
       deliveryId: row.id,
       eventType: 'workflow.notify',
-    };
+    });
+  }
+
+  /**
+   * Sends one event to an endpoint exactly as a delivery attempt would —
+   * same refusals, allowlist, timeout, redirect handling and signature —
+   * without a delivery row, for an administrator's test send (ADR 18 §3.13).
+   * The endpoint may be disabled: testing before enabling is the point.
+   */
+  async sendTestEvent(
+    entry: BPMWorkflowWebhookEndpointEntry,
+    event: BPMWorkflowWebhookEvent,
+  ): Promise<WorkflowWebhookTestOutcome> {
+    const outcome = await this.sendEvent(entry, event).catch(
+      (error: unknown): AttemptOutcome => ({
+        code: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.INTERNAL_ERROR,
+        detail: readErrorName(error),
+        kind: 'FAIL',
+        status: null,
+      }),
+    );
+
+    return outcome.kind === 'SENT'
+      ? { errorCode: null, errorDetail: null, ok: true, status: outcome.status }
+      : {
+          errorCode: outcome.code,
+          errorDetail: outcome.detail ? truncate(outcome.detail) : null,
+          ok: false,
+          status: outcome.status,
+        };
+  }
+
+  private async sendEvent(
+    entry: BPMWorkflowWebhookEndpointEntry,
+    event: BPMWorkflowWebhookEvent,
+  ): Promise<AttemptOutcome> {
     // Wrapped so a host that throws synchronously, or returns a non-promise,
     // is judged like any other failure instead of escaping the attempt.
     const built = await withDispatchTimeout(
@@ -541,7 +590,12 @@ export class WorkflowWebhookDeliveryService {
       body,
       // Signed at the moment of sending, not when the row was claimed, so a
       // receiver's replay window measures the request it actually got.
-      headers: buildHeaders(request, body, row.id, this.readCurrentTime()),
+      headers: buildHeaders(
+        request,
+        body,
+        event.deliveryId,
+        this.readCurrentTime(),
+      ),
       method: request.method ?? 'POST',
       timeoutMs,
       url: request.url,
@@ -778,12 +832,17 @@ export class WorkflowWebhookDeliveryService {
    */
   async readEndpointLabel(
     row: Pick<WorkflowWebhookDeliveryEntity, 'endpointKey' | 'endpointVersion'>,
+    manager?: EntityManager,
   ): Promise<string | null> {
     // Every step is guarded: a host entry missing its descriptor must cost
     // the label, not the activity log it is written into.
     return Promise.resolve()
       .then(() =>
-        this.webhookService.getEndpoint(row.endpointKey, row.endpointVersion),
+        this.webhookService.getEndpoint(
+          row.endpointKey,
+          row.endpointVersion,
+          manager,
+        ),
       )
       .then((entry): string | null => {
         const label = (
