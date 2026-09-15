@@ -10,6 +10,7 @@ import { buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
 import { BPM_BUSINESS_CALENDAR } from '@rytass/bpm-core-nestjs-module';
 import { BPM_FORM_DATA_SOURCE_REGISTRY } from '@rytass/bpm-core-nestjs-module';
+import { BPM_WORKFLOW_WEBHOOK_REGISTRY } from '@rytass/bpm-core-nestjs-module';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -20,15 +21,16 @@ import { ApiMemberResolver } from './api-member.resolver';
 import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 import { ApiFormDataSourceRegistry } from './api-form-data-source';
-import { ApiDemoWebhookSinkController } from './api-demo-webhook-sink.controller';
+import { ApiDemoWebhookModule } from './api-demo-webhook.module';
 import {
-  ApiDemoWebhookSinkStore,
+  ApiDemoWebhookSigningSecret,
   createApiDemoWebhookRegistry,
 } from './api-demo-webhooks';
 
 @Module({
   imports: [
     ApiAuthModule,
+    ApiDemoWebhookModule,
     VaultModule.forRoot({
       path: process.env.VAULT_PATH ?? 'bpm_core/develop',
     }),
@@ -74,7 +76,7 @@ import {
       }),
     }),
     BPMRootModule.forRoot({
-      imports: [ApiAuthModule],
+      imports: [ApiAuthModule, ApiDemoWebhookModule],
       attachmentPublicBaseUrl:
         process.env.BPM_API_PUBLIC_URL ??
         process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
@@ -93,12 +95,18 @@ import {
         useExisting: ApiMemberResolver,
       },
       // Demo endpoints for the NOTIFY webhook feature; empty in production.
-      workflowWebhookRegistry: createApiDemoWebhookRegistry(),
+      // A provider rather than a value, so the endpoints can read their
+      // signing secret from Vault.
+      workflowWebhookRegistryProvider: {
+        inject: [ApiDemoWebhookSigningSecret],
+        provide: BPM_WORKFLOW_WEBHOOK_REGISTRY,
+        useFactory: createApiDemoWebhookRegistry,
+      },
     }),
   ],
-  controllers: [ApiDemoWebhookSinkController, AppController],
+  controllers: [AppController],
   // `businessCalendarProvider` uses `useClass`, so BPM instantiates the
   // calendar inside its own module context; it needs no provider entry here.
-  providers: [ApiDemoWebhookSinkStore, AppService, ApiSimulationSeedService],
+  providers: [AppService, ApiSimulationSeedService],
 })
 export class AppModule {}
