@@ -887,6 +887,7 @@ describe('WorkflowWebhookDeliveryService', () => {
             attempts: 6,
             deliveryId: 'delivery-1',
             endpointKey: 'erp.po',
+            endpointLabel: 'ERP',
             endpointVersion: 1,
             errorCode: 'WEBHOOK_HTTP_503',
             status: 503,

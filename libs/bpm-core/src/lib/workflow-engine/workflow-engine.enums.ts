@@ -67,6 +67,8 @@ export enum ActivityLogEventTypeEnum {
   TASK_DECIDED = 'TASK_DECIDED',
   TOKEN_ADVANCED = 'TOKEN_ADVANCED',
   TOKEN_CREATED = 'TOKEN_CREATED',
+  /** An administrator re-queued a FAILED NOTIFY webhook delivery (ADR 18 §3.10). */
+  WEBHOOK_DELIVERY_RETRIED = 'WEBHOOK_DELIVERY_RETRIED',
 }
 
 registerEnumType(ApprovalInstanceStateEnum, {

@@ -2,6 +2,8 @@ export * from './workflow-webhook-allowlist';
 export * from './workflow-webhook-delivery-scheduler.service';
 export * from './workflow-webhook-delivery.entity';
 export * from './workflow-webhook-delivery.enums';
+export * from './workflow-webhook-delivery.object';
+export * from './workflow-webhook-delivery.resolver';
 export * from './workflow-webhook-delivery.service';
 export * from './workflow-webhook-delivery.subscriber';
 export * from './workflow-webhook-enqueue';

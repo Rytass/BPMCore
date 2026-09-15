@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { WorkflowWebhookDeliverySchedulerService } from './workflow-webhook-delivery-scheduler.service';
 import { WorkflowWebhookDeliveryEntity } from './workflow-webhook-delivery.entity';
+import { WorkflowWebhookDeliveryResolver } from './workflow-webhook-delivery.resolver';
 import { WorkflowWebhookDeliveryService } from './workflow-webhook-delivery.service';
 import { WorkflowWebhookDeliverySubscriber } from './workflow-webhook-delivery.subscriber';
 import { defaultWorkflowWebhookRegistryProvider } from './workflow-webhook.provider';
@@ -45,6 +46,7 @@ export class WorkflowWebhookModule {
       module: WorkflowWebhookModule,
       providers: [
         registryProvider,
+        WorkflowWebhookDeliveryResolver,
         WorkflowWebhookDeliverySchedulerService,
         WorkflowWebhookDeliveryService,
         WorkflowWebhookDeliverySubscriber,

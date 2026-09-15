@@ -1,13 +1,15 @@
 import { createHmac } from 'node:crypto';
 import {
+  BadRequestException,
   Inject,
   Injectable,
   InjectionToken,
   Logger,
+  NotFoundException,
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, IsNull, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, MoreThan, Repository } from 'typeorm';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ActivityLogEventTypeEnum } from '../workflow-engine/workflow-engine.enums';
@@ -164,14 +166,119 @@ export class WorkflowWebhookDeliveryService {
     if (failed.length) {
       const activityRepository = manager.getRepository(ActivityLogEntity);
 
-      await activityRepository.save(
-        failed.map((row) =>
-          activityRepository.create(this.createTerminalActivity(row)),
+      const activities = await Promise.all(
+        failed.map(async (row) =>
+          activityRepository.create(
+            this.createTerminalActivity(row, await this.readEndpointLabel(row)),
+          ),
         ),
       );
+
+      await activityRepository.save(activities);
     }
 
     return saved.map((row) => row.id);
+  }
+
+  /** Every delivery queued for an instance, oldest first (ADR 18 §3.10). */
+  async listInstanceDeliveries(
+    instanceId: string,
+  ): Promise<readonly WorkflowWebhookDeliveryEntity[]> {
+    return this.deliveryRepository.find({
+      order: { createdAt: 'ASC' },
+      where: { instanceId },
+    });
+  }
+
+  /**
+   * Puts a `FAILED` delivery back in the queue with a fresh attempt budget
+   * and starts it at once. The delivery id does not change, so a receiver
+   * that already processed an earlier attempt still recognizes it.
+   *
+   * Only `FAILED` rows that were actually attempted qualify. A row in flight
+   * or already sent would be sent again; a row that failed while being queued
+   * (endpoint missing, lookup failed, parameter invalid) froze an event that
+   * never passed the parameter checks, and sending it would break the
+   * endpoint's contract. The state change and the audit entry commit together.
+   */
+  async retryFailedDelivery(
+    id: string,
+    actorMemberId: string | null,
+  ): Promise<WorkflowWebhookDeliveryEntity> {
+    const existing = await this.deliveryRepository.findOne({ where: { id } });
+
+    if (!existing) {
+      throw new NotFoundException(`Webhook delivery ${id} was not found`);
+    }
+
+    // Read before the transaction: a host lookup has no business holding the
+    // row lock or a second pooled connection.
+    const endpointLabel = await this.readEndpointLabel(existing);
+    const retried = await this.deliveryRepository.manager.transaction(
+      async (manager): Promise<WorkflowWebhookDeliveryEntity> => {
+        const repository = manager.getRepository(WorkflowWebhookDeliveryEntity);
+        const result = await repository.update(
+          {
+            attemptCount: MoreThan(0),
+            id,
+            status: WorkflowWebhookDeliveryStatusEnum.FAILED,
+          },
+          {
+            attemptCount: 0,
+            nextRetryAt: null,
+            status: WorkflowWebhookDeliveryStatusEnum.PENDING,
+          },
+        );
+        const row = await repository.findOne({ where: { id } });
+
+        if (!row) {
+          throw new NotFoundException(`Webhook delivery ${id} was not found`);
+        }
+
+        if (!result.affected) {
+          throw new BadRequestException(
+            row.status === WorkflowWebhookDeliveryStatusEnum.FAILED
+              ? `Webhook delivery ${id} failed before it was ever sent (${row.lastErrorCode ?? 'unknown'}) and cannot be retried`
+              : `Webhook delivery ${id} is ${row.status}; only FAILED deliveries can be retried`,
+          );
+        }
+
+        const activityRepository = manager.getRepository(ActivityLogEntity);
+
+        await activityRepository.save(
+          activityRepository.create({
+            actorMemberId,
+            eventType: ActivityLogEventTypeEnum.WEBHOOK_DELIVERY_RETRIED,
+            instanceId: row.instanceId,
+            nodeId: row.nodeId,
+            payload: {
+              action: 'NOTIFY_WEBHOOK',
+              deliveryId: row.id,
+              endpointKey: row.endpointKey,
+              endpointLabel,
+              endpointVersion: row.endpointVersion,
+              previousErrorCode: row.lastErrorCode,
+              targetId: row.targetId,
+            },
+            taskId: null,
+          }),
+        );
+
+        return row;
+      },
+    );
+
+    // After the commit, like the subscriber's kick: the scheduler would get
+    // there too, but an administrator who pressed retry expects an answer now.
+    setImmediate((): void => {
+      this.deliverByIds([retried.id]).catch((error: unknown): void => {
+        this.logger.warn(
+          `Retried webhook delivery ${retried.id} could not start immediately (${readErrorName(error)})`,
+        );
+      });
+    });
+
+    return retried;
   }
 
   /**
@@ -649,10 +756,12 @@ export class WorkflowWebhookDeliveryService {
     if (terminal) {
       // The outcome is already recorded; a failed timeline write must not be
       // reported as if the delivery itself were unrecorded.
+      const endpointLabel = await this.readEndpointLabel(row);
+
       await this.activityLogRepository
         .save(
           this.activityLogRepository.create(
-            this.createTerminalActivity({ ...row, ...changes }),
+            this.createTerminalActivity({ ...row, ...changes }, endpointLabel),
           ),
         )
         .catch((error: unknown): void => {
@@ -661,6 +770,33 @@ export class WorkflowWebhookDeliveryService {
           );
         });
     }
+  }
+
+  /**
+   * The endpoint's display name for the timeline, which every reader of the
+   * instance sees; `null` when the endpoint is gone and the key must stand in.
+   */
+  async readEndpointLabel(
+    row: Pick<WorkflowWebhookDeliveryEntity, 'endpointKey' | 'endpointVersion'>,
+  ): Promise<string | null> {
+    // Every step is guarded: a host entry missing its descriptor must cost
+    // the label, not the activity log it is written into.
+    return Promise.resolve()
+      .then(() =>
+        this.webhookService.getEndpoint(row.endpointKey, row.endpointVersion),
+      )
+      .then((entry): string | null => {
+        const label = (
+          entry as {
+            readonly endpoint?: {
+              readonly descriptor?: { readonly label?: unknown };
+            };
+          } | null
+        )?.endpoint?.descriptor?.label;
+
+        return typeof label === 'string' ? label : null;
+      })
+      .catch((): null => null);
   }
 
   /** Takes the claim over from `from` to `to`; `false` if it moved on. */
@@ -715,6 +851,7 @@ export class WorkflowWebhookDeliveryService {
       | 'status'
       | 'targetId'
     >,
+    endpointLabel: string | null,
   ): Partial<ActivityLogEntity> {
     return {
       actorMemberId: null,
@@ -729,6 +866,7 @@ export class WorkflowWebhookDeliveryService {
         attempts: row.attemptCount,
         deliveryId: row.id,
         endpointKey: row.endpointKey,
+        endpointLabel,
         endpointVersion: row.endpointVersion,
         errorCode: row.lastErrorCode,
         status: row.lastResponseStatus,

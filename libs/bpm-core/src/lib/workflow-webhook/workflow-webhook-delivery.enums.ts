@@ -1,9 +1,15 @@
+import { registerEnumType } from '@nestjs/graphql';
+
 export enum WorkflowWebhookDeliveryStatusEnum {
   DELIVERY_IN_PROGRESS = 'DELIVERY_IN_PROGRESS',
   FAILED = 'FAILED',
   PENDING = 'PENDING',
   SENT = 'SENT',
 }
+
+registerEnumType(WorkflowWebhookDeliveryStatusEnum, {
+  name: 'BPMWorkflowWebhookDeliveryStatus',
+});
 
 /**
  * Why a delivery attempt did not end in `SENT` (ADR 18 §3.6). Stored on the
