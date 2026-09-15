@@ -2722,6 +2722,53 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('ends a dry run branch at a NOTIFY node instead of demanding an outgoing edge', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const workflow: WorkflowDefinition = {
+      edges: [
+        { data: {}, id: 'edge_start_notify', source: 'start', target: 'notify', type: 'smoothstep' },
+        { data: {}, id: 'edge_start_end', source: 'start', target: 'end', type: 'smoothstep' },
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        { data: { label: '開始' }, id: 'start', position: { x: 0, y: 0 }, type: 'startEvent' },
+        {
+          data: {
+            action: {
+              channels: ['IN_APP'],
+              recipients: { memberIds: [], type: 'DIRECT' },
+              type: 'NOTIFY',
+              webhooks: [{ bindings: [], endpoint: { key: 'erp.po', version: 1 }, id: 'wh' }],
+            },
+            label: '通知 ERP',
+          },
+          id: 'notify',
+          position: { x: 200, y: 100 },
+          type: 'serviceTask',
+        },
+        { data: { endState: 'APPROVED', label: '完成' }, id: 'end', position: { x: 400, y: 0 }, type: 'endEvent' },
+      ],
+    } as WorkflowDefinition;
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      workflowDefinitionJson: JSON.stringify(workflow),
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.steps.map((step) => [step.nodeId, step.message])).toEqual([
+      ['start', '節點條件通過。'],
+      ['notify', '將發送知會，此分支不會繼續往下。'],
+      ['end', '流程結束：APPROVED'],
+    ]);
+  });
+
   it('falls back to the top-level manager id when custom fields carry none', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
