@@ -6,6 +6,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ReturnBehavior,
+  ServiceAction,
   SlaConfig,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
@@ -719,6 +720,165 @@ describe('workflow definition validator', () => {
       warnings: [
         'workflow.nodes.task_manager.sla mixes BUSINESS_DAY with an hour/minute component; only the day part skips non-business days',
       ],
+    });
+  });
+
+  describe('NOTIFY webhooks', (): void => {
+    const ERP_WEBHOOK = {
+      bindings: [
+        {
+          from: { fieldKey: 'amount', kind: 'FIELD' as const },
+          parameter: 'amount',
+        },
+      ],
+      endpoint: { key: 'erp.purchase-approved', version: 1 },
+      id: 'webhook_erp',
+    };
+
+    function workflowWithNotify(action: unknown): WorkflowDefinition {
+      return {
+        ...EMPTY_WORKFLOW_DEFINITION,
+        edges: [
+          {
+            data: {},
+            id: 'edge_start_end',
+            source: 'start',
+            target: 'end',
+            type: 'smoothstep',
+          },
+          {
+            data: {},
+            id: 'edge_start_notify',
+            source: 'start',
+            target: 'notify_erp',
+            type: 'smoothstep',
+          },
+        ],
+        nodes: [
+          ...EMPTY_WORKFLOW_DEFINITION.nodes,
+          {
+            data: { action: action as ServiceAction, label: '通知 ERP' },
+            id: 'notify_erp',
+            position: { x: 300, y: 300 },
+            type: 'serviceTask',
+          },
+        ],
+      };
+    }
+
+    it('accepts a node that notifies only external systems', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          workflowWithNotify({
+            channels: ['IN_APP'],
+            recipients: { memberIds: [], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: [ERP_WEBHOOK],
+          }),
+        ),
+      ).toEqual({ errors: [], valid: true, warnings: [] });
+    });
+
+    it('still requires recipients when the webhook list is empty', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          workflowWithNotify({
+            channels: ['IN_APP'],
+            recipients: { memberIds: [], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: [],
+          }),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.notify_erp.action.recipients.memberIds is required',
+      ]);
+    });
+
+    it('keeps linting a misconfigured runtime resolver next to webhooks', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          workflowWithNotify({
+            channels: ['IN_APP'],
+            recipients: { positionId: '', type: 'POSITION' },
+            type: 'NOTIFY',
+            webhooks: [ERP_WEBHOOK],
+          }),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.notify_erp.action.recipients.positionId is required',
+      ]);
+    });
+
+    it('reports structural webhook problems with their JSON path', (): void => {
+      const result = lintWorkflowDefinition(
+        workflowWithNotify({
+          channels: ['IN_APP'],
+          recipients: { memberIds: ['member-001'], type: 'DIRECT' },
+          type: 'NOTIFY',
+          webhooks: [
+            ERP_WEBHOOK,
+            {
+              bindings: [
+                { from: { kind: 'CONTEXT', path: 'formData' }, parameter: 'a' },
+                { from: { kind: 'CONSTANT', value: 1 }, parameter: 'a' },
+              ],
+              endpoint: { key: ' ', version: 0 },
+              id: 'webhook_erp',
+            },
+          ],
+        }),
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual([
+        'workflow.nodes.notify_erp.action.webhooks[1].id must be unique within the node',
+        'workflow.nodes.notify_erp.action.webhooks[1].endpoint.key is required',
+        'workflow.nodes.notify_erp.action.webhooks[1].endpoint.version must be an integer between 1 and 2147483647',
+        'workflow.nodes.notify_erp.action.webhooks[1].bindings[0].from.path is not a supported context path',
+        'workflow.nodes.notify_erp.action.webhooks[1].bindings[1].parameter "a" is bound more than once',
+      ]);
+    });
+
+    it('rejects a URL or headers stored on a webhook target', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          workflowWithNotify({
+            channels: ['IN_APP'],
+            recipients: { memberIds: ['member-001'], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: [
+              {
+                ...ERP_WEBHOOK,
+                bindings: [
+                  {
+                    from: { fieldKey: 'amount', kind: 'FIELD', token: 'x' },
+                    parameter: 'amount',
+                  },
+                ],
+                endpoint: { key: 'erp', secret: 's3cr3t', version: 1 },
+                url: 'https://erp.example.com/hook',
+              },
+            ],
+          }),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.notify_erp.action.webhooks[0].url is not allowed',
+        'workflow.nodes.notify_erp.action.webhooks[0].endpoint.secret is not allowed',
+        'workflow.nodes.notify_erp.action.webhooks[0].bindings[0].from.token is not allowed',
+      ]);
+    });
+
+    it('rejects a webhook list that is not an array', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          workflowWithNotify({
+            channels: ['IN_APP'],
+            recipients: { memberIds: ['member-001'], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: { key: 'erp' },
+          }),
+        ).errors,
+      ).toEqual(['workflow.nodes.notify_erp.action.webhooks must be an array']);
     });
   });
 });
