@@ -27,6 +27,7 @@ import {
 } from '@mezzanine-ui/icons';
 import {
   BPMNotificationBellButton,
+  isBPMAdminMember,
   useBPMMember,
   useBPMLogout,
   useBPMRoutes,
@@ -100,7 +101,7 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
   const routes = useBPMRoutes();
   const member = useBPMMember();
   const logout = useBPMLogout();
-  const isAdmin = isAdminMember(member);
+  const isAdmin = isBPMAdminMember(member);
   const groups = createNavigationGroups(routes);
   const visibleGroups = groups
     .map((group) => ({
@@ -163,17 +164,5 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
       <Navigation exactActivatedMatch>{navigationChildren}</Navigation>
       <Layout.Main>{children}</Layout.Main>
     </Layout>
-  );
-}
-
-function isAdminMember(
-  member: ReturnType<typeof useBPMMember>,
-): boolean {
-  if (!member) return false;
-  return (
-    (member.roles ?? []).includes('BPM_ADMIN') ||
-    (member.permissions ?? []).some((p) =>
-      ['bpm:*', 'bpm:admin', 'bpm.admin', 'bpm:admin:*'].includes(p),
-    )
   );
 }

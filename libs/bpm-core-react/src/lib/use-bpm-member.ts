@@ -16,3 +16,32 @@ export function useBPMMember(): ApiMember | null {
   const { member } = useAuth();
   return member;
 }
+
+const BPM_ADMIN_PERMISSIONS: ReadonlySet<string> = new Set([
+  'bpm:*',
+  'bpm:admin',
+  'bpm.admin',
+  'bpm:admin:*',
+]);
+
+/**
+ * Whether the member passes the server's `@BPMAdminOnly()` check — the
+ * `BPM_ADMIN` role or one of the administrator permissions. Use it to decide
+ * whether to show administrator-only UI; the server still enforces access.
+ */
+export function isBPMAdminMember(
+  member: Pick<ApiMember, 'permissions' | 'roles'> | null,
+): boolean {
+  if (!member) {
+    return false;
+  }
+
+  // The member comes from the host's `/auth/me` unvalidated; a host that
+  // omits either list must not take the page that asks down with it.
+  return (
+    (member.roles ?? []).includes('BPM_ADMIN') ||
+    (member.permissions ?? []).some((permission) =>
+      BPM_ADMIN_PERMISSIONS.has(permission),
+    )
+  );
+}

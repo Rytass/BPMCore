@@ -1260,6 +1260,7 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
 | `useBPMMember()` | hook | Host-facing alias of `useAuth().member` — current `ApiMember \| null` |
+| `isBPMAdminMember(member)` | function | Mirrors the server's `@BPMAdminOnly()` rule (`BPM_ADMIN` role or `bpm:*` / `bpm:admin` / `bpm.admin` / `bpm:admin:*`) for showing administrator-only UI |
 | `useBPMLogout()` | hook | Host-facing alias of `useAuth().logout` — `() => Promise<void>`, runs `logoutApi()` + redirect to `loginPath` |
 | `RouterAdapter` | interface | Framework-agnostic router contract (pathname / push / replace / back / searchParams) |
 | `RouterAdapterProvider` | Component | Inject host's RouterAdapter |
@@ -1358,7 +1359,7 @@ Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
-| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory`), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection` and their `*Props` | `@xyflow/react`, `dagre` |
+| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory` / `showWebhookDeliveries`; the webhook section is only ever shown to administrators, and only when the instance queued deliveries), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection`, `InstanceWebhookDeliveriesSection` (status, attempts, last error and a confirmed retry for attempted `FAILED` rows) and their `*Props` | `@xyflow/react`, `dagre` |
 | `views/instances/new` | `InstanceNewView` | medium |
 | `views/templates/compose` | `TemplateComposeWizardView`, `TemplateComposeWizardViewProps` (opt-in `showAiAssistant` / `aiAssistantAvailable` surface the Step 1 embedded-designer AI assistant), `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
 | `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
