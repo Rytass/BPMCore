@@ -100,8 +100,11 @@ import {
   SlaDurationUnit,
   composeQuorumThreshold,
   composeSlaDuration,
+  hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
+  readApproverResolverIssue,
   readDesignTimeApproverCount,
+  readNotifyServiceTaskIssue,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import {
@@ -5011,12 +5014,13 @@ function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readApproverResolverIssue(node.data.approverResolver)),
   );
-  const incompleteNotifyNode = definition.nodes.find(
-    (node) =>
-      node.type === 'serviceTask' &&
-      node.data.action.type === 'NOTIFY' &&
-      readServiceTaskMemberIds(node.data.action).length === 0,
-  );
+  // Shared with the backend lint and the AI toolset so a webhook-only or a
+  // runtime-resolved (position, org unit, manager) NOTIFY node is judged the
+  // same everywhere (ADR 18 P0).
+  const notifyNodeIssue =
+    definition.nodes
+      .map((node) => readNotifyServiceTaskIssue(node))
+      .find((issue): issue is string => issue !== null) ?? null;
   const incompleteConditionEdge = definition.edges.find(
     (edge) =>
       isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
@@ -5030,8 +5034,8 @@ function readWorkflowDefinitionIssue(
     );
   }
 
-  if (incompleteNotifyNode) {
-    return '知會節點需要至少一位知會對象。';
+  if (notifyNodeIssue) {
+    return notifyNodeIssue;
   }
 
   if (incompleteConditionEdge) {
@@ -5039,58 +5043,6 @@ function readWorkflowDefinitionIssue(
   }
 
   return null;
-}
-
-function readApproverResolverIssue(resolver: ApproverResolver): string | null {
-  if (resolver.type === 'DIRECT' && resolver.memberIds.length === 0) {
-    return '簽核節點需要指定簽核會員。';
-  }
-
-  if (resolver.type === 'ORG_MANAGER' && resolver.levelsUp < 1) {
-    return '簽核節點需要指定有效的主管層級。';
-  }
-
-  if (resolver.type === 'ORG_UNIT_MANAGER' && !resolver.orgUnitId.trim()) {
-    return '簽核節點需要指定組織。';
-  }
-
-  if (resolver.type === 'ORG_UNIT_MEMBER' && !resolver.orgUnitId.trim()) {
-    return '簽核節點需要指定組織。';
-  }
-
-  if (
-    resolver.type === 'ORG_UNIT_POSITION' &&
-    (!resolver.orgUnitId.trim() || !resolver.positionId.trim())
-  ) {
-    return '簽核節點需要指定組織與職位。';
-  }
-
-  if (
-    (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') &&
-    resolver.fallback?.type === 'DIRECT' &&
-    !resolver.fallback.memberId.trim()
-  ) {
-    return '簽核節點需要指定改派固定人。';
-  }
-
-  if (resolver.type === 'POSITION' && !resolver.positionId.trim()) {
-    return '簽核節點需要指定職位。';
-  }
-
-  return null;
-}
-
-function hasConfiguredConditionEdges(definition: WorkflowDefinition): boolean {
-  return definition.edges.some(
-    (edge) =>
-      isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
-      Boolean(
-        edge.data.condition ||
-        edge.data.conditionFieldKey ||
-        edge.data.conditionOperator ||
-        edge.data.conditionValue,
-      ),
-  );
 }
 
 function readConditionFieldOptions(
