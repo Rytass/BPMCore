@@ -32,11 +32,43 @@
 
 ```bash
 pnpm add @rytass/bpm-core-nestjs-module @rytass/bpm-core-shared
-pnpm add @nestjs/common @nestjs/core @nestjs/graphql @nestjs/typeorm graphql typeorm reflect-metadata
-pnpm add @nestjs/apollo @apollo/server                # 若用 Apollo
+pnpm add @nestjs/common @nestjs/core @nestjs/platform-express @nestjs/graphql @nestjs/typeorm graphql typeorm reflect-metadata
+pnpm add @nestjs/apollo @apollo/server @as-integrations/express5   # 若用 Apollo
 pnpm add pg                                            # PostgreSQL 驅動
-pnpm add @rytass/secret-adapter-vault-nestjs           # 可選：若用 Vault 管 DB 秘密
+pnpm add -D @rytass/secret-adapter-vault-nestjs        # 型別需要，見下方說明
 ```
+
+三個容易漏掉的項目：
+
+- **`@nestjs/platform-express`**：`NestFactory.create()` 的預設 HTTP adapter 由它提供，
+  沒裝時 app 起不來。
+- **`@as-integrations/express5`**：`@apollo/server` 5 + Express 5 的整合層。缺它時
+  `/graphql` 會回 503，而不是一個講得清楚的錯誤。
+- **`@rytass/secret-adapter-vault-nestjs`**：`buildTypeOrmModuleOptions(vault)` 的簽章
+  用到它的 `VaultService` 型別，型別宣告檔無條件 import 它。**即使不用 Vault**，
+  沒裝它 `tsc` 會報找不到模組；裝成 `devDependencies` 即可，執行期不會載入。
+
+### 1a. 版本對照
+
+四個套件的 peer range 是刻意放寬的（`@nestjs/core: >=10.0.0`、`graphql: >=16.0.0` 等），
+讓不同版本的 host 都接得上。代價是 **pnpm 的 `autoInstallPeers` 會把每個 peer 解析到最新版**，
+於是裝出 Nest 12 或 typeorm 1.x，出現 `TS1479`、或 module 明明有 import 卻被說沒 import 的
+假錯誤。新專案請照下表釘住主版本（這是 BPMCore 自己驗證的組合）：
+
+| 套件                     | 驗證版本 |
+| ------------------------ | -------- |
+| `@nestjs/*`              | 11.x     |
+| `@nestjs/graphql` / `@nestjs/apollo` | 13.x |
+| `@apollo/server`         | 5.x      |
+| `graphql`                | 16.x     |
+| `typeorm`                | 0.3.x    |
+| `@nestjs/typeorm`        | 11.x     |
+| `reflect-metadata`       | 0.1.x / 0.2.x（只能有一份） |
+| `pg`                     | 8.x      |
+
+同一個套件出現兩份複本是最常見的難查問題（兩個 `ModuleRef`、兩組
+`TypeOrmModuleOptions`）。pnpm 專案可用 `overrides` 強制單一複本，作法見
+`CLAUDE.md` 的 Dependency Overrides 一節。
 
 ### 2. 最小 `AppModule`
 
@@ -94,8 +126,8 @@ function buildHostBPMAuthContext(
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot(
-      buildBPMDataSourceOptions({
+    TypeOrmModule.forRoot({
+      ...buildBPMDataSourceOptions({
         host: process.env.DB_HOST!,
         port: Number(process.env.DB_PORT ?? 5432),
         username: process.env.DB_USER!,
@@ -103,7 +135,12 @@ function buildHostBPMAuthContext(
         database: process.env.DB_NAME!,
         schema: process.env.DB_SCHEMA ?? 'public',
       }),
-    ),
+      // 必要：`buildBPMDataSourceOptions()` 回傳的是給 TypeORM CLI 用的
+      // `DataSourceOptions`，其中 `entities` 是空陣列（CLI 只跑 migration）。
+      // 少了這一行，BPM 的 entity 不會被註冊，開機時會炸在
+      // `No metadata for "FormDefinitionEntity" was found`。
+      autoLoadEntities: true,
+    }),
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       autoSchemaFile: true,
@@ -320,10 +357,19 @@ BPM 固定加上 `x-bpm-delivery-id`、`x-bpm-event`；有 `signingSecret` 時�
 ```typescript
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-function isBPMWebhookSignatureValid(rawBody: string, headers: Headers, secret: string): boolean {
-  const timestamp = headers.get('x-bpm-timestamp');
-  const signature = headers.get('x-bpm-signature-sha256');
+interface BPMWebhookSignatureInput {
+  readonly rawBody: string;
+  readonly secret: string;
+  readonly signature: string | undefined;
+  readonly timestamp: string | undefined;
+}
 
+function isBPMWebhookSignatureValid({
+  rawBody,
+  secret,
+  signature,
+  timestamp,
+}: BPMWebhookSignatureInput): boolean {
   if (!timestamp || !signature) return false;
   // 拒絕太舊的請求以防重放，例如 5 分鐘
   if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
@@ -335,7 +381,31 @@ function isBPMWebhookSignatureValid(rawBody: string, headers: Headers, secret: s
 }
 ```
 
+取得兩個輸入的方式依 framework 而異——刻意不把 Web 的 `Headers` 寫死在函式裡，
+NestJS／Express 的 `req.headers` 是普通物件（Node 已把 header 名稱轉小寫）：
+
+```typescript
+// NestJS / Express：原始 body 必須在 bootstrap 開啟，否則拿到的是 parse 過的物件
+const app = await NestFactory.create(AppModule, { rawBody: true });
+
+@Post('hooks/bpm')
+receive(@Req() req: RawBodyRequest<Request>): void {
+  isBPMWebhookSignatureValid({
+    rawBody: req.rawBody?.toString('utf8') ?? '',
+    secret: process.env.BPM_WEBHOOK_SECRET!,
+    signature: req.headers['x-bpm-signature-sha256'] as string | undefined,
+    timestamp: req.headers['x-bpm-timestamp'] as string | undefined,
+  });
+}
+
+// Next.js route handler：這裡才有 Web 的 Headers
+const rawBody = await request.text();
+const signature = request.headers.get('x-bpm-signature-sha256') ?? undefined;
+```
+
 - **用原始 body 驗簽**，不要先 parse 再 stringify（自訂 `body` 時兩者不一定相同）。
+  這也是 `rawBody: true` 的理由：Nest 預設只留下 parse 後的 `req.body`，重新
+  `JSON.stringify()` 產生的字串與 BPM 簽章的位元組不保證相同。
 - **以 `deliveryId` 冪等**：重試、管理者重送都沿用同一個 id，接收端必須把重複的 id 當成已處理。
 - 2xx 表示收到。`408`、`429`、`5xx`、逾時與網路錯誤會以指數退避重試（預設 30 秒起、±20%
   抖動、單次上限 1 小時、總共最多嘗試 6 次，即首次加 5 次重試）；其他 `4xx`、`3xx`（BPM 不
@@ -405,7 +475,8 @@ import { AllExceptionsFilter } from '@rytass/bpm-core-nestjs-module';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // `rawBody` 只在這個 host 同時也是 BPM webhook 接收端時才需要（見 2c）。
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.enableCors({ credentials: true, origin: true });
   app.useGlobalFilters(new AllExceptionsFilter());
@@ -429,6 +500,41 @@ BPMCore 預期所有 controller 在 host 根路徑下提供 endpoint：
 - `GET /attachments/:id/download` — BPM 簽名後的下載/預覽 URL
 
 若要把這些放到 `/api/...` prefix，**設 `attachmentRoutePrefix: '/api/attachments'`** 並用 reverse proxy（Nginx / Cloudflare / k8s ingress）轉送 `/api/graphql` → `/graphql`。**不要** 用 NestJS `setGlobalPrefix`，這會與 BPMCore 假設衝突。
+
+### 3a. 錯誤碼契約與 `formatError`
+
+BPM 的領域錯誤是 Nest 的 `HttpException` 子類（例如
+`BPMWorkflowWebhookException extends BadRequestException`），**但 GraphQL 下
+`extensions.code` 一律是 `INTERNAL_SERVER_ERROR`**——這是 Nest + Apollo 的既有行為，
+不代表伺服器壞了。前端要判斷的穩定契約是：
+
+- `extensions.originalError.statusCode`（`400` / `403` / `404` …）
+- `message` 開頭的錯誤碼字串，例如
+  `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`、`WORKFLOW_WEBHOOK_TEST_RATE_LIMITED`、
+  `FORM_DATA_SOURCE_*`。`@rytass/bpm-core-react` 的畫面就是靠這些碼顯示對應文案。
+
+Apollo 預設會把**未處理**錯誤的 `message` 原樣透傳給前端，資料庫驅動的錯誤
+（例如把不是 UUID 的字串當 id 查詢時的 `invalid input syntax for type uuid: ...`）
+會因此外流。請在 `GraphQLModule.forRoot()` 加上這個 guard：
+
+```typescript
+import { unwrapResolverError } from '@apollo/server/errors';
+import { HttpException } from '@nestjs/common';
+import type { GraphQLFormattedError } from 'graphql';
+
+formatError: (
+  formattedError: GraphQLFormattedError,
+  error: unknown,
+): GraphQLFormattedError =>
+  formattedError.extensions?.code === 'INTERNAL_SERVER_ERROR' &&
+  !(unwrapResolverError(error) instanceof HttpException)
+    ? { ...formattedError, message: 'Internal server error' }
+    : formattedError,
+includeStacktraceInErrorResponses: false,
+```
+
+**`HttpException` 那個判斷是必要的**：若只看 `code` 就替換訊息，上面那些
+前端賴以顯示文案的穩定錯誤碼會一起被吃掉。
 
 ### 4. 跑 migrations（**必要，且只在 deploy 時跑一次**）
 
@@ -476,10 +582,74 @@ await dataSource.destroy();
 ```bash
 pnpm add @rytass/bpm-core-client @rytass/bpm-core-shared
 # 若要連 UI 一起拿（含 20 個內建頁面）：
-pnpm add @rytass/bpm-core-react @mezzanine-ui/react @mezzanine-ui/icons
+pnpm add @rytass/bpm-core-react @mezzanine-ui/react @mezzanine-ui/core @mezzanine-ui/icons @mezzanine-ui/system
+pnpm add -D sass                                       # 樣式用 SCSS entry，見 1a
 ```
 
 > `@rytass/bpm-core-client` 沒有 React peer dependency，純 `fetch`-based。
+
+`@mezzanine-ui/core`（樣式）與 `@mezzanine-ui/icons` 都是**非選用** peer；
+`@mezzanine-ui/system` 雖然是 `core` 的相依，但 SCSS 會直接 `@use` 它，
+pnpm strict node_modules 下必須顯式安裝，否則樣式編譯會找不到模組。
+
+**重的 view 另有選用 peer**，只有實際掛載該頁面時才需要安裝。要注意
+「選用」指的是 peer 宣告，不是 bundler 行為——view 內部是靜態 import，
+**掛了該 subpath 卻沒裝，`next build` 會直接 `Module not found`**：
+
+| 要掛的頁面                              | 另外要裝                                                      |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `views/templates/designer`／`compose`   | `@xyflow/react` `dagre` `@uiw/react-codemirror` `@codemirror/view` `@codemirror/lang-json` `@hello-pangea/dnd` `ai` `@ai-sdk/react` |
+| `views/instances/detail`                | `@xyflow/react` `dagre` `react-pdf` `pdfjs-dist`              |
+| `views/forms/builder`                   | `@uiw/react-codemirror` `@codemirror/view` `@codemirror/lang-json` `@hello-pangea/dnd` `pdfjs-dist` |
+| `next/workflow-chat-route`（AI 助手）   | `ai` `@ai-sdk/openai`                                         |
+
+設計器的 AI 助手預設隱藏，但 `TemplateDesignerView` 是靜態 import
+`WorkflowChatDrawer`，所以 `ai` 與 `@ai-sdk/react` 在 **build 期**就要在，
+即使永遠不打開助手。
+
+### 1a. 樣式（必要）
+
+Mezzanine 的樣式不會隨元件自動注入，host 要自己建一支 SCSS entry 並在 root layout
+import 一次。少了這步畫面會完全沒有樣式（元件仍可運作，但等於裸 HTML）：
+
+```scss
+// app/global.scss
+@use '@mezzanine-ui/system' as mzn-system;
+@use '@mezzanine-ui/core' as mzn-core;
+
+// 只有掛對應頁面時才需要這幾行
+@import '@xyflow/react/dist/style.css';           // 流程圖（designer / instance detail）
+@import 'react-pdf/dist/Page/AnnotationLayer.css'; // PDF 預覽
+@import 'react-pdf/dist/Page/TextLayer.css';
+
+:root {
+  @include mzn-system.common-variables('default');
+  @include mzn-system.colors('light');
+}
+
+[data-theme='dark'] {
+  @include mzn-system.colors('dark');
+}
+
+[data-density='compact'] {
+  @include mzn-system.common-variables('compact');
+}
+
+@include mzn-core.styles();
+
+body {
+  margin: 0;
+}
+```
+
+```tsx
+// app/layout.tsx
+import './global.scss';
+```
+
+深色模式與緊湊密度就是切換 `<html>` 上的 `data-theme` / `data-density`。
+BPMCore 自己的畫面只透過 design token（CSS variable）調整外觀，所以 host 覆寫
+token 就能換色，不需要改元件。
 
 > **Next.js + pnpm strict 必修**：若有裝 `@rytass/bpm-core-react`，`next.config.js` 必須加 `transpilePackages: ['@rytass/bpm-core-react']`，否則 Turbopack 無法解析 lib 內部對 `@rytass/bpm-core-client/workflow` 等 subpath 的 transitive peer-dep 引用，build 會炸 `Module not found`。
 >
@@ -505,9 +675,10 @@ NEXT_PUBLIC_API_AUTH_URL=https://api.example.com   # /auth/* 的 base URL
 'use client';
 
 import { loginApi, logoutApi, readApiCurrentMember } from '@rytass/bpm-core-client';
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 
-export function LoginCard(): JSX.Element {
+// React 19 的型別已移除全域 `JSX` namespace，回傳型別請用 `ReactElement`。
+export function LoginCard(): ReactElement {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
 
@@ -532,19 +703,25 @@ export function LoginCard(): JSX.Element {
 ```ts
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import { resolveMembers, type MemberProfileRecord } from '@rytass/bpm-core-client';
-import { listApprovalInstances, type ApprovalInstanceRecord } from '@rytass/bpm-core-client/workflow';
+import { listApprovalInstancesPage, type ApprovalInstanceRecord } from '@rytass/bpm-core-client/workflow';
 
-export function MyInbox({ memberId }: { readonly memberId: string }): JSX.Element {
+export function MyInbox({ memberId }: { readonly memberId: string }): ReactElement {
   const [instances, setInstances] = useState<readonly ApprovalInstanceRecord[]>([]);
   const [members, setMembers] = useState<readonly MemberProfileRecord[]>([]);
 
   useEffect(() => {
     void (async () => {
-      const result = await listApprovalInstances({
-        filter: { assigneeMemberId: memberId },
-        pagination: { limit: 50, offset: 0 },
+      // 清單一律以登入身分為準，沒有 assigneeMemberId 之類的參數；
+      // view 只有 'ALL' | 'SENT' | 'CC'，六個欄位都是必填（不篩就給 null）。
+      const result = await listApprovalInstancesPage({
+        page: 1,
+        pageSize: 50,
+        searchText: null,
+        state: null,
+        templateId: null,
+        view: 'ALL',
       });
       setInstances(result.instances);
 
@@ -561,7 +738,7 @@ export function MyInbox({ memberId }: { readonly memberId: string }): JSX.Elemen
         const initiator = members.find((m) => m.memberId === instance.initiatorMemberId);
         return (
           <li key={instance.id}>
-            #{instance.serialNumber} by {initiator?.name ?? instance.initiatorMemberId} — {instance.state}
+            {instance.title} by {initiator?.name ?? instance.initiatorMemberId} — {instance.state}
           </li>
         );
       })}
@@ -575,15 +752,19 @@ export function MyInbox({ memberId }: { readonly memberId: string }): JSX.Elemen
 ```ts
 import { useQuery } from '@tanstack/react-query';
 import { resolveMembers } from '@rytass/bpm-core-client';
-import { listApprovalInstances } from '@rytass/bpm-core-client/workflow';
+import { listApprovalInstancesPage } from '@rytass/bpm-core-client/workflow';
 
 export function useMyInbox(memberId: string) {
   return useQuery({
     queryKey: ['inbox', memberId],
     queryFn: async () => {
-      const inbox = await listApprovalInstances({
-        filter: { assigneeMemberId: memberId },
-        pagination: { limit: 50, offset: 0 },
+      const inbox = await listApprovalInstancesPage({
+        page: 1,
+        pageSize: 50,
+        searchText: null,
+        state: null,
+        templateId: null,
+        view: 'ALL',
       });
       const initiators = await resolveMembers(
         Array.from(new Set(inbox.instances.map((i) => i.initiatorMemberId))),
@@ -596,21 +777,60 @@ export function useMyInbox(memberId: string) {
 
 ### 6. Server Component / Server Action
 
+Server 端有兩件事和瀏覽器不一樣，兩件都會讓直接照抄的程式在第一次呼叫就失敗：
+
+1. **endpoint 必須是絕對 URL。** 預設解析靠 `window.location`，Node 端沒有
+   `window`，會退回 same-origin 的相對路徑 `/graphql`，而 Node 的 `fetch`
+   不接受相對 URL（`Failed to parse URL from /graphql`）。請設
+   `NEXT_PUBLIC_API_URL`，或用 `configureBPMClient({ baseUrl })`。
+2. **cookie 不會自動帶。** `credentials: 'include'` 只有瀏覽器認得；server 端要自己
+   從 `cookies()` 取出再放進 header。
+
+`requestGraphQl` 的第三個參數只有 `signal`，**沒有** per-call header。逐請求的身分
+要靠 `configureBPMClient({ fetch })` 換掉 fetch 實作——在 fetch 裡才呼叫 `cookies()`，
+它會在各自的 request scope 解析，所以同一個 process 併發服務多個使用者仍然正確：
+
+```ts
+// lib/bpm-server.ts — server-only，在 module scope 設定一次
+import 'server-only';
+import { cookies } from 'next/headers';
+import { configureBPMClient } from '@rytass/bpm-core-client';
+
+configureBPMClient({
+  // Node 端沒有 window，一定要給絕對 URL
+  baseUrl: process.env.BPM_API_URL!,
+  fetch: async (input, init) => {
+    const cookie = (await cookies()).toString();
+
+    return fetch(input, {
+      ...init,
+      headers: { ...(init?.headers as Record<string, string>), cookie },
+    });
+  },
+});
+```
+
 ```ts
 // app/inbox/page.tsx (Server Component)
+import '../lib/bpm-server';
 import { listApprovalInstances } from '@rytass/bpm-core-client/workflow';
+import type { ReactElement } from 'react';
 
-export default async function InboxPage(): Promise<JSX.Element> {
-  // requestGraphQl uses fetch which works on the Node side too. Pass NEXT_PUBLIC_API_URL
-  // to force a specific endpoint, otherwise it defaults to same-origin /graphql.
-  const result = await listApprovalInstances({ pagination: { limit: 20, offset: 0 } });
-  return (
-    <pre>{JSON.stringify(result.instances, null, 2)}</pre>
-  );
+export default async function InboxPage(): Promise<ReactElement> {
+  // 不分頁版本不收參數，直接回 ApprovalInstanceRecord[]
+  const instances = await listApprovalInstances();
+
+  return <pre>{JSON.stringify(instances, null, 2)}</pre>;
 }
 ```
 
-> Server Component 要傳遞 cookie / session 時，需要在請求前手動把 host 的 cookie 帶上；或使用 `'use server'` Action + `cookies()` API 取出後 `fetch` 帶 `cookie` header。客戶端 component 自動帶 cookie 因為 `requestGraphQl` 用 `credentials: 'include'`。
+> `cookies()` 只能在 request scope 內呼叫，build 期預渲染會丟錯；會在 server 讀 BPM
+> 資料的頁面請用 `await connection()`（或其他動態訊號）標成動態。
+>
+> `configureBPMClient()` 的 `headers` 選項是 process 全域的，適合服務帳號 token
+> 這類整個 process 共用的值；**不要**拿它塞單一使用者的 session cookie。
+> 客戶端 component 不受影響，`requestGraphQl` 用 `credentials: 'include'`，
+> 瀏覽器會自動帶 cookie。
 
 ---
 
