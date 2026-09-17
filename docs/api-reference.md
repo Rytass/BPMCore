@@ -673,7 +673,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 21-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 25-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -1206,11 +1206,11 @@ argument on the `notifications` / `notificationCount` queries.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 21-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 25-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-23 ordered migrations:
+25 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` are
    missing and the migration role has no CREATE privilege on the database, it
@@ -1296,18 +1296,20 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `NotificationDrawer` | Component | Mezzanine Drawer + NotificationCenter (overlay portal; mounted by `<Providers>`) |
 | `ApprovalInstanceListPage` | Component | Shared list page body (inbox / sent / cc / search). Returns content fragment — host wraps in its own layout. |
 | `ApprovalInstanceListPageProps` | interface | `{ defaultState, description, emptyMessage, searchPlaceholder, title, view }` |
-| `DashboardPage` | Component | Five-metric workflow dashboard (content fragment) |
-| `DashboardPageProps` | interface | `{}` (no props) |
+| `DashboardPage` | Component | Five-metric workflow dashboard (content fragment); takes no props, so there is no `DashboardPageProps` |
 | `BPMFormField` | Component | Mezzanine FormField wrapper (TIGHT / HORIZONTAL defaults) |
 | `MemberPicker` / `OrgUnitPicker` / `PositionPicker` | Component | Picker components for admin pages |
 | `readMemberOption()` / `readOrgUnitOption()` / `readPositionOption()` | function | record → picker option |
 | `MemberOption` / `OrgUnitOption` / `PositionOption` | type | Picker value types |
-| `PDFPreview` | Component | react-pdf preview component |
-| `PDFPreviewProps` | interface | url / height / controls |
-| `configurePdfWorker(url)` | function | Set `pdfjs.GlobalWorkerOptions.workerSrc` (must call before first mount) |
-| `OrgUnitTreeDraftEditor` | Component (forwardRef) | Org-tree draft editor |
-| `OrgUnitTreeDraftEditorHandle` | type | Imperative handle ref |
-| `OrgUnitTreeDraftEditorState` | type | Editor state shape |
+
+**Not exported from the root barrel** (deliberately): `PDFPreview`,
+`PDFPreviewProps`, `configurePdfWorker()`, `OrgUnitTreeDraftEditor`,
+`OrgUnitTreeDraftEditorHandle` and `OrgUnitTreeDraftEditorState` live in
+`src/components/` but stay internal. Re-exporting them would pull `react-pdf` /
+`pdfjs-dist` into the root entry, which every host loads — including the ones
+that never mount a PDF preview and have not installed those optional peers.
+They reach hosts through the views that use them (`views/instances/detail`,
+`views/admin/orgs`).
 
 ## `@rytass/bpm-core-react/next`
 
@@ -1351,7 +1353,7 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/cc` | `CcView` |
 | `views/search` | `SearchView` |
 | `views/delegations` | `DelegationsView` |
-| `views/root` | `RootView` (placeholder, returns null) |
+| ~~`views/root`~~ | `RootView` exists in the source but has **no `exports` entry and no Vite entry** — it is not importable and not published. It is a null placeholder; the root path is served by `pages/root`, which redirects to `/dashboard` on the server. |
 
 ### Heavy views (must stay isolated, fat dependencies)
 
@@ -1364,14 +1366,23 @@ a peer needs bumping too.
 
 Optional peers: `@xyflow/react`, `dagre`, `@codemirror/lang-json`,
 `@codemirror/view`, `@uiw/react-codemirror`, `@hello-pangea/dnd`, `pdfjs-dist`,
-`react-pdf`, `next`.
+`react-pdf`, `next`, `ai`, `@ai-sdk/react`, `@ai-sdk/openai`.
+
+**"Optional" is a peer declaration, not a bundler behaviour.** The views import
+these statically, so a host that mounts the subpath and has not installed its
+peers fails the build with `Module not found` — the table below is the install
+list, not a suggestion. The non-optional peers (`@mezzanine-ui/react`,
+`@mezzanine-ui/core`, `@mezzanine-ui/icons`, `react`, `react-dom`,
+`@rytass/bpm-core-client`, `@rytass/bpm-core-shared`) are needed by every host,
+and `@mezzanine-ui/core` also carries the styles — see
+`docs/11-consumer-quickstart.md` §B.1a for the SCSS entry.
 
 | Subpath | View | Heavy peerDeps |
 |---|---|---|
-| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory` / `showWebhookDeliveries`; the webhook section is only ever shown to administrators, and only when the instance queued deliveries), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection`, `InstanceWebhookDeliveriesSection` (status, attempts, last error and a confirmed retry for attempted `FAILED` rows) and their `*Props` | `@xyflow/react`, `dagre` |
+| `views/instances/detail` | `InstanceDetailView`, `InstanceDetailViewProps` (now toggles each section via `showForm` / `showAttachments` / `showTasks` / `showSignatures` / `showHistory` / `showWebhookDeliveries`; the webhook section is only ever shown to administrators, and only when the instance queued deliveries), plus the standalone section components `InstanceFormSection`, `InstanceAttachmentsSection`, `InstanceTasksSection` (+ `InstanceTasksSectionHandle`, `AdhocActionMode`; handle adds `canAddSignerCurrentTask` / `openAdhocModal(mode)`, props add `adhocDirectives`), `InstanceSignaturesSection`, `InstanceHistorySection`, `InstanceWebhookDeliveriesSection` (status, attempts, last error and a confirmed retry for attempted `FAILED` rows) and their `*Props` | `@xyflow/react`, `dagre`, `react-pdf`, `pdfjs-dist` (attachment preview) |
 | `views/instances/new` | `InstanceNewView` | medium |
-| `views/templates/compose` | `TemplateComposeWizardView`, `TemplateComposeWizardViewProps` (opt-in `showAiAssistant` / `aiAssistantAvailable` surface the Step 1 embedded-designer AI assistant), `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`) |
-| `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd` |
+| `views/templates/compose` | `TemplateComposeWizardView`, `TemplateComposeWizardViewProps` (opt-in `showAiAssistant` / `aiAssistantAvailable` surface the Step 1 embedded-designer AI assistant), `useTemplateComposeWizard`, `TemplateComposeWizard`, `ComposeWizardStep`, `ComposePublishPhase` | embeds designer + builder (`@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`, `ai`, `@ai-sdk/react`) |
+| `views/templates/designer` | `TemplateDesignerView`, `TemplateDesignerViewProps` (now supports `embedded` / `formSchemaOverride` / `initialWorkflowDefinition` / `initialInitiatorPolicyCel` / `onWorkflowChange` / `onInitiatorPolicyChange` for wizard reuse) | `@xyflow/react`, `@codemirror/*`, `dagre`, `@hello-pangea/dnd`, `ai`, `@ai-sdk/react` (the AI assistant is hidden by default but `WorkflowChatDrawer` is a static import, so both are needed to build) |
 | `views/templates/categories` | `TemplateCategoriesView` | normal |
 | `views/templates/versions` | `TemplateVersionsView` | normal |
 | `views/forms/builder` | `FormBuilderView` — controlled panel (`value` / `onChange` only; no standalone page mode). Embedded by the template designer and compose wizard; its option-field editor loads the host catalog, filters by capability, edits field/constant bindings, preserves references on field rename, and requires confirmation for source/mode/dependent-field impact before applying changes | `pdfjs-dist`, `@codemirror/*`, `@hello-pangea/dnd` |
