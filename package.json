@@ -52,7 +52,7 @@
     "@types/dagre": "^0.7.54",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
-    "@types/node": "20.19.9",
+    "@types/node": "26.5.1",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
