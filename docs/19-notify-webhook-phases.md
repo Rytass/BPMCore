@@ -930,3 +930,12 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
     的信封搬到 B 端點。以 `endpointId:column` 作為 AAD 可擋下，但需要 id 在寫入前產生並遷移既有值。
 17. **Webhook 端點管理頁沒有「最近投遞狀態」**（P6 驗證）：ADR §3.13 提到，P6 Scope 未列。目前只能
     在案件頁看投遞；可加每個端點最近 N 筆投遞與失敗率。
+18. **程式註冊端點的白名單不對稱**（消費端模擬驗證，2026-09-16）：資料庫端點在儲存時就比對
+    `workflowWebhookAllowedUrlPatterns`，程式註冊端點只在發布與每次投遞前比對。行為是刻意的
+    （registry URL 已過程式碼審查），但兩條路徑的錯誤時機不同，值得在文件或啟動檢查對齊。
+19. **Registry 端點的簽章金鑰格式不在開機檢查內**（消費端模擬驗證）：`workflowWebhookSecretEncryptionKey`
+    會在開機驗證長度與編碼，registry descriptor 自帶的 `signingSecret` 不會；格式錯誤要到第一次投遞
+    才會發現。
+20. **`requestGraphQl` 沒有 per-call header**（消費端模擬驗證）：server 端要逐請求帶 session 只能用
+    `configureBPMClient({ fetch })` 包一層（已寫入 quickstart §B.6）。若要讓型別化 wrapper 直接帶
+    header，需要在 client 加一層 request context，範圍比本輪大。
