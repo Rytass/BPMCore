@@ -1,3 +1,39 @@
+## 0.13.4 (2026-09-17)
+
+### 🚀 Features
+
+- **admin:** add the webhook endpoints page ([ac03c59](https://github.com/Rytass/BPMCore/commit/ac03c59))
+- **client:** add webhook endpoint administration API ([0fa9c2a](https://github.com/Rytass/BPMCore/commit/0fa9c2a))
+- **workflow-webhook:** manage notify webhook endpoints in the database ([63e2f95](https://github.com/Rytass/BPMCore/commit/63e2f95))
+- **template-designer:** configure notify node webhooks ([813a03e](https://github.com/Rytass/BPMCore/commit/813a03e))
+- **client:** add the webhook endpoint catalog query ([9e2c927](https://github.com/Rytass/BPMCore/commit/9e2c927))
+- **instance-detail:** show webhook deliveries to administrators ([4e1e3c1](https://github.com/Rytass/BPMCore/commit/4e1e3c1))
+- **client:** add webhook delivery listing and retry ([89387ae](https://github.com/Rytass/BPMCore/commit/89387ae))
+- **workflow-webhook:** let administrators inspect and retry deliveries ([4a6128b](https://github.com/Rytass/BPMCore/commit/4a6128b))
+- **workflow-webhook:** deliver notify webhooks through a transactional outbox ([cbb277f](https://github.com/Rytass/BPMCore/commit/cbb277f))
+- **workflow-webhook:** add the endpoint registry, catalog and allowlist ([82afe97](https://github.com/Rytass/BPMCore/commit/82afe97))
+- **workflow:** add the notify webhook contract to the shared lib ([e240632](https://github.com/Rytass/BPMCore/commit/e240632))
+- **bpm:** make every BPMRootModule option optional and async-loadable ([0966edb](https://github.com/Rytass/BPMCore/commit/0966edb))
+- **bpm-core-react:** let an approver add several people at once ([4543bee](https://github.com/Rytass/BPMCore/commit/4543bee))
+- **bpm-core-react:** give an approval comment its own line in the timeline ([2b03494](https://github.com/Rytass/BPMCore/commit/2b03494))
+
+### 🩹 Fixes
+
+- **template-designer:** start number webhook constants empty ([c64bf20](https://github.com/Rytass/BPMCore/commit/c64bf20))
+- **workflow-webhook:** harden the P1 catalog after independent review ([0ea9790](https://github.com/Rytass/BPMCore/commit/0ea9790))
+- **designer:** judge notify nodes with the shared rule ([30f1077](https://github.com/Rytass/BPMCore/commit/30f1077))
+- **delegation:** let the member tooltip reach assistive technology ([c6c355f](https://github.com/Rytass/BPMCore/commit/c6c355f))
+- **workflow:** let the engine pick its service task dispatcher ([21bcde4](https://github.com/Rytass/BPMCore/commit/21bcde4))
+- **bpm-core-react:** import ActivityLogRecord from the subpath that exports it ([31455c7](https://github.com/Rytass/BPMCore/commit/31455c7))
+- **bpm-core-react:** restore the separator and colour of a timeline comment ([9f58b49](https://github.com/Rytass/BPMCore/commit/9f58b49))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+- Claude Opus 5 (1M context)
+- Kai-Chieh Yang
+
 ## 0.13.3 (2026-09-04)
 
 This was a version bump only for bpm-core-react to align it with other projects, there were no code changes.

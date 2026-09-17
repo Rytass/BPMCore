@@ -1,3 +1,57 @@
+## 0.13.4 (2026-09-17)
+
+### 🚀 Features
+
+- **admin:** add the webhook endpoints page ([ac03c59](https://github.com/Rytass/BPMCore/commit/ac03c59))
+- **api:** add demo webhook endpoints and an in-process receiver ([6e16f28](https://github.com/Rytass/BPMCore/commit/6e16f28))
+- **api:** read the demo webhook secret from Vault and simulate receivers ([6db467b](https://github.com/Rytass/BPMCore/commit/6db467b))
+- **api:** enable database webhook endpoints in the wrapper host ([1fceb88](https://github.com/Rytass/BPMCore/commit/1fceb88))
+- **bpm:** make every BPMRootModule option optional and async-loadable ([0966edb](https://github.com/Rytass/BPMCore/commit/0966edb))
+- **bpm:** wire the webhook endpoint registry into BPMRootModule ([0009643](https://github.com/Rytass/BPMCore/commit/0009643))
+- **bpm-core-react:** give an approval comment its own line in the timeline ([2b03494](https://github.com/Rytass/BPMCore/commit/2b03494))
+- **bpm-core-react:** let an approver add several people at once ([4543bee](https://github.com/Rytass/BPMCore/commit/4543bee))
+- **client:** add webhook delivery listing and retry ([89387ae](https://github.com/Rytass/BPMCore/commit/89387ae))
+- **client:** add the webhook endpoint catalog query ([9e2c927](https://github.com/Rytass/BPMCore/commit/9e2c927))
+- **client:** add webhook endpoint administration API ([0fa9c2a](https://github.com/Rytass/BPMCore/commit/0fa9c2a))
+- **instance-detail:** show webhook deliveries to administrators ([4e1e3c1](https://github.com/Rytass/BPMCore/commit/4e1e3c1))
+- **template:** lint notify webhooks when publishing a template ([b6f75ec](https://github.com/Rytass/BPMCore/commit/b6f75ec))
+- **template:** check webhook endpoints and bindings before publishing ([8c40553](https://github.com/Rytass/BPMCore/commit/8c40553))
+- **template-designer:** configure notify node webhooks ([813a03e](https://github.com/Rytass/BPMCore/commit/813a03e))
+- **workflow:** make a multi-person ad-hoc countersign need everyone ([f13e227](https://github.com/Rytass/BPMCore/commit/f13e227))
+- **workflow:** add the notify webhook contract to the shared lib ([e240632](https://github.com/Rytass/BPMCore/commit/e240632))
+- **workflow-webhook:** add the endpoint registry, catalog and allowlist ([82afe97](https://github.com/Rytass/BPMCore/commit/82afe97))
+- **workflow-webhook:** deliver notify webhooks through a transactional outbox ([cbb277f](https://github.com/Rytass/BPMCore/commit/cbb277f))
+- **workflow-webhook:** let administrators inspect and retry deliveries ([4a6128b](https://github.com/Rytass/BPMCore/commit/4a6128b))
+- **workflow-webhook:** manage notify webhook endpoints in the database ([63e2f95](https://github.com/Rytass/BPMCore/commit/63e2f95))
+
+### 🩹 Fixes
+
+- **bpm-core-react:** restore the separator and colour of a timeline comment ([9f58b49](https://github.com/Rytass/BPMCore/commit/9f58b49))
+- **bpm-core-react:** import ActivityLogRecord from the subpath that exports it ([31455c7](https://github.com/Rytass/BPMCore/commit/31455c7))
+- **client:** tolerate hosts that omit the webhook deliveries field ([a0c00f1](https://github.com/Rytass/BPMCore/commit/a0c00f1))
+- **delegation:** hand back an entity from the rule mutations ([02acc1b](https://github.com/Rytass/BPMCore/commit/02acc1b))
+- **delegation:** let the member tooltip reach assistive technology ([c6c355f](https://github.com/Rytass/BPMCore/commit/c6c355f))
+- **designer:** judge notify nodes with the shared rule ([30f1077](https://github.com/Rytass/BPMCore/commit/30f1077))
+- **notification:** hand back an entity from the preference mutation ([3a9ab2c](https://github.com/Rytass/BPMCore/commit/3a9ab2c))
+- **template-designer:** start number webhook constants empty ([c64bf20](https://github.com/Rytass/BPMCore/commit/c64bf20))
+- **workflow:** keep cancelled rows as entities so their GraphQL getters resolve ([746fdb3](https://github.com/Rytass/BPMCore/commit/746fdb3))
+- **workflow:** report the state a submit actually committed ([67da905](https://github.com/Rytass/BPMCore/commit/67da905))
+- **workflow:** stop an end node completing the case twice ([e4b1931](https://github.com/Rytass/BPMCore/commit/e4b1931))
+- **workflow:** guard the completion against an active task too ([3ae69e7](https://github.com/Rytass/BPMCore/commit/3ae69e7))
+- **workflow:** drop a task from the inbox once that member has decided it ([187d38d](https://github.com/Rytass/BPMCore/commit/187d38d))
+- **workflow:** keep a cast vote visible while the countersign waits ([a2a6f21](https://github.com/Rytass/BPMCore/commit/a2a6f21))
+- **workflow:** let the engine pick its service task dispatcher ([21bcde4](https://github.com/Rytass/BPMCore/commit/21bcde4))
+- **workflow-engine:** let a webhook-only notify node run ([2e2813a](https://github.com/Rytass/BPMCore/commit/2e2813a))
+- **workflow-engine:** end dry-run branches at notify nodes ([6850920](https://github.com/Rytass/BPMCore/commit/6850920))
+- **workflow-webhook:** harden the P1 catalog after independent review ([0ea9790](https://github.com/Rytass/BPMCore/commit/0ea9790))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+- Claude Opus 5 (1M context)
+- Kai-Chieh Yang
+
 ## 0.13.3 (2026-09-04)
 
 ### 🩹 Fixes
