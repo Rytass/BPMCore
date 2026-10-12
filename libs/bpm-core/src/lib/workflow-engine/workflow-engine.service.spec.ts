@@ -3863,6 +3863,149 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('returns a rejected pre-approval to the current holder when its pointer still names a transferred task', async (): Promise<void> => {
+    const fixture = createStalePreApprovalOriginFixture({
+      processActivityLogs: [createTransferTaskCreatedLog('task-1', 'task-50')],
+      replacementTasks: [
+        createTask({
+          assigneeMemberId: 'member-101',
+          id: 'task-50',
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    // The holder's task is still open, so nothing is reopened — least of all
+    // for the member who transferred the stage away.
+    expect(
+      fixture.savedTasks.filter((task) => task.id !== 'task-90'),
+    ).toEqual([]);
+    expect(fixture.savedInstance).toBeNull();
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          adhocTaskId: 'task-90',
+          originTaskId: 'task-50',
+          type: 'PRE_APPROVAL_RETURNED',
+        }),
+        recipientMemberIds: ['member-101'],
+      }),
+    );
+  });
+
+  it('follows a stale pre-approval pointer across repeated transfers', async (): Promise<void> => {
+    const fixture = createStalePreApprovalOriginFixture({
+      processActivityLogs: [
+        createTransferTaskCreatedLog('task-1', 'task-50'),
+        createTransferTaskCreatedLog('task-50', 'task-51'),
+      ],
+      replacementTasks: [
+        createTask({
+          assigneeMemberId: 'member-101',
+          completedAt: new Date('2026-05-04T09:20:00.000Z'),
+          id: 'task-50',
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-finance',
+          status: TaskStatusEnum.TRANSFERRED,
+          tokenId: 'token-1',
+        }),
+        createTask({
+          assigneeMemberId: 'member-102',
+          id: 'task-51',
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(
+      fixture.savedTasks.filter((task) => task.id !== 'task-90'),
+    ).toEqual([]);
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ originTaskId: 'task-51' }),
+        recipientMemberIds: ['member-102'],
+      }),
+    );
+  });
+
+  it('reopens the stage for the member the transfer went to when that member already decided', async (): Promise<void> => {
+    const fixture = createStalePreApprovalOriginFixture({
+      processActivityLogs: [createTransferTaskCreatedLog('task-1', 'task-50')],
+      replacementTasks: [
+        createTask({
+          assigneeMemberId: 'member-101',
+          completedAt: new Date('2026-05-04T09:20:00.000Z'),
+          id: 'task-50',
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-finance',
+          status: TaskStatusEnum.COMPLETED,
+          tokenId: 'token-1',
+        }),
+      ],
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(
+      fixture.savedTasks
+        .filter((task) => task.status === TaskStatusEnum.PENDING)
+        .map((task) => task.assigneeMemberId),
+    ).toEqual(['member-101']);
+  });
+
+  it('keeps reopening for the transferring member when the transfer left no trail to follow', async (): Promise<void> => {
+    const fixture = createStalePreApprovalOriginFixture({
+      processActivityLogs: [],
+      replacementTasks: [],
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    expect(
+      fixture.savedTasks
+        .filter((task) => task.status === TaskStatusEnum.PENDING)
+        .map((task) => task.assigneeMemberId),
+    ).toEqual(['member-finance']);
+    expect(fixture.savedInstance).toBeNull();
+  });
+
   it('rejects the whole instance when an ad-hoc pre-approval is rejected with REJECT_INSTANCE', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [
@@ -4272,6 +4415,7 @@ function createServiceFixture({
   formVersionStatus,
   instanceState,
   latestReturnActivity,
+  processActivityLogs = [],
   processAdhocDirectives = [],
   processTaskCandidates = [],
   processFormData,
@@ -4298,6 +4442,7 @@ function createServiceFixture({
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
+  readonly processActivityLogs?: readonly ActivityLogEntity[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
   readonly processTaskCandidates?: readonly TaskCandidateEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
@@ -4338,6 +4483,7 @@ function createServiceFixture({
   let savedProcessLog: ActivityLogEntity | null = null;
   let savedActivityLogs: readonly ActivityLogEntity[] = [];
   let savedSingleActivityLogs: readonly ActivityLogEntity[] = [];
+  let storedActivityLogs: readonly ActivityLogEntity[] = processActivityLogs;
   let savedTasks: readonly TaskEntity[] = [];
   let savedTaskCandidates: readonly TaskCandidateEntity[] = [];
   let processTaskCandidateRows: readonly TaskCandidateEntity[] = [
@@ -4849,11 +4995,28 @@ function createServiceFixture({
           taskId: entity.taskId ?? null,
         }),
     ),
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly ActivityLogEntity[]> =>
+        Promise.resolve(
+          storedActivityLogs.filter((activityLog) =>
+            matchesFindWhere(activityLog, options?.where),
+          ),
+        ),
+    ),
     findOne: jest.fn(() => Promise.resolve(latestReturnActivity ?? null)),
     save: jest.fn(
       (
         entityOrEntities: ActivityLogEntity | ActivityLogEntity[],
       ): Promise<ActivityLogEntity | ActivityLogEntity[]> => {
+        storedActivityLogs = [
+          ...storedActivityLogs,
+          ...(Array.isArray(entityOrEntities)
+            ? entityOrEntities
+            : [entityOrEntities]),
+        ];
+
         if (Array.isArray(entityOrEntities)) {
           savedActivityLogs = [...entityOrEntities];
 
@@ -5447,6 +5610,78 @@ function createWorkflowToken(
     parentTokenId: value.parentTokenId ?? null,
     status: value.status ?? WorkflowTokenStatusEnum.ACTIVE,
   };
+}
+
+/**
+ * A RETURN_TO_ORIGIN pre-approval (task-90) whose pointer was left on task-1
+ * after task-1 was transferred — what a release that did not re-point open
+ * pre-approvals on transfer leaves behind.
+ */
+function createStalePreApprovalOriginFixture({
+  processActivityLogs,
+  replacementTasks,
+}: {
+  readonly processActivityLogs: readonly ActivityLogEntity[];
+  readonly replacementTasks: readonly TaskEntity[];
+}): ReturnType<typeof createServiceFixture> {
+  return createServiceFixture({
+    additionalProcessTasks: [
+      ...replacementTasks,
+      createTask({
+        adhocDirectiveId: 'directive-seed-1',
+        adhocOriginTaskId: 'task-1',
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        assigneeMemberId: 'member-d',
+        id: 'task-90',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-d',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+    ],
+    currentVersionId: 'template-version-1',
+    decisionTask: createTask({
+      assigneeMemberId: 'member-finance',
+      completedAt: new Date('2026-05-04T09:10:00.000Z'),
+      nodeId: 'task_finance',
+      originalAssigneeMemberId: 'member-finance',
+      status: TaskStatusEnum.TRANSFERRED,
+      tokenId: 'token-1',
+    }),
+    decisionToken: createWorkflowToken({
+      currentNodeId: 'task_finance',
+      status: WorkflowTokenStatusEnum.WAITING,
+    }),
+    formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+    processActivityLogs,
+    processAdhocDirectives: [
+      createAdhocDirective({
+        consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+        id: 'directive-seed-1',
+        onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+        type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+      }),
+    ],
+    processWorkflowSnapshot: createLinearUserTaskWorkflow({
+      allowAddSigner: true,
+    }),
+    templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+  });
+}
+
+function createTransferTaskCreatedLog(
+  transferredFromTaskId: string,
+  taskId: string,
+): ActivityLogEntity {
+  return createActivityLog({
+    eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+    id: `activity-log-${taskId}`,
+    nodeId: 'task_finance',
+    payload: { transferredFromTaskId },
+    taskId,
+  });
 }
 
 function createTaskCandidate(
