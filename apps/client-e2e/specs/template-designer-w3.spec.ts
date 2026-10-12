@@ -29,6 +29,9 @@ interface MockTemplateGraphQlOptions {
   // GraphQL error, the way the host fails a batch holding an id it cannot
   // handle.
   readonly failSelectedMemberId?: string;
+  // The fields of the bound form's unpublished draft, which 編輯表單 loads.
+  // Defaults to the bound (published) fields.
+  readonly formDraftFields?: readonly Readonly<Record<string, unknown>>[];
   // Replaces the fields of the bound form's schema (the published version).
   readonly formFields?: readonly Readonly<Record<string, unknown>>[];
   // Binds the template draft to this form version from the start.
@@ -1087,6 +1090,16 @@ test.describe('M1 W3 template designer', () => {
   }): Promise<void> => {
     await page.setViewportSize({ height: 1200, width: 1440 });
     await mockTemplateGraphQl(page, {
+      // The form draft adds a member field the bound version does not have.
+      formDraftFields: [
+        ...MEMBER_FORM_FIELDS,
+        {
+          fieldKey: 'reviewer',
+          label: '複核人',
+          required: true,
+          type: 'member',
+        },
+      ],
       formFields: MEMBER_FORM_FIELDS,
       initialFormDefinitionVersionId: FORM_VERSION_ID,
     });
@@ -1095,14 +1108,27 @@ test.describe('M1 W3 template designer', () => {
     await page.getByRole('combobox', { name: '未設定' }).click();
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
+
+    // Apply the form draft without saving it: the dry run must sample what
+    // publish would send, not the bound version.
+    await page.getByRole('button', { exact: true, name: '編輯表單' }).click();
+    await expect(page.getByText('載入中…')).toHaveCount(0);
+    await page.getByRole('button', { exact: true, name: '套用' }).click();
     await page.getByRole('button', { name: '試跑流程' }).click();
+
+    // The Mezzanine textarea is not tied to its label, so it is found inside
+    // the dry-run dialog (the only text box there).
+    const sampleJson = page
+      .getByRole('dialog')
+      .filter({ hasText: '表單資料 JSON' })
+      .getByRole('textbox');
 
     // A member field is sampled with the dry-run initiator, not free text, so
     // a 依表單欄位指定 node resolves to a real member.
-    const sampleJson = page.getByRole('textbox').first();
-
     await expect(sampleJson).toHaveValue(/"owner": "member-001"/u);
     await expect(sampleJson).toHaveValue(/"backup": "member-001"/u);
+    // The member field only the applied draft has is sampled too.
+    await expect(sampleJson).toHaveValue(/"reviewer": "member-001"/u);
   });
 
   test('names the dry run assignees instead of printing internal ids', async ({
@@ -1125,8 +1151,6 @@ test.describe('M1 W3 template designer', () => {
     });
 
     await page.goto(`/templates/${TEMPLATE_ID}/designer`);
-    await page.getByRole('combobox', { name: '未設定' }).click();
-    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '試跑流程' }).click();
     await page.getByRole('button', { name: '執行試跑' }).click();
 
@@ -1169,7 +1193,7 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('label[for="slaEnabled"]').click();
 
     await page.getByRole('combobox', { name: '日', exact: true }).click();
-    await page.locator('[role="option"]').filter({ hasText: '小時' }).click();
+    await clickDropdownOption(page, '小時');
 
     // A business calendar only advances whole days, so the selector goes away.
     await expect(page.getByText('計算方式')).toHaveCount(0);
@@ -1255,15 +1279,11 @@ test.describe('M1 W3 template designer', () => {
       .click();
 
     await page.getByRole('combobox', { name: '指定職位' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '組織特定職位' })
-      .click();
+    // The resolver list is long enough that this option renders below the
+    // viewport.
+    await clickDropdownOption(page, '組織特定職位');
     await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '財務部 · FIN-TW' })
-      .click();
+    await clickDropdownOption(page, '財務部 · FIN-TW');
     await page.getByRole('combobox', { name: '選擇職位' }).click();
     await clickDropdownOption(page, '部門主管 · DEPARTMENT_HEAD');
     await expect(
@@ -1423,6 +1443,36 @@ async function mockTemplateGraphQl(
 
     if (query.includes('query AdminOrganizationDashboard')) {
       await fulfillGraphQl(route, readOrganizationDashboardData());
+      return;
+    }
+
+    if (query.includes('query FormBuilder(')) {
+      await fulfillGraphQl(route, {
+        formDefinition: {
+          currentVersionCreatedAt: UPDATED_AT,
+          currentVersionId: FORM_VERSION_ID,
+          currentVersionNumber: 1,
+          currentVersionPublishedAt: UPDATED_AT,
+          description: null,
+          id: FORM_ID,
+          name: 'E2E 表單',
+          updatedAt: UPDATED_AT,
+        },
+        formDefinitionVersions: [
+          {
+            id: `${FORM_VERSION_ID}-draft`,
+            publishedAt: null,
+            schemaJson: JSON.stringify({
+              fields: options.formDraftFields ?? options.formFields ?? [],
+              schemaVersion: 1,
+            }),
+            status: 'DRAFT',
+            uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+            updatedAt: UPDATED_AT,
+            version: 2,
+          },
+        ],
+      });
       return;
     }
 
