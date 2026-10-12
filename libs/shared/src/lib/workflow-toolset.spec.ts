@@ -576,6 +576,79 @@ describe('set_user_task_decision_policy', () => {
     });
   });
 
+  it('keeps a well-formed DIRECT fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: {
+          allowInitiatorSelfApproval: true,
+          memberId: 'm9',
+          type: 'DIRECT',
+        },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: {
+        allowInitiatorSelfApproval: true,
+        memberId: 'm9',
+        type: 'DIRECT',
+      },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['a DIRECT fallback without a member', { type: 'DIRECT' }],
+    ['a blank member id', { memberId: '  ', type: 'DIRECT' }],
+    ['an unknown fallback type', { memberId: 'm9', type: 'SKIP' }],
+    [
+      'a non-boolean allowInitiatorSelfApproval',
+      { allowInitiatorSelfApproval: 'yes', memberId: 'm9', type: 'DIRECT' },
+    ],
+    ['a non-object fallback', 'm9'],
+  ])(
+    'drops a malformed ORG_MANAGER_CHAIN fallback (%s) but keeps the resolver',
+    async (_label, fallback) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: {
+          fallback,
+          minPositionLevel: 5,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    },
+  );
+
+  it('keeps a NONE fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { type: 'NONE' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: { type: 'NONE' },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
   it.each([
     ['missing', undefined],
     ['fractional', 2.5],

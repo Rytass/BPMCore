@@ -124,6 +124,10 @@ import {
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
+  readDefaultMinPositionLevel,
+  readMinPositionLevelOptions,
+} from './position-level-options';
+import {
   OrgUnitRecord,
   MembershipRecord,
   PositionRecord,
@@ -865,6 +869,9 @@ export function TemplateDesignerView({
   const [policyNotice, setPolicyNotice] = useState<Readonly<{
     message: string;
     nodeId: string;
+    // The policy the reducer replaced it with; the notice is only true while
+    // the node still carries that policy.
+    policyType: DecisionPolicy['type'];
   }> | null>(null);
   // A notice describes one editing moment on one node, so it must not outlive
   // that node staying selected. `nodeId` alone is not identity: node ids are
@@ -1646,6 +1653,18 @@ export function TemplateDesignerView({
     // answer before working out the new one.
     setPolicyNotice(null);
 
+    if (
+      isOrgManagerChainDecisionPolicyInvalid(approverResolver, decisionPolicy)
+    ) {
+      setPolicyNotice({
+        message: '主管鏈會依序加入多位主管，簽核方式已改為「全部同意」。',
+        nodeId,
+        policyType: 'PARALLEL_ALL',
+      });
+
+      return;
+    }
+
     if (!isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
       return;
     }
@@ -1656,6 +1675,7 @@ export function TemplateDesignerView({
         `不足原本設定的 ${decisionPolicy?.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
         '簽核政策已重設為單人簽核，請重新設定。',
       nodeId,
+      policyType: 'SINGLE',
     });
   }
 
@@ -1903,7 +1923,7 @@ export function TemplateDesignerView({
               policyNotice.nodeId === selectedNode?.id &&
               selectedNode.type === 'userTask' &&
               (selectedNode.data.decisionPolicy?.type ?? 'SINGLE') ===
-                'SINGLE' ? (
+                policyNotice.policyType ? (
                 <Typography color="text-warning" variant="body">
                   {policyNotice.message}
                 </Typography>
@@ -2933,7 +2953,16 @@ export function TemplateDesignerView({
                 ),
               )
             }
-            options={[...DECISION_POLICY_OPTIONS]}
+            options={[
+              // A chain needs every manager to sign, so only the policies the
+              // validator accepts are offered; a stored one stays readable
+              // through `readDecisionPolicyOption`.
+              ...DECISION_POLICY_OPTIONS.filter(
+                (option) =>
+                  resolver.type !== 'ORG_MANAGER_CHAIN' ||
+                  option.id === 'PARALLEL_ALL',
+              ),
+            ]}
             value={readDecisionPolicyOption(decisionPolicyType)}
           />
         </BPMFormField>
@@ -4361,10 +4390,7 @@ function readDefaultApproverResolver(
 
   if (mode === 'ORG_MANAGER_CHAIN') {
     return {
-      minPositionLevel: positions.reduce(
-        (highest, position) => Math.max(highest, position.level),
-        1,
-      ),
+      minPositionLevel: readDefaultMinPositionLevel(positions),
       type: 'ORG_MANAGER_CHAIN',
     };
   }
@@ -4417,39 +4443,6 @@ function updateApproverResolverFallback(
   }
 
   return resolver;
-}
-
-/**
- * One option per distinct position level in the directory, highest first, each
- * labelled with the positions sitting on that level. A saved level that no
- * position carries (positions deleted or not loaded yet) is still offered so
- * the select never renders blank and the stored value is not silently changed.
- */
-function readMinPositionLevelOptions(
-  positions: readonly PositionRecord[],
-  currentLevel: number,
-): readonly ManagerLevelOption[] {
-  const levels = [...new Set(positions.map((position) => position.level))];
-  const allLevels = levels.includes(currentLevel)
-    ? levels
-    : [...levels, currentLevel];
-
-  return [...allLevels]
-    .sort((left, right) => right - left)
-    .map((level) => {
-      const names = positions
-        .filter((position) => position.level === level)
-        .map((position) => position.name);
-
-      return {
-        id: String(level),
-        name:
-          names.length > 0
-            ? `職等 ${level}（${names.join('、')}）`
-            : `職等 ${level}`,
-        value: level,
-      };
-    });
 }
 
 function readManagerLevelOption(levelsUp: number): ManagerLevelOption {

@@ -1,6 +1,7 @@
 import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
+  ApproverResolverFallback,
   DecisionPolicy,
   ReturnResubmitStrategy,
   ServiceAction,
@@ -1125,12 +1126,14 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       };
     case 'ORG_MANAGER_CHAIN': {
       const minPositionLevel = value['minPositionLevel'];
+      const fallback = parseApproverResolverFallback(value['fallback']);
 
       return typeof minPositionLevel === 'number' &&
         Number.isInteger(minPositionLevel)
         ? {
             minPositionLevel,
             type: 'ORG_MANAGER_CHAIN',
+            ...(fallback ? { fallback } : {}),
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
@@ -1290,6 +1293,43 @@ function readStringArray(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
     : [];
+}
+
+/**
+ * A malformed fallback is dropped (the resolver then stops the flow when the
+ * chain ends early) rather than failing the whole tool call, in line with
+ * {@link parseApproverResolver}'s never-throw rule.
+ */
+function parseApproverResolverFallback(
+  value: unknown,
+): ApproverResolverFallback | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (value['type'] === 'NONE') {
+    return { type: 'NONE' };
+  }
+
+  const memberId = readNonEmptyString(value['memberId']);
+  const allowInitiatorSelfApproval = value['allowInitiatorSelfApproval'];
+
+  if (
+    value['type'] !== 'DIRECT' ||
+    !memberId ||
+    (allowInitiatorSelfApproval !== undefined &&
+      typeof allowInitiatorSelfApproval !== 'boolean')
+  ) {
+    return null;
+  }
+
+  return {
+    memberId,
+    type: 'DIRECT',
+    ...(allowInitiatorSelfApproval === undefined
+      ? {}
+      : { allowInitiatorSelfApproval }),
+  };
 }
 
 function readNonEmptyString(value: unknown): string | null {
