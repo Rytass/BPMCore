@@ -1158,9 +1158,9 @@ describe('WorkflowEngineService', () => {
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
 
-    await expect(
-      fixture.service.processInstance('instance-1'),
-    ).rejects.toThrow('did not resolve to a member id');
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      '找不到簽核人',
+    );
   });
 
   it('records webhook failures and continues processing', async (): Promise<void> => {
@@ -4280,6 +4280,276 @@ describe('WorkflowEngineService', () => {
         }),
       ]),
     );
+  });
+
+  describe('dry run with an approver that cannot be resolved', (): void => {
+    const runDryRun = (
+      workflow: WorkflowDefinition,
+      options: {
+        readonly formDataJson?: string;
+        readonly initiatorMetadataSnapshotJson?: string | null;
+      } = {},
+    ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.dryRunApprovalWorkflow({
+        formDataJson: options.formDataJson ?? '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson:
+          options.initiatorMetadataSnapshotJson ?? null,
+        workflowDefinitionJson: JSON.stringify(workflow),
+      });
+
+    it('stops at a DIRECT node with nobody chosen and names it by label', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.steps).toEqual([
+        expect.objectContaining({ nodeId: 'start', status: 'PASSED' }),
+        expect.objectContaining({
+          assigneeMemberId: null,
+          message:
+            '簽核節點「財務簽核」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+          nodeId: 'task_finance',
+          status: 'STOPPED',
+        }),
+      ]);
+    });
+
+    it('keeps the steps before the unassigned node and ends only that branch', (): void => {
+      const result = runDryRun(
+        withNodeData(
+          createExcludeInitiatorTwoStepWorkflow({
+            whenEmpty: 'INITIATOR_MANAGER',
+          }),
+          'task_next',
+          { approverResolver: { memberIds: [], type: 'DIRECT' } },
+        ),
+        {
+          initiatorMetadataSnapshotJson: JSON.stringify({
+            managerMemberId: 'member-manager',
+          }),
+        },
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.map((step) => [step.nodeId, step.status])).toEqual([
+        ['start', 'PASSED'],
+        ['task_finance', 'WAITING'],
+        ['task_next', 'STOPPED'],
+      ]);
+      expect(result.steps[2].message).toBe(
+        '簽核節點「下一關」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+      );
+    });
+
+    it('stops an unassigned node even when it excludes the initiator', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops a DYNAMIC_FORM node whose form field is empty', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { formPath: 'approver', type: 'DYNAMIC_FORM' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」依表單欄位找不到簽核人，請確認試跑資料中該欄位有填人員',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops an EXPRESSION node whose expression yields nobody', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { expression: '[]', type: 'EXPRESSION' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message: '簽核節點「財務簽核」依運算式找不到簽核人，請確認運算式的結果',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops an ORG_MANAGER node when the initiator snapshot names no manager', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」依申請人的組織找不到主管，請確認試跑時的申請人資料',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops at an exclusive gateway when no branch matches and there is no default', (): void => {
+      const workflow = createExclusiveGatewayWorkflow();
+      const result = runDryRun(
+        {
+          ...workflow,
+          edges: workflow.edges.filter(
+            (edge) => edge.id !== 'edge_gateway_default',
+          ),
+        },
+        { formDataJson: '{"amount":500}' },
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.map((step) => [step.nodeId, step.status])).toEqual([
+        ['start', 'PASSED'],
+        ['gateway_amount', 'STOPPED'],
+      ]);
+      expect(result.steps[1].message).toBe(
+        '節點「金額分流」的連出線條件都不符合，且沒有設定預設路徑，請檢查連出線的條件或補上預設路徑',
+      );
+    });
+
+    it('stops at a node that has no outgoing edge', (): void => {
+      const workflow = createLinearUserTaskWorkflow();
+      const result = runDryRun({
+        ...workflow,
+        edges: workflow.edges.filter((edge) => edge.id !== 'edge_task_end'),
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '節點「財務簽核」沒有連到下一個節點，請在流程設計器為此節點接上連線',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+  });
+
+  describe('runtime approver resolution errors name the org and the position', (): void => {
+    const processWith = (
+      approverResolver: ApproverResolver,
+      options: {
+        readonly processOrgUnits?: readonly OrgUnitEntity[];
+        readonly processPositions?: readonly PositionEntity[];
+      },
+    ): Promise<void> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processOrgUnits: options.processOrgUnits,
+        processPositions: options.processPositions,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.processInstance('instance-1');
+
+    it('names the organisation when ORG_UNIT_MEMBER finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        { orgUnitId: 'org-empty', type: 'ORG_UNIT_MEMBER' },
+        {
+          processOrgUnits: [
+            createOrgUnit({
+              id: 'org-empty',
+              name: '空組織',
+              path: 'org.empty',
+            }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織「空組織」目前沒有任何有效成員，請先將人員加入該組織',
+      );
+    });
+
+    it('names the position when POSITION finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        { positionId: 'position-cfo', type: 'POSITION' },
+        {
+          processPositions: [
+            createPosition({ id: 'position-cfo', name: '財務長' }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：職位「財務長」目前沒有任何有效成員',
+      );
+    });
+
+    it('falls back to the id when the position row is missing', async (): Promise<void> => {
+      await expect(
+        processWith({ positionId: 'position-gone', type: 'POSITION' }, {}),
+      ).rejects.toThrow('職位「position-gone」目前沒有任何有效成員');
+    });
+
+    it('names the organisation and the position when ORG_UNIT_POSITION finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        {
+          orgUnitId: 'org-empty',
+          positionId: 'position-cfo',
+          type: 'ORG_UNIT_POSITION',
+        },
+        {
+          processOrgUnits: [
+            createOrgUnit({
+              id: 'org-empty',
+              name: '空組織',
+              path: 'org.empty',
+            }),
+          ],
+          processPositions: [
+            createPosition({ id: 'position-cfo', name: '財務長' }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織「空組織」的職位「財務長」目前沒有任何有效成員',
+      );
+    });
+
+    it('reports an empty DYNAMIC_FORM field as no approver found', async (): Promise<void> => {
+      await expect(
+        processWith({ formPath: 'approver', type: 'DYNAMIC_FORM' }, {}),
+      ).rejects.toThrow('簽核節點「財務簽核」 找不到簽核人');
+    });
   });
 
   it('resubmits returned instances from the return point when configured', async (): Promise<void> => {
@@ -7893,6 +8163,16 @@ function createServiceFixture({
   };
   const transactionalOrgUnitRepository = createRepository<OrgUnitEntity>({
     createQueryBuilder: jest.fn(() => createOrgUnitQueryBuilder()),
+    findOne: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<OrgUnitEntity | null> =>
+        Promise.resolve(
+          processOrgUnits.find((orgUnit) =>
+            matchesFindWhere(orgUnit, options?.where),
+          ) ?? null,
+        ),
+    ),
     find: jest.fn(
       (
         options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
@@ -7905,6 +8185,16 @@ function createServiceFixture({
     ),
   });
   const transactionalPositionRepository = createRepository<PositionEntity>({
+    findOne: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<PositionEntity | null> =>
+        Promise.resolve(
+          processPositions.find((position) =>
+            matchesFindWhere(position, options?.where),
+          ) ?? null,
+        ),
+    ),
     find: jest.fn(
       (
         options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,

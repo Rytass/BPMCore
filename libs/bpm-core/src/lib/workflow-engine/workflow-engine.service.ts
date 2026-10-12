@@ -155,6 +155,12 @@ interface DryRunAssignment {
   readonly outcome: 'SKIPPED' | 'STOPPED' | null;
 }
 
+interface DryRunOutgoing {
+  readonly edges: readonly WorkflowEdge[];
+  // Set when the node cannot route any further and its branch ends here.
+  readonly stopMessage: string | null;
+}
+
 interface DryRunPathInput extends DryRunSimulationInput {
   readonly depth: number;
   readonly incomingEdge: WorkflowEdge | null;
@@ -2472,6 +2478,7 @@ export class WorkflowEngineService {
         : null;
     const assigneeMemberId = assignment?.assigneeMemberId ?? null;
     const skippedByExclusion = assignment?.outcome === 'SKIPPED';
+    const stoppedByAssignment = assignment?.outcome === 'STOPPED';
     const nextLastDecision =
       entryConditionMet && node.type === 'userTask' && !skippedByExclusion
         ? {
@@ -2480,6 +2487,21 @@ export class WorkflowEngineService {
             nodeId: node.id,
           }
         : input.lastDecision;
+    // A node that stops on its assignment, an asynchronous NOTIFY node (at
+    // runtime it consumes its token and never advances) and an end event do
+    // not route any further.
+    const routes =
+      !stoppedByAssignment &&
+      !isAsyncNotifyServiceTask(node) &&
+      node.type !== 'endEvent';
+    const outgoing: DryRunOutgoing = routes
+      ? this.readDryRunOutgoing(
+          input,
+          node,
+          nextLastDecision,
+          entryConditionMet && !skippedByExclusion,
+        )
+      : { edges: [], stopMessage: null };
     const nextSteps = [
       ...input.steps,
       createDryRunStep({
@@ -2490,54 +2512,20 @@ export class WorkflowEngineService {
         entryCondition,
         entryConditionMet,
         message:
-          assignment?.message ?? readDryRunStepMessage(node, entryConditionMet),
+          assignment?.message ??
+          outgoing.stopMessage ??
+          readDryRunStepMessage(node, entryConditionMet),
         node,
         status:
-          assignment?.outcome ?? readDryRunStepStatus(node, entryConditionMet),
+          assignment?.outcome ??
+          (outgoing.stopMessage === null
+            ? readDryRunStepStatus(node, entryConditionMet)
+            : 'STOPPED'),
         stepIndex: input.steps.length,
       }),
     ];
 
-    // The initiator is the only approver and the node cannot proceed: this
-    // branch ends here, as it would fail at runtime.
-    if (assignment?.outcome === 'STOPPED') {
-      return nextSteps;
-    }
-
-    // A NOTIFY node is an asynchronous branch: at runtime it consumes its
-    // token and never advances, so its branch ends here rather than failing
-    // for want of an outgoing edge it is not allowed to have.
-    if (isAsyncNotifyServiceTask(node)) {
-      return nextSteps;
-    }
-
-    if (!entryConditionMet || skippedByExclusion || node.type === 'endEvent') {
-      if (node.type === 'endEvent') {
-        return nextSteps;
-      }
-
-      return readOutgoingEdgesOrThrow(input.workflowDefinition, node.id).reduce(
-        (steps, edge) =>
-          this.simulateWorkflowPath({
-            ...input,
-            depth: input.depth + 1,
-            incomingEdge: edge,
-            lastDecision: nextLastDecision,
-            nodeId: edge.target,
-            steps,
-            visitedNodeIds: nextVisitedNodeIds,
-          }),
-        nextSteps,
-      );
-    }
-
-    const outgoingEdges = this.readDryRunAvailableOutgoingEdges(
-      input,
-      node,
-      nextLastDecision,
-    );
-
-    return outgoingEdges.reduce(
+    return outgoing.edges.reduce(
       (steps, edge) =>
         this.simulateWorkflowPath({
           ...input,
@@ -2552,25 +2540,39 @@ export class WorkflowEngineService {
     );
   }
 
-  private readDryRunAvailableOutgoingEdges(
+  /**
+   * The edges a dry-run step continues along. A node a designer has left
+   * unfinished (nothing drawn out of it, or no branch of a gateway taken) ends
+   * its branch with a readable message instead of failing the whole dry run.
+   */
+  private readDryRunOutgoing(
     input: DryRunSimulationInput,
     node: WorkflowNode,
     lastDecision: Readonly<Record<string, unknown>> | null,
-  ): readonly WorkflowEdge[] {
-    if (node.type === 'endEvent') {
-      return [];
+    evaluatesConditions: boolean,
+  ): DryRunOutgoing {
+    const nodeName = readDryRunNodeName(node);
+    const outgoingEdges = input.workflowDefinition.edges.filter(
+      (edge) => edge.source === node.id,
+    );
+
+    if (outgoingEdges.length === 0) {
+      return {
+        edges: [],
+        stopMessage: `節點「${nodeName}」沒有連到下一個節點，請在流程設計器為此節點接上連線`,
+      };
     }
 
-    const outgoingEdges = readOutgoingEdgesOrThrow(
-      input.workflowDefinition,
-      node.id,
-    );
+    if (!evaluatesConditions) {
+      return { edges: outgoingEdges, stopMessage: null };
+    }
+
     const conditionalEdges = outgoingEdges.filter(
       (edge) => !edge.data.isDefault && edgeHasCondition(edge),
     );
 
     if (conditionalEdges.length === 0) {
-      return outgoingEdges;
+      return { edges: outgoingEdges, stopMessage: null };
     }
 
     const matchingEdges = conditionalEdges.filter((edge) =>
@@ -2578,22 +2580,27 @@ export class WorkflowEngineService {
     );
 
     if (matchingEdges.length > 0) {
-      return node.type === 'exclusiveGateway'
-        ? [matchingEdges[0]]
-        : matchingEdges;
+      return {
+        edges:
+          node.type === 'exclusiveGateway' ? [matchingEdges[0]] : matchingEdges,
+        stopMessage: null,
+      };
     }
 
     const defaultEdges = outgoingEdges.filter((edge) => edge.data.isDefault);
 
     if (defaultEdges.length > 0) {
-      return node.type === 'exclusiveGateway'
-        ? [defaultEdges[0]]
-        : defaultEdges;
+      return {
+        edges:
+          node.type === 'exclusiveGateway' ? [defaultEdges[0]] : defaultEdges,
+        stopMessage: null,
+      };
     }
 
-    throw new ConflictException(
-      `Workflow node ${node.id} has no matching outgoing edge`,
-    );
+    return {
+      edges: [],
+      stopMessage: `節點「${nodeName}」的連出線條件都不符合，且沒有設定預設路徑，請檢查連出線的條件或補上預設路徑`,
+    };
   }
 
   private evaluateDryRunEdge(
@@ -2625,19 +2632,38 @@ export class WorkflowEngineService {
     node: UserTaskNode,
   ): DryRunAssignment {
     const resolver = node.data.approverResolver;
-    const label = `workflow.nodes.${node.id}.data.approverResolver`;
     const excludeInitiator = node.data.excludeInitiator;
-    const memberIds = excludeInitiator
-      ? this.readDryRunMemberIds(input, resolver, label)
-      : null;
+    const memberIds = this.readDryRunMemberIds(
+      input,
+      resolver,
+      `workflow.nodes.${node.id}.data.approverResolver`,
+    );
 
-    if (!excludeInitiator || !memberIds?.includes(input.initiatorMemberId)) {
+    if (memberIds === null) {
       return {
-        assigneeMemberId: this.resolveDryRunAssigneeMemberId(
-          input,
+        assigneeMemberId: readDryRunPlaceholderAssignee(resolver),
+        message: null,
+        outcome: null,
+      };
+    }
+
+    // Nobody to ask yet — typically a node whose approver has not been chosen.
+    // The branch ends here and says which node needs attention, rather than
+    // failing the whole dry run.
+    if (memberIds.length === 0) {
+      return {
+        assigneeMemberId: null,
+        message: readDryRunUnresolvedApproverMessage(
           resolver,
-          label,
+          readDryRunNodeName(node),
         ),
+        outcome: 'STOPPED',
+      };
+    }
+
+    if (!excludeInitiator || !memberIds.includes(input.initiatorMemberId)) {
+      return {
+        assigneeMemberId: memberIds[0],
         message: null,
         outcome: null,
       };
@@ -2700,100 +2726,46 @@ export class WorkflowEngineService {
     };
   }
 
+  /**
+   * The member ids a dry run resolves for a user task: an empty list when the
+   * resolver names nobody, `null` for resolvers that only resolve to a
+   * placeholder in a dry run.
+   */
   private readDryRunMemberIds(
     input: DryRunSimulationInput,
     resolver: ApproverResolver,
     label: string,
   ): readonly string[] | null {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdsFromValue(resolver.memberIds, label);
+      return findMemberIdsInValue(resolver.memberIds);
     }
 
     if (resolver.type === 'DYNAMIC_FORM') {
-      return readMemberIdsFromValue(
+      return findMemberIdsInValue(
         readValueAtPath(input.formData, resolver.formPath),
-        `${label}.formPath`,
       );
     }
 
     if (resolver.type === 'EXPRESSION') {
-      return readMemberIdsFromValue(
+      return findMemberIdsInValue(
         this.conditionService.evaluateValue(
           resolver.expression,
           buildDryRunExpressionContext(input, null),
           `${label}.expression`,
         ),
-        `${label}.expression`,
       );
     }
 
     if (resolver.type === 'ORG_MANAGER') {
-      return readMemberIdsFromValue(
+      return findMemberIdsInValue(
         readManagerMemberIdFromInitiatorSnapshot(
           input.initiatorMetadataSnapshot,
           resolver.levelsUp,
         ),
-        label,
       );
     }
 
     return null;
-  }
-
-  private resolveDryRunAssigneeMemberId(
-    input: DryRunSimulationInput,
-    resolver: ApproverResolver,
-    label: string,
-  ): string {
-    if (resolver.type === 'DIRECT') {
-      return readMemberIdFromValue(resolver.memberIds, label);
-    }
-
-    if (resolver.type === 'DYNAMIC_FORM') {
-      return readMemberIdFromValue(
-        readValueAtPath(input.formData, resolver.formPath),
-        `${label}.formPath`,
-      );
-    }
-
-    if (resolver.type === 'EXPRESSION') {
-      return readMemberIdFromValue(
-        this.conditionService.evaluateValue(
-          resolver.expression,
-          buildDryRunExpressionContext(input, null),
-          `${label}.expression`,
-        ),
-        `${label}.expression`,
-      );
-    }
-
-    if (resolver.type === 'POSITION') {
-      return `position:${resolver.positionId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_MEMBER') {
-      return `orgUnitMember:${resolver.orgUnitId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_POSITION') {
-      return `orgUnitPosition:${resolver.orgUnitId}:${resolver.positionId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_MANAGER') {
-      return `orgUnitManager:${resolver.orgUnitId}`;
-    }
-
-    if (resolver.type === 'ORG_MANAGER_CHAIN') {
-      return `orgManagerChain:${resolver.minPositionLevel}`;
-    }
-
-    return readMemberIdFromValue(
-      readManagerMemberIdFromInitiatorSnapshot(
-        input.initiatorMetadataSnapshot,
-        resolver.levelsUp,
-      ),
-      label,
-    );
   }
 
   async getApprovalInstance(
@@ -4805,7 +4777,7 @@ export class WorkflowEngineService {
     if (resolver.type === 'DYNAMIC_FORM') {
       return readMemberIdsFromValue(
         readValueAtPath(instance.formData, resolver.formPath),
-        `${label}.formPath`,
+        label,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4816,7 +4788,7 @@ export class WorkflowEngineService {
           buildWorkflowExpressionContext(instance),
           `${label}.expression`,
         ),
-        `${label}.expression`,
+        label,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4915,7 +4887,7 @@ export class WorkflowEngineService {
 
     if (!activeMemberships.length) {
       throw new ConflictException(
-        `${label} position ${positionId} has no active membership`,
+        `${label} 找不到簽核人：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
@@ -5336,7 +5308,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} orgUnit ${orgUnitId} has no active member`,
+        `${label} 找不到簽核人：組織「${await this.readOrgUnitName(manager, orgUnitId)}」目前沒有任何有效成員，請先將人員加入該組織`,
       );
     }
 
@@ -5366,11 +5338,35 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} orgUnit ${orgUnitId} and position ${positionId} has no active membership`,
+        `${label} 找不到簽核人：組織「${await this.readOrgUnitName(manager, orgUnitId)}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
     return uniqueTexts(memberIds);
+  }
+
+  // Names only make an error readable, so a row that has gone missing falls
+  // back to its id instead of hiding the real problem.
+  private async readOrgUnitName(
+    manager: EntityManager,
+    orgUnitId: string,
+  ): Promise<string> {
+    const orgUnit = await manager
+      .getRepository(OrgUnitEntity)
+      .findOne({ where: { id: orgUnitId } });
+
+    return orgUnit?.name ?? orgUnitId;
+  }
+
+  private async readPositionName(
+    manager: EntityManager,
+    positionId: string,
+  ): Promise<string> {
+    const position = await manager
+      .getRepository(PositionEntity)
+      .findOne({ where: { id: positionId } });
+
+    return position?.name ?? positionId;
   }
 
   private async readOrgUnitScopeIds(
@@ -6570,32 +6566,36 @@ function edgeHasCondition(edge: WorkflowEdge): boolean {
   );
 }
 
-function readMemberIdFromValue(value: unknown, label: string): string {
-  return readMemberIdsFromValue(value, label)[0] ?? '';
+function findMemberIdsInValue(value: unknown): readonly string[] {
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  if (Array.isArray(value)) {
+    return uniqueTexts(
+      value
+        .filter(
+          (candidate): candidate is string =>
+            typeof candidate === 'string' && Boolean(candidate.trim()),
+        )
+        .map((candidate) => candidate.trim()),
+    );
+  }
+
+  return [];
 }
 
 function readMemberIdsFromValue(
   value: unknown,
   label: string,
 ): readonly string[] {
-  if (typeof value === 'string' && value.trim()) {
-    return [value.trim()];
+  const memberIds = findMemberIdsInValue(value);
+
+  if (memberIds.length === 0) {
+    throw new ConflictException(`${label} 找不到簽核人`);
   }
 
-  if (Array.isArray(value)) {
-    const memberIds = value
-      .filter(
-        (candidate): candidate is string =>
-          typeof candidate === 'string' && Boolean(candidate.trim()),
-      )
-      .map((candidate) => candidate.trim());
-
-    if (memberIds.length > 0) {
-      return uniqueTexts(memberIds);
-    }
-  }
-
-  throw new ConflictException(`${label} did not resolve to a member id`);
+  return memberIds;
 }
 
 function uniqueTexts(values: readonly string[]): readonly string[] {
@@ -7794,6 +7794,53 @@ function isNumberFormField(
   field: FormFieldDefinition,
 ): field is NumberFieldDefinition {
   return field.type === 'number' || field.type === 'money';
+}
+
+function readDryRunNodeName(node: WorkflowNode): string {
+  return node.data.label?.trim() || node.id;
+}
+
+// The dry run cannot look the organisation up, so these resolvers stand in
+// with a placeholder that names what the runtime would resolve.
+function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
+  if (resolver.type === 'POSITION') {
+    return `position:${resolver.positionId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MEMBER') {
+    return `orgUnitMember:${resolver.orgUnitId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_POSITION') {
+    return `orgUnitPosition:${resolver.orgUnitId}:${resolver.positionId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MANAGER') {
+    return `orgUnitManager:${resolver.orgUnitId}`;
+  }
+
+  return resolver.type === 'ORG_MANAGER_CHAIN'
+    ? `orgManagerChain:${resolver.minPositionLevel}`
+    : resolver.type;
+}
+
+function readDryRunUnresolvedApproverMessage(
+  resolver: ApproverResolver,
+  nodeName: string,
+): string {
+  if (resolver.type === 'DIRECT') {
+    return `簽核節點「${nodeName}」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人`;
+  }
+
+  if (resolver.type === 'DYNAMIC_FORM') {
+    return `簽核節點「${nodeName}」依表單欄位找不到簽核人，請確認試跑資料中該欄位有填人員`;
+  }
+
+  if (resolver.type === 'EXPRESSION') {
+    return `簽核節點「${nodeName}」依運算式找不到簽核人，請確認運算式的結果`;
+  }
+
+  return `簽核節點「${nodeName}」依申請人的組織找不到主管，請確認試跑時的申請人資料`;
 }
 
 function createDryRunStep(input: {
