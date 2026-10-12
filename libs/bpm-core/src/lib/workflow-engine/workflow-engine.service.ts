@@ -1190,9 +1190,10 @@ export class WorkflowEngineService {
         // Rejects WEBHOOK targets — countersigners must be members.
         buildAdhocApproverResolver(targetValue);
 
-        // The task is only spawned when a later node is reached, where a
-        // target the initiator exclusion rejects would fail long after this
-        // request was accepted. Fail it now against the node being decided.
+        // The countersign task is only created when a later user task is
+        // reached, against that node's own setting. This checks the target
+        // against the node being decided now, as an early rejection for the
+        // common case; it is not a guarantee about the node it attaches to.
         if (node.data.excludeInitiator) {
           await this.resolveAdhocTaskCandidates(
             manager,
@@ -1683,14 +1684,16 @@ export class WorkflowEngineService {
       buildAdhocApproverResolver(targetValue),
       `${label}「${node.data.label}」`,
     );
-    const delegatedCandidates = await this.applyDelegationToResolvedCandidates(
+    const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
       node.id,
       resolvedCandidates,
     );
-    const candidates = node.data.excludeInitiator
-      ? dropInitiatorCandidates(delegatedCandidates, instance.initiatorMemberId)
-      : delegatedCandidates;
+    const candidates = selectNodeCandidates(
+      delegatedCandidates,
+      node.data.excludeInitiator !== undefined,
+      instance.initiatorMemberId,
+    );
 
     if (candidates.length > 0) {
       return candidates;
@@ -2409,9 +2412,10 @@ export class WorkflowEngineService {
   }
 
   /**
-   * The dry-run assignee of a user task. Only resolvers that name real member
-   * ids can be checked against the initiator; the org-derived ones resolve to
-   * placeholders and are left as they are.
+   * The dry-run assignee of a user task. Only resolvers whose dry run yields
+   * real member ids (DIRECT, DYNAMIC_FORM, EXPRESSION and ORG_MANAGER, which
+   * reads the initiator snapshot) can be checked against the initiator; the
+   * others resolve to placeholders and are left as they are.
    */
   private resolveDryRunAssignment(
     input: DryRunSimulationInput,
@@ -2508,6 +2512,16 @@ export class WorkflowEngineService {
           `${label}.expression`,
         ),
         `${label}.expression`,
+      );
+    }
+
+    if (resolver.type === 'ORG_MANAGER') {
+      return readMemberIdsFromValue(
+        readManagerMemberIdFromInitiatorSnapshot(
+          input.initiatorMetadataSnapshot,
+          resolver.levelsUp,
+        ),
+        label,
       );
     }
 
@@ -3816,7 +3830,12 @@ export class WorkflowEngineService {
             : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        decisionPolicySnapshot: node.data.decisionPolicy,
+        decisionPolicySnapshot: node.data.excludeInitiator
+          ? capDecisionPolicyToCandidateCount(
+              node.data.decisionPolicy,
+              candidates.length,
+            )
+          : node.data.decisionPolicy,
         delegationChain:
           candidates.length === 1 ? primaryCandidate.delegationChain : [],
         instanceId: instance.id,
@@ -4120,15 +4139,17 @@ export class WorkflowEngineService {
       node.data.approverResolver,
       label,
     );
-    const delegatedCandidates = await this.applyDelegationToResolvedCandidates(
+    const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
       node.id,
       resolvedCandidates,
     );
     const excludeInitiator = node.data.excludeInitiator;
-    const uniqueCandidates = excludeInitiator
-      ? dropInitiatorCandidates(delegatedCandidates, instance.initiatorMemberId)
-      : delegatedCandidates;
+    const uniqueCandidates = selectNodeCandidates(
+      delegatedCandidates,
+      excludeInitiator !== undefined,
+      instance.initiatorMemberId,
+    );
 
     if (uniqueCandidates.length > 0) {
       return uniqueCandidates;
@@ -4170,13 +4191,17 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
   ): Promise<readonly RuntimeTaskCandidate[]> {
+    // The initiator's own direct manager: the closest org unit only, and the
+    // initiator himself (a unit head) is skipped so resolution falls through
+    // to the next tier instead of ending on him.
     const managerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       instance.initiatorMemberId,
       toDateOnlyString(new Date()),
-      false,
+      true,
+      instance.initiatorMemberId,
     );
-    const delegatedCandidates = await this.applyDelegationToResolvedCandidates(
+    const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
       node.id,
       managerMemberIds.map((memberId) => ({
@@ -4185,13 +4210,16 @@ export class WorkflowEngineService {
       })),
     );
 
-    return dropInitiatorCandidates(
+    return selectNodeCandidates(
       delegatedCandidates,
+      true,
       instance.initiatorMemberId,
     );
   }
 
-  private async applyDelegationToResolvedCandidates(
+  // Not deduplicated: a node that excludes the initiator filters first, so a
+  // first-seen entry that must be dropped cannot shadow a legitimate one.
+  private async delegateResolvedCandidates(
     instance: ApprovalInstanceEntity,
     nodeId: string,
     resolvedCandidates: readonly ResolvedApproverCandidate[],
@@ -4226,7 +4254,7 @@ export class WorkflowEngineService {
       ),
     );
 
-    return uniqueRuntimeCandidates(delegatedCandidates);
+    return delegatedCandidates;
   }
 
   private async resolveApproverResolver(
@@ -4465,6 +4493,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -4500,6 +4529,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
+      excludedManagerMemberId,
     );
   }
 
@@ -4577,6 +4607,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -4606,6 +4637,13 @@ export class WorkflowEngineService {
         ),
       )
       .filter((resolution) => isDateRangeActive(resolution, date))
+      // Dropped before the top-priority tier is chosen, so resolution falls
+      // through to the next tier instead of ending on the excluded member.
+      .filter(
+        (resolution) =>
+          excludedManagerMemberId === undefined ||
+          resolution.managerMemberId !== excludedManagerMemberId,
+      )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
       );
@@ -5921,16 +5959,52 @@ function uniqueRuntimeCandidates(
 }
 
 // A delegate acting for the initiator is still the initiator approving their
-// own document, so both the final and the pre-delegation member are checked.
-function dropInitiatorCandidates(
-  candidates: readonly RuntimeTaskCandidate[],
+// own document, so the initiator anywhere on the delegation path (the
+// pre-delegation member, any hop, or the final assignee) drops the candidate.
+function isInitiatorOnCandidatePath(
+  candidate: RuntimeTaskCandidate,
+  initiatorMemberId: string,
+): boolean {
+  return (
+    candidate.memberId === initiatorMemberId ||
+    candidate.originalMemberId === initiatorMemberId ||
+    candidate.delegationChain.some(
+      (step) =>
+        step.from === initiatorMemberId || step.to === initiatorMemberId,
+    )
+  );
+}
+
+// The initiator filter runs on the delegated list before the dedupe, so a
+// legitimate approver is never shadowed by an excluded entry for the same
+// final assignee. Without the exclusion this is the plain dedupe.
+function selectNodeCandidates(
+  delegatedCandidates: readonly RuntimeTaskCandidate[],
+  excludeInitiator: boolean,
   initiatorMemberId: string,
 ): readonly RuntimeTaskCandidate[] {
-  return candidates.filter(
-    (candidate) =>
-      candidate.memberId !== initiatorMemberId &&
-      candidate.originalMemberId !== initiatorMemberId,
+  return uniqueRuntimeCandidates(
+    excludeInitiator
+      ? delegatedCandidates.filter(
+          (candidate) =>
+            !isInitiatorOnCandidatePath(candidate, initiatorMemberId),
+        )
+      : delegatedCandidates,
   );
+}
+
+// A COUNT threshold above the people left would never be reached once the
+// initiator is gone, so it is capped at who remains ("everyone else").
+// PERCENTAGE is computed from the actual candidate count and needs nothing.
+function capDecisionPolicyToCandidateCount(
+  policy: DecisionPolicy,
+  candidateCount: number,
+): DecisionPolicy {
+  return policy.type === 'QUORUM' &&
+    policy.thresholdType === 'COUNT' &&
+    policy.threshold > candidateCount
+    ? { ...policy, threshold: Math.max(candidateCount, 1) }
+    : policy;
 }
 
 function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {

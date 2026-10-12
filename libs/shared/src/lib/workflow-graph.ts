@@ -896,7 +896,7 @@ export function readExcludeInitiatorIssue(
 
   return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
     ? null
-    : '簽核節點的「排除申請人」需要指定沒有其他簽核人時的處理方式。';
+    : '簽核節點的「申請人不可簽核自己的單」需要指定沒有其他簽核人時的處理方式。';
 }
 
 export function readApproverResolverIssue(

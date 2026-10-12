@@ -401,13 +401,20 @@ User Task 節點設定 `excludeInitiator: { whenEmpty }` 後，送出單據的�
 runtime 讀的是 `instance.workflowSnapshot`，所以模板之後才開啟此設定時，已經在跑的
 instance 不受影響。
 
-- **建立待簽任務**：先解析、再套用 delegation，然後移除 `memberId`（代理後）或
-  `originalMemberId`（代理前）等於申請人的候選人——代理人替申請人簽，等於申請人自己簽。
-  這一步在「沒有任何候選人」的檢查之前。
+- **建立待簽任務**：先解析、再套用 delegation，然後移除申請人出現在其代理路徑上的候選人
+  （代理前的 `originalMemberId`、`delegationChain` 中任何一步的 `from`／`to`，或代理後的
+  `memberId`）——代理人替申請人簽，等於申請人自己簽。這一步在「沒有任何候選人」的檢查之前，
+  而且在同一個 `memberId` 的去重之前：申請人把席位代理給名單中另一位簽核人時，
+  那位簽核人自己的那一筆不會被申請人的那一筆蓋掉。
+- **COUNT 門檻**：排除申請人後剩下的人數低於 `QUORUM` 的 COUNT 門檻時，該 task 的
+  `decisionPolicySnapshot` 會把門檻降到剩下的人數（「兩人要同意」變成「其餘的人都要同意」），
+  否則任務永遠無法完成。PERCENTAGE 由實際候選人數計算，不需處理。`INITIATOR_MANAGER` 改派的名單同樣適用。
 - **移除後沒有人時**依 `whenEmpty`：
   - `FAIL`：丟出 `ConflictException`，不建立任務。
   - `INITIATOR_MANAGER`：改派申請人的直屬主管（同樣套 delegation、同樣排除申請人），
     候選人的 `sourceType` 為 `EXCLUDE_INITIATOR_MANAGER`；找不到主管同樣丟 `ConflictException`。
+    查主管時只取申請人最近的組織單位，並先排除申請人本人的主管規則再選最高優先序——
+    申請人本人就是單位主管時，會落到上一層的主管，而不是又選回自己。
   - `SKIP_NODE`：不建立任務，寫一筆 `TOKEN_ADVANCED` activity log
     （`payload: { skippedByInitiatorExclusion: true, tokenId }`），token 直接往下走。
     待處理的會簽 directive 留給下一個真正建立的 user task。
@@ -415,11 +422,12 @@ instance 不受影響。
 - **轉交**：簽核人手動轉交（`decideTask` 的 `TRANSFERRED`）時，若目標是申請人本人，
   回 `ConflictException`。
 - **臨時加簽／會簽**：建立任務時套用同一個過濾，指定對象只剩申請人時回
-  `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個節點才
-  產生，所以在送出會簽要求時就依「目前這個節點」的設定先檢查一次，避免要求被接受很久之後才失敗
-  （實際產生任務時仍以該節點自己的設定為準，失敗會取消 directive，不阻塞主流程）。
-- **Dry run**：只有 resolver 解析成真實 member id（`DIRECT`／`DYNAMIC_FORM`／`EXPRESSION`）時才會比對
-  申請人；`SKIP_NODE` 回報該步驟 `SKIPPED`，`FAIL`（或找不到主管）回報 `STOPPED` 並帶說明，
+  `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個 user task
+  建立時才產生，且以「那個節點」自己的設定為準（失敗會取消 directive，不阻塞主流程）。
+  送出會簽要求時另依「目前正在決策的節點」做一次提前檢查，只是常見情況的早期拒絕，
+  不保證任務最後掛上的節點也會通過。
+- **Dry run**：只有 dry run 能解析成真實 member id 的 resolver（`DIRECT`／`DYNAMIC_FORM`／`EXPRESSION`，
+  以及讀申請人 snapshot 的 `ORG_MANAGER`）才會比對申請人；`SKIP_NODE` 回報該步驟 `SKIPPED`，`FAIL`（或找不到主管）回報 `STOPPED` 並帶說明，
   `INITIATOR_MANAGER` 取申請人 snapshot 中的主管。
 
 **不涵蓋**：
@@ -427,10 +435,8 @@ instance 不受影響。
 - SLA 升級（`ESCALATE`）選出的轉交對象——它帶 `transferReason`，不經過上面的轉交檢查，
   升級對象仍可能是申請人。
 - 設定開啟之前就已啟動的 instance（節點讀的是啟動時的 snapshot）。
-- 組織推導型 resolver（`POSITION`／`ORG_MANAGER` 等）在 dry run 中的比對；它們在實際建立任務時
-  仍會被過濾。
-- `QUORUM` 的 COUNT 門檻不會因排除申請人而自動下修；`DIRECT` 名單含申請人又要求
-  全部人數時，設計者需自行調整門檻。
+- 其餘組織推導型 resolver（`POSITION`／`ORG_UNIT_*` 等）在 dry run 中的比對（dry run 只回傳佔位字串）；
+  它們在實際建立任務時仍會被過濾。
 
 ---
 

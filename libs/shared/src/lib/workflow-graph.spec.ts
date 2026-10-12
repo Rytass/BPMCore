@@ -157,7 +157,7 @@ describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
       }),
     );
 
-    expect(issue).toContain('排除申請人');
+    expect(issue).toContain('申請人不可簽核自己的單');
   });
 
   it.each(['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'] as const)(
