@@ -1,3 +1,17 @@
+## 0.13.5 (2026-10-12)
+
+### 🩹 Fixes
+
+- **deps:** patch critical advisories in next, handlebars, proxy-addr and shell-quote ([c58a51a](https://github.com/Rytass/BPMCore/commit/c58a51a))
+- **workflow-engine:** keep ad-hoc fields on the task a transfer creates ([d6732ef](https://github.com/Rytass/BPMCore/commit/d6732ef))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+- Claude Opus 5.5
+- Kai-Chieh Yang
+
 ## 0.13.4 (2026-09-17)
 
 ### 🚀 Features

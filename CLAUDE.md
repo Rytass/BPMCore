@@ -56,7 +56,82 @@ registry". `bpm-core-react` was unaffected only because its package root is the
 source directory. Verified by reading `nx/dist/src/utils/package-json.js`
 (targetDefaults are *merged into* the implicit target, so nx's own
 `^nx-release-publish` ordering survives) and by watching the build run ahead of
-publish in `nx release --dry-run`.
+publish in `nx release --dry-run`. That dry run is a weak check: it never
+writes the version, so it cannot see the failure below.
+
+**`dependsOn: ["build"]` is necessary but not sufficient — a release can exit 0
+with three packages never reaching npm.** On v0.13.5 the build *did* run ahead
+of publish, hit the nx cache, and restored a `dist` still carrying the old
+version:
+
+```
+> nx run shared:build  [local cache]
+> nx run shared:nx-release-publish
+Skipped package "@rytass/bpm-core-shared" ... because v0.13.4 already exists
+```
+
+Only `bpm-core-react` reached npm. The command still reported success.
+
+The mechanism, verified: daemonless, a single nx process keeps the Rust
+`WorkspaceContext` file hashes it read at startup, and nothing in the
+`nx release` path notifies that context when the version step rewrites
+`libs/*/package.json` — only the daemon's watcher
+(`daemon/server/project-graph-incremental-recomputation.js` →
+`updateFilesInContext`) and `utils/sync-generators.js` ever push changed files
+into it. So the version bump leaves the build hash untouched, and the cache
+entry written moments earlier by the pre-version `prepublish-check` build —
+under the *old* version — is a hit. Probed directly: within one process the
+`build` hashes before and after rewriting every `libs/*/package.json` are
+identical (`shared:build 404298817381`), while a fresh process computes a
+different hash for the same tree. `package.json` **is** in the input set
+(`nx show target inputs bpm-core:build` lists it); the stale hash value is the
+problem, not the input set, so adding it to `inputs` fixes nothing.
+
+This workspace is daemonless: `.nx/workspace-data/d/disabled` has sat there
+since 2026-08-25 (a `TypeError` in the daemon's incremental recomputation), and
+`daemon/client/client.js` also disables the daemon inside a sandbox. With the
+daemon enabled the in-process hash is still stale for the first ~200ms, so the
+daemon is a race, not a fix.
+
+`bpm-core-react` escapes for a second reason: its `build` is `nx:run-commands`,
+and the `targetDefaults` key is the executor `@nx/js:tsc`, not the target name
+`build`, so `isCacheableTask` never marks it cacheable and it always really
+runs.
+
+Why v0.13.4 published cleanly is **not** established. `dependsOn: ["build"]`
+predates it and `prepublish-check` writes that stale entry on every release, so
+"a build ran first" is not the trigger. Treat the one-command form as
+unreliable, not as broken since a known date.
+
+**Never trust the exit code — verify the registry after every release.**
+`npm view` is locally cached and shows the old version for a minute or two:
+
+```bash
+for p in bpm-core-shared bpm-core-nestjs-module bpm-core-client bpm-core-react; do
+  curl -s -o /dev/null -w "$p %{http_code}\n" \
+    "https://registry.npmjs.org/@rytass%2F$p/<version>"   # 404 = never published
+done
+```
+
+**Recovery when a package was skipped** — this is the path that worked:
+
+```bash
+pnpm nx run-many -t build -p shared,bpm-core,bpm-core-client --skip-nx-cache
+npx nx release publish --projects=shared,bpm-core,bpm-core-client,bpm-core-react --otp=<6 digits>
+```
+
+List **all four**: a fixed release group rejects a subset ("Cannot filter to a
+subset of projects within fixed release group") and the already-published one
+skips itself. This is the one sanctioned use of `--projects`, and the rule
+above is exactly why the build is run first and by hand.
+
+**Candidate fixes, none proven across a real release yet.**
+`NX_SKIP_NX_CACHE=true npx nx release …` is the cheapest: the variable is read
+in `tasks-runner/run-command.js`, it does bypass the cache (verified on a
+`build` target), and being process-level it also covers the publish phase.
+Running `nx release version` and `nx release publish` as two separate processes
+should also work, since a fresh process hashes the new `package.json` correctly
+(verified in isolation). Both still need a real release to confirm.
 
 **Never pass `--projects` or `--groups` to a release.** `publish.js` turns on
 `excludeTaskDependencies` whenever either is set, which silently drops that
