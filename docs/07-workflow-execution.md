@@ -321,7 +321,9 @@ async function resolveApprovers(
 `ORG_MANAGER` 的 `levelsUp` 是固定層數；`ORG_MANAGER_CHAIN` 則是從申請人開始一層一層往上找
 主管，讓每一位主管都要簽，直到某位主管的**職等**達到 `minPositionLevel` 為止，所以簽幾關取決於
 組織圖，不是模板寫死。resolver 回傳的是**有順序**的 member id 清單（最近的主管在最前面）。
-目前這種節點請搭配 `PARALLEL_ALL`；清單順序要變成真正的簽核順序，要等 `SEQUENTIAL` 依序派發另案完成後。
+搭配 `SEQUENTIAL`（建議）時，主管鏈**由近到遠依序簽**：先只開給最近的主管，他核准後才輪到
+下一位（規則見 §4.3 的〈`SEQUENTIAL`：依序簽核〉）；搭配 `PARALLEL_ALL` 則所有主管同時收到待辦、全部同意才通過。
+設計器把節點改成主管鏈時，若原本的決策方式會讓一位主管簽完就結案，會自動改成 `SEQUENTIAL`。
 
 - **職等來源**：`PositionEntity.level`（數字越大越高階）。一位主管的職等 = 他**目前有效**
   （`effective_from`／`effective_to` 涵蓋今天）且有 `positionId` 的所有 membership 中最大的
@@ -344,8 +346,7 @@ async function resolveApprovers(
   `allowInitiatorSelfApproval` → 丟錯）。fallback 成功時把改派固定人放在清單**最後**一關；
   若他已在清單裡就不重複加入。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
-  `SEQUENTIAL` 或 `PARALLEL_ALL`。目前 `SEQUENTIAL` 的完成條件與 `PARALLEL_ALL` 相同（所有人都簽完），
-  真正「一次只派給一位」的依序派發，以及保存簽核順序，另案處理。
+  `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。
 
 ### 4.2 Delegation 解析順序（**重要**）
 

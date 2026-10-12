@@ -103,7 +103,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
-    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
   properties: {
     type: {

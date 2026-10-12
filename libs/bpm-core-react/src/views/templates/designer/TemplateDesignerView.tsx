@@ -1663,9 +1663,9 @@ export function TemplateDesignerView({
       isOrgManagerChainDecisionPolicyInvalid(approverResolver, decisionPolicy)
     ) {
       setPolicyNotice({
-        message: '主管鏈會依序加入多位主管，簽核方式已改為「全部同意」。',
+        message: '主管鏈會依序加入多位主管，簽核方式已改為「依序簽核」。',
         nodeId,
-        policyType: 'PARALLEL_ALL',
+        policyType: 'SEQUENTIAL',
       });
 
       return;
@@ -2981,6 +2981,7 @@ export function TemplateDesignerView({
               ...DECISION_POLICY_OPTIONS.filter(
                 (option) =>
                   resolver.type !== 'ORG_MANAGER_CHAIN' ||
+                  option.id === 'SEQUENTIAL' ||
                   option.id === 'PARALLEL_ALL',
               ),
             ]}
@@ -5353,7 +5354,7 @@ function readWorkflowDefinitionIssue(
   }
 
   if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
-    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「全部同意」，否則任一位主管簽完就會結案。`;
+    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「依序簽核或全部同意」，否則任一位主管簽完就會結案。`;
   }
 
   if (excludeInitiatorNode && excludeInitiatorNode.type === 'userTask') {

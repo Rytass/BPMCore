@@ -2525,6 +2525,106 @@ describe('WorkflowEngineService', () => {
       ]);
     });
 
+    it('opens only the nearest manager and keeps the rest waiting in chain order', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+            ['member-m2', 'member-m3'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.savedTaskCandidates.map((candidate) => ({
+          memberId: candidate.memberId,
+          sequence: candidate.sequence,
+          status: candidate.status,
+        })),
+      ).toEqual([
+        {
+          memberId: 'member-m1',
+          sequence: 0,
+          status: TaskCandidateStatusEnum.PENDING,
+        },
+        {
+          memberId: 'member-m2',
+          sequence: 1,
+          status: TaskCandidateStatusEnum.WAITING,
+        },
+        {
+          memberId: 'member-m3',
+          sequence: 2,
+          status: TaskCandidateStatusEnum.WAITING,
+        },
+      ]);
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-m1',
+        decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+      });
+    });
+
+    it('hands the task up to the next manager when the nearest one approves', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          assigneeMemberId: 'member-m1',
+          assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+          candidateMemberIds: ['member-m1', 'member-m2', 'member-m3'],
+          decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+          id: 'task-chain',
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-m1',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processTaskCandidates: ['member-m1', 'member-m2', 'member-m3'].map(
+          (memberId, index) =>
+            createTaskCandidate({
+              id: `candidate-${memberId.slice(-2)}`,
+              memberId,
+              sequence: index,
+              status:
+                index === 0
+                  ? TaskCandidateStatusEnum.PENDING
+                  : TaskCandidateStatusEnum.WAITING,
+              taskId: 'task-chain',
+            }),
+        ),
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: { minPositionLevel: 3, type: 'ORG_MANAGER_CHAIN' },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-m1',
+        taskId: 'task-chain',
+      });
+
+      expect(readLatestCandidateStatuses(fixture, 'task-chain')).toEqual({
+        'member-m1': TaskCandidateStatusEnum.COMPLETED,
+        'member-m2': TaskCandidateStatusEnum.PENDING,
+        'member-m3': TaskCandidateStatusEnum.WAITING,
+      });
+      expect(readLatestTask(fixture, 'task-chain')).toMatchObject({
+        assigneeMemberId: 'member-m2',
+        status: TaskStatusEnum.PENDING,
+      });
+    });
+
     it('stops at the first manager that already reaches the level', async (): Promise<void> => {
       const fixture = createChainFixture(
         createManagerChainOrg({
@@ -6357,6 +6457,90 @@ describe('WorkflowEngineService', () => {
       });
     });
 
+    it('keeps the stored member when a late delegation would route a waiting candidate to the initiator on an excluding node', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture({
+        excludeInitiator: { whenEmpty: 'FAIL' },
+      });
+
+      // member-b delegated to the initiator (member-001) after the task was
+      // created; creation would have dropped that path, so activation must too.
+      fixture.delegationService.resolveAssignee.mockImplementation(
+        (memberId: string): Promise<DelegationResolution> =>
+          Promise.resolve(
+            memberId === 'member-b'
+              ? {
+                  delegationChain: [
+                    {
+                      from: 'member-b',
+                      reason: 'ALL',
+                      ruleId: 'delegation-rule-initiator',
+                      to: 'member-001',
+                    },
+                  ],
+                  finalAssigneeMemberId: 'member-001',
+                }
+              : { delegationChain: [], finalAssigneeMemberId: memberId },
+          ),
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-b',
+        delegationChain: [],
+      });
+      expect(
+        readLatestCandidates(fixture, 'task-seq').find(
+          (candidate) => candidate.id === 'candidate-b',
+        ),
+      ).toMatchObject({
+        delegationChain: [],
+        memberId: 'member-b',
+        status: TaskCandidateStatusEnum.PENDING,
+      });
+    });
+
+    it('still applies a late delegation to someone else on an excluding node', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture({
+        excludeInitiator: { whenEmpty: 'FAIL' },
+      });
+
+      fixture.delegationService.resolveAssignee.mockImplementation(
+        (memberId: string): Promise<DelegationResolution> =>
+          Promise.resolve(
+            memberId === 'member-b'
+              ? {
+                  delegationChain: [
+                    {
+                      from: 'member-b',
+                      reason: 'ALL',
+                      ruleId: 'delegation-rule-other',
+                      to: 'member-b-delegate',
+                    },
+                  ],
+                  finalAssigneeMemberId: 'member-b-delegate',
+                }
+              : { delegationChain: [], finalAssigneeMemberId: memberId },
+          ),
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-b-delegate',
+      });
+    });
+
     it('carries the waiting candidates over when an SLA escalation transfers the active one', async (): Promise<void> => {
       const fixture = createSequentialDecisionFixture();
 
@@ -8937,10 +9121,12 @@ function readTaskByNodeId(
 function createSequentialDecisionFixture({
   activeIndex = 0,
   additionalProcessTasks,
+  excludeInitiator,
   processAdhocDirectives,
 }: {
   readonly activeIndex?: number;
   readonly additionalProcessTasks?: readonly TaskEntity[];
+  readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
 } = {}): ServiceFixture {
   const memberIds = ['member-a', 'member-b', 'member-c'];
@@ -8982,6 +9168,7 @@ function createSequentialDecisionFixture({
     ),
     processWorkflowSnapshot: createLinearUserTaskWorkflow({
       decisionPolicy: { type: 'SEQUENTIAL' },
+      excludeInitiator,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
       slaDuration: 'PT2H',
     }),

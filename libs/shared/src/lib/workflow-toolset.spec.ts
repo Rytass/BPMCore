@@ -822,15 +822,16 @@ describe('set_user_task_decision_policy', () => {
 
   // A chain only works when every manager signs, so the shared reducer
   // upgrades the default SINGLE policy instead of leaving the assistant with a
-  // draft the backend validator would reject.
-  it('switches the node to PARALLEL_ALL when the approver becomes a chain', async () => {
+  // draft the backend validator would reject. The chain signs bottom-up, so the
+  // policy it picks is SEQUENTIAL.
+  it('switches the node to SEQUENTIAL when the approver becomes a chain', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const afterApprover = await runTool(state, 'set_user_task_approver', {
       approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
       nodeId,
     });
 
-    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SEQUENTIAL' });
   });
 
   it('keeps an already chain-compatible policy when the approver becomes a chain', async () => {

@@ -4151,6 +4151,7 @@ export class WorkflowEngineService {
     const delegation = await this.resolveActivationDelegation({
       candidate: nextCandidate,
       candidates,
+      excludesInitiator: isInitiatorExcluded(node),
       instance,
       nodeId: task.nodeId,
     });
@@ -4213,16 +4214,21 @@ export class WorkflowEngineService {
    * Re-resolves the delegation of a candidate whose turn has come. When the
    * delegate already holds another candidate row on the task, the stored values
    * are kept: (task_id, member_id) is unique, and that member signs from the
-   * row they already have.
+   * row they already have. On a node that excludes the initiator the stored
+   * values are kept as well when the new delegation path would run through the
+   * initiator: creation already filtered such paths out, and a delegation added
+   * while the candidate waited must not bring them back.
    */
   private async resolveActivationDelegation({
     candidate,
     candidates,
+    excludesInitiator,
     instance,
     nodeId,
   }: {
     readonly candidate: TaskCandidateEntity;
     readonly candidates: readonly TaskCandidateEntity[];
+    readonly excludesInitiator: boolean;
     readonly instance: ApprovalInstanceEntity;
     readonly nodeId: string;
   }): Promise<{
@@ -4243,7 +4249,18 @@ export class WorkflowEngineService {
         other.memberId === resolution.finalAssigneeMemberId,
     );
 
-    if (collides) {
+    if (
+      collides ||
+      (excludesInitiator &&
+        isInitiatorOnCandidatePath(
+          {
+            delegationChain: resolution.delegationChain,
+            memberId: resolution.finalAssigneeMemberId,
+            originalMemberId: candidate.originalMemberId,
+          },
+          instance.initiatorMemberId,
+        ))
+    ) {
       return stored;
     }
 
@@ -6533,7 +6550,10 @@ function isInitiatorExcluded(node: UserTaskNode): boolean {
 // own document, so the initiator anywhere on the delegation path (the
 // pre-delegation member, any hop, or the final assignee) drops the candidate.
 function isInitiatorOnCandidatePath(
-  candidate: RuntimeTaskCandidate,
+  candidate: Pick<
+    RuntimeTaskCandidate,
+    'delegationChain' | 'memberId' | 'originalMemberId'
+  >,
   initiatorMemberId: string,
 ): boolean {
   return (
