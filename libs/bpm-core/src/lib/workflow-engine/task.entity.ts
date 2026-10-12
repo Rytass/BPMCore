@@ -59,6 +59,14 @@ export class TaskEntity {
   @Field(() => Date, { nullable: true })
   slaDueAt!: Date | null;
 
+  /**
+   * When the current SLA window began. Set when a SEQUENTIAL candidate is
+   * activated; NULL means the window began at `createdAt`.
+   */
+  @Column('timestamptz', { name: 'sla_started_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  slaStartedAt!: Date | null;
+
   @Column('boolean', { default: false, name: 'is_adhoc' })
   @Field()
   isAdhoc!: boolean;

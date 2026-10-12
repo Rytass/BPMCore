@@ -4093,8 +4093,14 @@ describe('WorkflowEngineService', () => {
       ).toMatchObject({
         actorMemberId: null,
         nodeId: 'task_finance',
+        // The same recipient fields TASK_CREATED carries, so a consumer can
+        // route "your turn" exactly like an assignment.
         payload: {
+          assigneeMemberId: 'member-b',
+          assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
           candidateMemberId: 'member-b',
+          candidateMemberIds: ['member-b'],
+          originalAssigneeMemberId: 'member-b',
           originalMemberId: 'member-b',
           previousMemberId: 'member-a',
           sequence: 1,
@@ -4344,40 +4350,7 @@ describe('WorkflowEngineService', () => {
     });
 
     it('keeps the old behaviour for a SEQUENTIAL task created before candidates were ordered', async (): Promise<void> => {
-      const fixture = createServiceFixture({
-        currentVersionId: 'template-version-1',
-        decisionTask: createTask({
-          assigneeMemberId: null,
-          assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
-          decisionPolicySnapshot: { type: 'SEQUENTIAL' },
-          id: 'task-legacy',
-          nodeId: 'task_finance',
-          originalAssigneeMemberId: null,
-          status: TaskStatusEnum.PENDING,
-          tokenId: 'token-1',
-        }),
-        decisionToken: createWorkflowToken({
-          currentNodeId: 'task_finance',
-          status: WorkflowTokenStatusEnum.WAITING,
-        }),
-        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
-        processTaskCandidates: [
-          createTaskCandidate({
-            id: 'candidate-a',
-            memberId: 'member-a',
-            taskId: 'task-legacy',
-          }),
-          createTaskCandidate({
-            id: 'candidate-b',
-            memberId: 'member-b',
-            taskId: 'task-legacy',
-          }),
-        ],
-        processWorkflowSnapshot: createLinearUserTaskWorkflow({
-          decisionPolicy: { type: 'SEQUENTIAL' },
-        }),
-        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
-      });
+      const fixture = createLegacySequentialFixture();
 
       // Any order, and the task stays open until both have approved.
       await fixture.service.decideTask({
@@ -4414,6 +4387,363 @@ describe('WorkflowEngineService', () => {
             log.eventType === ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
         ),
       ).toBe(false);
+    });
+
+    it('starts a fresh SLA window for the activated candidate', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture();
+      const before = Date.now();
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      const activated = readLatestTask(fixture, 'task-seq');
+
+      expect(activated?.slaStartedAt?.getTime()).toBeGreaterThanOrEqual(before);
+      expect(activated?.slaStartedAt?.getTime()).toBeLessThanOrEqual(
+        Date.now(),
+      );
+      expect(activated?.slaDueAt?.getTime()).toBeGreaterThan(
+        activated?.slaStartedAt?.getTime() ?? Infinity,
+      );
+    });
+
+    it('applies a delegation created after the task when the candidate is activated', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture();
+      const delegationChain = [
+        {
+          from: 'member-b',
+          reason: 'ALL',
+          ruleId: 'delegation-rule-late',
+          to: 'member-b-delegate',
+        },
+      ];
+
+      fixture.delegationService.resolveAssignee.mockImplementation(
+        (memberId: string): Promise<DelegationResolution> =>
+          Promise.resolve(
+            memberId === 'member-b'
+              ? { delegationChain, finalAssigneeMemberId: 'member-b-delegate' }
+              : { delegationChain: [], finalAssigneeMemberId: memberId },
+          ),
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(
+        readLatestCandidates(fixture, 'task-seq').find(
+          (candidate) => candidate.id === 'candidate-b',
+        ),
+      ).toMatchObject({
+        delegationChain,
+        memberId: 'member-b-delegate',
+        originalMemberId: 'member-b',
+        status: TaskCandidateStatusEnum.PENDING,
+      });
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-b-delegate',
+        delegationChain,
+        originalAssigneeMemberId: 'member-b',
+      });
+      expect(
+        fixture.notificationService.createTaskAssignedNotification,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: expect.objectContaining({
+            assigneeMemberId: 'member-b-delegate',
+          }),
+        }),
+      );
+      expect(
+        fixture.savedSingleActivityLogs.find(
+          (log) =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+        )?.payload,
+      ).toMatchObject({
+        assigneeMemberId: 'member-b-delegate',
+        candidateMemberIds: ['member-b-delegate'],
+        originalAssigneeMemberId: 'member-b',
+      });
+    });
+
+    it('keeps the stored member when the delegate already holds another candidate row', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture();
+
+      // member-b now delegates to member-c, who is also a candidate on the
+      // task; (task_id, member_id) is unique, so b must stay as stored.
+      fixture.delegationService.resolveAssignee.mockImplementation(
+        (memberId: string): Promise<DelegationResolution> =>
+          Promise.resolve(
+            memberId === 'member-b'
+              ? {
+                  delegationChain: [
+                    {
+                      from: 'member-b',
+                      reason: 'ALL',
+                      ruleId: 'delegation-rule-collide',
+                      to: 'member-c',
+                    },
+                  ],
+                  finalAssigneeMemberId: 'member-c',
+                }
+              : { delegationChain: [], finalAssigneeMemberId: memberId },
+          ),
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(readLatestCandidateStatuses(fixture, 'task-seq')).toEqual({
+        'member-a': TaskCandidateStatusEnum.COMPLETED,
+        'member-b': TaskCandidateStatusEnum.PENDING,
+        'member-c': TaskCandidateStatusEnum.WAITING,
+      });
+      expect(
+        readLatestCandidates(fixture, 'task-seq').find(
+          (candidate) => candidate.id === 'candidate-b',
+        )?.delegationChain,
+      ).toEqual([]);
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-b',
+        delegationChain: [],
+      });
+    });
+
+    it('carries the waiting candidates over when an SLA escalation transfers the active one', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture();
+
+      // The SLA scan drives this through decideTask exactly like this.
+      await fixture.service.decideTask(
+        {
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: 'SLA timeout escalated this task.',
+          decidedByMemberId: 'member-a',
+          taskId: 'task-seq',
+          transferToMemberId: 'member-manager',
+        },
+        { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+      );
+
+      const replacement = readTaskAssignedTo(fixture, 'member-manager');
+
+      expect(replacement).toMatchObject({
+        decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+      });
+      expect(replacement.delegationChain).toEqual([
+        {
+          from: 'member-a',
+          reason: SLA_ESCALATION_DELEGATION_REASON,
+          ruleId: null,
+          to: 'member-manager',
+        },
+      ]);
+      expect(readLatestCandidateStatuses(fixture, replacement.id)).toEqual({
+        'member-b': TaskCandidateStatusEnum.WAITING,
+        'member-c': TaskCandidateStatusEnum.WAITING,
+        'member-manager': TaskCandidateStatusEnum.PENDING,
+      });
+    });
+
+    it('activates the next candidate when an SLA auto-approval decides for the active one', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture();
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: 'SLA timeout auto-approved this task.',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(readLatestCandidateStatuses(fixture, 'task-seq')).toEqual({
+        'member-a': TaskCandidateStatusEnum.COMPLETED,
+        'member-b': TaskCandidateStatusEnum.PENDING,
+        'member-c': TaskCandidateStatusEnum.WAITING,
+      });
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-b',
+        status: TaskStatusEnum.PENDING,
+      });
+      expect(
+        fixture.savedSingleActivityLogs.some(
+          (log) =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+        ),
+      ).toBe(true);
+    });
+
+    it('hands the replacement a SINGLE task when the last candidate transfers', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture({ activeIndex: 2 });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        comment: '請代簽',
+        decidedByMemberId: 'member-c',
+        taskId: 'task-seq',
+        transferToMemberId: 'member-x',
+      });
+
+      const replacement = readTaskAssignedTo(fixture, 'member-x');
+
+      expect(replacement).toMatchObject({
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+      });
+      expect(
+        readLatestCandidates(fixture, replacement.id).map((candidate) => ({
+          memberId: candidate.memberId,
+          sequence: candidate.sequence,
+        })),
+      ).toEqual([{ memberId: 'member-x', sequence: null }]);
+    });
+
+    it('keeps a transfer SINGLE on a SEQUENTIAL task created before candidates were ordered', async (): Promise<void> => {
+      const fixture = createLegacySequentialFixture();
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        comment: '請代簽',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-legacy',
+        transferToMemberId: 'member-x',
+      });
+
+      const replacement = readTaskAssignedTo(fixture, 'member-x');
+
+      expect(replacement).toMatchObject({
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+      });
+      expect(
+        readLatestCandidates(fixture, replacement.id).map(
+          (candidate) => candidate.sequence,
+        ),
+      ).toEqual([null]);
+    });
+
+    it('leaves a one-candidate SEQUENTIAL task unordered and never activates anyone', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: { memberIds: ['member-a'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.savedTaskCandidates.map((candidate) => ({
+          memberId: candidate.memberId,
+          sequence: candidate.sequence,
+          status: candidate.status,
+        })),
+      ).toEqual([
+        {
+          memberId: 'member-a',
+          sequence: null,
+          status: TaskCandidateStatusEnum.PENDING,
+        },
+      ]);
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-a',
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+      });
+      expect(
+        fixture.savedSingleActivityLogs.find(
+          (log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED,
+        )?.payload,
+      ).not.toHaveProperty('sequentialCandidateMemberIds');
+
+      const taskId = fixture.savedTasks[0]?.id ?? '';
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId,
+      });
+
+      expect(readLatestTask(fixture, taskId)?.status).toBe(
+        TaskStatusEnum.COMPLETED,
+      );
+      expect(
+        fixture.savedSingleActivityLogs.some(
+          (log) =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+        ),
+      ).toBe(false);
+    });
+
+    it('tells the requester, not only the next signer, when a pre-approval is returned after the task moved on', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture({
+        additionalProcessTasks: [
+          createTask({
+            adhocDirectiveId: 'directive-seed-1',
+            adhocOriginTaskId: 'task-seq',
+            adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+            assigneeMemberId: 'member-p',
+            id: 'task-pre',
+            isAdhoc: true,
+            nodeId: 'task_finance',
+            originalAssigneeMemberId: 'member-p',
+            status: TaskStatusEnum.PENDING,
+            tokenId: 'token-1',
+          }),
+        ],
+        processAdhocDirectives: [
+          createAdhocDirective({
+            consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+            createdByMemberId: 'member-a',
+            id: 'directive-seed-1',
+            onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+            status: AdhocDirectiveStatusEnum.CONSUMED,
+            type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          }),
+        ],
+      });
+
+      // Nothing stops the active signer approving while their pre-approval is
+      // open (the same is true of a single-approver task); the token is held
+      // back, and the task moves on to member-b.
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '同意',
+        decidedByMemberId: 'member-a',
+        taskId: 'task-seq',
+      });
+
+      expect(readLatestTask(fixture, 'task-seq')?.assigneeMemberId).toBe(
+        'member-b',
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.REJECTED,
+        comment: '需要更多資訊',
+        decidedByMemberId: 'member-p',
+        taskId: 'task-pre',
+      });
+
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientMemberIds: ['member-a', 'member-b'],
+        }),
+      );
     });
 
     it('still creates every PARALLEL_ALL candidate at once', async (): Promise<void> => {
@@ -4564,6 +4894,12 @@ interface ServiceFixture {
     Promise<unknown>,
     [string, readonly unknown[]]
   >;
+  readonly delegationService: {
+    readonly resolveAssignee: jest.Mock<
+      Promise<DelegationResolution>,
+      [string]
+    >;
+  };
   readonly notificationService: Pick<
     NotificationService,
     | 'createAdhocWorkflowNotifications'
@@ -5394,6 +5730,7 @@ function createServiceFixture({
       return savedToken;
     },
     taskCandidateFind,
+    delegationService,
     service: new WorkflowEngineService(
       instanceRepository,
       tokenRepository,
@@ -5863,6 +6200,7 @@ function createTask(value: Partial<TaskEntity>): TaskEntity {
         ? null
         : (value.originalAssigneeMemberId ?? 'member-finance'),
     slaDueAt: value.slaDueAt ?? null,
+    slaStartedAt: value.slaStartedAt ?? null,
     status: value.status ?? TaskStatusEnum.PENDING,
     tokenId: value.tokenId ?? 'token-1',
   });
@@ -6404,18 +6742,72 @@ function readTaskByNodeId(
   return task;
 }
 
-function createSequentialDecisionFixture(): ServiceFixture {
+function createSequentialDecisionFixture({
+  activeIndex = 0,
+  additionalProcessTasks,
+  processAdhocDirectives,
+}: {
+  readonly activeIndex?: number;
+  readonly additionalProcessTasks?: readonly TaskEntity[];
+  readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+} = {}): ServiceFixture {
+  const memberIds = ['member-a', 'member-b', 'member-c'];
+
   return createServiceFixture({
+    additionalProcessTasks,
     currentVersionId: 'template-version-1',
     decisionTask: createTask({
-      assigneeMemberId: 'member-a',
+      assigneeMemberId: memberIds[activeIndex],
       assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
-      candidateMemberIds: ['member-a', 'member-b', 'member-c'],
+      candidateMemberIds: memberIds,
       decisionPolicySnapshot: { type: 'SEQUENTIAL' },
       id: 'task-seq',
       nodeId: 'task_finance',
-      originalAssigneeMemberId: 'member-a',
+      originalAssigneeMemberId: memberIds[activeIndex],
       slaDueAt: new Date('2026-05-04T11:00:00.000Z'),
+      status: TaskStatusEnum.PENDING,
+      tokenId: 'token-1',
+    }),
+    decisionToken: createWorkflowToken({
+      currentNodeId: 'task_finance',
+      status: WorkflowTokenStatusEnum.WAITING,
+    }),
+    formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+    processAdhocDirectives,
+    processTaskCandidates: memberIds.map((memberId, index) =>
+      createTaskCandidate({
+        id: `candidate-${memberId.slice(-1)}`,
+        memberId,
+        sequence: index,
+        status:
+          index < activeIndex
+            ? TaskCandidateStatusEnum.COMPLETED
+            : index === activeIndex
+              ? TaskCandidateStatusEnum.PENDING
+              : TaskCandidateStatusEnum.WAITING,
+        taskId: 'task-seq',
+      }),
+    ),
+    processWorkflowSnapshot: createLinearUserTaskWorkflow({
+      decisionPolicy: { type: 'SEQUENTIAL' },
+      returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+      slaDuration: 'PT2H',
+    }),
+    templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+  });
+}
+
+/** A SEQUENTIAL task from before candidates were ordered (no sequence). */
+function createLegacySequentialFixture(): ServiceFixture {
+  return createServiceFixture({
+    currentVersionId: 'template-version-1',
+    decisionTask: createTask({
+      assigneeMemberId: null,
+      assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+      decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+      id: 'task-legacy',
+      nodeId: 'task_finance',
+      originalAssigneeMemberId: null,
       status: TaskStatusEnum.PENDING,
       tokenId: 'token-1',
     }),
@@ -6428,28 +6820,16 @@ function createSequentialDecisionFixture(): ServiceFixture {
       createTaskCandidate({
         id: 'candidate-a',
         memberId: 'member-a',
-        sequence: 0,
-        taskId: 'task-seq',
+        taskId: 'task-legacy',
       }),
       createTaskCandidate({
         id: 'candidate-b',
         memberId: 'member-b',
-        sequence: 1,
-        status: TaskCandidateStatusEnum.WAITING,
-        taskId: 'task-seq',
-      }),
-      createTaskCandidate({
-        id: 'candidate-c',
-        memberId: 'member-c',
-        sequence: 2,
-        status: TaskCandidateStatusEnum.WAITING,
-        taskId: 'task-seq',
+        taskId: 'task-legacy',
       }),
     ],
     processWorkflowSnapshot: createLinearUserTaskWorkflow({
       decisionPolicy: { type: 'SEQUENTIAL' },
-      returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
-      slaDuration: 'PT2H',
     }),
     templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
   });

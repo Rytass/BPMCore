@@ -1854,10 +1854,12 @@ export class WorkflowEngineService {
       }
     }
 
-    const recipientMemberIds = await this.readOpenTaskRecipientMemberIds(
-      manager,
-      originTask,
-    );
+    // The requester is told even when the origin task has moved on to someone
+    // else (a SEQUENTIAL task passes to the next signer once they approve).
+    const recipientMemberIds = uniqueTexts([
+      directive.createdByMemberId,
+      ...(await this.readOpenTaskRecipientMemberIds(manager, originTask)),
+    ]);
 
     if (recipientMemberIds.length > 0) {
       await this.notificationService.createAdhocWorkflowNotifications({
@@ -3802,10 +3804,18 @@ export class WorkflowEngineService {
     }
 
     const now = new Date();
+    // Delegation was resolved when the task was created; the candidate may have
+    // gained a delegate while waiting, so resolve it again for the new turn.
+    const delegation = await this.resolveActivationDelegation({
+      candidate: nextCandidate,
+      candidates,
+      instance,
+      nodeId: task.nodeId,
+    });
     const activatedCandidate = await manager
       .getRepository(TaskCandidateEntity)
       .save(
-        Object.assign(new TaskCandidateEntity(), nextCandidate, {
+        Object.assign(new TaskCandidateEntity(), nextCandidate, delegation, {
           status: TaskCandidateStatusEnum.PENDING,
         }),
       );
@@ -3816,11 +3826,12 @@ export class WorkflowEngineService {
       openedAt: null,
       originalAssigneeMemberId: activatedCandidate.originalMemberId,
       // The new holder gets the node's full SLA window, not what is left of
-      // the previous holder's.
+      // the previous holder's; the warning is measured from this moment.
       slaDueAt: await this.slaScheduleService.resolveTaskSlaDueAt({
         node,
         now,
       }),
+      slaStartedAt: now,
       status: TaskStatusEnum.PENDING,
     });
 
@@ -3832,8 +3843,14 @@ export class WorkflowEngineService {
         eventType: ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
         instanceId: instance.id,
         nodeId: task.nodeId,
+        // Carries the same recipient fields as TASK_CREATED so a consumer can
+        // route this event exactly like a task assignment.
         payload: {
+          assigneeMemberId: activatedCandidate.memberId,
+          assignmentType: activatedTask.assignmentType,
           candidateMemberId: activatedCandidate.memberId,
+          candidateMemberIds: [activatedCandidate.memberId],
+          originalAssigneeMemberId: activatedCandidate.originalMemberId,
           originalMemberId: activatedCandidate.originalMemberId,
           previousMemberId,
           sequence: activatedCandidate.sequence,
@@ -3848,6 +3865,50 @@ export class WorkflowEngineService {
       node,
       task: activatedTask,
     });
+  }
+
+  /**
+   * Re-resolves the delegation of a candidate whose turn has come. When the
+   * delegate already holds another candidate row on the task, the stored values
+   * are kept: (task_id, member_id) is unique, and that member signs from the
+   * row they already have.
+   */
+  private async resolveActivationDelegation({
+    candidate,
+    candidates,
+    instance,
+    nodeId,
+  }: {
+    readonly candidate: TaskCandidateEntity;
+    readonly candidates: readonly TaskCandidateEntity[];
+    readonly instance: ApprovalInstanceEntity;
+    readonly nodeId: string;
+  }): Promise<{
+    readonly delegationChain: TaskCandidateEntity['delegationChain'];
+    readonly memberId: string;
+  }> {
+    const stored = {
+      delegationChain: candidate.delegationChain,
+      memberId: candidate.memberId,
+    };
+    const resolution = await this.delegationService.resolveAssignee(
+      candidate.originalMemberId,
+      this.buildDelegationContext(instance, nodeId),
+    );
+    const collides = candidates.some(
+      (other) =>
+        other.id !== candidate.id &&
+        other.memberId === resolution.finalAssigneeMemberId,
+    );
+
+    if (collides) {
+      return stored;
+    }
+
+    return {
+      delegationChain: resolution.delegationChain,
+      memberId: resolution.finalAssigneeMemberId,
+    };
   }
 
   private async markTaskCandidateDecision({
@@ -4140,12 +4201,11 @@ export class WorkflowEngineService {
     return uniqueCandidates;
   }
 
-  private async applyDelegationToResolvedCandidates(
+  private buildDelegationContext(
     instance: ApprovalInstanceEntity,
     nodeId: string,
-    resolvedCandidates: readonly ResolvedApproverCandidate[],
-  ): Promise<readonly RuntimeTaskCandidate[]> {
-    const context = {
+  ): Parameters<DelegationService['resolveAssignee']>[1] {
+    return {
       formData: instance.formData,
       initiatorMemberId: instance.initiatorMemberId,
       initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
@@ -4156,6 +4216,14 @@ export class WorkflowEngineService {
       templateVersionId: instance.templateVersionId,
       title: instance.title,
     };
+  }
+
+  private async applyDelegationToResolvedCandidates(
+    instance: ApprovalInstanceEntity,
+    nodeId: string,
+    resolvedCandidates: readonly ResolvedApproverCandidate[],
+  ): Promise<readonly RuntimeTaskCandidate[]> {
+    const context = this.buildDelegationContext(instance, nodeId);
     const delegatedCandidates = await Promise.all(
       resolvedCandidates.map(
         async (candidate): Promise<RuntimeTaskCandidate> => {

@@ -386,27 +386,46 @@ async function createTasksForNode(node, token) {
 > **行為變更**：在此之前 `SEQUENTIAL` 與 `PARALLEL_ALL` 完全相同（所有候選人同時收到待辦、
 > 全部同意才完成）。現在 `SEQUENTIAL` 才真正代表「一位簽完、下一位才輪到」。
 
-- **順序**：候選人的順序就是 approver resolver 解析出來的順序（套用代理、去重之後），
-  寫入 `task_candidates.sequence`（0 起算）。例如主管鏈由下往上簽，resolver 就應由下往上回傳。
+- **順序**：候選人的順序就是 approver resolver 回傳的順序（套用代理、去重之後），
+  寫入 `task_candidates.sequence`（0 起算）。`DIRECT`／`DYNAMIC_FORM`／`EXPRESSION` 的順序由
+  流程作者控制（`memberIds` 陣列、表單欄位值、運算式結果的順序）。由組織資料解析的 resolver
+  （`POSITION`、`ORG_UNIT_*`、`ORG_MANAGER`）回傳的成員順序不是為簽核順序設計的，不要依賴它。
 - **建立 task**：只有 `sequence = 0` 的候選人是 `PENDING`，其餘為 `WAITING`（還沒輪到）。
   task 的 `assignee_member_id`／`original_assignee_member_id`／`delegation_chain` 一律是目前輪到的那位，
   `assignment_type` 仍是 `CANDIDATE_GROUP`。`WAITING` 的人不會有待辦、也收不到通知；
   他們若在輪到前嘗試決策，會得到 `ConflictException`（`not this member's turn yet`）。
 - **同意**：該位候選人 → `COMPLETED`，`sequence` 最小的 `WAITING` 候選人 → `PENDING`，
   task 回到 `PENDING`（`opened_at` 清空）、assignee 換成新的一位，`sla_due_at` 依節點 SLA 重新計算
-  （新的一位拿到完整的 SLA 時間）。同時寫入 `TASK_CANDIDATE_ACTIVATED` activity log 並通知新的一位。
-  token 仍停在該節點等待。
+  （新的一位拿到完整的 SLA 時間），並把這個時間點記在 `tasks.sla_started_at`：SLA 預警
+  （`warningAt`）從 `sla_started_at` 起算，沒有這個值（一般 task、舊資料）才從 `created_at` 起算。
+  同時寫入 `TASK_CANDIDATE_ACTIVATED` activity log 並通知新的一位。token 仍停在該節點等待。
+- **代理**：代理關係在建立 task 時只解析了第一位；輪到某位候選人時，會用他的 `original_member_id`
+  重新解析一次代理，結果寫回該候選人（`member_id`、`delegation_chain`）與 task 的 assignee。
+  若重新解析出的代理人在這個 task 上已經有另一列候選人（`(task_id, member_id)` 唯一），
+  就保留原本記下的值，不再代理。
 - **完成**：所有候選人（含 `WAITING`）都 `COMPLETED` 才完成 task，token 才往下走。
 - **拒絕／退回**：與以往一樣，任何一位拒絕或退回即處理整個 instance；尚在 `WAITING` 的候選人與
   其他未決候選人一併關閉（`CANCELLED`；instance 被取消時同樣處理）。
-- **轉簽**：目前輪到的人轉簽給 X 時，替換 task 沿用 `SEQUENTIAL` 與 `CANDIDATE_GROUP`，
+- **轉簽**：目前輪到的人轉簽給 X 時，只要後面還有 `WAITING` 的候選人，替換 task 就沿用 `SEQUENTIAL` 與 `CANDIDATE_GROUP`；
+  若轉簽者是最後一位（後面已經沒有 `WAITING`），替換 task 是 `SINGLE`／`DIRECT_MEMBER`、`sequence` 為 `NULL`
+  （與舊資料的 `SEQUENTIAL` task 轉簽相同）。沿用時，
   X 取代轉簽者的位置（`PENDING`、同一個 `sequence`），其餘 `WAITING` 候選人原樣複製到新 task，
   舊 task 的 `WAITING` 候選人標為 `SUPERSEDED`。若 X 本來就排在後面，X 只簽一次（取代目前這一位，
   後面那個位置不再重複詢問）。SLA 升級逾時使用同一條轉簽路徑，行為相同。
 - **`TASK_CREATED` payload**：`assigneeMemberId` 與 `candidateMemberIds` 只有目前輪到的那位
   （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
-  `sequentialCandidateMemberIds`。`TASK_CANDIDATE_ACTIVATED` payload：
-  `{ candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`，`actorMemberId` 為 `null`。
+  `sequentialCandidateMemberIds`。
+- **`TASK_CANDIDATE_ACTIVATED` payload**（`actorMemberId` 為 `null`）：
+  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  前四個欄位與 `TASK_CREATED` 的收件人欄位同名同義，其餘是這個事件專屬。
+- **給事件消費端（BREAKING）**：SEQUENTIAL task 的 `TASK_CREATED` 只點名第一位簽核人；
+  **`TASK_CANDIDATE_ACTIVATED` 才是「現在輪到這位」的訊號**，必須和 `TASK_CREATED` 用同一套
+  收件人邏輯（待辦、通知、webhook、外部系統）處理。只訂閱 `TASK_CREATED` 的消費端，
+  第二位之後的簽核人永遠不會被通知。
+- **回滾**：`down()` 會先把 `WAITING` 候選人改回 `PENDING`（退回「全部同時簽」），再移除
+  `sequence` 與 `sla_started_at`；沒有 `sequence`，`WAITING` 的人永遠不會被啟動，task 會卡死。
+  **只回滾程式、不跑 migration `down()` 時，必須自己執行同一句**：
+  `UPDATE task_candidates SET status = 'PENDING' WHERE status = 'WAITING';`
 - **舊資料**：此變更前建立的 `SEQUENTIAL` task，候選人全是 `PENDING`、`sequence` 為 `NULL`，
   **沒有 backfill**，繼續照舊行為（不分先後、全部同意才完成）。只有 `decisionPolicy.type = 'SEQUENTIAL'`
   且候選人有 `sequence` 的 task 才走依序流程；只有一位候選人時沒有差別。

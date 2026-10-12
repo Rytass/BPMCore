@@ -127,7 +127,10 @@ Task 相關欄位（`TaskRecord`／activity payload）：
   SEQUENTIAL task 另帶 `sequentialCandidateMemberIds`（完整順序，只有 SEQUENTIAL
   task 才有此 key），時間軸顯示為「簽核順序：A → B → C」。
 - activity `TASK_CANDIDATE_ACTIVATED`（時間軸標題「輪到下一位簽核」）：payload
-  `{ candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  `{ assigneeMemberId, candidateMemberIds, originalAssigneeMemberId, assignmentType,
+  candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`；
+  前四個欄位與 `TASK_CREATED` 的收件人欄位同義，這個事件是 SEQUENTIAL task「現在輪到這位」
+  的訊號（細節見 `07-workflow-execution.md` §4.3）。
 
 `sla` 的期限以「數量 + 單位（日／小時）」輸入而非直接寫 ISO duration，因此
 designer 不會產生 `P1DT4H` 這種日與時混用的值——`BUSINESS_DAY` 只對「日」的部分

@@ -328,6 +328,7 @@ assignment_type             text                  -- 'DIRECT_MEMBER' | 'CANDIDAT
 delegation_chain            jsonb                 -- 代理鏈紀錄 [{from, to, ruleId}]
 status                      text                  -- 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'TRANSFERRED' | 'CANCELLED'
 sla_due_at                  timestamptz (nullable)
+sla_started_at              timestamptz (nullable) -- 目前 SLA 視窗的起點；SEQUENTIAL 輪到下一位時重設，NULL 表示從 created_at 起算
 created_at                  timestamptz
 opened_at                   timestamptz (nullable)
 completed_at                timestamptz (nullable)
