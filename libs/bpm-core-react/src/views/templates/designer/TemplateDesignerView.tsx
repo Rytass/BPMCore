@@ -945,7 +945,9 @@ export function TemplateDesignerView({
   // order-insensitive (it only ever adds), so it does not need this guard.
   const memberSearchSequenceRef = useRef(0);
   // Member ids the directory could not resolve, even asked for on their own.
-  // They keep their 「未知會員」 placeholder and are not requested again.
+  // They keep their 「未知會員」 placeholder and are not requested again for
+  // the rest of the session, a transient failure included, unless a later
+  // member search returns them (the merge then replaces the placeholder).
   const unresolvableMemberIdsRef = useRef<Set<string>>(new Set());
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);

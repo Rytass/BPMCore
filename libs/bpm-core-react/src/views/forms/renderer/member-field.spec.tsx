@@ -1,6 +1,7 @@
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { resolveMembers, searchMembers } from '@rytass/bpm-core-client';
+import { MAX_PER_ID_REQUESTS } from '../../../lib/member-profile-resolution';
 import { MemberFieldControl } from './member-field';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -88,6 +89,18 @@ async function unmount(harness: {
   harness.container.remove();
 }
 
+// Lets every chained lookup round (and the re-render it triggers) settle.
+async function flushRounds(rounds = 5): Promise<void> {
+  if (rounds === 0) {
+    return;
+  }
+
+  await act(async (): Promise<void> => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+  await flushRounds(rounds - 1);
+}
+
 function readProps(): MockAutoCompleteProps {
   if (!latestProps) {
     throw new Error('AutoComplete was not rendered.');
@@ -161,6 +174,58 @@ describe('MemberFieldControl', () => {
       ]);
       // batch + one request per id; the failing id is not retried afterwards.
       expect(resolveMembersMock).toHaveBeenCalledTimes(3);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('asks again for the ids skipped over the per-id cap instead of giving up on them', async (): Promise<void> => {
+    // One bad id fails every batch holding it; the cap leaves the last two good
+    // ids unasked in the first round.
+    const goodIds = Array.from(
+      { length: MAX_PER_ID_REQUESTS + 1 },
+      (_, index) => `g${index + 1}`,
+    );
+    const storedIds = ['bad', ...goodIds];
+    const skippedIds = goodIds.slice(MAX_PER_ID_REQUESTS - 1);
+
+    resolveMembersMock.mockImplementation(async (memberIds) => {
+      if (memberIds.includes('bad')) {
+        throw new Error('directory cannot handle bad');
+      }
+
+      return memberIds.map((memberId) => ({
+        customFieldsJson: '{}',
+        email: '',
+        memberId,
+        name: `Name ${memberId}`,
+      }));
+    });
+    const harness = await mount({
+      multiple: true,
+      readonly: true,
+      value: storedIds,
+    });
+
+    try {
+      await flushRounds();
+
+      expect(skippedIds).toHaveLength(2);
+      expect(readProps().value).toEqual(
+        storedIds.map((memberId) =>
+          memberId === 'bad'
+            ? { id: 'bad', name: '未知會員', unresolved: true }
+            : { id: memberId, name: `Name ${memberId}` },
+        ),
+      );
+      // The skipped ids get a round of their own...
+      expect(resolveMembersMock).toHaveBeenLastCalledWith(skippedIds);
+      // ...while the id that failed on its own is not asked for again.
+      expect(
+        resolveMembersMock.mock.calls.filter(([memberIds]) =>
+          memberIds.includes('bad'),
+        ),
+      ).toHaveLength(2);
     } finally {
       await unmount(harness);
     }

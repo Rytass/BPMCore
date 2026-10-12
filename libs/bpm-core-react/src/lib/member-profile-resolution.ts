@@ -83,6 +83,11 @@ export async function resolveMemberProfilesPerIdOnFailure(
  * The ids still worth asking the directory for: those that already failed on
  * their own in this session are left out, so they stay 「未知會員」 instead of
  * being re-requested every time the option list changes.
+ *
+ * A failed id stays 「未知會員」 for the rest of the session, even when the
+ * failure was transient (a network blip, say), unless a later member search
+ * returns it and replaces the placeholder. Ids skipped over the per-id cap
+ * were never asked and must not be added to `failedMemberIds`.
  */
 export function excludeFailedMemberIds(
   memberIds: readonly string[],

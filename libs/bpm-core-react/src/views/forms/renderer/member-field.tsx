@@ -56,6 +56,10 @@ export function MemberFieldControl({
   const latestSearchRef = useRef(0);
   // Ids the directory could not name; they stay 「未知會員」 and are not asked
   // for again when the other ids of the value resolve and the key changes.
+  // That holds for the rest of the session, a transient failure included,
+  // unless a later search returns the member (the merge then replaces the
+  // placeholder). Ids skipped over the per-id cap were never asked, so they are
+  // not given up on.
   const givenUpIdsRef = useRef<Set<string>>(new Set());
   const unresolvedKey = readUnresolvedMemberIds(value, knownOptions).join('\n');
 
@@ -72,32 +76,34 @@ export function MemberFieldControl({
 
     // One id the directory cannot handle fails the whole batch, so a failed
     // batch is retried per id: the other members keep their names.
-    void resolveMemberProfilesPerIdOnFailure(memberIds, resolveMembers)
-      .then(({ profiles }): readonly MemberFieldOption[] =>
-        profiles.map(readMemberFieldOption),
-      )
-      .then((resolved): void => {
+    void resolveMemberProfilesPerIdOnFailure(memberIds, resolveMembers).then(
+      ({ profiles, skippedIds }): void => {
         if (cancelled) {
           return;
         }
 
-        // Ids the directory did not return stay visible as placeholders; they
-        // count as known for the merge, so a failed lookup is not retried in a
-        // loop.
+        const resolved = profiles.map(readMemberFieldOption);
+        // Ids the directory did not return stay visible as placeholders.
         const placeholders = memberIds
           .filter(
             (memberId) => !resolved.some((option) => option.id === memberId),
           )
           .map(readUnresolvedMemberFieldOption);
 
-        placeholders.forEach((placeholder) =>
-          givenUpIdsRef.current.add(placeholder.id),
-        );
+        // Only the ids that were asked for and still came back without a
+        // profile are given up on, so a failed lookup is not retried in a loop.
+        // Ids skipped over the per-id cap were never asked: they keep a
+        // placeholder but stay eligible for the next round, as the designer
+        // does.
+        placeholders
+          .filter((placeholder) => !skippedIds.includes(placeholder.id))
+          .forEach((placeholder) => givenUpIdsRef.current.add(placeholder.id));
 
         setKnownOptions((current) =>
           mergeMemberFieldOptions(current, [...resolved, ...placeholders]),
         );
-      });
+      },
+    );
 
     return (): void => {
       cancelled = true;
