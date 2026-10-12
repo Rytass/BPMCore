@@ -321,7 +321,9 @@ async function resolveApprovers(
 `ORG_MANAGER` 的 `levelsUp` 是固定層數；`ORG_MANAGER_CHAIN` 則是從申請人開始一層一層往上找
 主管，讓每一位主管都要簽，直到某位主管的**職等**達到 `minPositionLevel` 為止，所以簽幾關取決於
 組織圖，不是模板寫死。resolver 回傳的是**有順序**的 member id 清單（最近的主管在最前面）。
-目前這種節點請搭配 `PARALLEL_ALL`；清單順序要變成真正的簽核順序，要等 `SEQUENTIAL` 依序派發另案完成後。
+搭配 `SEQUENTIAL`（建議）時，主管鏈**由近到遠依序簽**：先只開給最近的主管，他核准後才輪到
+下一位（規則見 §4.3 的〈`SEQUENTIAL`：依序簽核〉）；搭配 `PARALLEL_ALL` 則所有主管同時收到待辦、全部同意才通過。
+設計器把節點改成主管鏈時，若原本的決策方式會讓一位主管簽完就結案，會自動改成 `SEQUENTIAL`。
 
 - **職等來源**：`PositionEntity.level`（數字越大越高階）。一位主管的職等 = 他**目前有效**
   （`effective_from`／`effective_to` 涵蓋今天）且有 `positionId` 的所有 membership 中最大的
@@ -344,8 +346,7 @@ async function resolveApprovers(
   `allowInitiatorSelfApproval` → 丟錯）。fallback 成功時把改派固定人放在清單**最後**一關；
   若他已在清單裡就不重複加入。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
-  `SEQUENTIAL` 或 `PARALLEL_ALL`。目前 `SEQUENTIAL` 的完成條件與 `PARALLEL_ALL` 相同（所有人都簽完），
-  真正「一次只派給一位」的依序派發，以及保存簽核順序，另案處理。
+  `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。
 
 ### 4.2 Delegation 解析順序（**重要**）
 
@@ -415,7 +416,57 @@ async function createTasksForNode(node, token) {
 一個 User Task 可以由 direct resolver 指定多位候選簽核者；runtime 會將候選者與
 `decisionPolicy` 一起寫入 task snapshot。`SINGLE`／`PARALLEL_ANY` 任一人同意
 即可完成，`PARALLEL_ALL`／`SEQUENTIAL` 需全部同意，`QUORUM` 則依門檻完成。
-目前 `SEQUENTIAL` 仍會同時建立所有候選人的待辦，因此不代表依序解鎖。
+
+#### `SEQUENTIAL`：依序簽核
+
+> **行為變更**：在此之前 `SEQUENTIAL` 與 `PARALLEL_ALL` 完全相同（所有候選人同時收到待辦、
+> 全部同意才完成）。現在 `SEQUENTIAL` 才真正代表「一位簽完、下一位才輪到」。
+
+- **順序**：候選人的順序就是 approver resolver 回傳的順序（套用代理、去重之後），
+  寫入 `task_candidates.sequence`（0 起算）。`DIRECT`／`DYNAMIC_FORM`／`EXPRESSION` 的順序由
+  流程作者控制（`memberIds` 陣列、表單欄位值、運算式結果的順序）。由組織資料解析的 resolver
+  （`POSITION`、`ORG_UNIT_*`、`ORG_MANAGER`）回傳的成員順序不是為簽核順序設計的，不要依賴它。
+- **建立 task**：只有 `sequence = 0` 的候選人是 `PENDING`，其餘為 `WAITING`（還沒輪到）。
+  task 的 `assignee_member_id`／`original_assignee_member_id`／`delegation_chain` 一律是目前輪到的那位，
+  `assignment_type` 仍是 `CANDIDATE_GROUP`。`WAITING` 的人不會有待辦、也收不到通知；
+  他們若在輪到前嘗試決策，會得到 `ConflictException`（`not this member's turn yet`）。
+- **同意**：該位候選人 → `COMPLETED`，`sequence` 最小的 `WAITING` 候選人 → `PENDING`，
+  task 回到 `PENDING`（`opened_at` 清空）、assignee 換成新的一位，`sla_due_at` 依節點 SLA 重新計算
+  （新的一位拿到完整的 SLA 時間），並把這個時間點記在 `tasks.sla_started_at`：SLA 預警
+  （`warningAt`）從 `sla_started_at` 起算，沒有這個值（一般 task、舊資料）才從 `created_at` 起算。
+  同時寫入 `TASK_CANDIDATE_ACTIVATED` activity log 並通知新的一位。token 仍停在該節點等待。
+- **代理**：代理關係在建立 task 時只解析了第一位；輪到某位候選人時，會用他的 `original_member_id`
+  重新解析一次代理，結果寫回該候選人（`member_id`、`delegation_chain`）與 task 的 assignee。
+  若重新解析出的代理人在這個 task 上已經有另一列候選人（`(task_id, member_id)` 唯一），
+  就保留原本記下的值，不再代理。
+- **完成**：所有候選人（含 `WAITING`）都 `COMPLETED` 才完成 task，token 才往下走。
+- **拒絕／退回**：與以往一樣，任何一位拒絕或退回即處理整個 instance；尚在 `WAITING` 的候選人與
+  其他未決候選人一併關閉（`CANCELLED`；instance 被取消時同樣處理）。
+- **轉簽**：目前輪到的人轉簽給 X 時，只要後面還有 `WAITING` 的候選人，替換 task 就沿用 `SEQUENTIAL` 與 `CANDIDATE_GROUP`；
+  若轉簽者是最後一位（後面已經沒有 `WAITING`），替換 task 是 `SINGLE`／`DIRECT_MEMBER`、`sequence` 為 `NULL`
+  （與舊資料的 `SEQUENTIAL` task 轉簽相同）。沿用時，
+  X 取代轉簽者的位置（`PENDING`、同一個 `sequence`），其餘 `WAITING` 候選人原樣複製到新 task，
+  舊 task 的 `WAITING` 候選人標為 `SUPERSEDED`。若 X 本來就排在後面，X 只簽一次（取代目前這一位，
+  後面那個位置不再重複詢問）。SLA 升級逾時使用同一條轉簽路徑，行為相同。
+- **`TASK_CREATED` payload**：`assigneeMemberId` 與 `candidateMemberIds` 只有目前輪到的那位
+  （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
+  `sequentialCandidateMemberIds`。
+- **`TASK_CANDIDATE_ACTIVATED` payload**（`actorMemberId` 為 `null`）：
+  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  前四個欄位與 `TASK_CREATED` 的收件人欄位同名同義，其餘是這個事件專屬。
+- **給事件消費端（BREAKING）**：SEQUENTIAL task 的 `TASK_CREATED` 只點名第一位簽核人；
+  **`TASK_CANDIDATE_ACTIVATED` 才是「現在輪到這位」的訊號**，必須和 `TASK_CREATED` 用同一套
+  收件人邏輯（待辦、通知、webhook、外部系統）處理。只訂閱 `TASK_CREATED` 的消費端，
+  第二位之後的簽核人永遠不會被通知。
+- **回滾**：`down()` 會先把 `WAITING` 候選人改回 `PENDING`（退回「全部同時簽」），再移除
+  `sequence` 與 `sla_started_at`；沒有 `sequence`，`WAITING` 的人永遠不會被啟動，task 會卡死。
+  **只回滾程式、不跑 migration `down()` 時，必須自己執行同一句**：
+  `UPDATE task_candidates SET status = 'PENDING' WHERE status = 'WAITING';`
+  這些候選人當初並沒有收到通知，UPDATE 之後他們只會在自己的待辦清單看到這個 task。
+- **舊資料**：此變更前建立的 `SEQUENTIAL` task，候選人全是 `PENDING`、`sequence` 為 `NULL`，
+  **沒有 backfill**，繼續照舊行為（不分先後、全部同意才完成）。只有 `decisionPolicy.type = 'SEQUENTIAL'`
+  且候選人有 `sequence` 的 task 才走依序流程；只有一位候選人時沒有差別。
+- **不在範圍**：ad-hoc task 永遠不是 sequential；dry run 不變；`PARALLEL_*`／`QUORUM` 不變。
 
 例如：
 

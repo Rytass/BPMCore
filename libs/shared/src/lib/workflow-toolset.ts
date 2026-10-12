@@ -86,15 +86,14 @@ const SLA_TIMEOUT_ACTION_ENUM: readonly SlaConfig['onTimeout'][] = [
 const SLA_DURATION_UNIT_ENUM = ['DAY', 'HOUR'] as const;
 
 /**
- * Mirrors `DECISION_POLICY_OPTIONS` in the designer's property form rather
- * than the full {@link DecisionPolicy} union: `SEQUENTIAL` is a valid engine
- * policy but the form deliberately does not offer it, and this toolset's
- * contract is parity with what a user can do on that form — no more.
+ * Mirrors `DECISION_POLICY_OPTIONS` in the designer's property form: this
+ * toolset's contract is parity with what a user can do on that form.
  */
 const DECISION_POLICY_TYPE_ENUM = [
   'SINGLE',
   'PARALLEL_ANY',
   'PARALLEL_ALL',
+  'SEQUENTIAL',
   'QUORUM',
 ] as const;
 const QUORUM_THRESHOLD_TYPE_ENUM = ['COUNT', 'PERCENTAGE'] as const;
@@ -104,7 +103,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
-    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
   properties: {
     type: {
@@ -206,7 +205,8 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'set_user_task_decision_policy',
     description:
       '設定簽核節點的決策政策，也就是這一關解析出來的簽核者要有幾個人同意才算通過。' +
-      'SINGLE=單人簽核；PARALLEL_ANY=任一人同意即通過；PARALLEL_ALL=全部同意才通過；' +
+      'SINGLE=單人簽核；PARALLEL_ANY=任一人同意即通過；PARALLEL_ALL=全部同意才通過（所有人同時收到待辦）；' +
+      'SEQUENTIAL=依序簽核，依候選簽核人的順序一次只開放一位，前一位核准後才輪到下一位，全部核准才通過；' +
       'QUORUM=達到指定門檻，此時需一併提供 threshold 與 thresholdType。' +
       'thresholdType=COUNT 時 threshold 是同意人數；=PERCENTAGE 時是佔簽核者總數的百分比（換算人數無條件進位，上限 100）。' +
       '門檻若超過該節點實際簽核者人數，這一關將永遠無法通過 —— 設定 COUNT 門檻前請先確認簽核人員數量。',

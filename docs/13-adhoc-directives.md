@@ -167,9 +167,14 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
   - `REJECT_INSTANCE`：走一般 `rejectInstance`，整張單駁回。
   - `RETURN_TO_ORIGIN`：退回原簽核人重新處理 —
     - 原始 task 仍開啟：通知原簽核人，記錄 `ADHOC_PRE_APPROVAL_RETURNED`，
-      不重複開 task。
+      不重複開 task。通知對象除了目前持有 task 的人，也包含發起加簽的人：
+      `SEQUENTIAL` task 在加簽期間可以由發起人先同意（加簽並不擋住決策，只擋住 token 推進），
+      task 這時已經輪到下一位，若只通知目前持有人，發起人不會知道加簽被退回。
     - 原始 task 已完成但原 assignee 仍在：**重新建立一個指派給原簽核人的新
       task**，讓他重新決策。
+      `SEQUENTIAL` task 的 assignee 會隨輪次更換、最後停在最後一位簽核人，
+      所以這種 task 重新建立的 task 改指派給**發起加簽的人**（沿用他在原 task 上的
+      候選資料：原始成員與代理鏈）。
     - 找不到有效原簽核人：退回機制無法套用，fall back 到一般拒絕路徑。
     - 加簽期間原始 task 被轉交（`TRANSFERRED`）：仍開啟（`PENDING` /
       `IN_PROGRESS`）的加簽 task 會跟著改指向轉交後的新 task，退回與通知對象是

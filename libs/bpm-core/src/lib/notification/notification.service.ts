@@ -735,9 +735,9 @@ export class NotificationService {
           return currentResult;
         }
 
+        const slaStartTime = (task.slaStartedAt ?? task.createdAt).getTime();
         const warningAtTime =
-          task.createdAt.getTime() +
-          (task.slaDueAt.getTime() - task.createdAt.getTime()) * warningAt;
+          slaStartTime + (task.slaDueAt.getTime() - slaStartTime) * warningAt;
 
         if (warningAtTime > now.getTime()) {
           return currentResult;

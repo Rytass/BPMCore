@@ -59,6 +59,14 @@ export class TaskEntity {
   @Field(() => Date, { nullable: true })
   slaDueAt!: Date | null;
 
+  /**
+   * When the current SLA window began. Set when a SEQUENTIAL candidate is
+   * activated; NULL means the window began at `createdAt`.
+   */
+  @Column('timestamptz', { name: 'sla_started_at', nullable: true })
+  @Field(() => Date, { nullable: true })
+  slaStartedAt!: Date | null;
+
   @Column('boolean', { default: false, name: 'is_adhoc' })
   @Field()
   isAdhoc!: boolean;
@@ -99,4 +107,12 @@ export class TaskEntity {
 
   @Field(() => [String])
   candidateMemberIds: readonly string[] = [];
+
+  /**
+   * The candidates who can act on the task right now (`PENDING` or
+   * `CLAIMED`), in candidate order. Equals `candidateMemberIds` except for a
+   * SEQUENTIAL task, where candidates whose turn has not come are left out.
+   */
+  @Field(() => [String])
+  openCandidateMemberIds: readonly string[] = [];
 }

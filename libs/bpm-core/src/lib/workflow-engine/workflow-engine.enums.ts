@@ -42,6 +42,8 @@ export enum TaskCandidateStatusEnum {
   PENDING = 'PENDING',
   SUPERSEDED = 'SUPERSEDED',
   TRANSFERRED = 'TRANSFERRED',
+  /** SEQUENTIAL task, not this candidate's turn yet. */
+  WAITING = 'WAITING',
 }
 
 export enum TaskDecisionActionEnum {
@@ -63,6 +65,8 @@ export enum ActivityLogEventTypeEnum {
   SERVICE_TASK_EXECUTED = 'SERVICE_TASK_EXECUTED',
   SERVICE_TASK_FAILED = 'SERVICE_TASK_FAILED',
   SLA_TRIGGERED = 'SLA_TRIGGERED',
+  /** A SEQUENTIAL task passed to its next candidate. */
+  TASK_CANDIDATE_ACTIVATED = 'TASK_CANDIDATE_ACTIVATED',
   TASK_CREATED = 'TASK_CREATED',
   TASK_DECIDED = 'TASK_DECIDED',
   TOKEN_ADVANCED = 'TOKEN_ADVANCED',

@@ -142,6 +142,13 @@ export interface TaskRecord {
   readonly instanceId: string;
   readonly isAdhoc: boolean;
   readonly nodeId: string;
+  /**
+   * Candidates who may act now (`PENDING`/`CLAIMED`). The bundled queries
+   * always select it, so an older server rejects them: upgrade client and
+   * server together (same release). The optional type and the
+   * `candidateMemberIds` fallback only cover hosts running their own queries.
+   */
+  readonly openCandidateMemberIds?: readonly string[];
   readonly openedAt: string | null;
   readonly originalAssigneeMemberId: string | null;
   readonly slaDueAt: string | null;
@@ -157,6 +164,8 @@ export interface TaskCandidateRecord {
   readonly id: string;
   readonly memberId: string;
   readonly originalMemberId: string;
+  /** 0-based signing order in a SEQUENTIAL task; null elsewhere. */
+  readonly sequence?: number | null;
   readonly sourceType: string;
   readonly status: string;
   readonly taskId: string;
@@ -843,6 +852,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -899,6 +909,7 @@ export async function listInboxTasks(
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -932,6 +943,7 @@ export async function listApprovalHistoryTasks(
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -1788,6 +1800,7 @@ const ADHOC_TASK_FIELDS = `
   assigneeMemberId
   assignmentType
   candidateMemberIds
+  openCandidateMemberIds
   completedAt
   createdAt
   decisionPolicySnapshotJson

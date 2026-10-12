@@ -690,13 +690,11 @@ test.describe('M1 W3 template designer', () => {
     });
   });
 
-  test('keeps a stored sequential policy readable', async ({
+  test('shows a stored sequential policy as an option', async ({
     page,
   }): Promise<void> => {
     await page.setViewportSize({ height: 1200, width: 1440 });
     await mockTemplateGraphQl(page, {
-      // `SEQUENTIAL` is not offered in the dropdown because the engine treats
-      // it exactly like `PARALLEL_ALL`, but API-authored templates may use it.
       initialWorkflowDefinitionJson: JSON.stringify(
         readWorkflowDefinitionWithDecisionPolicy({ type: 'SEQUENTIAL' }),
       ),
@@ -708,11 +706,7 @@ test.describe('M1 W3 template designer', () => {
       .filter({ hasText: '簽核節點' })
       .click();
 
-    // `SEQUENTIAL` behaves exactly like `PARALLEL_ALL` in the engine, so the
-    // fallback label reads that way rather than implying a queued hand-off.
-    await expect(
-      page.getByRole('combobox', { name: '全部同意（既有設定）' }),
-    ).toBeVisible();
+    await expect(page.getByRole('combobox', { name: '依序簽核' })).toBeVisible();
   });
 
   test('preserves a non-default decision policy across an approver edit', async ({

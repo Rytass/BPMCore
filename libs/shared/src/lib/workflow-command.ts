@@ -528,8 +528,10 @@ function applySetNodeTriggerMode(
  * destroyed an author's quorum while the same edit through the UI kept it.
  *
  * An `ORG_MANAGER_CHAIN` approver needs every manager on the chain to sign, so
- * a policy that lets one of them close the node is replaced by `PARALLEL_ALL`
- * (the only chain-compatible option the designer offers) in the same update.
+ * a policy that lets one of them close the node is replaced by `SEQUENTIAL`
+ * (the chain signs bottom-up, nearest manager first; `PARALLEL_ALL` is the
+ * other chain-compatible option and is kept when the author already chose it)
+ * in the same update.
  */
 function applySetUserTaskApprover(
   state: WorkflowDesignerState,
@@ -549,7 +551,7 @@ function applySetUserTaskApprover(
                 command.approverResolver,
                 node.data.decisionPolicy,
               )
-                ? { type: 'PARALLEL_ALL' }
+                ? { type: 'SEQUENTIAL' }
                 : isDecisionPolicyUnsatisfiable(
                       node.data.decisionPolicy,
                       command.approverResolver,

@@ -329,9 +329,14 @@ export function canMemberActOnTask(
     return false;
   }
 
+  // `candidateMemberIds` lists everyone on the task, including SEQUENTIAL
+  // candidates whose turn has not come; `openCandidateMemberIds` is who may act
+  // now. The fallback only covers hosts that run their own task queries without
+  // the field; the bundled client always selects it, so client and server must
+  // be upgraded together (same release).
   return (
     task.assigneeMemberId === memberId ||
-    task.candidateMemberIds.includes(memberId)
+    (task.openCandidateMemberIds ?? task.candidateMemberIds).includes(memberId)
   );
 }
 
@@ -517,11 +522,50 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
     activityLog.eventType === 'INSTANCE_STARTED' ||
     activityLog.eventType === 'TASK_DECIDED' ||
     activityLog.eventType === 'SLA_TRIGGERED' ||
+    activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
+    isSequentialTaskCreation(activityLog) ||
     isNotifyWebhookActivity(
       activityLog.eventType,
       readActivityPayload(activityLog),
     )
   );
+}
+
+/**
+ * Only a SEQUENTIAL task's creation is worth a timeline entry (it carries the
+ * signing order); every other TASK_CREATED row stays hidden as before.
+ */
+function isSequentialTaskCreation(activityLog: ActivityLogRecord): boolean {
+  return (
+    activityLog.eventType === 'TASK_CREATED' &&
+    readStringArrayField(
+      readActivityPayload(activityLog),
+      'sequentialCandidateMemberIds',
+    ).length > 0
+  );
+}
+
+/**
+ * Member ids that only appear inside the payload of the sequential-signing
+ * events, so the timeline can load their profiles and show names, not ids.
+ */
+export function readSequentialActivityPayloadMemberIds(
+  activityLog: ActivityLogRecord,
+): readonly string[] {
+  if (
+    activityLog.eventType !== 'TASK_CANDIDATE_ACTIVATED' &&
+    activityLog.eventType !== 'TASK_CREATED'
+  ) {
+    return [];
+  }
+
+  const payload = readActivityPayload(activityLog);
+
+  return [
+    ...readStringArrayField(payload, 'sequentialCandidateMemberIds'),
+    readStringField(payload, 'candidateMemberId'),
+    readStringField(payload, 'previousMemberId'),
+  ].filter(isPresentText);
 }
 
 const NOTIFY_WEBHOOK_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -574,6 +618,7 @@ export function readActivityEventLabel(
   if (eventType === 'ENGINE_PROCESS_REQUESTED') return '流程引擎已處理';
   if (eventType === 'TOKEN_ADVANCED') return '流程已前進';
   if (eventType === 'TASK_CREATED') return '待簽任務已建立';
+  if (eventType === 'TASK_CANDIDATE_ACTIVATED') return '輪到下一位簽核';
   if (eventType === 'TASK_DECIDED') {
     return readTaskDecisionEventLabel(readStringField(payload, 'action'));
   }
@@ -628,7 +673,41 @@ function readActivityDetail(
   workflow: WorkflowDefinition | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): string | null {
+  if (activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED') {
+    const candidateMemberId = readStringField(payload, 'candidateMemberId');
+    const previousMemberId = readStringField(payload, 'previousMemberId');
+
+    if (!candidateMemberId) {
+      return null;
+    }
+
+    const candidateLabel = readMemberDisplayText(
+      candidateMemberId,
+      memberProfilesById,
+    );
+
+    return previousMemberId
+      ? `輪到：${candidateLabel}（前一位：${readMemberDisplayText(
+          previousMemberId,
+          memberProfilesById,
+        )}）`
+      : `輪到：${candidateLabel}`;
+  }
+
   if (activityLog.eventType === 'TASK_CREATED') {
+    // A SEQUENTIAL task opens one candidate at a time; show the whole order
+    // rather than only the person who is up first.
+    const sequentialMemberIds = readStringArrayField(
+      payload,
+      'sequentialCandidateMemberIds',
+    );
+
+    if (sequentialMemberIds.length) {
+      return `簽核順序：${sequentialMemberIds
+        .map((memberId) => readMemberDisplayText(memberId, memberProfilesById))
+        .join(' → ')}`;
+    }
+
     const assigneeMemberId = readStringField(payload, 'assigneeMemberId');
     const originalAssigneeMemberId = readStringField(
       payload,

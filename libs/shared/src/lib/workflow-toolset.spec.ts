@@ -580,6 +580,25 @@ describe('set_user_task_decision_policy', () => {
     expect(readDecisionPolicy(next)).toEqual({ type: 'PARALLEL_ALL' });
   });
 
+  it('accepts SEQUENTIAL and stores it as a bare type', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      type: 'SEQUENTIAL',
+    });
+
+    expect(readDecisionPolicy(next)).toEqual({ type: 'SEQUENTIAL' });
+  });
+
+  it('tells the assistant that SEQUENTIAL signs one candidate at a time', () => {
+    const tool = WORKFLOW_TOOLSET.find(
+      (item) => item.name === 'set_user_task_decision_policy',
+    );
+
+    expect(tool?.description).toContain('SEQUENTIAL=依序簽核');
+    expect(tool?.description).toContain('一次只開放一位');
+  });
+
   it('sanitises the quorum threshold the way the designer form does', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const overCap = await runTool(state, 'set_user_task_decision_policy', {
@@ -803,15 +822,16 @@ describe('set_user_task_decision_policy', () => {
 
   // A chain only works when every manager signs, so the shared reducer
   // upgrades the default SINGLE policy instead of leaving the assistant with a
-  // draft the backend validator would reject.
-  it('switches the node to PARALLEL_ALL when the approver becomes a chain', async () => {
+  // draft the backend validator would reject. The chain signs bottom-up, so the
+  // policy it picks is SEQUENTIAL.
+  it('switches the node to SEQUENTIAL when the approver becomes a chain', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const afterApprover = await runTool(state, 'set_user_task_approver', {
       approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
       nodeId,
     });
 
-    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SEQUENTIAL' });
   });
 
   it('keeps an already chain-compatible policy when the approver becomes a chain', async () => {

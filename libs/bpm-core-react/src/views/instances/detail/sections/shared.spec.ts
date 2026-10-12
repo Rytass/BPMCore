@@ -1,11 +1,18 @@
-import type { ActivityLogRecord } from '@rytass/bpm-core-client/workflow';
+import type {
+  ActivityLogRecord,
+  MemberProfileRecord,
+  TaskRecord,
+} from '@rytass/bpm-core-client/workflow';
 
 import {
+  canMemberActOnTask,
   isActivityError,
   isUserMeaningfulActivity,
   readActivityDetailParts,
   readActivityEventLabel,
+  readActivityStepRecords,
   readAdhocTargetDraft,
+  readSequentialActivityPayloadMemberIds,
 } from './shared';
 
 function createDecisionActivityLog(): ActivityLogRecord {
@@ -228,5 +235,217 @@ describe('notify webhook timeline entries', () => {
         ),
       ),
     ).not.toContain('WEBHOOK_HTTP_503');
+  });
+});
+
+function readEventParts(
+  eventType: string,
+  payload: Readonly<Record<string, unknown>>,
+): readonly ReturnType<typeof readActivityDetailParts>[number][] {
+  const profiles = new Map<string, MemberProfileRecord>(
+    ['alice', 'bob', 'carol'].map((id) => [
+      id,
+      { email: `${id}@example.com`, id, name: id.toUpperCase() } as MemberProfileRecord,
+    ]),
+  );
+
+  return readActivityDetailParts(
+    { ...createDecisionActivityLog(), eventType } as ActivityLogRecord,
+    payload,
+    null,
+    new Map(),
+    new Map(),
+    null,
+    profiles,
+  );
+}
+
+describe('sequential signing in the timeline', () => {
+  it('lists the whole signing order on a SEQUENTIAL TASK_CREATED', () => {
+    expect(
+      readEventParts('TASK_CREATED', {
+        assigneeMemberId: 'alice',
+        candidateMemberIds: ['alice'],
+        sequentialCandidateMemberIds: ['alice', 'bob', 'carol'],
+      }),
+    ).toEqual([
+      {
+        text: '簽核順序：ALICE（alice@example.com） → BOB（bob@example.com） → CAROL（carol@example.com）',
+        type: 'text',
+      },
+    ]);
+  });
+
+  it('keeps 候選簽核人 for a task that is not sequential', () => {
+    expect(
+      readEventParts('TASK_CREATED', {
+        assigneeMemberId: null,
+        candidateMemberIds: ['alice', 'bob'],
+      }),
+    ).toEqual([
+      {
+        text: '候選簽核人：ALICE（alice@example.com）、BOB（bob@example.com）',
+        type: 'text',
+      },
+    ]);
+  });
+
+  it('labels and describes a candidate being activated', () => {
+    expect(readActivityEventLabel('TASK_CANDIDATE_ACTIVATED', {})).toBe(
+      '輪到下一位簽核',
+    );
+    expect(
+      readEventParts('TASK_CANDIDATE_ACTIVATED', {
+        candidateMemberId: 'bob',
+        previousMemberId: 'alice',
+      }),
+    ).toEqual([
+      {
+        text: '輪到：BOB（bob@example.com）（前一位：ALICE（alice@example.com））',
+        type: 'text',
+      },
+    ]);
+  });
+});
+
+describe('canMemberActOnTask', () => {
+  function task(overrides: Partial<TaskRecord>): TaskRecord {
+    return {
+      assigneeMemberId: 'alice',
+      candidateMemberIds: ['alice', 'bob'],
+      ...overrides,
+    } as TaskRecord;
+  }
+
+  it('lets the active candidate act but not one still waiting their turn', () => {
+    const sequential = task({ openCandidateMemberIds: ['alice'] });
+
+    expect(canMemberActOnTask(sequential, 'alice')).toBe(true);
+    expect(canMemberActOnTask(sequential, 'bob')).toBe(false);
+  });
+
+  it('lets every open candidate act on a parallel task', () => {
+    const parallel = task({
+      assigneeMemberId: null,
+      openCandidateMemberIds: ['alice', 'bob'],
+    });
+
+    expect(canMemberActOnTask(parallel, 'bob')).toBe(true);
+  });
+
+  it('falls back to candidateMemberIds when the server sends no open list', () => {
+    expect(canMemberActOnTask(task({ assigneeMemberId: null }), 'bob')).toBe(
+      true,
+    );
+    expect(canMemberActOnTask(task({}), null)).toBe(false);
+  });
+});
+
+describe('sequential signing in the instance timeline', () => {
+  const profiles = new Map<string, MemberProfileRecord>(
+    ['alice', 'bob', 'carol'].map((id) => [
+      id,
+      { email: `${id}@example.com`, id, name: id.toUpperCase() } as MemberProfileRecord,
+    ]),
+  );
+
+  function log(
+    id: string,
+    eventType: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord {
+    return {
+      ...createDecisionActivityLog(),
+      eventType,
+      id,
+      payloadJson: JSON.stringify(payload),
+    } as ActivityLogRecord;
+  }
+
+  function steps(
+    logs: readonly ActivityLogRecord[],
+  ): ReturnType<typeof readActivityStepRecords> {
+    return readActivityStepRecords(
+      logs,
+      [],
+      [],
+      null,
+      'IN_PROGRESS' as never,
+      profiles,
+      new Map(),
+      new Map(),
+      null,
+    );
+  }
+
+  function textOf(
+    step: ReturnType<typeof readActivityStepRecords>[number],
+  ): string {
+    return step.descriptionParts
+      .map((part) => ('text' in part ? part.text : ''))
+      .join(' | ');
+  }
+
+  it('shows the signing order, each approval and every hand-off', () => {
+    const result = steps([
+      log('created', 'TASK_CREATED', {
+        assigneeMemberId: 'alice',
+        candidateMemberIds: ['alice'],
+        sequentialCandidateMemberIds: ['alice', 'bob'],
+      }),
+      log('decided', 'TASK_DECIDED', { action: 'APPROVED' }),
+      log('activated', 'TASK_CANDIDATE_ACTIVATED', {
+        candidateMemberId: 'bob',
+        previousMemberId: 'alice',
+      }),
+    ]);
+
+    expect(result.map((step) => step.id).slice(0, 3)).toEqual([
+      'created',
+      'decided',
+      'activated',
+    ]);
+    expect(textOf(result[0])).toContain(
+      '簽核順序：ALICE（alice@example.com） → BOB（bob@example.com）',
+    );
+    expect(result[2].title).toBe('輪到下一位簽核');
+    expect(textOf(result[2])).toContain('輪到：BOB（bob@example.com）');
+  });
+
+  it('keeps an ordinary TASK_CREATED off the timeline', () => {
+    const result = steps([
+      log('created', 'TASK_CREATED', {
+        assigneeMemberId: 'alice',
+        candidateMemberIds: ['alice', 'bob'],
+      }),
+    ]);
+
+    expect(result.map((step) => step.id)).not.toContain('created');
+    expect(
+      isUserMeaningfulActivity(log('x', 'TASK_CREATED', {})),
+    ).toBe(false);
+  });
+
+  it('collects the member ids that only appear in sequential payloads', () => {
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('c', 'TASK_CREATED', {
+          sequentialCandidateMemberIds: ['alice', 'bob', 'carol'],
+        }),
+      ),
+    ).toEqual(['alice', 'bob', 'carol']);
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('a', 'TASK_CANDIDATE_ACTIVATED', {
+          candidateMemberId: 'bob',
+          previousMemberId: 'alice',
+        }),
+      ),
+    ).toEqual(['bob', 'alice']);
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('d', 'TASK_DECIDED', { candidateMemberId: 'bob' }),
+      ),
+    ).toEqual([]);
   });
 });

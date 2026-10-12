@@ -1121,6 +1121,48 @@ describe('NotificationService', () => {
       ]),
     );
   });
+  describe('SLA warning window', () => {
+    // A later SEQUENTIAL signer is activated long after the task was created
+    // (created 08:00, activated 18:00, due 20:00, warn at 50%).
+    const createdAt = new Date('2026-05-10T08:00:00.000Z');
+    const slaStartedAt = new Date('2026-05-10T18:00:00.000Z');
+    const slaDueAt = new Date('2026-05-10T20:00:00.000Z');
+    const buildTask = (startedAt: Date | null): TaskEntity =>
+      Object.assign(new TaskEntity(), {
+        assigneeMemberId: 'member-b',
+        createdAt,
+        id: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+        instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+        nodeId: 'task_review',
+        slaDueAt,
+        slaStartedAt: startedAt,
+        status: TaskStatusEnum.PENDING,
+      });
+
+    it('measures the warning point from when the window started, not from task creation', async (): Promise<void> => {
+      const service = createSlaScanService(buildTask(slaStartedAt));
+
+      await expect(
+        service.runSlaScan(new Date('2026-05-10T18:30:00.000Z')),
+      ).resolves.toEqual({ overdueCount: 0, warningCount: 0 });
+      await expect(
+        service.runSlaScan(new Date('2026-05-10T19:01:00.000Z')),
+      ).resolves.toEqual({ overdueCount: 0, warningCount: 1 });
+    });
+
+    it('falls back to the creation time when the window start is not recorded', async (): Promise<void> => {
+      const service = createSlaScanService(buildTask(null));
+
+      // 08:00 + (20:00 - 08:00) * 0.5 = 14:00
+      await expect(
+        service.runSlaScan(new Date('2026-05-10T13:59:00.000Z')),
+      ).resolves.toEqual({ overdueCount: 0, warningCount: 0 });
+      await expect(
+        service.runSlaScan(new Date('2026-05-10T14:01:00.000Z')),
+      ).resolves.toEqual({ overdueCount: 0, warningCount: 1 });
+    });
+  });
+
   it('escalates an overdue task once and stamps the escalation reason', async (): Promise<void> => {
     const fixture = createEscalationFixture({ delegationChain: [] });
 
@@ -1175,6 +1217,38 @@ describe('NotificationService', () => {
     expect(fixture.decideTask).toHaveBeenCalledTimes(1);
   });
 });
+
+function createSlaScanService(task: TaskEntity): NotificationService {
+  return new NotificationService(
+    {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      findOne: (): Promise<NotificationEntity | null> => Promise.resolve(null),
+      save: (entity: NotificationEntity): Promise<NotificationEntity> =>
+        Promise.resolve(entity),
+    } as unknown as Repository<NotificationEntity>,
+    {
+      findOne: (): Promise<NotificationPreferenceEntity | null> =>
+        Promise.resolve(null),
+    } as unknown as Repository<NotificationPreferenceEntity>,
+    {
+      find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+    } as unknown as Repository<TaskEntity>,
+    createRepository<TaskCandidateEntity>(),
+    {
+      findOne: (): Promise<ApprovalInstanceEntity> =>
+        Promise.resolve(createApprovalInstance()),
+    } as unknown as Repository<ApprovalInstanceEntity>,
+    {
+      create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
+        Object.assign(new ActivityLogEntity(), entity),
+      save: (entity: ActivityLogEntity): Promise<ActivityLogEntity> =>
+        Promise.resolve(entity),
+    } as unknown as Repository<ActivityLogEntity>,
+    createDeliveryService(),
+    createModuleRef(),
+  );
+}
 
 function createEscalationFixture({
   delegationChain,

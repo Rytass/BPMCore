@@ -328,6 +328,7 @@ assignment_type             text                  -- 'DIRECT_MEMBER' | 'CANDIDAT
 delegation_chain            jsonb                 -- 代理鏈紀錄 [{from, to, ruleId}]
 status                      text                  -- 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'TRANSFERRED' | 'CANCELLED'
 sla_due_at                  timestamptz (nullable)
+sla_started_at              timestamptz (nullable) -- 目前 SLA 視窗的起點；SEQUENTIAL 輪到下一位時重設，NULL 表示從 created_at 起算
 created_at                  timestamptz
 opened_at                   timestamptz (nullable)
 completed_at                timestamptz (nullable)
@@ -340,6 +341,8 @@ INDEX (sla_due_at) WHERE sla_due_at IS NOT NULL AND status IN ('PENDING','IN_PRO
 ### `task_candidates`
 
 > Candidate-group task 的候選簽核人。單一 member 決策後，其餘候選會關閉。
+> `SEQUENTIAL`（依序簽核）的 task 以 `sequence` 排定順序，輪到的人 `PENDING`、其餘 `WAITING`，
+> 詳見 `07-workflow-execution.md` §4.3。
 
 ```
 id                          uuid PK
@@ -348,7 +351,8 @@ member_id                   text
 original_member_id          text
 source_type                 text                  -- DIRECT / ORG_UNIT / POSITION / MANAGER
 delegation_chain            jsonb
-status                      text                  -- PENDING / CLAIMED / COMPLETED / CANCELLED / TRANSFERRED / SUPERSEDED
+sequence                    integer (nullable)    -- SEQUENTIAL task 內的簽核順序（0 起算）；其他 task 與舊資料為 NULL
+status                      text                  -- PENDING / CLAIMED / COMPLETED / CANCELLED / TRANSFERRED / SUPERSEDED / WAITING（SEQUENTIAL 尚未輪到）
 claimed_at                  timestamptz (nullable)
 decided_at                  timestamptz (nullable)
 created_at                  timestamptz
@@ -388,7 +392,7 @@ INDEX (decided_by_member_id, decided_at)
 ```
 id                          uuid PK
 instance_id                 uuid FK → approval_instances.id
-event_type                  text          -- INSTANCE_STARTED / TOKEN_ADVANCED / TASK_CREATED / TASK_DECIDED / SLA_TRIGGERED / ...
+event_type                  text          -- INSTANCE_STARTED / TOKEN_ADVANCED / TASK_CREATED / TASK_DECIDED / TASK_CANDIDATE_ACTIVATED / SLA_TRIGGERED / ...
 actor_member_id             text (nullable)  -- null = 系統事件
 node_id                     text (nullable)
 task_id                     uuid (nullable)

@@ -506,6 +506,40 @@ describe('user task return and SLA commands', () => {
     ).toEqual({ type: 'SINGLE' });
   });
 
+  it('switches a policy that would end a manager chain early to SEQUENTIAL', () => {
+    const chain: ApproverResolver = {
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    };
+
+    expect(afterApproverChange({ type: 'SINGLE' }, chain)).toEqual({
+      type: 'SEQUENTIAL',
+    });
+    expect(afterApproverChange({ type: 'PARALLEL_ANY' }, chain)).toEqual({
+      type: 'SEQUENTIAL',
+    });
+    expect(
+      afterApproverChange(
+        { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+        chain,
+      ),
+    ).toEqual({ type: 'SEQUENTIAL' });
+  });
+
+  it('keeps a chain-compatible policy when the approver becomes a manager chain', () => {
+    const chain: ApproverResolver = {
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    };
+
+    expect(afterApproverChange({ type: 'PARALLEL_ALL' }, chain)).toEqual({
+      type: 'PARALLEL_ALL',
+    });
+    expect(afterApproverChange({ type: 'SEQUENTIAL' }, chain)).toEqual({
+      type: 'SEQUENTIAL',
+    });
+  });
+
   it('keeps a quorum whose approver count is only known at run time', () => {
     // A manager resolver may produce any number of approvers, so design time
     // cannot call it unsatisfiable without rejecting workable templates.
