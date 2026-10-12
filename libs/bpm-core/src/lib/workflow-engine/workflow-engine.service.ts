@@ -155,6 +155,10 @@ interface DryRunAssignment {
   readonly outcome: 'SKIPPED' | 'STOPPED' | null;
 }
 
+// Who a resolver is looking for: approvers of a task, or the recipients of a
+// notification. Only the wording of the "nobody found" errors differs.
+type ResolvedSubject = '簽核人' | '通知對象';
+
 interface DryRunOutgoing {
   readonly edges: readonly WorkflowEdge[];
   // Set when the node cannot route any further and its branch ends here.
@@ -2319,6 +2323,7 @@ export class WorkflowEngineService {
         instance,
         buildAdhocApproverResolver(targetValue),
         '臨時通知對象',
+        '通知對象',
       );
 
       await this.notificationService.createAdhocWorkflowNotifications({
@@ -4767,9 +4772,10 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     resolver: ApproverResolver,
     label: string,
+    subject: ResolvedSubject = '簽核人',
   ): Promise<readonly ResolvedApproverCandidate[]> {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdsFromValue(resolver.memberIds, label).map(
+      return readMemberIdsFromValue(resolver.memberIds, label, subject).map(
         (memberId) => ({ memberId, sourceType: resolver.type }),
       );
     }
@@ -4778,6 +4784,7 @@ export class WorkflowEngineService {
       return readMemberIdsFromValue(
         readValueAtPath(instance.formData, resolver.formPath),
         label,
+        subject,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4789,6 +4796,7 @@ export class WorkflowEngineService {
           `${label}.expression`,
         ),
         label,
+        subject,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4797,6 +4805,7 @@ export class WorkflowEngineService {
         manager,
         resolver.positionId,
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4808,6 +4817,7 @@ export class WorkflowEngineService {
         resolver.orgUnitId,
         Boolean(resolver.includeDescendants),
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4820,6 +4830,7 @@ export class WorkflowEngineService {
         resolver.positionId,
         Boolean(resolver.includeDescendants),
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4866,6 +4877,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     positionId: string,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const today = toDateOnlyString(new Date());
     const memberships = await manager.getRepository(MembershipEntity).find({
@@ -4887,7 +4899,7 @@ export class WorkflowEngineService {
 
     if (!activeMemberships.length) {
       throw new ConflictException(
-        `${label} 找不到簽核人：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
+        `${label} 找不到${subject}：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
@@ -5291,6 +5303,7 @@ export class WorkflowEngineService {
     orgUnitId: string,
     includeDescendants: boolean,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const orgUnitIds = await this.readOrgUnitScopeIds(
       manager,
@@ -5308,7 +5321,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} 找不到簽核人：組織「${await this.readOrgUnitName(manager, orgUnitId)}」目前沒有任何有效成員，請先將人員加入該組織`,
+        `${label} 找不到${subject}：組織「${await this.readOrgUnitName(manager, orgUnitId)}」目前沒有任何有效成員，請先將人員加入該組織`,
       );
     }
 
@@ -5321,6 +5334,7 @@ export class WorkflowEngineService {
     positionId: string,
     includeDescendants: boolean,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const orgUnitIds = await this.readOrgUnitScopeIds(
       manager,
@@ -5338,7 +5352,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} 找不到簽核人：組織「${await this.readOrgUnitName(manager, orgUnitId)}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
+        `${label} 找不到${subject}：組織「${await this.readOrgUnitName(manager, orgUnitId)}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
@@ -5537,6 +5551,7 @@ export class WorkflowEngineService {
             instance,
             action.recipients,
             `知會節點「${node.data.label}」`,
+            '通知對象',
           );
     const recipientMemberIds = uniqueTexts(
       recipients.map((recipient) => recipient.memberId),
@@ -6588,11 +6603,12 @@ function findMemberIdsInValue(value: unknown): readonly string[] {
 function readMemberIdsFromValue(
   value: unknown,
   label: string,
+  subject: ResolvedSubject = '簽核人',
 ): readonly string[] {
   const memberIds = findMemberIdsInValue(value);
 
   if (memberIds.length === 0) {
-    throw new ConflictException(`${label} 找不到簽核人`);
+    throw new ConflictException(`${label} 找不到${subject}`);
   }
 
   return memberIds;

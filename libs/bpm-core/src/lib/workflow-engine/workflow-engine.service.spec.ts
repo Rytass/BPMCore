@@ -1159,7 +1159,7 @@ describe('WorkflowEngineService', () => {
     });
 
     await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
-      '找不到簽核人',
+      '知會節點「財務知會」 找不到通知對象',
     );
   });
 
@@ -6180,6 +6180,51 @@ describe('WorkflowEngineService', () => {
         payload: expect.objectContaining({
           action: 'ADHOC_WEBHOOK',
           directiveId: 'directive-webhook-1',
+        }),
+      }),
+    );
+  });
+
+  it('words an ad-hoc notification that finds nobody as 通知對象, not 簽核人', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-notify-1',
+          originNodeId: 'task_finance',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetKind: AdhocTargetKindEnum.MEMBER,
+          targetValue: { kind: AdhocTargetKindEnum.MEMBER, memberIds: [] },
+          type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+        payload: expect.objectContaining({
+          action: 'ADHOC_NOTIFY',
+          error: '臨時通知對象 找不到通知對象',
         }),
       }),
     );
