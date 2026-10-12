@@ -103,6 +103,7 @@ import {
   composeSlaDuration,
   hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
+  isOrgManagerChainDecisionPolicyInvalid,
   readApproverResolverIssue,
   readDesignTimeApproverCount,
   readNotifyServiceTaskIssue,
@@ -230,6 +231,7 @@ type ApproverResolverMode = Extract<
   ApproverResolver['type'],
   | 'DIRECT'
   | 'ORG_MANAGER'
+  | 'ORG_MANAGER_CHAIN'
   | 'ORG_UNIT_MANAGER'
   | 'ORG_UNIT_MEMBER'
   | 'ORG_UNIT_POSITION'
@@ -541,6 +543,7 @@ const SLA_WARNING_AT_OPTIONS: readonly {
 const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'DIRECT', name: '指定會員' },
   { id: 'ORG_MANAGER', name: '發起人主管' },
+  { id: 'ORG_MANAGER_CHAIN', name: '主管鏈（簽到指定職等）' },
   { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
   { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
   { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
@@ -2516,13 +2519,19 @@ export function TemplateDesignerView({
         ? readManagerLevelOption(resolver.levelsUp)
         : MANAGER_LEVEL_OPTIONS[0];
     const fallback =
-      resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER'
+      resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN' ||
+      resolver.type === 'ORG_UNIT_MANAGER'
         ? (resolver.fallback ?? { type: 'NONE' as const })
         : { type: 'NONE' as const };
     // An empty `memberId` means no one has been picked yet (the just-switched
     // default). `readMemberSelectOption` never returns null, so without this
     // guard it would resolve to the "未知會員" sentinel and offer that
     // sentinel as a selectable, phantom row.
+    const minPositionLevelOptions =
+      resolver.type === 'ORG_MANAGER_CHAIN'
+        ? readMinPositionLevelOptions(positions, resolver.minPositionLevel)
+        : [];
     const fallbackMember =
       fallback.type === 'DIRECT' && fallback.memberId
         ? readMemberSelectOption(memberOptions, fallback.memberId)
@@ -2553,7 +2562,7 @@ export function TemplateDesignerView({
             clearable={false}
             onChange={(option): void =>
               updateUserTaskResolver(
-                readDefaultApproverResolver(option?.id ?? null),
+                readDefaultApproverResolver(option?.id ?? null, positions),
               )
             }
             options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
@@ -2635,6 +2644,31 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
+        {resolver.type === 'ORG_MANAGER_CHAIN' ? (
+          <BPMFormField
+            hintText="從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。"
+            label="簽到職等"
+            name="minPositionLevel"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  ...resolver,
+                  minPositionLevel: Number(
+                    option?.id ?? resolver.minPositionLevel,
+                  ),
+                })
+              }
+              options={[...minPositionLevelOptions]}
+              value={readSelectOption(
+                minPositionLevelOptions,
+                String(resolver.minPositionLevel),
+              )}
+            />
+          </BPMFormField>
+        ) : null}
         {resolver.type === 'ORG_UNIT_MANAGER' ||
         resolver.type === 'ORG_UNIT_MEMBER' ||
         resolver.type === 'ORG_UNIT_POSITION' ? (
@@ -2679,6 +2713,7 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         {resolver.type === 'ORG_MANAGER' ||
+        resolver.type === 'ORG_MANAGER_CHAIN' ||
         resolver.type === 'ORG_UNIT_MANAGER' ? (
           <>
             <BPMFormField
@@ -2701,7 +2736,11 @@ export function TemplateDesignerView({
               />
             </BPMFormField>
             <BPMFormField
-              hintText="預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。"
+              hintText={
+                resolver.type === 'ORG_MANAGER_CHAIN'
+                  ? '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。'
+                  : '預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。'
+              }
               label="無主管時"
               name="approverFallbackMode"
               required
@@ -4299,6 +4338,7 @@ function omitSlaKey(
 
 function readApproverResolverMode(value: string): ApproverResolverMode {
   return value === 'ORG_MANAGER' ||
+    value === 'ORG_MANAGER_CHAIN' ||
     value === 'ORG_UNIT_MANAGER' ||
     value === 'ORG_UNIT_MEMBER' ||
     value === 'ORG_UNIT_POSITION' ||
@@ -4307,11 +4347,24 @@ function readApproverResolverMode(value: string): ApproverResolverMode {
     : 'DIRECT';
 }
 
-function readDefaultApproverResolver(value: string | null): ApproverResolver {
+function readDefaultApproverResolver(
+  value: string | null,
+  positions: readonly PositionRecord[],
+): ApproverResolver {
   const mode = readApproverResolverMode(value ?? 'DIRECT');
 
   if (mode === 'ORG_MANAGER') {
     return { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' };
+  }
+
+  if (mode === 'ORG_MANAGER_CHAIN') {
+    return {
+      minPositionLevel: positions.reduce(
+        (highest, position) => Math.max(highest, position.level),
+        1,
+      ),
+      type: 'ORG_MANAGER_CHAIN',
+    };
   }
 
   if (mode === 'ORG_UNIT_MANAGER') {
@@ -4350,7 +4403,10 @@ function updateApproverResolverFallback(
   resolver: ApproverResolver,
   fallback: ApproverResolverFallback,
 ): ApproverResolver {
-  if (resolver.type === 'ORG_MANAGER') {
+  if (
+    resolver.type === 'ORG_MANAGER' ||
+    resolver.type === 'ORG_MANAGER_CHAIN'
+  ) {
     return { ...resolver, fallback };
   }
 
@@ -4359,6 +4415,39 @@ function updateApproverResolverFallback(
   }
 
   return resolver;
+}
+
+/**
+ * One option per distinct position level in the directory, highest first, each
+ * labelled with the positions sitting on that level. A saved level that no
+ * position carries (positions deleted or not loaded yet) is still offered so
+ * the select never renders blank and the stored value is not silently changed.
+ */
+function readMinPositionLevelOptions(
+  positions: readonly PositionRecord[],
+  currentLevel: number,
+): readonly ManagerLevelOption[] {
+  const levels = [...new Set(positions.map((position) => position.level))];
+  const allLevels = levels.includes(currentLevel)
+    ? levels
+    : [...levels, currentLevel];
+
+  return [...allLevels]
+    .sort((left, right) => right - left)
+    .map((level) => {
+      const names = positions
+        .filter((position) => position.level === level)
+        .map((position) => position.name);
+
+      return {
+        id: String(level),
+        name:
+          names.length > 0
+            ? `職等 ${level}（${names.join('、')}）`
+            : `職等 ${level}`,
+        value: level,
+      };
+    });
 }
 
 function readManagerLevelOption(levelsUp: number): ManagerLevelOption {
@@ -4981,7 +5070,11 @@ function readApproverResolverMemberIds(
     return resolver.memberIds;
   }
 
-  if (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') {
+  if (
+    resolver.type === 'ORG_MANAGER' ||
+    resolver.type === 'ORG_MANAGER_CHAIN' ||
+    resolver.type === 'ORG_UNIT_MANAGER'
+  ) {
     return resolver.fallback?.type === 'DIRECT' && resolver.fallback.memberId
       ? [resolver.fallback.memberId]
       : [];
@@ -5044,6 +5137,10 @@ function readApproverResolverSummary(
 
   if (resolver.type === 'ORG_MANAGER') {
     return readManagerLevelOption(resolver.levelsUp).name;
+  }
+
+  if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    return `主管鏈：簽到職等 ${resolver.minPositionLevel}`;
   }
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
@@ -5224,11 +5321,23 @@ function readWorkflowDefinitionIssue(
       !edge.data.isDefault &&
       !edge.data.condition,
   );
+  const chainPolicyNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      isOrgManagerChainDecisionPolicyInvalid(
+        node.data.approverResolver,
+        node.data.decisionPolicy,
+      ),
+  );
 
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
       incompleteUserTaskNode.data.approverResolver,
     );
+  }
+
+  if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
+    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是依序簽核或全部同意，否則任一位主管簽完就會結案。`;
   }
 
   if (notifyNodeIssue) {

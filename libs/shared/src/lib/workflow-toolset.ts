@@ -100,7 +100,8 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
   description:
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
-    'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback?, preferClosestOrgUnit? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
   properties: {
     type: {
@@ -110,6 +111,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
         'ORG_UNIT_MEMBER',
         'ORG_UNIT_POSITION',
         'ORG_MANAGER',
+        'ORG_MANAGER_CHAIN',
         'ORG_UNIT_MANAGER',
         'DYNAMIC_FORM',
         'EXPRESSION',
@@ -1121,6 +1123,18 @@ function parseApproverResolver(value: unknown): ApproverResolver {
         preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'ORG_MANAGER',
       };
+    case 'ORG_MANAGER_CHAIN': {
+      const minPositionLevel = value['minPositionLevel'];
+
+      return typeof minPositionLevel === 'number' &&
+        Number.isInteger(minPositionLevel)
+        ? {
+            minPositionLevel,
+            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+            type: 'ORG_MANAGER_CHAIN',
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
 
