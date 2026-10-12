@@ -330,6 +330,8 @@ Form-schema definitions.
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
 | `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
+| `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them). `{ whenEmpty }`; absent keeps the previous behaviour |
+| `ExcludeInitiatorWhenEmpty` | type | What happens when no approver is left after the initiator is removed: `FAIL` / `INITIATOR_MANAGER` / `SKIP_NODE` |
 | `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
 | `FieldPermission` | interface | Per-node read/write permission |
 | `NotificationOverride` | interface | Node-level notification overrides |
@@ -380,6 +382,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `defaultNotifyWebhookTargetId` / `createNotifyWebhookTarget` / `readNotifyWebhookTargets` | function | NOTIFY webhook target factory and reader |
 | `isNotifyRecipientsEmpty` / `readNotifyRecipientsIssue` | function | Empty `DIRECT` recipients (allowed only with webhooks) vs a misconfigured recipient resolver |
 | `readNotifyServiceTaskIssue` | function | zh-TW issue for one NOTIFY node (recipients + webhooks); used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
+| `EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES` | const | The accepted `ExcludeInitiatorWhenEmpty` values |
+| `readExcludeInitiatorIssue` | function | zh-TW issue when a userTask's `excludeInitiator` is set without a valid `whenEmpty`; used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
 | `readNotifyWebhookStructureIssues` / `isNotifyWebhookContextPath` | function | Structural webhook checks shared by the designer and `lintWorkflowDefinition`, including rejection of unknown keys (no URL/header/secret may be stored) |
 | `isFormFieldCompatibleWithWebhookParameter` / `isNotifyWebhookValueCompatibleWithParameter` | function | Whether a form field or a concrete value can feed a webhook parameter type |
 | `NotifyWebhookEndpointContract` (optional `deprecated` / `disabled`) / `NotifyWebhookCatalogIssue` / `NotifyWebhookCatalogIssueCode` | type/interface | The descriptor subset the catalog lint reads, and a catalog/form publish problem as a code (`ENDPOINT_MISSING`, `ENDPOINT_DEPRECATED`, `ENDPOINT_DISABLED`, `PARAMETER_REQUIRED`, `PARAMETER_UNKNOWN`, `FIELD_MISSING`, `FIELD_INCOMPATIBLE`, `CONSTANT_REQUIRED_NULL`, `CONSTANT_INCOMPATIBLE`, `CONTEXT_INCOMPATIBLE`) |
@@ -394,7 +398,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/…) |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
