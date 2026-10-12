@@ -1754,8 +1754,17 @@ export class WorkflowEngineService {
     const taskRepository = manager.getRepository(TaskEntity);
     const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
-    const originTask = task.adhocOriginTaskId
+    const adhocOriginTask = task.adhocOriginTaskId
       ? await taskRepository.findOne({ where: { id: task.adhocOriginTaskId } })
+      : null;
+    // transferTask re-points an open pre-approval when its origin is
+    // transferred, but a pre-approval whose origin was transferred by a release
+    // that did not do that yet still points at the TRANSFERRED row, and so does
+    // the pointer on `task` when a transfer commits after decideTask read it
+    // and before it took the instance lock. Following the transfer here hands
+    // the decision to whoever holds the stage now in both cases.
+    const originTask = adhocOriginTask
+      ? await this.readTransferSuccessorTask(manager, adhocOriginTask)
       : null;
     const originTaskIsOpen =
       originTask?.status === TaskStatusEnum.PENDING ||
@@ -1874,6 +1883,72 @@ export class WorkflowEngineService {
     );
 
     return true;
+  }
+
+  /**
+   * Follows a TRANSFERRED task to the task that replaced it, repeatedly, and
+   * returns the last one reached. A transfer leaves no pointer on either task
+   * row; the link is the `transferredFromTaskId` in the payload of the
+   * TASK_CREATED activity written for the replacement. When the trail stops
+   * (no such activity, or its task is gone) the last task reached is returned,
+   * so a caller sees the transferred row exactly as it did before.
+   */
+  private async readTransferSuccessorTask(
+    manager: EntityManager,
+    task: TaskEntity,
+  ): Promise<TaskEntity> {
+    if (task.status !== TaskStatusEnum.TRANSFERRED) {
+      return task;
+    }
+
+    const taskRepository = manager.getRepository(TaskEntity);
+    const taskCreatedActivities = await manager
+      .getRepository(ActivityLogEntity)
+      .find({
+        where: {
+          eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+          instanceId: task.instanceId,
+          nodeId: task.nodeId,
+        },
+      });
+    const successorTaskIdByTransferredTaskId = new Map<string, string>(
+      taskCreatedActivities.flatMap(
+        (activity): readonly (readonly [string, string])[] => {
+          const transferredFromTaskId =
+            activity.payload['transferredFromTaskId'];
+
+          return typeof transferredFromTaskId === 'string' && activity.taskId
+            ? [[transferredFromTaskId, activity.taskId]]
+            : [];
+        },
+      ),
+    );
+    const followTransfer = async (
+      currentTask: TaskEntity,
+      visitedTaskIds: ReadonlySet<string>,
+    ): Promise<TaskEntity> => {
+      const successorTaskId =
+        currentTask.status === TaskStatusEnum.TRANSFERRED
+          ? successorTaskIdByTransferredTaskId.get(currentTask.id)
+          : undefined;
+
+      if (!successorTaskId || visitedTaskIds.has(successorTaskId)) {
+        return currentTask;
+      }
+
+      const successorTask = await taskRepository.findOne({
+        where: { id: successorTaskId },
+      });
+
+      return successorTask
+        ? followTransfer(
+            successorTask,
+            new Set([...visitedTaskIds, successorTaskId]),
+          )
+        : currentTask;
+    };
+
+    return followTransfer(task, new Set([task.id]));
   }
 
   private async readOpenTaskRecipientMemberIds(
@@ -3827,6 +3902,41 @@ export class WorkflowEngineService {
         tokenId: task.tokenId,
       }),
     );
+    // A pre-approval the previous holder requested still points at the task
+    // being transferred. Its RETURN_TO_ORIGIN rejection hands the decision back
+    // through adhocOriginTaskId, so leaving it on the TRANSFERRED row reopened
+    // a task for the member who had just transferred the stage away. Only open
+    // pre-approvals move; closed ones keep pointing at the task they ran
+    // against, and countersign tasks keep agreeing with directive.originTaskId
+    // because nothing reads their pointer. A pre-approval is always created on
+    // the origin task's instance and node, so those narrow the lookup to the
+    // idx_tasks_instance_node index (adhoc_origin_task_id has none).
+    const openPreApprovalsOnTransferredTask = (
+      await taskRepository.find({
+        where: {
+          adhocOriginTaskId: task.id,
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          instanceId: task.instanceId,
+          nodeId: task.nodeId,
+        },
+      })
+    ).filter(
+      (adhocTask) =>
+        adhocTask.status === TaskStatusEnum.PENDING ||
+        adhocTask.status === TaskStatusEnum.IN_PROGRESS,
+    );
+
+    if (openPreApprovalsOnTransferredTask.length > 0) {
+      await taskRepository.save(
+        openPreApprovalsOnTransferredTask.map(
+          (adhocTask): TaskEntity =>
+            Object.assign(new TaskEntity(), adhocTask, {
+              adhocOriginTaskId: nextTask.id,
+            }),
+        ),
+      );
+    }
+
     await taskCandidateRepository.save([
       ...(actorCandidate
         ? [
