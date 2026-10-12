@@ -1865,6 +1865,16 @@ export class WorkflowEngineService {
       return false;
     }
 
+    const originCandidates =
+      readDecisionPolicySnapshot(originTask).type === 'SEQUENTIAL'
+        ? await taskCandidateRepository.find({
+            where: { taskId: originTask.id },
+          })
+        : [];
+    const isSequentialOrigin = isOrderedSequentialTask(
+      originTask,
+      originCandidates,
+    );
     const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
 
     if (!originTaskIsOpen && originTask.assigneeMemberId) {
@@ -1872,23 +1882,24 @@ export class WorkflowEngineService {
       // the stage can be re-decided after the rejected pre-approval. A
       // SEQUENTIAL task's assignee rotates and ends on the last signer, so it
       // goes back to whoever asked for the pre-approval instead.
-      const originCandidates = await taskCandidateRepository.find({
-        where: { taskId: originTask.id },
-      });
-      const requesterCandidate =
-        readDecisionPolicySnapshot(originTask).type === 'SEQUENTIAL' &&
-        originCandidates.some((candidate) => candidate.sequence !== null)
-          ? originCandidates.find(
-              (candidate) => candidate.memberId === directive.createdByMemberId,
-            )
-          : undefined;
-      const reopenedAssigneeMemberId =
-        requesterCandidate?.memberId ?? originTask.assigneeMemberId;
-      const reopenedOriginalMemberId = requesterCandidate
-        ? requesterCandidate.originalMemberId
+      const requesterCandidate = isSequentialOrigin
+        ? await this.readSequentialRequesterCandidate(
+            manager,
+            originTask,
+            originCandidates,
+            directive.createdByMemberId,
+          )
+        : undefined;
+      // A sequential origin always reopens for the requester, even when the
+      // successor of a transferred task has no row for them.
+      const reopenedAssigneeMemberId = isSequentialOrigin
+        ? directive.createdByMemberId
+        : originTask.assigneeMemberId;
+      const reopenedOriginalMemberId = isSequentialOrigin
+        ? (requesterCandidate?.originalMemberId ?? directive.createdByMemberId)
         : originTask.originalAssigneeMemberId;
-      const reopenedDelegationChain = requesterCandidate
-        ? requesterCandidate.delegationChain
+      const reopenedDelegationChain = isSequentialOrigin
+        ? (requesterCandidate?.delegationChain ?? [])
         : originTask.delegationChain;
       const reopenedTask = await taskRepository.save(
         taskRepository.create({
@@ -1954,9 +1965,7 @@ export class WorkflowEngineService {
     // the requester is the origin holder (or handed the stage away by a
     // transfer) and only whoever holds the task now is told.
     const recipientMemberIds = uniqueTexts([
-      ...(readDecisionPolicySnapshot(originTask).type === 'SEQUENTIAL'
-        ? [directive.createdByMemberId]
-        : []),
+      ...(isSequentialOrigin ? [directive.createdByMemberId] : []),
       ...(await this.readOpenTaskRecipientMemberIds(manager, originTask)),
     ]);
 
@@ -2062,6 +2071,75 @@ export class WorkflowEngineService {
     };
 
     return followTransfer(task, new Set([task.id]));
+  }
+
+  /**
+   * The requester's candidate row on a SEQUENTIAL origin task. A task that was
+   * transferred mid-order continues as a replacement that carries only the
+   * candidates still to sign, so a requester who already signed is found on an
+   * earlier task of the transfer chain instead.
+   */
+  private async readSequentialRequesterCandidate(
+    manager: EntityManager,
+    originTask: TaskEntity,
+    originCandidates: readonly TaskCandidateEntity[],
+    requesterMemberId: string,
+  ): Promise<TaskCandidateEntity | undefined> {
+    const ownCandidate = originCandidates.find(
+      (candidate) => candidate.memberId === requesterMemberId,
+    );
+
+    if (ownCandidate) {
+      return ownCandidate;
+    }
+
+    const taskCreatedActivities = await manager
+      .getRepository(ActivityLogEntity)
+      .find({
+        where: {
+          eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+          instanceId: originTask.instanceId,
+          nodeId: originTask.nodeId,
+        },
+      });
+    const transferredFromTaskIdByTaskId = new Map<string, string>(
+      taskCreatedActivities.flatMap(
+        (activity): readonly (readonly [string, string])[] => {
+          const transferredFromTaskId =
+            activity.payload['transferredFromTaskId'];
+
+          return typeof transferredFromTaskId === 'string' && activity.taskId
+            ? [[activity.taskId, transferredFromTaskId]]
+            : [];
+        },
+      ),
+    );
+    const searchEarlierTasks = async (
+      currentTaskId: string,
+      visitedTaskIds: ReadonlySet<string>,
+    ): Promise<TaskCandidateEntity | undefined> => {
+      const earlierTaskId = transferredFromTaskIdByTaskId.get(currentTaskId);
+
+      if (!earlierTaskId || visitedTaskIds.has(earlierTaskId)) {
+        return undefined;
+      }
+
+      const earlierCandidate = (
+        await manager
+          .getRepository(TaskCandidateEntity)
+          .find({ where: { taskId: earlierTaskId } })
+      ).find((candidate) => candidate.memberId === requesterMemberId);
+
+      return (
+        earlierCandidate ??
+        searchEarlierTasks(
+          earlierTaskId,
+          new Set([...visitedTaskIds, earlierTaskId]),
+        )
+      );
+    };
+
+    return searchEarlierTasks(originTask.id, new Set([originTask.id]));
   }
 
   private async readOpenTaskRecipientMemberIds(
@@ -6538,6 +6616,18 @@ function uniqueRuntimeCandidates(
 
     return true;
   });
+}
+
+// A task signs in order only when its snapshot says so and its candidates carry
+// a sequence; a SEQUENTIAL task from before ordering existed behaves as before.
+function isOrderedSequentialTask(
+  task: TaskEntity,
+  candidates: readonly TaskCandidateEntity[],
+): boolean {
+  return (
+    readDecisionPolicySnapshot(task).type === 'SEQUENTIAL' &&
+    candidates.some((candidate) => candidate.sequence !== null)
+  );
 }
 
 // Every read of the setting goes through here so an explicit `null` behaves
