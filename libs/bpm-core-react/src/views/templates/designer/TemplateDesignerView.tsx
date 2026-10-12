@@ -103,6 +103,7 @@ import {
   composeSlaDuration,
   hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
+  isOrgManagerChainDecisionPolicyInvalid,
   readApproverResolverIssue,
   readDesignTimeApproverCount,
   readNotifyServiceTaskIssue,
@@ -122,6 +123,10 @@ import {
   readPositionOption,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
+import {
+  readDefaultMinPositionLevel,
+  readMinPositionLevelOptions,
+} from './position-level-options';
 import {
   OrgUnitRecord,
   MembershipRecord,
@@ -230,6 +235,7 @@ type ApproverResolverMode = Extract<
   ApproverResolver['type'],
   | 'DIRECT'
   | 'ORG_MANAGER'
+  | 'ORG_MANAGER_CHAIN'
   | 'ORG_UNIT_MANAGER'
   | 'ORG_UNIT_MEMBER'
   | 'ORG_UNIT_POSITION'
@@ -541,6 +547,7 @@ const SLA_WARNING_AT_OPTIONS: readonly {
 const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'DIRECT', name: '指定會員' },
   { id: 'ORG_MANAGER', name: '發起人主管' },
+  { id: 'ORG_MANAGER_CHAIN', name: '主管鏈（簽到指定職等）' },
   { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
   { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
   { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
@@ -862,6 +869,9 @@ export function TemplateDesignerView({
   const [policyNotice, setPolicyNotice] = useState<Readonly<{
     message: string;
     nodeId: string;
+    // The policy the reducer replaced it with; the notice is only true while
+    // the node still carries that policy.
+    policyType: DecisionPolicy['type'];
   }> | null>(null);
   // A notice describes one editing moment on one node, so it must not outlive
   // that node staying selected. `nodeId` alone is not identity: node ids are
@@ -1643,6 +1653,18 @@ export function TemplateDesignerView({
     // answer before working out the new one.
     setPolicyNotice(null);
 
+    if (
+      isOrgManagerChainDecisionPolicyInvalid(approverResolver, decisionPolicy)
+    ) {
+      setPolicyNotice({
+        message: '主管鏈會依序加入多位主管，簽核方式已改為「全部同意」。',
+        nodeId,
+        policyType: 'PARALLEL_ALL',
+      });
+
+      return;
+    }
+
     if (!isDecisionPolicyUnsatisfiable(decisionPolicy, approverResolver)) {
       return;
     }
@@ -1653,6 +1675,7 @@ export function TemplateDesignerView({
         `不足原本設定的 ${decisionPolicy?.type === 'QUORUM' ? decisionPolicy.threshold : 0} 位門檻，` +
         '簽核政策已重設為單人簽核，請重新設定。',
       nodeId,
+      policyType: 'SINGLE',
     });
   }
 
@@ -1900,7 +1923,7 @@ export function TemplateDesignerView({
               policyNotice.nodeId === selectedNode?.id &&
               selectedNode.type === 'userTask' &&
               (selectedNode.data.decisionPolicy?.type ?? 'SINGLE') ===
-                'SINGLE' ? (
+                policyNotice.policyType ? (
                 <Typography color="text-warning" variant="body">
                   {policyNotice.message}
                 </Typography>
@@ -2516,13 +2539,19 @@ export function TemplateDesignerView({
         ? readManagerLevelOption(resolver.levelsUp)
         : MANAGER_LEVEL_OPTIONS[0];
     const fallback =
-      resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER'
+      resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN' ||
+      resolver.type === 'ORG_UNIT_MANAGER'
         ? (resolver.fallback ?? { type: 'NONE' as const })
         : { type: 'NONE' as const };
     // An empty `memberId` means no one has been picked yet (the just-switched
     // default). `readMemberSelectOption` never returns null, so without this
     // guard it would resolve to the "未知會員" sentinel and offer that
     // sentinel as a selectable, phantom row.
+    const minPositionLevelOptions =
+      resolver.type === 'ORG_MANAGER_CHAIN'
+        ? readMinPositionLevelOptions(positions, resolver.minPositionLevel)
+        : [];
     const fallbackMember =
       fallback.type === 'DIRECT' && fallback.memberId
         ? readMemberSelectOption(memberOptions, fallback.memberId)
@@ -2553,7 +2582,7 @@ export function TemplateDesignerView({
             clearable={false}
             onChange={(option): void =>
               updateUserTaskResolver(
-                readDefaultApproverResolver(option?.id ?? null),
+                readDefaultApproverResolver(option?.id ?? null, positions),
               )
             }
             options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
@@ -2635,6 +2664,31 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
+        {resolver.type === 'ORG_MANAGER_CHAIN' ? (
+          <BPMFormField
+            hintText="從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。"
+            label="簽到職等"
+            name="minPositionLevel"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  ...resolver,
+                  minPositionLevel: Number(
+                    option?.id ?? resolver.minPositionLevel,
+                  ),
+                })
+              }
+              options={[...minPositionLevelOptions]}
+              value={readSelectOption(
+                minPositionLevelOptions,
+                String(resolver.minPositionLevel),
+              )}
+            />
+          </BPMFormField>
+        ) : null}
         {resolver.type === 'ORG_UNIT_MANAGER' ||
         resolver.type === 'ORG_UNIT_MEMBER' ||
         resolver.type === 'ORG_UNIT_POSITION' ? (
@@ -2679,29 +2733,36 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         {resolver.type === 'ORG_MANAGER' ||
+        resolver.type === 'ORG_MANAGER_CHAIN' ||
         resolver.type === 'ORG_UNIT_MANAGER' ? (
           <>
+            {resolver.type !== 'ORG_MANAGER_CHAIN' ? (
+              <BPMFormField
+                hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
+                label="只取最近一層主管"
+                name="preferClosestOrgUnit"
+              >
+                <Toggle
+                  checked={Boolean(resolver.preferClosestOrgUnit)}
+                  inputProps={{
+                    id: 'preferClosestOrgUnit',
+                    name: 'preferClosestOrgUnit',
+                  }}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                    updateUserTaskResolver({
+                      ...resolver,
+                      preferClosestOrgUnit: event.target.checked,
+                    })
+                  }
+                />
+              </BPMFormField>
+            ) : null}
             <BPMFormField
-              hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
-              label="只取最近一層主管"
-              name="preferClosestOrgUnit"
-            >
-              <Toggle
-                checked={Boolean(resolver.preferClosestOrgUnit)}
-                inputProps={{
-                  id: 'preferClosestOrgUnit',
-                  name: 'preferClosestOrgUnit',
-                }}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                  updateUserTaskResolver({
-                    ...resolver,
-                    preferClosestOrgUnit: event.target.checked,
-                  })
-                }
-              />
-            </BPMFormField>
-            <BPMFormField
-              hintText="預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。"
+              hintText={
+                resolver.type === 'ORG_MANAGER_CHAIN'
+                  ? '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。'
+                  : '預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。'
+              }
               label="無主管時"
               name="approverFallbackMode"
               required
@@ -2892,7 +2953,16 @@ export function TemplateDesignerView({
                 ),
               )
             }
-            options={[...DECISION_POLICY_OPTIONS]}
+            options={[
+              // A chain needs every manager to sign, so only the policies the
+              // validator accepts are offered; a stored one stays readable
+              // through `readDecisionPolicyOption`.
+              ...DECISION_POLICY_OPTIONS.filter(
+                (option) =>
+                  resolver.type !== 'ORG_MANAGER_CHAIN' ||
+                  option.id === 'PARALLEL_ALL',
+              ),
+            ]}
             value={readDecisionPolicyOption(decisionPolicyType)}
           />
         </BPMFormField>
@@ -4299,6 +4369,7 @@ function omitSlaKey(
 
 function readApproverResolverMode(value: string): ApproverResolverMode {
   return value === 'ORG_MANAGER' ||
+    value === 'ORG_MANAGER_CHAIN' ||
     value === 'ORG_UNIT_MANAGER' ||
     value === 'ORG_UNIT_MEMBER' ||
     value === 'ORG_UNIT_POSITION' ||
@@ -4307,11 +4378,21 @@ function readApproverResolverMode(value: string): ApproverResolverMode {
     : 'DIRECT';
 }
 
-function readDefaultApproverResolver(value: string | null): ApproverResolver {
+function readDefaultApproverResolver(
+  value: string | null,
+  positions: readonly PositionRecord[],
+): ApproverResolver {
   const mode = readApproverResolverMode(value ?? 'DIRECT');
 
   if (mode === 'ORG_MANAGER') {
     return { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' };
+  }
+
+  if (mode === 'ORG_MANAGER_CHAIN') {
+    return {
+      minPositionLevel: readDefaultMinPositionLevel(positions),
+      type: 'ORG_MANAGER_CHAIN',
+    };
   }
 
   if (mode === 'ORG_UNIT_MANAGER') {
@@ -4350,7 +4431,10 @@ function updateApproverResolverFallback(
   resolver: ApproverResolver,
   fallback: ApproverResolverFallback,
 ): ApproverResolver {
-  if (resolver.type === 'ORG_MANAGER') {
+  if (
+    resolver.type === 'ORG_MANAGER' ||
+    resolver.type === 'ORG_MANAGER_CHAIN'
+  ) {
     return { ...resolver, fallback };
   }
 
@@ -4981,7 +5065,11 @@ function readApproverResolverMemberIds(
     return resolver.memberIds;
   }
 
-  if (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') {
+  if (
+    resolver.type === 'ORG_MANAGER' ||
+    resolver.type === 'ORG_MANAGER_CHAIN' ||
+    resolver.type === 'ORG_UNIT_MANAGER'
+  ) {
     return resolver.fallback?.type === 'DIRECT' && resolver.fallback.memberId
       ? [resolver.fallback.memberId]
       : [];
@@ -5044,6 +5132,10 @@ function readApproverResolverSummary(
 
   if (resolver.type === 'ORG_MANAGER') {
     return readManagerLevelOption(resolver.levelsUp).name;
+  }
+
+  if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    return `主管鏈：簽到職等 ${resolver.minPositionLevel}`;
   }
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
@@ -5224,11 +5316,23 @@ function readWorkflowDefinitionIssue(
       !edge.data.isDefault &&
       !edge.data.condition,
   );
+  const chainPolicyNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      isOrgManagerChainDecisionPolicyInvalid(
+        node.data.approverResolver,
+        node.data.decisionPolicy,
+      ),
+  );
 
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
       incompleteUserTaskNode.data.approverResolver,
     );
+  }
+
+  if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
+    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「全部同意」，否則任一位主管簽完就會結案。`;
   }
 
   if (notifyNodeIssue) {

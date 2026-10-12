@@ -806,6 +806,19 @@ export function readWorkflowDefinitionIssue(
     );
   }
 
+  const chainPolicyNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      isOrgManagerChainDecisionPolicyInvalid(
+        node.data.approverResolver,
+        node.data.decisionPolicy,
+      ),
+  );
+
+  if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
+    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「全部同意」，否則任一位主管簽完就會結案。`;
+  }
+
   if (
     unsatisfiableQuorumNode &&
     unsatisfiableQuorumNode.type === 'userTask' &&
@@ -867,6 +880,27 @@ export function readNotifyServiceTaskIssue(node: WorkflowNode): string | null {
   return readNotifyRecipientsIssue(action.recipients);
 }
 
+/**
+ * `true` when an `ORG_MANAGER_CHAIN` node uses a decision policy that lets one
+ * manager close the node (`SINGLE`, `PARALLEL_ANY`, `QUORUM`) or has none at
+ * all. A chain only makes sense when every manager on it has to sign, so the
+ * node must wait for all candidates (`SEQUENTIAL` or `PARALLEL_ALL`).
+ *
+ * Only applies to user-task approver resolvers: a NOTIFY recipient chain
+ * notifies everyone and has no decision policy.
+ */
+export function isOrgManagerChainDecisionPolicyInvalid(
+  resolver: ApproverResolver,
+  decisionPolicy: DecisionPolicy | undefined,
+): boolean {
+  // `resolver` can be missing on raw JSON that has not been linted yet.
+  return (
+    resolver?.type === 'ORG_MANAGER_CHAIN' &&
+    decisionPolicy?.type !== 'SEQUENTIAL' &&
+    decisionPolicy?.type !== 'PARALLEL_ALL'
+  );
+}
+
 export function readApproverResolverIssue(
   resolver: ApproverResolver,
 ): string | null {
@@ -894,7 +928,16 @@ export function readApproverResolverIssue(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') &&
+    resolver.type === 'ORG_MANAGER_CHAIN' &&
+    !Number.isInteger(resolver.minPositionLevel)
+  ) {
+    return '簽核節點需要指定有效的職等門檻。';
+  }
+
+  if (
+    (resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN') &&
     resolver.fallback?.type === 'DIRECT' &&
     !resolver.fallback.memberId.trim()
   ) {

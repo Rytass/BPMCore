@@ -72,6 +72,7 @@ import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
+import { PositionEntity } from '../organization/position.entity';
 import { ManagerResolutionScopeTypeEnum } from '../organization/organization.enums';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
@@ -135,6 +136,8 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
 };
 
 const MAX_PROCESSING_STEPS = 500;
+// Guards ORG_MANAGER_CHAIN against misconfigured manager rules that never end.
+const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
 
@@ -2460,6 +2463,10 @@ export class WorkflowEngineService {
       return `orgUnitManager:${resolver.orgUnitId}`;
     }
 
+    if (resolver.type === 'ORG_MANAGER_CHAIN') {
+      return `orgManagerChain:${resolver.minPositionLevel}`;
+    }
+
     return readMemberIdFromValue(
       readManagerMemberIdFromInitiatorSnapshot(
         input.initiatorMetadataSnapshot,
@@ -4147,6 +4154,18 @@ export class WorkflowEngineService {
       );
     }
 
+    if (resolver.type === 'ORG_MANAGER_CHAIN') {
+      return this.resolveOrgManagerChainCandidates(
+        manager,
+        instance,
+        resolver.minPositionLevel,
+        resolver.fallback,
+        label,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
     return this.resolveInitiatorManagerCandidates(
       manager,
       instance,
@@ -4222,6 +4241,120 @@ export class WorkflowEngineService {
         `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
       ),
     ];
+  }
+
+  /**
+   * Walks up the initiator's manager chain, nearest manager first, until a
+   * manager whose position level reaches `minPositionLevel` is added. The
+   * list is returned nearest manager first.
+   */
+  private async resolveOrgManagerChainCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    minPositionLevel: number,
+    fallback: ApproverResolverFallback | undefined,
+    label: string,
+  ): Promise<readonly string[]> {
+    const date = toDateOnlyString(new Date());
+    const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
+    const chain: string[] = [];
+    let currentMemberId = instance.initiatorMemberId;
+    let lastAddedLevel: number | null = null;
+
+    for (let hop = 0; hop < ORG_MANAGER_CHAIN_MAX_HOPS; hop += 1) {
+      // A chain is a single path, so it always uses closest-org-unit semantics
+      // (merging ancestor-unit rules could only produce ties). The member is
+      // excluded from his own candidates: a unit head belongs to the unit he
+      // heads, so without this his unit rule would name himself and the walk
+      // could never climb past him.
+      const directManagerMemberIds = await this.resolveDirectManagerMemberIds(
+        manager,
+        currentMemberId,
+        date,
+        true,
+        currentMemberId,
+      );
+
+      if (directManagerMemberIds.length === 0) {
+        break;
+      }
+
+      if (directManagerMemberIds.length > 1) {
+        // Picking one silently would route the document by accident.
+        throw new ConflictException(
+          `${label} 無法沿主管鏈簽核：成員 ${currentMemberId} 的主管規則在同一優先順序出現多位主管（${directManagerMemberIds.join('、')}），無法決定簽核路徑。請聯絡流程管理員調整主管規則。`,
+        );
+      }
+
+      const [managerMemberId] = directManagerMemberIds;
+
+      if (visitedMemberIds.has(managerMemberId)) {
+        break;
+      }
+
+      visitedMemberIds.add(managerMemberId);
+      currentMemberId = managerMemberId;
+
+      const level = await this.readMemberPositionLevel(
+        manager,
+        managerMemberId,
+        date,
+      );
+
+      if (
+        level === null ||
+        (lastAddedLevel !== null && level <= lastAddedLevel)
+      ) {
+        continue;
+      }
+
+      chain.push(managerMemberId);
+      lastAddedLevel = level;
+
+      if (level >= minPositionLevel) {
+        return chain;
+      }
+    }
+
+    const fallbackMemberId = this.resolveFallbackAssignee(
+      instance,
+      fallback,
+      label,
+      `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
+    );
+
+    return chain.includes(fallbackMemberId)
+      ? chain
+      : [...chain, fallbackMemberId];
+  }
+
+  /** Highest position level over the member's active memberships, or `null`. */
+  private async readMemberPositionLevel(
+    manager: EntityManager,
+    memberId: string,
+    date: string,
+  ): Promise<number | null> {
+    const memberships = await manager.getRepository(MembershipEntity).find({
+      where: { memberId },
+    });
+    const positionIds = uniqueTexts(
+      memberships
+        .filter((membership) => isDateRangeActive(membership, date))
+        .map((membership) => membership.positionId)
+        .filter((positionId): positionId is string => Boolean(positionId)),
+    );
+
+    if (positionIds.length === 0) {
+      return null;
+    }
+
+    const positions = await manager.getRepository(PositionEntity).find({
+      where: { id: In([...positionIds]) },
+    });
+
+    return positions.length === 0
+      ? null
+      : Math.max(...positions.map((position) => position.level));
   }
 
   private resolveFallbackAssignee(
@@ -4307,6 +4440,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -4342,6 +4476,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
+      excludedManagerMemberId,
     );
   }
 
@@ -4419,6 +4554,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -4448,6 +4584,13 @@ export class WorkflowEngineService {
         ),
       )
       .filter((resolution) => isDateRangeActive(resolution, date))
+      // Dropped before the top-priority tier is chosen, so resolution falls
+      // through to the next tier instead of ending on the excluded member.
+      .filter(
+        (resolution) =>
+          excludedManagerMemberId === undefined ||
+          resolution.managerMemberId !== excludedManagerMemberId,
+      )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
       );
