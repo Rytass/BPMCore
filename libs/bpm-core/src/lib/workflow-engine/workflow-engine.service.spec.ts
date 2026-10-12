@@ -3591,6 +3591,94 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('returns a rejected pre-approval to whoever holds the origin task after a transfer', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    // The origin approver hands the stage to member-101 while the
+    // pre-approval they requested is still open.
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-101',
+    });
+
+    const replacementTask = fixture.savedTasks.find(
+      (task) => task.assigneeMemberId === 'member-101',
+    );
+
+    expect(replacementTask?.id).toBeDefined();
+
+    const savedTaskCountBeforeRejection = fixture.savedTasks.length;
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    // Returned to the current holder: no fresh task reopened for the member
+    // who transferred the stage away, and the instance is not rejected.
+    expect(
+      fixture.savedTasks
+        .slice(savedTaskCountBeforeRejection)
+        .filter(
+          (task) =>
+            task.assigneeMemberId === 'member-finance' &&
+            task.status === TaskStatusEnum.PENDING,
+        ),
+    ).toEqual([]);
+    expect(fixture.savedInstance).toBeNull();
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientMemberIds: ['member-101'] }),
+    );
+  });
+
   it('rejects the whole instance when an ad-hoc pre-approval is rejected with REJECT_INSTANCE', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [

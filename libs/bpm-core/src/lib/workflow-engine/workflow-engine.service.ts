@@ -3819,6 +3819,30 @@ export class WorkflowEngineService {
         tokenId: task.tokenId,
       }),
     );
+    // A pre-approval the previous holder requested still points at the task
+    // being transferred. Its RETURN_TO_ORIGIN rejection hands the decision back
+    // through adhocOriginTaskId, so leaving it on the TRANSFERRED row reopened
+    // a task for the member who had just transferred the stage away. Only open
+    // ad-hoc tasks move; closed ones keep pointing at the task they ran against.
+    const openAdhocTasksOnTransferredTask = (
+      await taskRepository.find({ where: { adhocOriginTaskId: task.id } })
+    ).filter(
+      (adhocTask) =>
+        adhocTask.status === TaskStatusEnum.PENDING ||
+        adhocTask.status === TaskStatusEnum.IN_PROGRESS,
+    );
+
+    if (openAdhocTasksOnTransferredTask.length > 0) {
+      await taskRepository.save(
+        openAdhocTasksOnTransferredTask.map(
+          (adhocTask): TaskEntity =>
+            Object.assign(new TaskEntity(), adhocTask, {
+              adhocOriginTaskId: nextTask.id,
+            }),
+        ),
+      );
+    }
+
     await taskCandidateRepository.save([
       ...(actorCandidate
         ? [
