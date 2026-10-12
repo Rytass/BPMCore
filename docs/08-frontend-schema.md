@@ -113,7 +113,7 @@ UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與�
 
 `SEQUENTIAL`（designer 選項「依序簽核」）依候選簽核人的順序一次只開放一位：
 `task_candidates.sequence`（0 起算）排定順序，輪到的候選人為 `PENDING`，其餘為
-`WAITING`（畫面標示「等待中」）；前一位同意後才輪到下一位，任一位拒絕或退回即
+`WAITING`（目前畫面不顯示候選人狀態）；前一位同意後才輪到下一位，任一位拒絕或退回即
 結束該關。節點面板的提示文字照此說明。
 
 Task 相關欄位（`TaskRecord`／activity payload）：
@@ -121,7 +121,9 @@ Task 相關欄位（`TaskRecord`／activity payload）：
 - `candidateMemberIds`：task 上所有候選人（顯示用摘要，含尚未輪到者）。
 - `openCandidateMemberIds`：現在可以操作的候選人（候選狀態為 `PENDING` 或
   `CLAIMED`），順序同 `candidateMemberIds`。判斷「某人是否能簽」請用這個欄位
-  （`canMemberActOnTask` 在欄位缺席時才退回 `candidateMemberIds`）；SEQUENTIAL
+  （`canMemberActOnTask` 在欄位缺席時才退回 `candidateMemberIds`，這只涵蓋自行撰寫
+  查詢的 host；內建 client 一律選取此欄位，舊版 server 會直接拒絕整個查詢，所以
+  client 與 server 必須同版升級，即同一個 release）；SEQUENTIAL
   以外的 task 兩者只差已決議者。
 - activity `TASK_CREATED` payload：`candidateMemberIds` 只列目前開放的人；
   SEQUENTIAL task 另帶 `sequentialCandidateMemberIds`（完整順序，只有 SEQUENTIAL

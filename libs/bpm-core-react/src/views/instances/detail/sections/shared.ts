@@ -331,7 +331,9 @@ export function canMemberActOnTask(
 
   // `candidateMemberIds` lists everyone on the task, including SEQUENTIAL
   // candidates whose turn has not come; `openCandidateMemberIds` is who may act
-  // now. Servers that predate it do not send the field.
+  // now. The fallback only covers hosts that run their own task queries without
+  // the field; the bundled client always selects it, so client and server must
+  // be upgraded together (same release).
   return (
     task.assigneeMemberId === memberId ||
     (task.openCandidateMemberIds ?? task.candidateMemberIds).includes(memberId)
@@ -520,11 +522,50 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
     activityLog.eventType === 'INSTANCE_STARTED' ||
     activityLog.eventType === 'TASK_DECIDED' ||
     activityLog.eventType === 'SLA_TRIGGERED' ||
+    activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
+    isSequentialTaskCreation(activityLog) ||
     isNotifyWebhookActivity(
       activityLog.eventType,
       readActivityPayload(activityLog),
     )
   );
+}
+
+/**
+ * Only a SEQUENTIAL task's creation is worth a timeline entry (it carries the
+ * signing order); every other TASK_CREATED row stays hidden as before.
+ */
+function isSequentialTaskCreation(activityLog: ActivityLogRecord): boolean {
+  return (
+    activityLog.eventType === 'TASK_CREATED' &&
+    readStringArrayField(
+      readActivityPayload(activityLog),
+      'sequentialCandidateMemberIds',
+    ).length > 0
+  );
+}
+
+/**
+ * Member ids that only appear inside the payload of the sequential-signing
+ * events, so the timeline can load their profiles and show names, not ids.
+ */
+export function readSequentialActivityPayloadMemberIds(
+  activityLog: ActivityLogRecord,
+): readonly string[] {
+  if (
+    activityLog.eventType !== 'TASK_CANDIDATE_ACTIVATED' &&
+    activityLog.eventType !== 'TASK_CREATED'
+  ) {
+    return [];
+  }
+
+  const payload = readActivityPayload(activityLog);
+
+  return [
+    ...readStringArrayField(payload, 'sequentialCandidateMemberIds'),
+    readStringField(payload, 'candidateMemberId'),
+    readStringField(payload, 'previousMemberId'),
+  ].filter(isPresentText);
 }
 
 const NOTIFY_WEBHOOK_EVENT_TYPES: ReadonlySet<string> = new Set([

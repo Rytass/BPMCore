@@ -10,7 +10,9 @@ import {
   isUserMeaningfulActivity,
   readActivityDetailParts,
   readActivityEventLabel,
+  readActivityStepRecords,
   readAdhocTargetDraft,
+  readSequentialActivityPayloadMemberIds,
 } from './shared';
 
 function createDecisionActivityLog(): ActivityLogRecord {
@@ -336,5 +338,114 @@ describe('canMemberActOnTask', () => {
       true,
     );
     expect(canMemberActOnTask(task({}), null)).toBe(false);
+  });
+});
+
+describe('sequential signing in the instance timeline', () => {
+  const profiles = new Map<string, MemberProfileRecord>(
+    ['alice', 'bob', 'carol'].map((id) => [
+      id,
+      { email: `${id}@example.com`, id, name: id.toUpperCase() } as MemberProfileRecord,
+    ]),
+  );
+
+  function log(
+    id: string,
+    eventType: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord {
+    return {
+      ...createDecisionActivityLog(),
+      eventType,
+      id,
+      payloadJson: JSON.stringify(payload),
+    } as ActivityLogRecord;
+  }
+
+  function steps(
+    logs: readonly ActivityLogRecord[],
+  ): ReturnType<typeof readActivityStepRecords> {
+    return readActivityStepRecords(
+      logs,
+      [],
+      [],
+      null,
+      'IN_PROGRESS' as never,
+      profiles,
+      new Map(),
+      new Map(),
+      null,
+    );
+  }
+
+  function textOf(
+    step: ReturnType<typeof readActivityStepRecords>[number],
+  ): string {
+    return step.descriptionParts
+      .map((part) => ('text' in part ? part.text : ''))
+      .join(' | ');
+  }
+
+  it('shows the signing order, each approval and every hand-off', () => {
+    const result = steps([
+      log('created', 'TASK_CREATED', {
+        assigneeMemberId: 'alice',
+        candidateMemberIds: ['alice'],
+        sequentialCandidateMemberIds: ['alice', 'bob'],
+      }),
+      log('decided', 'TASK_DECIDED', { action: 'APPROVED' }),
+      log('activated', 'TASK_CANDIDATE_ACTIVATED', {
+        candidateMemberId: 'bob',
+        previousMemberId: 'alice',
+      }),
+    ]);
+
+    expect(result.map((step) => step.id).slice(0, 3)).toEqual([
+      'created',
+      'decided',
+      'activated',
+    ]);
+    expect(textOf(result[0])).toContain(
+      '簽核順序：ALICE（alice@example.com） → BOB（bob@example.com）',
+    );
+    expect(result[2].title).toBe('輪到下一位簽核');
+    expect(textOf(result[2])).toContain('輪到：BOB（bob@example.com）');
+  });
+
+  it('keeps an ordinary TASK_CREATED off the timeline', () => {
+    const result = steps([
+      log('created', 'TASK_CREATED', {
+        assigneeMemberId: 'alice',
+        candidateMemberIds: ['alice', 'bob'],
+      }),
+    ]);
+
+    expect(result.map((step) => step.id)).not.toContain('created');
+    expect(
+      isUserMeaningfulActivity(log('x', 'TASK_CREATED', {})),
+    ).toBe(false);
+  });
+
+  it('collects the member ids that only appear in sequential payloads', () => {
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('c', 'TASK_CREATED', {
+          sequentialCandidateMemberIds: ['alice', 'bob', 'carol'],
+        }),
+      ),
+    ).toEqual(['alice', 'bob', 'carol']);
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('a', 'TASK_CANDIDATE_ACTIVATED', {
+          candidateMemberId: 'bob',
+          previousMemberId: 'alice',
+        }),
+      ),
+    ).toEqual(['bob', 'alice']);
+    expect(
+      readSequentialActivityPayloadMemberIds(
+        log('d', 'TASK_DECIDED', { candidateMemberId: 'bob' }),
+      ),
+    ).toEqual([]);
   });
 });

@@ -15,6 +15,7 @@ import {
 import {
   isPresentText,
   readDelegationChain as _readDelegationChain,
+  readSequentialActivityPayloadMemberIds,
 } from './shared';
 
 // Re-export shared helpers needed by the container
@@ -38,6 +39,7 @@ export async function readMemberProfilesForTimeline({
     ...new Set(
       [
         ...activityLogs.map((activityLog) => activityLog.actorMemberId),
+        ...activityLogs.flatMap(readSequentialActivityPayloadMemberIds),
         ...tasks.map((task) => task.assigneeMemberId),
         ...tasks.map((task) => task.originalAssigneeMemberId),
         ...tasks.flatMap((task) => task.candidateMemberIds),

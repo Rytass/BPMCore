@@ -143,8 +143,10 @@ export interface TaskRecord {
   readonly isAdhoc: boolean;
   readonly nodeId: string;
   /**
-   * Candidates who may act now (`PENDING`/`CLAIMED`). Absent on servers older
-   * than the sequential-signing change; fall back to `candidateMemberIds`.
+   * Candidates who may act now (`PENDING`/`CLAIMED`). The bundled queries
+   * always select it, so an older server rejects them: upgrade client and
+   * server together (same release). The optional type and the
+   * `candidateMemberIds` fallback only cover hosts running their own queries.
    */
   readonly openCandidateMemberIds?: readonly string[];
   readonly openedAt: string | null;
@@ -162,6 +164,8 @@ export interface TaskCandidateRecord {
   readonly id: string;
   readonly memberId: string;
   readonly originalMemberId: string;
+  /** 0-based signing order in a SEQUENTIAL task; null elsewhere. */
+  readonly sequence?: number | null;
   readonly sourceType: string;
   readonly status: string;
   readonly taskId: string;
