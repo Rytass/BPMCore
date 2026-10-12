@@ -3,6 +3,7 @@ import {
   NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
+  createWorkflowNode,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
   isFormFieldCompatibleWithWebhookParameter,
@@ -172,6 +173,31 @@ describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
       ).toBeNull();
     },
   );
+});
+
+describe('createWorkflowNode defaults', () => {
+  it('starts a new user task on the initiator manager, not a placeholder member', () => {
+    const node = createWorkflowNode('userTask', 1);
+
+    expect(node.type === 'userTask' && node.data.approverResolver).toEqual(
+      ONE_MANAGER,
+    );
+    expect(
+      node.type === 'userTask' &&
+        readApproverResolverIssue(node.data.approverResolver),
+    ).toBeNull();
+  });
+
+  it('starts a new notify node on the initiator manager and passes validation', () => {
+    const node = createWorkflowNode('serviceTask', 1);
+
+    expect(
+      node.type === 'serviceTask' &&
+        node.data.action.type === 'NOTIFY' &&
+        node.data.action.recipients,
+    ).toEqual(ONE_MANAGER);
+    expect(readNotifyServiceTaskIssue(node)).toBeNull();
+  });
 });
 
 describe('DYNAMIC_FORM validation', () => {

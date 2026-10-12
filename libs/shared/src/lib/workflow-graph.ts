@@ -377,6 +377,18 @@ export function normalizeSingleIncomingTriggerModes(
 
 // ── Node / edge factories ──────────────────────────────────────────────────
 
+/**
+ * The always-valid default approver: the initiator's direct manager (one level
+ * up). Needs no member/org id, so a node built purely from this passes
+ * validation. New nodes start from it instead of a placeholder member id that
+ * would be stored forever if the designer never removed it.
+ */
+export const DEFAULT_MANAGER_RESOLVER: ApproverResolver = {
+  baseFromInitiator: true,
+  levelsUp: 1,
+  type: 'ORG_MANAGER',
+};
+
 export function createWorkflowNode(
   type: NodePaletteType,
   index: number,
@@ -394,7 +406,7 @@ export function createWorkflowNode(
         allowAddSigner: false,
         allowReject: true,
         allowTransfer: true,
-        approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+        approverResolver: DEFAULT_MANAGER_RESOLVER,
         decisionPolicy: { type: 'SINGLE' },
         label: `簽核節點 ${index}`,
         returnBehavior: {
@@ -415,7 +427,7 @@ export function createWorkflowNode(
       data: {
         action: {
           channels: ['IN_APP'],
-          recipients: { memberIds: ['member-001'], type: 'DIRECT' },
+          recipients: DEFAULT_MANAGER_RESOLVER,
           type: 'NOTIFY',
         },
         label: `知會節點 ${index}`,
