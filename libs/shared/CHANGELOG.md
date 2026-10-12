@@ -1,3 +1,56 @@
+## 0.14.0 (2026-10-12)
+
+### 🚀 Features
+
+- **workflow-engine:** sign manager chains in order and keep the initiator out of re-delegation ([6eaf1e6](https://github.com/Rytass/BPMCore/commit/6eaf1e6))
+- **designer:** offer SEQUENTIAL again and show signing order in task views ([ed38d04](https://github.com/Rytass/BPMCore/commit/ed38d04))
+- ⚠️  **workflow-engine:** make SEQUENTIAL sign one candidate at a time ([70e9cde](https://github.com/Rytass/BPMCore/commit/70e9cde))
+- **designer:** configure initiator exclusion on user task nodes ([b7b51cd](https://github.com/Rytass/BPMCore/commit/b7b51cd))
+- **workflow-engine:** let a user task exclude the initiator from its approvers ([a4c6e51](https://github.com/Rytass/BPMCore/commit/a4c6e51))
+- **designer:** configure the ORG_MANAGER_CHAIN resolver in the template designer ([ab64fe4](https://github.com/Rytass/BPMCore/commit/ab64fe4))
+- **workflow-engine:** add ORG_MANAGER_CHAIN resolver that walks up to a position level ([001af84](https://github.com/Rytass/BPMCore/commit/001af84))
+
+### 🩹 Fixes
+
+- **workflow-engine:** reopen a rejected pre-approval for its requester on sequential tasks ([2cf8004](https://github.com/Rytass/BPMCore/commit/2cf8004))
+- **designer:** show the signing order and turn hand-offs in the instance timeline ([7ade44a](https://github.com/Rytass/BPMCore/commit/7ade44a))
+- **workflow-engine:** re-delegate on activation, anchor the SLA warning and give consumers a turn signal ([f50c781](https://github.com/Rytass/BPMCore/commit/f50c781))
+- **toolset:** show initiator exclusion in node summaries ([5ea8ea5](https://github.com/Rytass/BPMCore/commit/5ea8ea5))
+- **workflow-engine:** filter the initiator before dedupe and keep exclusion nodes completable ([5a6570a](https://github.com/Rytass/BPMCore/commit/5a6570a))
+- **designer:** explain the chain policy switch and keep the chain fallback in the toolset ([743df14](https://github.com/Rytass/BPMCore/commit/743df14))
+- **workflow-engine:** let ORG_MANAGER_CHAIN climb past unit heads under org-unit rules ([5baa2e6](https://github.com/Rytass/BPMCore/commit/5baa2e6))
+- **workflow-engine:** scope the transfer re-point to pre-approvals on the origin node ([70d99d7](https://github.com/Rytass/BPMCore/commit/70d99d7))
+
+### ⚠️  Breaking Changes
+
+- **workflow-engine:** make SEQUENTIAL sign one candidate at a time  ([70e9cde](https://github.com/Rytass/BPMCore/commit/70e9cde))
+  the SEQUENTIAL decision policy used to behave exactly like
+  PARALLEL_ALL (every candidate got the task at once). It now means what its
+  name says: candidates sign one after another, in the order the approver
+  resolver returned them.
+  - task_candidates gains a nullable `sequence` column (migration
+    0000000025000-task-candidate-sequence) and a WAITING status for candidates
+    whose turn has not come. Only the first candidate is PENDING, assigned and
+    notified; an approval activates the next one (fresh SLA window, a
+    TASK_CANDIDATE_ACTIVATED activity log, a new assignment notification).
+  - A WAITING candidate who tries to decide gets a ConflictException.
+  - Reject, return and instance cancellation close the WAITING candidates too.
+  - Transferring (including SLA escalation) keeps the SEQUENTIAL policy and
+    carries the remaining WAITING candidates to the replacement task.
+  - TASK_CREATED lists only the active candidate in candidateMemberIds and adds
+    sequentialCandidateMemberIds with the full order.
+  - Candidates are read ordered by sequence, unordered ones last.
+  SEQUENTIAL tasks created before this change keep their old behaviour: their
+  candidates are all PENDING with a NULL sequence and nothing is backfilled.
+  PARALLEL_*, QUORUM, ad-hoc tasks and dry run are unchanged.
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  Claude-Session: https://claude.ai/code/session_01C3u1QC5Uo4tZvyTaJE6Gap
+
+### ❤️ Thank You
+
+- Claude Opus 5.5
+- Kai-Chieh Yang
+
 ## 0.13.5 (2026-10-12)
 
 ### 🩹 Fixes
