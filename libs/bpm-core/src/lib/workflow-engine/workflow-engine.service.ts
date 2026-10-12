@@ -3823,18 +3823,29 @@ export class WorkflowEngineService {
     // being transferred. Its RETURN_TO_ORIGIN rejection hands the decision back
     // through adhocOriginTaskId, so leaving it on the TRANSFERRED row reopened
     // a task for the member who had just transferred the stage away. Only open
-    // ad-hoc tasks move; closed ones keep pointing at the task they ran against.
-    const openAdhocTasksOnTransferredTask = (
-      await taskRepository.find({ where: { adhocOriginTaskId: task.id } })
+    // pre-approvals move; closed ones keep pointing at the task they ran
+    // against, and countersign tasks keep agreeing with directive.originTaskId
+    // because nothing reads their pointer. A pre-approval is always created on
+    // the origin task's instance and node, so those narrow the lookup to the
+    // idx_tasks_instance_node index (adhoc_origin_task_id has none).
+    const openPreApprovalsOnTransferredTask = (
+      await taskRepository.find({
+        where: {
+          adhocOriginTaskId: task.id,
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          instanceId: task.instanceId,
+          nodeId: task.nodeId,
+        },
+      })
     ).filter(
       (adhocTask) =>
         adhocTask.status === TaskStatusEnum.PENDING ||
         adhocTask.status === TaskStatusEnum.IN_PROGRESS,
     );
 
-    if (openAdhocTasksOnTransferredTask.length > 0) {
+    if (openPreApprovalsOnTransferredTask.length > 0) {
       await taskRepository.save(
-        openAdhocTasksOnTransferredTask.map(
+        openPreApprovalsOnTransferredTask.map(
           (adhocTask): TaskEntity =>
             Object.assign(new TaskEntity(), adhocTask, {
               adhocOriginTaskId: nextTask.id,

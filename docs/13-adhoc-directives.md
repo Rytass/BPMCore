@@ -171,6 +171,9 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
     - 原始 task 已完成但原 assignee 仍在：**重新建立一個指派給原簽核人的新
       task**，讓他重新決策。
     - 找不到有效原簽核人：退回機制無法套用，fall back 到一般拒絕路徑。
+    - 加簽期間原始 task 被轉交（`TRANSFERRED`）：仍開啟（`PENDING` /
+      `IN_PROGRESS`）的加簽 task 會跟著改指向轉交後的新 task，退回與通知對象是
+      目前持有該關卡的人；已結束的加簽 task 維持原指向。
 
 ---
 
@@ -279,7 +282,7 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 | ----------------------- | ----------------------------- | ---- | -------------------------------------- |
 | `is_adhoc`              | `boolean`，預設 `false`       | 否   | 是否為 ad-hoc 產生的任務               |
 | `adhoc_type`            | `text` (`AdhocDirectiveType`) | 是   | 僅 ad-hoc task：`COUNTERSIGN`/`PRE_APPROVAL` |
-| `adhoc_origin_task_id`  | `uuid`                        | 是   | 觸發此 ad-hoc task 的原始 task         |
+| `adhoc_origin_task_id`  | `uuid`                        | 是   | 觸發此 ad-hoc task 的原始 task；仍開啟的加簽（`PRE_APPROVAL`）task 會隨原始 task 的轉交改指向新 task，`adhoc_directives.origin_task_id` 則維持指向實際觸發的 task |
 | `adhoc_directive_id`    | `uuid`                        | 是   | 對應的 directive id                    |
 
 ### 8.3 列舉型別（`adhoc.enums.ts`）

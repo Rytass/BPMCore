@@ -3672,10 +3672,148 @@ describe('WorkflowEngineService', () => {
         ),
     ).toEqual([]);
     expect(fixture.savedInstance).toBeNull();
+    // The open pre-approval was moved onto the replacement task when the stage
+    // was transferred, so the rejection resolves the current holder from it.
+    expect(
+      fixture.savedTasks.filter((task) => task.id === 'task-90').pop(),
+    ).toMatchObject({ adhocOriginTaskId: replacementTask?.id });
+    expect(
+      fixture.notificationService.createAdhocWorkflowNotifications,
+    ).toHaveBeenCalledTimes(1);
     expect(
       fixture.notificationService.createAdhocWorkflowNotifications,
     ).toHaveBeenCalledWith(
-      expect.objectContaining({ recipientMemberIds: ['member-101'] }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          adhocTaskId: 'task-90',
+          originTaskId: replacementTask?.id,
+          type: 'PRE_APPROVAL_RETURNED',
+        }),
+        recipientMemberIds: ['member-101'],
+      }),
+    );
+  });
+
+  it('keeps a closed pre-approval pointing at the task it ran against when that task is transferred', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          completedAt: new Date('2026-05-04T09:30:00.000Z'),
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.COMPLETED,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-101',
+    });
+
+    expect(
+      fixture.savedTasks.some((task) => task.assigneeMemberId === 'member-101'),
+    ).toBe(true);
+    // The completed pre-approval is not re-saved, so its pointer is untouched.
+    expect(fixture.savedTasks.filter((task) => task.id === 'task-90')).toEqual(
+      [],
+    );
+  });
+
+  it('leaves an open countersign task pointing at the task that triggered it when that task is transferred', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          id: 'directive-seed-1',
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-101',
+    });
+
+    expect(
+      fixture.savedTasks.some((task) => task.assigneeMemberId === 'member-101'),
+    ).toBe(true);
+    // Only pre-approvals follow a transfer; the countersign task is not
+    // re-saved, so it keeps agreeing with directive.originTaskId.
+    expect(fixture.savedTasks.filter((task) => task.id === 'task-90')).toEqual(
+      [],
     );
   });
 
