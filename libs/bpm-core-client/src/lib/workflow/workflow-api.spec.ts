@@ -170,6 +170,53 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ).toBe('事由：汰換');
     });
 
+    // A member field stores raw member ids, which must never reach an inbox or
+    // case list as a title.
+    it('skips a member field and titles the case with the next field', (): void => {
+      const memberField: FormFieldDefinition = {
+        fieldKey: 'reviewer',
+        label: '人員選擇',
+        required: true,
+        type: 'member',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reason: '汰換', reviewer: 'member-uuid-1' },
+          schema: { fields: [memberField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'reviewer', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+    });
+
+    it('falls back when a member field is the only field', (): void => {
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reviewer: 'member-uuid-1' },
+          schema: {
+            fields: [
+              {
+                fieldKey: 'reviewer',
+                label: '人員選擇',
+                required: true,
+                type: 'member',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          uiSchema: null,
+        }),
+      ).toBe('fallback');
+    });
+
     it('falls back when a table is the only field', (): void => {
       expect(
         readFormDataCaseTitle({

@@ -1136,6 +1136,46 @@ describe('form schema validator', () => {
       ]);
     });
 
+    it('rejects a blank member id in a default value', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              defaultValue: '',
+              fieldKey: 'owner',
+              label: '負責人',
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: ['member-1', ' '],
+              fieldKey: 'watchers',
+              label: '關注者',
+              multiple: true,
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: [''],
+              fieldKey: 'backup',
+              label: '備援',
+              multiple: true,
+              required: false,
+              type: 'member',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('owner', 'watchers', 'backup'),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].defaultValue has invalid type for field type',
+        'schema.fields[1].defaultValue has invalid type for field type',
+        'schema.fields[2].defaultValue has invalid type for field type',
+      ]);
+    });
+
     it('does not allow a member column inside a table in V1', (): void => {
       const result = lintFormSchemaJson(
         JSON.stringify({

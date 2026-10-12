@@ -25,7 +25,11 @@ import {
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
-import { NotifyWebhookTarget } from '@rytass/bpm-core-shared/workflow';
+import {
+  ApproverResolver,
+  NotifyWebhookTarget,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow';
 import { resolveBPMWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import {
@@ -695,6 +699,78 @@ describe('TemplateService', () => {
     );
   });
 
+  describe('DYNAMIC_FORM member references', (): void => {
+    const memberSchema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'reviewer', label: '審核人', required: false, type: 'member' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+
+    it('rejects a user task whose formPath names no field of the bound form', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: memberSchema,
+        workflowDefinition: createDynamicFormWorkflow({
+          formPath: 'missing',
+          type: 'DYNAMIC_FORM',
+        }),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(
+        'workflow.nodes.task_manager.approverResolver.formPath must reference a member (人員選擇) field of the bound form: missing',
+      );
+    });
+
+    it('rejects a user task whose formPath names a non-member field', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: memberSchema,
+        workflowDefinition: createDynamicFormWorkflow({
+          formPath: 'note',
+          type: 'DYNAMIC_FORM',
+        }),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(
+        'workflow.nodes.task_manager.approverResolver.formPath must reference a member (人員選擇) field of the bound form: note',
+      );
+    });
+
+    it('rejects NOTIFY recipients whose formPath is not a member field', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: memberSchema,
+        workflowDefinition: createDynamicFormWorkflow(
+          { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+          { formPath: 'note', type: 'DYNAMIC_FORM' },
+        ),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(
+        'workflow.nodes.notify_peer.action.recipients.formPath must reference a member (人員選擇) field of the bound form: note',
+      );
+    });
+
+    it('publishes when formPath names an optional member field', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: memberSchema,
+        workflowDefinition: createDynamicFormWorkflow(
+          { formPath: 'reviewer', type: 'DYNAMIC_FORM' },
+          { formPath: 'reviewer', type: 'DYNAMIC_FORM' },
+        ),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+  });
+
   it('rejects publishing a webhook whose endpoint is not registered', async (): Promise<void> => {
     const service = createWebhookPublishService(
       new WorkflowWebhookService(
@@ -1295,6 +1371,57 @@ const TABLE_FORM_SCHEMA = {
 };
 
 /**
+ * VALID_WORKFLOW_DEFINITION with the manager task's approver resolver swapped
+ * and, when `notifyRecipients` is given, a NOTIFY service task hanging off the
+ * start event (a NOTIFY node is a leaf, it cannot have outgoing edges).
+ */
+function createDynamicFormWorkflow(
+  approverResolver: ApproverResolver,
+  notifyRecipients?: ApproverResolver,
+): WorkflowDefinition {
+  const base = VALID_WORKFLOW_DEFINITION as unknown as WorkflowDefinition;
+  const nodes = base.nodes.map((node) =>
+    node.type === 'userTask'
+      ? { ...node, data: { ...node.data, approverResolver } }
+      : node,
+  );
+
+  if (!notifyRecipients) {
+    return { ...base, nodes };
+  }
+
+  return {
+    ...base,
+    edges: [
+      ...base.edges,
+      {
+        data: {},
+        id: 'edge_start_notify',
+        source: 'start',
+        target: 'notify_peer',
+        type: 'smoothstep',
+      },
+    ],
+    nodes: [
+      ...nodes,
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: notifyRecipients,
+            type: 'NOTIFY',
+          },
+          label: '通知',
+        },
+        id: 'notify_peer',
+        position: { x: 400, y: 160 },
+        type: 'serviceTask',
+      },
+    ],
+  } as WorkflowDefinition;
+}
+
+/**
  * A publishable draft bound to a form whose only field is a table, with the
  * given condition data on the single start → end edge. Used to prove both
  * halves of the table-internals ban: the CEL expressions and the structured
@@ -1306,12 +1433,16 @@ function createTableConditionPublishService({
   conditionOperator,
   conditionValue,
   initiatorPolicyCel = null,
+  schema = TABLE_FORM_SCHEMA as FormDefinitionSchema,
+  workflowDefinition,
 }: {
   readonly condition?: string;
   readonly conditionFieldKey?: string;
   readonly conditionOperator?: string;
   readonly conditionValue?: string;
   readonly initiatorPolicyCel?: string | null;
+  readonly schema?: FormDefinitionSchema;
+  readonly workflowDefinition?: WorkflowDefinition;
 }): TemplateService {
   const draftVersion = Object.assign(new ApprovalTemplateVersionEntity(), {
     archivedAt: null,
@@ -1327,7 +1458,7 @@ function createTableConditionPublishService({
     templateId: 'template-1',
     updatedAt: new Date('2026-08-20T00:00:00.000Z'),
     version: 1,
-    workflowDefinition: {
+    workflowDefinition: workflowDefinition ?? {
       edges: [
         {
           data: {
@@ -1366,7 +1497,7 @@ function createTableConditionPublishService({
     id: 'form-version-1',
     publishedAt: new Date('2026-08-20T00:00:00.000Z'),
     publishedByMemberId: 'member-admin',
-    schema: TABLE_FORM_SCHEMA,
+    schema,
     status: FormDefinitionVersionStatusEnum.PUBLISHED,
     uiSchema: { layout: [{ fieldKey: 'items', width: 'FULL' }] },
     updatedAt: new Date('2026-08-20T00:00:00.000Z'),

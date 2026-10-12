@@ -574,6 +574,48 @@ describe('WorkflowEngineService', () => {
     ).resolves.toMatchObject({ id: 'instance-1' });
   });
 
+  it('shape-checks a hidden member field that still holds a value', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          {
+            fieldKey: 'needsReviewer',
+            label: '需要審核人',
+            required: false,
+            type: 'boolean',
+          },
+          {
+            fieldKey: 'reviewer',
+            label: '審核人',
+            required: true,
+            type: 'member',
+            visibleWhen: 'form.needsReviewer == true',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(
+      submit({ needsReviewer: false, reviewer: 7 }),
+    ).rejects.toThrow('formData.reviewer must be a member id');
+    // A hidden field that is blank / absent is not required and not checked.
+    await expect(
+      submit({ needsReviewer: false, reviewer: '' }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
   it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
     const formSchema = createRequiredReasonFormSchema();
     const fixture = createServiceFixture({

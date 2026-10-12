@@ -372,7 +372,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `readDesignTimeApproverCount` | function | Approvers a resolver is guaranteed to produce; `null` for runtime-resolved strategies |
 | `isDecisionPolicyUnsatisfiable` | function | `true` when a `COUNT` quorum exceeds the approvers the node can ever collect |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
-| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
+| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing. **Behaviour change:** a new `userTask` approver and a new NOTIFY `recipients` now default to `DEFAULT_MANAGER_RESOLVER` (the initiator's manager) instead of the placeholder `{ type: 'DIRECT', memberIds: ['member-001'] }`; callers that relied on the old placeholder must set a resolver themselves |
+| `DEFAULT_MANAGER_RESOLVER` | const | `{ type: 'ORG_MANAGER', baseFromInitiator: true, levelsUp: 1 }` — the resolver `createWorkflowNode` seeds on new user and NOTIFY nodes, exported so a host can reuse or compare against it |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
 | `insertWorkflowNodeIntoDefinition` / `insertWorkflowNodeAtEdge` / `insertWorkflowNodeAfterNode` | function | Node insertion strategies |
 | `renameWorkflowNode` / `applyWorkflowNodeTriggerMode` | function | Node data transforms |
@@ -872,6 +873,16 @@ definition snapshot rather than whatever version the template publishes today.
 > (`createApprovalTemplate` / `updateApprovalTemplateDraft` /
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
+
+**Publish-time member reference check.** `publishApprovalTemplateVersion` also
+checks every `DYNAMIC_FORM` resolver against the bound form version: each user
+task `approverResolver.formPath` and each NOTIFY `action.recipients.formPath`
+must equal the `fieldKey` of a `member` (人員選擇) field, otherwise publish fails
+with `workflow.nodes.<id>.approverResolver.formPath must reference a member
+(人員選擇) field of the bound form: <path>` (or `...action.recipients.formPath`).
+An optional or conditionally hidden member field is accepted; the designer warns
+about it instead. A path that names no member field resolves to nothing at
+runtime and would otherwise throw while the task is created.
 
 **Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
 `NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a

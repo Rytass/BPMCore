@@ -7,7 +7,10 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  FormDefinitionSchema,
+  isMemberFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import {
   EntityManager,
@@ -944,6 +947,10 @@ export class TemplateService {
       version.initiatorPolicyCel,
       formVersion.schema,
     );
+    const memberReferenceErrors = lintWorkflowMemberReferences(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
     const webhookErrors = await this.lintWorkflowWebhooks(
       version.workflowDefinition,
       formVersion.schema,
@@ -952,6 +959,7 @@ export class TemplateService {
       ...workflowResult.errors,
       ...conditionErrors,
       ...tableReferenceErrors,
+      ...memberReferenceErrors,
       ...webhookErrors,
     ];
 
@@ -1324,6 +1332,67 @@ function lintWorkflowTableReferences(
     );
 
   return [...expressionErrors, ...structuredErrors];
+}
+
+/**
+ * A `DYNAMIC_FORM` approver resolver (user task) or recipient resolver (NOTIFY)
+ * reads member ids from the form data at `formPath`. A path that names no
+ * member field of the bound form version resolves to nothing at runtime, which
+ * throws while the task is created and can strand the case — so it is caught
+ * here instead. A member field that is optional or conditionally hidden is
+ * allowed: whether it is filled is a submit-time question the designer warns
+ * about, not a publish-time one.
+ */
+function lintWorkflowMemberReferences(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const memberFieldKeys = new Set(
+    (schema?.fields ?? [])
+      .filter(isMemberFieldDefinition)
+      .map((field) => field.fieldKey),
+  );
+
+  return definition.nodes
+    .flatMap((node) => {
+      if (
+        node.type === 'userTask' &&
+        node.data.approverResolver?.type === 'DYNAMIC_FORM'
+      ) {
+        return [
+          {
+            formPath: node.data.approverResolver.formPath,
+            label: `workflow.nodes.${node.id}.approverResolver.formPath`,
+          },
+        ];
+      }
+
+      if (
+        node.type === 'serviceTask' &&
+        node.data.action?.type === 'NOTIFY' &&
+        node.data.action.recipients?.type === 'DYNAMIC_FORM'
+      ) {
+        return [
+          {
+            formPath: node.data.action.recipients.formPath,
+            label: `workflow.nodes.${node.id}.action.recipients.formPath`,
+          },
+        ];
+      }
+
+      return [];
+    })
+    .filter(
+      ({ formPath }) =>
+        // A blank path is reported by the workflow definition lint already.
+        typeof formPath === 'string' &&
+        formPath.trim() !== '' &&
+        !memberFieldKeys.has(formPath),
+    )
+    .map(
+      ({ formPath, label }) =>
+        `${label} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+    );
 }
 
 function readConditionExpressions(

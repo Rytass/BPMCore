@@ -6,6 +6,7 @@ import {
   FormUiSchema,
   FormStaticOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isMemberFieldDefinition,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
@@ -2248,19 +2249,20 @@ function readFirstCaseTitleField(
     schema.fields.map((field) => [field.fieldKey, field]),
   );
   // A row count is a poor case title, so a table never becomes the title field
-  // — the first non-table field takes its place (ADR 16 §3.8).
+  // — the first non-table field takes its place (ADR 16 §3.8). A member field
+  // holds raw member ids, which are no better, so it is skipped the same way.
   const firstLayoutField = uiSchema?.layout
     .map((layoutItem) => fieldsByKey.get(layoutItem.fieldKey) ?? null)
     .find(
       (field): field is FormFieldDefinition =>
-        field !== null && !isTableFieldDefinition(field),
+        field !== null && isCaseTitleField(field),
     );
 
-  return (
-    firstLayoutField ??
-    schema.fields.find((field) => !isTableFieldDefinition(field)) ??
-    null
-  );
+  return firstLayoutField ?? schema.fields.find(isCaseTitleField) ?? null;
+}
+
+function isCaseTitleField(field: FormFieldDefinition): boolean {
+  return !isTableFieldDefinition(field) && !isMemberFieldDefinition(field);
 }
 
 function readFieldValueLabel(

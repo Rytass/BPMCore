@@ -7401,7 +7401,17 @@ function validateSubmittedFormData(
     );
   }
 
-  const memberErrors = readSubmittedMemberValueErrors(visibleFields, formData);
+  // A `DYNAMIC_FORM` resolver reads a member value whether or not its field is
+  // visible, so a hidden field still holding a value must be well-formed too.
+  // Whether a hidden field is *required* stays a visibility question above.
+  const memberErrors = readSubmittedMemberValueErrors(
+    schema.fields.filter(
+      (field) =>
+        visibleFields.includes(field) ||
+        isSubmittedFieldValuePresent(formData[field.fieldKey]),
+    ),
+    formData,
+  );
 
   if (memberErrors.length > 0) {
     throw new BadRequestException(memberErrors.join('; '));

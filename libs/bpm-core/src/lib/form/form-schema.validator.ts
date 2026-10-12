@@ -5,6 +5,7 @@ import {
   FormLayoutItem,
   FormUiSchema,
   isFormIdentifierKey,
+  isFormMemberValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
 } from '@rytass/bpm-core-shared/form';
@@ -632,9 +633,12 @@ function lintMemberField(
 
   return [
     ...multipleErrors,
-    ...lintOptionalDefaultValue(field.defaultValue, path, (value) =>
-      value === null ||
-      (field.multiple === true ? isStringArray(value) : typeof value === 'string'),
+    // Submit rejects blank member ids, so a default of `''` / `['']` would make
+    // every untouched form unsubmittable.
+    ...lintOptionalDefaultValue(
+      field.defaultValue,
+      path,
+      (value) => value === null || isFormMemberValue(value, field.multiple === true),
     ),
   ];
 }
