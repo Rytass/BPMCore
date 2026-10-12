@@ -5332,7 +5332,7 @@ function readWorkflowDefinitionIssue(
   }
 
   if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
-    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是依序簽核或全部同意，否則任一位主管簽完就會結案。`;
+    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「全部同意」，否則任一位主管簽完就會結案。`;
   }
 
   if (notifyNodeIssue) {

@@ -319,7 +319,7 @@ async function resolveApprovers(
 #### 4.1.1 `ORG_MANAGER_CHAIN`：沿主管鏈簽到職等門檻
 
 `ORG_MANAGER` 的 `levelsUp` 是固定層數；`ORG_MANAGER_CHAIN` 則是從申請人開始一層一層往上找
-主管，讓每一位主管依序簽，直到某位主管的**職等**達到 `minPositionLevel` 為止，所以簽幾關取決於
+主管，讓每一位主管都要簽，直到某位主管的**職等**達到 `minPositionLevel` 為止，所以簽幾關取決於
 組織圖，不是模板寫死。resolver 回傳的是**有順序**的 member id 清單（最近的主管在最前面）。
 目前這種節點請搭配 `PARALLEL_ALL`；清單順序要變成真正的簽核順序，要等 `SEQUENTIAL` 依序派發另案完成後。
 

@@ -203,7 +203,7 @@ describe('ORG_MANAGER_CHAIN validation', () => {
     );
 
     expect(issue).toContain('部門會簽');
-    expect(issue).toContain('依序簽核');
+    expect(issue).toContain('「全部同意」');
     expect(
       readWorkflowDefinitionIssue(
         definitionWithUserTask(CHAIN, { type: 'SEQUENTIAL' }),
