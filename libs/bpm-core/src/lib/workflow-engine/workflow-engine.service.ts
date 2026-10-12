@@ -698,7 +698,7 @@ export class WorkflowEngineService {
         if (
           input.action === TaskDecisionActionEnum.TRANSFERRED &&
           options.transferReason === undefined &&
-          taskNode.data.excludeInitiator &&
+          isInitiatorExcluded(taskNode) &&
           transferToMemberId === instance.initiatorMemberId
         ) {
           throw new ConflictException(
@@ -1194,7 +1194,7 @@ export class WorkflowEngineService {
         // reached, against that node's own setting. This checks the target
         // against the node being decided now, as an early rejection for the
         // common case; it is not a guarantee about the node it attaches to.
-        if (node.data.excludeInitiator) {
+        if (isInitiatorExcluded(node)) {
           await this.resolveAdhocTaskCandidates(
             manager,
             instance,
@@ -1691,7 +1691,7 @@ export class WorkflowEngineService {
     );
     const candidates = selectNodeCandidates(
       delegatedCandidates,
-      node.data.excludeInitiator !== undefined,
+      isInitiatorExcluded(node),
       instance.initiatorMemberId,
     );
 
@@ -2460,17 +2460,26 @@ export class WorkflowEngineService {
       };
     }
 
-    const managerMemberId = readManagerMemberIdFromInitiatorSnapshot(
-      input.initiatorMetadataSnapshot,
-      1,
-    );
+    // Level 1 is the initiator when they head their unit; like the runtime,
+    // fall through to the next level of the snapshot's manager chain.
+    const managerMemberId =
+      excludeInitiator.whenEmpty === 'INITIATOR_MANAGER'
+        ? [1, 2]
+            .map((levelsUp) =>
+              readManagerMemberIdFromInitiatorSnapshot(
+                input.initiatorMetadataSnapshot,
+                levelsUp,
+              ),
+            )
+            .find(
+              (memberId): memberId is string =>
+                typeof memberId === 'string' &&
+                memberId.trim() !== '' &&
+                memberId.trim() !== input.initiatorMemberId,
+            )
+        : undefined;
 
-    if (
-      excludeInitiator.whenEmpty === 'INITIATOR_MANAGER' &&
-      typeof managerMemberId === 'string' &&
-      managerMemberId.trim() &&
-      managerMemberId !== input.initiatorMemberId
-    ) {
+    if (managerMemberId !== undefined) {
       return {
         assigneeMemberId: managerMemberId.trim(),
         message: null,
@@ -3830,7 +3839,7 @@ export class WorkflowEngineService {
             : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        decisionPolicySnapshot: node.data.excludeInitiator
+        decisionPolicySnapshot: isInitiatorExcluded(node)
           ? capDecisionPolicyToCandidateCount(
               node.data.decisionPolicy,
               candidates.length,
@@ -4147,7 +4156,7 @@ export class WorkflowEngineService {
     const excludeInitiator = node.data.excludeInitiator;
     const uniqueCandidates = selectNodeCandidates(
       delegatedCandidates,
-      excludeInitiator !== undefined,
+      isInitiatorExcluded(node),
       instance.initiatorMemberId,
     );
 
@@ -5958,6 +5967,12 @@ function uniqueRuntimeCandidates(
   });
 }
 
+// Every read of the setting goes through here so an explicit `null` behaves
+// exactly like an absent setting.
+function isInitiatorExcluded(node: UserTaskNode): boolean {
+  return Boolean(node.data.excludeInitiator);
+}
+
 // A delegate acting for the initiator is still the initiator approving their
 // own document, so the initiator anywhere on the delegation path (the
 // pre-delegation member, any hop, or the final assignee) drops the candidate.
@@ -5997,10 +6012,10 @@ function selectNodeCandidates(
 // initiator is gone, so it is capped at who remains ("everyone else").
 // PERCENTAGE is computed from the actual candidate count and needs nothing.
 function capDecisionPolicyToCandidateCount(
-  policy: DecisionPolicy,
+  policy: DecisionPolicy | undefined,
   candidateCount: number,
-): DecisionPolicy {
-  return policy.type === 'QUORUM' &&
+): DecisionPolicy | undefined {
+  return policy?.type === 'QUORUM' &&
     policy.thresholdType === 'COUNT' &&
     policy.threshold > candidateCount
     ? { ...policy, threshold: Math.max(candidateCount, 1) }

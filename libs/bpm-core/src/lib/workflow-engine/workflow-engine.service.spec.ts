@@ -2206,6 +2206,9 @@ describe('WorkflowEngineService', () => {
         createManagerResolution({
           id: 'manager-resolution-finance',
           managerMemberId: 'member-001',
+          // Outranks the parent unit's rule, so only excluding the initiator
+          // before the top-priority tier is chosen reaches the next tier up.
+          priority: 10,
           scopeId: 'org-finance',
           scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
         }),
@@ -2238,6 +2241,97 @@ describe('WorkflowEngineService', () => {
     expect(
       fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
     ).toEqual(['member-ceo']);
+  });
+
+  it('hands an ordinary initiator to the closest unit manager only', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processManagerResolutions: [
+        createManagerResolution({
+          id: 'manager-resolution-finance',
+          managerMemberId: 'member-manager',
+          scopeId: 'org-finance',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+        createManagerResolution({
+          id: 'manager-resolution-company',
+          managerMemberId: 'member-ceo',
+          scopeId: 'org-company',
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        }),
+      ],
+      processMemberships: [
+        createMembership({ memberId: 'member-001', orgUnitId: 'org-finance' }),
+      ],
+      processOrgUnits: [
+        createOrgUnit({ id: 'org-company', path: 'org' }),
+        createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+        excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks[0]).toMatchObject({
+      assigneeMemberId: 'member-manager',
+    });
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+    ).toEqual(['member-manager']);
+  });
+
+  it('treats a null excludeInitiator exactly like an absent one', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: withNodeData(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            memberIds: ['member-001', 'member-x'],
+            type: 'DIRECT',
+          },
+        }),
+        'task_finance',
+        { excludeInitiator: null },
+      ),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+    ).toEqual(['member-001', 'member-x']);
+  });
+
+  it('creates the task of an excluding node that has no decision policy', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: withNodeData(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            memberIds: ['member-001', 'member-x'],
+            type: 'DIRECT',
+          },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        }),
+        'task_finance',
+        { decisionPolicy: undefined },
+      ),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedTasks[0]).toMatchObject({
+      assigneeMemberId: 'member-x',
+    });
   });
 
   it('allows an SLA escalation to transfer to the initiator on an excluding node', async (): Promise<void> => {
@@ -3487,6 +3581,42 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('hands a unit head initiator to the next manager level in a dry run', (): void => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const result = fixture.service.dryRunApprovalWorkflow({
+      formDataJson: '{}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: JSON.stringify({
+        managerChain: ['member-001', 'member-ceo'],
+      }),
+      workflowDefinitionJson: JSON.stringify(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+        }),
+      ),
+    });
+
+    expect(result.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          assigneeMemberId: 'member-ceo',
+          nodeId: 'task_finance',
+          status: 'WAITING',
+        }),
+      ]),
+    );
+  });
+
   it('ends a dry run branch at a NOTIFY node instead of demanding an outgoing edge', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -3975,6 +4105,53 @@ describe('WorkflowEngineService', () => {
         taskId: 'task-1',
       }),
     ).rejects.toThrow('指定對象只有申請人本人');
+  });
+
+  it('keeps the legitimate ad-hoc target when the initiator listed first delegates to them', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      delegationResolutionByMember: {
+        'member-001': {
+          delegationChain: [
+            {
+              from: 'member-001',
+              reason: 'ALL',
+              ruleId: 'delegation-rule-1',
+              to: 'member-x',
+            },
+          ],
+          finalAssigneeMemberId: 'member-x',
+        },
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+        excludeInitiator: { whenEmpty: 'FAIL' },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const adhocTask = await fixture.service.requestAdhocPreApproval({
+      comment: null,
+      onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+      requestedByMemberId: 'member-finance',
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-001', 'member-x'],
+      },
+      taskId: 'task-1',
+    });
+
+    expect(adhocTask).toMatchObject({ assigneeMemberId: 'member-x' });
   });
 
   it('rejects an ad-hoc countersign request whose only target is the initiator when the node excludes the initiator', async (): Promise<void> => {
@@ -6203,6 +6380,21 @@ function createOrgUnit(value: Partial<OrgUnitEntity>): OrgUnitEntity {
     type: value.type ?? OrgUnitTypeEnum.DEPARTMENT,
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
   });
+}
+
+// Overlays raw node data, for shapes the typed builders refuse (a persisted
+// `null`, a legacy node missing a field).
+function withNodeData(
+  workflow: WorkflowDefinition,
+  nodeId: string,
+  patch: Readonly<Record<string, unknown>>,
+): WorkflowDefinition {
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node) =>
+      node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node,
+    ),
+  } as WorkflowDefinition;
 }
 
 function createLinearUserTaskWorkflow({
