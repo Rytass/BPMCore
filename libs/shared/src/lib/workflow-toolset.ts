@@ -287,7 +287,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'set_user_task_exclude_initiator',
     description:
-      '設定簽核節點是否排除申請人（職責分離）。enabled=true 時，申請人本人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關；enabled=false 會移除此設定。' +
+      '設定簽核節點的「申請人不可簽核自己的單」（職責分離）。enabled=true 時，申請人本人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關；enabled=false 會移除此設定。' +
       'whenEmpty 為排除後沒有任何簽核人時的處理：INITIATOR_MANAGER=改由申請人的直屬主管簽核（預設）；SKIP_NODE=跳過此關；FAIL=停止流程並提示。',
     inputSchema: objectSchema(
       {
@@ -538,7 +538,12 @@ function readNodeSummary(node: WorkflowNode): string {
     return (
       `簽核人=${node.data.approverResolver.type}` +
       `；決策=${readDecisionPolicySummary(node.data.decisionPolicy)}` +
-      `；觸發=${node.data.triggerMode ?? 'AND'}`
+      `；觸發=${node.data.triggerMode ?? 'AND'}` +
+      // Only reported when set, so the assistant can read back what
+      // set_user_task_exclude_initiator wrote; absent means "not excluded".
+      (node.data.excludeInitiator
+        ? `；申請人不可簽核自己的單=${node.data.excludeInitiator.whenEmpty}`
+        : '')
     );
   }
 

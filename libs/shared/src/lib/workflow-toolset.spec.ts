@@ -477,6 +477,27 @@ describe('set_user_task_exclude_initiator', () => {
     });
   });
 
+  it('shows the setting in the node summary only when it is set', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const readSummary = (target: WorkflowDesignerState): string | undefined =>
+      readWorkflowSnapshot(target).nodes.find((node) => node.id === nodeId)
+        ?.summary;
+
+    expect(readSummary(state)).not.toContain('申請人不可簽核自己的單');
+
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'SKIP_NODE',
+    });
+
+    expect(readSummary(enabled)).toContain('申請人不可簽核自己的單=SKIP_NODE');
+
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readSummary(disabled)).not.toContain('申請人不可簽核自己的單');
+  });
+
   it('removes the setting when disabled', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const enabled = await run(state, {
