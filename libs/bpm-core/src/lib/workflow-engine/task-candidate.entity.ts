@@ -1,4 +1,4 @@
-import { Field, ID, ObjectType } from '@nestjs/graphql';
+import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import {
   Column,
   CreateDateColumn,
@@ -36,6 +36,11 @@ export class TaskCandidateEntity {
   @Column('text')
   @Field(() => TaskCandidateStatusEnum)
   status!: TaskCandidateStatusEnum;
+
+  /** 0-based signing order in a SEQUENTIAL task; null everywhere else. */
+  @Column('int', { nullable: true })
+  @Field(() => Int, { nullable: true })
+  sequence!: number | null;
 
   @Column('timestamptz', { name: 'claimed_at', nullable: true })
   @Field(() => Date, { nullable: true })

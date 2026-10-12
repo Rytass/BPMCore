@@ -380,7 +380,37 @@ async function createTasksForNode(node, token) {
 一個 User Task 可以由 direct resolver 指定多位候選簽核者；runtime 會將候選者與
 `decisionPolicy` 一起寫入 task snapshot。`SINGLE`／`PARALLEL_ANY` 任一人同意
 即可完成，`PARALLEL_ALL`／`SEQUENTIAL` 需全部同意，`QUORUM` 則依門檻完成。
-目前 `SEQUENTIAL` 仍會同時建立所有候選人的待辦，因此不代表依序解鎖。
+
+#### `SEQUENTIAL`：依序簽核
+
+> **行為變更**：在此之前 `SEQUENTIAL` 與 `PARALLEL_ALL` 完全相同（所有候選人同時收到待辦、
+> 全部同意才完成）。現在 `SEQUENTIAL` 才真正代表「一位簽完、下一位才輪到」。
+
+- **順序**：候選人的順序就是 approver resolver 解析出來的順序（套用代理、去重之後），
+  寫入 `task_candidates.sequence`（0 起算）。例如主管鏈由下往上簽，resolver 就應由下往上回傳。
+- **建立 task**：只有 `sequence = 0` 的候選人是 `PENDING`，其餘為 `WAITING`（還沒輪到）。
+  task 的 `assignee_member_id`／`original_assignee_member_id`／`delegation_chain` 一律是目前輪到的那位，
+  `assignment_type` 仍是 `CANDIDATE_GROUP`。`WAITING` 的人不會有待辦、也收不到通知；
+  他們若在輪到前嘗試決策，會得到 `ConflictException`（`not this member's turn yet`）。
+- **同意**：該位候選人 → `COMPLETED`，`sequence` 最小的 `WAITING` 候選人 → `PENDING`，
+  task 回到 `PENDING`（`opened_at` 清空）、assignee 換成新的一位，`sla_due_at` 依節點 SLA 重新計算
+  （新的一位拿到完整的 SLA 時間）。同時寫入 `TASK_CANDIDATE_ACTIVATED` activity log 並通知新的一位。
+  token 仍停在該節點等待。
+- **完成**：所有候選人（含 `WAITING`）都 `COMPLETED` 才完成 task，token 才往下走。
+- **拒絕／退回**：與以往一樣，任何一位拒絕或退回即處理整個 instance；尚在 `WAITING` 的候選人與
+  其他未決候選人一併關閉（`CANCELLED`；instance 被取消時同樣處理）。
+- **轉簽**：目前輪到的人轉簽給 X 時，替換 task 沿用 `SEQUENTIAL` 與 `CANDIDATE_GROUP`，
+  X 取代轉簽者的位置（`PENDING`、同一個 `sequence`），其餘 `WAITING` 候選人原樣複製到新 task，
+  舊 task 的 `WAITING` 候選人標為 `SUPERSEDED`。若 X 本來就排在後面，X 只簽一次（取代目前這一位，
+  後面那個位置不再重複詢問）。SLA 升級逾時使用同一條轉簽路徑，行為相同。
+- **`TASK_CREATED` payload**：`assigneeMemberId` 與 `candidateMemberIds` 只有目前輪到的那位
+  （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
+  `sequentialCandidateMemberIds`。`TASK_CANDIDATE_ACTIVATED` payload：
+  `{ candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`，`actorMemberId` 為 `null`。
+- **舊資料**：此變更前建立的 `SEQUENTIAL` task，候選人全是 `PENDING`、`sequence` 為 `NULL`，
+  **沒有 backfill**，繼續照舊行為（不分先後、全部同意才完成）。只有 `decisionPolicy.type = 'SEQUENTIAL'`
+  且候選人有 `sequence` 的 task 才走依序流程；只有一位候選人時沒有差別。
+- **不在範圍**：ad-hoc task 永遠不是 sequential；dry run 不變；`PARALLEL_*`／`QUORUM` 不變。
 
 例如：
 

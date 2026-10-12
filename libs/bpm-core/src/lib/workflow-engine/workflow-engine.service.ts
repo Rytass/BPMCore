@@ -830,6 +830,20 @@ export class WorkflowEngineService {
 
         if (
           input.action === TaskDecisionActionEnum.APPROVED &&
+          !shouldCompleteTask
+        ) {
+          await this.activateNextSequentialCandidate({
+            candidates: nextCandidateRows,
+            instance,
+            manager,
+            node: taskNode,
+            previousMemberId: input.decidedByMemberId,
+            task: completedTask,
+          });
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.APPROVED &&
           shouldCompleteTask
         ) {
           // Ad-hoc gate: the token may only advance once every task bound to
@@ -1408,6 +1422,12 @@ export class WorkflowEngineService {
     if (!isDirectAssignee && !actorCandidate) {
       throw new ConflictException(
         `Task ${task.id} is assigned to another member`,
+      );
+    }
+
+    if (actorCandidate?.status === TaskCandidateStatusEnum.WAITING) {
+      throw new ConflictException(
+        `Task ${task.id} is not this member's turn yet`,
       );
     }
 
@@ -2833,7 +2853,11 @@ export class WorkflowEngineService {
     await this.assertTaskReadable(taskId, scope);
 
     return this.taskCandidateRepository.find({
-      order: { createdAt: 'ASC', id: 'ASC' },
+      order: {
+        sequence: { direction: 'ASC', nulls: 'LAST' },
+        createdAt: 'ASC',
+        id: 'ASC',
+      },
       where: { taskId },
     });
   }
@@ -2846,7 +2870,11 @@ export class WorkflowEngineService {
     }
 
     const candidates = await this.taskCandidateRepository.find({
-      order: { createdAt: 'ASC', id: 'ASC' },
+      order: {
+        sequence: { direction: 'ASC', nulls: 'LAST' },
+        createdAt: 'ASC',
+        id: 'ASC',
+      },
       where: { taskId: In(tasks.map((task) => task.id)) },
     });
     const candidatesByTaskId = candidates.reduce<
@@ -3596,6 +3624,12 @@ export class WorkflowEngineService {
       node,
     );
     const primaryCandidate = candidates[0];
+    const isSequential =
+      node.data.decisionPolicy.type === 'SEQUENTIAL' && candidates.length > 1;
+    // A sequential task is held by exactly one candidate at a time, so it
+    // carries that candidate as its assignee from the start.
+    const assignedCandidate =
+      candidates.length === 1 || isSequential ? primaryCandidate : null;
     const now = new Date();
     const slaDueAt = await this.slaScheduleService.resolveTaskSlaDueAt({
       node,
@@ -3603,8 +3637,7 @@ export class WorkflowEngineService {
     });
     const task = await taskRepository.save(
       taskRepository.create({
-        assigneeMemberId:
-          candidates.length === 1 ? primaryCandidate.memberId : null,
+        assigneeMemberId: assignedCandidate?.memberId ?? null,
         assignmentType:
           candidates.length === 1
             ? TaskAssignmentTypeEnum.DIRECT_MEMBER
@@ -3612,20 +3645,18 @@ export class WorkflowEngineService {
         completedAt: null,
         createdAt: now,
         decisionPolicySnapshot: node.data.decisionPolicy,
-        delegationChain:
-          candidates.length === 1 ? primaryCandidate.delegationChain : [],
+        delegationChain: assignedCandidate?.delegationChain ?? [],
         instanceId: instance.id,
         nodeId: node.id,
         openedAt: null,
-        originalAssigneeMemberId:
-          candidates.length === 1 ? primaryCandidate.originalMemberId : null,
+        originalAssigneeMemberId: assignedCandidate?.originalMemberId ?? null,
         slaDueAt,
         status: TaskStatusEnum.PENDING,
         tokenId: token.id,
       }),
     );
     const savedCandidates = await taskCandidateRepository.save(
-      candidates.map((candidate) =>
+      candidates.map((candidate, index) =>
         taskCandidateRepository.create({
           claimedAt: null,
           createdAt: now,
@@ -3633,17 +3664,26 @@ export class WorkflowEngineService {
           delegationChain: candidate.delegationChain,
           memberId: candidate.memberId,
           originalMemberId: candidate.originalMemberId,
+          sequence: isSequential ? index : null,
           sourceType: candidate.sourceType,
-          status: TaskCandidateStatusEnum.PENDING,
+          status:
+            isSequential && index > 0
+              ? TaskCandidateStatusEnum.WAITING
+              : TaskCandidateStatusEnum.PENDING,
           taskId: task.id,
         }),
       ),
     );
+    // Display summary of everyone on the task, including the ones whose turn
+    // has not come; who may act now is `status`, not membership of this list.
     task.candidateMemberIds = savedCandidates.map(
       (candidate) => candidate.memberId,
     );
     const singleCandidate =
       savedCandidates.length === 1 ? savedCandidates[0] : null;
+    const openCandidates = savedCandidates.filter(
+      (candidate) => candidate.status === TaskCandidateStatusEnum.PENDING,
+    );
 
     await tokenRepository.save({
       ...token,
@@ -3657,17 +3697,28 @@ export class WorkflowEngineService {
         nodeId: node.id,
         payload: {
           assignmentType: task.assignmentType,
-          assigneeMemberId: singleCandidate?.memberId ?? null,
-          candidateMemberIds: savedCandidates.map(
+          assigneeMemberId:
+            (isSequential ? openCandidates[0] : singleCandidate)?.memberId ??
+            null,
+          candidateMemberIds: openCandidates.map(
             (candidate) => candidate.memberId,
           ),
-          originalAssigneeMemberId: singleCandidate?.originalMemberId ?? null,
+          originalAssigneeMemberId:
+            (isSequential ? openCandidates[0] : singleCandidate)
+              ?.originalMemberId ?? null,
+          ...(isSequential
+            ? {
+                sequentialCandidateMemberIds: savedCandidates.map(
+                  (candidate) => candidate.memberId,
+                ),
+              }
+            : {}),
           tokenId: token.id,
         },
         taskId: task.id,
       }),
     );
-    await savedCandidates.reduce<Promise<void>>(
+    await openCandidates.reduce<Promise<void>>(
       async (previous, candidate): Promise<void> => {
         await previous;
         await this.notificationService.createTaskAssignedNotification({
@@ -3687,6 +3738,91 @@ export class WorkflowEngineService {
     // Pending ad-hoc countersign directives attach to the next user task
     // created after they were requested — spawn their parallel tasks now.
     await this.spawnCountersignTasksForNode(manager, instance, token, node, now);
+  }
+
+  /**
+   * Hands a SEQUENTIAL task to the lowest-`sequence` candidate still WAITING.
+   * A task without a WAITING candidate (every other policy, and SEQUENTIAL
+   * tasks created before candidates were ordered) is left alone.
+   */
+  private async activateNextSequentialCandidate({
+    candidates,
+    instance,
+    manager,
+    node,
+    previousMemberId,
+    task,
+  }: {
+    readonly candidates: readonly TaskCandidateEntity[];
+    readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
+    readonly node: UserTaskNode;
+    readonly previousMemberId: string;
+    readonly task: TaskEntity;
+  }): Promise<void> {
+    if (readDecisionPolicySnapshot(task).type !== 'SEQUENTIAL') {
+      return;
+    }
+
+    const nextCandidate = [...candidates]
+      .filter(
+        (candidate) =>
+          candidate.status === TaskCandidateStatusEnum.WAITING &&
+          candidate.sequence !== null,
+      )
+      .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0))[0];
+
+    if (!nextCandidate) {
+      return;
+    }
+
+    const now = new Date();
+    const activatedCandidate = await manager
+      .getRepository(TaskCandidateEntity)
+      .save(
+        Object.assign(new TaskCandidateEntity(), nextCandidate, {
+          status: TaskCandidateStatusEnum.PENDING,
+        }),
+      );
+    const activatedTask = await manager.getRepository(TaskEntity).save({
+      ...task,
+      assigneeMemberId: activatedCandidate.memberId,
+      delegationChain: activatedCandidate.delegationChain,
+      openedAt: null,
+      originalAssigneeMemberId: activatedCandidate.originalMemberId,
+      // The new holder gets the node's full SLA window, not what is left of
+      // the previous holder's.
+      slaDueAt: await this.slaScheduleService.resolveTaskSlaDueAt({
+        node,
+        now,
+      }),
+      status: TaskStatusEnum.PENDING,
+    });
+
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: null,
+        eventType: ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          candidateMemberId: activatedCandidate.memberId,
+          originalMemberId: activatedCandidate.originalMemberId,
+          previousMemberId,
+          sequence: activatedCandidate.sequence,
+          tokenId: task.tokenId,
+        },
+        taskId: task.id,
+      }),
+    );
+    await this.notificationService.createTaskAssignedNotification({
+      instance,
+      manager,
+      node,
+      task: activatedTask,
+    });
   }
 
   private async markTaskCandidateDecision({
@@ -3745,7 +3881,8 @@ export class WorkflowEngineService {
       if (
         shouldCancelOpenCandidates &&
         (currentCandidate.status === TaskCandidateStatusEnum.PENDING ||
-          currentCandidate.status === TaskCandidateStatusEnum.CLAIMED)
+          currentCandidate.status === TaskCandidateStatusEnum.CLAIMED ||
+          currentCandidate.status === TaskCandidateStatusEnum.WAITING)
       ) {
         return Object.assign(new TaskCandidateEntity(), currentCandidate, {
           decidedAt,
@@ -3803,6 +3940,24 @@ export class WorkflowEngineService {
       delegationChain: nextDelegationChain,
       status: TaskStatusEnum.TRANSFERRED,
     });
+    // Candidates still waiting for their turn move with the task; without this
+    // the replacement SINGLE task would silently drop them from the chain.
+    // A waiting candidate who is also the transfer target takes the active slot
+    // and is not asked a second time later in the order.
+    const waitingCandidates =
+      readDecisionPolicySnapshot(task).type === 'SEQUENTIAL' &&
+      actorCandidate?.sequence != null
+        ? (await taskCandidateRepository.find({ where: { taskId: task.id } }))
+            .filter(
+              (candidate) =>
+                candidate.status === TaskCandidateStatusEnum.WAITING,
+            )
+            .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0))
+        : [];
+    const isSequentialTransfer = waitingCandidates.length > 0;
+    const carriedCandidates = waitingCandidates.filter(
+      (candidate) => candidate.memberId !== transferToMemberId,
+    );
     const nextTask = await taskRepository.save(
       taskRepository.create({
         // A transferred ad-hoc task stays the same ad-hoc task for its new
@@ -3813,9 +3968,13 @@ export class WorkflowEngineService {
         adhocOriginTaskId: task.adhocOriginTaskId,
         adhocType: task.adhocType,
         assigneeMemberId: transferToMemberId,
-        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        assignmentType: isSequentialTransfer
+          ? task.assignmentType
+          : TaskAssignmentTypeEnum.DIRECT_MEMBER,
         completedAt: null,
-        decisionPolicySnapshot: { type: 'SINGLE' },
+        decisionPolicySnapshot: isSequentialTransfer
+          ? task.decisionPolicySnapshot
+          : { type: 'SINGLE' },
         delegationChain: nextDelegationChain,
         instanceId: task.instanceId,
         isAdhoc: task.isAdhoc,
@@ -3844,10 +4003,32 @@ export class WorkflowEngineService {
         delegationChain: nextDelegationChain,
         memberId: transferToMemberId,
         originalMemberId: task.originalAssigneeMemberId ?? transferToMemberId,
+        sequence: isSequentialTransfer
+          ? (actorCandidate?.sequence ?? null)
+          : null,
         sourceType: 'DIRECT',
         status: TaskCandidateStatusEnum.PENDING,
         taskId: nextTask.id,
       }),
+      ...carriedCandidates.map((candidate) =>
+        taskCandidateRepository.create({
+          claimedAt: null,
+          createdAt: candidate.createdAt,
+          decidedAt: null,
+          delegationChain: candidate.delegationChain,
+          memberId: candidate.memberId,
+          originalMemberId: candidate.originalMemberId,
+          sequence: candidate.sequence,
+          sourceType: candidate.sourceType,
+          status: TaskCandidateStatusEnum.WAITING,
+          taskId: nextTask.id,
+        }),
+      ),
+      ...waitingCandidates.map((candidate): TaskCandidateEntity =>
+        Object.assign(new TaskCandidateEntity(), candidate, {
+          status: TaskCandidateStatusEnum.SUPERSEDED,
+        }),
+      ),
     ]);
 
     await activityRepository.save([
@@ -3873,8 +4054,19 @@ export class WorkflowEngineService {
         nodeId: task.nodeId,
         payload: {
           assigneeMemberId: transferToMemberId,
+          ...(isSequentialTransfer
+            ? { candidateMemberIds: [transferToMemberId] }
+            : {}),
           delegationChain: nextDelegationChain,
           originalAssigneeMemberId: task.originalAssigneeMemberId,
+          ...(isSequentialTransfer
+            ? {
+                sequentialCandidateMemberIds: [
+                  transferToMemberId,
+                  ...carriedCandidates.map((candidate) => candidate.memberId),
+                ],
+              }
+            : {}),
           tokenId: task.tokenId,
           transferredFromTaskId: task.id,
         },
@@ -5035,7 +5227,8 @@ export class WorkflowEngineService {
     ).filter(
       (candidate) =>
         candidate.status === TaskCandidateStatusEnum.PENDING ||
-        candidate.status === TaskCandidateStatusEnum.CLAIMED,
+        candidate.status === TaskCandidateStatusEnum.CLAIMED ||
+        candidate.status === TaskCandidateStatusEnum.WAITING,
     );
 
     if (candidates.length === 0) {
