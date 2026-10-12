@@ -85,12 +85,23 @@ interface UserTaskNodeData extends BaseNodeData {
   readonly decisionPolicy: DecisionPolicy;
   readonly description?: string;
   readonly entryCondition?: string;
+  readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
   readonly returnBehavior: ReturnBehavior;
   readonly sla?: SlaConfig;
 }
+
+interface ExcludeInitiatorConfig {
+  /** 排除申請人後沒有任何簽核人時的處理方式。 */
+  readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
+}
 ```
+
+`excludeInitiator` 是權責分離設定：存在時，送出單據的人（`initiatorMemberId`）
+不會是該節點的簽核人，代理人替申請人簽也算申請人本人。省略此欄位時行為與過去
+完全相同，因此既有模板與進行中的 instance 不受影響。`whenEmpty` 只接受上述三個值，
+runtime 規則見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
@@ -107,7 +118,9 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 簽核可由 direct resolver 指定多位成員，runtime 會依 snapshot 中的
 `decisionPolicy` 判定完成條件。
 
-目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`，以及
+目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
+`excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
+`set_user_task_exclude_initiator`），以及
 `description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
@@ -167,6 +180,11 @@ type ApproverResolver =
       readonly orgUnitId: string;
       readonly type: 'ORG_UNIT_MANAGER';
     }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly minPositionLevel: number;
+      readonly type: 'ORG_MANAGER_CHAIN';
+    }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
   | { readonly expression: string; readonly type: 'EXPRESSION' };
 
@@ -183,6 +201,12 @@ Designer 目前提供 direct member、position、org-unit member、org-unit posi
 initiator manager、specific org-unit manager、dynamic form、expression 等模式。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+`ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
+[07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
+`minPositionLevel` 必須是有限整數；`userTask` 的 `decisionPolicy` 只能是
+`SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。同一個 resolver
+用在 `NOTIFY.recipients` 時不受 decision policy 限制（所有人都會收到通知）。
 
 ### Service Task
 

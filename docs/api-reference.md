@@ -324,12 +324,14 @@ Form-schema definitions.
 | `WorkflowNodeTriggerMode` | type | `'AND' \| 'OR'` |
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
-| `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP |
+| `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`) |
 | `ApproverResolverFallback` | type | Fallback when primary resolver fails |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
 | `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
+| `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them). `{ whenEmpty }`; absent keeps the previous behaviour |
+| `ExcludeInitiatorWhenEmpty` | type | What happens when no approver is left after the initiator is removed: `FAIL` / `INITIATOR_MANAGER` / `SKIP_NODE` |
 | `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
 | `FieldPermission` | interface | Per-node read/write permission |
 | `NotificationOverride` | interface | Node-level notification overrides |
@@ -375,11 +377,14 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `isWorkflowConnectionValid` / `isWorkflowNodeRemovable` / `isWorkflowNodeInputConnectable` / `isWorkflowNodeOutputConnectable` / `isAsyncNotifyServiceTask` | function | Connection rules |
 | `isExclusiveGatewaySourceEdge` / `isParallelGatewaySourceEdge` / `toggleSelectedEdgeId` | function | Gateway/edge helpers |
 | `readWorkflowDefinitionIssue` / `readApproverResolverIssue` / `hasConfiguredConditionEdges` / `readServiceTaskMemberIds` | function | Validation |
+| `isOrgManagerChainDecisionPolicyInvalid` | function | `true` when an `ORG_MANAGER_CHAIN` approver is paired with a decision policy other than `SEQUENTIAL` / `PARALLEL_ALL` (or none); shared by `readWorkflowDefinitionIssue`, `lintWorkflowDefinition`, the designer and the `setUserTaskApprover` command, which swaps such a policy for `PARALLEL_ALL` |
 | `NOTIFY_WEBHOOK_TARGET_LIMIT` / `NOTIFY_WEBHOOK_CONTEXT_PATHS` / `NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX` | const | Per-node webhook cap (10), the allowed `CONTEXT` binding paths, and the endpoint version ceiling (int32) |
 | `NotifyWebhookTargetIdFactory` / `NotifyWebhookStructureIssue` / `NotifyWebhookStructureIssueCode` | type/interface | Injectable target-id generator; registry-independent webhook shape issue as a code (formatted separately by the designer and the backend lint), located by `targetIndex` / `bindingIndex` / `parameter`, plus `property` for `UNKNOWN_PROPERTY` (a key outside the contract, relative to the target or binding) |
 | `defaultNotifyWebhookTargetId` / `createNotifyWebhookTarget` / `readNotifyWebhookTargets` | function | NOTIFY webhook target factory and reader |
 | `isNotifyRecipientsEmpty` / `readNotifyRecipientsIssue` | function | Empty `DIRECT` recipients (allowed only with webhooks) vs a misconfigured recipient resolver |
 | `readNotifyServiceTaskIssue` | function | zh-TW issue for one NOTIFY node (recipients + webhooks); used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
+| `EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES` | const | The accepted `ExcludeInitiatorWhenEmpty` values |
+| `readExcludeInitiatorIssue` | function | zh-TW issue when a userTask's `excludeInitiator` is set without a valid `whenEmpty`; used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
 | `readNotifyWebhookStructureIssues` / `isNotifyWebhookContextPath` | function | Structural webhook checks shared by the designer and `lintWorkflowDefinition`, including rejection of unknown keys (no URL/header/secret may be stored) |
 | `isFormFieldCompatibleWithWebhookParameter` / `isNotifyWebhookValueCompatibleWithParameter` | function | Whether a form field or a concrete value can feed a webhook parameter type |
 | `NotifyWebhookEndpointContract` (optional `deprecated` / `disabled`) / `NotifyWebhookCatalogIssue` / `NotifyWebhookCatalogIssueCode` | type/interface | The descriptor subset the catalog lint reads, and a catalog/form publish problem as a code (`ENDPOINT_MISSING`, `ENDPOINT_DEPRECATED`, `ENDPOINT_DISABLED`, `PARAMETER_REQUIRED`, `PARAMETER_UNKNOWN`, `FIELD_MISSING`, `FIELD_INCOMPATIBLE`, `CONSTANT_REQUIRED_NULL`, `CONSTANT_INCOMPATIBLE`, `CONTEXT_INCOMPATIBLE`) |
@@ -394,7 +399,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/…) |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
@@ -414,7 +419,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla`, `set_user_task_exclude_initiator` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |

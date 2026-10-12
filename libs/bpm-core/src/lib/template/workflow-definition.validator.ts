@@ -1,5 +1,7 @@
 import {
   ApproverResolver,
+  ExcludeInitiatorConfig,
+  ExcludeInitiatorWhenEmpty,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -14,6 +16,7 @@ import {
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   NotifyWebhookStructureIssue,
   readDesignTimeApproverCount,
+  isOrgManagerChainDecisionPolicyInvalid,
   readNotifyWebhookStructureIssues,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -25,6 +28,9 @@ const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
   'ESCALATE',
   'TERMINATE_INSTANCE',
 ];
+
+const EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES: readonly ExcludeInitiatorWhenEmpty[] =
+  ['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'];
 
 const SLA_CALENDAR_MODES: readonly SlaCalendarMode[] = [
   'CALENDAR',
@@ -221,6 +227,16 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
         ...(data.decisionPolicy?.type
           ? []
           : [`workflow.nodes.${node.id}.decisionPolicy is required`]),
+        // One manager's approval must not close a chain node, so only the
+        // policies that wait for every candidate are allowed.
+        ...(isOrgManagerChainDecisionPolicyInvalid(
+          data.approverResolver,
+          data.decisionPolicy,
+        )
+          ? [
+              `workflow.nodes.${node.id}.decisionPolicy must be SEQUENTIAL or PARALLEL_ALL when approverResolver is ORG_MANAGER_CHAIN`,
+            ]
+          : []),
         // A COUNT quorum above the number of approvers the node can produce
         // deadlocks the task forever — the engine gates on
         // `completedCount >= threshold` and an ad-hoc signer opens a separate
@@ -250,9 +266,23 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
           : [
               `workflow.nodes.${node.id}.returnBehavior.requireComment must be a boolean`,
             ]),
+        ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
       ];
     });
+}
+
+function lintExcludeInitiator(
+  config: ExcludeInitiatorConfig | undefined,
+  nodeId: string,
+): readonly string[] {
+  if (config === undefined) {
+    return [];
+  }
+
+  return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
+    ? []
+    : [`workflow.nodes.${nodeId}.excludeInitiator.whenEmpty is invalid`];
 }
 
 function lintSlaConfig(
@@ -362,7 +392,18 @@ function lintApproverResolver(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') &&
+    resolver.type === 'ORG_MANAGER_CHAIN' &&
+    !Number.isInteger(resolver.minPositionLevel)
+  ) {
+    return [
+      `workflow.nodes.${nodeId}.approverResolver.minPositionLevel is invalid`,
+    ];
+  }
+
+  if (
+    (resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN') &&
     resolver.fallback?.type === 'DIRECT' &&
     !resolver.fallback.memberId.trim()
   ) {

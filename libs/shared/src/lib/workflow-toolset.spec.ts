@@ -380,6 +380,137 @@ describe('SLA and return-comment tools', () => {
   });
 });
 
+describe('set_user_task_exclude_initiator', () => {
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const added = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!added.ok || added.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const nodeId = added.result.state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state: added.result.state };
+  }
+
+  async function run(
+    state: WorkflowDesignerState,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      'set_user_task_exclude_initiator',
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  function readExcludeInitiator(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return 'excludeInitiator' in node.data
+      ? node.data.excludeInitiator
+      : 'ABSENT';
+  }
+
+  it('is exposed as a mutation tool', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_exclude_initiator',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('stores the chosen fallback', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, { enabled: true, nodeId, whenEmpty: 'FAIL' });
+
+    expect(readExcludeInitiator(next)).toEqual({ whenEmpty: 'FAIL' });
+  });
+
+  it('defaults to the initiator manager when whenEmpty is omitted', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, { enabled: true, nodeId });
+
+    expect(readExcludeInitiator(next)).toEqual({
+      whenEmpty: 'INITIATOR_MANAGER',
+    });
+  });
+
+  it('never throws on an unrecognised whenEmpty and keeps the exclusion on with the default', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'NOBODY',
+    });
+
+    expect(readExcludeInitiator(next)).toEqual({
+      whenEmpty: 'INITIATOR_MANAGER',
+    });
+  });
+
+  it('shows the setting in the node summary only when it is set', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const readSummary = (target: WorkflowDesignerState): string | undefined =>
+      readWorkflowSnapshot(target).nodes.find((node) => node.id === nodeId)
+        ?.summary;
+
+    expect(readSummary(state)).not.toContain('申請人不可簽核自己的單');
+
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'SKIP_NODE',
+    });
+
+    expect(readSummary(enabled)).toContain('申請人不可簽核自己的單=SKIP_NODE');
+
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readSummary(disabled)).not.toContain('申請人不可簽核自己的單');
+  });
+
+  it('removes the setting when disabled', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'SKIP_NODE',
+    });
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readExcludeInitiator(disabled)).toBe('ABSENT');
+  });
+});
+
 describe('set_user_task_decision_policy', () => {
   async function runTool(
     state: WorkflowDesignerState,
@@ -563,6 +694,191 @@ describe('set_user_task_decision_policy', () => {
     });
 
     expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
+  });
+
+  function readApproverResolver(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node.data.approverResolver;
+  }
+
+  it('keeps a valid ORG_MANAGER_CHAIN resolver and drops preferClosestOrgUnit', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        minPositionLevel: 5,
+        preferClosestOrgUnit: true,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    // The chain always uses closest-org-unit semantics, so the flag is gone.
+    expect(readApproverResolver(afterApprover)).toEqual({
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('keeps a well-formed DIRECT fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: {
+          allowInitiatorSelfApproval: true,
+          memberId: 'm9',
+          type: 'DIRECT',
+        },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: {
+        allowInitiatorSelfApproval: true,
+        memberId: 'm9',
+        type: 'DIRECT',
+      },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['a DIRECT fallback without a member', { type: 'DIRECT' }],
+    ['a blank member id', { memberId: '  ', type: 'DIRECT' }],
+    ['an unknown fallback type', { memberId: 'm9', type: 'SKIP' }],
+    [
+      'a non-boolean allowInitiatorSelfApproval',
+      { allowInitiatorSelfApproval: 'yes', memberId: 'm9', type: 'DIRECT' },
+    ],
+    ['a non-object fallback', 'm9'],
+  ])(
+    'drops a malformed ORG_MANAGER_CHAIN fallback (%s) but keeps the resolver',
+    async (_label, fallback) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: {
+          fallback,
+          minPositionLevel: 5,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    },
+  );
+
+  it('keeps a NONE fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { type: 'NONE' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: { type: 'NONE' },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['fractional', 2.5],
+    ['a string', '5'],
+  ])(
+    'falls back to the manager default when ORG_MANAGER_CHAIN minPositionLevel is %s',
+    async (_label, minPositionLevel) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: { minPositionLevel, type: 'ORG_MANAGER_CHAIN' },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        baseFromInitiator: true,
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      });
+    },
+  );
+
+  // A chain only works when every manager signs, so the shared reducer
+  // upgrades the default SINGLE policy instead of leaving the assistant with a
+  // draft the backend validator would reject.
+  it('switches the node to PARALLEL_ALL when the approver becomes a chain', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+    });
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+  });
+
+  it('keeps an already chain-compatible policy when the approver becomes a chain', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withParallelAll = await runTool(
+      state,
+      'set_user_task_decision_policy',
+      { nodeId, type: 'PARALLEL_ALL' },
+    );
+    const afterApprover = await runTool(
+      withParallelAll,
+      'set_user_task_approver',
+      {
+        approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+        nodeId,
+      },
+    );
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+  });
+
+  it('validate_workflow flags a chain node later set to a single-approver policy', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withChain = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+    });
+    const withSingle = await runTool(
+      withChain,
+      'set_user_task_decision_policy',
+      {
+        nodeId,
+        type: 'SINGLE',
+      },
+    );
+    const validation = await executeWorkflowTool(
+      withSingle,
+      'validate_workflow',
+      {},
+    );
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: expect.stringContaining('沿主管鏈簽核'),
+      });
+    }
   });
 });
 

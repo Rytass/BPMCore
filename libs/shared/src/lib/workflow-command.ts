@@ -2,6 +2,7 @@ import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaConfig,
@@ -18,6 +19,7 @@ import {
   insertWorkflowNodeIntoDefinition,
   isDecisionPolicyUnsatisfiable,
   isExclusiveGatewaySourceEdge,
+  isOrgManagerChainDecisionPolicyInvalid,
   isWorkflowConnectionValid,
   isWorkflowNodeRemovable,
   normalizeDesignerWorkflowDefinition,
@@ -103,6 +105,15 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskDecisionPolicy';
       readonly nodeId: string;
       readonly decisionPolicy: DecisionPolicy;
+    }
+  | {
+      /**
+       * Separation of duties: keeps the initiator out of this node's approvers.
+       * `null` removes the setting entirely.
+       */
+      readonly type: 'setUserTaskExcludeInitiator';
+      readonly nodeId: string;
+      readonly excludeInitiator: ExcludeInitiatorConfig | null;
     }
   | {
       readonly type: 'setUserTaskOptions';
@@ -255,6 +266,8 @@ export function applyWorkflowCommand(
       return applySetUserTaskReturnRequireComment(state, command);
     case 'setUserTaskSla':
       return applySetUserTaskSla(state, command);
+    case 'setUserTaskExcludeInitiator':
+      return applySetUserTaskExcludeInitiator(state, command);
     case 'setUserTaskDecisionPolicy':
       return applySetUserTaskDecisionPolicy(state, command);
     case 'setUserTaskOptions':
@@ -513,6 +526,10 @@ function applySetNodeTriggerMode(
  * the LLM toolset's `set_user_task_approver` runs this same reducer, and when
  * the rule lived in the React view an assistant asked to change an approver
  * destroyed an author's quorum while the same edit through the UI kept it.
+ *
+ * An `ORG_MANAGER_CHAIN` approver needs every manager on the chain to sign, so
+ * a policy that lets one of them close the node is replaced by `PARALLEL_ALL`
+ * (the only chain-compatible option the designer offers) in the same update.
  */
 function applySetUserTaskApprover(
   state: WorkflowDesignerState,
@@ -528,12 +545,17 @@ function applySetUserTaskApprover(
             data: {
               ...node.data,
               approverResolver: command.approverResolver,
-              decisionPolicy: isDecisionPolicyUnsatisfiable(
-                node.data.decisionPolicy,
+              decisionPolicy: isOrgManagerChainDecisionPolicyInvalid(
                 command.approverResolver,
+                node.data.decisionPolicy,
               )
-                ? { type: 'SINGLE' }
-                : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
+                ? { type: 'PARALLEL_ALL' }
+                : isDecisionPolicyUnsatisfiable(
+                      node.data.decisionPolicy,
+                      command.approverResolver,
+                    )
+                  ? { type: 'SINGLE' }
+                  : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
             },
           }
         : node,
@@ -645,6 +667,33 @@ function applySetUserTaskSla(
       }
 
       return { ...node, data: { ...node.data, sla: command.sla } };
+    },
+    'userTask',
+  );
+}
+
+function applySetUserTaskExcludeInitiator(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskExcludeInitiator' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      // Off drops the key entirely: an absent field is the "unchanged
+      // behaviour" definition, and the saved JSON stays clean.
+      if (!command.excludeInitiator) {
+        return { ...node, data: omitKey(node.data, 'excludeInitiator') };
+      }
+
+      return {
+        ...node,
+        data: { ...node.data, excludeInitiator: command.excludeInitiator },
+      };
     },
     'userTask',
   );

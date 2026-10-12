@@ -72,6 +72,7 @@ import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
+import { PositionEntity } from '../organization/position.entity';
 import { ManagerResolutionScopeTypeEnum } from '../organization/organization.enums';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
@@ -135,6 +136,8 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
 };
 
 const MAX_PROCESSING_STEPS = 500;
+// Guards ORG_MANAGER_CHAIN against misconfigured manager rules that never end.
+const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
 
@@ -143,6 +146,13 @@ interface DryRunSimulationInput {
   readonly initiatorMemberId: string;
   readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>>;
   readonly workflowDefinition: WorkflowDefinition;
+}
+
+interface DryRunAssignment {
+  readonly assigneeMemberId: string | null;
+  // Set only when the initiator exclusion changed how the step ends.
+  readonly message: string | null;
+  readonly outcome: 'SKIPPED' | 'STOPPED' | null;
 }
 
 interface DryRunPathInput extends DryRunSimulationInput {
@@ -183,16 +193,21 @@ interface ResubmitFormDataOptionsPreparation {
   readonly instance: ApprovalInstanceEntity;
 }
 
+// Candidates that replaced an excluded initiator's own seat come from the
+// initiator's manager rather than from the node's resolver.
+type CandidateSourceType =
+  ApproverResolver['type'] | 'EXCLUDE_INITIATOR_MANAGER';
+
 interface ResolvedApproverCandidate {
   readonly memberId: string;
-  readonly sourceType: ApproverResolver['type'];
+  readonly sourceType: CandidateSourceType;
 }
 
 interface RuntimeTaskCandidate {
   readonly delegationChain: readonly DelegationStep[];
   readonly memberId: string;
   readonly originalMemberId: string;
-  readonly sourceType: ApproverResolver['type'];
+  readonly sourceType: CandidateSourceType;
 }
 
 type AdhocTargetValue = {
@@ -678,6 +693,19 @@ export class WorkflowEngineService {
         ) {
           throw new ForbiddenException(
             `Workflow node ${task.nodeId} does not allow transfer`,
+          );
+        }
+
+        // Only guards a human picking the target; SLA escalation passes a
+        // `transferReason` and is deliberately left alone.
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          isInitiatorExcluded(taskNode) &&
+          transferToMemberId === instance.initiatorMemberId
+        ) {
+          throw new ConflictException(
+            `簽核節點「${taskNode.data.label}」不允許申請人自簽，不能將任務轉交給申請人本人`,
           );
         }
 
@@ -1179,6 +1207,20 @@ export class WorkflowEngineService {
         // Rejects WEBHOOK targets — countersigners must be members.
         buildAdhocApproverResolver(targetValue);
 
+        // The countersign task is only created when a later user task is
+        // reached, against that node's own setting. This checks the target
+        // against the node being decided now, as an early rejection for the
+        // common case; it is not a guarantee about the node it attaches to.
+        if (isInitiatorExcluded(node)) {
+          await this.resolveAdhocTaskCandidates(
+            manager,
+            instance,
+            node,
+            '臨時會簽',
+            targetValue,
+          );
+        }
+
         const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
         const directive = await directiveRepository.save(
           directiveRepository.create({
@@ -1546,24 +1588,13 @@ export class WorkflowEngineService {
       directive.type === AdhocDirectiveTypeEnum.COUNTERSIGN
         ? '臨時會簽'
         : '臨時加簽';
-    const resolvedCandidates = await this.resolveApproverResolver(
+    const candidates = await this.resolveAdhocTaskCandidates(
       manager,
       instance,
-      buildAdhocApproverResolver(readAdhocTargetValue(directive)),
-      `${label}「${node.data.label}」`,
+      node,
+      label,
+      readAdhocTargetValue(directive),
     );
-    const candidates = await this.applyDelegationToResolvedCandidates(
-      instance,
-      node.id,
-      resolvedCandidates,
-    );
-
-    if (candidates.length === 0) {
-      throw new ConflictException(
-        `${label}「${node.data.label}」 did not resolve to any member id`,
-      );
-    }
-
     const primaryCandidate = candidates[0];
     const task = await taskRepository.save(
       taskRepository.create({
@@ -1662,6 +1693,41 @@ export class WorkflowEngineService {
     );
 
     return task;
+  }
+
+  private async resolveAdhocTaskCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+    label: string,
+    targetValue: AdhocTargetValue,
+  ): Promise<readonly RuntimeTaskCandidate[]> {
+    const resolvedCandidates = await this.resolveApproverResolver(
+      manager,
+      instance,
+      buildAdhocApproverResolver(targetValue),
+      `${label}「${node.data.label}」`,
+    );
+    const delegatedCandidates = await this.delegateResolvedCandidates(
+      instance,
+      node.id,
+      resolvedCandidates,
+    );
+    const candidates = selectNodeCandidates(
+      delegatedCandidates,
+      isInitiatorExcluded(node),
+      instance.initiatorMemberId,
+    );
+
+    if (candidates.length > 0) {
+      return candidates;
+    }
+
+    throw new ConflictException(
+      delegatedCandidates.length > 0
+        ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
+        : `${label}「${node.data.label}」 did not resolve to any member id`,
+    );
   }
 
   private async spawnCountersignTasksForNode(
@@ -1775,8 +1841,17 @@ export class WorkflowEngineService {
     const taskRepository = manager.getRepository(TaskEntity);
     const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
     const activityRepository = manager.getRepository(ActivityLogEntity);
-    const originTask = task.adhocOriginTaskId
+    const adhocOriginTask = task.adhocOriginTaskId
       ? await taskRepository.findOne({ where: { id: task.adhocOriginTaskId } })
+      : null;
+    // transferTask re-points an open pre-approval when its origin is
+    // transferred, but a pre-approval whose origin was transferred by a release
+    // that did not do that yet still points at the TRANSFERRED row, and so does
+    // the pointer on `task` when a transfer commits after decideTask read it
+    // and before it took the instance lock. Following the transfer here hands
+    // the decision to whoever holds the stage now in both cases.
+    const originTask = adhocOriginTask
+      ? await this.readTransferSuccessorTask(manager, adhocOriginTask)
       : null;
     const originTaskIsOpen =
       originTask?.status === TaskStatusEnum.PENDING ||
@@ -1874,10 +1949,14 @@ export class WorkflowEngineService {
       }
     }
 
-    // The requester is told even when the origin task has moved on to someone
-    // else (a SEQUENTIAL task passes to the next signer once they approve).
+    // On a SEQUENTIAL task the requester has already signed and the task has
+    // moved on to the next signer, so they are told as well. On any other task
+    // the requester is the origin holder (or handed the stage away by a
+    // transfer) and only whoever holds the task now is told.
     const recipientMemberIds = uniqueTexts([
-      directive.createdByMemberId,
+      ...(readDecisionPolicySnapshot(originTask).type === 'SEQUENTIAL'
+        ? [directive.createdByMemberId]
+        : []),
       ...(await this.readOpenTaskRecipientMemberIds(manager, originTask)),
     ]);
 
@@ -1917,6 +1996,72 @@ export class WorkflowEngineService {
     );
 
     return true;
+  }
+
+  /**
+   * Follows a TRANSFERRED task to the task that replaced it, repeatedly, and
+   * returns the last one reached. A transfer leaves no pointer on either task
+   * row; the link is the `transferredFromTaskId` in the payload of the
+   * TASK_CREATED activity written for the replacement. When the trail stops
+   * (no such activity, or its task is gone) the last task reached is returned,
+   * so a caller sees the transferred row exactly as it did before.
+   */
+  private async readTransferSuccessorTask(
+    manager: EntityManager,
+    task: TaskEntity,
+  ): Promise<TaskEntity> {
+    if (task.status !== TaskStatusEnum.TRANSFERRED) {
+      return task;
+    }
+
+    const taskRepository = manager.getRepository(TaskEntity);
+    const taskCreatedActivities = await manager
+      .getRepository(ActivityLogEntity)
+      .find({
+        where: {
+          eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+          instanceId: task.instanceId,
+          nodeId: task.nodeId,
+        },
+      });
+    const successorTaskIdByTransferredTaskId = new Map<string, string>(
+      taskCreatedActivities.flatMap(
+        (activity): readonly (readonly [string, string])[] => {
+          const transferredFromTaskId =
+            activity.payload['transferredFromTaskId'];
+
+          return typeof transferredFromTaskId === 'string' && activity.taskId
+            ? [[transferredFromTaskId, activity.taskId]]
+            : [];
+        },
+      ),
+    );
+    const followTransfer = async (
+      currentTask: TaskEntity,
+      visitedTaskIds: ReadonlySet<string>,
+    ): Promise<TaskEntity> => {
+      const successorTaskId =
+        currentTask.status === TaskStatusEnum.TRANSFERRED
+          ? successorTaskIdByTransferredTaskId.get(currentTask.id)
+          : undefined;
+
+      if (!successorTaskId || visitedTaskIds.has(successorTaskId)) {
+        return currentTask;
+      }
+
+      const successorTask = await taskRepository.findOne({
+        where: { id: successorTaskId },
+      });
+
+      return successorTask
+        ? followTransfer(
+            successorTask,
+            new Set([...visitedTaskIds, successorTaskId]),
+          )
+        : currentTask;
+    };
+
+    return followTransfer(task, new Set([task.id]));
   }
 
   private async readOpenTaskRecipientMemberIds(
@@ -2243,16 +2388,14 @@ export class WorkflowEngineService {
       buildDryRunExpressionContext(input, input.lastDecision),
       `workflow.nodes.${node.id}.data.entryCondition`,
     );
-    const assigneeMemberId =
+    const assignment =
       entryConditionMet && node.type === 'userTask'
-        ? this.resolveDryRunAssigneeMemberId(
-            input,
-            node.data.approverResolver,
-            `workflow.nodes.${node.id}.data.approverResolver`,
-          )
+        ? this.resolveDryRunAssignment(input, node)
         : null;
+    const assigneeMemberId = assignment?.assigneeMemberId ?? null;
+    const skippedByExclusion = assignment?.outcome === 'SKIPPED';
     const nextLastDecision =
-      entryConditionMet && node.type === 'userTask'
+      entryConditionMet && node.type === 'userTask' && !skippedByExclusion
         ? {
             action: TaskDecisionActionEnum.APPROVED,
             assigneeMemberId,
@@ -2268,12 +2411,20 @@ export class WorkflowEngineService {
         edgeReason: readDryRunEdgeReason(input.incomingEdge),
         entryCondition,
         entryConditionMet,
-        message: readDryRunStepMessage(node, entryConditionMet),
+        message:
+          assignment?.message ?? readDryRunStepMessage(node, entryConditionMet),
         node,
-        status: readDryRunStepStatus(node, entryConditionMet),
+        status:
+          assignment?.outcome ?? readDryRunStepStatus(node, entryConditionMet),
         stepIndex: input.steps.length,
       }),
     ];
+
+    // The initiator is the only approver and the node cannot proceed: this
+    // branch ends here, as it would fail at runtime.
+    if (assignment?.outcome === 'STOPPED') {
+      return nextSteps;
+    }
 
     // A NOTIFY node is an asynchronous branch: at runtime it consumes its
     // token and never advances, so its branch ends here rather than failing
@@ -2282,7 +2433,7 @@ export class WorkflowEngineService {
       return nextSteps;
     }
 
-    if (!entryConditionMet || node.type === 'endEvent') {
+    if (!entryConditionMet || skippedByExclusion || node.type === 'endEvent') {
       if (node.type === 'endEvent') {
         return nextSteps;
       }
@@ -2385,6 +2536,132 @@ export class WorkflowEngineService {
     return evaluateWorkflowEdgeCondition(edge, { formData: input.formData });
   }
 
+  /**
+   * The dry-run assignee of a user task. Only resolvers whose dry run yields
+   * real member ids (DIRECT, DYNAMIC_FORM, EXPRESSION and ORG_MANAGER, which
+   * reads the initiator snapshot) can be checked against the initiator; the
+   * others resolve to placeholders and are left as they are.
+   */
+  private resolveDryRunAssignment(
+    input: DryRunSimulationInput,
+    node: UserTaskNode,
+  ): DryRunAssignment {
+    const resolver = node.data.approverResolver;
+    const label = `workflow.nodes.${node.id}.data.approverResolver`;
+    const excludeInitiator = node.data.excludeInitiator;
+    const memberIds = excludeInitiator
+      ? this.readDryRunMemberIds(input, resolver, label)
+      : null;
+
+    if (!excludeInitiator || !memberIds?.includes(input.initiatorMemberId)) {
+      return {
+        assigneeMemberId: this.resolveDryRunAssigneeMemberId(
+          input,
+          resolver,
+          label,
+        ),
+        message: null,
+        outcome: null,
+      };
+    }
+
+    const remainingMemberId = memberIds.find(
+      (memberId) => memberId !== input.initiatorMemberId,
+    );
+
+    if (remainingMemberId !== undefined) {
+      return {
+        assigneeMemberId: remainingMemberId,
+        message: null,
+        outcome: null,
+      };
+    }
+
+    if (excludeInitiator.whenEmpty === 'SKIP_NODE') {
+      return {
+        assigneeMemberId: null,
+        message: '簽核人只有申請人本人，依設定略過節點。',
+        outcome: 'SKIPPED',
+      };
+    }
+
+    // Level 1 is the initiator when they head their unit; like the runtime,
+    // fall through to the next level of the snapshot's manager chain.
+    const managerMemberId =
+      excludeInitiator.whenEmpty === 'INITIATOR_MANAGER'
+        ? [1, 2]
+            .map((levelsUp) =>
+              readManagerMemberIdFromInitiatorSnapshot(
+                input.initiatorMetadataSnapshot,
+                levelsUp,
+              ),
+            )
+            .find(
+              (memberId): memberId is string =>
+                typeof memberId === 'string' &&
+                memberId.trim() !== '' &&
+                memberId.trim() !== input.initiatorMemberId,
+            )
+        : undefined;
+
+    if (managerMemberId !== undefined) {
+      return {
+        assigneeMemberId: managerMemberId.trim(),
+        message: null,
+        outcome: null,
+      };
+    }
+
+    return {
+      assigneeMemberId: null,
+      message:
+        excludeInitiator.whenEmpty === 'INITIATOR_MANAGER'
+          ? '簽核人只有申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。'
+          : '簽核人只有申請人本人，此節點不允許申請人自簽。',
+      outcome: 'STOPPED',
+    };
+  }
+
+  private readDryRunMemberIds(
+    input: DryRunSimulationInput,
+    resolver: ApproverResolver,
+    label: string,
+  ): readonly string[] | null {
+    if (resolver.type === 'DIRECT') {
+      return readMemberIdsFromValue(resolver.memberIds, label);
+    }
+
+    if (resolver.type === 'DYNAMIC_FORM') {
+      return readMemberIdsFromValue(
+        readValueAtPath(input.formData, resolver.formPath),
+        `${label}.formPath`,
+      );
+    }
+
+    if (resolver.type === 'EXPRESSION') {
+      return readMemberIdsFromValue(
+        this.conditionService.evaluateValue(
+          resolver.expression,
+          buildDryRunExpressionContext(input, null),
+          `${label}.expression`,
+        ),
+        `${label}.expression`,
+      );
+    }
+
+    if (resolver.type === 'ORG_MANAGER') {
+      return readMemberIdsFromValue(
+        readManagerMemberIdFromInitiatorSnapshot(
+          input.initiatorMetadataSnapshot,
+          resolver.levelsUp,
+        ),
+        label,
+      );
+    }
+
+    return null;
+  }
+
   private resolveDryRunAssigneeMemberId(
     input: DryRunSimulationInput,
     resolver: ApproverResolver,
@@ -2426,6 +2703,10 @@ export class WorkflowEngineService {
 
     if (resolver.type === 'ORG_UNIT_MANAGER') {
       return `orgUnitManager:${resolver.orgUnitId}`;
+    }
+
+    if (resolver.type === 'ORG_MANAGER_CHAIN') {
+      return `orgManagerChain:${resolver.minPositionLevel}`;
     }
 
     return readMemberIdFromValue(
@@ -3345,6 +3626,29 @@ export class WorkflowEngineService {
     token: WorkflowTokenEntity,
     node: WorkflowNode,
   ): Promise<void> {
+    await this.skipNode(manager, instance, token, node, {
+      skippedByEntryCondition: true,
+    });
+  }
+
+  private async skipNodeByInitiatorExclusion(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    token: WorkflowTokenEntity,
+    node: WorkflowNode,
+  ): Promise<void> {
+    await this.skipNode(manager, instance, token, node, {
+      skippedByInitiatorExclusion: true,
+    });
+  }
+
+  private async skipNode(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    token: WorkflowTokenEntity,
+    node: WorkflowNode,
+    reason: Readonly<Record<string, true>>,
+  ): Promise<void> {
     await manager.getRepository(ActivityLogEntity).save(
       manager.getRepository(ActivityLogEntity).create({
         actorMemberId: null,
@@ -3352,7 +3656,7 @@ export class WorkflowEngineService {
         instanceId: instance.id,
         nodeId: node.id,
         payload: {
-          skippedByEntryCondition: true,
+          ...reason,
           tokenId: token.id,
         },
         taskId: null,
@@ -3667,9 +3971,22 @@ export class WorkflowEngineService {
       instance,
       node,
     );
+
+    // The initiator was the only approver and the node asks to be skipped in
+    // that case: no task, the token moves on. Pending countersign directives
+    // stay pending for the next user task that actually gets created.
+    if (candidates === null) {
+      await this.skipNodeByInitiatorExclusion(manager, instance, token, node);
+
+      return;
+    }
+
     const primaryCandidate = candidates[0];
+    // Legacy snapshots may carry no policy at all; they behave as before.
+    const decisionPolicy: DecisionPolicy | undefined =
+      node.data.decisionPolicy;
     const isSequential =
-      node.data.decisionPolicy.type === 'SEQUENTIAL' && candidates.length > 1;
+      decisionPolicy?.type === 'SEQUENTIAL' && candidates.length > 1;
     // A sequential task is held by exactly one candidate at a time, so it
     // carries that candidate as its assignee from the start.
     const assignedCandidate =
@@ -3688,7 +4005,12 @@ export class WorkflowEngineService {
             : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        decisionPolicySnapshot: node.data.decisionPolicy,
+        decisionPolicySnapshot: isInitiatorExcluded(node)
+          ? capDecisionPolicyToCandidateCount(
+              decisionPolicy,
+              candidates.length,
+            )
+          : decisionPolicy,
         delegationChain: assignedCandidate?.delegationChain ?? [],
         instanceId: instance.id,
         nodeId: node.id,
@@ -4092,6 +4414,41 @@ export class WorkflowEngineService {
         tokenId: task.tokenId,
       }),
     );
+    // A pre-approval the previous holder requested still points at the task
+    // being transferred. Its RETURN_TO_ORIGIN rejection hands the decision back
+    // through adhocOriginTaskId, so leaving it on the TRANSFERRED row reopened
+    // a task for the member who had just transferred the stage away. Only open
+    // pre-approvals move; closed ones keep pointing at the task they ran
+    // against, and countersign tasks keep agreeing with directive.originTaskId
+    // because nothing reads their pointer. A pre-approval is always created on
+    // the origin task's instance and node, so those narrow the lookup to the
+    // idx_tasks_instance_node index (adhoc_origin_task_id has none).
+    const openPreApprovalsOnTransferredTask = (
+      await taskRepository.find({
+        where: {
+          adhocOriginTaskId: task.id,
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          instanceId: task.instanceId,
+          nodeId: task.nodeId,
+        },
+      })
+    ).filter(
+      (adhocTask) =>
+        adhocTask.status === TaskStatusEnum.PENDING ||
+        adhocTask.status === TaskStatusEnum.IN_PROGRESS,
+    );
+
+    if (openPreApprovalsOnTransferredTask.length > 0) {
+      await taskRepository.save(
+        openPreApprovalsOnTransferredTask.map(
+          (adhocTask): TaskEntity =>
+            Object.assign(new TaskEntity(), adhocTask, {
+              adhocOriginTaskId: nextTask.id,
+            }),
+        ),
+      );
+    }
+
     await taskCandidateRepository.save([
       ...(actorCandidate
         ? [
@@ -4195,30 +4552,100 @@ export class WorkflowEngineService {
     }
   }
 
+  /**
+   * Resolves who gets the node's task. `null` means the node asked to be
+   * skipped (`excludeInitiator.whenEmpty = SKIP_NODE`) because the initiator
+   * was the only approver — the sole caller creates no task and advances the
+   * token instead.
+   */
   private async resolveRuntimeTaskCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<readonly RuntimeTaskCandidate[]> {
+  ): Promise<readonly RuntimeTaskCandidate[] | null> {
+    const label = `簽核節點「${node.data.label}」`;
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
       instance,
       node.data.approverResolver,
-      `簽核節點「${node.data.label}」`,
+      label,
     );
-    const uniqueCandidates = await this.applyDelegationToResolvedCandidates(
+    const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
       node.id,
       resolvedCandidates,
     );
+    const excludeInitiator = node.data.excludeInitiator;
+    const uniqueCandidates = selectNodeCandidates(
+      delegatedCandidates,
+      isInitiatorExcluded(node),
+      instance.initiatorMemberId,
+    );
 
-    if (uniqueCandidates.length === 0) {
+    if (uniqueCandidates.length > 0) {
+      return uniqueCandidates;
+    }
+
+    // Only the initiator was left — what the node does about it is configured.
+    // Nothing resolved to begin with is the ordinary failure below.
+    if (!excludeInitiator || delegatedCandidates.length === 0) {
+      throw new ConflictException(`${label} did not resolve to any member id`);
+    }
+
+    if (excludeInitiator.whenEmpty === 'SKIP_NODE') {
+      return null;
+    }
+
+    if (excludeInitiator.whenEmpty === 'INITIATOR_MANAGER') {
+      const managerCandidates = await this.resolveInitiatorManagerReplacements(
+        manager,
+        instance,
+        node,
+      );
+
+      if (managerCandidates.length > 0) {
+        return managerCandidates;
+      }
+
       throw new ConflictException(
-        `簽核節點「${node.data.label}」 did not resolve to any member id`,
+        `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
       );
     }
 
-    return uniqueCandidates;
+    throw new ConflictException(
+      `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+    );
+  }
+
+  private async resolveInitiatorManagerReplacements(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+  ): Promise<readonly RuntimeTaskCandidate[]> {
+    // The initiator's own direct manager: the closest org unit only, and the
+    // initiator himself (a unit head) is skipped so resolution falls through
+    // to the next tier instead of ending on him.
+    const managerMemberIds = await this.resolveDirectManagerMemberIds(
+      manager,
+      instance.initiatorMemberId,
+      toDateOnlyString(new Date()),
+      true,
+      instance.initiatorMemberId,
+    );
+    const delegatedCandidates = await this.delegateResolvedCandidates(
+      instance,
+      node.id,
+      managerMemberIds.map((memberId) => ({
+        memberId,
+        sourceType: 'EXCLUDE_INITIATOR_MANAGER',
+      })),
+    );
+
+    return selectNodeCandidates(
+      delegatedCandidates,
+      true,
+      instance.initiatorMemberId,
+    );
   }
 
   private buildDelegationContext(
@@ -4238,7 +4665,9 @@ export class WorkflowEngineService {
     };
   }
 
-  private async applyDelegationToResolvedCandidates(
+  // Not deduplicated: a node that excludes the initiator filters first, so a
+  // first-seen entry that must be dropped cannot shadow a legitimate one.
+  private async delegateResolvedCandidates(
     instance: ApprovalInstanceEntity,
     nodeId: string,
     resolvedCandidates: readonly ResolvedApproverCandidate[],
@@ -4263,7 +4692,7 @@ export class WorkflowEngineService {
       ),
     );
 
-    return uniqueRuntimeCandidates(delegatedCandidates);
+    return delegatedCandidates;
   }
 
   private async resolveApproverResolver(
@@ -4337,6 +4766,18 @@ export class WorkflowEngineService {
         resolver.fallback,
         label,
         resolver.preferClosestOrgUnit === true,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'ORG_MANAGER_CHAIN') {
+      return this.resolveOrgManagerChainCandidates(
+        manager,
+        instance,
+        resolver.minPositionLevel,
+        resolver.fallback,
+        label,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4417,6 +4858,120 @@ export class WorkflowEngineService {
         `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
       ),
     ];
+  }
+
+  /**
+   * Walks up the initiator's manager chain, nearest manager first, until a
+   * manager whose position level reaches `minPositionLevel` is added. The
+   * list is returned nearest manager first.
+   */
+  private async resolveOrgManagerChainCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    minPositionLevel: number,
+    fallback: ApproverResolverFallback | undefined,
+    label: string,
+  ): Promise<readonly string[]> {
+    const date = toDateOnlyString(new Date());
+    const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
+    const chain: string[] = [];
+    let currentMemberId = instance.initiatorMemberId;
+    let lastAddedLevel: number | null = null;
+
+    for (let hop = 0; hop < ORG_MANAGER_CHAIN_MAX_HOPS; hop += 1) {
+      // A chain is a single path, so it always uses closest-org-unit semantics
+      // (merging ancestor-unit rules could only produce ties). The member is
+      // excluded from his own candidates: a unit head belongs to the unit he
+      // heads, so without this his unit rule would name himself and the walk
+      // could never climb past him.
+      const directManagerMemberIds = await this.resolveDirectManagerMemberIds(
+        manager,
+        currentMemberId,
+        date,
+        true,
+        currentMemberId,
+      );
+
+      if (directManagerMemberIds.length === 0) {
+        break;
+      }
+
+      if (directManagerMemberIds.length > 1) {
+        // Picking one silently would route the document by accident.
+        throw new ConflictException(
+          `${label} 無法沿主管鏈簽核：成員 ${currentMemberId} 的主管規則在同一優先順序出現多位主管（${directManagerMemberIds.join('、')}），無法決定簽核路徑。請聯絡流程管理員調整主管規則。`,
+        );
+      }
+
+      const [managerMemberId] = directManagerMemberIds;
+
+      if (visitedMemberIds.has(managerMemberId)) {
+        break;
+      }
+
+      visitedMemberIds.add(managerMemberId);
+      currentMemberId = managerMemberId;
+
+      const level = await this.readMemberPositionLevel(
+        manager,
+        managerMemberId,
+        date,
+      );
+
+      if (
+        level === null ||
+        (lastAddedLevel !== null && level <= lastAddedLevel)
+      ) {
+        continue;
+      }
+
+      chain.push(managerMemberId);
+      lastAddedLevel = level;
+
+      if (level >= minPositionLevel) {
+        return chain;
+      }
+    }
+
+    const fallbackMemberId = this.resolveFallbackAssignee(
+      instance,
+      fallback,
+      label,
+      `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
+    );
+
+    return chain.includes(fallbackMemberId)
+      ? chain
+      : [...chain, fallbackMemberId];
+  }
+
+  /** Highest position level over the member's active memberships, or `null`. */
+  private async readMemberPositionLevel(
+    manager: EntityManager,
+    memberId: string,
+    date: string,
+  ): Promise<number | null> {
+    const memberships = await manager.getRepository(MembershipEntity).find({
+      where: { memberId },
+    });
+    const positionIds = uniqueTexts(
+      memberships
+        .filter((membership) => isDateRangeActive(membership, date))
+        .map((membership) => membership.positionId)
+        .filter((positionId): positionId is string => Boolean(positionId)),
+    );
+
+    if (positionIds.length === 0) {
+      return null;
+    }
+
+    const positions = await manager.getRepository(PositionEntity).find({
+      where: { id: In([...positionIds]) },
+    });
+
+    return positions.length === 0
+      ? null
+      : Math.max(...positions.map((position) => position.level));
   }
 
   private resolveFallbackAssignee(
@@ -4502,6 +5057,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -4537,6 +5093,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
+      excludedManagerMemberId,
     );
   }
 
@@ -4614,6 +5171,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -4643,6 +5201,13 @@ export class WorkflowEngineService {
         ),
       )
       .filter((resolution) => isDateRangeActive(resolution, date))
+      // Dropped before the top-priority tier is chosen, so resolution falls
+      // through to the next tier instead of ending on the excluded member.
+      .filter(
+        (resolution) =>
+          excludedManagerMemberId === undefined ||
+          resolution.managerMemberId !== excludedManagerMemberId,
+      )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
       );
@@ -5956,6 +6521,61 @@ function uniqueRuntimeCandidates(
 
     return true;
   });
+}
+
+// Every read of the setting goes through here so an explicit `null` behaves
+// exactly like an absent setting.
+function isInitiatorExcluded(node: UserTaskNode): boolean {
+  return Boolean(node.data.excludeInitiator);
+}
+
+// A delegate acting for the initiator is still the initiator approving their
+// own document, so the initiator anywhere on the delegation path (the
+// pre-delegation member, any hop, or the final assignee) drops the candidate.
+function isInitiatorOnCandidatePath(
+  candidate: RuntimeTaskCandidate,
+  initiatorMemberId: string,
+): boolean {
+  return (
+    candidate.memberId === initiatorMemberId ||
+    candidate.originalMemberId === initiatorMemberId ||
+    candidate.delegationChain.some(
+      (step) =>
+        step.from === initiatorMemberId || step.to === initiatorMemberId,
+    )
+  );
+}
+
+// The initiator filter runs on the delegated list before the dedupe, so a
+// legitimate approver is never shadowed by an excluded entry for the same
+// final assignee. Without the exclusion this is the plain dedupe.
+function selectNodeCandidates(
+  delegatedCandidates: readonly RuntimeTaskCandidate[],
+  excludeInitiator: boolean,
+  initiatorMemberId: string,
+): readonly RuntimeTaskCandidate[] {
+  return uniqueRuntimeCandidates(
+    excludeInitiator
+      ? delegatedCandidates.filter(
+          (candidate) =>
+            !isInitiatorOnCandidatePath(candidate, initiatorMemberId),
+        )
+      : delegatedCandidates,
+  );
+}
+
+// A COUNT threshold above the people left would never be reached once the
+// initiator is gone, so it is capped at who remains ("everyone else").
+// PERCENTAGE is computed from the actual candidate count and needs nothing.
+function capDecisionPolicyToCandidateCount(
+  policy: DecisionPolicy | undefined,
+  candidateCount: number,
+): DecisionPolicy | undefined {
+  return policy?.type === 'QUORUM' &&
+    policy.thresholdType === 'COUNT' &&
+    policy.threshold > candidateCount
+    ? { ...policy, threshold: Math.max(candidateCount, 1) }
+    : policy;
 }
 
 function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {
