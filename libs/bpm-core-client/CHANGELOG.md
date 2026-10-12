@@ -1,3 +1,14 @@
+## 0.13.5 (2026-10-12)
+
+### 🩹 Fixes
+
+- **deps:** patch critical advisories in next, handlebars, proxy-addr and shell-quote ([c58a51a](https://github.com/Rytass/BPMCore/commit/c58a51a))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5
+
 ## 0.13.4 (2026-09-17)
 
 ### 🚀 Features
