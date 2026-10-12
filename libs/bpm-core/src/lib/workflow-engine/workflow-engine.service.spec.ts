@@ -530,6 +530,50 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Form data is missing required fields: 附件');
   });
 
+  it('rejects a submitted member value that is not a member id (or an array of ids when multiple)', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          {
+            fieldKey: 'owner',
+            label: '負責人',
+            required: false,
+            type: 'member',
+          },
+          {
+            fieldKey: 'reviewers',
+            label: '審閱者',
+            multiple: true,
+            required: false,
+            type: 'member',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(submit({ owner: ['member-002'] })).rejects.toThrow(
+      'formData.owner must be a member id',
+    );
+    await expect(
+      submit({ owner: 'member-002', reviewers: ['member-003', 7] }),
+    ).rejects.toThrow('formData.reviewers must be an array of member ids');
+    await expect(
+      submit({ owner: 'member-002', reviewers: ['member-003', 'member-004'] }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
   it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
     const formSchema = createRequiredReasonFormSchema();
     const fixture = createServiceFixture({
