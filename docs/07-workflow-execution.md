@@ -394,6 +394,44 @@ A -> C -> D
 
 每個建立 task 前都要呼叫 `applyDelegation` 替換 assignee。`decisionPolicy` 保留為相容欄位，設計器固定寫入 `{ type: 'SINGLE' }`。
 
+### 4.4 排除申請人（`excludeInitiator`）
+
+User Task 節點設定 `excludeInitiator: { whenEmpty }` 後，送出單據的人
+（`instance.initiatorMemberId`）不能是該節點的簽核人。沒有設定時完全沿用 4.3 的行為；
+runtime 讀的是 `instance.workflowSnapshot`，所以模板之後才開啟此設定時，已經在跑的
+instance 不受影響。
+
+- **建立待簽任務**：先解析、再套用 delegation，然後移除 `memberId`（代理後）或
+  `originalMemberId`（代理前）等於申請人的候選人——代理人替申請人簽，等於申請人自己簽。
+  這一步在「沒有任何候選人」的檢查之前。
+- **移除後沒有人時**依 `whenEmpty`：
+  - `FAIL`：丟出 `ConflictException`，不建立任務。
+  - `INITIATOR_MANAGER`：改派申請人的直屬主管（同樣套 delegation、同樣排除申請人），
+    候選人的 `sourceType` 為 `EXCLUDE_INITIATOR_MANAGER`；找不到主管同樣丟 `ConflictException`。
+  - `SKIP_NODE`：不建立任務，寫一筆 `TOKEN_ADVANCED` activity log
+    （`payload: { skippedByInitiatorExclusion: true, tokenId }`），token 直接往下走。
+    待處理的會簽 directive 留給下一個真正建立的 user task。
+  - 一開始就解析不出任何人（與申請人無關）仍是原本的錯誤，不套用 `whenEmpty`。
+- **轉交**：簽核人手動轉交（`decideTask` 的 `TRANSFERRED`）時，若目標是申請人本人，
+  回 `ConflictException`。
+- **臨時加簽／會簽**：建立任務時套用同一個過濾，指定對象只剩申請人時回
+  `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個節點才
+  產生，所以在送出會簽要求時就依「目前這個節點」的設定先檢查一次，避免要求被接受很久之後才失敗
+  （實際產生任務時仍以該節點自己的設定為準，失敗會取消 directive，不阻塞主流程）。
+- **Dry run**：只有 resolver 解析成真實 member id（`DIRECT`／`DYNAMIC_FORM`／`EXPRESSION`）時才會比對
+  申請人；`SKIP_NODE` 回報該步驟 `SKIPPED`，`FAIL`（或找不到主管）回報 `STOPPED` 並帶說明，
+  `INITIATOR_MANAGER` 取申請人 snapshot 中的主管。
+
+**不涵蓋**：
+
+- SLA 升級（`ESCALATE`）選出的轉交對象——它帶 `transferReason`，不經過上面的轉交檢查，
+  升級對象仍可能是申請人。
+- 設定開啟之前就已啟動的 instance（節點讀的是啟動時的 snapshot）。
+- 組織推導型 resolver（`POSITION`／`ORG_MANAGER` 等）在 dry run 中的比對；它們在實際建立任務時
+  仍會被過濾。
+- `QUORUM` 的 COUNT 門檻不會因排除申請人而自動下修；`DIRECT` 名單含申請人又要求
+  全部人數時，設計者需自行調整門檻。
+
 ---
 
 ## 5. Task 決策處理

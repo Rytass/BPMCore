@@ -5,6 +5,7 @@ import {
 import {
   ApproverResolver,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
   ReturnBehavior,
   ServiceAction,
   SlaConfig,
@@ -697,6 +698,27 @@ describe('workflow definition validator', () => {
     );
   });
 
+  it('rejects an excludeInitiator whose whenEmpty is not a known behaviour', (): void => {
+    const workflow = createUserTaskWorkflow({
+      excludeInitiator: { whenEmpty: 'IGNORE' as never },
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.task_manager.excludeInitiator.whenEmpty is invalid',
+    );
+  });
+
+  it.each(['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'] as const)(
+    'accepts excludeInitiator whenEmpty %s',
+    (whenEmpty): void => {
+      const workflow = createUserTaskWorkflow({
+        excludeInitiator: { whenEmpty },
+      });
+
+      expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
+    },
+  );
+
   it('accepts a business-day SLA without warnings', (): void => {
     const workflow = createUserTaskWorkflow({
       sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'REMIND' },
@@ -886,11 +908,13 @@ describe('workflow definition validator', () => {
 function createUserTaskWorkflow({
   approverResolver = { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
   decisionPolicy = { type: 'SINGLE' },
+  excludeInitiator,
   returnBehavior = { allowReturn: true, allowedTargets: 'INITIATOR' },
   sla,
 }: {
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
+  readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly returnBehavior?: ReturnBehavior;
   readonly sla?: SlaConfig;
 }): WorkflowDefinition {
@@ -928,6 +952,7 @@ function createUserTaskWorkflow({
           decisionPolicy,
           label: '主管簽核',
           returnBehavior,
+          ...(excludeInitiator ? { excludeInitiator } : {}),
           ...(sla ? { sla } : {}),
         },
         id: 'task_manager',

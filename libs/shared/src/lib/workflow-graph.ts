@@ -10,6 +10,8 @@ import {
 import {
   ApproverResolver,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
+  ExcludeInitiatorWhenEmpty,
   NotifyWebhookBindingSource,
   NotifyWebhookContextPath,
   NotifyWebhookEndpointReference,
@@ -41,6 +43,9 @@ import {
 
 /** Node types a user can add from the palette (start/end are implicit). */
 export type NodePaletteType = 'exclusiveGateway' | 'serviceTask' | 'userTask';
+
+export const EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES: readonly ExcludeInitiatorWhenEmpty[] =
+  ['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'];
 
 export const WORKFLOW_INPUT_HANDLE_ID = 'input';
 export const WORKFLOW_OUTPUT_HANDLE_ID = 'output';
@@ -776,6 +781,11 @@ export function readWorkflowDefinitionIssue(
         node.data.approverResolver,
       ),
   );
+  const excludeInitiatorNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
+  );
   const notifyNodeIssue =
     definition.nodes
       .map((node) => readNotifyServiceTaskIssue(node))
@@ -816,6 +826,12 @@ export function readWorkflowDefinitionIssue(
       `${unsatisfiableQuorumNode.data.decisionPolicy.threshold}，` +
       `但只指定了 ${readDesignTimeApproverCount(unsatisfiableQuorumNode.data.approverResolver)} 位簽核者，` +
       '這一關將永遠無法通過。請降低門檻人數或增加簽核者。'
+    );
+  }
+
+  if (excludeInitiatorNode && excludeInitiatorNode.type === 'userTask') {
+    return readExcludeInitiatorIssue(
+      excludeInitiatorNode.data.excludeInitiator,
     );
   }
 
@@ -865,6 +881,22 @@ export function readNotifyServiceTaskIssue(node: WorkflowNode): string | null {
   }
 
   return readNotifyRecipientsIssue(action.recipients);
+}
+
+/**
+ * The designer-facing issue for a node's `excludeInitiator` setting, or `null`
+ * when it is absent or well-formed.
+ */
+export function readExcludeInitiatorIssue(
+  config: ExcludeInitiatorConfig | undefined,
+): string | null {
+  if (config === undefined) {
+    return null;
+  }
+
+  return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
+    ? null
+    : '簽核節點的「排除申請人」需要指定沒有其他簽核人時的處理方式。';
 }
 
 export function readApproverResolverIssue(

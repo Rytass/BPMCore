@@ -1,5 +1,7 @@
 import {
   ApproverResolver,
+  ExcludeInitiatorConfig,
+  ExcludeInitiatorWhenEmpty,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -25,6 +27,9 @@ const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
   'ESCALATE',
   'TERMINATE_INSTANCE',
 ];
+
+const EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES: readonly ExcludeInitiatorWhenEmpty[] =
+  ['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'];
 
 const SLA_CALENDAR_MODES: readonly SlaCalendarMode[] = [
   'CALENDAR',
@@ -250,9 +255,23 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
           : [
               `workflow.nodes.${node.id}.returnBehavior.requireComment must be a boolean`,
             ]),
+        ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
       ];
     });
+}
+
+function lintExcludeInitiator(
+  config: ExcludeInitiatorConfig | undefined,
+  nodeId: string,
+): readonly string[] {
+  if (config === undefined) {
+    return [];
+  }
+
+  return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
+    ? []
+    : [`workflow.nodes.${nodeId}.excludeInitiator.whenEmpty is invalid`];
 }
 
 function lintSlaConfig(
