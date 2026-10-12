@@ -2333,6 +2333,7 @@ describe('WorkflowEngineService', () => {
               to: 'member-101',
             },
           ],
+          isAdhoc: false,
           originalAssigneeMemberId: 'member-finance',
           status: TaskStatusEnum.PENDING,
           tokenId: 'token-1',
@@ -2352,6 +2353,51 @@ describe('WorkflowEngineService', () => {
         supersedeOthers: true,
       }),
     );
+  });
+
+  it('keeps the ad-hoc fields when an ad-hoc task is transferred', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        adhocDirectiveId: 'directive-seed-1',
+        adhocOriginTaskId: 'task-origin',
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        assigneeMemberId: 'member-finance',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+        originalAssigneeMemberId: 'member-finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+      transferToMemberId: 'member-101',
+    });
+
+    // The replacement is still the pre-approval: the pre-approval rejection
+    // path reads adhocType / adhocDirectiveId / adhocOriginTaskId off it, and
+    // hosts read isAdhoc to tell it from the node's own task.
+    expect(
+      fixture.savedTasks.find((task) => task.assigneeMemberId === 'member-101'),
+    ).toMatchObject({
+      adhocDirectiveId: 'directive-seed-1',
+      adhocOriginTaskId: 'task-origin',
+      adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+      isAdhoc: true,
+      status: TaskStatusEnum.PENDING,
+    });
   });
 
   it('lets a cast vote reach history before the countersign finishes', async (): Promise<void> => {
