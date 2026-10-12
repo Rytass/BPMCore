@@ -174,6 +174,8 @@ function readNodeDetail(node: WorkflowNode): string | null {
       return '單位職位';
     case 'ORG_MANAGER':
       return '主管';
+    case 'ORG_MANAGER_CHAIN':
+      return '主管鏈';
     case 'ORG_UNIT_MANAGER':
       return '單位主管';
     case 'DYNAMIC_FORM':

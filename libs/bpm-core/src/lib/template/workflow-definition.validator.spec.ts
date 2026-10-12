@@ -745,6 +745,158 @@ describe('workflow definition validator', () => {
     });
   });
 
+  describe('ORG_MANAGER_CHAIN approver resolver', (): void => {
+    const chain = (
+      overrides: Partial<
+        Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>
+      >,
+    ): ApproverResolver => ({
+      minPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+      ...overrides,
+    });
+
+    it('accepts an integer level with SEQUENTIAL or PARALLEL_ALL', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          createUserTaskWorkflow({
+            approverResolver: chain({}),
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+        ).errors,
+      ).toEqual([]);
+      expect(
+        lintWorkflowDefinition(
+          createUserTaskWorkflow({
+            approverResolver: chain({}),
+            decisionPolicy: { type: 'PARALLEL_ALL' },
+          }),
+        ).errors,
+      ).toEqual([]);
+    });
+
+    it.each([2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+      'rejects a non-integer minPositionLevel (%s)',
+      (minPositionLevel): void => {
+        expect(
+          lintWorkflowDefinition(
+            createUserTaskWorkflow({
+              approverResolver: chain({ minPositionLevel }),
+              decisionPolicy: { type: 'SEQUENTIAL' },
+            }),
+          ).errors,
+        ).toEqual([
+          'workflow.nodes.task_manager.approverResolver.minPositionLevel is invalid',
+        ]);
+      },
+    );
+
+    it('rejects a DIRECT fallback with a blank member id', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          createUserTaskWorkflow({
+            approverResolver: chain({
+              fallback: { memberId: '  ', type: 'DIRECT' },
+            }),
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.task_manager.approverResolver.fallback.memberId is required',
+      ]);
+    });
+
+    it.each([
+      { type: 'SINGLE' },
+      { type: 'PARALLEL_ANY' },
+      { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+    ] as const)(
+      'rejects a decision policy that lets one manager close the node (%j)',
+      (decisionPolicy): void => {
+        expect(
+          lintWorkflowDefinition(
+            createUserTaskWorkflow({
+              approverResolver: chain({}),
+              decisionPolicy,
+            }),
+          ).errors,
+        ).toEqual([
+          'workflow.nodes.task_manager.decisionPolicy must be SEQUENTIAL or PARALLEL_ALL when approverResolver is ORG_MANAGER_CHAIN',
+        ]);
+      },
+    );
+
+    it('reports a missing approverResolver instead of throwing', (): void => {
+      const workflow = createUserTaskWorkflow({
+        decisionPolicy: { type: 'SEQUENTIAL' },
+      });
+      const userTask = workflow.nodes.find((node) => node.id === 'task_manager');
+
+      if (userTask?.type !== 'userTask') {
+        throw new Error('fixture has no user task');
+      }
+
+      const { approverResolver: _omitted, ...dataWithoutResolver } =
+        userTask.data;
+      void _omitted;
+
+      expect(
+        lintWorkflowDefinition({
+          ...workflow,
+          nodes: workflow.nodes.map((node) =>
+            node.id === 'task_manager'
+              ? ({ ...node, data: dataWithoutResolver } as typeof node)
+              : node,
+          ),
+        }).errors,
+      ).toEqual(['workflow.nodes.task_manager.approverResolver is required']);
+    });
+
+    it('does not apply the decision policy rule to NOTIFY recipients', (): void => {
+      const workflow: WorkflowDefinition = {
+        ...EMPTY_WORKFLOW_DEFINITION,
+        edges: [
+          {
+            data: {},
+            id: 'edge_start_end',
+            source: 'start',
+            target: 'end',
+            type: 'smoothstep',
+          },
+          {
+            data: {},
+            id: 'edge_start_notify',
+            source: 'start',
+            target: 'notify_chain',
+            type: 'smoothstep',
+          },
+        ],
+        nodes: [
+          ...EMPTY_WORKFLOW_DEFINITION.nodes,
+          {
+            data: {
+              action: {
+                channels: ['IN_APP'],
+                recipients: chain({}),
+                type: 'NOTIFY',
+              },
+              label: '通知主管鏈',
+            },
+            id: 'notify_chain',
+            position: { x: 300, y: 300 },
+            type: 'serviceTask',
+          },
+        ],
+      };
+
+      expect(lintWorkflowDefinition(workflow)).toEqual({
+        errors: [],
+        valid: true,
+        warnings: [],
+      });
+    });
+  });
+
   describe('NOTIFY webhooks', (): void => {
     const ERP_WEBHOOK = {
       bindings: [

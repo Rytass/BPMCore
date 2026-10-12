@@ -19,6 +19,7 @@ import {
   insertWorkflowNodeIntoDefinition,
   isDecisionPolicyUnsatisfiable,
   isExclusiveGatewaySourceEdge,
+  isOrgManagerChainDecisionPolicyInvalid,
   isWorkflowConnectionValid,
   isWorkflowNodeRemovable,
   normalizeDesignerWorkflowDefinition,
@@ -525,6 +526,10 @@ function applySetNodeTriggerMode(
  * the LLM toolset's `set_user_task_approver` runs this same reducer, and when
  * the rule lived in the React view an assistant asked to change an approver
  * destroyed an author's quorum while the same edit through the UI kept it.
+ *
+ * An `ORG_MANAGER_CHAIN` approver needs every manager on the chain to sign, so
+ * a policy that lets one of them close the node is replaced by `PARALLEL_ALL`
+ * (the only chain-compatible option the designer offers) in the same update.
  */
 function applySetUserTaskApprover(
   state: WorkflowDesignerState,
@@ -540,12 +545,17 @@ function applySetUserTaskApprover(
             data: {
               ...node.data,
               approverResolver: command.approverResolver,
-              decisionPolicy: isDecisionPolicyUnsatisfiable(
-                node.data.decisionPolicy,
+              decisionPolicy: isOrgManagerChainDecisionPolicyInvalid(
                 command.approverResolver,
+                node.data.decisionPolicy,
               )
-                ? { type: 'SINGLE' }
-                : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
+                ? { type: 'PARALLEL_ALL' }
+                : isDecisionPolicyUnsatisfiable(
+                      node.data.decisionPolicy,
+                      command.approverResolver,
+                    )
+                  ? { type: 'SINGLE' }
+                  : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
             },
           }
         : node,

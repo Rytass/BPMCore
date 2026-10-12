@@ -676,6 +676,191 @@ describe('set_user_task_decision_policy', () => {
 
     expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'SINGLE' });
   });
+
+  function readApproverResolver(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node.data.approverResolver;
+  }
+
+  it('keeps a valid ORG_MANAGER_CHAIN resolver and drops preferClosestOrgUnit', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        minPositionLevel: 5,
+        preferClosestOrgUnit: true,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    // The chain always uses closest-org-unit semantics, so the flag is gone.
+    expect(readApproverResolver(afterApprover)).toEqual({
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('keeps a well-formed DIRECT fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: {
+          allowInitiatorSelfApproval: true,
+          memberId: 'm9',
+          type: 'DIRECT',
+        },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: {
+        allowInitiatorSelfApproval: true,
+        memberId: 'm9',
+        type: 'DIRECT',
+      },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['a DIRECT fallback without a member', { type: 'DIRECT' }],
+    ['a blank member id', { memberId: '  ', type: 'DIRECT' }],
+    ['an unknown fallback type', { memberId: 'm9', type: 'SKIP' }],
+    [
+      'a non-boolean allowInitiatorSelfApproval',
+      { allowInitiatorSelfApproval: 'yes', memberId: 'm9', type: 'DIRECT' },
+    ],
+    ['a non-object fallback', 'm9'],
+  ])(
+    'drops a malformed ORG_MANAGER_CHAIN fallback (%s) but keeps the resolver',
+    async (_label, fallback) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: {
+          fallback,
+          minPositionLevel: 5,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    },
+  );
+
+  it('keeps a NONE fallback on an ORG_MANAGER_CHAIN resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { type: 'NONE' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: { type: 'NONE' },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['fractional', 2.5],
+    ['a string', '5'],
+  ])(
+    'falls back to the manager default when ORG_MANAGER_CHAIN minPositionLevel is %s',
+    async (_label, minPositionLevel) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: { minPositionLevel, type: 'ORG_MANAGER_CHAIN' },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        baseFromInitiator: true,
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      });
+    },
+  );
+
+  // A chain only works when every manager signs, so the shared reducer
+  // upgrades the default SINGLE policy instead of leaving the assistant with a
+  // draft the backend validator would reject.
+  it('switches the node to PARALLEL_ALL when the approver becomes a chain', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+    });
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+  });
+
+  it('keeps an already chain-compatible policy when the approver becomes a chain', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withParallelAll = await runTool(
+      state,
+      'set_user_task_decision_policy',
+      { nodeId, type: 'PARALLEL_ALL' },
+    );
+    const afterApprover = await runTool(
+      withParallelAll,
+      'set_user_task_approver',
+      {
+        approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+        nodeId,
+      },
+    );
+
+    expect(readDecisionPolicy(afterApprover)).toEqual({ type: 'PARALLEL_ALL' });
+  });
+
+  it('validate_workflow flags a chain node later set to a single-approver policy', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withChain = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+    });
+    const withSingle = await runTool(
+      withChain,
+      'set_user_task_decision_policy',
+      {
+        nodeId,
+        type: 'SINGLE',
+      },
+    );
+    const validation = await executeWorkflowTool(
+      withSingle,
+      'validate_workflow',
+      {},
+    );
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: expect.stringContaining('沿主管鏈簽核'),
+      });
+    }
+  });
 });
 
 describe('set_service_action — NOTIFY webhooks', () => {

@@ -1,6 +1,7 @@
 import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
+  ApproverResolverFallback,
   DecisionPolicy,
   ExcludeInitiatorConfig,
   ReturnResubmitStrategy,
@@ -102,7 +103,8 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
   description:
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
-    'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
   properties: {
     type: {
@@ -112,6 +114,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
         'ORG_UNIT_MEMBER',
         'ORG_UNIT_POSITION',
         'ORG_MANAGER',
+        'ORG_MANAGER_CHAIN',
         'ORG_UNIT_MANAGER',
         'DYNAMIC_FORM',
         'EXPRESSION',
@@ -1152,6 +1155,19 @@ function parseApproverResolver(value: unknown): ApproverResolver {
         preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'ORG_MANAGER',
       };
+    case 'ORG_MANAGER_CHAIN': {
+      const minPositionLevel = value['minPositionLevel'];
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return typeof minPositionLevel === 'number' &&
+        Number.isInteger(minPositionLevel)
+        ? {
+            minPositionLevel,
+            type: 'ORG_MANAGER_CHAIN',
+            ...(fallback ? { fallback } : {}),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
 
@@ -1328,6 +1344,43 @@ function readStringArray(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
     : [];
+}
+
+/**
+ * A malformed fallback is dropped (the resolver then stops the flow when the
+ * chain ends early) rather than failing the whole tool call, in line with
+ * {@link parseApproverResolver}'s never-throw rule.
+ */
+function parseApproverResolverFallback(
+  value: unknown,
+): ApproverResolverFallback | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (value['type'] === 'NONE') {
+    return { type: 'NONE' };
+  }
+
+  const memberId = readNonEmptyString(value['memberId']);
+  const allowInitiatorSelfApproval = value['allowInitiatorSelfApproval'];
+
+  if (
+    value['type'] !== 'DIRECT' ||
+    !memberId ||
+    (allowInitiatorSelfApproval !== undefined &&
+      typeof allowInitiatorSelfApproval !== 'boolean')
+  ) {
+    return null;
+  }
+
+  return {
+    memberId,
+    type: 'DIRECT',
+    ...(allowInitiatorSelfApproval === undefined
+      ? {}
+      : { allowInitiatorSelfApproval }),
+  };
 }
 
 function readNonEmptyString(value: unknown): string | null {
