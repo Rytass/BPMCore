@@ -380,6 +380,137 @@ describe('SLA and return-comment tools', () => {
   });
 });
 
+describe('set_user_task_exclude_initiator', () => {
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const added = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!added.ok || added.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const nodeId = added.result.state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state: added.result.state };
+  }
+
+  async function run(
+    state: WorkflowDesignerState,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      'set_user_task_exclude_initiator',
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  function readExcludeInitiator(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return 'excludeInitiator' in node.data
+      ? node.data.excludeInitiator
+      : 'ABSENT';
+  }
+
+  it('is exposed as a mutation tool', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_exclude_initiator',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('stores the chosen fallback', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, { enabled: true, nodeId, whenEmpty: 'FAIL' });
+
+    expect(readExcludeInitiator(next)).toEqual({ whenEmpty: 'FAIL' });
+  });
+
+  it('defaults to the initiator manager when whenEmpty is omitted', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, { enabled: true, nodeId });
+
+    expect(readExcludeInitiator(next)).toEqual({
+      whenEmpty: 'INITIATOR_MANAGER',
+    });
+  });
+
+  it('never throws on an unrecognised whenEmpty and keeps the exclusion on with the default', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'NOBODY',
+    });
+
+    expect(readExcludeInitiator(next)).toEqual({
+      whenEmpty: 'INITIATOR_MANAGER',
+    });
+  });
+
+  it('shows the setting in the node summary only when it is set', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const readSummary = (target: WorkflowDesignerState): string | undefined =>
+      readWorkflowSnapshot(target).nodes.find((node) => node.id === nodeId)
+        ?.summary;
+
+    expect(readSummary(state)).not.toContain('申請人不可簽核自己的單');
+
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'SKIP_NODE',
+    });
+
+    expect(readSummary(enabled)).toContain('申請人不可簽核自己的單=SKIP_NODE');
+
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readSummary(disabled)).not.toContain('申請人不可簽核自己的單');
+  });
+
+  it('removes the setting when disabled', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      whenEmpty: 'SKIP_NODE',
+    });
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readExcludeInitiator(disabled)).toBe('ABSENT');
+  });
+});
+
 describe('set_user_task_decision_policy', () => {
   async function runTool(
     state: WorkflowDesignerState,

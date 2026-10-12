@@ -23,6 +23,7 @@ import { FormFieldDefinition } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
   NotifyWebhookTarget,
   ServiceAction,
   WorkflowDefinition,
@@ -45,6 +46,7 @@ function quorum(threshold: number, thresholdType: 'COUNT' | 'PERCENTAGE' = 'COUN
 function definitionWithUserTask(
   approverResolver: ApproverResolver,
   decisionPolicy: DecisionPolicy,
+  excludeInitiator?: ExcludeInitiatorConfig,
 ): WorkflowDefinition {
   const fallback = readFallbackWorkflowDefinition();
 
@@ -77,6 +79,7 @@ function definitionWithUserTask(
           decisionPolicy,
           label: '部門會簽',
           returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+          ...(excludeInitiator ? { excludeInitiator } : {}),
         },
         id: 'task',
         position: { x: 300, y: 160 },
@@ -144,6 +147,31 @@ describe('readWorkflowDefinitionIssue', () => {
       ),
     ).toBeNull();
   });
+});
+
+describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
+  const ONE_MEMBER: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+  it('rejects an unknown whenEmpty', () => {
+    const issue = readWorkflowDefinitionIssue(
+      definitionWithUserTask(ONE_MEMBER, { type: 'SINGLE' }, {
+        whenEmpty: 'IGNORE' as never,
+      }),
+    );
+
+    expect(issue).toContain('申請人不可簽核自己的單');
+  });
+
+  it.each(['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'] as const)(
+    'accepts whenEmpty %s',
+    (whenEmpty) => {
+      expect(
+        readWorkflowDefinitionIssue(
+          definitionWithUserTask(ONE_MEMBER, { type: 'SINGLE' }, { whenEmpty }),
+        ),
+      ).toBeNull();
+    },
+  );
 });
 
 describe('ORG_MANAGER_CHAIN validation', () => {

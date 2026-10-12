@@ -3,6 +3,7 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaCalendarMode,
@@ -15,6 +16,7 @@ import {
 import {
   CONDITION_OPERATOR_OPTIONS,
   DEFAULT_QUORUM_THRESHOLD,
+  EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES,
   WORKFLOW_NODE_TYPE_LABELS,
   composeQuorumThreshold,
   composeSlaDuration,
@@ -286,6 +288,24 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     kind: 'mutation',
   },
   {
+    name: 'set_user_task_exclude_initiator',
+    description:
+      '設定簽核節點的「申請人不可簽核自己的單」（職責分離）。enabled=true 時，申請人本人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關；enabled=false 會移除此設定。' +
+      'whenEmpty 為排除後沒有任何簽核人時的處理：INITIATOR_MANAGER=改由申請人的直屬主管簽核（預設）；SKIP_NODE=跳過此關；FAIL=停止流程並提示。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        enabled: { type: 'boolean' },
+        whenEmpty: {
+          enum: [...EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES],
+          type: 'string',
+        },
+      },
+      ['nodeId', 'enabled'],
+    ),
+    kind: 'mutation',
+  },
+  {
     name: 'set_service_action',
     description: '設定系統節點的動作（NOTIFY 知會 / WEBHOOK / SET_FORM_FIELD）。',
     inputSchema: objectSchema(
@@ -521,7 +541,12 @@ function readNodeSummary(node: WorkflowNode): string {
     return (
       `簽核人=${node.data.approverResolver.type}` +
       `；決策=${readDecisionPolicySummary(node.data.decisionPolicy)}` +
-      `；觸發=${node.data.triggerMode ?? 'AND'}`
+      `；觸發=${node.data.triggerMode ?? 'AND'}` +
+      // Only reported when set, so the assistant can read back what
+      // set_user_task_exclude_initiator wrote; absent means "not excluded".
+      (node.data.excludeInitiator
+        ? `；申請人不可簽核自己的單=${node.data.excludeInitiator.whenEmpty}`
+        : '')
     );
   }
 
@@ -799,6 +824,12 @@ function buildPrimitiveCommand(
         sla: parseSlaConfig(input),
         type: 'setUserTaskSla',
       };
+    case 'set_user_task_exclude_initiator':
+      return {
+        excludeInitiator: parseExcludeInitiator(input),
+        nodeId: readString(input, 'nodeId'),
+        type: 'setUserTaskExcludeInitiator',
+      };
     case 'set_service_action':
       return {
         action: parseServiceAction(input['action']),
@@ -882,7 +913,7 @@ function readNodeTypeCatalog(): unknown {
       {
         dataShape:
           'label, approverResolver, decisionPolicy, returnBehavior(allowReturn, allowedTargets, requireComment?, resubmitStrategy?), ' +
-          'allowReject, allowTransfer, allowAddSigner, triggerMode, ' +
+          'allowReject, allowTransfer, allowAddSigner, excludeInitiator?(whenEmpty), triggerMode, ' +
           'sla?(duration, calendar?, onTimeout, escalateLevelsUp?, warningAt?), notification?',
         label: WORKFLOW_NODE_TYPE_LABELS.userTask,
         type: 'userTask',
@@ -1165,6 +1196,26 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     default:
       return DEFAULT_MANAGER_RESOLVER;
   }
+}
+
+/**
+ * Builds the node's `excludeInitiator` setting from the flat tool input,
+ * **never throwing**. `enabled: false` removes it (`null`). When enabled, an
+ * absent or unrecognised `whenEmpty` falls back to the same default the
+ * designer seeds, so a malformed value can never silently drop the protection.
+ */
+function parseExcludeInitiator(
+  input: Readonly<Record<string, unknown>>,
+): ExcludeInitiatorConfig | null {
+  if (input['enabled'] === false) {
+    return null;
+  }
+
+  const whenEmpty = EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.find(
+    (candidate) => candidate === input['whenEmpty'],
+  );
+
+  return { whenEmpty: whenEmpty ?? 'INITIATOR_MANAGER' };
 }
 
 /** Coerce an LLM-supplied service action, **never throwing** (defaults to NOTIFY). */

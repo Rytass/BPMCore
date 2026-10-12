@@ -58,11 +58,27 @@ export interface UserTaskNodeData extends BaseNodeData {
   readonly decisionPolicy: DecisionPolicy;
   readonly description?: string;
   readonly entryCondition?: string;
+  readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
   readonly returnBehavior: ReturnBehavior;
   readonly sla?: SlaConfig;
 }
+
+/**
+ * Separation of duties: when present, the member who submitted the instance
+ * is never one of this node's approvers (a delegate acting for them counts
+ * as them). Absent keeps today's behaviour.
+ */
+export interface ExcludeInitiatorConfig {
+  /** What happens when no approver is left after the initiator is removed. */
+  readonly whenEmpty: ExcludeInitiatorWhenEmpty;
+}
+
+export type ExcludeInitiatorWhenEmpty =
+  | 'FAIL'
+  | 'INITIATOR_MANAGER'
+  | 'SKIP_NODE';
 
 export type ApproverResolver =
   | { readonly memberIds: readonly string[]; readonly type: 'DIRECT' }

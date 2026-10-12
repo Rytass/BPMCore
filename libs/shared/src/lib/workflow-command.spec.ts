@@ -355,6 +355,54 @@ describe('user task return and SLA commands', () => {
     expect('sla' in readUserTaskNode(withoutSla.state).data).toBe(false);
   });
 
+  it('stores the initiator exclusion, changes its fallback and drops the key when removed', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+
+    expect('excludeInitiator' in readUserTaskNode(state).data).toBe(false);
+
+    const enabled = applyWorkflowCommand(state, {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      nodeId,
+      type: 'setUserTaskExcludeInitiator',
+    });
+
+    expect(readUserTaskNode(enabled.state).data.excludeInitiator).toEqual({
+      whenEmpty: 'INITIATOR_MANAGER',
+    });
+
+    const changed = applyWorkflowCommand(enabled.state, {
+      excludeInitiator: { whenEmpty: 'SKIP_NODE' },
+      nodeId,
+      type: 'setUserTaskExcludeInitiator',
+    });
+
+    expect(readUserTaskNode(changed.state).data.excludeInitiator).toEqual({
+      whenEmpty: 'SKIP_NODE',
+    });
+
+    const removed = applyWorkflowCommand(changed.state, {
+      excludeInitiator: null,
+      nodeId,
+      type: 'setUserTaskExcludeInitiator',
+    });
+
+    expect('excludeInitiator' in readUserTaskNode(removed.state).data).toBe(
+      false,
+    );
+  });
+
+  it('rejects the initiator exclusion on a node that is not a user task', () => {
+    const result = applyWorkflowCommand(initialState(), {
+      excludeInitiator: { whenEmpty: 'FAIL' },
+      nodeId: 'start',
+      type: 'setUserTaskExcludeInitiator',
+    });
+
+    expect(result.error).not.toBeNull();
+    expect(result.changed).toBe(false);
+  });
+
   it('defaults a new user task to a single decider', () => {
     expect(readUserTaskNode(stateWithUserTask()).data.decisionPolicy).toEqual({
       type: 'SINGLE',
