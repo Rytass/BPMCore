@@ -140,6 +140,32 @@ describe('MemberFieldControl', () => {
     }
   });
 
+  it('keeps the names the directory can give when one stored id fails the whole batch', async (): Promise<void> => {
+    resolveMembersMock.mockImplementation(async (memberIds) => {
+      if (memberIds.length === 1 && memberIds[0] === 'm1') {
+        return [ALICE];
+      }
+
+      throw new Error('directory cannot handle m9');
+    });
+    const harness = await mount({
+      multiple: true,
+      readonly: true,
+      value: ['m1', 'm9'],
+    });
+
+    try {
+      expect(readProps().value).toEqual([
+        { id: 'm1', name: 'Alice (alice@example.com)' },
+        { id: 'm9', name: '未知會員', unresolved: true },
+      ]);
+      // batch + one request per id; the failing id is not retried afterwards.
+      expect(resolveMembersMock).toHaveBeenCalledTimes(3);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   it('does not call the directory when nothing is stored', async (): Promise<void> => {
     const harness = await mount({ value: undefined });
 

@@ -177,7 +177,10 @@ import {
   readFormVersionLabel,
   readTemplateVersionDescription,
 } from './designer-version-labels';
-import { resolveMemberProfilesPerIdOnFailure } from './member-profile-resolution';
+import {
+  excludeFailedMemberIds,
+  resolveMemberProfilesPerIdOnFailure,
+} from '../../../lib/member-profile-resolution';
 import {
   findNotifyWebhookEndpoint,
   isNotifyWebhookListEditable,
@@ -941,6 +944,9 @@ export function TemplateDesignerView({
   // response for a more recent search. `memberOptions` accumulation is
   // order-insensitive (it only ever adds), so it does not need this guard.
   const memberSearchSequenceRef = useRef(0);
+  // Member ids the directory could not resolve, even asked for on their own.
+  // They keep their 「未知會員」 placeholder and are not requested again.
+  const unresolvableMemberIdsRef = useRef<Set<string>>(new Set());
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
   const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
@@ -1402,11 +1408,19 @@ export function TemplateDesignerView({
     // the member id, so a plain presence check treats a failed fetch as a hit
     // and never asks again — the "未知會員" sentinel would then survive every
     // later definition load for the rest of the session.
-    const missingMemberIds = memberIds.filter(
-      (memberId) =>
-        !memberOptions.some(
-          (option) => option.memberId === memberId && !option.unresolved,
-        ),
+    //
+    // The exception is an id the directory already failed to resolve on its
+    // own: it stays 「未知會員」 for the session. Counting it as missing again
+    // would re-request it (and re-run the whole per-id retry) every time
+    // `memberOptions` changes, which the placeholder merge itself triggers.
+    const missingMemberIds = excludeFailedMemberIds(
+      memberIds.filter(
+        (memberId) =>
+          !memberOptions.some(
+            (option) => option.memberId === memberId && !option.unresolved,
+          ),
+      ),
+      unresolvableMemberIdsRef.current,
     );
 
     if (missingMemberIds.length === 0) {
@@ -1416,15 +1430,28 @@ export function TemplateDesignerView({
     // One bad id (a foreign id stored in the template) makes the host fail the
     // whole batch, so a failed batch is retried per id: the members that do
     // resolve keep their names and only the failing ids show 「未知會員」.
-    const { failedIds, profiles } = await resolveMemberProfilesPerIdOnFailure(
+    const { profiles, skippedIds } = await resolveMemberProfilesPerIdOnFailure(
       missingMemberIds,
       resolveMemberOptions,
+    );
+    const resolvedIds = new Set(profiles.map((profile) => profile.memberId));
+    const unresolvableIds = missingMemberIds.filter(
+      (memberId) =>
+        !resolvedIds.has(memberId) && !skippedIds.includes(memberId),
+    );
+
+    // Ids the directory answered without (or failed on their own) are given
+    // up on for this session; skipped ids were never asked and stay eligible.
+    unresolvableIds.forEach((memberId) =>
+      unresolvableMemberIdsRef.current.add(memberId),
     );
 
     setMemberOptions((currentOptions) =>
       mergeMemberOptions(currentOptions, [
         ...readMemberSelectOptions(profiles),
-        ...failedIds.map(readFallbackMemberSelectOption),
+        ...[...unresolvableIds, ...skippedIds].map(
+          readFallbackMemberSelectOption,
+        ),
       ]),
     );
   }
@@ -1508,10 +1535,10 @@ export function TemplateDesignerView({
   function openDryRunModal(): void {
     setDryRunFormDataJson(
       JSON.stringify(
-        readDryRunSampleFormData(
-          selectedFormVersionOption?.schema ?? null,
-          DRY_RUN_MEMBER_ID,
-        ),
+        // The schema publish would send (an applied form edit included), the
+        // same one the 依表單欄位指定 picker reads, so a member field just added
+        // to the draft gets a sample value.
+        readDryRunSampleFormData(webhookFormSchema, DRY_RUN_MEMBER_ID),
         null,
         2,
       ),

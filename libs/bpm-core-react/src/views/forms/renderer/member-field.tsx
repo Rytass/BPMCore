@@ -5,6 +5,10 @@ import { AutoComplete } from '@mezzanine-ui/react';
 import { resolveMembers, searchMembers } from '@rytass/bpm-core-client';
 import type { FormFieldValue } from '@rytass/bpm-core-shared/form';
 import {
+  excludeFailedMemberIds,
+  resolveMemberProfilesPerIdOnFailure,
+} from '../../../lib/member-profile-resolution';
+import {
   mergeMemberFieldOptions,
   readMemberFieldOption,
   readMemberFieldValue,
@@ -50,21 +54,28 @@ export function MemberFieldControl({
   >([]);
   const [loading, setLoading] = useState(false);
   const latestSearchRef = useRef(0);
+  // Ids the directory could not name; they stay 「未知會員」 and are not asked
+  // for again when the other ids of the value resolve and the key changes.
+  const givenUpIdsRef = useRef<Set<string>>(new Set());
   const unresolvedKey = readUnresolvedMemberIds(value, knownOptions).join('\n');
 
   useEffect((): (() => void) => {
-    const memberIds = unresolvedKey ? unresolvedKey.split('\n') : [];
+    const memberIds = excludeFailedMemberIds(
+      unresolvedKey ? unresolvedKey.split('\n') : [],
+      givenUpIdsRef.current,
+    );
     let cancelled = false;
 
     if (memberIds.length === 0) {
       return (): void => undefined;
     }
 
-    void resolveMembers(memberIds)
-      .then((members): readonly MemberFieldOption[] =>
-        members.map(readMemberFieldOption),
+    // One id the directory cannot handle fails the whole batch, so a failed
+    // batch is retried per id: the other members keep their names.
+    void resolveMemberProfilesPerIdOnFailure(memberIds, resolveMembers)
+      .then(({ profiles }): readonly MemberFieldOption[] =>
+        profiles.map(readMemberFieldOption),
       )
-      .catch((): readonly MemberFieldOption[] => [])
       .then((resolved): void => {
         if (cancelled) {
           return;
@@ -78,6 +89,10 @@ export function MemberFieldControl({
             (memberId) => !resolved.some((option) => option.id === memberId),
           )
           .map(readUnresolvedMemberFieldOption);
+
+        placeholders.forEach((placeholder) =>
+          givenUpIdsRef.current.add(placeholder.id),
+        );
 
         setKnownOptions((current) =>
           mergeMemberFieldOptions(current, [...resolved, ...placeholders]),
