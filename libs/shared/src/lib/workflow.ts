@@ -91,6 +91,12 @@ export type ApproverResolver =
       readonly preferClosestOrgUnit?: boolean;
       readonly type: 'ORG_UNIT_MANAGER';
     }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly minPositionLevel: number;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'ORG_MANAGER_CHAIN';
+    }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
   | { readonly expression: string; readonly type: 'EXPRESSION' };
 

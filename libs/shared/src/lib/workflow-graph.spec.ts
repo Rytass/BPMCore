@@ -4,6 +4,7 @@ import {
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
   isDecisionPolicyUnsatisfiable,
+  isOrgManagerChainDecisionPolicyInvalid,
   isFormFieldCompatibleWithWebhookParameter,
   isNotifyRecipientsEmpty,
   isNotifyWebhookValueCompatibleWithParameter,
@@ -14,6 +15,7 @@ import {
   readNotifyServiceTaskIssue,
   readNotifyWebhookCatalogIssueMessage,
   readNotifyWebhookStructureIssues,
+  readApproverResolverIssue,
   readNotifyWebhookTargetCatalogIssues,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
@@ -139,6 +141,72 @@ describe('readWorkflowDefinitionIssue', () => {
     expect(
       readWorkflowDefinitionIssue(
         definitionWithUserTask(THREE_MEMBERS, quorum(2)),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('ORG_MANAGER_CHAIN validation', () => {
+  const CHAIN: ApproverResolver = {
+    minPositionLevel: 3,
+    type: 'ORG_MANAGER_CHAIN',
+  };
+
+  it('accepts an integer level', () => {
+    expect(readApproverResolverIssue(CHAIN)).toBeNull();
+  });
+
+  it.each([2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects a non-integer level (%s)',
+    (minPositionLevel) => {
+      expect(readApproverResolverIssue({ ...CHAIN, minPositionLevel })).toBe(
+        '簽核節點需要指定有效的職等門檻。',
+      );
+    },
+  );
+
+  it('rejects a DIRECT fallback with a blank member id', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        fallback: { memberId: ' ', type: 'DIRECT' },
+      }),
+    ).toBe('簽核節點需要指定改派固定人。');
+  });
+
+  it('flags every policy that lets one manager close the node', () => {
+    expect(
+      isOrgManagerChainDecisionPolicyInvalid(CHAIN, { type: 'SINGLE' }),
+    ).toBe(true);
+    expect(
+      isOrgManagerChainDecisionPolicyInvalid(CHAIN, { type: 'PARALLEL_ANY' }),
+    ).toBe(true);
+    expect(isOrgManagerChainDecisionPolicyInvalid(CHAIN, quorum(2))).toBe(true);
+    expect(isOrgManagerChainDecisionPolicyInvalid(CHAIN, undefined)).toBe(true);
+  });
+
+  it('accepts SEQUENTIAL and PARALLEL_ALL, and ignores other resolvers', () => {
+    expect(
+      isOrgManagerChainDecisionPolicyInvalid(CHAIN, { type: 'SEQUENTIAL' }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainDecisionPolicyInvalid(CHAIN, { type: 'PARALLEL_ALL' }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainDecisionPolicyInvalid(ONE_MANAGER, { type: 'SINGLE' }),
+    ).toBe(false);
+  });
+
+  it('reports the node whose policy would let one manager close it', () => {
+    const issue = readWorkflowDefinitionIssue(
+      definitionWithUserTask(CHAIN, { type: 'SINGLE' }),
+    );
+
+    expect(issue).toContain('部門會簽');
+    expect(issue).toContain('依序簽核');
+    expect(
+      readWorkflowDefinitionIssue(
+        definitionWithUserTask(CHAIN, { type: 'SEQUENTIAL' }),
       ),
     ).toBeNull();
   });

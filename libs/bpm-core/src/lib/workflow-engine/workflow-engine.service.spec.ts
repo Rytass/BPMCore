@@ -6,6 +6,7 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
+  DecisionPolicy,
   ReturnBehavior,
   ServiceAction,
   WorkflowDefinition,
@@ -33,6 +34,7 @@ import { NotificationService } from '../notification/notification.service';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
+import { PositionEntity } from '../organization/position.entity';
 import {
   ManagerResolutionScopeTypeEnum,
   OrgUnitTypeEnum,
@@ -1849,6 +1851,311 @@ describe('WorkflowEngineService', () => {
     expect(fixture.savedTasks[0]).toMatchObject({
       assigneeMemberId: 'member-org-manager',
       originalAssigneeMemberId: 'member-org-manager',
+    });
+  });
+
+  describe('ORG_MANAGER_CHAIN approver resolver', () => {
+    const createChainFixture = (
+      org: ReturnType<typeof createManagerChainOrg>,
+      resolver: Partial<
+        Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>
+      > = {},
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        ...org,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+            ...resolver,
+          },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const readCandidateMemberIds = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly string[] =>
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+
+    it('creates candidates nearest manager first up to the required level', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+            ['member-m2', 'member-m3'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+        'member-m3',
+      ]);
+    });
+
+    it('stops at the first manager that already reaches the level', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 3, 'member-m2': 4 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual(['member-m1']);
+    });
+
+    it('passes through managers without a position and managers not senior to the last one added', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: {
+            'member-m1': 2,
+            'member-m2': null,
+            'member-m3': 2,
+            'member-m4': 1,
+            'member-m5': 3,
+          },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+            ['member-m2', 'member-m3'],
+            ['member-m3', 'member-m4'],
+            ['member-m4', 'member-m5'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m5',
+      ]);
+    });
+
+    it('uses the highest level among the manager active memberships and ignores inactive ones', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          extraMemberships: [
+            createMembership({
+              effectiveTo: '2026-02-01',
+              id: 'membership-m1-expired',
+              memberId: 'member-m1',
+              positionId: 'position-9',
+            }),
+            createMembership({
+              id: 'membership-m2-second',
+              memberId: 'member-m2',
+              positionId: 'position-3',
+            }),
+          ],
+          extraPositionLevels: [3, 9],
+          grades: { 'member-m1': 1, 'member-m2': 2 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      // Counting the expired level 9 would stop the walk at member-m1.
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+      ]);
+    });
+
+    it('rejects when the chain ends below the level and no fallback is set', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+          ],
+        }),
+      );
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('沿主管鏈找不到職等達 3 的主管，且未設定改派固定人');
+      expect(fixture.savedTaskCandidates).toHaveLength(0);
+    });
+
+    it('appends the fallback assignee last when the chain ends below the level', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+          ],
+        }),
+        { fallback: { memberId: 'member-admin', type: 'DIRECT' } },
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+        'member-admin',
+      ]);
+    });
+
+    it('does not duplicate a fallback that is already on the chain', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+          ],
+        }),
+        { fallback: { memberId: 'member-m1', type: 'DIRECT' } },
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+      ]);
+    });
+
+    it('keeps the initiator self-approval guard on the fallback', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({ grades: {}, links: [] }),
+        { fallback: { memberId: 'member-001', type: 'DIRECT' } },
+      );
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('改派固定人是申請人本人');
+    });
+
+    it('throws instead of choosing when manager rules tie at a hop', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1a': 1, 'member-m1b': 3 },
+          links: [
+            ['member-001', 'member-m1a'],
+            ['member-001', 'member-m1b'],
+          ],
+        }),
+      );
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('主管規則在同一優先順序出現多位主管');
+      expect(fixture.savedTaskCandidates).toHaveLength(0);
+    });
+
+    it('stops walking when the manager rules form a cycle', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+            ['member-m2', 'member-m1'],
+          ],
+        }),
+        { fallback: { memberId: 'member-admin', type: 'DIRECT' } },
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+        'member-admin',
+      ]);
+    });
+
+    it('treats a manager rule that leads back to the initiator as the end of the chain', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          // The initiator would reach the level itself, but is never a step.
+          grades: { 'member-001': 3, 'member-m1': 1 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-001'],
+          ],
+        }),
+      );
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('沿主管鏈找不到職等達 3 的主管');
+    });
+
+    it('treats a chain longer than the hop limit as ended', async (): Promise<void> => {
+      const members = Array.from(
+        { length: 25 },
+        (_, index) => `member-h${index + 1}`,
+      );
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: Object.fromEntries(
+            members.map((memberId, index) => [memberId, index + 1]),
+          ),
+          links: [
+            ['member-001', members[0]],
+            ...members
+              .slice(1)
+              .map((memberId, index): readonly [string, string] => [
+                members[index],
+                memberId,
+              ]),
+          ],
+        }),
+        { minPositionLevel: 25 },
+      );
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('沿主管鏈找不到職等達 25 的主管');
+    });
+
+    it('keeps the chain order on the saved task candidates', async (): Promise<void> => {
+      const fixture = createChainFixture(
+        createManagerChainOrg({
+          grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
+          links: [
+            ['member-001', 'member-m1'],
+            ['member-m1', 'member-m2'],
+            ['member-m2', 'member-m3'],
+          ],
+        }),
+      );
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.savedTaskCandidates.map((candidate) => ({
+          memberId: candidate.memberId,
+          taskId: candidate.taskId,
+        })),
+      ).toEqual([
+        { memberId: 'member-m1', taskId: fixture.savedTasks[0].id },
+        { memberId: 'member-m2', taskId: fixture.savedTasks[0].id },
+        { memberId: 'member-m3', taskId: fixture.savedTasks[0].id },
+      ]);
     });
   });
 
@@ -4055,6 +4362,7 @@ function createServiceFixture({
   processMemberships = [],
   processNotifications = [],
   processOrgUnits = [],
+  processPositions = [],
   processWorkflowSnapshot,
   rootInstanceUpdatedAt,
   serviceTaskDispatcher,
@@ -4081,6 +4389,7 @@ function createServiceFixture({
   readonly processNotifications?: readonly NotificationEntity[];
   readonly processOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly processOrgUnits?: readonly OrgUnitEntity[];
+  readonly processPositions?: readonly PositionEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
   readonly rootInstanceUpdatedAt?: Date;
@@ -4687,6 +4996,18 @@ function createServiceFixture({
         ),
     ),
   });
+  const transactionalPositionRepository = createRepository<PositionEntity>({
+    find: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<readonly PositionEntity[]> =>
+        Promise.resolve(
+          processPositions.filter((position) =>
+            matchesFindWhere(position, options?.where),
+          ),
+        ),
+    ),
+  });
   const managerQuery = jest.fn<Promise<unknown>, [string, readonly unknown[]]>(
     () => Promise.resolve([]),
   );
@@ -4730,6 +5051,10 @@ function createServiceFixture({
 
       if (target === OrgUnitEntity) {
         return transactionalOrgUnitRepository;
+      }
+
+      if (target === PositionEntity) {
+        return transactionalPositionRepository;
       }
 
       if (target === AdhocDirectiveEntity) {
@@ -5348,6 +5673,74 @@ function createOrgUnit(value: Partial<OrgUnitEntity>): OrgUnitEntity {
   });
 }
 
+function createPosition(value: Partial<PositionEntity>): PositionEntity {
+  return Object.assign(new PositionEntity(), {
+    code: value.code ?? `position-${value.level ?? 1}`,
+    createdAt: new Date('2026-05-04T09:00:00.000Z'),
+    id: value.id ?? `position-${value.level ?? 1}`,
+    level: value.level ?? 1,
+    metadata: {},
+    name: value.name ?? `職等 ${value.level ?? 1}`,
+    updatedAt: new Date('2026-05-04T09:00:00.000Z'),
+  });
+}
+
+/**
+ * Builds the org data for an ORG_MANAGER_CHAIN walk: one MEMBER-scope manager
+ * rule per `[member, manager]` link, plus one position membership per graded
+ * member. A `null` grade means the member has no position at all.
+ */
+function createManagerChainOrg({
+  extraMemberships = [],
+  extraPositionLevels = [],
+  grades,
+  links,
+}: {
+  readonly extraMemberships?: readonly MembershipEntity[];
+  readonly extraPositionLevels?: readonly number[];
+  readonly grades: Readonly<Record<string, number | null>>;
+  readonly links: readonly (readonly [string, string])[];
+}): Pick<
+  Parameters<typeof createServiceFixture>[0],
+  | 'processManagerResolutions'
+  | 'processMemberships'
+  | 'processOrgUnits'
+  | 'processPositions'
+> {
+  const gradedMembers = Object.entries(grades);
+
+  return {
+    processManagerResolutions: links.map(([memberId, managerMemberId]) =>
+      createManagerResolution({
+        id: `manager-resolution-${memberId}-${managerMemberId}`,
+        managerMemberId,
+        scopeId: memberId,
+        scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+      }),
+    ),
+    processMemberships: [
+      ...gradedMembers.map(([memberId, level]) =>
+        createMembership({
+          id: `membership-${memberId}`,
+          memberId,
+          orgUnitId: 'org-finance',
+          positionId: level === null ? null : `position-${level}`,
+        }),
+      ),
+      ...extraMemberships,
+    ],
+    processOrgUnits: [createOrgUnit({ id: 'org-finance' })],
+    processPositions: [
+      ...new Set([
+        ...Object.values(grades).filter(
+          (level): level is number => level !== null,
+        ),
+        ...extraPositionLevels,
+      ]),
+    ].map((level) => createPosition({ level })),
+  };
+}
+
 function createLinearUserTaskWorkflow({
   allowAddSigner = false,
   allowReject = true,
@@ -5356,6 +5749,7 @@ function createLinearUserTaskWorkflow({
     memberIds: ['member-finance'],
     type: 'DIRECT',
   },
+  decisionPolicy = { type: 'SINGLE' },
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -5366,6 +5760,7 @@ function createLinearUserTaskWorkflow({
   readonly allowReject?: boolean;
   readonly allowTransfer?: boolean;
   readonly approverResolver?: ApproverResolver;
+  readonly decisionPolicy?: DecisionPolicy;
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -5400,7 +5795,7 @@ function createLinearUserTaskWorkflow({
           allowReject,
           allowTransfer,
           approverResolver,
-          decisionPolicy: { type: 'SINGLE' },
+          decisionPolicy,
           label: '財務簽核',
           returnBehavior,
           ...(slaDuration

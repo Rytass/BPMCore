@@ -147,6 +147,12 @@ type ApproverResolver =
       readonly orgUnitId: string;
       readonly type: 'ORG_UNIT_MANAGER';
     }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly minPositionLevel: number;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'ORG_MANAGER_CHAIN';
+    }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
   | { readonly expression: string; readonly type: 'EXPRESSION' };
 
@@ -163,6 +169,12 @@ Designer 目前提供 direct member、position、org-unit member、org-unit posi
 initiator manager、specific org-unit manager、dynamic form、expression 等模式。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+`ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
+[07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
+`minPositionLevel` 必須是有限整數；`userTask` 的 `decisionPolicy` 只能是
+`SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。同一個 resolver
+用在 `NOTIFY.recipients` 時不受 decision policy 限制（所有人都會收到通知）。
 
 ### Service Task
 

@@ -14,6 +14,7 @@ import {
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   NotifyWebhookStructureIssue,
   readDesignTimeApproverCount,
+  isOrgManagerChainDecisionPolicyInvalid,
   readNotifyWebhookStructureIssues,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -221,6 +222,16 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
         ...(data.decisionPolicy?.type
           ? []
           : [`workflow.nodes.${node.id}.decisionPolicy is required`]),
+        // One manager's approval must not close a chain node, so only the
+        // policies that wait for every candidate are allowed.
+        ...(isOrgManagerChainDecisionPolicyInvalid(
+          data.approverResolver,
+          data.decisionPolicy,
+        )
+          ? [
+              `workflow.nodes.${node.id}.decisionPolicy must be SEQUENTIAL or PARALLEL_ALL when approverResolver is ORG_MANAGER_CHAIN`,
+            ]
+          : []),
         // A COUNT quorum above the number of approvers the node can produce
         // deadlocks the task forever — the engine gates on
         // `completedCount >= threshold` and an ad-hoc signer opens a separate
@@ -362,7 +373,18 @@ function lintApproverResolver(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' || resolver.type === 'ORG_UNIT_MANAGER') &&
+    resolver.type === 'ORG_MANAGER_CHAIN' &&
+    !Number.isInteger(resolver.minPositionLevel)
+  ) {
+    return [
+      `workflow.nodes.${nodeId}.approverResolver.minPositionLevel is invalid`,
+    ];
+  }
+
+  if (
+    (resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN') &&
     resolver.fallback?.type === 'DIRECT' &&
     !resolver.fallback.memberId.trim()
   ) {
