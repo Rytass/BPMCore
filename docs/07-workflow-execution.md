@@ -426,6 +426,7 @@ async function createTasksForNode(node, token) {
   `sequence` 與 `sla_started_at`；沒有 `sequence`，`WAITING` 的人永遠不會被啟動，task 會卡死。
   **只回滾程式、不跑 migration `down()` 時，必須自己執行同一句**：
   `UPDATE task_candidates SET status = 'PENDING' WHERE status = 'WAITING';`
+  這些候選人當初並沒有收到通知，UPDATE 之後他們只會在自己的待辦清單看到這個 task。
 - **舊資料**：此變更前建立的 `SEQUENTIAL` task，候選人全是 `PENDING`、`sequence` 為 `NULL`，
   **沒有 backfill**，繼續照舊行為（不分先後、全部同意才完成）。只有 `decisionPolicy.type = 'SEQUENTIAL'`
   且候選人有 `sequence` 的 task 才走依序流程；只有一位候選人時沒有差別。

@@ -1794,19 +1794,39 @@ export class WorkflowEngineService {
 
     if (!originTaskIsOpen && originTask.assigneeMemberId) {
       // The origin approver already decided — reopen a fresh decision task so
-      // the stage can be re-decided after the rejected pre-approval.
+      // the stage can be re-decided after the rejected pre-approval. A
+      // SEQUENTIAL task's assignee rotates and ends on the last signer, so it
+      // goes back to whoever asked for the pre-approval instead.
+      const originCandidates = await taskCandidateRepository.find({
+        where: { taskId: originTask.id },
+      });
+      const requesterCandidate =
+        readDecisionPolicySnapshot(originTask).type === 'SEQUENTIAL' &&
+        originCandidates.some((candidate) => candidate.sequence !== null)
+          ? originCandidates.find(
+              (candidate) => candidate.memberId === directive.createdByMemberId,
+            )
+          : undefined;
+      const reopenedAssigneeMemberId =
+        requesterCandidate?.memberId ?? originTask.assigneeMemberId;
+      const reopenedOriginalMemberId = requesterCandidate
+        ? requesterCandidate.originalMemberId
+        : originTask.originalAssigneeMemberId;
+      const reopenedDelegationChain = requesterCandidate
+        ? requesterCandidate.delegationChain
+        : originTask.delegationChain;
       const reopenedTask = await taskRepository.save(
         taskRepository.create({
-          assigneeMemberId: originTask.assigneeMemberId,
+          assigneeMemberId: reopenedAssigneeMemberId,
           assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
           completedAt: null,
           createdAt: decidedAt,
           decisionPolicySnapshot: { type: 'SINGLE' },
-          delegationChain: originTask.delegationChain,
+          delegationChain: reopenedDelegationChain,
           instanceId: instance.id,
           nodeId: originTask.nodeId,
           openedAt: null,
-          originalAssigneeMemberId: originTask.originalAssigneeMemberId,
+          originalAssigneeMemberId: reopenedOriginalMemberId,
           slaDueAt: null,
           status: TaskStatusEnum.PENDING,
           tokenId: originTask.tokenId,
@@ -1818,10 +1838,10 @@ export class WorkflowEngineService {
           claimedAt: null,
           createdAt: decidedAt,
           decidedAt: null,
-          delegationChain: originTask.delegationChain,
-          memberId: originTask.assigneeMemberId,
+          delegationChain: reopenedDelegationChain,
+          memberId: reopenedAssigneeMemberId,
           originalMemberId:
-            originTask.originalAssigneeMemberId ?? originTask.assigneeMemberId,
+            reopenedOriginalMemberId ?? reopenedAssigneeMemberId,
           sourceType: 'DIRECT',
           status: TaskCandidateStatusEnum.PENDING,
           taskId: reopenedTask.id,
@@ -1835,7 +1855,7 @@ export class WorkflowEngineService {
           nodeId: originTask.nodeId,
           payload: {
             adhocDirectiveId: directive.id,
-            assigneeMemberId: originTask.assigneeMemberId,
+            assigneeMemberId: reopenedAssigneeMemberId,
             reopenedFromTaskId: originTask.id,
             rejectedAdhocTaskId: task.id,
             tokenId: originTask.tokenId,

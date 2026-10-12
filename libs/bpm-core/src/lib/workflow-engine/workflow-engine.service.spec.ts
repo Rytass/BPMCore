@@ -3639,6 +3639,70 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('reopens a rejected pre-approval for the origin assignee on a non-sequential task', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.COMPLETED,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          createdByMemberId: 'member-requester',
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    const reopened = readTaskAssignedTo(fixture, 'member-finance');
+
+    expect(reopened).toMatchObject({
+      assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+      decisionPolicySnapshot: { type: 'SINGLE' },
+    });
+    expect(
+      fixture.savedTasks.some(
+        (task) => task.assigneeMemberId === 'member-requester',
+      ),
+    ).toBe(false);
+  });
+
   it('rejects the whole instance when an ad-hoc pre-approval is rejected with REJECT_INSTANCE', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [
@@ -4744,6 +4808,81 @@ describe('WorkflowEngineService', () => {
           recipientMemberIds: ['member-a', 'member-b'],
         }),
       );
+    });
+
+    it('reopens a rejected pre-approval for its requester, not for the last signer', async (): Promise<void> => {
+      const fixture = createSequentialDecisionFixture({
+        additionalProcessTasks: [
+          createTask({
+            adhocDirectiveId: 'directive-seed-1',
+            adhocOriginTaskId: 'task-seq',
+            adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+            assigneeMemberId: 'member-p',
+            id: 'task-pre',
+            isAdhoc: true,
+            nodeId: 'task_finance',
+            originalAssigneeMemberId: 'member-p',
+            status: TaskStatusEnum.PENDING,
+            tokenId: 'token-1',
+          }),
+        ],
+        processAdhocDirectives: [
+          createAdhocDirective({
+            consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+            createdByMemberId: 'member-a',
+            id: 'directive-seed-1',
+            onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+            status: AdhocDirectiveStatusEnum.CONSUMED,
+            type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          }),
+        ],
+      });
+
+      // a, b and c all approve while the pre-approval is open; the task
+      // completes and the open pre-approval holds the token.
+      await ['member-a', 'member-b', 'member-c'].reduce<Promise<void>>(
+        async (previous, memberId): Promise<void> => {
+          await previous;
+          await fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: '同意',
+            decidedByMemberId: memberId,
+            taskId: 'task-seq',
+          });
+        },
+        Promise.resolve(),
+      );
+
+      expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+        assigneeMemberId: 'member-c',
+        status: TaskStatusEnum.COMPLETED,
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.REJECTED,
+        comment: '需要更多資訊',
+        decidedByMemberId: 'member-p',
+        taskId: 'task-pre',
+      });
+
+      const reopened = readTaskAssignedTo(fixture, 'member-a');
+
+      expect(reopened).toMatchObject({
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+        originalAssigneeMemberId: 'member-a',
+      });
+      expect(readLatestCandidateStatuses(fixture, reopened.id)).toEqual({
+        'member-a': TaskCandidateStatusEnum.PENDING,
+      });
+      expect(
+        fixture.savedTasks.some(
+          (task) =>
+            task.id !== 'task-seq' &&
+            task.assigneeMemberId === 'member-c' &&
+            task.status === TaskStatusEnum.PENDING,
+        ),
+      ).toBe(false);
     });
 
     it('still creates every PARALLEL_ALL candidate at once', async (): Promise<void> => {
