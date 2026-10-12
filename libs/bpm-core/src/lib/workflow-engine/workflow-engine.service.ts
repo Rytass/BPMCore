@@ -2516,16 +2516,18 @@ export class WorkflowEngineService {
         edgeReason: readDryRunEdgeReason(input.incomingEdge),
         entryCondition,
         entryConditionMet,
-        message:
-          assignment?.message ??
-          outgoing.stopMessage ??
+        message: readDryRunStepResultMessage(
+          assignment?.message ?? null,
+          outgoing.stopMessage,
           readDryRunStepMessage(node, entryConditionMet),
+          !entryConditionMet || skippedByExclusion,
+        ),
         node,
         status:
-          assignment?.outcome ??
-          (outgoing.stopMessage === null
-            ? readDryRunStepStatus(node, entryConditionMet)
-            : 'STOPPED'),
+          outgoing.stopMessage === null
+            ? (assignment?.outcome ??
+              readDryRunStepStatus(node, entryConditionMet))
+            : 'STOPPED',
         stepIndex: input.steps.length,
       }),
     ];
@@ -2762,12 +2764,16 @@ export class WorkflowEngineService {
     }
 
     if (resolver.type === 'ORG_MANAGER') {
-      return findMemberIdsInValue(
+      const managerMemberIds = findMemberIdsInValue(
         readManagerMemberIdFromInitiatorSnapshot(
           input.initiatorMetadataSnapshot,
           resolver.levelsUp,
         ),
       );
+
+      return managerMemberIds.length > 0
+        ? managerMemberIds
+        : readDryRunFallbackMemberIds(input, resolver.fallback);
     }
 
     return null;
@@ -4785,6 +4791,7 @@ export class WorkflowEngineService {
         readValueAtPath(instance.formData, resolver.formPath),
         label,
         subject,
+        `依表單欄位「${resolver.formPath}」`,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4797,6 +4804,7 @@ export class WorkflowEngineService {
         ),
         label,
         subject,
+        '依運算式',
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4844,6 +4852,7 @@ export class WorkflowEngineService {
         resolver.fallback,
         label,
         resolver.preferClosestOrgUnit === true,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4856,6 +4865,7 @@ export class WorkflowEngineService {
         resolver.minPositionLevel,
         resolver.fallback,
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4868,6 +4878,7 @@ export class WorkflowEngineService {
       resolver.fallback,
       label,
       resolver.preferClosestOrgUnit === true,
+      subject,
     ).then((memberIds) =>
       memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
     );
@@ -4915,6 +4926,7 @@ export class WorkflowEngineService {
     fallback: ApproverResolverFallback | undefined,
     label: string,
     preferClosestOrgUnit: boolean,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const normalizedLevelsUp = Math.max(Math.trunc(levelsUp), 1);
     const resolvedManagerMemberIds =
@@ -4934,6 +4946,7 @@ export class WorkflowEngineService {
         instance,
         fallback,
         label,
+        subject,
         `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
       ),
     ];
@@ -4950,6 +4963,7 @@ export class WorkflowEngineService {
     minPositionLevel: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
     const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
@@ -5016,6 +5030,7 @@ export class WorkflowEngineService {
       instance,
       fallback,
       label,
+      subject,
       `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
     );
 
@@ -5057,18 +5072,20 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    subject: ResolvedSubject,
     failureReason: string,
   ): string {
+    const failure =
+      subject === '通知對象' ? '無法建立通知' : '無法建立待簽任務';
+
     if (!fallback || fallback.type === 'NONE') {
       throw new ConflictException(
-        `${label} 無法建立待簽任務：${failureReason}，且未設定改派固定人。請聯絡流程管理員調整主管規則或模板 fallback。`,
+        `${label} ${failure}：${failureReason}，且未設定改派固定人。請聯絡流程管理員調整主管規則或模板 fallback。`,
       );
     }
 
     if (!fallback.memberId.trim()) {
-      throw new ConflictException(
-        `${label} 無法建立待簽任務：改派固定人未設定。`,
-      );
+      throw new ConflictException(`${label} ${failure}：改派固定人未設定。`);
     }
 
     if (
@@ -5076,7 +5093,7 @@ export class WorkflowEngineService {
       !fallback.allowInitiatorSelfApproval
     ) {
       throw new ConflictException(
-        `${label} 無法建立待簽任務：改派固定人是申請人本人，且此節點未允許申請人自簽。`,
+        `${label} ${failure}：改派固定人是申請人本人，且此節點未允許申請人自簽。`,
       );
     }
 
@@ -5183,6 +5200,7 @@ export class WorkflowEngineService {
     fallback: ApproverResolverFallback | undefined,
     label: string,
     preferClosestOrgUnit: boolean,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
     const orgUnits = await this.readOrgUnitAndAncestors(manager, [orgUnitId]);
@@ -5203,6 +5221,7 @@ export class WorkflowEngineService {
           instance,
           fallback,
           label,
+          subject,
           `找不到指定組織的主管規則`,
         ),
       ];
@@ -5305,14 +5324,21 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const orgUnitIds = await this.readOrgUnitScopeIds(
+    const scope = await this.readOrgUnitScope(
       manager,
       orgUnitId,
       includeDescendants,
     );
+
+    if (!scope) {
+      throw new ConflictException(
+        readMissingOrgUnitMessage(label, subject, orgUnitId),
+      );
+    }
+
     const today = toDateOnlyString(new Date());
     const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { orgUnitId: In([...orgUnitIds]) },
+      where: { orgUnitId: In([...scope.orgUnitIds]) },
     });
     const memberIds = memberships
       .filter((membership) => isDateRangeActive(membership, today))
@@ -5321,7 +5347,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} 找不到${subject}：組織「${await this.readOrgUnitName(manager, orgUnitId)}」目前沒有任何有效成員，請先將人員加入該組織`,
+        `${label} 找不到${subject}：組織「${scope.name}」目前沒有任何有效成員，請先將人員加入該組織`,
       );
     }
 
@@ -5336,14 +5362,21 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const orgUnitIds = await this.readOrgUnitScopeIds(
+    const scope = await this.readOrgUnitScope(
       manager,
       orgUnitId,
       includeDescendants,
     );
+
+    if (!scope) {
+      throw new ConflictException(
+        readMissingOrgUnitMessage(label, subject, orgUnitId),
+      );
+    }
+
     const today = toDateOnlyString(new Date());
     const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { orgUnitId: In([...orgUnitIds]), positionId },
+      where: { orgUnitId: In([...scope.orgUnitIds]), positionId },
     });
     const memberIds = memberships
       .filter((membership) => isDateRangeActive(membership, today))
@@ -5352,7 +5385,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} 找不到${subject}：組織「${await this.readOrgUnitName(manager, orgUnitId)}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
+        `${label} 找不到${subject}：組織「${scope.name}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
@@ -5361,17 +5394,6 @@ export class WorkflowEngineService {
 
   // Names only make an error readable, so a row that has gone missing falls
   // back to its id instead of hiding the real problem.
-  private async readOrgUnitName(
-    manager: EntityManager,
-    orgUnitId: string,
-  ): Promise<string> {
-    const orgUnit = await manager
-      .getRepository(OrgUnitEntity)
-      .findOne({ where: { id: orgUnitId } });
-
-    return orgUnit?.name ?? orgUnitId;
-  }
-
   private async readPositionName(
     manager: EntityManager,
     positionId: string,
@@ -5383,22 +5405,26 @@ export class WorkflowEngineService {
     return position?.name ?? positionId;
   }
 
-  private async readOrgUnitScopeIds(
+  /** The org unit's name and the ids it covers, or `null` once it is gone. */
+  private async readOrgUnitScope(
     manager: EntityManager,
     orgUnitId: string,
     includeDescendants: boolean,
-  ): Promise<readonly string[]> {
+  ): Promise<{
+    readonly name: string;
+    readonly orgUnitIds: readonly string[];
+  } | null> {
     const orgUnitRepository = manager.getRepository(OrgUnitEntity);
     const orgUnit = await orgUnitRepository.findOne({
       where: { deletedAt: IsNull(), id: orgUnitId },
     });
 
     if (!orgUnit) {
-      throw new ConflictException(`Org unit ${orgUnitId} was not found`);
+      return null;
     }
 
     if (!includeDescendants) {
-      return [orgUnit.id];
+      return { name: orgUnit.name, orgUnitIds: [orgUnit.id] };
     }
 
     const descendants = await orgUnitRepository
@@ -5407,7 +5433,13 @@ export class WorkflowEngineService {
       .andWhere('orgUnit.path <@ :path', { path: orgUnit.path })
       .getMany();
 
-    return uniqueTexts([orgUnit.id, ...descendants.map((unit) => unit.id)]);
+    return {
+      name: orgUnit.name,
+      orgUnitIds: uniqueTexts([
+        orgUnit.id,
+        ...descendants.map((unit) => unit.id),
+      ]),
+    };
   }
 
   private async processExclusiveGateway(
@@ -6581,6 +6613,14 @@ function edgeHasCondition(edge: WorkflowEdge): boolean {
   );
 }
 
+function readMissingOrgUnitMessage(
+  label: string,
+  subject: ResolvedSubject,
+  orgUnitId: string,
+): string {
+  return `${label} 找不到${subject}：組織（${orgUnitId}）已不存在，請在流程設計器重新選擇組織`;
+}
+
 function findMemberIdsInValue(value: unknown): readonly string[] {
   if (typeof value === 'string' && value.trim()) {
     return [value.trim()];
@@ -6604,11 +6644,12 @@ function readMemberIdsFromValue(
   value: unknown,
   label: string,
   subject: ResolvedSubject = '簽核人',
+  source = '',
 ): readonly string[] {
   const memberIds = findMemberIdsInValue(value);
 
   if (memberIds.length === 0) {
-    throw new ConflictException(`${label} 找不到${subject}`);
+    throw new ConflictException(`${label} ${source}找不到${subject}`);
   }
 
   return memberIds;
@@ -7810,6 +7851,47 @@ function isNumberFormField(
   field: FormFieldDefinition,
 ): field is NumberFieldDefinition {
   return field.type === 'number' || field.type === 'money';
+}
+
+// A node that is skipped and then has nowhere to go keeps saying why it was
+// skipped, then why the branch ends; any other node just says why it ends.
+function readDryRunStepResultMessage(
+  assignmentMessage: string | null,
+  stopMessage: string | null,
+  defaultMessage: string,
+  skipped: boolean,
+): string {
+  const message = assignmentMessage ?? defaultMessage;
+
+  if (stopMessage === null) {
+    return message;
+  }
+
+  return skipped ? `${message}${stopMessage}` : stopMessage;
+}
+
+// Like the runtime, a configured fixed fallback takes over when the initiator
+// has no manager, unless it is the initiator and the node does not allow
+// self-approval (then nobody is left to ask).
+function readDryRunFallbackMemberIds(
+  input: DryRunSimulationInput,
+  fallback: ApproverResolverFallback | undefined,
+): readonly string[] {
+  if (!fallback || fallback.type !== 'DIRECT') {
+    return [];
+  }
+
+  const memberId = fallback.memberId.trim();
+
+  if (
+    memberId === '' ||
+    (memberId === input.initiatorMemberId &&
+      !fallback.allowInitiatorSelfApproval)
+  ) {
+    return [];
+  }
+
+  return [memberId];
 }
 
 function readDryRunNodeName(node: WorkflowNode): string {

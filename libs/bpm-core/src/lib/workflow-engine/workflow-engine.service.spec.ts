@@ -4455,6 +4455,94 @@ describe('WorkflowEngineService', () => {
         status: 'STOPPED',
       });
     });
+
+    it('keeps saying why a skipped node was skipped when it also has no outgoing edge', (): void => {
+      const workflow = createExcludeInitiatorTwoStepWorkflow({
+        whenEmpty: 'SKIP_NODE',
+      });
+      const result = runDryRun({
+        ...workflow,
+        edges: workflow.edges.filter((edge) => edge.id !== 'edge_task_next'),
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核人只有申請人本人，依設定略過節點。節點「財務簽核」沒有連到下一個節點，請在流程設計器為此節點接上連線',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('uses a fixed fallback when the initiator snapshot names no manager', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: 'member-fallback', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(
+        result.steps.find((step) => step.nodeId === 'task_finance'),
+      ).toMatchObject({
+        assigneeMemberId: 'member-fallback',
+        status: 'WAITING',
+      });
+    });
+
+    it('does not fall back to the initiator unless the node allows self-approval', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: 'member-001', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('keeps a placeholder assignee for resolvers that need the organisation', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { positionId: 'position-cfo', type: 'POSITION' },
+        }),
+      );
+
+      expect(
+        result.steps.find((step) => step.nodeId === 'task_finance'),
+      ).toMatchObject({
+        assigneeMemberId: 'position:position-cfo',
+        status: 'WAITING',
+      });
+    });
+
+    it('keeps running a sibling branch after another branch is stopped', (): void => {
+      const result = runDryRun(
+        withNodeData(createParallelApprovalWorkflow('AND'), 'task_a', {
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ nodeId: 'task_a', status: 'STOPPED' }),
+          expect.objectContaining({ nodeId: 'task_b', status: 'WAITING' }),
+        ]),
+      );
+    });
   });
 
   describe('runtime approver resolution errors name the org and the position', (): void => {
@@ -4548,7 +4636,120 @@ describe('WorkflowEngineService', () => {
     it('reports an empty DYNAMIC_FORM field as no approver found', async (): Promise<void> => {
       await expect(
         processWith({ formPath: 'approver', type: 'DYNAMIC_FORM' }, {}),
-      ).rejects.toThrow('簽核節點「財務簽核」 找不到簽核人');
+      ).rejects.toThrow(
+        '簽核節點「財務簽核」 依表單欄位「approver」找不到簽核人',
+      );
+    });
+
+    it('names the expression as the source when an EXPRESSION resolver yields nobody', async (): Promise<void> => {
+      await expect(
+        processWith({ expression: '[]', type: 'EXPRESSION' }, {}),
+      ).rejects.toThrow('簽核節點「財務簽核」 依運算式找不到簽核人');
+    });
+
+    it('reports an empty DIRECT resolver as no approver found', async (): Promise<void> => {
+      await expect(
+        processWith({ memberIds: [], type: 'DIRECT' }, {}),
+      ).rejects.toThrow(/^簽核節點「財務簽核」 找不到簽核人$/);
+    });
+
+    it('says the organisation no longer exists when ORG_UNIT_MEMBER points at a missing org unit', async (): Promise<void> => {
+      const attempt = processWith(
+        { orgUnitId: 'org-gone', type: 'ORG_UNIT_MEMBER' },
+        {},
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織（org-gone）已不存在，請在流程設計器重新選擇組織',
+      );
+    });
+
+    it('says the organisation no longer exists when ORG_UNIT_POSITION points at a missing org unit', async (): Promise<void> => {
+      await expect(
+        processWith(
+          {
+            orgUnitId: 'org-gone',
+            positionId: 'position-cfo',
+            type: 'ORG_UNIT_POSITION',
+          },
+          {},
+        ),
+      ).rejects.toThrow('組織（org-gone）已不存在');
+    });
+
+    it('reads the org unit once when it reports an empty organisation', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processOrgUnits: [
+          createOrgUnit({ id: 'org-empty', name: '空組織', path: 'org.empty' }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: { orgUnitId: 'org-empty', type: 'ORG_UNIT_MEMBER' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('組織「空組織」');
+      expect(fixture.orgUnitFindOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not look up names when the position resolves', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            isPrimary: true,
+            memberId: 'member-position-owner',
+            positionId: 'position-finance',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            positionId: 'position-finance',
+            type: 'POSITION',
+          },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.positionFindOne).not.toHaveBeenCalled();
+    });
+
+    it('words a notify recipient resolved through the manager chain as 通知, not 待簽任務', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+          recipients: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow(
+        '知會節點「財務知會」 無法建立通知：找不到發起人的第 1 層主管，且未設定改派固定人',
+      );
+    });
+
+    it('keeps 待簽任務 wording when a task approver has no manager', async (): Promise<void> => {
+      await expect(
+        processWith(
+          { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+          {},
+        ),
+      ).rejects.toThrow('無法建立待簽任務：找不到發起人的第 1 層主管');
     });
   });
 
@@ -7436,6 +7637,8 @@ interface ServiceFixture {
     Promise<unknown>,
     [string, readonly unknown[]]
   >;
+  readonly orgUnitFindOne: import('typeorm').Repository<OrgUnitEntity>['findOne'];
+  readonly positionFindOne: import('typeorm').Repository<PositionEntity>['findOne'];
   readonly delegationService: {
     readonly resolveAssignee: jest.Mock<
       Promise<DelegationResolution>,
@@ -8329,6 +8532,8 @@ function createServiceFixture({
   return {
     managerQuery,
     notificationFind,
+    orgUnitFindOne: transactionalOrgUnitRepository.findOne,
+    positionFindOne: transactionalPositionRepository.findOne,
     rootInstanceCount,
     rootInstanceFind,
     rootInstanceQueryBuilder,
