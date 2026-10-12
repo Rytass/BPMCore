@@ -555,7 +555,11 @@ function readInitialFormRendererValue(
     return false;
   }
 
-  if (field.type === 'checkbox' || field.type === 'file_upload') {
+  if (
+    field.type === 'checkbox' ||
+    field.type === 'file_upload' ||
+    (field.type === 'member' && field.multiple === true)
+  ) {
     return [];
   }
 

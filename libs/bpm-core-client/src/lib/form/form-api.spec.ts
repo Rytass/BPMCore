@@ -1,4 +1,8 @@
-import { createFormDefinition, listFormDefinitions } from './form-api';
+import {
+  createFieldDefinition,
+  createFormDefinition,
+  listFormDefinitions,
+} from './form-api';
 
 interface CapturedRequest {
   readonly query: string;
@@ -76,6 +80,17 @@ describe('@rytass/bpm-core-client/form', () => {
       } finally {
         harness.restore();
       }
+    });
+  });
+
+  describe('createFieldDefinition', () => {
+    it('creates a labelled, optional, single-select member field', (): void => {
+      expect(createFieldDefinition('member', 3)).toEqual({
+        fieldKey: 'member_3',
+        label: '人員選擇 3',
+        required: false,
+        type: 'member',
+      });
     });
   });
 });

@@ -1204,10 +1204,14 @@ export function isFormFieldCompatibleWithWebhookParameter(
     : null;
 
   if (type === 'stringArray') {
-    return selectionMode === 'multiple';
+    return (
+      selectionMode === 'multiple' ||
+      (field.type === 'member' && field.multiple === true)
+    );
   }
 
   return (
+    (field.type === 'member' && field.multiple !== true) ||
     field.type === 'text' ||
     field.type === 'textarea' ||
     field.type === 'date' ||
@@ -1697,7 +1701,13 @@ export function readConditionOperator(
 export function readConditionOperatorIds(
   field: FormFieldDefinition,
 ): readonly WorkflowEdgeConditionOperator[] {
-  if (field.type === 'file_upload' || field.type === 'table') {
+  // A member id is an opaque directory key: nobody can type the right one into
+  // a condition, so only "was someone picked" is offered.
+  if (
+    field.type === 'file_upload' ||
+    field.type === 'member' ||
+    field.type === 'table'
+  ) {
     return ['IS_FILLED', 'IS_EMPTY'];
   }
 
@@ -1860,6 +1870,22 @@ export function readConditionExpression(
   }
 
   const fieldReference = readFormFieldReference(field.fieldKey);
+
+  if (field.type === 'member') {
+    // The value is a string (single) or a list (multiple), so the flat `== ""`
+    // test alone would call the list `[]` filled, and `size()` would throw on
+    // an explicit `null` (it does not short-circuit behind `== null ||`).
+    // Comparing against `[]` as well is null-safe for both shapes.
+    if (operator === 'IS_FILLED') {
+      return `${fieldReference} != null && ${fieldReference} != "" && ${fieldReference} != []`;
+    }
+
+    if (operator === 'IS_EMPTY') {
+      return `${fieldReference} == null || ${fieldReference} == "" || ${fieldReference} == []`;
+    }
+
+    return undefined;
+  }
 
   if (field.type === 'table') {
     // A table value is a list, so emptiness means row count, not `== ""`.

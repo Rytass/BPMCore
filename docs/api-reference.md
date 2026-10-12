@@ -262,6 +262,7 @@ Form-schema definitions.
 | `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
+| `MemberFieldDefinition` | type | 人員選擇 field — stores a member id, or an array of ids when `multiple` is true |
 | `TableFieldDefinition` | type | Repeating-row table field (columns, row bounds, add-row label) |
 | `TableColumnDefinition` | type | Union of the field types a table column may use |
 | `TABLE_COLUMN_FIELD_TYPES` | const | Field types the structural lint accepts as a column |
@@ -271,6 +272,9 @@ Form-schema definitions.
 | `isFormOptionFieldDefinition()` | function | Option-control type guard |
 | `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
 | `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `isMemberFieldDefinition()` | function | Member field type guard |
+| `isFormMemberValue()` | function | Whether a value is a well-formed member value (non-empty string, or array of non-empty strings when `multiple`) |
+| `readFormMemberIds()` | function | Member ids held by a member field value, whichever shape it has |
 | `isTableFieldDefinition()` | function | Table field type guard |
 | `isTableColumnFieldType()` | function | Whether a field type may be used as a column |
 | `isFormTableCellValue()` | function | Primitive cell-value guard |

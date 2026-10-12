@@ -1025,4 +1025,147 @@ describe('form schema validator', () => {
       ]);
     });
   });
+
+  describe('member fields', () => {
+    const layoutFor = (...fieldKeys: readonly string[]): string =>
+      JSON.stringify({
+        layout: fieldKeys.map((fieldKey) => ({ fieldKey, width: 'HALF' })),
+        schemaVersion: 1,
+      });
+
+    it('accepts single and multiple member fields with matching defaults', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'reviewer',
+              label: '審核人',
+              required: true,
+              type: 'member',
+            },
+            {
+              defaultValue: 'member-1',
+              fieldKey: 'owner',
+              label: '負責人',
+              multiple: false,
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: ['member-1', 'member-2'],
+              fieldKey: 'watchers',
+              label: '關注者',
+              multiple: true,
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: null,
+              fieldKey: 'backup',
+              label: '備援',
+              required: false,
+              type: 'member',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('reviewer', 'owner', 'watchers', 'backup'),
+      );
+
+      expect(result).toEqual({ errors: [], valid: true });
+    });
+
+    it('rejects a non-boolean multiple flag', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'reviewer',
+              label: '審核人',
+              multiple: 'yes',
+              required: false,
+              type: 'member',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('reviewer'),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].multiple must be a boolean',
+      ]);
+    });
+
+    it('rejects a default value whose shape does not match multiple', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              defaultValue: ['member-1'],
+              fieldKey: 'owner',
+              label: '負責人',
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: 'member-1',
+              fieldKey: 'watchers',
+              label: '關注者',
+              multiple: true,
+              required: false,
+              type: 'member',
+            },
+            {
+              defaultValue: 42,
+              fieldKey: 'backup',
+              label: '備援',
+              required: false,
+              type: 'member',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('owner', 'watchers', 'backup'),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].defaultValue has invalid type for field type',
+        'schema.fields[1].defaultValue has invalid type for field type',
+        'schema.fields[2].defaultValue has invalid type for field type',
+      ]);
+    });
+
+    it('does not allow a member column inside a table in V1', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                {
+                  fieldKey: 'who',
+                  label: 'Who',
+                  required: false,
+                  type: 'member',
+                },
+              ],
+              fieldKey: 'items',
+              label: 'Items',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'items', width: 'FULL' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].columns[0].type is not supported for a table column',
+      ]);
+    });
+  });
 });

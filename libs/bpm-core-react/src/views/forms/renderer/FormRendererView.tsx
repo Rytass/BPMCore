@@ -69,6 +69,7 @@ import {
   readFormDataSourceFieldStatusMessage,
   useFormDataSourceField,
 } from './form-data-source-field';
+import { MemberFieldControl } from './member-field';
 
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
@@ -960,6 +961,20 @@ function renderStaticControl(
     );
   }
 
+  if (field.type === 'member') {
+    return (
+      <MemberFieldControl
+        multiple={field.multiple === true}
+        name={field.fieldKey}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        placeholder={field.placeholder}
+        readonly={readonly}
+        size={size}
+        value={value}
+      />
+    );
+  }
+
   if (field.type === 'file_upload') {
     return (
       <Upload
@@ -1281,6 +1296,7 @@ function readInputPlaceholder(type: FormFieldDefinition['type']): string {
     date: '請選擇日期',
     datetime: '請選擇日期與時間',
     file_upload: '請上傳附件',
+    member: '搜尋姓名或信箱',
     money: '請輸入金額',
     number: '請輸入數字',
     radio: '請選擇一個選項',

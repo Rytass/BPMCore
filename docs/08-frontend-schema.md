@@ -202,6 +202,29 @@ initiator manager、specific org-unit manager、dynamic form、expression 等模
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
 
+#### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
+
+`DYNAMIC_FORM` 的 `formPath` 讀到的值必須是成員 id（字串）或成員 id 陣列。表單欄位
+類型 **`member`（人員選擇）** 就是為此而設：
+
+```ts
+type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
+  readonly multiple?: boolean; // 可複選；省略或 false = 單選
+};
+```
+
+- **儲存值**：單選為成員 id 字串，可複選為成員 id 字串陣列；只存 id，不存 `{ id, name }`，
+  名稱在顯示時才以成員目錄解析。沒選人時，單選是省略／`null`，可複選是 `[]`，與其他選填
+  欄位一致。因此 `formPath` 直接寫欄位的 `fieldKey`（例如 `reviewer`）即可。
+- **Builder**：欄位庫的「人員選擇」，設定項有「可複選」與一般欄位共有的標題、必填等；
+  不提供預設值 UI，也不能當作表格欄（V1）。
+- **Renderer**：填寫與唯讀都用同一個成員搜尋（姓名或信箱，與 designer 指定會員同一組
+  `searchMembers`／`resolveMembers` 查詢）；唯讀時顯示姓名，找不到的 id 顯示「未知會員」。
+- **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——成員 id
+  不是人能手打的值。表單內的顯示／必填／唯讀規則也不會把人員選擇欄位列為條件來源。
+- **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
+  為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
+
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
 `minPositionLevel` 必須是有限整數；`userTask` 的 `decisionPolicy` 只能是

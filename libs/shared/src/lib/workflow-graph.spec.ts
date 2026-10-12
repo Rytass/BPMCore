@@ -287,6 +287,57 @@ describe('table field conditions', () => {
   });
 });
 
+describe('member field conditions', () => {
+  const MEMBER_FIELD: FormFieldDefinition = {
+    fieldKey: 'reviewer',
+    label: 'Reviewer',
+    required: false,
+    type: 'member',
+  };
+
+  it('offers only emptiness operators for a member', () => {
+    expect(readConditionOperatorIds(MEMBER_FIELD)).toEqual([
+      'IS_FILLED',
+      'IS_EMPTY',
+    ]);
+  });
+
+  it('compiles emptiness without size() so an explicit null cannot throw', () => {
+    expect(readConditionExpression(MEMBER_FIELD, 'IS_FILLED', undefined)).toBe(
+      'form.reviewer != null && form.reviewer != "" && form.reviewer != []',
+    );
+    expect(readConditionExpression(MEMBER_FIELD, 'IS_EMPTY', undefined)).toBe(
+      'form.reviewer == null || form.reviewer == "" || form.reviewer == []',
+    );
+  });
+
+  it('refuses to compile value operators against a member', () => {
+    expect(
+      readConditionExpression(MEMBER_FIELD, 'EQUALS', 'm1'),
+    ).toBeUndefined();
+  });
+
+  it('feeds a webhook string when single and stringArray when multiple', () => {
+    const multiple: FormFieldDefinition = { ...MEMBER_FIELD, multiple: true };
+
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(MEMBER_FIELD, 'string'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(MEMBER_FIELD, 'stringArray'),
+    ).toBe(false);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(multiple, 'stringArray'),
+    ).toBe(true);
+    expect(isFormFieldCompatibleWithWebhookParameter(multiple, 'string')).toBe(
+      false,
+    );
+    expect(isFormFieldCompatibleWithWebhookParameter(multiple, 'number')).toBe(
+      false,
+    );
+  });
+});
+
 const NOBODY: ApproverResolver = { memberIds: [], type: 'DIRECT' };
 
 const ERP_WEBHOOK: NotifyWebhookTarget = {

@@ -52,6 +52,7 @@ import {
   ListIcon,
   PlusIcon,
   TrashIcon,
+  UserIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
@@ -68,6 +69,7 @@ import {
   FormOptionFieldDefinition,
   FormStaticOptionFieldDefinition,
   FormUiSchema,
+  MemberFieldDefinition,
   NumberFieldDefinition,
   TableColumnDefinition,
   TableFieldDefinition,
@@ -75,6 +77,7 @@ import {
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
+  isMemberFieldDefinition,
   isTableColumnFieldType,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -292,6 +295,12 @@ const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
     icon: FileAttachmentIcon,
     label: '附件',
     type: 'file_upload',
+  },
+  {
+    description: '從成員名單挑選一或多位人員',
+    icon: UserIcon,
+    label: '人員選擇',
+    type: 'member',
   },
   {
     description: '多列多欄明細',
@@ -1740,6 +1749,10 @@ export function FormBuilderView({
       return renderFileUploadFieldSettings(field, commit);
     }
 
+    if (isMemberFieldDefinition(field)) {
+      return renderMemberFieldSettings(field, commit);
+    }
+
     if (isTableFieldDefinition(field)) {
       return renderTableFieldSettings(field);
     }
@@ -2871,6 +2884,30 @@ export function FormBuilderView({
     );
   }
 
+  function renderMemberFieldSettings(
+    field: MemberFieldDefinition,
+    commit: FieldCommit<MemberFieldDefinition>,
+  ): ReactElement {
+    return renderSettingsFormRow(
+      '可複選',
+      'fieldMemberMultiple',
+      <Toggle
+        checked={field.multiple === true}
+        label={field.multiple === true ? '可選多位' : '只能選一位'}
+        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+          // The stored shape changes with `multiple` (string vs. string[]), so
+          // a default written for the other shape must not survive the switch.
+          commit({
+            ...field,
+            defaultValue: undefined,
+            multiple: event.target.checked || undefined,
+          })
+        }
+        size="sub"
+      />,
+    );
+  }
+
   function renderFileUploadFieldSettings(
     field: FileUploadFieldDefinition,
     commit: FieldCommit<FileUploadFieldDefinition>,
@@ -2908,8 +2945,12 @@ export function FormBuilderView({
   }
 
   function renderConditionSettings(field: FormFieldDefinition): ReactElement {
+    // A member id is an opaque directory key — there is nothing sensible to
+    // compare it with in a form-level rule, so member fields are not offered.
     const conditionFieldOptions = schema.fields.filter(
-      (schemaField) => schemaField.fieldKey !== field.fieldKey,
+      (schemaField) =>
+        schemaField.fieldKey !== field.fieldKey &&
+        !isMemberFieldDefinition(schemaField),
     );
 
     if (!conditionFieldOptions.length) {
