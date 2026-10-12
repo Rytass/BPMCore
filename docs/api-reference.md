@@ -414,7 +414,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla`, `set_user_task_exclude_initiator` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |

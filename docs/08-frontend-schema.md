@@ -118,7 +118,9 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 簽核可由 direct resolver 指定多位成員，runtime 會依 snapshot 中的
 `decisionPolicy` 判定完成條件。
 
-目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`，以及
+目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
+`excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
+`set_user_task_exclude_initiator`），以及
 `description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 

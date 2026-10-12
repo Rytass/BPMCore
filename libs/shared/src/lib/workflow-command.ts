@@ -2,6 +2,7 @@ import { FormDefinitionSchema } from './form';
 import {
   ApproverResolver,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaConfig,
@@ -103,6 +104,15 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskDecisionPolicy';
       readonly nodeId: string;
       readonly decisionPolicy: DecisionPolicy;
+    }
+  | {
+      /**
+       * Separation of duties: keeps the initiator out of this node's approvers.
+       * `null` removes the setting entirely.
+       */
+      readonly type: 'setUserTaskExcludeInitiator';
+      readonly nodeId: string;
+      readonly excludeInitiator: ExcludeInitiatorConfig | null;
     }
   | {
       readonly type: 'setUserTaskOptions';
@@ -255,6 +265,8 @@ export function applyWorkflowCommand(
       return applySetUserTaskReturnRequireComment(state, command);
     case 'setUserTaskSla':
       return applySetUserTaskSla(state, command);
+    case 'setUserTaskExcludeInitiator':
+      return applySetUserTaskExcludeInitiator(state, command);
     case 'setUserTaskDecisionPolicy':
       return applySetUserTaskDecisionPolicy(state, command);
     case 'setUserTaskOptions':
@@ -645,6 +657,33 @@ function applySetUserTaskSla(
       }
 
       return { ...node, data: { ...node.data, sla: command.sla } };
+    },
+    'userTask',
+  );
+}
+
+function applySetUserTaskExcludeInitiator(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskExcludeInitiator' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      // Off drops the key entirely: an absent field is the "unchanged
+      // behaviour" definition, and the saved JSON stays clean.
+      if (!command.excludeInitiator) {
+        return { ...node, data: omitKey(node.data, 'excludeInitiator') };
+      }
+
+      return {
+        ...node,
+        data: { ...node.data, excludeInitiator: command.excludeInitiator },
+      };
     },
     'userTask',
   );

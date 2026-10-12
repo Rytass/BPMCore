@@ -79,6 +79,8 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   DecisionPolicy,
+  ExcludeInitiatorConfig,
+  ExcludeInitiatorWhenEmpty,
   NotifyWebhookTarget,
   ServiceAction,
   SlaCalendarMode,
@@ -105,6 +107,7 @@ import {
   isDecisionPolicyUnsatisfiable,
   readApproverResolverIssue,
   readDesignTimeApproverCount,
+  readExcludeInitiatorIssue,
   readNotifyServiceTaskIssue,
   readNotifyWebhookTargets,
   readSlaDurationParts,
@@ -255,6 +258,10 @@ type QuorumThresholdTypeOption = Readonly<{
 type ApproverFallbackMode = 'DIRECT' | 'NONE';
 type ApproverFallbackModeOption = Readonly<{
   id: ApproverFallbackMode;
+  name: string;
+}>;
+type ExcludeInitiatorWhenEmptyOption = Readonly<{
+  id: ExcludeInitiatorWhenEmpty;
   name: string;
 }>;
 type WorkflowConnectionCandidate = Readonly<{
@@ -570,6 +577,15 @@ const APPROVER_FALLBACK_MODE_OPTIONS: readonly ApproverFallbackModeOption[] = [
   { id: 'NONE', name: '停止流程並提示' },
   { id: 'DIRECT', name: '固定改派' },
 ];
+const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOption[] =
+  [
+    { id: 'INITIATOR_MANAGER', name: '改由申請人的直屬主管簽核' },
+    { id: 'SKIP_NODE', name: '跳過此關' },
+    { id: 'FAIL', name: '停止流程並提示' },
+  ];
+const DEFAULT_EXCLUDE_INITIATOR_CONFIG: ExcludeInitiatorConfig = {
+  whenEmpty: 'INITIATOR_MANAGER',
+};
 const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
   { id: 'EQUALS', name: '等於' },
   { id: 'NOT_EQUALS', name: '不等於' },
@@ -1694,6 +1710,20 @@ export function TemplateDesignerView({
     });
   }
 
+  function updateUserTaskExcludeInitiator(
+    excludeInitiator: ExcludeInitiatorConfig | null,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      excludeInitiator,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskExcludeInitiator',
+    });
+  }
+
   function updateUserTaskDecisionPolicy(decisionPolicy: DecisionPolicy): void {
     if (!selectedNode || selectedNode.type !== 'userTask') {
       return;
@@ -2530,6 +2560,7 @@ export function TemplateDesignerView({
     const resubmitStrategy =
       node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
     const sla = node.data.sla ?? null;
+    const excludeInitiator = node.data.excludeInitiator ?? null;
     // A hand-authored or AI-authored template may carry a mixed duration such
     // as `P1DT4H`, which this form cannot represent. Keep it visible and
     // read-only rather than silently rewriting it.
@@ -3189,6 +3220,46 @@ export function TemplateDesignerView({
             }
           />
         </BPMFormField>
+        <BPMFormField
+          hintText="開啟後，申請人本人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關。"
+          label="申請人不可簽核自己的單"
+          name="excludeInitiator"
+        >
+          <Toggle
+            checked={Boolean(excludeInitiator)}
+            inputProps={{ id: 'excludeInitiator', name: 'excludeInitiator' }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskExcludeInitiator(
+                event.target.checked ? DEFAULT_EXCLUDE_INITIATOR_CONFIG : null,
+              )
+            }
+          />
+        </BPMFormField>
+        {excludeInitiator ? (
+          <BPMFormField
+            label="排除後沒有簽核人時"
+            name="excludeInitiatorWhenEmpty"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskExcludeInitiator({
+                  whenEmpty:
+                    readSelectOption(
+                      EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS,
+                      option?.id ?? null,
+                    )?.id ?? DEFAULT_EXCLUDE_INITIATOR_CONFIG.whenEmpty,
+                })
+              }
+              options={[...EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS]}
+              value={readSelectOption(
+                EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS,
+                excludeInitiator.whenEmpty,
+              )}
+            />
+          </BPMFormField>
+        ) : null}
       </>
     );
   }
@@ -5211,6 +5282,11 @@ function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readApproverResolverIssue(node.data.approverResolver)),
   );
+  const excludeInitiatorNode = definition.nodes.find(
+    (node) =>
+      node.type === 'userTask' &&
+      Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
+  );
   // Shared with the backend lint and the AI toolset so a webhook-only or a
   // runtime-resolved (position, org unit, manager) NOTIFY node is judged the
   // same everywhere (ADR 18 P0).
@@ -5228,6 +5304,12 @@ function readWorkflowDefinitionIssue(
   if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
     return readApproverResolverIssue(
       incompleteUserTaskNode.data.approverResolver,
+    );
+  }
+
+  if (excludeInitiatorNode && excludeInitiatorNode.type === 'userTask') {
+    return readExcludeInitiatorIssue(
+      excludeInitiatorNode.data.excludeInitiator,
     );
   }
 
