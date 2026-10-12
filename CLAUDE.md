@@ -34,13 +34,24 @@ Before adding new exports, check the file first — likely something close alrea
 releases for **all four** published packages:
 
 ```bash
-npx nx release --dry-run       # review the resolved version and changelog
-npx nx release --otp=<6 digits>  # the whole release, in one command
+npx nx release --dry-run        # review the resolved version and changelog
+npx nx release --skip-publish   # everything up to the GitHub release
+pnpm nx run-many -t build -p shared,bpm-core,bpm-core-client --skip-nx-cache
+npx nx release publish --otp=<6 digits>   # a second process: build → publish
 ```
 
-One command runs the lot in order: `prepublish-check` → version → changelogs →
-commit → tag → `git push --follow-tags` → GitHub release → build → publish. Add
-`--yes` for an unattended run; the interactive form prompts before publishing.
+Run it as those separate processes; that is how v0.14.0 shipped (its first
+step also had `NX_SKIP_NX_CACHE=true` set, which changes nothing there).
+`--skip-publish` runs `prepublish-check` → version → changelogs → commit → tag →
+`git push --follow-tags` → GitHub release and stops there, so it needs no OTP.
+The OTP is typed only when publishing actually starts — a code lives about 30
+seconds, which the earlier phases of a one-command release can outlast.
+
+`npx nx release --otp=<6 digits>` does the lot in one command
+(`prepublish-check` → version → changelogs → commit → tag →
+`git push --follow-tags` → GitHub release → build → publish; `--yes` for an
+unattended run). It is the form that left three packages off npm on v0.13.5 —
+see below — so it is documented here, not recommended.
 
 A manual bump skips the changelog generation, so a release ships with a
 `CHANGELOG.md` that still ends at the previous version. That has happened; do
@@ -104,7 +115,11 @@ predates it and `prepublish-check` writes that stale entry on every release, so
 unreliable, not as broken since a known date.
 
 **Never trust the exit code — verify the registry after every release.**
-`npm view` is locally cached and shows the old version for a minute or two:
+`npm view` is locally cached and shows the old version for a minute or two, and
+the registry itself lags: on v0.14.0 all four URLs below still answered 404 for
+about a minute after `Published to https://registry.npmjs.org/`. A 404 straight
+after a publish is not yet a skipped package — look for `Skipped package` in the
+output, and ask the registry again before recovering:
 
 ```bash
 for p in bpm-core-shared bpm-core-nestjs-module bpm-core-client bpm-core-react; do
@@ -125,13 +140,35 @@ subset of projects within fixed release group") and the already-published one
 skips itself. This is the one sanctioned use of `--projects`, and the rule
 above is exactly why the build is run first and by hand.
 
-**Candidate fixes, none proven across a real release yet.**
-`NX_SKIP_NX_CACHE=true npx nx release …` is the cheapest: the variable is read
-in `tasks-runner/run-command.js`, it does bypass the cache (verified on a
-`build` target), and being process-level it also covers the publish phase.
-Running `nx release version` and `nx release publish` as two separate processes
-should also work, since a fresh process hashes the new `package.json` correctly
-(verified in isolation). Both still need a real release to confirm.
+**What v0.14.0 established about the two candidate fixes.**
+
+Two processes work. `nx release publish` ran as its own process after
+`nx release --skip-publish` and put all four packages on npm at 0.14.0. Its
+builds were still restored from the cache (`nx run shared:build  [local cache]`)
+— but a fresh process hashes the already-bumped `package.json`, so the entry it
+hit was the one the hand-run build had just written, after the bump, and the
+tarballs were 0.14.0. Whether the publish would have been right without that
+hand-run build was not tested; keep the build in the sequence. A cache hit in
+the publish output is therefore not a failure by itself; the version in the
+`📦  @rytass/…@<version>` lines is what to read.
+
+`NX_SKIP_NX_CACHE=true` does **not** reach the publish phase — do not rely on
+it. nx reads the variable in `runCommand` (`tasks-runner/run-command.js`) and
+in the CLI argument splitter (`utils/command-line-utils.js`), which is why it
+works on `nx run shared:build`; `command-line/release/publish.js` calls
+`runCommandForTasks` directly and never consults it. With the variable set,
+`nx release publish --dry-run` still reports the three builds as
+`[local cache]`, and so did the real v0.14.0 publish. The flag form is
+different: `nx release publish --skip-nx-cache` does make the builds run
+(verified with `--dry-run` only, not across a real publish).
+
+**An OTP that starts with `0` cannot be passed as `--otp=`.** nx parses the
+value as a number: `--otp=075689` was echoed back as `--otp=75689` and pnpm
+answered "This operation requires a one-time password". Nothing had been
+published, so re-running with the next code that does not start with `0` was
+enough. `NPM_CONFIG_OTP=<code> npx nx release publish` should avoid the parsing
+(`pnpm config get otp` returns the value with its leading zero), but that has
+not been tried on a real publish.
 
 **Never pass `--projects` or `--groups` to a release.** `publish.js` turns on
 `excludeTaskDependencies` whenever either is set, which silently drops that
@@ -171,8 +208,10 @@ to `minor`.
 Still read the resolved version in the dry run, and override when needed:
 
 ```bash
-npx nx release minor --otp=<6 digits>   # or patch / an exact version
+npx nx release minor --skip-publish   # or patch / an exact version
 ```
+
+Then build and publish as above.
 
 **`release.version.adjustSemverBumpsForZeroMajorVersion` is `true` — the 0.x
 convention.** Without it a `BREAKING CHANGE:` footer resolves to a major bump,
