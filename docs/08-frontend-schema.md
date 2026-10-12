@@ -111,8 +111,23 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 `description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
-`SEQUENTIAL` 目前會同時建立所有候選人的待辦，並等待全部同意後通過；designer
-提示會照此 runtime 行為說明，不宣稱尚未實作的依序解鎖流程。
+`SEQUENTIAL`（designer 選項「依序簽核」）依候選簽核人的順序一次只開放一位：
+`task_candidates.sequence`（0 起算）排定順序，輪到的候選人為 `PENDING`，其餘為
+`WAITING`（畫面標示「等待中」）；前一位同意後才輪到下一位，任一位拒絕或退回即
+結束該關。節點面板的提示文字照此說明。
+
+Task 相關欄位（`TaskRecord`／activity payload）：
+
+- `candidateMemberIds`：task 上所有候選人（顯示用摘要，含尚未輪到者）。
+- `openCandidateMemberIds`：現在可以操作的候選人（候選狀態為 `PENDING` 或
+  `CLAIMED`），順序同 `candidateMemberIds`。判斷「某人是否能簽」請用這個欄位
+  （`canMemberActOnTask` 在欄位缺席時才退回 `candidateMemberIds`）；SEQUENTIAL
+  以外的 task 兩者只差已決議者。
+- activity `TASK_CREATED` payload：`candidateMemberIds` 只列目前開放的人；
+  SEQUENTIAL task 另帶 `sequentialCandidateMemberIds`（完整順序，只有 SEQUENTIAL
+  task 才有此 key），時間軸顯示為「簽核順序：A → B → C」。
+- activity `TASK_CANDIDATE_ACTIVATED`（時間軸標題「輪到下一位簽核」）：payload
+  `{ candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
 
 `sla` 的期限以「數量 + 單位（日／小時）」輸入而非直接寫 ISO duration，因此
 designer 不會產生 `P1DT4H` 這種日與時混用的值——`BUSINESS_DAY` 只對「日」的部分

@@ -4493,6 +4493,69 @@ describe('WorkflowEngineService', () => {
         ],
       ]);
     });
+
+    it('reports who may act now as openCandidateMemberIds on the task summary', async (): Promise<void> => {
+      const sequential = createSequentialDecisionFixture();
+
+      sequential.rootTaskFind.mockResolvedValue([
+        createTask({ id: 'task-seq' }),
+      ]);
+
+      const [sequentialTask] = await sequential.service.listTasks('instance-1');
+
+      // Everyone stays in the display summary; only the active candidate may act.
+      expect(sequentialTask?.candidateMemberIds).toEqual([
+        'member-a',
+        'member-b',
+        'member-c',
+      ]);
+      expect(sequentialTask?.openCandidateMemberIds).toEqual(['member-a']);
+
+      const parallel = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processTaskCandidates: [
+          createTaskCandidate({
+            id: 'candidate-a',
+            memberId: 'member-a',
+            taskId: 'task-par',
+          }),
+          createTaskCandidate({
+            id: 'candidate-b',
+            memberId: 'member-b',
+            status: TaskCandidateStatusEnum.COMPLETED,
+            taskId: 'task-par',
+          }),
+          createTaskCandidate({
+            id: 'candidate-c',
+            memberId: 'member-c',
+            status: TaskCandidateStatusEnum.CLAIMED,
+            taskId: 'task-par',
+          }),
+        ],
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      parallel.rootTaskFind.mockResolvedValue([
+        createTask({
+          decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+          id: 'task-par',
+        }),
+      ]);
+
+      const [parallelTask] = await parallel.service.listTasks('instance-1');
+
+      // A candidate who already decided is no longer open; a claimed one is.
+      expect(parallelTask?.candidateMemberIds).toEqual([
+        'member-a',
+        'member-b',
+        'member-c',
+      ]);
+      expect(parallelTask?.openCandidateMemberIds).toEqual([
+        'member-a',
+        'member-c',
+      ]);
+    });
   });
 });
 

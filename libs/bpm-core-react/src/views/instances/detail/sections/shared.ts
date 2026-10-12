@@ -329,9 +329,12 @@ export function canMemberActOnTask(
     return false;
   }
 
+  // `candidateMemberIds` lists everyone on the task, including SEQUENTIAL
+  // candidates whose turn has not come; `openCandidateMemberIds` is who may act
+  // now. Servers that predate it do not send the field.
   return (
     task.assigneeMemberId === memberId ||
-    task.candidateMemberIds.includes(memberId)
+    (task.openCandidateMemberIds ?? task.candidateMemberIds).includes(memberId)
   );
 }
 
@@ -574,6 +577,7 @@ export function readActivityEventLabel(
   if (eventType === 'ENGINE_PROCESS_REQUESTED') return '流程引擎已處理';
   if (eventType === 'TOKEN_ADVANCED') return '流程已前進';
   if (eventType === 'TASK_CREATED') return '待簽任務已建立';
+  if (eventType === 'TASK_CANDIDATE_ACTIVATED') return '輪到下一位簽核';
   if (eventType === 'TASK_DECIDED') {
     return readTaskDecisionEventLabel(readStringField(payload, 'action'));
   }
@@ -628,7 +632,41 @@ function readActivityDetail(
   workflow: WorkflowDefinition | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): string | null {
+  if (activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED') {
+    const candidateMemberId = readStringField(payload, 'candidateMemberId');
+    const previousMemberId = readStringField(payload, 'previousMemberId');
+
+    if (!candidateMemberId) {
+      return null;
+    }
+
+    const candidateLabel = readMemberDisplayText(
+      candidateMemberId,
+      memberProfilesById,
+    );
+
+    return previousMemberId
+      ? `輪到：${candidateLabel}（前一位：${readMemberDisplayText(
+          previousMemberId,
+          memberProfilesById,
+        )}）`
+      : `輪到：${candidateLabel}`;
+  }
+
   if (activityLog.eventType === 'TASK_CREATED') {
+    // A SEQUENTIAL task opens one candidate at a time; show the whole order
+    // rather than only the person who is up first.
+    const sequentialMemberIds = readStringArrayField(
+      payload,
+      'sequentialCandidateMemberIds',
+    );
+
+    if (sequentialMemberIds.length) {
+      return `簽核順序：${sequentialMemberIds
+        .map((memberId) => readMemberDisplayText(memberId, memberProfilesById))
+        .join(' → ')}`;
+    }
+
     const assigneeMemberId = readStringField(payload, 'assigneeMemberId');
     const originalAssigneeMemberId = readStringField(
       payload,

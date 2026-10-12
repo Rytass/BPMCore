@@ -99,4 +99,12 @@ export class TaskEntity {
 
   @Field(() => [String])
   candidateMemberIds: readonly string[] = [];
+
+  /**
+   * The candidates who can act on the task right now (`PENDING` or
+   * `CLAIMED`), in candidate order. Equals `candidateMemberIds` except for a
+   * SEQUENTIAL task, where candidates whose turn has not come are left out.
+   */
+  @Field(() => [String])
+  openCandidateMemberIds: readonly string[] = [];
 }

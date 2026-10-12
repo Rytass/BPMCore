@@ -14,6 +14,11 @@ import {
 } from 'react';
 import { useRouterAdapter } from '../../../lib/router-adapter';
 import type { WorkflowDirectory } from '@rytass/bpm-core-shared';
+import {
+  DECISION_POLICY_OPTIONS,
+  readDecisionPolicyHint,
+  readDecisionPolicyOption,
+} from './decision-policy-options';
 import { useWorkflowDesignerController } from './use-workflow-designer-controller';
 import { WorkflowChatDrawer } from './workflow-chat-drawer';
 import { FormBuilderView } from '../../forms/builder/FormBuilderView';
@@ -243,10 +248,6 @@ type ManagerLevelOption = Readonly<{
   id: string;
   name: string;
   value: number;
-}>;
-type DecisionPolicyOption = Readonly<{
-  id: DecisionPolicy['type'];
-  name: string;
 }>;
 type QuorumThresholdTypeOption = Readonly<{
   id: 'COUNT' | 'PERCENTAGE';
@@ -545,17 +546,6 @@ const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
   { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
   { id: 'POSITION', name: '指定職位' },
-];
-// `SEQUENTIAL` is intentionally absent: the engine treats it exactly like
-// `PARALLEL_ALL` (`workflow-engine.service.ts` resolves both to
-// `completedCount >= totalCount`), so offering it would promise a queued
-// hand-off that does not exist. Templates that already carry it stay readable
-// through `readDecisionPolicyOption`.
-const DECISION_POLICY_OPTIONS: readonly DecisionPolicyOption[] = [
-  { id: 'SINGLE', name: '單人簽核' },
-  { id: 'PARALLEL_ANY', name: '任一人同意' },
-  { id: 'PARALLEL_ALL', name: '全部同意' },
-  { id: 'QUORUM', name: '達到指定門檻' },
 ];
 const QUORUM_THRESHOLD_TYPE_OPTIONS: readonly QuorumThresholdTypeOption[] = [
   { id: 'COUNT', name: '人數' },
@@ -4108,55 +4098,10 @@ function readReturnResubmitStrategy(
   return value === 'FROM_RETURN_POINT' ? 'FROM_RETURN_POINT' : 'RESTART';
 }
 
-function readDecisionPolicyHint(policy: DecisionPolicy | undefined): string {
-  if (!policy || policy.type === 'SINGLE' || policy.type === 'PARALLEL_ANY') {
-    return '可指定多位；多位時所有人都會收到待辦，任一人同意即可通過。';
-  }
-
-  if (policy.type === 'PARALLEL_ALL') {
-    return '可指定多位；多位時所有人都會收到待辦，全部同意後才會通過。';
-  }
-
-  if (policy.type === 'SEQUENTIAL') {
-    return '可指定多位；所有人會同時收到待辦，需全部同意後才會通過。';
-  }
-
-  const thresholdUnit =
-    policy.thresholdType === 'PERCENTAGE' ? '%' : ' 位簽核者';
-
-  return `可指定多位；需達到 ${policy.threshold}${thresholdUnit} 才會通過。`;
-}
-
 function readDecisionPolicyType(
   policy: DecisionPolicy | undefined,
 ): DecisionPolicy['type'] {
   return policy?.type ?? 'SINGLE';
-}
-
-function readDecisionPolicyOption(
-  type: DecisionPolicy['type'],
-): DecisionPolicyOption {
-  const option = DECISION_POLICY_OPTIONS.find((item) => item.id === type);
-
-  if (option) {
-    return option;
-  }
-
-  // `SEQUENTIAL` is not offered in the dropdown, but templates authored
-  // through the API may already carry it — the AI assistant cannot produce
-  // it: its toolset (`workflow-toolset.ts`) has no decision-policy tool at
-  // all. The engine treats `SEQUENTIAL` exactly like `PARALLEL_ALL`
-  // (simultaneous notification, everyone must agree), so label it that way
-  // instead of implying a queued hand-off that does not exist.
-  if (type === 'SEQUENTIAL') {
-    return { id: type, name: '全部同意（既有設定）' };
-  }
-
-  // Any other stored value falls outside `DecisionPolicy['type']`'s own
-  // union — it can only have come from an untyped source (API payload, an
-  // older schema) this form was never told about. Echo it verbatim instead
-  // of mislabelling it as a specific known policy.
-  return { id: type, name: `未知決策方式（${type}）` };
 }
 
 function readDecisionPolicyFromOptionId(

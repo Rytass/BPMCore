@@ -1622,6 +1622,7 @@ export class WorkflowEngineService {
     task.candidateMemberIds = savedCandidates.map(
       (candidate) => candidate.memberId,
     );
+    task.openCandidateMemberIds = task.candidateMemberIds;
 
     await activityRepository.save(
       activityRepository.create({
@@ -2888,9 +2889,30 @@ export class WorkflowEngineService {
       return nextMap;
     }, new Map<string, readonly string[]>());
 
+    const openCandidatesByTaskId = candidates
+      .filter(
+        (candidate) =>
+          candidate.status === TaskCandidateStatusEnum.PENDING ||
+          candidate.status === TaskCandidateStatusEnum.CLAIMED,
+      )
+      .reduce<ReadonlyMap<string, readonly string[]>>(
+        (currentMap, candidate) => {
+          const nextMap = new Map(currentMap);
+
+          nextMap.set(candidate.taskId, [
+            ...(nextMap.get(candidate.taskId) ?? []),
+            candidate.memberId,
+          ]);
+
+          return nextMap;
+        },
+        new Map<string, readonly string[]>(),
+      );
+
     return tasks.map((task) =>
       Object.assign(new TaskEntity(), task, {
         candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
+        openCandidateMemberIds: openCandidatesByTaskId.get(task.id) ?? [],
       }),
     );
   }
@@ -3683,6 +3705,9 @@ export class WorkflowEngineService {
       savedCandidates.length === 1 ? savedCandidates[0] : null;
     const openCandidates = savedCandidates.filter(
       (candidate) => candidate.status === TaskCandidateStatusEnum.PENDING,
+    );
+    task.openCandidateMemberIds = openCandidates.map(
+      (candidate) => candidate.memberId,
     );
 
     await tokenRepository.save({

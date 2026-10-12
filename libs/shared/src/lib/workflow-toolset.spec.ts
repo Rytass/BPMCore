@@ -449,6 +449,25 @@ describe('set_user_task_decision_policy', () => {
     expect(readDecisionPolicy(next)).toEqual({ type: 'PARALLEL_ALL' });
   });
 
+  it('accepts SEQUENTIAL and stores it as a bare type', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_decision_policy', {
+      nodeId,
+      type: 'SEQUENTIAL',
+    });
+
+    expect(readDecisionPolicy(next)).toEqual({ type: 'SEQUENTIAL' });
+  });
+
+  it('tells the assistant that SEQUENTIAL signs one candidate at a time', () => {
+    const tool = WORKFLOW_TOOLSET.find(
+      (item) => item.name === 'set_user_task_decision_policy',
+    );
+
+    expect(tool?.description).toContain('SEQUENTIAL=依序簽核');
+    expect(tool?.description).toContain('一次只開放一位');
+  });
+
   it('sanitises the quorum threshold the way the designer form does', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const overCap = await runTool(state, 'set_user_task_decision_policy', {

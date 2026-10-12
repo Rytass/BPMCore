@@ -142,6 +142,11 @@ export interface TaskRecord {
   readonly instanceId: string;
   readonly isAdhoc: boolean;
   readonly nodeId: string;
+  /**
+   * Candidates who may act now (`PENDING`/`CLAIMED`). Absent on servers older
+   * than the sequential-signing change; fall back to `candidateMemberIds`.
+   */
+  readonly openCandidateMemberIds?: readonly string[];
   readonly openedAt: string | null;
   readonly originalAssigneeMemberId: string | null;
   readonly slaDueAt: string | null;
@@ -843,6 +848,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -899,6 +905,7 @@ export async function listInboxTasks(
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -932,6 +939,7 @@ export async function listApprovalHistoryTasks(
         assigneeMemberId
         assignmentType
         candidateMemberIds
+        openCandidateMemberIds
         completedAt
         createdAt
         decisionPolicySnapshotJson
@@ -1788,6 +1796,7 @@ const ADHOC_TASK_FIELDS = `
   assigneeMemberId
   assignmentType
   candidateMemberIds
+  openCandidateMemberIds
   completedAt
   createdAt
   decisionPolicySnapshotJson
