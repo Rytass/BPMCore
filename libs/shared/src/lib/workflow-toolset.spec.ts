@@ -558,7 +558,7 @@ describe('set_user_task_decision_policy', () => {
     return node.data.approverResolver;
   }
 
-  it('keeps a valid ORG_MANAGER_CHAIN resolver as supplied', async () => {
+  it('keeps a valid ORG_MANAGER_CHAIN resolver and drops preferClosestOrgUnit', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const afterApprover = await runTool(state, 'set_user_task_approver', {
       approverResolver: {
@@ -569,9 +569,9 @@ describe('set_user_task_decision_policy', () => {
       nodeId,
     });
 
+    // The chain always uses closest-org-unit semantics, so the flag is gone.
     expect(readApproverResolver(afterApprover)).toEqual({
       minPositionLevel: 5,
-      preferClosestOrgUnit: true,
       type: 'ORG_MANAGER_CHAIN',
     });
   });

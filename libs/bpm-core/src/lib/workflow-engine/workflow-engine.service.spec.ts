@@ -2104,58 +2104,159 @@ describe('WorkflowEngineService', () => {
       ).rejects.toThrow('沿主管鏈找不到職等達 3 的主管');
     });
 
-    it('treats a chain longer than the hop limit as ended', async (): Promise<void> => {
-      const members = Array.from(
-        { length: 25 },
-        (_, index) => `member-h${index + 1}`,
-      );
-      const fixture = createChainFixture(
-        createManagerChainOrg({
-          grades: Object.fromEntries(
-            members.map((memberId, index) => [memberId, index + 1]),
-          ),
-          links: [
-            ['member-001', members[0]],
-            ...members
-              .slice(1)
-              .map((memberId, index): readonly [string, string] => [
-                members[index],
-                memberId,
-              ]),
-          ],
-        }),
-        { minPositionLevel: 25 },
-      );
+    describe('org-unit scope manager rules', () => {
+      // company (org) > finance (org.finance) > ap (org.finance.ap), each unit
+      // headed by one member. The head belongs to the unit he heads, so his own
+      // unit rule names himself.
+      const UNITS = [
+        createOrgUnit({ code: 'CO', id: 'org-company', path: 'org' }),
+        createOrgUnit({ code: 'FIN', id: 'org-finance', path: 'org.finance' }),
+        createOrgUnit({ code: 'AP', id: 'org-ap', path: 'org.finance.ap' }),
+      ];
+      const unitRule = (
+        orgUnitId: string,
+        managerMemberId: string,
+      ): ManagerResolutionEntity =>
+        createManagerResolution({
+          id: `manager-resolution-${orgUnitId}`,
+          managerMemberId,
+          priority: 100,
+          scopeId: orgUnitId,
+          scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+        });
+      const placeMember = (
+        memberId: string,
+        orgUnitId: string,
+        level: number | null,
+      ): MembershipEntity =>
+        createMembership({
+          id: `membership-${memberId}`,
+          memberId,
+          orgUnitId,
+          positionId: level === null ? null : `position-${level}`,
+        });
+      const createUnitOrg = ({
+        extraRules = [],
+        initiatorHeadsAp,
+      }: {
+        readonly extraRules?: readonly ManagerResolutionEntity[];
+        readonly initiatorHeadsAp: boolean;
+      }): ReturnType<typeof createManagerChainOrg> => ({
+        processManagerResolutions: [
+          unitRule('org-ap', initiatorHeadsAp ? 'member-001' : 'member-head-ap'),
+          unitRule('org-finance', 'member-head-fin'),
+          unitRule('org-company', 'member-head-co'),
+          ...extraRules,
+        ],
+        processMemberships: [
+          placeMember('member-001', 'org-ap', null),
+          placeMember('member-head-ap', 'org-ap', 1),
+          placeMember('member-head-fin', 'org-finance', 2),
+          placeMember('member-head-co', 'org-company', 3),
+          placeMember('member-vp', 'org-company', 3),
+        ],
+        processOrgUnits: UNITS,
+        processPositions: [1, 2, 3].map((level) => createPosition({ level })),
+      });
 
-      await expect(
-        fixture.service.processInstance('instance-1'),
-      ).rejects.toThrow('沿主管鏈找不到職等達 25 的主管');
+      it('climbs through the unit heads when the initiator is a plain member', async (): Promise<void> => {
+        const fixture = createChainFixture(
+          createUnitOrg({ initiatorHeadsAp: false }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readCandidateMemberIds(fixture)).toEqual([
+          'member-head-ap',
+          'member-head-fin',
+          'member-head-co',
+        ]);
+      });
+
+      it('reaches the parent unit manager when the initiator heads his own unit', async (): Promise<void> => {
+        const fixture = createChainFixture(
+          createUnitOrg({ initiatorHeadsAp: true }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readCandidateMemberIds(fixture)).toEqual([
+          'member-head-fin',
+          'member-head-co',
+        ]);
+      });
+
+      it('lets a member-scope rule take over a hop beside org-unit rules', async (): Promise<void> => {
+        const fixture = createChainFixture(
+          createUnitOrg({
+            extraRules: [
+              createManagerResolution({
+                id: 'manager-resolution-head-fin',
+                managerMemberId: 'member-vp',
+                priority: 100,
+                scopeId: 'member-head-fin',
+                scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+              }),
+            ],
+            initiatorHeadsAp: false,
+          }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readCandidateMemberIds(fixture)).toEqual([
+          'member-head-ap',
+          'member-head-fin',
+          'member-vp',
+        ]);
+      });
     });
 
-    it('keeps the chain order on the saved task candidates', async (): Promise<void> => {
-      const fixture = createChainFixture(
-        createManagerChainOrg({
-          grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
-          links: [
-            ['member-001', 'member-m1'],
-            ['member-m1', 'member-m2'],
-            ['member-m2', 'member-m3'],
-          ],
-        }),
-      );
+    describe('hop limit', () => {
+      // member-h1 .. member-h25, where member-hN has position level N.
+      const buildLongChain = (
+        minPositionLevel: number,
+      ): ReturnType<typeof createServiceFixture> => {
+        const members = Array.from(
+          { length: 25 },
+          (_, index) => `member-h${index + 1}`,
+        );
 
-      await fixture.service.processInstance('instance-1');
+        return createChainFixture(
+          createManagerChainOrg({
+            grades: Object.fromEntries(
+              members.map((memberId, index) => [memberId, index + 1]),
+            ),
+            links: [
+              ['member-001', members[0]],
+              ...members
+                .slice(1)
+                .map((memberId, index): readonly [string, string] => [
+                  members[index],
+                  memberId,
+                ]),
+            ],
+          }),
+          { minPositionLevel },
+        );
+      };
 
-      expect(
-        fixture.savedTaskCandidates.map((candidate) => ({
-          memberId: candidate.memberId,
-          taskId: candidate.taskId,
-        })),
-      ).toEqual([
-        { memberId: 'member-m1', taskId: fixture.savedTasks[0].id },
-        { memberId: 'member-m2', taskId: fixture.savedTasks[0].id },
-        { memberId: 'member-m3', taskId: fixture.savedTasks[0].id },
-      ]);
+      it('resolves a chain that reaches the level exactly on the 20th hop', async (): Promise<void> => {
+        const fixture = buildLongChain(20);
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readCandidateMemberIds(fixture)).toHaveLength(20);
+        expect(readCandidateMemberIds(fixture).at(-1)).toBe('member-h20');
+      });
+
+      it('treats a chain that only reaches the level on the 21st hop as ended', async (): Promise<void> => {
+        const fixture = buildLongChain(21);
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('沿主管鏈找不到職等達 21 的主管');
+      });
     });
   });
 
@@ -4978,9 +5079,29 @@ function createServiceFixture({
           ),
       ),
     });
-  const orgUnitQueryBuilder = {
-    andWhere: jest.fn().mockReturnThis(),
-    getMany: jest.fn(() => Promise.resolve(processOrgUnits)),
+  // Mirrors `orgUnit.path @> :path` (ancestors and the unit itself) so a
+  // member only sees the units above his own.
+  let ancestorQueryPath: string | undefined;
+  const orgUnitQueryBuilder: {
+    readonly andWhere: jest.Mock;
+    readonly getMany: jest.Mock;
+    readonly where: jest.Mock;
+  } = {
+    andWhere: jest.fn((_sql: string, params?: { readonly path?: string }) => {
+      ancestorQueryPath = params?.path;
+
+      return orgUnitQueryBuilder;
+    }),
+    getMany: jest.fn(() =>
+      Promise.resolve(
+        processOrgUnits.filter(
+          (orgUnit) =>
+            ancestorQueryPath === undefined ||
+            ancestorQueryPath === orgUnit.path ||
+            ancestorQueryPath.startsWith(`${orgUnit.path}.`),
+        ),
+      ),
+    ),
     where: jest.fn().mockReturnThis(),
   };
   const transactionalOrgUnitRepository = createRepository<OrgUnitEntity>({

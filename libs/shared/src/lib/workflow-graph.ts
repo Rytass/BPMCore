@@ -893,8 +893,9 @@ export function isOrgManagerChainDecisionPolicyInvalid(
   resolver: ApproverResolver,
   decisionPolicy: DecisionPolicy | undefined,
 ): boolean {
+  // `resolver` can be missing on raw JSON that has not been linted yet.
   return (
-    resolver.type === 'ORG_MANAGER_CHAIN' &&
+    resolver?.type === 'ORG_MANAGER_CHAIN' &&
     decisionPolicy?.type !== 'SEQUENTIAL' &&
     decisionPolicy?.type !== 'PARALLEL_ALL'
   );

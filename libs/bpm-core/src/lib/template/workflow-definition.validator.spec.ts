@@ -804,6 +804,32 @@ describe('workflow definition validator', () => {
       },
     );
 
+    it('reports a missing approverResolver instead of throwing', (): void => {
+      const workflow = createUserTaskWorkflow({
+        decisionPolicy: { type: 'SEQUENTIAL' },
+      });
+      const userTask = workflow.nodes.find((node) => node.id === 'task_manager');
+
+      if (userTask?.type !== 'userTask') {
+        throw new Error('fixture has no user task');
+      }
+
+      const { approverResolver: _omitted, ...dataWithoutResolver } =
+        userTask.data;
+      void _omitted;
+
+      expect(
+        lintWorkflowDefinition({
+          ...workflow,
+          nodes: workflow.nodes.map((node) =>
+            node.id === 'task_manager'
+              ? ({ ...node, data: dataWithoutResolver } as typeof node)
+              : node,
+          ),
+        }).errors,
+      ).toEqual(['workflow.nodes.task_manager.approverResolver is required']);
+    });
+
     it('does not apply the decision policy rule to NOTIFY recipients', (): void => {
       const workflow: WorkflowDefinition = {
         ...EMPTY_WORKFLOW_DEFINITION,

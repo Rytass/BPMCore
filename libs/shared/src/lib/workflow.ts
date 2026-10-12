@@ -94,7 +94,6 @@ export type ApproverResolver =
   | {
       readonly fallback?: ApproverResolverFallback;
       readonly minPositionLevel: number;
-      readonly preferClosestOrgUnit?: boolean;
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }

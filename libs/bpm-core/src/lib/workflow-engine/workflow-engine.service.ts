@@ -4051,7 +4051,6 @@ export class WorkflowEngineService {
         resolver.minPositionLevel,
         resolver.fallback,
         label,
-        resolver.preferClosestOrgUnit === true,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4137,7 +4136,7 @@ export class WorkflowEngineService {
   /**
    * Walks up the initiator's manager chain, nearest manager first, until a
    * manager whose position level reaches `minPositionLevel` is added. The
-   * returned order is the signing order for a SEQUENTIAL decision policy.
+   * list is returned nearest manager first.
    */
   private async resolveOrgManagerChainCandidates(
     manager: EntityManager,
@@ -4145,7 +4144,6 @@ export class WorkflowEngineService {
     minPositionLevel: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
-    preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
     const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
@@ -4154,11 +4152,17 @@ export class WorkflowEngineService {
     let lastAddedLevel: number | null = null;
 
     for (let hop = 0; hop < ORG_MANAGER_CHAIN_MAX_HOPS; hop += 1) {
+      // A chain is a single path, so it always uses closest-org-unit semantics
+      // (merging ancestor-unit rules could only produce ties). The member is
+      // excluded from his own candidates: a unit head belongs to the unit he
+      // heads, so without this his unit rule would name himself and the walk
+      // could never climb past him.
       const directManagerMemberIds = await this.resolveDirectManagerMemberIds(
         manager,
         currentMemberId,
         date,
-        preferClosestOrgUnit,
+        true,
+        currentMemberId,
       );
 
       if (directManagerMemberIds.length === 0) {
@@ -4326,6 +4330,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -4361,6 +4366,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
+      excludedManagerMemberId,
     );
   }
 
@@ -4438,6 +4444,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
+    excludedManagerMemberId?: string,
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -4467,6 +4474,13 @@ export class WorkflowEngineService {
         ),
       )
       .filter((resolution) => isDateRangeActive(resolution, date))
+      // Dropped before the top-priority tier is chosen, so resolution falls
+      // through to the next tier instead of ending on the excluded member.
+      .filter(
+        (resolution) =>
+          excludedManagerMemberId === undefined ||
+          resolution.managerMemberId !== excludedManagerMemberId,
+      )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
       );

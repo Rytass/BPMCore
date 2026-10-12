@@ -320,14 +320,17 @@ async function resolveApprovers(
 
 `ORG_MANAGER` 的 `levelsUp` 是固定層數；`ORG_MANAGER_CHAIN` 則是從申請人開始一層一層往上找
 主管，讓每一位主管依序簽，直到某位主管的**職等**達到 `minPositionLevel` 為止，所以簽幾關取決於
-組織圖，不是模板寫死。回傳的是**有順序**的 member id 清單（最近的主管在最前面），搭配
-`decisionPolicy: SEQUENTIAL` 由下往上簽。
+組織圖，不是模板寫死。resolver 回傳的是**有順序**的 member id 清單（最近的主管在最前面）。
+目前這種節點請搭配 `PARALLEL_ALL`；清單順序要變成真正的簽核順序，要等 `SEQUENTIAL` 依序派發另案完成後。
 
 - **職等來源**：`PositionEntity.level`（數字越大越高階）。一位主管的職等 = 他**目前有效**
   （`effective_from`／`effective_to` 涵蓋今天）且有 `positionId` 的所有 membership 中最大的
   `level`；沒有這種 membership 就是「沒有職等」。
 - **每一層怎麼走**：用跟 `ORG_MANAGER` 同一套主管規則（`resolveDirectManagerMemberIds`）找目前這個人的
-  直屬主管。
+  直屬主管，但有兩點不同：一律採「只取最近一層」語意（主鏈只有一條路徑，合併上層單位的規則只會
+  造成平手，所以沒有 `preferClosestOrgUnit` 設定）；以及解析時**先排除這個人自己**再選最高優先順序，
+  因為單位主管本身也屬於他所管的單位，不排除的話他的單位規則會指回他自己，鏈就爬不上去
+  （發起人本身是單位主管時，第一層也會直接取上層單位的主管）。
   1. 找不到主管 → 鏈走完了，仍未達門檻（見下方「未達門檻」）。
   2. 同一層有多位主管（主管規則在最高優先順序平手）→ **丟 `ConflictException`**，不會默默挑一位；
      要由流程管理員調整主管規則。
@@ -341,8 +344,8 @@ async function resolveApprovers(
   `allowInitiatorSelfApproval` → 丟錯）。fallback 成功時把改派固定人放在清單**最後**一關；
   若他已在清單裡就不重複加入。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
-  `SEQUENTIAL` 或 `PARALLEL_ALL`。resolver 只保證 `task_candidates` 依清單順序建立；目前 `SEQUENTIAL` 的完成條件與
-  `PARALLEL_ALL` 相同（所有人都簽完），真正「一次只派給一位」的依序派發另案處理。
+  `SEQUENTIAL` 或 `PARALLEL_ALL`。目前 `SEQUENTIAL` 的完成條件與 `PARALLEL_ALL` 相同（所有人都簽完），
+  真正「一次只派給一位」的依序派發，以及保存簽核順序，另案處理。
 
 ### 4.2 Delegation 解析順序（**重要**）
 

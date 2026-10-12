@@ -2716,25 +2716,27 @@ export function TemplateDesignerView({
         resolver.type === 'ORG_MANAGER_CHAIN' ||
         resolver.type === 'ORG_UNIT_MANAGER' ? (
           <>
-            <BPMFormField
-              hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
-              label="只取最近一層主管"
-              name="preferClosestOrgUnit"
-            >
-              <Toggle
-                checked={Boolean(resolver.preferClosestOrgUnit)}
-                inputProps={{
-                  id: 'preferClosestOrgUnit',
-                  name: 'preferClosestOrgUnit',
-                }}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                  updateUserTaskResolver({
-                    ...resolver,
-                    preferClosestOrgUnit: event.target.checked,
-                  })
-                }
-              />
-            </BPMFormField>
+            {resolver.type !== 'ORG_MANAGER_CHAIN' ? (
+              <BPMFormField
+                hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
+                label="只取最近一層主管"
+                name="preferClosestOrgUnit"
+              >
+                <Toggle
+                  checked={Boolean(resolver.preferClosestOrgUnit)}
+                  inputProps={{
+                    id: 'preferClosestOrgUnit',
+                    name: 'preferClosestOrgUnit',
+                  }}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                    updateUserTaskResolver({
+                      ...resolver,
+                      preferClosestOrgUnit: event.target.checked,
+                    })
+                  }
+                />
+              </BPMFormField>
+            ) : null}
             <BPMFormField
               hintText={
                 resolver.type === 'ORG_MANAGER_CHAIN'
