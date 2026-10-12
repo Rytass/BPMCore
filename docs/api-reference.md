@@ -884,6 +884,14 @@ An optional or conditionally hidden member field is accepted; the designer warns
 about it instead. A path that names no member field resolves to nothing at
 runtime and would otherwise throw while the task is created.
 
+> **Compatibility change.** This check is new: a `DYNAMIC_FORM` resolver whose
+> `formPath` points at a non-member field can no longer be published. Such a
+> draft could only be written through the API or the AI assistant before the
+> `member` field type existed. It still saves as a draft
+> (`updateApprovalTemplateDraft` does not run the check), but publishing it now
+> fails until the path is re-pointed at a member field.
+> Versions published before the check are not re-validated.
+
 **Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
 `NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a
 template out of service without deleting it or archiving its published version.
