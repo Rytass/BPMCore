@@ -174,6 +174,10 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
     - 加簽期間原始 task 被轉交（`TRANSFERRED`）：仍開啟（`PENDING` /
       `IN_PROGRESS`）的加簽 task 會跟著改指向轉交後的新 task，退回與通知對象是
       目前持有該關卡的人；已結束的加簽 task 維持原指向。
+    - 加簽 task 仍指向已轉交的 task（尚未隨轉交改指向的舊版留下的資料）：退回
+      時沿 `TASK_CREATED` activity 的 `transferredFromTaskId` 逐層找到目前持有
+      該關卡的 task 再套用上述規則，不需要資料遷移；查不到轉交紀錄時視同原始
+      task 已完成，重新指派給原簽核人。
 
 ---
 
