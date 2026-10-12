@@ -3805,12 +3805,20 @@ export class WorkflowEngineService {
     });
     const nextTask = await taskRepository.save(
       taskRepository.create({
+        // A transferred ad-hoc task stays the same ad-hoc task for its new
+        // holder: the pre-approval rejection path (RETURN_TO_ORIGIN) reads these
+        // off the task being decided, so without them a rejection after a
+        // transfer rejected the whole instance instead.
+        adhocDirectiveId: task.adhocDirectiveId,
+        adhocOriginTaskId: task.adhocOriginTaskId,
+        adhocType: task.adhocType,
         assigneeMemberId: transferToMemberId,
         assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
         completedAt: null,
         decisionPolicySnapshot: { type: 'SINGLE' },
         delegationChain: nextDelegationChain,
         instanceId: task.instanceId,
+        isAdhoc: task.isAdhoc,
         nodeId: task.nodeId,
         openedAt: null,
         originalAssigneeMemberId: task.originalAssigneeMemberId,
