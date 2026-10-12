@@ -174,6 +174,20 @@ describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
   );
 });
 
+describe('DYNAMIC_FORM validation', () => {
+  it('rejects a blank form field', () => {
+    expect(
+      readApproverResolverIssue({ formPath: ' ', type: 'DYNAMIC_FORM' }),
+    ).toBe('簽核節點需要指定表單欄位。');
+  });
+
+  it('accepts a chosen form field', () => {
+    expect(
+      readApproverResolverIssue({ formPath: 'owner', type: 'DYNAMIC_FORM' }),
+    ).toBeNull();
+  });
+});
+
 describe('ORG_MANAGER_CHAIN validation', () => {
   const CHAIN: ApproverResolver = {
     minPositionLevel: 3,

@@ -980,6 +980,10 @@ export function readApproverResolverIssue(
     return '簽核節點需要指定職位。';
   }
 
+  if (resolver.type === 'DYNAMIC_FORM' && !resolver.formPath.trim()) {
+    return '簽核節點需要指定表單欄位。';
+  }
+
   return null;
 }
 

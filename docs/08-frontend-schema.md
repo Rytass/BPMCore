@@ -197,12 +197,22 @@ type ApproverResolverFallback =
     };
 ```
 
-Designer 目前提供 direct member、position、org-unit member、org-unit position、
-initiator manager、specific org-unit manager、dynamic form、expression 等模式。
+Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
+指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
+只由 API／AI 建立並照常顯示。「依表單欄位指定」只列出綁定表單中的 `member` 欄位
+（`formPath` = 欄位的 `fieldKey`）；表單沒有人員選擇欄位時會提示先到表單設計加入，儲存值
+已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
 
 #### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
+
+試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
+`assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
+designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
+顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入試跑發起人
+（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人。
 
 `DYNAMIC_FORM` 的 `formPath` 讀到的值必須是成員 id（字串）或成員 id 陣列。表單欄位
 類型 **`member`（人員選擇）** 就是為此而設：
