@@ -2663,6 +2663,7 @@ export class WorkflowEngineService {
         message: readDryRunUnresolvedApproverMessage(
           resolver,
           readDryRunNodeName(node),
+          input.initiatorMemberId,
         ),
         outcome: 'STOPPED',
       };
@@ -7870,28 +7871,38 @@ function readDryRunStepResultMessage(
   return skipped ? `${message}${stopMessage}` : stopMessage;
 }
 
-// Like the runtime, a configured fixed fallback takes over when the initiator
-// has no manager, unless it is the initiator and the node does not allow
-// self-approval (then nobody is left to ask).
-function readDryRunFallbackMemberIds(
-  input: DryRunSimulationInput,
+type DryRunFallbackProblem = 'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR';
+
+// Why a manager resolver's fixed fallback cannot take over when the initiator
+// has no manager, or `null` when it can: like the runtime, it must exist, name
+// a member, and not be the initiator unless the node allows self-approval.
+function readDryRunFallbackProblem(
+  initiatorMemberId: string,
   fallback: ApproverResolverFallback | undefined,
-): readonly string[] {
+): DryRunFallbackProblem | null {
   if (!fallback || fallback.type !== 'DIRECT') {
-    return [];
+    return 'NOT_SET';
   }
 
   const memberId = fallback.memberId.trim();
 
-  if (
-    memberId === '' ||
-    (memberId === input.initiatorMemberId &&
-      !fallback.allowInitiatorSelfApproval)
-  ) {
-    return [];
+  if (memberId === '') {
+    return 'BLANK_MEMBER';
   }
 
-  return [memberId];
+  return memberId === initiatorMemberId && !fallback.allowInitiatorSelfApproval
+    ? 'IS_INITIATOR'
+    : null;
+}
+
+function readDryRunFallbackMemberIds(
+  input: DryRunSimulationInput,
+  fallback: ApproverResolverFallback | undefined,
+): readonly string[] {
+  return readDryRunFallbackProblem(input.initiatorMemberId, fallback) ===
+    null && fallback?.type === 'DIRECT'
+    ? [fallback.memberId.trim()]
+    : [];
 }
 
 function readDryRunNodeName(node: WorkflowNode): string {
@@ -7925,6 +7936,7 @@ function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
 function readDryRunUnresolvedApproverMessage(
   resolver: ApproverResolver,
   nodeName: string,
+  initiatorMemberId: string,
 ): string {
   if (resolver.type === 'DIRECT') {
     return `簽核節點「${nodeName}」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人`;
@@ -7936,6 +7948,19 @@ function readDryRunUnresolvedApproverMessage(
 
   if (resolver.type === 'EXPRESSION') {
     return `簽核節點「${nodeName}」依運算式找不到簽核人，請確認運算式的結果`;
+  }
+
+  const fallbackProblem =
+    resolver.type === 'ORG_MANAGER'
+      ? readDryRunFallbackProblem(initiatorMemberId, resolver.fallback)
+      : null;
+
+  if (fallbackProblem === 'BLANK_MEMBER') {
+    return `簽核節點「${nodeName}」找不到主管，且改派固定人未設定`;
+  }
+
+  if (fallbackProblem === 'IS_INITIATOR') {
+    return `簽核節點「${nodeName}」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽`;
   }
 
   return `簽核節點「${nodeName}」依申請人的組織找不到主管，請確認試跑時的申請人資料`;

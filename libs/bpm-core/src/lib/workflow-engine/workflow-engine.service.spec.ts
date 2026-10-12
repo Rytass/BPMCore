@@ -4508,6 +4508,27 @@ describe('WorkflowEngineService', () => {
       );
 
       expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('says the fallback member is not set when a manager fallback names nobody', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: '  ', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        message: '簽核節點「財務簽核」找不到主管，且改派固定人未設定',
         nodeId: 'task_finance',
         status: 'STOPPED',
       });
