@@ -3,6 +3,7 @@ import {
   NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
+  createWorkflowNode,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
   isFormFieldCompatibleWithWebhookParameter,
@@ -174,6 +175,45 @@ describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
   );
 });
 
+describe('createWorkflowNode defaults', () => {
+  it('starts a new user task on the initiator manager, not a placeholder member', () => {
+    const node = createWorkflowNode('userTask', 1);
+
+    expect(node.type === 'userTask' && node.data.approverResolver).toEqual(
+      ONE_MANAGER,
+    );
+    expect(
+      node.type === 'userTask' &&
+        readApproverResolverIssue(node.data.approverResolver),
+    ).toBeNull();
+  });
+
+  it('starts a new notify node on the initiator manager and passes validation', () => {
+    const node = createWorkflowNode('serviceTask', 1);
+
+    expect(
+      node.type === 'serviceTask' &&
+        node.data.action.type === 'NOTIFY' &&
+        node.data.action.recipients,
+    ).toEqual(ONE_MANAGER);
+    expect(readNotifyServiceTaskIssue(node)).toBeNull();
+  });
+});
+
+describe('DYNAMIC_FORM validation', () => {
+  it('rejects a blank form field', () => {
+    expect(
+      readApproverResolverIssue({ formPath: ' ', type: 'DYNAMIC_FORM' }),
+    ).toBe('簽核節點需要指定表單欄位。');
+  });
+
+  it('accepts a chosen form field', () => {
+    expect(
+      readApproverResolverIssue({ formPath: 'owner', type: 'DYNAMIC_FORM' }),
+    ).toBeNull();
+  });
+});
+
 describe('ORG_MANAGER_CHAIN validation', () => {
   const CHAIN: ApproverResolver = {
     minPositionLevel: 3,
@@ -284,6 +324,57 @@ describe('table field conditions', () => {
 
   it('refuses to compile value operators against a table', () => {
     expect(readConditionExpression(TABLE_FIELD, 'EQUALS', '1')).toBeUndefined();
+  });
+});
+
+describe('member field conditions', () => {
+  const MEMBER_FIELD: FormFieldDefinition = {
+    fieldKey: 'reviewer',
+    label: 'Reviewer',
+    required: false,
+    type: 'member',
+  };
+
+  it('offers only emptiness operators for a member', () => {
+    expect(readConditionOperatorIds(MEMBER_FIELD)).toEqual([
+      'IS_FILLED',
+      'IS_EMPTY',
+    ]);
+  });
+
+  it('compiles emptiness without size() so an explicit null cannot throw', () => {
+    expect(readConditionExpression(MEMBER_FIELD, 'IS_FILLED', undefined)).toBe(
+      'form.reviewer != null && form.reviewer != "" && form.reviewer != []',
+    );
+    expect(readConditionExpression(MEMBER_FIELD, 'IS_EMPTY', undefined)).toBe(
+      'form.reviewer == null || form.reviewer == "" || form.reviewer == []',
+    );
+  });
+
+  it('refuses to compile value operators against a member', () => {
+    expect(
+      readConditionExpression(MEMBER_FIELD, 'EQUALS', 'm1'),
+    ).toBeUndefined();
+  });
+
+  it('feeds a webhook string when single and stringArray when multiple', () => {
+    const multiple: FormFieldDefinition = { ...MEMBER_FIELD, multiple: true };
+
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(MEMBER_FIELD, 'string'),
+    ).toBe(true);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(MEMBER_FIELD, 'stringArray'),
+    ).toBe(false);
+    expect(
+      isFormFieldCompatibleWithWebhookParameter(multiple, 'stringArray'),
+    ).toBe(true);
+    expect(isFormFieldCompatibleWithWebhookParameter(multiple, 'string')).toBe(
+      false,
+    );
+    expect(isFormFieldCompatibleWithWebhookParameter(multiple, 'number')).toBe(
+      false,
+    );
   });
 });
 

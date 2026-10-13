@@ -1,12 +1,15 @@
 import {
   FormDefinitionSchema,
   isFormIdentifierKey,
+  isFormMemberValue,
   isFormTableCellValue,
   isFormTableRowValue,
   isFormTableRowValues,
+  isMemberFieldDefinition,
   isTableColumnFieldType,
   isTableFieldDefinition,
   normalizeFormDefinitionSchema,
+  readFormMemberIds,
   readFormTableCellValue,
   TABLE_COLUMN_FIELD_TYPES,
 } from './form';
@@ -148,5 +151,71 @@ describe('form table contracts', () => {
     expect(isFormIdentifierKey('line-items')).toBe(false);
     expect(isFormIdentifierKey('items.qty')).toBe(false);
     expect(isFormIdentifierKey('')).toBe(false);
+  });
+});
+
+describe('member field contracts', () => {
+  it('recognises a member field and keeps it out of table columns', () => {
+    expect(
+      isMemberFieldDefinition({
+        fieldKey: 'reviewer',
+        label: 'Reviewer',
+        required: false,
+        type: 'member',
+      }),
+    ).toBe(true);
+    expect(
+      isMemberFieldDefinition({
+        fieldKey: 'note',
+        label: 'Note',
+        required: false,
+        type: 'text',
+      }),
+    ).toBe(false);
+    expect(isTableColumnFieldType('member')).toBe(false);
+  });
+
+  it('normalizes a schema holding a member field without touching it', () => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'watchers',
+          label: 'Watchers',
+          multiple: true,
+          required: false,
+          type: 'member',
+        },
+      ],
+      schemaVersion: 1,
+    };
+
+    expect(normalizeFormDefinitionSchema(schema)).toEqual(schema);
+  });
+
+  it('accepts a non-empty string for a single field and ids for a multiple one', () => {
+    expect(isFormMemberValue('m1', false)).toBe(true);
+    expect(isFormMemberValue(['m1', 'm2'], true)).toBe(true);
+    expect(isFormMemberValue([], true)).toBe(true);
+  });
+
+  it('rejects the wrong shape for the field mode', () => {
+    expect(isFormMemberValue('', false)).toBe(false);
+    expect(isFormMemberValue('  ', false)).toBe(false);
+    expect(isFormMemberValue(['m1'], false)).toBe(false);
+    expect(isFormMemberValue('m1', true)).toBe(false);
+    expect(isFormMemberValue([''], true)).toBe(false);
+    expect(isFormMemberValue(['m1', 2], true)).toBe(false);
+    expect(isFormMemberValue(null, false)).toBe(false);
+    expect(isFormMemberValue({ id: 'm1' }, false)).toBe(false);
+  });
+
+  it('reads member ids out of either stored shape', () => {
+    expect(readFormMemberIds('m1')).toEqual(['m1']);
+    expect(readFormMemberIds(['m1', '', 'm2'])).toEqual(['m1', 'm2']);
+    expect(readFormMemberIds('   ')).toEqual([]);
+    expect(readFormMemberIds(undefined)).toEqual([]);
+    expect(readFormMemberIds(null)).toEqual([]);
+    expect(readFormMemberIds(true)).toEqual([]);
+    expect(readFormMemberIds([{ qty: 1 }])).toEqual([]);
   });
 });

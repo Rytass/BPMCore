@@ -59,6 +59,7 @@ import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
 } from '../form-data-source/form-data-source.errors';
+import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -7901,6 +7902,22 @@ function validateSubmittedFormData(
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
     );
+  }
+
+  // A `DYNAMIC_FORM` resolver reads a member value whether or not its field is
+  // visible, so a hidden field still holding a value must be well-formed too.
+  // Whether a hidden field is *required* stays a visibility question above.
+  const memberErrors = readSubmittedMemberValueErrors(
+    schema.fields.filter(
+      (field) =>
+        visibleFields.includes(field) ||
+        isSubmittedFieldValuePresent(formData[field.fieldKey]),
+    ),
+    formData,
+  );
+
+  if (memberErrors.length > 0) {
+    throw new BadRequestException(memberErrors.join('; '));
   }
 
   const tableErrors = [

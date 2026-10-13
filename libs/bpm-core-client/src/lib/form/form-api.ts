@@ -451,6 +451,7 @@ function readDefaultFieldLabel(
     date: '日期',
     datetime: '日期時間',
     file_upload: '附件',
+    member: '人員選擇',
     money: '金額',
     number: '數字',
     radio: '單選',

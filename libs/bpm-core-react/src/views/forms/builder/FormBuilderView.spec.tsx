@@ -502,6 +502,95 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('adds a member field from the palette as a single-select optional field', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([]));
+
+    try {
+      clickButton(harness.container, '人員選擇');
+
+      expect(harness.readSchema().fields[0]).toEqual({
+        fieldKey: 'member_1',
+        label: '人員選擇 1',
+        required: false,
+        type: 'member',
+      });
+      expect(harness.readUiSchema().layout[0]?.width).toBe('HALF');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('toggles 可複選 on a member field and drops a default of the old shape', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          defaultValue: 'm1',
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ]),
+    );
+
+    try {
+      const toggle = harness.container.querySelector(
+        '[data-mock-form-field="fieldMemberMultiple"] input',
+      ) as HTMLInputElement | null;
+
+      if (!toggle) {
+        throw new Error('The 可複選 toggle was not rendered.');
+      }
+
+      act((): void => {
+        toggle.click();
+      });
+
+      const multiple = readField(harness.readSchema(), 'reviewer');
+
+      expect(multiple).toMatchObject({ multiple: true, type: 'member' });
+      expect(multiple.defaultValue).toBeUndefined();
+
+      const turnedOff = harness.container.querySelector(
+        '[data-mock-form-field="fieldMemberMultiple"] input',
+      ) as HTMLInputElement | null;
+
+      act((): void => {
+        turnedOff?.click();
+      });
+
+      expect(readField(harness.readSchema(), 'reviewer').multiple).toBe(
+        undefined,
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('does not offer a member field as a condition source', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        {
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'note');
+
+      expect(harness.container.textContent).toContain(
+        '目前沒有其他欄位可作為條件來源',
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   it('adds a table field as a full-width field with one column', async (): Promise<void> => {
     const harness = await mountBuilder(createSchema([]));
 

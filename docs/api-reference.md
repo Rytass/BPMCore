@@ -262,6 +262,7 @@ Form-schema definitions.
 | `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
+| `MemberFieldDefinition` | type | 人員選擇 field — stores a member id, or an array of ids when `multiple` is true |
 | `TableFieldDefinition` | type | Repeating-row table field (columns, row bounds, add-row label) |
 | `TableColumnDefinition` | type | Union of the field types a table column may use |
 | `TABLE_COLUMN_FIELD_TYPES` | const | Field types the structural lint accepts as a column |
@@ -271,6 +272,9 @@ Form-schema definitions.
 | `isFormOptionFieldDefinition()` | function | Option-control type guard |
 | `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
 | `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `isMemberFieldDefinition()` | function | Member field type guard |
+| `isFormMemberValue()` | function | Whether a value is a well-formed member value (non-empty string, or array of non-empty strings when `multiple`) |
+| `readFormMemberIds()` | function | Member ids held by a member field value, whichever shape it has |
 | `isTableFieldDefinition()` | function | Table field type guard |
 | `isTableColumnFieldType()` | function | Whether a field type may be used as a column |
 | `isFormTableCellValue()` | function | Primitive cell-value guard |
@@ -368,7 +372,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `readDesignTimeApproverCount` | function | Approvers a resolver is guaranteed to produce; `null` for runtime-resolved strategies |
 | `isDecisionPolicyUnsatisfiable` | function | `true` when a `COUNT` quorum exceeds the approvers the node can ever collect |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
-| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
+| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing. **Behaviour change:** a new `userTask` approver and a new NOTIFY `recipients` now default to `DEFAULT_MANAGER_RESOLVER` (the initiator's manager) instead of the placeholder `{ type: 'DIRECT', memberIds: ['member-001'] }`; callers that relied on the old placeholder must set a resolver themselves |
+| `DEFAULT_MANAGER_RESOLVER` | const | `{ type: 'ORG_MANAGER', baseFromInitiator: true, levelsUp: 1 }` — the resolver `createWorkflowNode` seeds on new user and NOTIFY nodes, exported so a host can reuse or compare against it |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
 | `insertWorkflowNodeIntoDefinition` / `insertWorkflowNodeAtEdge` / `insertWorkflowNodeAfterNode` | function | Node insertion strategies |
 | `renameWorkflowNode` / `applyWorkflowNodeTriggerMode` | function | Node data transforms |
@@ -897,6 +902,24 @@ definition snapshot rather than whatever version the template publishes today.
 > (`createApprovalTemplate` / `updateApprovalTemplateDraft` /
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
+
+**Publish-time member reference check.** `publishApprovalTemplateVersion` also
+checks every `DYNAMIC_FORM` resolver against the bound form version: each user
+task `approverResolver.formPath` and each NOTIFY `action.recipients.formPath`
+must equal the `fieldKey` of a `member` (人員選擇) field, otherwise publish fails
+with `workflow.nodes.<id>.approverResolver.formPath must reference a member
+(人員選擇) field of the bound form: <path>` (or `...action.recipients.formPath`).
+An optional or conditionally hidden member field is accepted; the designer warns
+about it instead. A path that names no member field resolves to nothing at
+runtime and would otherwise throw while the task is created.
+
+> **Compatibility change.** This check is new: a `DYNAMIC_FORM` resolver whose
+> `formPath` points at a non-member field can no longer be published. Such a
+> draft could only be written through the API or the AI assistant before the
+> `member` field type existed. It still saves as a draft
+> (`updateApprovalTemplateDraft` does not run the check), but publishing it now
+> fails until the path is re-pointed at a member field.
+> Versions published before the check are not re-validated.
 
 **Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
 `NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a

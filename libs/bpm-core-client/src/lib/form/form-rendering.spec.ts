@@ -423,3 +423,69 @@ describe('hidden (store-only) fields', () => {
     });
   });
 });
+
+describe('member fields in the renderer', () => {
+  const single: FormFieldDefinition = {
+    fieldKey: 'reviewer',
+    label: '審核人',
+    required: true,
+    type: 'member',
+  };
+  const multiple: FormFieldDefinition = {
+    fieldKey: 'watchers',
+    label: '關注者',
+    multiple: true,
+    required: true,
+    type: 'member',
+  };
+  const schema: FormDefinitionSchema = {
+    fields: [single, multiple],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [
+      { fieldKey: 'reviewer', width: 'HALF' },
+      { fieldKey: 'watchers', width: 'HALF' },
+    ],
+    schemaVersion: 1,
+  };
+
+  it('starts a single field empty and a multiple field as an empty list', (): void => {
+    const values = buildFormRendererValues(schema.fields, {});
+
+    expect(values.reviewer).toBeUndefined();
+    expect(values.watchers).toEqual([]);
+  });
+
+  it('keeps a stored member value instead of resetting it', (): void => {
+    expect(
+      buildFormRendererValues(schema.fields, {
+        reviewer: 'm1',
+        watchers: ['m1', 'm2'],
+      }),
+    ).toEqual({ reviewer: 'm1', watchers: ['m1', 'm2'] });
+  });
+
+  it('reports a required member field that nobody was picked for', (): void => {
+    const result = validateFormRendererValues({
+      schema,
+      uiSchema,
+      values: buildFormRendererValues(schema.fields, {}),
+    });
+
+    expect(result.errors).toEqual({
+      reviewer: '審核人為必填欄位。',
+      watchers: '關注者為必填欄位。',
+    });
+  });
+
+  it('accepts a required member field once someone is picked', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { reviewer: 'm1', watchers: ['m2'] },
+      }).valid,
+    ).toBe(true);
+  });
+});

@@ -215,10 +215,43 @@ type ApproverResolverFallback =
     };
 ```
 
-Designer 目前提供 direct member、position、org-unit member、org-unit position、
-initiator manager、specific org-unit manager、dynamic form、expression 等模式。
+Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
+指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
+只由 API／AI 建立並照常顯示。「依表單欄位指定」只列出綁定表單中的 `member` 欄位
+（`formPath` = 欄位的 `fieldKey`）；表單沒有人員選擇欄位時會提示先到表單設計加入，儲存值
+已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+#### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
+
+試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
+`assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
+designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
+顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入試跑發起人
+（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人。
+
+`DYNAMIC_FORM` 的 `formPath` 讀到的值必須是成員 id（字串）或成員 id 陣列。表單欄位
+類型 **`member`（人員選擇）** 就是為此而設：
+
+```ts
+type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
+  readonly multiple?: boolean; // 可複選；省略或 false = 單選
+};
+```
+
+- **儲存值**：單選為成員 id 字串，可複選為成員 id 字串陣列；只存 id，不存 `{ id, name }`，
+  名稱在顯示時才以成員目錄解析。沒選人時，單選是省略／`null`，可複選是 `[]`，與其他選填
+  欄位一致。因此 `formPath` 直接寫欄位的 `fieldKey`（例如 `reviewer`）即可。
+- **Builder**：欄位庫的「人員選擇」，設定項有「可複選」與一般欄位共有的標題、必填等；
+  不提供預設值 UI，也不能當作表格欄（V1）。
+- **Renderer**：填寫與唯讀都用同一個成員搜尋（姓名或信箱，與 designer 指定會員同一組
+  `searchMembers`／`resolveMembers` 查詢）；唯讀時顯示姓名，找不到的 id 顯示「未知會員」。
+- **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——成員 id
+  不是人能手打的值。表單內的顯示／必填／唯讀規則也不會把人員選擇欄位列為條件來源。
+- **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
+  為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：

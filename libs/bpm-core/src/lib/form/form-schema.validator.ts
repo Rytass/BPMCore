@@ -5,6 +5,7 @@ import {
   FormLayoutItem,
   FormUiSchema,
   isFormIdentifierKey,
+  isFormMemberValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
 } from '@rytass/bpm-core-shared/form';
@@ -16,6 +17,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'date',
   'datetime',
   'file_upload',
+  'member',
   'money',
   'number',
   'autocomplete',
@@ -283,6 +285,10 @@ function lintFieldTypeSpecifics(
 
   if (type === 'boolean') {
     return lintBooleanField(field, path);
+  }
+
+  if (type === 'member') {
+    return lintMemberField(field, path);
   }
 
   if (type === 'table') {
@@ -662,6 +668,27 @@ function lintBooleanField(
   return lintOptionalDefaultValue(field.defaultValue, path, (value) =>
     typeof value === 'boolean' || value === null,
   );
+}
+
+function lintMemberField(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  const multipleErrors =
+    typeof field.multiple === 'undefined' || typeof field.multiple === 'boolean'
+      ? []
+      : [`${path}.multiple must be a boolean`];
+
+  return [
+    ...multipleErrors,
+    // Submit rejects blank member ids, so a default of `''` / `['']` would make
+    // every untouched form unsubmittable.
+    ...lintOptionalDefaultValue(
+      field.defaultValue,
+      path,
+      (value) => value === null || isFormMemberValue(value, field.multiple === true),
+    ),
+  ];
 }
 
 function lintTableField(

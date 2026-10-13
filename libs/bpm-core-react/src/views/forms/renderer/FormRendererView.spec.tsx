@@ -252,6 +252,29 @@ jest.mock('@rytass/bpm-core-client/form', (): typeof import('@rytass/bpm-core-cl
   };
 });
 
+// The picker itself is covered by member-field.spec.tsx; here only the wiring
+// from a `member` field definition to its props is under test.
+jest.mock('./member-field', () => ({
+  MemberFieldControl: (props: Readonly<Record<string, unknown>>): ReactElement => (
+    <div
+      data-mock-member-field={String(props.name)}
+      data-mock-member-multiple={String(props.multiple)}
+      data-mock-member-readonly={String(props.readonly)}
+      data-mock-member-value={JSON.stringify(props.value ?? null)}
+    >
+      <button
+        data-mock-member-pick=""
+        onClick={(): void =>
+          (props.onChange as (value: unknown) => void)(
+            props.multiple ? ['m1', 'm2'] : 'm1',
+          )
+        }
+        type="button"
+      />
+    </div>
+  ),
+}));
+
 const previewOptionsMock = previewFormFieldOptions as jest.MockedFunction<
   typeof previewFormFieldOptions
 >;
@@ -833,6 +856,90 @@ describe('FormRenderer link display', () => {
 
     try {
       expect(harness.container.querySelector('a')).toBeNull();
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
+describe('FormRenderer member field', () => {
+  function createMemberSchema(): FormDefinitionSchema {
+    return {
+      fields: [
+        { fieldKey: 'reviewer', label: '審核人', required: true, type: 'member' },
+        {
+          fieldKey: 'watchers',
+          label: '關注者',
+          multiple: true,
+          required: false,
+          type: 'member',
+        },
+      ],
+      schemaVersion: 1,
+    };
+  }
+
+  function readMember(
+    container: HTMLElement,
+    fieldKey: string,
+  ): HTMLElement | null {
+    return container.querySelector(`[data-mock-member-field="${fieldKey}"]`);
+  }
+
+  it('renders the picker with the field mode and writes member ids back', async (): Promise<void> => {
+    const harness = await mountRenderer({ schema: createMemberSchema() });
+
+    try {
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberMultiple,
+      ).toBe('false');
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberMultiple,
+      ).toBe('true');
+      // A multiple member field starts as an empty list, a single one empty.
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberValue,
+      ).toBe('[]');
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberValue,
+      ).toBe('null');
+
+      act((): void => {
+        (
+          readMember(harness.container, 'reviewer')?.querySelector(
+            'button',
+          ) as HTMLButtonElement
+        ).click();
+      });
+      act((): void => {
+        (
+          readMember(harness.container, 'watchers')?.querySelector(
+            'button',
+          ) as HTMLButtonElement
+        ).click();
+      });
+
+      expect(harness.readValues().reviewer).toBe('m1');
+      expect(harness.readValues().watchers).toEqual(['m1', 'm2']);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('hands the stored ids to a read-only picker so it can show names', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: createMemberSchema(),
+      value: { reviewer: 'm1', watchers: ['m1', 'm2'] },
+    });
+
+    try {
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberReadonly,
+      ).toBe('true');
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberValue,
+      ).toBe('["m1","m2"]');
     } finally {
       await unmountRenderer(harness);
     }

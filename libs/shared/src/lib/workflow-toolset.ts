@@ -15,6 +15,7 @@ import {
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
+  DEFAULT_MANAGER_RESOLVER,
   DEFAULT_QUORUM_THRESHOLD,
   EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES,
   WORKFLOW_NODE_TYPE_LABELS,
@@ -1080,17 +1081,6 @@ function readAnchor(
     edgeId: readNullableString(input, 'anchorEdgeId'),
   };
 }
-
-/**
- * The always-valid default approver: the initiator's direct manager (one level
- * up). Needs no member/org id, so a draft built purely from this passes
- * validation — letting the assistant draw a flow from one sentence.
- */
-const DEFAULT_MANAGER_RESOLVER: ApproverResolver = {
-  baseFromInitiator: true,
-  levelsUp: 1,
-  type: 'ORG_MANAGER',
-};
 
 const DEFAULT_NOTIFY_ACTION: ServiceAction = {
   channels: ['IN_APP'],
