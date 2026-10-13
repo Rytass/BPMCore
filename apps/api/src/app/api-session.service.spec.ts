@@ -4,6 +4,7 @@ import { createApiTestMemberPasswordHash } from './api-simulation-members';
 import {
   API_SESSION_COOKIE_NAME,
   ApiSessionService,
+  resolveApiSessionSecret,
 } from './api-session.service';
 import { ApiTestMemberEntity } from './api-test-member.entity';
 
@@ -205,3 +206,53 @@ function createRequestWithSession(token: string): Request {
     },
   } as unknown as Request;
 }
+
+describe('resolveApiSessionSecret', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalSecret = process.env.API_SESSION_SECRET;
+  let warnSpy: jest.SpiedFunction<typeof console.warn>;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    delete process.env.API_SESSION_SECRET;
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.env.NODE_ENV = originalNodeEnv;
+
+    if (originalSecret === undefined) {
+      delete process.env.API_SESSION_SECRET;
+    } else {
+      process.env.API_SESSION_SECRET = originalSecret;
+    }
+  });
+
+  it('uses a configured secret without warning', (): void => {
+    process.env.NODE_ENV = 'production';
+    process.env.API_SESSION_SECRET = 'configured-secret';
+
+    expect(resolveApiSessionSecret()).toBe('configured-secret');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('generates a random secret under production and warns', (): void => {
+    process.env.NODE_ENV = 'production';
+
+    const first = resolveApiSessionSecret();
+
+    expect(first).toMatch(/^[0-9a-f]{64}$/u);
+    expect(resolveApiSessionSecret()).not.toBe(first);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
+      'API_SESSION_SECRET is unset',
+    );
+  });
+
+  it('keeps the fixed development secret outside production', (): void => {
+    process.env.NODE_ENV = 'development';
+
+    expect(resolveApiSessionSecret()).toBe(resolveApiSessionSecret());
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
