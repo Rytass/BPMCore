@@ -151,6 +151,14 @@ export interface TaskRecord {
   readonly isAdhoc: boolean;
   readonly nodeId: string;
   /**
+   * The node's display name, read server-side from the instance's workflow
+   * snapshot; `null` when the node is not in it. The bundled queries always
+   * select it, so an older server rejects them: upgrade client and server
+   * together (same release). Optional only for hosts running their own
+   * queries — show `nodeLabel ?? nodeId`.
+   */
+  readonly nodeLabel?: string | null;
+  /**
    * Candidates who may act now (`PENDING`/`CLAIMED`). The bundled queries
    * always select it, so an older server rejects them: upgrade client and
    * server together (same release). The optional type and the
@@ -872,6 +880,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -929,6 +938,7 @@ export async function listInboxTasks(
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -963,6 +973,7 @@ export async function listApprovalHistoryTasks(
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -1820,6 +1831,7 @@ const ADHOC_TASK_FIELDS = `
   instanceId
   isAdhoc
   nodeId
+  nodeLabel
   openedAt
   originalAssigneeMemberId
   slaDueAt

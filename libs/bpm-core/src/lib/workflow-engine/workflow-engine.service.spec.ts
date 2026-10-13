@@ -18,7 +18,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
-import { FindOperator, ObjectLiteral } from 'typeorm';
+import { FindOperator, In, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
@@ -7678,6 +7678,8 @@ describe('WorkflowEngineService', () => {
       assigneeMemberId: 'member-d',
       isAdhoc: true,
       nodeId: 'task_finance',
+      // The node it was spawned on — clients add the 臨時加簽 marker themselves.
+      nodeLabel: '財務簽核',
       status: TaskStatusEnum.PENDING,
       tokenId: 'token-1',
     });
@@ -7695,6 +7697,55 @@ describe('WorkflowEngineService', () => {
         task: expect.objectContaining({ assigneeMemberId: 'member-d' }),
       }),
     );
+  });
+
+  it('gives an ad-hoc pre-approval task the same nodeLabel a list would, null for a blank label', async (): Promise<void> => {
+    const workflow = createLinearUserTaskWorkflow({ allowAddSigner: true });
+    const blankLabelWorkflow: WorkflowDefinition = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) =>
+        node.id === 'task_finance'
+          ? ({ ...node, data: { ...node.data, label: '  ' } } as typeof node)
+          : node,
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: blankLabelWorkflow,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const adhocTask = await fixture.service.requestAdhocPreApproval({
+      onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+      requestedByMemberId: 'member-finance',
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-d'],
+      },
+      taskId: 'task-1',
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({ workflowSnapshot: blankLabelWorkflow }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-listed', nodeId: 'task_finance' }),
+    ]);
+
+    const [listed] = await fixture.service.listInboxTasks('member-finance');
+
+    expect(adhocTask.nodeLabel).toBeNull();
+    expect(listed?.nodeLabel).toBe(adhocTask.nodeLabel);
   });
 
   it('rejects an ad-hoc pre-approval whose only target is the initiator when the node excludes the initiator', async (): Promise<void> => {
@@ -10274,6 +10325,112 @@ describe('WorkflowEngineService', () => {
         'member-c',
       ]);
     });
+  });
+});
+
+describe('WorkflowEngineService task node labels', () => {
+  function createLabelFixture(): ReturnType<typeof createServiceFixture> {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        id: 'instance-1',
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+      createApprovalInstance({
+        id: 'instance-2',
+        workflowSnapshot: {
+          edges: [],
+          meta: { schemaVersion: 1 },
+          nodes: [
+            createUserTaskNode('band-0', '部門主管簽核', 'member-finance', 0, 0),
+          ],
+        },
+      }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+      createTask({ id: 'task-b', instanceId: 'instance-2', nodeId: 'band-0' }),
+      createTask({ id: 'task-c', instanceId: 'instance-1', nodeId: 'gone' }),
+      createTask({ id: 'task-d', instanceId: 'missing-instance' }),
+    ]);
+
+    return fixture;
+  }
+
+  it('reads nodeLabel from each instance snapshot, null when the node or instance is unknown', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listInboxTasks('member-finance');
+
+    expect(
+      Object.fromEntries(tasks.map((task) => [task.id, task.nodeLabel])),
+    ).toEqual({
+      'task-a': '財務簽核',
+      'task-b': '部門主管簽核',
+      'task-c': null,
+      'task-d': null,
+    });
+  });
+
+  it('loads the instances for a whole task list in one query', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    await fixture.service.listInboxTasks('member-finance');
+
+    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceFind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: { id: true, workflowSnapshot: true },
+        where: { id: In(['instance-1', 'instance-2', 'missing-instance']) },
+      }),
+    );
+  });
+
+  it('gives an ad-hoc task in a list the plain label of the node it sits on', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        id: 'task-adhoc',
+        instanceId: 'instance-1',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+      }),
+    ]);
+
+    const [task] = await fixture.service.listInboxTasks('member-finance');
+
+    // No 臨時加簽 wording on the server; clients add it from isAdhoc/adhocType.
+    expect(task?.nodeLabel).toBe('財務簽核');
+  });
+
+  it('labels approval history tasks too', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listApprovalHistoryTasks('member-finance');
+
+    expect(tasks.find((task) => task.id === 'task-b')?.nodeLabel).toBe(
+      '部門主管簽核',
+    );
+    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the tasks of an instance', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+    ]);
+
+    const [task] = await fixture.service.listTasks('instance-1');
+
+    expect(task?.nodeLabel).toBe('財務簽核');
   });
 });
 

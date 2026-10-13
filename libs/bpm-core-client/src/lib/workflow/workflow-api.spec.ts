@@ -1,9 +1,11 @@
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  listApprovalHistoryTasks,
   listApprovalInstances,
   listApprovalInstancesPage,
   listInboxTasks,
   readApprovalInstance,
+  requestAdhocPreApproval,
   readFormDataCaseTitle,
   retryWorkflowWebhookDelivery,
   listWorkflowWebhookDeliveries,
@@ -187,6 +189,78 @@ describe('@rytass/bpm-core-client/workflow', () => {
         expect(request.variables).toEqual({ assigneeMemberId: 'member-001' });
         expect(tasks).toHaveLength(1);
         expect(tasks[0]?.assigneeMemberId).toBe('member-001');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('task node label', () => {
+    const selectsNodeLabel = (query: string): boolean =>
+      /\bnodeId\s+nodeLabel\b/.test(query);
+    const task = {
+      assigneeMemberId: 'member-001',
+      id: 'task-1',
+      nodeId: 'band-0',
+      nodeLabel: '部門主管簽核',
+    };
+
+    it.each([
+      [
+        'readApprovalInstance',
+        async (): Promise<unknown> => readApprovalInstance('instance-1'),
+        {
+          approvalInstance: {
+            formDataJson: '{}',
+            formDefinitionSnapshotJson: '{}',
+            id: 'instance-1',
+            workflowSnapshotJson: '{}',
+          },
+          activityLogs: [],
+          tasks: [task],
+          workflowTokens: [],
+        },
+      ],
+      [
+        'listInboxTasks',
+        async (): Promise<unknown> => listInboxTasks('member-001'),
+        { inboxTasks: [task] },
+      ],
+      [
+        'listApprovalHistoryTasks',
+        async (): Promise<unknown> => listApprovalHistoryTasks('member-001'),
+        { approvalHistoryTasks: [task] },
+      ],
+      [
+        'requestAdhocPreApproval',
+        async (): Promise<unknown> =>
+          requestAdhocPreApproval({
+            onReject: 'REJECT_INSTANCE',
+            target: { kind: 'MEMBER', memberIds: ['member-002'] },
+            taskId: 'task-1',
+          }),
+        { requestAdhocPreApproval: task },
+      ],
+    ])(
+      'selects nodeLabel next to nodeId in %s',
+      async (_name, call, payload): Promise<void> => {
+        const harness = installFetchMock(payload);
+        try {
+          await call();
+
+          expect(selectsNodeLabel(harness.capture().query)).toBe(true);
+        } finally {
+          harness.restore();
+        }
+      },
+    );
+
+    it('keeps nodeLabel on the normalized inbox records', async (): Promise<void> => {
+      const harness = installFetchMock({ inboxTasks: [task] });
+      try {
+        const [first] = await listInboxTasks('member-001');
+
+        expect(first?.nodeLabel).toBe('部門主管簽核');
       } finally {
         harness.restore();
       }

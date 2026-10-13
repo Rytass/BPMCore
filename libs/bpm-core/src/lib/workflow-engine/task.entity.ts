@@ -105,6 +105,17 @@ export class TaskEntity {
     return JSON.stringify(this.decisionPolicySnapshot);
   }
 
+  /**
+   * Display name of the workflow node (`node.data.label`), read from the
+   * instance's `workflow_snapshot` — never stored on the task row. `null`
+   * when the snapshot has no node with this `nodeId` (or the task came from a
+   * path that does not resolve it). An ad-hoc task keeps the label of the
+   * node it was spawned on; clients add their own 臨時加簽／會簽 marker from
+   * `isAdhoc` / `adhocType`.
+   */
+  @Field(() => String, { nullable: true })
+  nodeLabel: string | null = null;
+
   @Field(() => [String])
   candidateMemberIds: readonly string[] = [];
 

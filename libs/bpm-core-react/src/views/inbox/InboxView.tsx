@@ -26,6 +26,7 @@ import {
 } from '@rytass/bpm-core-client/workflow';
 import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
+import { readTaskNodeText } from '../../lib/task-node-label';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
 
@@ -36,6 +37,7 @@ type InboxTaskRow = Readonly<
     TaskRecord & {
       caseTitle: string;
       key: string;
+      nodeText: string;
       slaStatusColor: 'text-error' | 'text-neutral' | 'text-success';
       slaStatusText: string;
       statusLabel: string;
@@ -54,6 +56,7 @@ type ApprovalHistoryRow = Readonly<
       instanceState: ApprovalInstanceRecord['state'] | null;
       instanceStateLabel: string;
       key: string;
+      nodeText: string;
     }
 >;
 
@@ -85,7 +88,7 @@ export function InboxView(): ReactElement {
   const pendingColumns = useMemo(
     (): TableColumn<InboxTaskRow>[] => [
       { dataIndex: 'caseTitle', key: 'caseTitle', title: '案件', width: 280 },
-      { dataIndex: 'nodeId', key: 'nodeId', title: '節點', width: 180 },
+      { dataIndex: 'nodeText', key: 'nodeText', title: '節點', width: 180 },
       {
         dataIndex: 'statusLabel',
         key: 'statusLabel',
@@ -135,7 +138,7 @@ export function InboxView(): ReactElement {
   const historyColumns = useMemo(
     (): TableColumn<ApprovalHistoryRow>[] => [
       { dataIndex: 'caseTitle', key: 'caseTitle', title: '案件', width: 280 },
-      { dataIndex: 'nodeId', key: 'nodeId', title: '節點', width: 180 },
+      { dataIndex: 'nodeText', key: 'nodeText', title: '節點', width: 180 },
       {
         key: 'decisionLabel',
         render: (record: ApprovalHistoryRow): ReactElement => (
@@ -334,6 +337,7 @@ async function readInboxTaskRows(
       ...task,
       caseTitle: readTaskCaseTitle(task, instances[index] ?? null),
       key: task.id,
+      nodeText: readTaskNodeText(task),
       slaStatusColor: readSlaStatusColor(task.slaDueAt),
       slaStatusText: readSlaStatusText(task.slaDueAt),
       statusLabel: readTaskStatusLabel(task.status),
@@ -364,6 +368,7 @@ async function readApprovalHistoryRows(
       instanceState: instance?.state ?? null,
       instanceStateLabel: readInstanceStateLabel(instance?.state ?? null),
       key: task.id,
+      nodeText: readTaskNodeText(task),
     };
   });
 }

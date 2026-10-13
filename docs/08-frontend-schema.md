@@ -136,6 +136,14 @@ UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與�
 
 Task 相關欄位（`TaskRecord`／activity payload）：
 
+- `nodeLabel`：task 所在節點的顯示名稱（`node.data.label`）。由 server 依 task 所屬
+  案件的 `workflow_snapshot` 解析、不存進 task 資料列（無 migration）；`inboxTasks`／
+  `approvalHistoryTasks`／`tasks` 以一次查詢取得整批 task 的案件快照，不會每筆 task
+  各查一次。快照裡找不到該節點時為 `null`。清單類畫面（待簽、歷史、追蹤）顯示
+  `nodeLabel ?? nodeId`，不再顯示內部 id（如 `band-0`）；臨時加簽／會簽產生的 task
+  沿用它所在節點的名稱，畫面另依 `isAdhoc`／`adhocType` 加「（臨時加簽）」或
+  「（臨時會簽）」。內建 client 一律選取此欄位，舊版 server 會直接拒絕整個查詢，
+  所以 client 與 server 必須同版升級，即同一個 release。
 - `candidateMemberIds`：task 上所有候選人（顯示用摘要，含尚未輪到者）。
 - `openCandidateMemberIds`：現在可以操作的候選人（候選狀態為 `PENDING` 或
   `CLAIMED`），順序同 `candidateMemberIds`。判斷「某人是否能簽」請用這個欄位

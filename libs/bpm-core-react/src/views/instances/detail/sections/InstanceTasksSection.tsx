@@ -35,6 +35,7 @@ import {
   searchMembers,
 } from '@rytass/bpm-core-client/workflow';
 import { formatDateTime } from '../../../../lib/format-date-time';
+import { readTaskNodeText } from '../../../../lib/task-node-label';
 import { BPMFormField } from '../../../../components/bpm-form-field';
 import {
   MemberOption,
@@ -320,16 +321,15 @@ export const InstanceTasksSection = forwardRef<
         ...task,
         assigneeLabel: readTaskAssigneeLabel(task, memberProfilesById),
         key: task.id,
-        nodeLabel: `${readNodeDisplayLabel(
-          task.nodeId,
-          instance?.workflowSnapshot ?? null,
-        )}${
-          task.isAdhoc
-            ? task.adhocType === 'COUNTERSIGN'
-              ? '（臨時會簽）'
-              : '（臨時加簽）'
-            : ''
-        }`,
+        // This view holds the snapshot, so it resolves the name itself rather
+        // than trusting the server-sent `task.nodeLabel`.
+        nodeLabel: readTaskNodeText({
+          ...task,
+          nodeLabel: readNodeDisplayLabel(
+            task.nodeId,
+            instance?.workflowSnapshot ?? null,
+          ),
+        }),
         statusLabel: readTaskStatusLabel(task.status),
       })),
     [instance, memberProfilesById, tasks],
