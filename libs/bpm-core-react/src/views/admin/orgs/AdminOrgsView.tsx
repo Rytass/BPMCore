@@ -79,8 +79,8 @@ import {
   OrgUnitTreeDraftEditorState,
 } from '../../../components/org-unit-tree-draft-editor';
 import type { OrgUnitHierarchyDraftChange } from '../../../lib/org-tree-draft';
-import styles from './orgs.module.scss';
 import { formatMemberLabel } from '../../../lib/format-member-label';
+import styles from './orgs.module.scss';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
 type OrgUnitViewMode = 'FLOW' | 'TABLE';

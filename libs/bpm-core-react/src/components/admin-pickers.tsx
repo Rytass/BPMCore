@@ -7,8 +7,8 @@ import type {
   OrgUnitRecord,
   PositionRecord,
 } from '@rytass/bpm-core-client/organization';
-import styles from './admin-pickers.module.scss';
 import { formatMemberLabel } from '../lib/format-member-label';
+import styles from './admin-pickers.module.scss';
 
 export type MemberOption = Readonly<{
   email: string;

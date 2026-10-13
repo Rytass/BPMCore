@@ -25,6 +25,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 import styles from './users.module.scss';
 import {
   listMemberDirectoryPage,
@@ -40,7 +41,6 @@ import {
   readResolvedManager,
   ResolvedManagerRecord,
 } from '@rytass/bpm-core-client/organization';
-import { formatMemberLabel } from '../../../lib/format-member-label';
 
 type MemberRow = Readonly<
   Record<string, unknown> &
