@@ -104,9 +104,10 @@ overrides:
   # `reflect-metadata: >=0.1.13`, so `autoInstallPeers` installed 0.2.2 beside
   # the workspace's 0.1.14 — which gave @nestjs/core two snapshots differing
   # only by that peer, hence two `ModuleRef` classes, and every module that
-  # injects one failed to resolve it. Moving the workspace to 0.2.x is a
-  # separate decision (0.x minor is a breaking change); this keeps it at one.
-  'reflect-metadata': '^0.1.14'
+  # injects one failed to resolve it. Now on 0.2: typeorm and @peculiar/x509
+  # depend on `^0.2.2` themselves, so holding 0.1 forced them below their own
+  # range. Whatever the version, keep it to one copy.
+  'reflect-metadata': '^0.2.2'
   'sharp': '^0.35.4'
   'shell-quote': '^1.11.0'
   'svgo@3': '^3.3.5'
