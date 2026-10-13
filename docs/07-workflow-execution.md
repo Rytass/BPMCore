@@ -509,9 +509,11 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
   **只有讀取**：重送（resubmit）與取消（cancel）仍然只有申請人本人能做，檢查沒有動。
   不相干的成員讀到的仍是 `Approval instance … was not found`。
 - **申請人的通知會說明是誰代送**：單據完成時寄給申請人的 `INSTANCE_COMPLETED` 通知，內文在有代送人時
-  多一句「（由 {代送人姓名} 代為送出）」，payload 另帶 `submittedByMemberId`；申請人自己送出的單據
-  內文與 payload 完全不變。姓名經由主機的身分來源解析（與寄信取收件人 email 同一條路），
-  查不到時退回顯示成員 id，不會因此讓核准失敗。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
+  多一句「（由 {代送人姓名} 代為送出）」，payload 另帶 `submittedByMemberId` 與組好的句子
+  `submittedByNote`（內建模板 `{{submittedByNote}}` 取用它；自訂的 handlebars 模板也可以用）；
+  申請人自己送出的單據內文與 payload 完全不變。姓名經由主機的身分來源解析（與寄信取收件人 email
+  同一條路）；查不到、丟錯，或 2 秒內沒有回應（這一步發生在核准的 transaction 內，不能讓主機卡住它）
+  都退回顯示成員 id，不會因此讓核准失敗或一直卡著。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
 - **前端顯示**：單據詳情標題下方的說明列在有代送人時多一段「由 {代送人} 代 {申請人} 送出」，時間軸的
   「案件已發起」那一筆也會有同一句。判斷「是否代送」的規則（`submittedByMemberId` 非空且不同於
   `initiatorMemberId`）集中在 `libs/bpm-core-react/src/views/instances/detail/submitted-by.ts`；
