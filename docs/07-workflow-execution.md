@@ -504,6 +504,18 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
   `whenEmpty` 的處理也不變。代送人不是申請人本人時，錯誤訊息改用「申請人或代為送出此單的人／代送人」的版本。
 - 舊資料的 `submitted_by_member_id` 是 `NULL`，一律視為「申請人自己送出」，不回填。
 - `INSTANCE_STARTED` activity 的 payload 另帶 `submittedByMemberId`。
+- **代送人看得到單據**：代送人（與申請人不同時）可以讀這張單——單據詳情、時間軸、附件，
+  以及「我送出的」（`SENT`）與一般可讀清單裡都找得到，助理才找得回自己送出的案件。
+  **只有讀取**：重送（resubmit）與取消（cancel）仍然只有申請人本人能做，檢查沒有動。
+  不相干的成員讀到的仍是 `Approval instance … was not found`。
+- **申請人的通知會說明是誰代送**：單據完成時寄給申請人的 `INSTANCE_COMPLETED` 通知，內文在有代送人時
+  多一句「（由 {代送人姓名} 代為送出）」，payload 另帶 `submittedByMemberId`；申請人自己送出的單據
+  內文與 payload 完全不變。姓名經由主機的身分來源解析（與寄信取收件人 email 同一條路），
+  查不到時退回顯示成員 id，不會因此讓核准失敗。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
+- **前端顯示**：單據詳情標題下方的說明列在有代送人時多一段「由 {代送人} 代 {申請人} 送出」，時間軸的
+  「案件已發起」那一筆也會有同一句。判斷「是否代送」的規則（`submittedByMemberId` 非空且不同於
+  `initiatorMemberId`）集中在 `libs/bpm-core-react/src/views/instances/detail/submitted-by.ts`；
+  姓名解析沿用頁面既有的成員資料載入，沒載入到的顯示成員 id。
 
 - **建立待簽任務**：先解析、再套用 delegation，然後移除申請人出現在其代理路徑上的候選人
   （代理前的 `originalMemberId`、`delegationChain` 中任何一步的 `from`／`to`，或代理後的

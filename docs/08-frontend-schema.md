@@ -104,6 +104,9 @@ interface ExcludeInitiatorConfig {
 runtime 規則見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 單據有「代送人」（`submittedByMemberId`，建單人替申請人送出時才會與申請人不同）時，
 同一個設定也會把代送人排除，規則與申請人完全一樣。
+Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `null`）就是這個欄位；
+`null`、缺省、或等於 `initiatorMemberId` 都表示申請人自己送出，只有不同的非空值才顯示「由 X 代 Y 送出」。
+讀取權限與通知內文見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
