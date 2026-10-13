@@ -1,5 +1,14 @@
 ## 0.15.0 (2026-10-13)
 
+### ⚠️  Breaking Changes
+
+- **workflow-engine / organization:** the engine now reads "today" in the organization time zone (`organizationTimeZone`, default `Asia/Taipei`) instead of UTC. For a membership or manager rule whose `effectiveFrom` / `effectiveTo` is today, approver resolution applies or retires it from local midnight — up to eight hours earlier than before in UTC+8. A host whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'` before upgrading. Running instances keep their tasks. ([d6e43f3](https://github.com/Rytass/BPMCore/commit/d6e43f3); this note was missing from the generated changelog because the footer sits on a `docs:` commit)
+- **template:** publishing now refuses a `DYNAMIC_FORM` resolver whose member field can be left empty — the field must be `required`, not `hidden`, and have no `visibleWhen`. Drafts still save; versions already published are not re-validated. ([b3a3950](https://github.com/Rytass/BPMCore/commit/b3a3950))
+
+### 🗄️ Upgrade
+
+- New migrations add nullable columns and indexes only; no data is dropped. Hosts run with `migrationsRun: false`, so **run the migrations before deploying 0.15.0**.
+
 ### 🚀 Features
 
 - **designer:** pick approvers from a member field and show readable dry-run assignees ([bc9592e](https://github.com/Rytass/BPMCore/commit/bc9592e))
