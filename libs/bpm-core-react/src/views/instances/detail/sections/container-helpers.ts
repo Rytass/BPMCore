@@ -6,6 +6,7 @@
 import {
   ActivityLogRecord,
   AdhocDirectiveRecord,
+  ApprovalInstanceRecord,
   MemberProfileRecord,
   TaskDecisionRecord,
   TaskRecord,
@@ -29,15 +30,24 @@ export {
 export async function readMemberProfilesForTimeline({
   activityLogs,
   adhocDirectives = [],
+  instance,
   tasks,
 }: {
   readonly activityLogs: readonly ActivityLogRecord[];
   readonly adhocDirectives?: readonly AdhocDirectiveRecord[];
+  readonly instance?: Pick<
+    ApprovalInstanceRecord,
+    'initiatorMemberId' | 'submittedByMemberId'
+  >;
   readonly tasks: readonly TaskRecord[];
 }): Promise<readonly MemberProfileRecord[]> {
   const memberIds = [
     ...new Set(
       [
+        // The applicant and whoever filed on their behalf are named in the
+        // page header even when the timeline does not mention them.
+        instance?.initiatorMemberId ?? null,
+        instance?.submittedByMemberId ?? null,
         ...activityLogs.map((activityLog) => activityLog.actorMemberId),
         ...activityLogs.flatMap(readSequentialActivityPayloadMemberIds),
         ...tasks.map((task) => task.assigneeMemberId),

@@ -100,7 +100,8 @@ import {
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
 import { InstanceHistorySection } from './sections/InstanceHistorySection';
 import { InstanceWebhookDeliveriesSection } from './sections/InstanceWebhookDeliveriesSection';
-import { readNodeDisplayLabel } from './sections/shared';
+import { isPresentText, readNodeDisplayLabel } from './sections/shared';
+import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
@@ -695,9 +696,13 @@ export function InstanceDetailView({
         <ContentHeader
           description={
             instance
-              ? `${readInstanceStateLabel(instance.state)} · ${formatDateTime(
-                  instance.startedAt,
-                )}`
+              ? [
+                  readInstanceStateLabel(instance.state),
+                  formatDateTime(instance.startedAt),
+                  readSubmittedOnBehalfLabel(instance, memberProfilesById),
+                ]
+                  .filter(isPresentText)
+                  .join(' · ')
               : '載入案件內容。'
           }
           title={instance?.title ?? '簽核案件'}

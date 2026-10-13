@@ -10,7 +10,7 @@ interface NotificationTemplate {
 const TEMPLATES: Readonly<Record<NotificationTypeEnum, NotificationTemplate>> =
   {
     [NotificationTypeEnum.INSTANCE_COMPLETED]: {
-      body: '案件 {{instanceTitle}} 已完成。',
+      body: '案件 {{instanceTitle}} 已完成。{{submittedByNote}}',
       title: '案件已完成',
     },
     [NotificationTypeEnum.SLA_OVERDUE]: {

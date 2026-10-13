@@ -25,8 +25,11 @@ import {
   BPMBusinessCalendar,
 } from '../calendar/business-calendar.token';
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
+import { withDispatchTimeout } from '../common/outbox';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
+import { IdentityService } from '../identity/identity.service';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { readDistinctSubmitterMemberId } from '../workflow-engine/instance-submitter';
 import { OrganizationService } from '../organization/organization.service';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
@@ -81,6 +84,10 @@ interface CreateNotificationInput {
   readonly type: NotificationTypeEnum;
   readonly customTemplate?: string | null;
 }
+
+// How long the applicant's "filed by" wording may wait for the host's member
+// lookup before the member id is shown instead.
+const MEMBER_NAME_LOOKUP_TIMEOUT_MS = 2000;
 
 interface SlaScanResult {
   readonly overdueCount: number;
@@ -555,6 +562,18 @@ export class NotificationService {
       return [];
     }
 
+    // The applicant is told who filed the document for them. Nothing is added
+    // when they submitted it themselves, so those payloads stay as they were.
+    const submitterMemberId = readDistinctSubmitterMemberId(instance);
+    const submitterPayload = submitterMemberId
+      ? {
+          submittedByMemberId: submitterMemberId,
+          submittedByNote: `（由 ${await this.readMemberDisplayName(
+            submitterMemberId,
+          )} 代為送出）`,
+        }
+      : {};
+
     return this.createNotifications(
       {
         channels: [NotificationChannelEnum.IN_APP],
@@ -564,6 +583,7 @@ export class NotificationService {
           instanceId: instance.id,
           instanceTitle: instance.title,
           recipientMemberId: instance.initiatorMemberId,
+          ...submitterPayload,
         },
         recipientMemberId: instance.initiatorMemberId,
         taskId: null,
@@ -974,6 +994,29 @@ export class NotificationService {
       }).timeZone;
     } catch {
       return DEFAULT_QUIET_HOURS_TIME_ZONE;
+    }
+  }
+
+  /**
+   * The name a member goes by in notification text, resolved through the host
+   * identity source like the email recipient is. Falls back to the id when
+   * the identity source fails or does not answer within
+   * {@link MEMBER_NAME_LOOKUP_TIMEOUT_MS} — this runs inside the approval
+   * transaction, and wording a notification must never be the reason an
+   * approval fails or stays open.
+   */
+  private async readMemberDisplayName(memberId: string): Promise<string> {
+    try {
+      const member = await withDispatchTimeout(
+        this.moduleRef
+          .get(IdentityService, { strict: false })
+          .resolveMember(memberId),
+        MEMBER_NAME_LOOKUP_TIMEOUT_MS,
+      );
+
+      return member.name.trim() || memberId;
+    } catch {
+      return memberId;
     }
   }
 

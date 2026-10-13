@@ -17,6 +17,7 @@ import {
 import { readFormDataSourceErrorMessage } from '@rytass/bpm-core-client/form';
 import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
 import { formatDateTime } from '../../../../lib/format-date-time';
+import { readSubmittedOnBehalfLabel } from '../submitted-by';
 
 // ---------------------------------------------------------------------------
 // Row types
@@ -673,6 +674,18 @@ function readActivityDetail(
   workflow: WorkflowDefinition | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): string | null {
+  if (activityLog.eventType === 'INSTANCE_STARTED') {
+    // The actor of this event is the applicant; the payload says who pressed
+    // submit. Nothing is shown when they are the same person.
+    return readSubmittedOnBehalfLabel(
+      {
+        initiatorMemberId: activityLog.actorMemberId,
+        submittedByMemberId: readStringField(payload, 'submittedByMemberId'),
+      },
+      memberProfilesById,
+    );
+  }
+
   if (activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED') {
     const candidateMemberId = readStringField(payload, 'candidateMemberId');
     const previousMemberId = readStringField(payload, 'previousMemberId');

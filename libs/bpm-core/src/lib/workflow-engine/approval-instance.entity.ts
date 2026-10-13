@@ -40,6 +40,15 @@ export class ApprovalInstanceEntity {
   @Field()
   initiatorMemberId!: string;
 
+  /**
+   * Who actually pressed submit, when that is not the applicant (an assistant,
+   * or a manager filing for a subordinate). NULL on rows written before the
+   * column existed, which means "the initiator submitted it themselves".
+   */
+  @Column('text', { name: 'submitted_by_member_id', nullable: true })
+  @Field(() => String, { nullable: true })
+  submittedByMemberId!: string | null;
+
   @Column('jsonb', { name: 'initiator_metadata_snapshot' })
   initiatorMetadataSnapshot!: Readonly<Record<string, unknown>>;
 

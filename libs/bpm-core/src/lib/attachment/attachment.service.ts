@@ -9,6 +9,7 @@ import {
 import { EntityManager, In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
+import { readDistinctSubmitterMemberId } from '../workflow-engine/instance-submitter';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
@@ -278,7 +279,13 @@ export class AttachmentService {
         })
       : null;
 
-    if (instance?.initiatorMemberId === requestedByMemberId) {
+    // The member who filed the instance on the applicant's behalf opens the
+    // instance detail, so they must be able to open its files as well.
+    if (
+      instance &&
+      (instance.initiatorMemberId === requestedByMemberId ||
+        readDistinctSubmitterMemberId(instance) === requestedByMemberId)
+    ) {
       return;
     }
 

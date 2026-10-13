@@ -43,4 +43,24 @@ describe('readMemberProfilesForTimeline', () => {
       ['member-a', 'member-actor', 'member-b'],
     );
   });
+
+  it('loads the applicant and the member who filed on their behalf for the header', async () => {
+    const resolve = jest.mocked(resolveMemberProfiles);
+
+    resolve.mockClear();
+    resolve.mockResolvedValue([] as readonly MemberProfileRecord[]);
+
+    await readMemberProfilesForTimeline({
+      activityLogs: [],
+      instance: {
+        initiatorMemberId: 'member-applicant',
+        submittedByMemberId: 'member-assistant',
+      },
+      tasks: [],
+    });
+
+    expect([...(resolve.mock.calls[0][0] as readonly string[])].sort()).toEqual(
+      ['member-applicant', 'member-assistant'],
+    );
+  });
 });

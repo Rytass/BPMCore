@@ -237,6 +237,7 @@ template_id                         uuid FK → approval_templates.id
 template_version_id                 uuid FK → approval_template_versions.id
 initiator_member_id                 text
 initiator_metadata_snapshot         jsonb        -- 發起當下的 metadata 快照
+submitted_by_member_id              text (nullable) -- 代為送出的人；NULL 或等於 initiator_member_id ＝ 申請人自己送出
 workflow_snapshot                   jsonb        -- 流程定義快照
 form_definition_snapshot            jsonb        -- 表單定義快照
 form_data                           jsonb        -- 使用者填寫
@@ -249,6 +250,7 @@ completed_at                        timestamptz (nullable)
 created_at                          timestamptz
 
 INDEX (initiator_member_id, state)
+INDEX (submitted_by_member_id, created_at DESC)  -- 「我送出的」清單比對申請人或代送人時用
 INDEX (template_id, state)
 INDEX (state, started_at)
 UNIQUE INDEX approval_instances_business_key_key (template_id, business_key)

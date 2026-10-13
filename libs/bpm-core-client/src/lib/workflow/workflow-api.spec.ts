@@ -1,6 +1,7 @@
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
   listApprovalInstances,
+  listApprovalInstancesPage,
   listInboxTasks,
   readApprovalInstance,
   readFormDataCaseTitle,
@@ -53,10 +54,65 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('query ApprovalInstances');
+        expect(request.query).toContain('submittedByMemberId');
         expect(request.variables).toBeUndefined();
         expect(instances).toEqual([]);
       } finally {
         harness.restore();
+      }
+    });
+  });
+
+  describe('listApprovalInstancesPage', () => {
+    it('selects submittedByMemberId on the paged list too', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const queries: string[] = [];
+
+      (global as { fetch: typeof fetch }).fetch = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) => {
+          queries.push(
+            (JSON.parse(String(init?.body)) as { query: string }).query,
+          );
+
+          return new Response(
+            JSON.stringify({
+              data: {
+                approvalInstancePageInfo: {
+                  hasNextPage: false,
+                  hasPreviousPage: false,
+                  page: 1,
+                  pageSize: 10,
+                  totalCount: 0,
+                  totalPages: 1,
+                },
+                approvalInstances: [],
+              },
+            }),
+            {
+              headers: { 'Content-Type': 'application/json' },
+              status: 200,
+            },
+          );
+        },
+      ) as unknown as typeof fetch;
+
+      try {
+        await listApprovalInstancesPage({
+          page: 1,
+          pageSize: 10,
+          searchText: null,
+          state: null,
+          templateId: null,
+          view: 'SENT',
+        });
+
+        const listQuery = queries.find((query) =>
+          query.includes('query ApprovalInstancesPage('),
+        );
+
+        expect(listQuery).toContain('submittedByMemberId');
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
       }
     });
   });
@@ -72,6 +128,7 @@ describe('@rytass/bpm-core-client/workflow', () => {
           initiatorMemberId: 'member-001',
           startedAt: '2026-05-26T00:00:00.000Z',
           state: 'RUNNING',
+          submittedByMemberId: 'member-assistant',
           templateId: 'template-1',
           templateVersionId: 'tv-1',
           title: 'Test instance',
@@ -87,8 +144,10 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('query ApprovalInstance');
+        expect(request.query).toContain('submittedByMemberId');
         expect(request.variables).toEqual({ id: 'instance-1' });
         expect(result.instance.id).toBe('instance-1');
+        expect(result.instance.submittedByMemberId).toBe('member-assistant');
         expect(result.tasks).toEqual([]);
         expect(result.workflowTokens).toEqual([]);
       } finally {
