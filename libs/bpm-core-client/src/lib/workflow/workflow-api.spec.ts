@@ -149,7 +149,6 @@ describe('@rytass/bpm-core-client/workflow', () => {
     it.each([
       [
         'readApprovalInstance',
-        'tasks',
         async (): Promise<unknown> => readApprovalInstance('instance-1'),
         {
           approvalInstance: {
@@ -165,18 +164,15 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ],
       [
         'listInboxTasks',
-        'inboxTasks',
         async (): Promise<unknown> => listInboxTasks('member-001'),
         { inboxTasks: [task] },
       ],
       [
         'listApprovalHistoryTasks',
-        'approvalHistoryTasks',
         async (): Promise<unknown> => listApprovalHistoryTasks('member-001'),
         { approvalHistoryTasks: [task] },
       ],
       [
-        'requestAdhocPreApproval',
         'requestAdhocPreApproval',
         async (): Promise<unknown> =>
           requestAdhocPreApproval({
@@ -188,7 +184,7 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ],
     ])(
       'selects nodeLabel next to nodeId in %s',
-      async (_name, _field, call, payload): Promise<void> => {
+      async (_name, call, payload): Promise<void> => {
         const harness = installFetchMock(payload);
         try {
           await call();

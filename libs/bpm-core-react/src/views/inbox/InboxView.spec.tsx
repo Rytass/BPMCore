@@ -49,7 +49,22 @@ jest.mock('@mezzanine-ui/react', () => {
     PageHeader: Container,
     Section: Container,
     SectionGroup: Container,
-    Tab: Container,
+    Tab: (props: Readonly<Record<string, unknown>>): ReactElement => (
+      <div>
+        {['tracking', 'history'].map(
+          (tab): ReactElement => (
+            <button
+              data-tab={tab}
+              key={tab}
+              onClick={(): void =>
+                (props.onChange as (key: string) => void)(tab)
+              }
+              type="button"
+            />
+          ),
+        )}
+      </div>
+    ),
     TabItem: Container,
     Table,
     Typography: (props: Readonly<Record<string, unknown>>): ReactElement => (
@@ -123,20 +138,67 @@ describe('InboxView node column', () => {
     container.remove();
   });
 
+  const nodeCell = (taskId: string): string | undefined =>
+    container.querySelector(`[data-row="${taskId}"] [data-column="節點"]`)
+      ?.textContent ?? undefined;
+
+  async function renderInbox(): Promise<void> {
+    await act(async (): Promise<void> => {
+      root.render(<InboxView />);
+    });
+  }
+
+  async function openTab(tab: 'history' | 'tracking'): Promise<void> {
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>(`[data-tab="${tab}"]`)
+        ?.click();
+    });
+  }
+
+  const historyTasks = [
+    task({ id: 'task-1', nodeLabel: '部門主管簽核', status: 'COMPLETED' }),
+    task({
+      id: 'task-2',
+      nodeId: 'band-1',
+      nodeLabel: null,
+      status: 'COMPLETED',
+    }),
+  ];
+
   it('shows the node name in the pending tab and falls back to the id', async (): Promise<void> => {
     api.listInboxTasks.mockResolvedValue([
       task({ id: 'task-1', nodeLabel: '部門主管簽核' }),
       task({ id: 'task-2', nodeId: 'band-1', nodeLabel: null }),
     ]);
 
-    await act(async (): Promise<void> => {
-      root.render(<InboxView />);
-    });
+    await renderInbox();
 
-    const nodeCell = (taskId: string): string | undefined =>
-      container
-        .querySelector(`[data-row="${taskId}"] [data-column="節點"]`)
-        ?.textContent ?? undefined;
+    expect(nodeCell('task-1')).toBe('部門主管簽核');
+    expect(nodeCell('task-2')).toBe('band-1');
+  });
+
+  it('shows the node name in the history tab and falls back to the id', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([]);
+    api.listApprovalHistoryTasks.mockResolvedValue(historyTasks);
+
+    await renderInbox();
+    await openTab('history');
+
+    expect(nodeCell('task-1')).toBe('部門主管簽核');
+    expect(nodeCell('task-2')).toBe('band-1');
+  });
+
+  it('shows the node name in the tracking tab', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([]);
+    api.listApprovalHistoryTasks.mockResolvedValue(historyTasks);
+    api.readApprovalInstance.mockResolvedValue({
+      instance: { state: 'RUNNING' },
+    } as Awaited<ReturnType<typeof workflowApi.readApprovalInstance>>);
+    api.readApprovalInstanceCaseTitle.mockReturnValue('案件');
+
+    await renderInbox();
+    await openTab('tracking');
 
     expect(nodeCell('task-1')).toBe('部門主管簽核');
     expect(nodeCell('task-2')).toBe('band-1');
