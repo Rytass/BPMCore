@@ -5047,39 +5047,45 @@ export class WorkflowEngineService {
     gradeGated: boolean,
   ): Promise<readonly RuntimeTaskCandidate[]> {
     const context = this.buildDelegationContext(instance, nodeId);
-    const delegatedCandidates = await Promise.all(
-      resolvedCandidates.map(
-        async (candidate): Promise<RuntimeTaskCandidate> => {
-          const { skippedDelegation, ...delegationResolution } =
-            await this.resolveDelegation(
-              manager,
-              candidate.memberId,
-              context,
-              gradeGated,
-            );
-
-          return {
-            delegationChain: delegationResolution.delegationChain,
-            memberId: delegationResolution.finalAssigneeMemberId,
-            originalMemberId: candidate.memberId,
-            ...(skippedDelegation ? { skippedDelegation } : {}),
-            sourceType: candidate.sourceType,
-          };
-        },
-      ),
+    const resolved = await Promise.all(
+      resolvedCandidates.map(async (candidate) => ({
+        candidate,
+        resolution: await this.delegationService.resolveAssignee(
+          candidate.memberId,
+          context,
+        ),
+      })),
     );
+    // One batch of grade lookups for the whole node, not two per delegate.
+    const levels = gradeGated
+      ? await this.readMemberPositionLevels(
+          manager,
+          resolved.flatMap(({ candidate, resolution }) =>
+            readGradeGateMemberIds(candidate.memberId, resolution),
+          ),
+          this.readOrganizationToday(),
+        )
+      : new Map<string, number | null>();
 
-    return delegatedCandidates;
+    return resolved.map(({ candidate, resolution }): RuntimeTaskCandidate => {
+      const { skippedDelegation, ...delegationResolution } = applyGradeGate(
+        candidate.memberId,
+        resolution,
+        gradeGated,
+        levels,
+      );
+
+      return {
+        delegationChain: delegationResolution.delegationChain,
+        memberId: delegationResolution.finalAssigneeMemberId,
+        originalMemberId: candidate.memberId,
+        ...(skippedDelegation ? { skippedDelegation } : {}),
+        sourceType: candidate.sourceType,
+      };
+    });
   }
 
-  /**
-   * Resolves a member's delegation. On a manager-chain node the delegate must
-   * hold at least the grade of the member they replace: anything lower is not
-   * applied, the member stays and the refused delegation is returned so it can
-   * be recorded. Resolution does not walk further down the delegation chain
-   * once it has been refused. A member without a grade (or a delegate that
-   * stays the member) is never constrained.
-   */
+  /** One member's delegation, grade-gated as {@link applyGradeGate} says. */
   private async resolveDelegation(
     manager: EntityManager,
     principalMemberId: string,
@@ -5090,43 +5096,19 @@ export class WorkflowEngineService {
       principalMemberId,
       context,
     );
+    const memberIds = gradeGated
+      ? readGradeGateMemberIds(principalMemberId, resolution)
+      : [];
+    const levels =
+      memberIds.length > 0
+        ? await this.readMemberPositionLevels(
+            manager,
+            memberIds,
+            this.readOrganizationToday(),
+          )
+        : new Map<string, number | null>();
 
-    if (!gradeGated || resolution.finalAssigneeMemberId === principalMemberId) {
-      return resolution;
-    }
-
-    const date = this.readOrganizationToday();
-    const principalLevel = await this.readMemberPositionLevel(
-      manager,
-      principalMemberId,
-      date,
-    );
-
-    if (principalLevel === null) {
-      return resolution;
-    }
-
-    const agentLevel = await this.readMemberPositionLevel(
-      manager,
-      resolution.finalAssigneeMemberId,
-      date,
-    );
-
-    if (agentLevel !== null && agentLevel >= principalLevel) {
-      return resolution;
-    }
-
-    return {
-      delegationChain: [],
-      finalAssigneeMemberId: principalMemberId,
-      skippedDelegation: {
-        agentLevel,
-        agentMemberId: resolution.finalAssigneeMemberId,
-        principalLevel,
-        principalMemberId,
-        reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
-      },
-    };
+    return applyGradeGate(principalMemberId, resolution, gradeGated, levels);
   }
 
   /**
@@ -5459,27 +5441,62 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
   ): Promise<number | null> {
-    const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { memberId },
-    });
-    const positionIds = uniqueTexts(
-      memberships
-        .filter((membership) => isDateRangeActive(membership, date))
-        .map((membership) => membership.positionId)
-        .filter((positionId): positionId is string => Boolean(positionId)),
+    return (
+      (await this.readMemberPositionLevels(manager, [memberId], date)).get(
+        memberId,
+      ) ?? null
     );
+  }
 
-    if (positionIds.length === 0) {
-      return null;
+  /**
+   * {@link readMemberPositionLevel} for several members in two queries: every
+   * requested member is in the map, `null` when they hold no graded position.
+   */
+  private async readMemberPositionLevels(
+    manager: EntityManager,
+    memberIds: readonly string[],
+    date: string,
+  ): Promise<ReadonlyMap<string, number | null>> {
+    const uniqueMemberIds = uniqueTexts(memberIds);
+
+    if (uniqueMemberIds.length === 0) {
+      return new Map();
     }
 
-    const positions = await manager.getRepository(PositionEntity).find({
-      where: { id: In([...positionIds]) },
-    });
+    const memberships = (
+      await manager.getRepository(MembershipEntity).find({
+        where: { memberId: In([...uniqueMemberIds]) },
+      })
+    ).filter(
+      (membership) =>
+        Boolean(membership.positionId) && isDateRangeActive(membership, date),
+    );
+    const positionIds = uniqueTexts(
+      memberships.map((membership) => membership.positionId ?? ''),
+    );
+    const positions =
+      positionIds.length === 0
+        ? []
+        : await manager.getRepository(PositionEntity).find({
+            where: { id: In([...positionIds]) },
+          });
+    const levelByPositionId = new Map(
+      positions.map((position) => [position.id, position.level]),
+    );
 
-    return positions.length === 0
-      ? null
-      : Math.max(...positions.map((position) => position.level));
+    return new Map(
+      uniqueMemberIds.map((memberId) => {
+        const levels = memberships
+          .filter((membership) => membership.memberId === memberId)
+          .flatMap((membership) => {
+            const level = levelByPositionId.get(membership.positionId ?? '');
+
+            return level === undefined ? [] : [level];
+          });
+
+        return [memberId, levels.length === 0 ? null : Math.max(...levels)];
+      }),
+    );
   }
 
   private resolveFallbackAssignee(
@@ -6827,6 +6844,60 @@ function buildDryRunExpressionContext(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// The members whose grades decide a grade-gated delegation: none when the
+// delegation leaves the seat with its principal.
+function readGradeGateMemberIds(
+  principalMemberId: string,
+  resolution: DelegationResolution,
+): readonly string[] {
+  return resolution.finalAssigneeMemberId === principalMemberId
+    ? []
+    : [principalMemberId, resolution.finalAssigneeMemberId];
+}
+
+/**
+ * On a manager-chain node the delegate must hold at least the grade of the
+ * member they replace: anything lower is not applied, the member stays and
+ * the refused delegation is returned so it can be recorded. Resolution does
+ * not walk further down the delegation chain once it has been refused. A
+ * member without a grade (or a delegate that stays the member) is never
+ * constrained. `levels` holds the grades of `readGradeGateMemberIds`.
+ */
+function applyGradeGate(
+  principalMemberId: string,
+  resolution: DelegationResolution,
+  gradeGated: boolean,
+  levels: ReadonlyMap<string, number | null>,
+): GradeGatedDelegation {
+  if (!gradeGated || resolution.finalAssigneeMemberId === principalMemberId) {
+    return resolution;
+  }
+
+  const principalLevel = levels.get(principalMemberId) ?? null;
+
+  if (principalLevel === null) {
+    return resolution;
+  }
+
+  const agentLevel = levels.get(resolution.finalAssigneeMemberId) ?? null;
+
+  if (agentLevel !== null && agentLevel >= principalLevel) {
+    return resolution;
+  }
+
+  return {
+    delegationChain: [],
+    finalAssigneeMemberId: principalMemberId,
+    skippedDelegation: {
+      agentLevel,
+      agentMemberId: resolution.finalAssigneeMemberId,
+      principalLevel,
+      principalMemberId,
+      reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+    },
+  };
 }
 
 function readNodeLabelKey(instanceId: string, nodeId: string): string {

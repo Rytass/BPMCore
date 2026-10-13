@@ -4931,6 +4931,56 @@ describe('WorkflowEngineService', () => {
           );
         });
 
+        it('reads the grades of every delegated seat on the node in one batch', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> =>
+              Promise.resolve({
+                delegationChain: [],
+                finalAssigneeMemberId:
+                  memberId === 'member-m1'
+                    ? 'agent-high'
+                    : memberId === 'member-m2'
+                      ? 'agent-low'
+                      : memberId,
+              }),
+          );
+          await fixture.service.processInstance('instance-1');
+
+          // The member ids of each membership lookup made by member id list.
+          const memberIdLists = jest
+            .mocked(fixture.membershipFind)
+            .mock.calls.flatMap(([options]): readonly (readonly string[])[] => {
+              const where: unknown = options?.where;
+              const memberId: unknown =
+                typeof where === 'object' && where !== null
+                  ? (where as Readonly<Record<string, unknown>>)['memberId']
+                  : undefined;
+              const value: unknown =
+                memberId instanceof FindOperator ? memberId.value : undefined;
+
+              return Array.isArray(value)
+                ? [value.filter((id): id is string => typeof id === 'string')]
+                : [];
+            });
+          const gradeLookups = memberIdLists.filter((memberIds) =>
+            memberIds.includes('agent-low'),
+          );
+
+          expect(gradeLookups).toHaveLength(1);
+          expect([...(gradeLookups[0] ?? [])].sort()).toEqual([
+            'agent-high',
+            'agent-low',
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'agent-high',
+            'member-m2',
+          ]);
+        });
+
         it('applies a delegation to a delegate of the same grade', async (): Promise<void> => {
           const fixture = createGradedChainFixture();
 
@@ -10733,6 +10783,7 @@ interface ServiceFixture {
     [Readonly<Record<string, unknown>>]
   >;
   readonly rootInstanceCount: jest.Mock<Promise<number>, []>;
+  readonly membershipFind: import('typeorm').Repository<MembershipEntity>['find'];
   readonly rootInstanceNodeLabelQuery: jest.Mock<
     Promise<readonly Readonly<Record<string, unknown>>[]>,
     [string, readonly [readonly string[], readonly string[]]]
@@ -11667,6 +11718,7 @@ function createServiceFixture({
     rootInstanceFind,
     rootInstanceFindOne,
     rootInstanceNodeLabelQuery,
+    membershipFind: transactionalMembershipRepository.find,
     rootInstanceQueryBuilder,
     rootTaskFind,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
