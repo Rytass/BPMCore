@@ -3727,6 +3727,13 @@ export class WorkflowEngineService {
     node: WorkflowNode,
     reason: Readonly<Record<string, true>>,
   ): Promise<void> {
+    // A NOTIFY node is an asynchronous branch that may not have an outgoing
+    // edge, so a skipped one ends its branch exactly as an executed one does:
+    // the token is consumed instead of advanced (advancing would throw "has no
+    // outgoing edge" and fail the whole submission). Instance completion is
+    // evaluated by `processRunningInstance` once no ACTIVE token remains.
+    const consumesToken = isAsyncNotifyServiceTask(node);
+
     await manager.getRepository(ActivityLogEntity).save(
       manager.getRepository(ActivityLogEntity).create({
         actorMemberId: null,
@@ -3735,11 +3742,23 @@ export class WorkflowEngineService {
         nodeId: node.id,
         payload: {
           ...reason,
+          ...(consumesToken ? { consumed: true } : {}),
           tokenId: token.id,
         },
         taskId: null,
       }),
     );
+
+    if (consumesToken) {
+      await manager.getRepository(WorkflowTokenEntity).save({
+        ...token,
+        consumedAt: new Date(),
+        status: WorkflowTokenStatusEnum.CONSUMED,
+      });
+
+      return;
+    }
+
     await this.advanceTokenToOutgoingNodes(manager, instance, token, node);
   }
 
