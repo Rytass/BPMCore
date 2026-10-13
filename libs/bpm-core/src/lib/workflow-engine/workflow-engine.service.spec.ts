@@ -4583,6 +4583,55 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('gives an ad-hoc pre-approval task the same nodeLabel a list would, null for a blank label', async (): Promise<void> => {
+    const workflow = createLinearUserTaskWorkflow({ allowAddSigner: true });
+    const blankLabelWorkflow: WorkflowDefinition = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) =>
+        node.id === 'task_finance'
+          ? ({ ...node, data: { ...node.data, label: '  ' } } as typeof node)
+          : node,
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: blankLabelWorkflow,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const adhocTask = await fixture.service.requestAdhocPreApproval({
+      onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+      requestedByMemberId: 'member-finance',
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-d'],
+      },
+      taskId: 'task-1',
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({ workflowSnapshot: blankLabelWorkflow }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-listed', nodeId: 'task_finance' }),
+    ]);
+
+    const [listed] = await fixture.service.listInboxTasks('member-finance');
+
+    expect(adhocTask.nodeLabel).toBeNull();
+    expect(listed?.nodeLabel).toBe(adhocTask.nodeLabel);
+  });
+
   it('rejects an ad-hoc pre-approval whose only target is the initiator when the node excludes the initiator', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -7179,6 +7228,25 @@ describe('WorkflowEngineService task node labels', () => {
         where: { id: In(['instance-1', 'instance-2', 'missing-instance']) },
       }),
     );
+  });
+
+  it('gives an ad-hoc task in a list the plain label of the node it sits on', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        id: 'task-adhoc',
+        instanceId: 'instance-1',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+      }),
+    ]);
+
+    const [task] = await fixture.service.listInboxTasks('member-finance');
+
+    // No 臨時加簽 wording on the server; clients add it from isAdhoc/adhocType.
+    expect(task?.nodeLabel).toBe('財務簽核');
   });
 
   it('labels approval history tasks too', async (): Promise<void> => {

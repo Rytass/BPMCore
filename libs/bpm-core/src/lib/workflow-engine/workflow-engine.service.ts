@@ -1654,7 +1654,7 @@ export class WorkflowEngineService {
       (candidate) => candidate.memberId,
     );
     task.openCandidateMemberIds = task.candidateMemberIds;
-    task.nodeLabel = node.data.label;
+    task.nodeLabel = readWorkflowNodeLabel(instance.workflowSnapshot, node.id);
 
     await activityRepository.save(
       activityRepository.create({
@@ -3245,6 +3245,10 @@ export class WorkflowEngineService {
     });
   }
 
+  // The snapshot load is eager: every task list reads the instances' workflow
+  // snapshots and computes `nodeLabel` even when the query does not select it.
+  // If inbox size ever makes that matter, move the label to a `@ResolveField`
+  // (with a batching loader) so it is only paid for when asked for.
   private async attachTaskCandidateSummaries(
     tasks: readonly TaskEntity[],
   ): Promise<readonly TaskEntity[]> {
