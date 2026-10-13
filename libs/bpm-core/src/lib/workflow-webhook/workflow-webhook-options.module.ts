@@ -4,8 +4,8 @@ import {
   InjectionToken,
   Logger,
   Module,
+  ModuleMetadata,
 } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,

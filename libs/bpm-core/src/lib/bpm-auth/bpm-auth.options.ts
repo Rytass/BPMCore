@@ -1,5 +1,8 @@
-import { ExecutionContext, InjectionToken } from '@nestjs/common';
-import type { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  ExecutionContext,
+  InjectionToken,
+  ModuleMetadata,
+} from '@nestjs/common';
 import { BPMAuthContext } from './bpm-auth-context';
 
 export type BPMAuthContextFactory = (

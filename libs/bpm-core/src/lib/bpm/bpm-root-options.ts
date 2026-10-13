@@ -1,5 +1,10 @@
-import { DynamicModule, Global, InjectionToken, Module } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  DynamicModule,
+  Global,
+  InjectionToken,
+  Module,
+  ModuleMetadata,
+} from '@nestjs/common';
 import { BPMRootAttachmentOptions } from '../attachment/attachment-options';
 import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
@@ -129,9 +134,8 @@ export type BPMRootModuleAsyncFactoryOptions = BPMRootRuntimeOptions;
  *
  * Host code may inject it too, but it is primarily BPM's own plumbing.
  */
-export const BPM_ROOT_OPTIONS: InjectionToken<BPMRootRuntimeOptions> = Symbol(
-  'BPM_ROOT_OPTIONS',
-);
+export const BPM_ROOT_OPTIONS: InjectionToken<BPMRootRuntimeOptions> =
+  Symbol('BPM_ROOT_OPTIONS');
 
 export interface BPMRootOptionsModuleAsyncOptions extends Pick<
   ModuleMetadata,

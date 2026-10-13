@@ -1,5 +1,10 @@
-import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  DynamicModule,
+  Global,
+  Module,
+  ModuleMetadata,
+  Provider,
+} from '@nestjs/common';
 import { BPMBusinessCalendar } from './business-calendar.token';
 import { defaultBusinessCalendarProvider } from './business-calendar.provider';
 import { BPMSlaScheduleService } from './sla-schedule.service';

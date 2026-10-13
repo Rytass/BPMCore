@@ -3,9 +3,9 @@ import {
   Global,
   InjectionToken,
   Module,
+  ModuleMetadata,
   Provider,
 } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   BPMRootSignatureOptions,

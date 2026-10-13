@@ -1,5 +1,10 @@
-import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  DynamicModule,
+  Global,
+  Module,
+  ModuleMetadata,
+  Provider,
+} from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { DatabaseWorkflowWebhookEndpointSource } from './workflow-webhook-database-source';

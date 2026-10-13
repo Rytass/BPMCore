@@ -1,5 +1,10 @@
-import { DynamicModule, Global, InjectionToken, Module } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  DynamicModule,
+  Global,
+  InjectionToken,
+  Module,
+  ModuleMetadata,
+} from '@nestjs/common';
 import {
   BPM_NOTIFICATION_OPTIONS,
   BPMRootNotificationOptions,
