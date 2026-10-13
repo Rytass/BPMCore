@@ -109,6 +109,13 @@ export interface ApprovalInstanceRecord {
   readonly initiatorMemberId: string;
   readonly startedAt: string;
   readonly state: ApprovalInstanceState;
+  /**
+   * Who actually pressed submit when it was not the applicant. `null` (or
+   * equal to `initiatorMemberId`) means the applicant submitted it
+   * themselves — rows written before the column existed are `null`. Absent
+   * when talking to a server that predates the field.
+   */
+  readonly submittedByMemberId?: string | null;
   readonly templateId: string;
   readonly templateVersionId: string;
   readonly title: string;
@@ -597,6 +604,7 @@ export async function listApprovalInstances(): Promise<
         initiatorMemberId
         startedAt
         state
+        submittedByMemberId
         templateId
         templateVersionId
         title
@@ -650,6 +658,7 @@ export async function listApprovalInstancesPage({
           initiatorMemberId
           startedAt
           state
+          submittedByMemberId
           templateId
           templateVersionId
           title
@@ -840,6 +849,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         initiatorMemberId
         startedAt
         state
+        submittedByMemberId
         templateId
         templateVersionId
         title
