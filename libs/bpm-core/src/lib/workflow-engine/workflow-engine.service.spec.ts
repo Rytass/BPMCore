@@ -12,7 +12,7 @@ import {
   ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
@@ -23,6 +23,7 @@ import { ConditionService } from '../condition/condition.service';
 import {
   DelegationResolution,
   DelegationService,
+  DelegationStep,
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
@@ -2980,6 +2981,468 @@ describe('WorkflowEngineService', () => {
         await expect(
           fixture.service.processInstance('instance-1'),
         ).rejects.toThrow('沿主管鏈找不到職等達 21 的主管');
+      });
+    });
+
+    describe('grade of a delegate or transfer target', () => {
+      const GRADES = {
+        'agent-equal': 2,
+        'agent-high': 3,
+        'agent-low': 1,
+        'agent-none': null,
+        'member-001': 1,
+        'member-m1': 1,
+        'member-m2': 2,
+      } as const;
+      const CHAIN_LINKS: readonly (readonly [string, string])[] = [
+        ['member-001', 'member-m1'],
+        ['member-m1', 'member-m2'],
+      ];
+      const delegateMember = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        principal: string,
+        agent: string,
+      ): void => {
+        fixture.delegationService.resolveAssignee.mockImplementation(
+          (memberId: string): Promise<DelegationResolution> =>
+            Promise.resolve(
+              memberId === principal
+                ? {
+                    delegationChain: [
+                      {
+                        from: principal,
+                        reason: 'ALL',
+                        ruleId: 'delegation-rule-grade',
+                        to: agent,
+                      },
+                    ],
+                    finalAssigneeMemberId: agent,
+                  }
+                : { delegationChain: [], finalAssigneeMemberId: memberId },
+            ),
+        );
+      };
+      const readTaskCreatedPayload = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): Readonly<Record<string, unknown>> | undefined =>
+        fixture.savedSingleActivityLogs.find(
+          (log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED,
+        )?.payload;
+      const createGradedChainFixture = (
+        resolver: Partial<
+          Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>
+        > = {},
+      ): ReturnType<typeof createServiceFixture> =>
+        createChainFixture(
+          createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+          { minPositionLevel: 2, ...resolver },
+        );
+
+      describe('delegation when the task is created', () => {
+        it('applies a delegation to a delegate of a higher grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-high');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'agent-high',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('applies a delegation to a delegate of the same grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-equal');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'agent-equal',
+          ]);
+        });
+
+        it('keeps the member and records why when the delegate has a lower grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(
+            fixture.savedTaskCandidates.map((candidate) => ({
+              delegationChain: candidate.delegationChain,
+              memberId: candidate.memberId,
+              originalMemberId: candidate.originalMemberId,
+            })),
+          ).toEqual([
+            {
+              delegationChain: [],
+              memberId: 'member-m1',
+              originalMemberId: 'member-m1',
+            },
+            {
+              delegationChain: [],
+              memberId: 'member-m2',
+              originalMemberId: 'member-m2',
+            },
+          ]);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              {
+                agentLevel: 1,
+                agentMemberId: 'agent-low',
+                principalLevel: 2,
+                principalMemberId: 'member-m2',
+                reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+              },
+            ],
+          });
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'delegationChain',
+          );
+        });
+
+        it('keeps the member when the delegate holds no position', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-none');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              { agentLevel: null, agentMemberId: 'agent-none' },
+            ],
+          });
+        });
+
+        it('leaves the delegation alone when the replaced member has no grade', async (): Promise<void> => {
+          // member-admin is the fallback and holds no position at all.
+          const fixture = createChainFixture(
+            createManagerChainOrg({
+              grades: { ...GRADES, 'member-admin': null },
+              links: CHAIN_LINKS,
+            }),
+            {
+              fallback: { memberId: 'member-admin', type: 'DIRECT' },
+              minPositionLevel: 3,
+            },
+          );
+
+          delegateMember(fixture, 'member-admin', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+            'agent-low',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: { memberIds: ['member-m2'], type: 'DIRECT' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          delegateMember(fixture, 'member-m2', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['agent-low']);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('does not bring a delegation through the initiator back as a path', async (): Promise<void> => {
+          // member-001 (grade 1) is the initiator of a node that excludes him.
+          const createExcludingFixture = (
+            minPositionLevel: number,
+          ): ReturnType<typeof createServiceFixture> =>
+            createServiceFixture({
+              currentVersionId: 'template-version-1',
+              formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+              ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+              processWorkflowSnapshot: createLinearUserTaskWorkflow({
+                approverResolver: {
+                  minPositionLevel,
+                  type: 'ORG_MANAGER_CHAIN',
+                },
+                decisionPolicy: { type: 'SEQUENTIAL' },
+                excludeInitiator: { whenEmpty: 'FAIL' },
+              }),
+              templateVersionStatus:
+                ApprovalTemplateVersionStatusEnum.PUBLISHED,
+            });
+          // A grade 2 manager delegating to him is refused by the grade rule,
+          // so the manager stays and the path never touches the initiator.
+          const lowFixture = createExcludingFixture(2);
+
+          delegateMember(lowFixture, 'member-m2', 'member-001');
+          await lowFixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(lowFixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+
+          // A grade 1 manager delegating to him passes the grade rule, and the
+          // initiator exclusion still drops that path as before.
+          const equalFixture = createExcludingFixture(1);
+
+          delegateMember(equalFixture, 'member-m1', 'member-001');
+          await expect(
+            equalFixture.service.processInstance('instance-1'),
+          ).rejects.toThrow('只剩申請人本人');
+        });
+      });
+
+      describe('delegation when a waiting candidate is activated', () => {
+        const createActivationFixture = (
+          resolver: ApproverResolver = {
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+          },
+        ): ServiceFixture =>
+          createSequentialDecisionFixture({
+            approverResolver: resolver,
+            ...createManagerChainOrg({
+              grades: {
+                'agent-high': 3,
+                'agent-low': 1,
+                'member-a': 2,
+                'member-b': 2,
+                'member-c': 3,
+              },
+              links: [],
+            }),
+          });
+        const approveFirst = (fixture: ServiceFixture): Promise<unknown> =>
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: '同意',
+            decidedByMemberId: 'member-a',
+            taskId: 'task-seq',
+          });
+        const readActivatedPayload = (
+          fixture: ServiceFixture,
+        ): Readonly<Record<string, unknown>> | undefined =>
+          fixture.savedSingleActivityLogs.find(
+            (log) =>
+              log.eventType ===
+              ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+          )?.payload;
+
+        it('applies a late delegation to a delegate of an equal or higher grade', async (): Promise<void> => {
+          const fixture = createActivationFixture();
+
+          delegateMember(fixture, 'member-b', 'agent-high');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'agent-high',
+            originalAssigneeMemberId: 'member-b',
+          });
+          expect(readActivatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('keeps the member and records why when the late delegate has a lower grade', async (): Promise<void> => {
+          const fixture = createActivationFixture();
+
+          delegateMember(fixture, 'member-b', 'agent-low');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'member-b',
+            delegationChain: [],
+            originalAssigneeMemberId: 'member-b',
+          });
+          expect(readActivatedPayload(fixture)).toMatchObject({
+            assigneeMemberId: 'member-b',
+            skippedDelegations: [
+              {
+                agentLevel: 1,
+                agentMemberId: 'agent-low',
+                principalLevel: 2,
+                principalMemberId: 'member-b',
+                reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+              },
+            ],
+          });
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createActivationFixture({
+            memberIds: ['member-a', 'member-b', 'member-c'],
+            type: 'DIRECT',
+          });
+
+          delegateMember(fixture, 'member-b', 'agent-low');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'agent-low',
+          });
+          expect(readActivatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+      });
+
+      describe('manual transfer', () => {
+        const createTransferFixture = ({
+          assigneeMemberId = 'member-m2',
+          delegationChain = [],
+          grades = GRADES,
+          resolver = { minPositionLevel: 2, type: 'ORG_MANAGER_CHAIN' },
+        }: {
+          readonly assigneeMemberId?: string;
+          readonly delegationChain?: readonly DelegationStep[];
+          readonly grades?: Readonly<Record<string, number | null>>;
+          readonly resolver?: ApproverResolver;
+        } = {}): ServiceFixture =>
+          createServiceFixture({
+            currentVersionId: 'template-version-1',
+            decisionTask: createTask({
+              assigneeMemberId,
+              delegationChain,
+              nodeId: 'task_finance',
+              originalAssigneeMemberId: 'member-m2',
+              status: TaskStatusEnum.PENDING,
+              tokenId: 'token-1',
+            }),
+            decisionToken: createWorkflowToken({
+              currentNodeId: 'task_finance',
+              status: WorkflowTokenStatusEnum.WAITING,
+            }),
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades, links: [] }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: resolver,
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+        const transferTo = (
+          fixture: ServiceFixture,
+          transferToMemberId: string,
+          decidedByMemberId = 'member-m2',
+          options: { readonly transferReason?: string } = {},
+        ): Promise<unknown> =>
+          fixture.service.decideTask(
+            {
+              action: TaskDecisionActionEnum.TRANSFERRED,
+              comment: null,
+              decidedByMemberId,
+              taskId: 'task-1',
+              transferToMemberId,
+            },
+            options,
+          );
+        const GRADE_MESSAGE =
+          '簽核節點「財務簽核」需由職等 2 以上的成員簽核，不能轉簽給職等不足的成員';
+
+        it('rejects a transfer to a lower grade with the grade message', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            ForbiddenException,
+          );
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            GRADE_MESSAGE,
+          );
+        });
+
+        it('rejects a transfer to a member without a position', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(transferTo(fixture, 'agent-none')).rejects.toThrow(
+            GRADE_MESSAGE,
+          );
+        });
+
+        it('allows a transfer to an equal or higher grade', async (): Promise<void> => {
+          const equalFixture = createTransferFixture();
+          const highFixture = createTransferFixture();
+
+          await expect(
+            transferTo(equalFixture, 'agent-equal'),
+          ).resolves.toBeDefined();
+          await expect(
+            transferTo(highFixture, 'agent-high'),
+          ).resolves.toBeDefined();
+        });
+
+        it('allows a transfer when the member being replaced has no grade', async (): Promise<void> => {
+          const fixture = createTransferFixture({
+            grades: { ...GRADES, 'member-m2': null },
+          });
+
+          await expect(transferTo(fixture, 'agent-low')).resolves.toBeDefined();
+        });
+
+        it('measures a transfer by a delegate against the member they act for', async (): Promise<void> => {
+          // member-m2 (grade 2) delegated to agent-high (grade 3), who now
+          // holds the task. Handing it to a grade 2 member is fine because the
+          // member being replaced is member-m2, not the delegate.
+          const delegationChain: readonly DelegationStep[] = [
+            {
+              from: 'member-m2',
+              reason: 'ALL',
+              ruleId: 'delegation-rule-grade',
+              to: 'agent-high',
+            },
+          ];
+          const allowed = createTransferFixture({
+            assigneeMemberId: 'agent-high',
+            delegationChain,
+          });
+          const refused = createTransferFixture({
+            assigneeMemberId: 'agent-high',
+            delegationChain,
+          });
+
+          await expect(
+            transferTo(allowed, 'agent-equal', 'agent-high'),
+          ).resolves.toBeDefined();
+          await expect(
+            transferTo(refused, 'agent-low', 'agent-high'),
+          ).rejects.toThrow(GRADE_MESSAGE);
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createTransferFixture({
+            resolver: { memberIds: ['member-m2'], type: 'DIRECT' },
+          });
+
+          await expect(transferTo(fixture, 'agent-low')).resolves.toBeDefined();
+        });
+
+        it('leaves an SLA escalation alone', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(
+            transferTo(fixture, 'agent-low', 'member-m2', {
+              transferReason: SLA_ESCALATION_DELEGATION_REASON,
+            }),
+          ).resolves.toBeDefined();
+        });
       });
     });
   });
@@ -9253,13 +9716,19 @@ function readTaskByNodeId(
 function createSequentialDecisionFixture({
   activeIndex = 0,
   additionalProcessTasks,
+  approverResolver,
   excludeInitiator,
   processAdhocDirectives,
+  processMemberships,
+  processPositions,
 }: {
   readonly activeIndex?: number;
   readonly additionalProcessTasks?: readonly TaskEntity[];
+  readonly approverResolver?: ApproverResolver;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processMemberships?: readonly MembershipEntity[];
+  readonly processPositions?: readonly PositionEntity[];
 } = {}): ServiceFixture {
   const memberIds = ['member-a', 'member-b', 'member-c'];
 
@@ -9284,11 +9753,14 @@ function createSequentialDecisionFixture({
     }),
     formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
     processAdhocDirectives,
+    processMemberships,
+    processPositions,
     processTaskCandidates: memberIds.map((memberId, index) =>
       createTaskCandidate({
         id: `candidate-${memberId.slice(-1)}`,
         memberId,
         sequence: index,
+        sourceType: approverResolver?.type,
         status:
           index < activeIndex
             ? TaskCandidateStatusEnum.COMPLETED
@@ -9299,6 +9771,7 @@ function createSequentialDecisionFixture({
       }),
     ),
     processWorkflowSnapshot: createLinearUserTaskWorkflow({
+      approverResolver,
       decisionPolicy: { type: 'SEQUENTIAL' },
       excludeInitiator,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
