@@ -64,18 +64,20 @@ describe('readMemberFieldOptions', () => {
       {
         id: 'optional',
         name: '備援 (optional)（非必填）',
-        warning: '此欄位非必填，未填寫時此關會找不到簽核人',
+        warning:
+          '此欄位非必填，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
       },
       {
         id: 'hidden',
         name: '代理人 (hidden)（可能被條件隱藏）',
-        warning: '此欄位可能被條件隱藏，隱藏時此關會找不到簽核人',
+        warning:
+          '此欄位可能被條件隱藏，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
       },
       {
         id: 'both',
         name: '共同簽核 (both)（非必填）（可能被條件隱藏）',
         warning:
-          '此欄位非必填，未填寫時此關會找不到簽核人；此欄位可能被條件隱藏，隱藏時此關會找不到簽核人',
+          '此欄位非必填、此欄位可能被條件隱藏，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
       },
       { id: 'owner', name: '負責人 (owner)' },
     ]);
@@ -98,7 +100,9 @@ describe('readDynamicFormFieldChoice', () => {
     );
 
     expect(choice.selected?.id).toBe('optional');
-    expect(choice.problem).toBe('此欄位非必填，未填寫時此關會找不到簽核人');
+    expect(choice.problem).toBe(
+      '此欄位非必填，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
+    );
   });
 
   it('asks the author to add a member field when the form has none', () => {

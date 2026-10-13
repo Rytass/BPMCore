@@ -1031,13 +1031,15 @@ test.describe('M1 W3 template designer', () => {
         .filter({ hasText: '代理人 (delegate)（可能被條件隱藏）' }),
     ).toBeVisible();
 
-    // A risky field is still selectable; the hint explains the consequence.
+    // A risky field is still selectable; the hint says publishing refuses it.
     await page
       .locator('[role="option"]')
       .filter({ hasText: '備援審核人 (backup)（非必填）' })
       .click();
     await expect(
-      page.getByText('此欄位非必填，未填寫時此關會找不到簽核人'),
+      page.getByText(
+        '此欄位非必填，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
+      ),
     ).toBeVisible();
     await expect(
       page

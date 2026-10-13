@@ -702,7 +702,22 @@ describe('TemplateService', () => {
   describe('DYNAMIC_FORM member references', (): void => {
     const memberSchema: FormDefinitionSchema = {
       fields: [
-        { fieldKey: 'reviewer', label: '審核人', required: false, type: 'member' },
+        { fieldKey: 'reviewer', label: '審核人', required: true, type: 'member' },
+        { fieldKey: 'backup', label: '代理人', required: false, type: 'member' },
+        {
+          fieldKey: 'auditor',
+          label: '稽核',
+          required: true,
+          type: 'member',
+          visibleWhen: 'form.note == "audit"',
+        },
+        {
+          fieldKey: 'syncedOwner',
+          hidden: true,
+          label: '外部負責人',
+          required: false,
+          type: 'member',
+        },
         { fieldKey: 'note', label: '備註', required: false, type: 'text' },
       ],
       schemaVersion: 1,
@@ -756,7 +771,34 @@ describe('TemplateService', () => {
       );
     });
 
-    it('publishes when formPath names an optional member field', async (): Promise<void> => {
+    it.each([
+      ['an optional', 'backup'],
+      ['a conditionally hidden', 'auditor'],
+      ['a store-only hidden', 'syncedOwner'],
+    ])(
+      'rejects a user task and NOTIFY recipients that read %s member field',
+      async (_kind, formPath): Promise<void> => {
+        const service = createTableConditionPublishService({
+          schema: memberSchema,
+          workflowDefinition: createDynamicFormWorkflow(
+            { formPath, type: 'DYNAMIC_FORM' },
+            { formPath, type: 'DYNAMIC_FORM' },
+          ),
+        });
+        const publish = service.publishApprovalTemplateVersion(
+          'template-version-1',
+        );
+
+        await expect(publish).rejects.toThrow(
+          `workflow.nodes.task_manager.approverResolver.formPath must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+        await expect(publish).rejects.toThrow(
+          `workflow.nodes.notify_peer.action.recipients.formPath must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+      },
+    );
+
+    it('publishes when formPath names a required, always-visible member field', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: memberSchema,
         workflowDefinition: createDynamicFormWorkflow(

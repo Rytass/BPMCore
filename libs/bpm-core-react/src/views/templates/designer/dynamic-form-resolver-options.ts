@@ -8,9 +8,10 @@ export type MemberFieldOption = Readonly<{
   id: string;
   name: string;
   /**
-   * Set when the field can be empty at submit time (optional, or hidden by a
-   * visibility rule); the node then finds no approver. Still selectable — the
-   * server decides at publish what it accepts.
+   * Set when the field can be empty at submit time (optional, hidden by a
+   * visibility rule, or a store-only hidden field); the node would then find no
+   * approver, so publishing refuses it. Still selectable, so the stored choice
+   * stays visible until the form or the node is fixed.
    */
   warning?: string;
 }>;
@@ -29,8 +30,11 @@ export const NO_MEMBER_FIELD_HINT =
 const STALE_FIELD_HINT =
   '原本指定的欄位已不在表單中，或已不是「人員選擇」欄位，請重新選擇。';
 
-const OPTIONAL_FIELD_WARNING = '此欄位非必填，未填寫時此關會找不到簽核人';
-const HIDDEN_FIELD_WARNING = '此欄位可能被條件隱藏，隱藏時此關會找不到簽核人';
+const OPTIONAL_FIELD_WARNING = '此欄位非必填';
+const HIDDEN_FIELD_WARNING = '此欄位可能被條件隱藏';
+const STORE_ONLY_FIELD_WARNING = '此欄位為隱藏欄位，申請人無法填寫';
+const UNPUBLISHABLE_SUFFIX =
+  '，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏';
 
 function readMemberFieldWarning(
   field: FormFieldDefinition,
@@ -38,15 +42,18 @@ function readMemberFieldWarning(
   const warnings = [
     ...(field.required ? [] : [OPTIONAL_FIELD_WARNING]),
     ...(field.visibleWhen?.trim() ? [HIDDEN_FIELD_WARNING] : []),
+    ...(field.hidden ? [STORE_ONLY_FIELD_WARNING] : []),
   ];
 
-  return warnings.length > 0 ? warnings.join('；') : undefined;
+  return warnings.length > 0
+    ? `${warnings.join('、')}${UNPUBLISHABLE_SUFFIX}`
+    : undefined;
 }
 
 function readMemberFieldNameSuffix(field: FormFieldDefinition): string {
   return `${field.required ? '' : '（非必填）'}${
     field.visibleWhen?.trim() ? '（可能被條件隱藏）' : ''
-  }`;
+  }${field.hidden ? '（隱藏欄位）' : ''}`;
 }
 
 /** Only member fields can feed a 依表單欄位指定 approver resolver. */

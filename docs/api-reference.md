@@ -909,9 +909,14 @@ task `approverResolver.formPath` and each NOTIFY `action.recipients.formPath`
 must equal the `fieldKey` of a `member` (人員選擇) field, otherwise publish fails
 with `workflow.nodes.<id>.approverResolver.formPath must reference a member
 (人員選擇) field of the bound form: <path>` (or `...action.recipients.formPath`).
-An optional or conditionally hidden member field is accepted; the designer warns
-about it instead. A path that names no member field resolves to nothing at
-runtime and would otherwise throw while the task is created.
+The field must also be one the submit validation guarantees a value for —
+`required: true`, no `visibleWhen`, not `hidden` — otherwise publish fails with
+`<path> must reference a required member field that no visibility rule or
+hidden flag can leave empty: <fieldKey>`. A path that names no member field, or
+a member field left empty, resolves to nobody at runtime and throws while the
+task or notification is created; on a node past the first one that throw lands
+inside the previous approver's decision, which could then never commit. The
+designer still lists such fields, marked with the reason publishing refuses them.
 
 > **Compatibility change.** This check is new: a `DYNAMIC_FORM` resolver whose
 > `formPath` points at a non-member field can no longer be published. Such a
