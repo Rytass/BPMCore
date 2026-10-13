@@ -1654,6 +1654,7 @@ export class WorkflowEngineService {
       (candidate) => candidate.memberId,
     );
     task.openCandidateMemberIds = task.candidateMemberIds;
+    task.nodeLabel = node.data.label;
 
     await activityRepository.save(
       activityRepository.create({
@@ -3290,9 +3291,24 @@ export class WorkflowEngineService {
         new Map<string, readonly string[]>(),
       );
 
+    // One query for every instance behind the page of tasks, not one per task.
+    const instances = await this.approvalInstanceRepository.find({
+      select: { id: true, workflowSnapshot: true },
+      where: {
+        id: In([...new Set(tasks.map((task) => task.instanceId))]),
+      },
+    });
+    const snapshotsByInstanceId = new Map(
+      instances.map((instance) => [instance.id, instance.workflowSnapshot]),
+    );
+
     return tasks.map((task) =>
       Object.assign(new TaskEntity(), task, {
         candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
+        nodeLabel: readWorkflowNodeLabel(
+          snapshotsByInstanceId.get(task.instanceId),
+          task.nodeId,
+        ),
         openCandidateMemberIds: openCandidatesByTaskId.get(task.id) ?? [],
       }),
     );
@@ -6375,6 +6391,21 @@ function buildDryRunExpressionContext(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The node's display name from an instance's workflow snapshot, or `null`
+ * when the instance or node is missing, or the node carries no usable label
+ * (older snapshots).
+ */
+function readWorkflowNodeLabel(
+  workflow: WorkflowDefinition | undefined,
+  nodeId: string,
+): string | null {
+  const label = workflow?.nodes.find((candidate) => candidate.id === nodeId)
+    ?.data.label;
+
+  return typeof label === 'string' && label.trim() ? label : null;
 }
 
 function readWorkflowNodeOrThrow(

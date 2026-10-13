@@ -14,7 +14,7 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import { ConflictException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
-import { FindOperator, ObjectLiteral } from 'typeorm';
+import { FindOperator, In, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -4562,6 +4562,8 @@ describe('WorkflowEngineService', () => {
       assigneeMemberId: 'member-d',
       isAdhoc: true,
       nodeId: 'task_finance',
+      // The node it was spawned on — clients add the 臨時加簽 marker themselves.
+      nodeLabel: '財務簽核',
       status: TaskStatusEnum.PENDING,
       tokenId: 'token-1',
     });
@@ -7113,6 +7115,93 @@ describe('WorkflowEngineService', () => {
         'member-c',
       ]);
     });
+  });
+});
+
+describe('WorkflowEngineService task node labels', () => {
+  function createLabelFixture(): ReturnType<typeof createServiceFixture> {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        id: 'instance-1',
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+      createApprovalInstance({
+        id: 'instance-2',
+        workflowSnapshot: {
+          edges: [],
+          meta: { schemaVersion: 1 },
+          nodes: [
+            createUserTaskNode('band-0', '部門主管簽核', 'member-finance', 0, 0),
+          ],
+        },
+      }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+      createTask({ id: 'task-b', instanceId: 'instance-2', nodeId: 'band-0' }),
+      createTask({ id: 'task-c', instanceId: 'instance-1', nodeId: 'gone' }),
+      createTask({ id: 'task-d', instanceId: 'missing-instance' }),
+    ]);
+
+    return fixture;
+  }
+
+  it('reads nodeLabel from each instance snapshot, null when the node or instance is unknown', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listInboxTasks('member-finance');
+
+    expect(
+      Object.fromEntries(tasks.map((task) => [task.id, task.nodeLabel])),
+    ).toEqual({
+      'task-a': '財務簽核',
+      'task-b': '部門主管簽核',
+      'task-c': null,
+      'task-d': null,
+    });
+  });
+
+  it('loads the instances for a whole task list in one query', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    await fixture.service.listInboxTasks('member-finance');
+
+    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceFind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: { id: true, workflowSnapshot: true },
+        where: { id: In(['instance-1', 'instance-2', 'missing-instance']) },
+      }),
+    );
+  });
+
+  it('labels approval history tasks too', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listApprovalHistoryTasks('member-finance');
+
+    expect(tasks.find((task) => task.id === 'task-b')?.nodeLabel).toBe(
+      '部門主管簽核',
+    );
+    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the tasks of an instance', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+    ]);
+
+    const [task] = await fixture.service.listTasks('instance-1');
+
+    expect(task?.nodeLabel).toBe('財務簽核');
   });
 });
 
