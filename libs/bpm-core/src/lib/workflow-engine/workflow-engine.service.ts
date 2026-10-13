@@ -3750,16 +3750,23 @@ export class WorkflowEngineService {
     );
 
     if (consumesToken) {
-      await manager.getRepository(WorkflowTokenEntity).save({
-        ...token,
-        consumedAt: new Date(),
-        status: WorkflowTokenStatusEnum.CONSUMED,
-      });
+      await this.consumeToken(manager, token);
 
       return;
     }
 
     await this.advanceTokenToOutgoingNodes(manager, instance, token, node);
+  }
+
+  private async consumeToken(
+    manager: EntityManager,
+    token: WorkflowTokenEntity,
+  ): Promise<void> {
+    await manager.getRepository(WorkflowTokenEntity).save({
+      ...token,
+      consumedAt: new Date(),
+      status: WorkflowTokenStatusEnum.CONSUMED,
+    });
   }
 
   private async readAvailableOutgoingEdges(
@@ -5598,11 +5605,7 @@ export class WorkflowEngineService {
           )
         : [];
 
-    await manager.getRepository(WorkflowTokenEntity).save({
-      ...token,
-      consumedAt: new Date(),
-      status: WorkflowTokenStatusEnum.CONSUMED,
-    });
+    await this.consumeToken(manager, token);
     await activityRepository.save(
       activityRepository.create({
         actorMemberId: null,
