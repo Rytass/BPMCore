@@ -176,6 +176,21 @@ describe('readWorkflowDefinitionIssue — excludeInitiator', () => {
 });
 
 describe('createWorkflowNode defaults', () => {
+  it('never lets one node change the default resolver every other node shares', () => {
+    const first = createWorkflowNode('userTask', 1);
+    const second = createWorkflowNode('userTask', 2);
+    const resolver =
+      first.type === 'userTask' ? first.data.approverResolver : null;
+
+    expect(Object.isFrozen(resolver)).toBe(true);
+    expect(() => {
+      (resolver as { levelsUp: number }).levelsUp = 3;
+    }).toThrow(TypeError);
+    expect(second.type === 'userTask' && second.data.approverResolver).toEqual(
+      ONE_MANAGER,
+    );
+  });
+
   it('starts a new user task on the initiator manager, not a placeholder member', () => {
     const node = createWorkflowNode('userTask', 1);
 

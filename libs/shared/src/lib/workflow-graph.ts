@@ -382,12 +382,15 @@ export function normalizeSingleIncomingTriggerModes(
  * up). Needs no member/org id, so a node built purely from this passes
  * validation. New nodes start from it instead of a placeholder member id that
  * would be stored forever if the designer never removed it.
+ *
+ * Every new node shares this one object, so it is frozen: an in-place edit
+ * that slips past the readonly types throws instead of changing them all.
  */
-export const DEFAULT_MANAGER_RESOLVER: ApproverResolver = {
+export const DEFAULT_MANAGER_RESOLVER: ApproverResolver = Object.freeze({
   baseFromInitiator: true,
   levelsUp: 1,
   type: 'ORG_MANAGER',
-};
+});
 
 export function createWorkflowNode(
   type: NodePaletteType,
