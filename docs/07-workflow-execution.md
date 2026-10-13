@@ -358,7 +358,7 @@ async function resolveApprovers(
     被拒絕的代理人若剛好是申請人，因為代理沒有套用，主管不會因此被排除。
   - **為什麼沒套用要查得到**：不寫進 `delegation_chain`（時間軸與外送 payload 會把那裡的每一筆當成真的代理），
     也沒有新的 `ActivityLogEventTypeEnum` 值；改成在記錄該任務／候選人的 activity payload 加一個可選欄位
-    `skippedDelegations`：`TASK_CREATED`（建立時，所有被拒絕的代理）與 `TASK_CANDIDATE_ACTIVATED`（輪到時重新解析被拒絕的那一筆），
+    `skippedDelegations`：`TASK_CREATED`（建立時，所有被拒絕的代理——在排除申請人與去重之前蒐集，同一組主管與代理人只記一筆）與 `TASK_CANDIDATE_ACTIVATED`（輪到時重新解析被拒絕的那一筆；即使因代理人已在 task 上或代理路徑經過申請人而沿用原記下的值，被拒絕這件事仍會記錄），
     元素為 `{ principalMemberId, agentMemberId, reason: 'AGENT_POSITION_LEVEL_TOO_LOW', principalLevel, agentLevel }`
     （`agentLevel` 為 `null` 表示代理人沒有職等）。沒有被拒絕的代理時不會出現這個欄位。
   - **人工轉簽**（GraphQL `decideTask` 與宿主的 S2S 決策端點都走 `decideTask`）：被取代的成員是這位簽核人
@@ -472,7 +472,7 @@ async function createTasksForNode(node, token) {
   （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
   `sequentialCandidateMemberIds`。
 - **`TASK_CANDIDATE_ACTIVATED` payload**（`actorMemberId` 為 `null`）：
-  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, skippedDelegations?, tokenId }`（`skippedDelegations` 只在主管鏈節點拒絕了代理時出現，見 §4.1.1）。
   前四個欄位與 `TASK_CREATED` 的收件人欄位同名同義，其餘是這個事件專屬。
 - **給事件消費端（BREAKING）**：SEQUENTIAL task 的 `TASK_CREATED` 只點名第一位簽核人；
   **`TASK_CANDIDATE_ACTIVATED` 才是「現在輪到這位」的訊號**，必須和 `TASK_CREATED` 用同一套
