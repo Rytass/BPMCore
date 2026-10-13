@@ -568,7 +568,9 @@ export class NotificationService {
     const submitterPayload = submitterMemberId
       ? {
           submittedByMemberId: submitterMemberId,
-          submittedByNote: `（由 ${await this.readMemberDisplayName(
+          submittedByNote: `（由 ${await this.readRecordedSubmitterName(
+            manager,
+            instance.id,
             submitterMemberId,
           )} 代為送出）`,
         }
@@ -998,14 +1000,39 @@ export class NotificationService {
   }
 
   /**
+   * The submitter's name as the engine recorded it on `INSTANCE_STARTED`
+   * (`submittedByName`), or the member id when it was not recorded. This runs
+   * inside the approval transaction, so it reads the row instead of asking
+   * the identity source and holding the instance's locks while it answers.
+   */
+  private async readRecordedSubmitterName(
+    manager: EntityManager,
+    instanceId: string,
+    submitterMemberId: string,
+  ): Promise<string> {
+    const started = await manager.getRepository(ActivityLogEntity).findOne({
+      order: { createdAt: 'ASC' },
+      where: {
+        eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
+        instanceId,
+      },
+    });
+    const recordedName = started?.payload?.['submittedByName'];
+
+    return typeof recordedName === 'string' && recordedName.trim()
+      ? recordedName
+      : submitterMemberId;
+  }
+
+  /**
    * The name a member goes by in notification text, resolved through the host
    * identity source like the email recipient is. Falls back to the id when
    * the identity source fails or does not answer within
-   * {@link MEMBER_NAME_LOOKUP_TIMEOUT_MS} — this runs inside the approval
-   * transaction, and wording a notification must never be the reason an
-   * approval fails or stays open.
+   * {@link MEMBER_NAME_LOOKUP_TIMEOUT_MS}. Call it outside any transaction:
+   * the engine resolves the submitter's name this way before a submit opens
+   * one, so wording a notification never holds an approval's locks.
    */
-  private async readMemberDisplayName(memberId: string): Promise<string> {
+  async readMemberDisplayName(memberId: string): Promise<string> {
     try {
       const member = await withDispatchTimeout(
         this.moduleRef

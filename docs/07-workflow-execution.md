@@ -536,7 +536,8 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
 - 開了 `excludeInitiator` 的節點，下面各項**對代送人與對申請人套用完全相同的規則**（含代理路徑上任何一步）；
   `whenEmpty` 的處理也不變。代送人不是申請人本人時，錯誤訊息改用「申請人或代為送出此單的人／代送人」的版本。
 - 舊資料的 `submitted_by_member_id` 是 `NULL`，一律視為「申請人自己送出」，不回填。
-- `INSTANCE_STARTED` activity 的 payload 另帶 `submittedByMemberId`。
+- `INSTANCE_STARTED` activity 的 payload 另帶 `submittedByMemberId`；代送人不是申請人時，再帶送出當下查到的
+  代送人姓名 `submittedByName`。
 - **代送人看得到單據**：代送人（與申請人不同時）可以讀這張單——單據詳情、時間軸、附件，
   以及「我送出的」（`SENT`）與一般可讀清單裡都找得到，助理才找得回自己送出的案件。
   **只有讀取**：重送（resubmit）與取消（cancel）仍然只有申請人本人能做，檢查沒有動。
@@ -544,9 +545,10 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
 - **申請人的通知會說明是誰代送**：單據完成時寄給申請人的 `INSTANCE_COMPLETED` 通知，內文在有代送人時
   多一句「（由 {代送人姓名} 代為送出）」，payload 另帶 `submittedByMemberId` 與組好的句子
   `submittedByNote`（內建模板 `{{submittedByNote}}` 取用它；自訂的 handlebars 模板也可以用）；
-  申請人自己送出的單據內文與 payload 完全不變。姓名經由主機的身分來源解析（與寄信取收件人 email
-  同一條路）；查不到、丟錯，或 2 秒內沒有回應（這一步發生在核准的 transaction 內，不能讓主機卡住它）
-  都退回顯示成員 id，不會因此讓核准失敗或一直卡著。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
+  申請人自己送出的單據內文與 payload 完全不變。姓名在**送出時、送出的 transaction 開始之前**經由主機的
+  身分來源解析一次（與寄信取收件人 email 同一條路），記在 `INSTANCE_STARTED` 的 `submittedByName`；
+  查不到、丟錯，或 2 秒內沒有回應都退回成員 id。單據完成時只讀這筆紀錄，不在核准的 transaction 內呼叫
+  身分來源，避免主機回應慢時拖住核准並握著單據的鎖；沒有這筆紀錄的單據顯示成員 id。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
 - **前端顯示**：單據詳情標題下方的說明列在有代送人時多一段「由 {代送人} 代 {申請人} 送出」，時間軸的
   「案件已發起」那一筆也會有同一句。判斷「是否代送」的規則（`submittedByMemberId` 非空且不同於
   `initiatorMemberId`）集中在 `libs/bpm-core-react/src/views/instances/detail/submitted-by.ts`；

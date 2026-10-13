@@ -3622,7 +3622,37 @@ describe('WorkflowEngineService', () => {
             (log) =>
               log.eventType === ActivityLogEventTypeEnum.INSTANCE_STARTED,
           )?.payload,
-        ).toMatchObject({ submittedByMemberId: SUBMITTER });
+        ).toMatchObject({
+          submittedByMemberId: SUBMITTER,
+          submittedByName: `name-of-${SUBMITTER}`,
+        });
+      });
+
+      it('records no submitter name when the initiator submits themselves', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.submitApprovalInstance({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: '{}',
+          submittedByMemberId: 'member-001',
+          templateId: 'template-1',
+          title: null,
+        });
+
+        expect(
+          fixture.notificationService.readMemberDisplayName,
+        ).not.toHaveBeenCalled();
+        expect(
+          fixture.savedActivityLogs.find(
+            (log) =>
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_STARTED,
+          )?.payload,
+        ).not.toHaveProperty('submittedByName');
       });
 
       it.each([
@@ -10688,6 +10718,7 @@ interface ServiceFixture {
     | 'createInstanceCompletedNotification'
     | 'createServiceTaskNotifications'
     | 'createTaskAssignedNotification'
+    | 'readMemberDisplayName'
     | 'resolveTaskNotifications'
     | 'supersedeInstanceTaskNotifications'
   >;
@@ -11032,6 +11063,9 @@ function createServiceFixture({
     createInstanceCompletedNotification: jest.fn(() => Promise.resolve([])),
     createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
+    readMemberDisplayName: jest.fn((memberId: string) =>
+      Promise.resolve(`name-of-${memberId}`),
+    ),
     resolveTaskNotifications: jest.fn(() => Promise.resolve()),
     supersedeInstanceTaskNotifications: jest.fn(() => Promise.resolve()),
   };

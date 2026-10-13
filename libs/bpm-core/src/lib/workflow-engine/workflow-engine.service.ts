@@ -459,6 +459,15 @@ export class WorkflowEngineService {
       );
     }
 
+    // Named here, before the transaction, so the completion notice that later
+    // says "由 X 代為送出" reads it from the started activity instead of
+    // asking the identity source while an approval holds the instance's locks.
+    const submittedByName =
+      submittedByMemberId === input.initiatorMemberId
+        ? null
+        : await this.notificationService.readMemberDisplayName(
+            submittedByMemberId,
+          );
     const startedAt = new Date();
     const startNode = templateVersion.workflowDefinition.nodes.find(
       (node) => node.type === 'startEvent',
@@ -525,6 +534,7 @@ export class WorkflowEngineService {
             nodeId: startNode.id,
             payload: {
               submittedByMemberId,
+              ...(submittedByName === null ? {} : { submittedByName }),
               templateId: template.id,
               templateVersionId: templateVersion.id,
             },

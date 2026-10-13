@@ -22,6 +22,7 @@ import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.ent
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
 import {
+  ActivityLogEventTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
   TaskStatusEnum,
@@ -551,11 +552,13 @@ describe('NotificationService', () => {
   describe('instance completed notification', () => {
     function createCompletionHarness(
       resolveMember: (memberId: string) => Promise<{ readonly name: string }>,
+      startedPayload: Readonly<Record<string, unknown>> | null = null,
     ): {
       readonly complete: (
         overrides: Partial<ApprovalInstanceEntity>,
       ) => Promise<readonly NotificationEntity[]>;
       readonly saved: NotificationEntity[];
+      readonly service: NotificationService;
     } {
       const saved: NotificationEntity[] = [];
       const notificationRepository = {
@@ -570,8 +573,22 @@ describe('NotificationService', () => {
           return Promise.resolve(entities);
         },
       };
+      const activityLogRepository = {
+        findOne: (): Promise<ActivityLogEntity | null> =>
+          Promise.resolve(
+            startedPayload
+              ? Object.assign(new ActivityLogEntity(), {
+                  eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
+                  payload: startedPayload,
+                })
+              : null,
+          ),
+      };
       const manager = {
-        getRepository: (): unknown => notificationRepository,
+        getRepository: (entity: unknown): unknown =>
+          entity === ActivityLogEntity
+            ? activityLogRepository
+            : notificationRepository,
       } as unknown as EntityManager;
       const service = new NotificationService(
         notificationRepository as unknown as Repository<NotificationEntity>,
@@ -607,25 +624,52 @@ describe('NotificationService', () => {
             manager,
           }),
         saved,
+        service,
       };
     }
 
-    it('tells the applicant who filed the document for them', async (): Promise<void> => {
-      const harness = createCompletionHarness(
-        (memberId): Promise<{ readonly name: string }> =>
-          Promise.resolve({ name: `name-of-${memberId}` }),
-      );
+    it('tells the applicant who filed the document for them, by the name recorded at submit', async (): Promise<void> => {
+      const resolveMember = jest.fn();
+      const harness = createCompletionHarness(resolveMember, {
+        submittedByMemberId: 'member-assistant',
+        submittedByName: '王助理',
+      });
 
       await harness.complete({ submittedByMemberId: 'member-assistant' });
 
       expect(harness.saved).toHaveLength(1);
       expect(harness.saved[0]?.recipientMemberId).toBe('member-applicant');
-      expect(harness.saved[0]?.body).toMatch(
-        /已完成。（由 name-of-member-assistant 代為送出）$/u,
-      );
+      expect(harness.saved[0]?.body).toMatch(/已完成。（由 王助理 代為送出）$/u);
       expect(harness.saved[0]?.payload).toEqual(
         expect.objectContaining({ submittedByMemberId: 'member-assistant' }),
       );
+      // Completion runs inside the approval transaction: no identity lookup.
+      expect(resolveMember).not.toHaveBeenCalled();
+    });
+
+    it('shows the member id when no name was recorded at submit', async (): Promise<void> => {
+      const resolveMember = jest.fn();
+      const harness = createCompletionHarness(resolveMember, {
+        submittedByMemberId: 'member-assistant',
+      });
+
+      await harness.complete({ submittedByMemberId: 'member-assistant' });
+
+      expect(harness.saved[0]?.body).toMatch(
+        /已完成。（由 member-assistant 代為送出）$/u,
+      );
+      expect(resolveMember).not.toHaveBeenCalled();
+    });
+
+    it('names a member through the identity source', async (): Promise<void> => {
+      const harness = createCompletionHarness(
+        (memberId): Promise<{ readonly name: string }> =>
+          Promise.resolve({ name: `name-of-${memberId}` }),
+      );
+
+      await expect(
+        harness.service.readMemberDisplayName('member-assistant'),
+      ).resolves.toBe('name-of-member-assistant');
     });
 
     it('falls back to the member id when the identity source fails', async (): Promise<void> => {
@@ -634,11 +678,9 @@ describe('NotificationService', () => {
           Promise.reject(new Error('directory down')),
       );
 
-      await harness.complete({ submittedByMemberId: 'member-assistant' });
-
-      expect(harness.saved[0]?.body).toMatch(
-        /已完成。（由 member-assistant 代為送出）$/u,
-      );
+      await expect(
+        harness.service.readMemberDisplayName('member-assistant'),
+      ).resolves.toBe('member-assistant');
     });
 
     it('shows the member id when the identity source never answers', async (): Promise<void> => {
@@ -649,16 +691,13 @@ describe('NotificationService', () => {
           (): Promise<{ readonly name: string }> =>
             new Promise<{ readonly name: string }>(() => undefined),
         );
-        const pending = harness.complete({
-          submittedByMemberId: 'member-assistant',
-        });
+        const pending = harness.service.readMemberDisplayName(
+          'member-assistant',
+        );
 
         await jest.advanceTimersByTimeAsync(2000);
-        await pending;
 
-        expect(harness.saved[0]?.body).toMatch(
-          /已完成。（由 member-assistant 代為送出）$/u,
-        );
+        await expect(pending).resolves.toBe('member-assistant');
       } finally {
         jest.useRealTimers();
       }
