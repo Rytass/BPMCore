@@ -916,6 +916,53 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  // The DYNAMIC_FORM publish lint relies on this: a required, always-visible
+  // member field cannot reach the engine without at least one member id.
+  it('never accepts a required member field that names nobody', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'owner', label: '負責人', required: true, type: 'member' },
+          {
+            fieldKey: 'reviewers',
+            label: '審閱者',
+            multiple: true,
+            required: true,
+            type: 'member',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(submit({ owner: '', reviewers: ['m2'] })).rejects.toThrow(
+      'Form data is missing required fields: 負責人',
+    );
+    await expect(submit({ owner: '  ', reviewers: ['m2'] })).rejects.toThrow(
+      'Form data is missing required fields: 負責人',
+    );
+    await expect(submit({ owner: 'm1', reviewers: [] })).rejects.toThrow(
+      'Form data is missing required fields: 審閱者',
+    );
+    await expect(submit({ owner: 'm1', reviewers: [''] })).rejects.toThrow(
+      'formData.reviewers must be an array of member ids',
+    );
+    await expect(
+      submit({ owner: 'm1', reviewers: ['m2'] }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
   it('rejects a submitted member value that is not a member id (or an array of ids when multiple)', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
