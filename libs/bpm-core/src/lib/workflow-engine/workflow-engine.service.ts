@@ -3169,14 +3169,13 @@ export class WorkflowEngineService {
       })
     ).filter((instance) => isInstanceWithinRange(instance, options));
     const instanceIds = instances.map((instance) => instance.id);
-    const openTasks = instanceIds.length
-      ? await this.taskRepository.find({
-          where: {
-            instanceId: In(instanceIds),
-            status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
-          },
-        })
-      : [];
+    // The task counters answer "what is waiting on me", not "what is open on
+    // the instances I can see": a member who can read an instance as initiator,
+    // reader or administrator is not thereby the one who has to act on it. So
+    // they count the member's own inbox, narrowed to the instances in range.
+    // Without a scope there is no member to speak for, and the counters keep
+    // describing every open task.
+    const openTasks = await this.readDashboardOpenTasks(scope, instanceIds);
     const now = Date.now();
 
     return {
@@ -3195,6 +3194,30 @@ export class WorkflowEngineService {
       ).length,
       totalInstanceCount: instances.length,
     };
+  }
+
+  private async readDashboardOpenTasks(
+    scope: WorkflowReadScope | undefined,
+    instanceIds: readonly string[],
+  ): Promise<readonly TaskEntity[]> {
+    if (!instanceIds.length) {
+      return [];
+    }
+
+    if (scope) {
+      const instanceIdSet = new Set(instanceIds);
+
+      return (await this.readOpenInboxTasks(scope.memberId)).filter((task) =>
+        instanceIdSet.has(task.instanceId),
+      );
+    }
+
+    return this.taskRepository.find({
+      where: {
+        instanceId: In(instanceIds),
+        status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+      },
+    });
   }
 
   async listLaunchableApprovalTemplates(
@@ -3275,6 +3298,22 @@ export class WorkflowEngineService {
   async listInboxTasks(
     assigneeMemberId: string,
   ): Promise<readonly TaskEntity[]> {
+    return this.attachTaskCandidateSummaries(
+      await this.readOpenInboxTasks(assigneeMemberId),
+    );
+  }
+
+  /**
+   * The open tasks that are this member's own to act on — the single
+   * definition behind both the inbox list and the dashboard counters, so the
+   * two can never disagree. A task is theirs when it is assigned to them, or
+   * when they hold a PENDING or CLAIMED candidate row on it. A sequential
+   * chain's later candidates sit in WAITING until it is their turn, so a task
+   * that has not reached them is not theirs yet.
+   */
+  private async readOpenInboxTasks(
+    assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
     const directTasks = await this.taskRepository.find({
       order: { createdAt: 'DESC' },
       where: [
@@ -3327,9 +3366,7 @@ export class WorkflowEngineService {
       settledCandidateRows.map((candidate) => candidate.taskId),
     );
 
-    return this.attachTaskCandidateSummaries(
-      openTasks.filter((task) => !settledTaskIds.has(task.id)),
-    );
+    return openTasks.filter((task) => !settledTaskIds.has(task.id));
   }
 
   async listApprovalHistoryTasks(
