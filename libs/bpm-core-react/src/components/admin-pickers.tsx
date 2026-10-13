@@ -8,6 +8,7 @@ import type {
   PositionRecord,
 } from '@rytass/bpm-core-client/organization';
 import styles from './admin-pickers.module.scss';
+import { formatMemberLabel } from '../lib/format-member-label';
 
 export type MemberOption = Readonly<{
   email: string;
@@ -189,7 +190,7 @@ export function readMemberOption(member: {
   return {
     email: member.email,
     id: member.memberId,
-    name: `${member.name} · ${member.email}`,
+    name: formatMemberLabel(member.name, member.email, 'dot'),
   };
 }
 

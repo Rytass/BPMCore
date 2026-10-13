@@ -40,6 +40,7 @@ import {
   readResolvedManager,
   ResolvedManagerRecord,
 } from '@rytass/bpm-core-client/organization';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 
 type MemberRow = Readonly<
   Record<string, unknown> &
@@ -348,7 +349,9 @@ function readPositionLabel(position: PositionRecord | undefined): string {
 }
 
 function readMemberLabel(member: MemberProfileRecord | null): string {
-  return member ? `${member.name} · ${member.email}` : '主管資料尚未載入';
+  return member
+    ? formatMemberLabel(member.name, member.email, 'dot')
+    : '主管資料尚未載入';
 }
 
 function readErrorMessage(error: unknown): string {

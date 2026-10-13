@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 import { useRouterAdapter } from '../../../lib/router-adapter';
 import type { WorkflowDirectory } from '@rytass/bpm-core-shared';
 import {
@@ -5338,7 +5339,7 @@ function readMemberEmailSummary(
 }
 
 function formatMemberDisplayName(name: string, email: string): string {
-  return `${name} (${email})`;
+  return formatMemberLabel(name, email);
 }
 
 function readWorkflowViewport(

@@ -1,5 +1,6 @@
 import type { FormFieldValue } from '@rytass/bpm-core-shared/form';
 import { readFormMemberIds } from '@rytass/bpm-core-shared/form';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 
 /**
  * One pickable member, shaped for Mezzanine `AutoComplete` (`id` + `name`).
@@ -22,7 +23,7 @@ export function readMemberFieldOption(member: {
 }): MemberFieldOption {
   return {
     id: member.memberId,
-    name: member.email ? `${member.name} (${member.email})` : member.name,
+    name: formatMemberLabel(member.name, member.email),
   };
 }
 

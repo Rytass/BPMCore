@@ -53,6 +53,7 @@ import {
   ApprovalTemplateRecord,
   listApprovalTemplates,
 } from '@rytass/bpm-core-client/template';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 
 type MemberOption = Readonly<{
   displayName: string;
@@ -758,7 +759,7 @@ function readMemberOption(member: MemberProfileRecord): MemberOption {
     displayName: member.name,
     email: member.email,
     id: member.memberId,
-    name: `${member.name} · ${member.email}`,
+    name: formatMemberLabel(member.name, member.email, 'dot'),
   };
 }
 

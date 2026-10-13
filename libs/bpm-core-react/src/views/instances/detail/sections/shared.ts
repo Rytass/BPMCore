@@ -17,6 +17,7 @@ import {
 import { readFormDataSourceErrorMessage } from '@rytass/bpm-core-client/form';
 import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
 import { formatDateTime } from '../../../../lib/format-date-time';
+import { formatMemberLabel } from '../../../../lib/format-member-label';
 import { readSubmittedOnBehalfLabel } from '../submitted-by';
 
 // ---------------------------------------------------------------------------
@@ -286,7 +287,9 @@ export function readMemberDisplayText(
 
   const profile = memberProfilesById.get(memberId);
 
-  return profile ? `${profile.name}（${profile.email}）` : memberId;
+  return profile
+    ? formatMemberLabel(profile.name, profile.email, 'fullwidth')
+    : memberId;
 }
 
 export function readTaskAssigneeLabel(
@@ -380,7 +383,7 @@ export function readMemberOption(profile: MemberProfileRecord): MemberOption {
   return {
     email: profile.email,
     id: profile.memberId,
-    name: `${profile.name} · ${profile.email}`,
+    name: formatMemberLabel(profile.name, profile.email, 'dot'),
   };
 }
 
