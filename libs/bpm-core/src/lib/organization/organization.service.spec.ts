@@ -1,4 +1,4 @@
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, FindOperator, Repository } from 'typeorm';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import {
   CommitOrgUnitTreeDraftMoveInput,
@@ -1197,6 +1197,107 @@ describe('OrganizationService', () => {
     it('rejects an unknown zone when the service is created', (): void => {
       expect(() => createService({ organizationTimeZone: 'Nowhere/City' })).toThrow(
         'organizationTimeZone',
+      );
+    });
+
+    describe('activeOnly listings and counts', () => {
+      // 01:00 on 2026-10-14 in Asia/Taipei, still 2026-10-13 in UTC.
+      const instant = new Date('2026-10-13T17:00:00.000Z');
+
+      beforeEach((): void => {
+        jest.useFakeTimers({ now: instant });
+      });
+
+      afterEach((): void => {
+        jest.useRealTimers();
+      });
+
+      type ActiveOnlyCall = (service: OrganizationService) => Promise<unknown>;
+
+      // Each entry drives one of the four `toDateOnly(new Date())` call sites
+      // and returns the `where` clause the repository was given.
+      const readActiveOnlyDate = async (
+        repository: 'membership' | 'managerResolution',
+        method: 'find' | 'count',
+        call: ActiveOnlyCall,
+        rootOptions?: BPMRootRuntimeOptions,
+      ): Promise<string> => {
+        const query = jest.fn((): Promise<unknown> =>
+          Promise.resolve(method === 'find' ? [] : 0),
+        );
+        const repositoryStub = { [method]: query } as unknown;
+        const service = new OrganizationService(
+          {} as DataSource,
+          {} as Repository<OrgUnitEntity>,
+          {} as Repository<PositionEntity>,
+          (repository === 'membership'
+            ? repositoryStub
+            : {}) as Repository<MembershipEntity>,
+          (repository === 'managerResolution'
+            ? repositoryStub
+            : {}) as Repository<ManagerResolutionEntity>,
+          rootOptions,
+        );
+
+        await call(service);
+
+        const calls = query.mock.calls as unknown as readonly [
+          { readonly where: readonly { readonly effectiveFrom: FindOperator<string> }[] },
+        ][];
+
+        return calls[0][0].where[0].effectiveFrom.value;
+      };
+
+      const sites: readonly [
+        string,
+        'membership' | 'managerResolution',
+        'find' | 'count',
+        ActiveOnlyCall,
+      ][] = [
+        [
+          'listMemberships',
+          'membership',
+          'find',
+          (service) => service.listMemberships({ activeOnly: true }),
+        ],
+        [
+          'countMemberships',
+          'membership',
+          'count',
+          (service) => service.countMemberships({ activeOnly: true }),
+        ],
+        [
+          'listManagerResolutions',
+          'managerResolution',
+          'find',
+          (service) => service.listManagerResolutions({ activeOnly: true }),
+        ],
+        [
+          'countManagerResolutions',
+          'managerResolution',
+          'count',
+          (service) => service.countManagerResolutions({ activeOnly: true }),
+        ],
+      ];
+
+      it.each(sites)(
+        '%s reads today in Asia/Taipei by default',
+        async (_name, repository, method, call): Promise<void> => {
+          await expect(
+            readActiveOnlyDate(repository, method, call),
+          ).resolves.toBe('2026-10-14');
+        },
+      );
+
+      it.each(sites)(
+        '%s reads today in UTC when the zone is UTC',
+        async (_name, repository, method, call): Promise<void> => {
+          await expect(
+            readActiveOnlyDate(repository, method, call, {
+              organizationTimeZone: 'UTC',
+            }),
+          ).resolves.toBe('2026-10-13');
+        },
       );
     });
 
