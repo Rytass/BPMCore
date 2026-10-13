@@ -237,20 +237,28 @@ template_id                         uuid FK → approval_templates.id
 template_version_id                 uuid FK → approval_template_versions.id
 initiator_member_id                 text
 initiator_metadata_snapshot         jsonb        -- 發起當下的 metadata 快照
+submitted_by_member_id              text (nullable) -- 代為送出的人；NULL 或等於 initiator_member_id ＝ 申請人自己送出
 workflow_snapshot                   jsonb        -- 流程定義快照
 form_definition_snapshot            jsonb        -- 表單定義快照
 form_data                           jsonb        -- 使用者填寫
 form_data_option_snapshot           jsonb        -- 動態選項 label/source/hash snapshot
 state                               text         -- DRAFT/RUNNING/APPROVED/REJECTED/CANCELLED/RETURNED/EXPIRED
 title                               text         -- 自動產生（從 form_data 取一個欄位 or 模板名）
+business_key                        text (nullable) -- 宿主單據對應鍵；僅服務層送簽可帶，GraphQL 不可設
 started_at                          timestamptz
 completed_at                        timestamptz (nullable)
 created_at                          timestamptz
 
 INDEX (initiator_member_id, state)
+INDEX (submitted_by_member_id, created_at DESC)  -- 「我送出的」清單比對申請人或代送人時用
 INDEX (template_id, state)
 INDEX (state, started_at)
+UNIQUE INDEX approval_instances_business_key_key (template_id, business_key)
+  WHERE business_key IS NOT NULL   -- 同範本內唯一；不看 state，CANCELLED／REJECTED 仍佔著鍵
 ```
+
+`business_key` 的規則（trim、200 字上限、重複時的 ConflictException、查詢方法）見
+[api-reference — Business key](./api-reference.md#business-key-host-document--instance)。
 
 `form_data_option_snapshot` 的 key 是 field key；每筆 snapshot 保存 primitive value
 對應的 label、DataSource key/version、binding hash 與 validation timestamp。唯讀歷史

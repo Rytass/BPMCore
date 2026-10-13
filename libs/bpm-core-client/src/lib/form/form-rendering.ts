@@ -292,6 +292,12 @@ export function isFormRendererFieldVisible(
   fields: readonly FormFieldDefinition[],
   values: FormRendererValues,
 ): boolean {
+  // `hidden` is store-only: never rendered, never validated. Its value stays
+  // in the emitted values (buildFormRendererValues walks every schema field).
+  if (field.hidden) {
+    return false;
+  }
+
   return field.visibleWhen
     ? evaluateConditionExpression(field.visibleWhen, fields, values, true)
     : true;
@@ -555,7 +561,11 @@ function readInitialFormRendererValue(
     return false;
   }
 
-  if (field.type === 'checkbox' || field.type === 'file_upload') {
+  if (
+    field.type === 'checkbox' ||
+    field.type === 'file_upload' ||
+    (field.type === 'member' && field.multiple === true)
+  ) {
     return [];
   }
 

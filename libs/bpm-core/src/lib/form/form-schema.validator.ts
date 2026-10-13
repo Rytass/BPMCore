@@ -5,6 +5,7 @@ import {
   FormLayoutItem,
   FormUiSchema,
   isFormIdentifierKey,
+  isFormMemberValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
 } from '@rytass/bpm-core-shared/form';
@@ -16,6 +17,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'date',
   'datetime',
   'file_upload',
+  'member',
   'money',
   'number',
   'autocomplete',
@@ -203,12 +205,14 @@ function lintDefinitionSchema(schema: unknown): readonly string[] {
   );
   const duplicateErrors = readDuplicateFieldKeyErrors(fields);
   const dependencyErrors = lintFieldDependencyGraph(fields);
+  const hiddenSourceErrors = lintHiddenDataSourceDependencies(fields);
 
   return [
     ...versionErrors,
     ...fieldErrors,
     ...duplicateErrors,
     ...dependencyErrors,
+    ...hiddenSourceErrors,
   ];
 }
 
@@ -229,6 +233,7 @@ function lintFieldDefinition(
     ...lintOptionalString(field.requiredWhen, `${path}.requiredWhen`),
     ...lintOptionalString(field.readonlyWhen, `${path}.readonlyWhen`),
     ...lintFieldRequiredFlag(field, path),
+    ...lintFieldHiddenFlag(field, path),
     ...(isSupportedFieldType(type) ? [] : [`${path}.type is not supported`]),
     ...lintConditionTableReferences(field, path, scope.tableFieldKeys),
   ];
@@ -237,7 +242,23 @@ function lintFieldDefinition(
     return basicErrors;
   }
 
-  return [...basicErrors, ...lintFieldTypeSpecifics(field, type, path, scope)];
+  return [
+    ...basicErrors,
+    ...lintDisplayAsTarget(field, type, path),
+    ...lintFieldTypeSpecifics(field, type, path, scope),
+  ];
+}
+
+/** `displayAs` is a text-field option; every other type must not carry it. */
+function lintDisplayAsTarget(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+): readonly string[] {
+  return Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
+    !TEXT_FIELD_TYPES.has(type)
+    ? [`${path}.displayAs 只能用在文字欄位`]
+    : [];
 }
 
 function lintFieldTypeSpecifics(
@@ -266,6 +287,10 @@ function lintFieldTypeSpecifics(
     return lintBooleanField(field, path);
   }
 
+  if (type === 'member') {
+    return lintMemberField(field, path);
+  }
+
   if (type === 'table') {
     return lintTableField(field, path, scope);
   }
@@ -292,6 +317,28 @@ function lintFieldRequiredFlag(
   return typeof field.required === 'boolean'
     ? []
     : [`${path}.required must be a boolean`];
+}
+
+/**
+ * `hidden` is store-only: nobody sees the field, so nobody can fill a required
+ * value in. Combining it with `required: true` would make the form impossible
+ * to submit, hence the hard error. `visibleWhen` stays legal — `hidden` wins.
+ */
+function lintFieldHiddenFlag(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  if (!Object.prototype.hasOwnProperty.call(field, 'hidden')) {
+    return [];
+  }
+
+  if (typeof field.hidden !== 'boolean') {
+    return [`${path}.hidden 必須是布林值`];
+  }
+
+  return field.hidden && field.required === true
+    ? [`${path}.hidden 為 true 時不可同時設為必填（required）`]
+    : [];
 }
 
 /**
@@ -347,10 +394,17 @@ function lintTextField(
       ? [`${path}.minLength must be less than or equal to ${path}.maxLength`]
       : [];
 
+  const displayAsErrors =
+    Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
+    field.displayAs !== 'link'
+      ? [`${path}.displayAs 只支援 "link"`]
+      : [];
+
   return [
     ...minLengthErrors,
     ...maxLengthErrors,
     ...lengthRangeErrors,
+    ...displayAsErrors,
     ...lintOptionalDefaultValue(field.defaultValue, path, (value) =>
       typeof value === 'string' || value === null,
     ),
@@ -616,6 +670,27 @@ function lintBooleanField(
   );
 }
 
+function lintMemberField(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  const multipleErrors =
+    typeof field.multiple === 'undefined' || typeof field.multiple === 'boolean'
+      ? []
+      : [`${path}.multiple must be a boolean`];
+
+  return [
+    ...multipleErrors,
+    // Submit rejects blank member ids, so a default of `''` / `['']` would make
+    // every untouched form unsubmittable.
+    ...lintOptionalDefaultValue(
+      field.defaultValue,
+      path,
+      (value) => value === null || isFormMemberValue(value, field.multiple === true),
+    ),
+  ];
+}
+
 function lintTableField(
   field: Readonly<Record<string, unknown>>,
   path: string,
@@ -718,6 +793,12 @@ function lintTableColumn(
         `${path}.${conditionKey} is not supported for table columns`,
     ),
     ...lintFieldRequiredFlag(column, path),
+    ...(Object.prototype.hasOwnProperty.call(column, 'hidden')
+      ? [`${path}.hidden 不支援表格欄位`]
+      : []),
+    ...(Object.prototype.hasOwnProperty.call(column, 'displayAs')
+      ? [`${path}.displayAs 不支援表格欄位`]
+      : []),
     ...lintTableColumnType(type, path),
   ];
 
@@ -930,6 +1011,59 @@ function lintFieldDependencyGraph(
   const uniqueCycles = [...new Set(cycles)];
 
   return uniqueCycles.map((cycle) => `schema.fields dependency cycle: ${cycle}`);
+}
+
+/**
+ * A hidden field is never rendered, so the client DataSource gate (which only
+ * sees rendered fields) cannot wait on or resolve it; the server still does,
+ * and a failure there would leave a resubmitter with no field to fix. A hidden
+ * field may therefore only depend on other hidden fields (or nothing).
+ */
+function lintHiddenDataSourceDependencies(
+  fields: readonly unknown[],
+): readonly string[] {
+  const records = fields.filter(isRecord);
+  const visibleKeys = new Set(
+    records
+      .filter((field) => field.hidden !== true)
+      .map((field) => field.fieldKey)
+      .filter((fieldKey): fieldKey is string => typeof fieldKey === 'string'),
+  );
+  const message = (path: string, dependencyKey: string): string =>
+    `${path}.dataSource 所屬欄位為 hidden，只能綁定同為 hidden 的欄位，不可綁定顯示中的欄位：${dependencyKey}`;
+  const readVisibleDependencies = (
+    owner: Readonly<Record<string, unknown>>,
+  ): readonly string[] =>
+    readBindingSources(owner)
+      .filter((from) => from.kind === 'FIELD')
+      .map((from) => from.fieldKey)
+      .filter(
+        (dependencyKey): dependencyKey is string =>
+          typeof dependencyKey === 'string' && visibleKeys.has(dependencyKey),
+      );
+
+  return fields.flatMap((field, index) => {
+    if (!isRecord(field) || field.hidden !== true) {
+      return [];
+    }
+
+    const path = `schema.fields[${index}]`;
+    const columns =
+      field.type === 'table' && Array.isArray(field.columns)
+        ? field.columns
+        : [];
+
+    return [
+      ...readVisibleDependencies(field).map((key) => message(path, key)),
+      ...columns.flatMap((column, columnIndex) =>
+        isRecord(column)
+          ? readVisibleDependencies(column).map((key) =>
+              message(`${path}.columns[${columnIndex}]`, key),
+            )
+          : [],
+      ),
+    ];
+  });
 }
 
 function readFieldDependencyEntries(

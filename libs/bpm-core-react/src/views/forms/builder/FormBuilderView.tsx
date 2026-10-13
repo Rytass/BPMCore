@@ -52,6 +52,7 @@ import {
   ListIcon,
   PlusIcon,
   TrashIcon,
+  UserIcon,
 } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
@@ -68,6 +69,7 @@ import {
   FormOptionFieldDefinition,
   FormStaticOptionFieldDefinition,
   FormUiSchema,
+  MemberFieldDefinition,
   NumberFieldDefinition,
   TableColumnDefinition,
   TableFieldDefinition,
@@ -75,6 +77,7 @@ import {
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
+  isMemberFieldDefinition,
   isTableColumnFieldType,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -292,6 +295,12 @@ const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
     icon: FileAttachmentIcon,
     label: '附件',
     type: 'file_upload',
+  },
+  {
+    description: '從成員名單挑選一或多位人員',
+    icon: UserIcon,
+    label: '人員選擇',
+    type: 'member',
   },
   {
     description: '多列多欄明細',
@@ -1672,6 +1681,50 @@ export function FormBuilderView({
           commitSelectedField,
           requestDataSourceFieldChange,
         )}
+        {isTextFieldDefinition(field)
+          ? renderSettingsFormRow(
+              '以連結顯示',
+              'fieldDisplayAsLink',
+              <Toggle
+                checked={field.displayAs === 'link'}
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateSelectedFieldWith((current) =>
+                    event.target.checked
+                      ? isTextFieldDefinition(current)
+                        ? { ...current, displayAs: 'link' }
+                        : current
+                      : removeFieldKey(current, 'displayAs'),
+                  )
+                }
+              />,
+            )
+          : null}
+        {renderSettingsFormRow(
+          '只存不顯示（系統整合用）',
+          'fieldHidden',
+          <Toggle
+            checked={field.hidden === true}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              // A hidden field can never be required (the publish lint
+              // rejects the pair), so ticking it also clears 必填.
+              updateSelectedFieldWith((current) =>
+                event.target.checked
+                  ? { ...current, hidden: true, required: false }
+                  : removeFieldKey(current, 'hidden'),
+              )
+            }
+          />,
+        )}
+        {field.hidden === true ? (
+          <Typography
+            color="text-neutral"
+            style={FIELD_SETTINGS_HINT_STYLE}
+            variant="body"
+          >
+            填寫、唯讀與重送畫面都不會顯示這個欄位，值仍會存下來；
+            透過 API 仍然讀得到這個值，不是權限控管。
+          </Typography>
+        ) : null}
       </div>
     );
   }
@@ -1738,6 +1791,10 @@ export function FormBuilderView({
 
     if (field.type === 'file_upload') {
       return renderFileUploadFieldSettings(field, commit);
+    }
+
+    if (isMemberFieldDefinition(field)) {
+      return renderMemberFieldSettings(field, commit);
     }
 
     if (isTableFieldDefinition(field)) {
@@ -2871,6 +2928,30 @@ export function FormBuilderView({
     );
   }
 
+  function renderMemberFieldSettings(
+    field: MemberFieldDefinition,
+    commit: FieldCommit<MemberFieldDefinition>,
+  ): ReactElement {
+    return renderSettingsFormRow(
+      '可複選',
+      'fieldMemberMultiple',
+      <Toggle
+        checked={field.multiple === true}
+        label={field.multiple === true ? '可選多位' : '只能選一位'}
+        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+          // The stored shape changes with `multiple` (string vs. string[]), so
+          // a default written for the other shape must not survive the switch.
+          commit({
+            ...field,
+            defaultValue: undefined,
+            multiple: event.target.checked || undefined,
+          })
+        }
+        size="sub"
+      />,
+    );
+  }
+
   function renderFileUploadFieldSettings(
     field: FileUploadFieldDefinition,
     commit: FieldCommit<FileUploadFieldDefinition>,
@@ -2908,8 +2989,12 @@ export function FormBuilderView({
   }
 
   function renderConditionSettings(field: FormFieldDefinition): ReactElement {
+    // A member id is an opaque directory key — there is nothing sensible to
+    // compare it with in a form-level rule, so member fields are not offered.
     const conditionFieldOptions = schema.fields.filter(
-      (schemaField) => schemaField.fieldKey !== field.fieldKey,
+      (schemaField) =>
+        schemaField.fieldKey !== field.fieldKey &&
+        !isMemberFieldDefinition(schemaField),
     );
 
     if (!conditionFieldOptions.length) {
@@ -3424,6 +3509,7 @@ export function FormBuilderView({
           >
             {readFieldTypeLabel(field.type)} ·
             {field.required ? ' 必填' : ' 選填'} ·{field.fieldKey}
+            {field.hidden ? ' · 只存不顯示' : null}
           </Typography>
         </div>
         <div
@@ -3435,7 +3521,7 @@ export function FormBuilderView({
           <div style={FIELD_BLOCK_REQUIRED_STYLE}>
             <Toggle
               checked={Boolean(field.required)}
-              disabled={isDragging}
+              disabled={isDragging || field.hidden === true}
               label="必填"
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                 updateFieldRequired(field.fieldKey, event.target.checked)
@@ -3784,6 +3870,20 @@ function convertTableColumnType(
         type,
       }
     : ({ ...base, type } as TableColumnDefinition);
+}
+
+/**
+ * Drops an optional display key so it is absent from the saved JSON instead of
+ * lingering as `undefined`. Rebuilding the object from its entries loses the
+ * union's type, hence the single cast back.
+ */
+function removeFieldKey(
+  field: FormFieldDefinition,
+  key: 'displayAs' | 'hidden',
+): FormFieldDefinition {
+  return Object.fromEntries(
+    Object.entries(field).filter(([entryKey]) => entryKey !== key),
+  ) as unknown as FormFieldDefinition;
 }
 
 function hasConditionRules(field: FormFieldDefinition): boolean {

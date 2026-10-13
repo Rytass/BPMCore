@@ -13,12 +13,20 @@ export type FormFieldDefinition =
   | CheckboxFieldDefinition
   | BooleanFieldDefinition
   | FileUploadFieldDefinition
+  | MemberFieldDefinition
   | TableFieldDefinition;
 
 interface BaseFormFieldDefinition<TType extends string> {
   readonly defaultValue?: FormFieldValue;
   readonly description?: string;
   readonly fieldKey: string;
+  /**
+   * 只存不顯示：值照存進 `form_data`，填寫、唯讀、重送畫面都不渲染；供宿主
+   * 系統放技術欄位（單據編號、版本等）。不是權限邊界 — API 回傳的 `formData`
+   * 仍包含這個值。條件（`visibleWhen` 等）仍可引用它；與 `visibleWhen` 同時
+   * 設定時以 `hidden` 為準；不可與 `required: true` 並用，也不支援 table 欄。
+   */
+  readonly hidden?: boolean;
   readonly label: string;
   readonly placeholder?: string;
   readonly readonlyWhen?: string;
@@ -51,6 +59,11 @@ export type FormFieldValue = FormTableCellValue | readonly FormTableRowValue[];
 export type TextFieldDefinition = BaseFormFieldDefinition<
   'text' | 'textarea'
 > & {
+  /**
+   * 唯讀畫面以連結呈現：值仍是字串，條件與驗證不變。只有站內相對路徑或
+   * `http(s)://` 網址會變成連結，其他值照純文字顯示。不支援 table 欄。
+   */
+  readonly displayAs?: 'link';
   readonly maxLength?: number;
   readonly minLength?: number;
 };
@@ -158,6 +171,16 @@ export type FileUploadFieldDefinition =
   };
 
 /**
+ * 人員選擇. The stored value is a member id (`multiple` unset or `false`) or an
+ * array of member ids (`multiple: true`) — ids only, never `{ id, name }`, so
+ * the same value feeds a `DYNAMIC_FORM` approver resolver unchanged. Names are
+ * resolved for display at render time. Not a table column type in V1.
+ */
+export type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
+  readonly multiple?: boolean;
+};
+
+/**
  * Field types a table column may use. `textarea`, `radio`, `checkbox`,
  * `file_upload` and nested `table` are intentionally excluded in V1
  * (ADR 16 §3.10); opening any of them later is an additive change.
@@ -224,6 +247,48 @@ export function isFormOptionFieldDefinition(
     field.type === 'radio' ||
     field.type === 'checkbox'
   );
+}
+
+export function isMemberFieldDefinition(
+  field: FormFieldDefinition,
+): field is MemberFieldDefinition {
+  return field.type === 'member';
+}
+
+/**
+ * Whether `value` is a well-formed stored member value: a non-empty string
+ * (`multiple` false) or an array of non-empty strings (`multiple` true). `[]`
+ * is a well-formed multiple value — whether "nothing picked" is acceptable is
+ * the caller's required check, not this shape guard's.
+ */
+export function isFormMemberValue(value: unknown, multiple: boolean): boolean {
+  if (multiple) {
+    return (
+      Array.isArray(value) &&
+      value.every((item) => typeof item === 'string' && item.trim().length > 0)
+    );
+  }
+
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * The member ids held by a member field value, whichever shape it has. Anything
+ * that is not a string or an array of strings yields no ids.
+ */
+export function readFormMemberIds(
+  value: FormFieldValue | undefined,
+): readonly string[] {
+  if (typeof value === 'string') {
+    return value.trim() ? [value] : [];
+  }
+
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is string =>
+          typeof item === 'string' && item.trim().length > 0,
+      )
+    : [];
 }
 
 export function isTableFieldDefinition(

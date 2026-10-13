@@ -112,6 +112,7 @@ import {
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
   readApproverResolverIssue,
+  readConditionOperatorIds,
   readDesignTimeApproverCount,
   readExcludeInitiatorIssue,
   readNotifyServiceTaskIssue,
@@ -163,6 +164,23 @@ import {
   NotifyWebhookCatalogState,
   NotifyWebhookTargetsEditor,
 } from './NotifyWebhookTargetsEditor';
+import { readDryRunSampleFormData } from './dry-run-sample-data';
+import {
+  DryRunAssigneeDirectory,
+  readDryRunAssigneeLabel,
+} from './dry-run-assignee-label';
+import {
+  readDynamicFormFieldChoice,
+  readDynamicFormSummary,
+} from './dynamic-form-resolver-options';
+import {
+  readFormVersionLabel,
+  readTemplateVersionDescription,
+} from './designer-version-labels';
+import {
+  excludeFailedMemberIds,
+  resolveMemberProfilesPerIdOnFailure,
+} from '../../../lib/member-profile-resolution';
 import {
   findNotifyWebhookEndpoint,
   isNotifyWebhookListEditable,
@@ -242,6 +260,7 @@ type ReturnResubmitStrategyOption = Readonly<{
 type ApproverResolverMode = Extract<
   ApproverResolver['type'],
   | 'DIRECT'
+  | 'DYNAMIC_FORM'
   | 'ORG_MANAGER'
   | 'ORG_MANAGER_CHAIN'
   | 'ORG_UNIT_MANAGER'
@@ -554,6 +573,7 @@ const SLA_WARNING_AT_OPTIONS: readonly {
 ];
 const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
   { id: 'DIRECT', name: '指定會員' },
+  { id: 'DYNAMIC_FORM', name: '依表單欄位指定' },
   { id: 'ORG_MANAGER', name: '發起人主管' },
   { id: 'ORG_MANAGER_CHAIN', name: '主管鏈（簽到指定職等）' },
   { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
@@ -924,6 +944,11 @@ export function TemplateDesignerView({
   // response for a more recent search. `memberOptions` accumulation is
   // order-insensitive (it only ever adds), so it does not need this guard.
   const memberSearchSequenceRef = useRef(0);
+  // Member ids the directory could not resolve, even asked for on their own.
+  // They keep their 「未知會員」 placeholder and are not requested again for
+  // the rest of the session, a transient failure included, unless a later
+  // member search returns them (the merge then replaces the placeholder).
+  const unresolvableMemberIdsRef = useRef<Set<string>>(new Set());
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
   const [memberships, setMemberships] = useState<readonly MembershipRecord[]>(
@@ -1087,27 +1112,6 @@ export function TemplateDesignerView({
       initiatorPolicyModeDraft,
     ],
   );
-  const flowNodes = useMemo(
-    (): FlowNode[] =>
-      workflowDefinition.nodes.map((node) =>
-        readFlowNode(
-          node,
-          memberOptions,
-          orgUnits,
-          positions,
-          node.id === selectedNodeId,
-          initiatorPolicyDraft,
-        ),
-      ),
-    [
-      initiatorPolicyDraft,
-      memberOptions,
-      orgUnits,
-      positions,
-      selectedNodeId,
-      workflowDefinition.nodes,
-    ],
-  );
   const flowEdges = useMemo(
     (): FlowEdge[] =>
       workflowDefinition.edges.map((edge) =>
@@ -1196,6 +1200,29 @@ export function TemplateDesignerView({
           })[0] ?? null)
         : null,
     [webhookCatalog, webhookCatalogState, webhookFormSchema, workflowDefinition],
+  );
+  const flowNodes = useMemo(
+    (): FlowNode[] =>
+      workflowDefinition.nodes.map((node) =>
+        readFlowNode(
+          node,
+          memberOptions,
+          orgUnits,
+          positions,
+          node.id === selectedNodeId,
+          initiatorPolicyDraft,
+          webhookFormSchema,
+        ),
+      ),
+    [
+      initiatorPolicyDraft,
+      memberOptions,
+      orgUnits,
+      positions,
+      selectedNodeId,
+      webhookFormSchema,
+      workflowDefinition.nodes,
+    ],
   );
   const formVersionBindingLocked = useMemo(
     (): boolean => hasConfiguredConditionEdges(workflowDefinition),
@@ -1383,30 +1410,52 @@ export function TemplateDesignerView({
     // the member id, so a plain presence check treats a failed fetch as a hit
     // and never asks again — the "未知會員" sentinel would then survive every
     // later definition load for the rest of the session.
-    const missingMemberIds = memberIds.filter(
-      (memberId) =>
-        !memberOptions.some(
-          (option) => option.memberId === memberId && !option.unresolved,
-        ),
+    //
+    // The exception is an id the directory already failed to resolve on its
+    // own: it stays 「未知會員」 for the session. Counting it as missing again
+    // would re-request it (and re-run the whole per-id retry) every time
+    // `memberOptions` changes, which the placeholder merge itself triggers.
+    const missingMemberIds = excludeFailedMemberIds(
+      memberIds.filter(
+        (memberId) =>
+          !memberOptions.some(
+            (option) => option.memberId === memberId && !option.unresolved,
+          ),
+      ),
+      unresolvableMemberIdsRef.current,
     );
 
     if (missingMemberIds.length === 0) {
       return;
     }
 
-    try {
-      const options = await resolveMemberOptions(missingMemberIds);
-      setMemberOptions((currentOptions) =>
-        mergeMemberOptions(currentOptions, readMemberSelectOptions(options)),
-      );
-    } catch {
-      setMemberOptions((currentOptions) =>
-        mergeMemberOptions(
-          currentOptions,
-          missingMemberIds.map(readFallbackMemberSelectOption),
+    // One bad id (a foreign id stored in the template) makes the host fail the
+    // whole batch, so a failed batch is retried per id: the members that do
+    // resolve keep their names and only the failing ids show 「未知會員」.
+    const { profiles, skippedIds } = await resolveMemberProfilesPerIdOnFailure(
+      missingMemberIds,
+      resolveMemberOptions,
+    );
+    const resolvedIds = new Set(profiles.map((profile) => profile.memberId));
+    const unresolvableIds = missingMemberIds.filter(
+      (memberId) =>
+        !resolvedIds.has(memberId) && !skippedIds.includes(memberId),
+    );
+
+    // Ids the directory answered without (or failed on their own) are given
+    // up on for this session; skipped ids were never asked and stay eligible.
+    unresolvableIds.forEach((memberId) =>
+      unresolvableMemberIdsRef.current.add(memberId),
+    );
+
+    setMemberOptions((currentOptions) =>
+      mergeMemberOptions(currentOptions, [
+        ...readMemberSelectOptions(profiles),
+        ...[...unresolvableIds, ...skippedIds].map(
+          readFallbackMemberSelectOption,
         ),
-      );
-    }
+      ]),
+    );
   }
 
   async function commitDesigner(publish: boolean): Promise<void> {
@@ -1488,7 +1537,10 @@ export function TemplateDesignerView({
   function openDryRunModal(): void {
     setDryRunFormDataJson(
       JSON.stringify(
-        readDryRunSampleFormData(selectedFormVersionOption),
+        // The schema publish would send (an applied form edit included), the
+        // same one the 依表單欄位指定 picker reads, so a member field just added
+        // to the draft gets a sample value.
+        readDryRunSampleFormData(webhookFormSchema),
         null,
         2,
       ),
@@ -1863,9 +1915,17 @@ export function TemplateDesignerView({
         {!embedded ? (
           <PageHeader>
             <ContentHeader
-              description={`${draft ? `草稿 v${draft.version}` : '尚未建立草稿'} ·${
-                record?.template.currentVersionId ? ' 已發布版本' : ' 尚未發布'
-              }`}
+              description={readTemplateVersionDescription({
+                draftVersion: draft?.version ?? null,
+                hasPublishedVersion: Boolean(
+                  record?.template.currentVersionId,
+                ),
+                publishedVersion:
+                  record?.versions.find(
+                    (version) =>
+                      version.id === record.template.currentVersionId,
+                  )?.version ?? null,
+              })}
               onBackClick={handleBackToTemplates}
               title={record?.template.name ?? '流程設計器'}
             >
@@ -2222,6 +2282,16 @@ export function TemplateDesignerView({
   );
 
   function renderDryRunModal(): ReactElement {
+    const dryRunAssigneeDirectory: DryRunAssigneeDirectory = {
+      formFields: webhookFormSchema?.fields ?? [],
+      memberName: (memberId) =>
+        memberOptions.find(
+          (option) => option.memberId === memberId && !option.unresolved,
+        )?.displayName ?? null,
+      orgUnits,
+      positions,
+    };
+
     return (
       <Modal
         cancelText="關閉"
@@ -2279,7 +2349,10 @@ export function TemplateDesignerView({
                   <Typography color="text-neutral" variant="caption">
                     {readWorkflowNodeTypeLabel(step.nodeType)}
                     {step.assigneeMemberId
-                      ? ` · 處理者：${step.assigneeMemberId}`
+                      ? ` · 處理者：${readDryRunAssigneeLabel(
+                          step.assigneeMemberId,
+                          dryRunAssigneeDirectory,
+                        )}`
                       : ''}
                     {step.edgeLabel ? ` · 來源線段：${step.edgeLabel}` : ''}
                   </Typography>
@@ -2554,6 +2627,10 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const dynamicFormChoice =
+      resolver.type === 'DYNAMIC_FORM'
+        ? readDynamicFormFieldChoice(webhookFormSchema, resolver.formPath)
+        : null;
     const selectedManagerLevel =
       resolver.type === 'ORG_MANAGER'
         ? readManagerLevelOption(resolver.levelsUp)
@@ -2660,6 +2737,30 @@ export function TemplateDesignerView({
               placeholder="搜尋姓名或信箱"
               searchDebounceTime={300}
               value={selectedMembers}
+            />
+          </BPMFormField>
+        ) : null}
+        {resolver.type === 'DYNAMIC_FORM' ? (
+          <BPMFormField
+            hintText={
+              dynamicFormChoice?.problem ??
+              '簽核人取自申請人送出表單時在該欄位選的人員。'
+            }
+            label="表單欄位"
+            name="approverFormPath"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskResolver({
+                  formPath: option?.id ?? '',
+                  type: 'DYNAMIC_FORM',
+                })
+              }
+              options={[...(dynamicFormChoice?.options ?? [])]}
+              placeholder="選擇人員選擇欄位"
+              value={dynamicFormChoice?.selected ?? undefined}
             />
           </BPMFormField>
         ) : null}
@@ -3339,6 +3440,7 @@ export function TemplateDesignerView({
             memberOptions,
             orgUnits,
             positions,
+            webhookFormSchema,
           )
         : null;
 
@@ -3831,6 +3933,7 @@ function readFlowNode(
   positions: readonly PositionRecord[],
   selected: boolean,
   initiatorPolicyDraft: InitiatorPolicyDraft,
+  formSchema: FormDefinitionSchema | null,
 ): FlowNode {
   const dimensions = readWorkflowNodeDimensions(node);
 
@@ -3841,12 +3944,14 @@ function readFlowNode(
         memberOptions,
         orgUnits,
         positions,
+        formSchema,
       ),
       approverSummary: readNodeApproverSummary(
         node,
         memberOptions,
         orgUnits,
         positions,
+        formSchema,
       ),
       hasInput: isWorkflowNodeInputConnectable(node),
       hasOutput: isWorkflowNodeOutputConnectable(node),
@@ -4385,7 +4490,8 @@ function omitSlaKey(
 }
 
 function readApproverResolverMode(value: string): ApproverResolverMode {
-  return value === 'ORG_MANAGER' ||
+  return value === 'DYNAMIC_FORM' ||
+    value === 'ORG_MANAGER' ||
     value === 'ORG_MANAGER_CHAIN' ||
     value === 'ORG_UNIT_MANAGER' ||
     value === 'ORG_UNIT_MEMBER' ||
@@ -4400,6 +4506,10 @@ function readDefaultApproverResolver(
   positions: readonly PositionRecord[],
 ): ApproverResolver {
   const mode = readApproverResolverMode(value ?? 'DIRECT');
+
+  if (mode === 'DYNAMIC_FORM') {
+    return { formPath: '', type: 'DYNAMIC_FORM' };
+  }
 
   if (mode === 'ORG_MANAGER') {
     return { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' };
@@ -4730,51 +4840,9 @@ function readFormVersionSelectOptions(
     formDefinitionId: option.formDefinitionId,
     formName: option.formName,
     id: option.id,
-    name: `${option.formName} ｜ v${option.version}`,
+    name: readFormVersionLabel(option.formName, option.version),
     schema: option.schema,
   }));
-}
-
-function readDryRunSampleFormData(
-  option: FormVersionSelectOption | null,
-): Readonly<Record<string, unknown>> {
-  return (option?.schema.fields ?? []).reduce<
-    Readonly<Record<string, unknown>>
-  >(
-    (formData, field) => ({
-      ...formData,
-      [field.fieldKey]: readDryRunSampleFieldValue(field),
-    }),
-    {},
-  );
-}
-
-function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
-  if (field.type === 'number') {
-    return 1000;
-  }
-
-  if (field.type === 'boolean') {
-    return true;
-  }
-
-  if (isFormStaticOptionFieldDefinition(field)) {
-    return field.type === 'checkbox'
-      ? field.options[0]
-        ? [field.options[0].value]
-        : []
-      : field.options[0]?.value ?? '';
-  }
-
-  if (field.type === 'date') {
-    return '2026-05-08';
-  }
-
-  if (field.type === 'datetime') {
-    return '2026-05-08T09:00:00+08:00';
-  }
-
-  return field.placeholder ?? field.label;
 }
 
 function parseDryRunFormData(value: string): Readonly<Record<string, unknown>> {
@@ -5120,6 +5188,7 @@ function readNodeApproverSummary(
   memberOptions: readonly MemberSelectOption[],
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
+  formSchema: FormDefinitionSchema | null,
 ): string | null {
   if (node.type === 'userTask') {
     return readApproverResolverSummary(
@@ -5127,6 +5196,7 @@ function readNodeApproverSummary(
       memberOptions,
       orgUnits,
       positions,
+      formSchema,
     );
   }
 
@@ -5138,6 +5208,7 @@ function readApproverResolverSummary(
   memberOptions: readonly MemberSelectOption[],
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
+  formSchema: FormDefinitionSchema | null,
 ): string {
   if (resolver.type === 'DIRECT') {
     return readMemberEmailSummary(
@@ -5175,7 +5246,7 @@ function readApproverResolverSummary(
   }
 
   if (resolver.type === 'DYNAMIC_FORM') {
-    return `表單欄位：${resolver.formPath || '未設定'}`;
+    return readDynamicFormSummary(formSchema, resolver.formPath);
   }
 
   return '自訂表達式';
@@ -5186,6 +5257,7 @@ function readNodeApproverLines(
   memberOptions: readonly MemberSelectOption[],
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
+  formSchema: FormDefinitionSchema | null,
 ): readonly string[] | null {
   if (node.type !== 'serviceTask') {
     return null;
@@ -5200,6 +5272,7 @@ function readNodeApproverLines(
             memberOptions,
             orgUnits,
             positions,
+            formSchema,
           ),
         ]
       : readServiceTaskMemberIds(action).map(
@@ -5415,38 +5488,6 @@ function readConditionOperator(
   return CONDITION_OPERATOR_OPTIONS.some((option) => option.id === value)
     ? (value as WorkflowEdgeConditionOperator)
     : null;
-}
-
-function readConditionOperatorIds(
-  field: FormFieldDefinition,
-): readonly WorkflowEdgeConditionOperator[] {
-  if (field.type === 'file_upload') {
-    return ['IS_FILLED', 'IS_EMPTY'];
-  }
-
-  if (field.type === 'boolean') {
-    return ['EQUALS', 'NOT_EQUALS', 'IS_FILLED', 'IS_EMPTY'];
-  }
-
-  if (
-    field.type === 'date' ||
-    field.type === 'datetime' ||
-    field.type === 'money' ||
-    field.type === 'number'
-  ) {
-    return [
-      'EQUALS',
-      'NOT_EQUALS',
-      'GREATER_THAN',
-      'GREATER_THAN_OR_EQUALS',
-      'LESS_THAN',
-      'LESS_THAN_OR_EQUALS',
-      'IS_FILLED',
-      'IS_EMPTY',
-    ];
-  }
-
-  return ['EQUALS', 'NOT_EQUALS', 'IS_FILLED', 'IS_EMPTY'];
 }
 
 function readConditionValueOptions(

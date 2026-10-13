@@ -79,6 +79,7 @@ interface MemberMetadata {
 | ---- | ---------------------------------------------------- |
 | 基本 | text、number、date、datetime、boolean                |
 | 選擇 | select / radio / checkbox（含動態資料源）            |
+| 人員 | member（人員選擇，值為成員 id，可複選）              |
 | 進階 | file_upload、signature_pad、table、sub_form、address |
 | 系統 | org_picker、user_picker、money（含幣別）             |
 | 動態 | calculated_field（公式）、reference_field（查主檔）  |

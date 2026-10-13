@@ -159,7 +159,8 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 ```
 
 - 建立時 directive 直接 `CONSUMED`，並立即在**當前節點**產生阻塞 task，回傳值
-  是新產生的 `TaskEntity`（非 directive）。
+  是新產生的 `TaskEntity`（非 directive）；其 `nodeLabel` 為所在節點的名稱
+  （不含「臨時加簽」字樣，畫面依 `isAdhoc`／`adhocType` 自行加註）。
 - 阻塞語意同會簽：基於 `hasOpenTasksForTokenNode`，當前 token 在所有任務
   （含加簽 task）完成前不推進。
 - **加簽人拒絕時**（`handleAdhocPreApprovalRejection`），依建立時指定的

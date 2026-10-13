@@ -356,6 +356,67 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('toggles store-only (hidden) and clears required with it', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'docId', label: '單據', required: true, type: 'text' },
+      ]),
+    );
+
+    try {
+      toggleSetting(harness.container, 'fieldHidden');
+      expect(readField(harness.readSchema(), 'docId')).toMatchObject({
+        hidden: true,
+        required: false,
+      });
+      expect(harness.container.textContent).toContain('只存不顯示');
+      expect(harness.container.textContent).toContain('不是權限控管');
+
+      toggleSetting(harness.container, 'fieldHidden');
+      expect(readField(harness.readSchema(), 'docId')).not.toHaveProperty('hidden');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('offers 以連結顯示 on text fields only', async (): Promise<void> => {
+    const textHarness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'source', label: '來源', required: false, type: 'text' },
+      ]),
+    );
+
+    try {
+      toggleSetting(textHarness.container, 'fieldDisplayAsLink');
+      expect(readField(textHarness.readSchema(), 'source')).toMatchObject({
+        displayAs: 'link',
+      });
+
+      toggleSetting(textHarness.container, 'fieldDisplayAsLink');
+      expect(readField(textHarness.readSchema(), 'source')).not.toHaveProperty(
+        'displayAs',
+      );
+    } finally {
+      await unmount(textHarness);
+    }
+
+    const numberHarness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+      ]),
+    );
+
+    try {
+      expect(
+        numberHarness.container.querySelector(
+          '[data-mock-form-field="fieldDisplayAsLink"]',
+        ),
+      ).toBeNull();
+    } finally {
+      await unmount(numberHarness);
+    }
+  });
+
   it('edits a number field default, minimum and maximum', async (): Promise<void> => {
     const harness = await mountBuilder(
       createSchema([
@@ -436,6 +497,95 @@ describe('FormBuilderView field settings', () => {
         'option_z',
         'option_3',
       ]);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('adds a member field from the palette as a single-select optional field', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([]));
+
+    try {
+      clickButton(harness.container, '人員選擇');
+
+      expect(harness.readSchema().fields[0]).toEqual({
+        fieldKey: 'member_1',
+        label: '人員選擇 1',
+        required: false,
+        type: 'member',
+      });
+      expect(harness.readUiSchema().layout[0]?.width).toBe('HALF');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('toggles 可複選 on a member field and drops a default of the old shape', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          defaultValue: 'm1',
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ]),
+    );
+
+    try {
+      const toggle = harness.container.querySelector(
+        '[data-mock-form-field="fieldMemberMultiple"] input',
+      ) as HTMLInputElement | null;
+
+      if (!toggle) {
+        throw new Error('The 可複選 toggle was not rendered.');
+      }
+
+      act((): void => {
+        toggle.click();
+      });
+
+      const multiple = readField(harness.readSchema(), 'reviewer');
+
+      expect(multiple).toMatchObject({ multiple: true, type: 'member' });
+      expect(multiple.defaultValue).toBeUndefined();
+
+      const turnedOff = harness.container.querySelector(
+        '[data-mock-form-field="fieldMemberMultiple"] input',
+      ) as HTMLInputElement | null;
+
+      act((): void => {
+        turnedOff?.click();
+      });
+
+      expect(readField(harness.readSchema(), 'reviewer').multiple).toBe(
+        undefined,
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('does not offer a member field as a condition source', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        {
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'note');
+
+      expect(harness.container.textContent).toContain(
+        '目前沒有其他欄位可作為條件來源',
+      );
     } finally {
       await unmount(harness);
     }
@@ -1365,6 +1515,20 @@ function typeInto(
   }
 
   setControlValue(input, value);
+}
+
+function toggleSetting(container: HTMLElement, fieldName: string): void {
+  const input = container.querySelector(
+    `[data-mock-form-field="${fieldName}"] input`,
+  ) as HTMLInputElement | null;
+
+  if (!input) {
+    throw new Error(`Settings toggle ${fieldName} was not rendered.`);
+  }
+
+  act((): void => {
+    input.click();
+  });
 }
 
 function typeIntoExpandedSetting(

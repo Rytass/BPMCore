@@ -1,8 +1,11 @@
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  listApprovalHistoryTasks,
   listApprovalInstances,
+  listApprovalInstancesPage,
   listInboxTasks,
   readApprovalInstance,
+  requestAdhocPreApproval,
   readFormDataCaseTitle,
   retryWorkflowWebhookDelivery,
   listWorkflowWebhookDeliveries,
@@ -53,10 +56,65 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('query ApprovalInstances');
+        expect(request.query).toContain('submittedByMemberId');
         expect(request.variables).toBeUndefined();
         expect(instances).toEqual([]);
       } finally {
         harness.restore();
+      }
+    });
+  });
+
+  describe('listApprovalInstancesPage', () => {
+    it('selects submittedByMemberId on the paged list too', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const queries: string[] = [];
+
+      (global as { fetch: typeof fetch }).fetch = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) => {
+          queries.push(
+            (JSON.parse(String(init?.body)) as { query: string }).query,
+          );
+
+          return new Response(
+            JSON.stringify({
+              data: {
+                approvalInstancePageInfo: {
+                  hasNextPage: false,
+                  hasPreviousPage: false,
+                  page: 1,
+                  pageSize: 10,
+                  totalCount: 0,
+                  totalPages: 1,
+                },
+                approvalInstances: [],
+              },
+            }),
+            {
+              headers: { 'Content-Type': 'application/json' },
+              status: 200,
+            },
+          );
+        },
+      ) as unknown as typeof fetch;
+
+      try {
+        await listApprovalInstancesPage({
+          page: 1,
+          pageSize: 10,
+          searchText: null,
+          state: null,
+          templateId: null,
+          view: 'SENT',
+        });
+
+        const listQuery = queries.find((query) =>
+          query.includes('query ApprovalInstancesPage('),
+        );
+
+        expect(listQuery).toContain('submittedByMemberId');
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
       }
     });
   });
@@ -72,6 +130,7 @@ describe('@rytass/bpm-core-client/workflow', () => {
           initiatorMemberId: 'member-001',
           startedAt: '2026-05-26T00:00:00.000Z',
           state: 'RUNNING',
+          submittedByMemberId: 'member-assistant',
           templateId: 'template-1',
           templateVersionId: 'tv-1',
           title: 'Test instance',
@@ -87,8 +146,10 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('query ApprovalInstance');
+        expect(request.query).toContain('submittedByMemberId');
         expect(request.variables).toEqual({ id: 'instance-1' });
         expect(result.instance.id).toBe('instance-1');
+        expect(result.instance.submittedByMemberId).toBe('member-assistant');
         expect(result.tasks).toEqual([]);
         expect(result.workflowTokens).toEqual([]);
       } finally {
@@ -134,6 +195,78 @@ describe('@rytass/bpm-core-client/workflow', () => {
     });
   });
 
+  describe('task node label', () => {
+    const selectsNodeLabel = (query: string): boolean =>
+      /\bnodeId\s+nodeLabel\b/.test(query);
+    const task = {
+      assigneeMemberId: 'member-001',
+      id: 'task-1',
+      nodeId: 'band-0',
+      nodeLabel: '部門主管簽核',
+    };
+
+    it.each([
+      [
+        'readApprovalInstance',
+        async (): Promise<unknown> => readApprovalInstance('instance-1'),
+        {
+          approvalInstance: {
+            formDataJson: '{}',
+            formDefinitionSnapshotJson: '{}',
+            id: 'instance-1',
+            workflowSnapshotJson: '{}',
+          },
+          activityLogs: [],
+          tasks: [task],
+          workflowTokens: [],
+        },
+      ],
+      [
+        'listInboxTasks',
+        async (): Promise<unknown> => listInboxTasks('member-001'),
+        { inboxTasks: [task] },
+      ],
+      [
+        'listApprovalHistoryTasks',
+        async (): Promise<unknown> => listApprovalHistoryTasks('member-001'),
+        { approvalHistoryTasks: [task] },
+      ],
+      [
+        'requestAdhocPreApproval',
+        async (): Promise<unknown> =>
+          requestAdhocPreApproval({
+            onReject: 'REJECT_INSTANCE',
+            target: { kind: 'MEMBER', memberIds: ['member-002'] },
+            taskId: 'task-1',
+          }),
+        { requestAdhocPreApproval: task },
+      ],
+    ])(
+      'selects nodeLabel next to nodeId in %s',
+      async (_name, call, payload): Promise<void> => {
+        const harness = installFetchMock(payload);
+        try {
+          await call();
+
+          expect(selectsNodeLabel(harness.capture().query)).toBe(true);
+        } finally {
+          harness.restore();
+        }
+      },
+    );
+
+    it('keeps nodeLabel on the normalized inbox records', async (): Promise<void> => {
+      const harness = installFetchMock({ inboxTasks: [task] });
+      try {
+        const [first] = await listInboxTasks('member-001');
+
+        expect(first?.nodeLabel).toBe('部門主管簽核');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
   describe('readFormDataCaseTitle', () => {
     const tableField: FormFieldDefinition = {
       columns: [
@@ -168,6 +301,86 @@ describe('@rytass/bpm-core-client/workflow', () => {
           },
         }),
       ).toBe('事由：汰換');
+    });
+
+    it('never titles a case with a hidden field', (): void => {
+      const hiddenField: FormFieldDefinition = {
+        fieldKey: 'sourceDocId',
+        hidden: true,
+        label: '來源單據',
+        required: false,
+        type: 'text',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reason: '汰換', sourceDocId: 'PO-1' },
+          schema: { fields: [hiddenField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'sourceDocId', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { sourceDocId: 'PO-1' },
+          schema: { fields: [hiddenField], schemaVersion: 1 },
+          uiSchema: null,
+        }),
+      ).toBe('fallback');
+    });
+
+    // A member field stores raw member ids, which must never reach an inbox or
+    // case list as a title.
+    it('skips a member field and titles the case with the next field', (): void => {
+      const memberField: FormFieldDefinition = {
+        fieldKey: 'reviewer',
+        label: '人員選擇',
+        required: true,
+        type: 'member',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reason: '汰換', reviewer: 'member-uuid-1' },
+          schema: { fields: [memberField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'reviewer', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+    });
+
+    it('falls back when a member field is the only field', (): void => {
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reviewer: 'member-uuid-1' },
+          schema: {
+            fields: [
+              {
+                fieldKey: 'reviewer',
+                label: '人員選擇',
+                required: true,
+                type: 'member',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          uiSchema: null,
+        }),
+      ).toBe('fallback');
     });
 
     it('falls back when a table is the only field', (): void => {

@@ -252,6 +252,29 @@ jest.mock('@rytass/bpm-core-client/form', (): typeof import('@rytass/bpm-core-cl
   };
 });
 
+// The picker itself is covered by member-field.spec.tsx; here only the wiring
+// from a `member` field definition to its props is under test.
+jest.mock('./member-field', () => ({
+  MemberFieldControl: (props: Readonly<Record<string, unknown>>): ReactElement => (
+    <div
+      data-mock-member-field={String(props.name)}
+      data-mock-member-multiple={String(props.multiple)}
+      data-mock-member-readonly={String(props.readonly)}
+      data-mock-member-value={JSON.stringify(props.value ?? null)}
+    >
+      <button
+        data-mock-member-pick=""
+        onClick={(): void =>
+          (props.onChange as (value: unknown) => void)(
+            props.multiple ? ['m1', 'm2'] : 'm1',
+          )
+        }
+        type="button"
+      />
+    </div>
+  ),
+}));
+
 const previewOptionsMock = previewFormFieldOptions as jest.MockedFunction<
   typeof previewFormFieldOptions
 >;
@@ -614,6 +637,315 @@ describe('FormRenderer table field', () => {
   });
 });
 
+describe('FormRenderer hidden fields', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'reason', label: '事由', required: true, type: 'text' },
+      {
+        fieldKey: 'sourceDocId',
+        hidden: true,
+        label: '來源單據',
+        required: false,
+        type: 'text',
+      },
+      {
+        fieldKey: 'docVersion',
+        hidden: true,
+        label: '單據版本',
+        required: false,
+        type: 'number',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const stored = { docVersion: 3, reason: 'old', sourceDocId: 'PO-1' };
+
+  function typeIntoReason(container: HTMLElement, text: string): void {
+    const input = container.querySelector(
+      '[data-mock-form-field="reason"] input',
+    ) as HTMLInputElement | null;
+
+    if (!input) {
+      throw new Error('The reason input was not rendered.');
+    }
+
+    act((): void => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it.each([
+    ['fill-in', false],
+    ['read-only', true],
+  ])('renders no hidden field in %s mode', async (_mode, readonly): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly,
+      schema,
+      value: stored,
+    });
+
+    try {
+      expect(
+        harness.container.querySelector('[data-form-field-key="reason"]'),
+      ).not.toBeNull();
+      expect(
+        harness.container.querySelector('[data-form-field-key="sourceDocId"]'),
+      ).toBeNull();
+      expect(
+        harness.container.querySelector('[data-form-field-key="docVersion"]'),
+      ).toBeNull();
+      expect(harness.container.textContent).not.toContain('來源單據');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  // A resubmit mounts the renderer on the stored form data; the hidden values
+  // must come back out of the very next edit instead of being dropped.
+  it('keeps hidden values in what an edit emits (fill-in and resubmit)', async (): Promise<void> => {
+    const resubmit = await mountRenderer({ schema, value: stored });
+
+    try {
+      typeIntoReason(resubmit.container, 'new');
+
+      expect(resubmit.readValues()).toEqual({
+        docVersion: 3,
+        reason: 'new',
+        sourceDocId: 'PO-1',
+      });
+    } finally {
+      await unmountRenderer(resubmit);
+    }
+
+    const fillIn = await mountRenderer({ schema });
+
+    try {
+      typeIntoReason(fillIn.container, 'first');
+
+      expect(fillIn.readValues()).toMatchObject({ reason: 'first' });
+      expect(Object.keys(fillIn.readValues())).toEqual(
+        expect.arrayContaining(['sourceDocId', 'docVersion']),
+      );
+    } finally {
+      await unmountRenderer(fillIn);
+    }
+  });
+});
+
+describe('FormRenderer link display', () => {
+  function createLinkSchema(
+    overrides: Readonly<Record<string, unknown>> = {},
+  ): FormDefinitionSchema {
+    return {
+      fields: [
+        {
+          displayAs: 'link',
+          fieldKey: 'source',
+          label: '來源單據',
+          required: false,
+          type: 'text',
+          ...overrides,
+        } as FormDefinitionSchema['fields'][number],
+      ],
+      schemaVersion: 1,
+    };
+  }
+
+  async function readAnchor(
+    value: string,
+    options: {
+      readonly overrides?: Readonly<Record<string, unknown>>;
+      readonly readonly?: boolean;
+    } = {},
+  ): Promise<{
+    readonly anchor: HTMLAnchorElement | null;
+    readonly container: HTMLElement;
+    readonly unmount: () => Promise<void>;
+  }> {
+    const harness = await mountRenderer({
+      readonly: options.readonly ?? true,
+      schema: createLinkSchema(options.overrides),
+      value: { source: value },
+    });
+
+    return {
+      anchor: harness.container.querySelector('a'),
+      container: harness.container,
+      unmount: (): Promise<void> => unmountRenderer(harness),
+    };
+  }
+
+  it('renders a site-relative path as a same-tab anchor', async (): Promise<void> => {
+    const view = await readAnchor('/document-approval/PO/abc');
+
+    try {
+      expect(view.anchor?.getAttribute('href')).toBe(
+        '/document-approval/PO/abc',
+      );
+      expect(view.anchor?.getAttribute('target')).toBeNull();
+      expect(view.anchor?.getAttribute('title')).toBeNull();
+      expect(view.anchor?.getAttribute('aria-label')).toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('opens an absolute URL in a new tab with noopener noreferrer', async (): Promise<void> => {
+    const view = await readAnchor('https://example.com/x');
+
+    try {
+      expect(view.anchor?.getAttribute('href')).toBe('https://example.com/x');
+      expect(view.anchor?.getAttribute('target')).toBe('_blank');
+      expect(view.anchor?.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(view.anchor?.getAttribute('title')).toBe('另開新分頁');
+      expect(view.anchor?.getAttribute('aria-label')).toBe(
+        'https://example.com/x（另開新分頁）',
+      );
+      // Selecting or copying the link must yield just the URL.
+      expect(view.anchor?.textContent).toBe('https://example.com/x');
+      expect(view.anchor?.children).toHaveLength(0);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it.each([['javascript:alert(1)'], ['//evil.example/x'], ['plain text']])(
+    'keeps %s as plain text',
+    async (value): Promise<void> => {
+      const view = await readAnchor(value);
+
+      try {
+        expect(view.anchor).toBeNull();
+        expect(
+          (view.container.querySelector('input') as HTMLInputElement).value,
+        ).toBe(value);
+      } finally {
+        await view.unmount();
+      }
+    },
+  );
+
+  it('keeps the normal text input while filling in', async (): Promise<void> => {
+    const view = await readAnchor('/document-approval/PO/abc', {
+      readonly: false,
+    });
+
+    try {
+      expect(view.anchor).toBeNull();
+      expect(view.container.querySelector('input')).not.toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('renders no anchor for a text field without displayAs', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: {
+        fields: [
+          { fieldKey: 'source', label: '來源單據', required: false, type: 'text' },
+        ],
+        schemaVersion: 1,
+      },
+      value: { source: '/document-approval/PO/abc' },
+    });
+
+    try {
+      expect(harness.container.querySelector('a')).toBeNull();
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
+describe('FormRenderer member field', () => {
+  function createMemberSchema(): FormDefinitionSchema {
+    return {
+      fields: [
+        { fieldKey: 'reviewer', label: '審核人', required: true, type: 'member' },
+        {
+          fieldKey: 'watchers',
+          label: '關注者',
+          multiple: true,
+          required: false,
+          type: 'member',
+        },
+      ],
+      schemaVersion: 1,
+    };
+  }
+
+  function readMember(
+    container: HTMLElement,
+    fieldKey: string,
+  ): HTMLElement | null {
+    return container.querySelector(`[data-mock-member-field="${fieldKey}"]`);
+  }
+
+  it('renders the picker with the field mode and writes member ids back', async (): Promise<void> => {
+    const harness = await mountRenderer({ schema: createMemberSchema() });
+
+    try {
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberMultiple,
+      ).toBe('false');
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberMultiple,
+      ).toBe('true');
+      // A multiple member field starts as an empty list, a single one empty.
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberValue,
+      ).toBe('[]');
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberValue,
+      ).toBe('null');
+
+      act((): void => {
+        (
+          readMember(harness.container, 'reviewer')?.querySelector(
+            'button',
+          ) as HTMLButtonElement
+        ).click();
+      });
+      act((): void => {
+        (
+          readMember(harness.container, 'watchers')?.querySelector(
+            'button',
+          ) as HTMLButtonElement
+        ).click();
+      });
+
+      expect(harness.readValues().reviewer).toBe('m1');
+      expect(harness.readValues().watchers).toEqual(['m1', 'm2']);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('hands the stored ids to a read-only picker so it can show names', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: createMemberSchema(),
+      value: { reviewer: 'm1', watchers: ['m1', 'm2'] },
+    });
+
+    try {
+      expect(
+        readMember(harness.container, 'reviewer')?.dataset.mockMemberReadonly,
+      ).toBe('true');
+      expect(
+        readMember(harness.container, 'watchers')?.dataset.mockMemberValue,
+      ).toBe('["m1","m2"]');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
 interface RendererHarness {
   readonly container: HTMLElement;
   readonly readValues: () => FormRendererValues;
@@ -626,12 +958,14 @@ async function mountRenderer({
   readonly,
   schema,
   singleColumn,
+  value,
 }: {
   readonly errors?: Readonly<Record<string, string>>;
   readonly maxWidth?: number;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
   readonly singleColumn?: boolean;
+  readonly value?: FormRendererValues;
 }): Promise<RendererHarness> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -650,6 +984,7 @@ async function mountRenderer({
         schema={schema}
         {...(singleColumn ? { singleColumn: true } : {})}
         uiSchema={createUiSchema()}
+        {...(value ? { value } : {})}
       />,
     );
   });

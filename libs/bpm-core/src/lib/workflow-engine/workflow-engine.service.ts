@@ -1,3 +1,4 @@
+import { isUUID } from 'class-validator';
 import {
   FORM_TABLE_MAX_ROWS,
   FormDataSourceOptionFieldDefinition,
@@ -48,6 +49,7 @@ import {
 } from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
 import {
+  DelegationResolution,
   DelegationService,
   DelegationStep,
 } from '../delegation/delegation.service';
@@ -57,6 +59,7 @@ import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
 } from '../form-data-source/form-data-source.errors';
+import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -74,6 +77,10 @@ import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
 import { PositionEntity } from '../organization/position.entity';
 import { ManagerResolutionScopeTypeEnum } from '../organization/organization.enums';
+import {
+  formatDateOnlyInTimeZone,
+  resolveBPMOrganizationTimeZone,
+} from '../organization/organization-time-zone';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
@@ -92,6 +99,7 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
@@ -129,6 +137,18 @@ import {
  */
 type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
   readonly initiatorMemberId: string;
+  /**
+   * The host document this instance stands for, unique within the template.
+   * Service-level only: it is not on the GraphQL input, and the mutation
+   * always passes `null`, so an end user can never claim a key.
+   */
+  readonly businessKey?: string | null;
+  /**
+   * Service layer only: the GraphQL mutation always fills it with the
+   * authenticated member and the input type does not expose it. Absent means
+   * the initiator submitted the document themselves.
+   */
+  readonly submittedByMemberId?: string | null;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
@@ -136,6 +156,9 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
 };
 
 const MAX_PROCESSING_STEPS = 500;
+export const MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH = 200;
+const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
+  'approval_instances_business_key_key';
 // Guards ORG_MANAGER_CHAIN against misconfigured manager rules that never end.
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
@@ -153,6 +176,16 @@ interface DryRunAssignment {
   // Set only when the initiator exclusion changed how the step ends.
   readonly message: string | null;
   readonly outcome: 'SKIPPED' | 'STOPPED' | null;
+}
+
+// Who a resolver is looking for: approvers of a task, or the recipients of a
+// notification. Only the wording of the "nobody found" errors differs.
+type ResolvedSubject = '簽核人' | '通知對象';
+
+interface DryRunOutgoing {
+  readonly edges: readonly WorkflowEdge[];
+  // Set when the node cannot route any further and its branch ends here.
+  readonly stopMessage: string | null;
 }
 
 interface DryRunPathInput extends DryRunSimulationInput {
@@ -203,11 +236,37 @@ interface ResolvedApproverCandidate {
   readonly sourceType: CandidateSourceType;
 }
 
+/**
+ * A delegation that was resolved for a manager-chain candidate but not applied
+ * because the delegate's grade is below the grade of the member they would
+ * replace. Recorded on the activity payload (not in `delegationChain`, which
+ * consumers read as a real delegation).
+ */
+interface SkippedDelegation {
+  readonly agentLevel: number | null;
+  readonly agentMemberId: string;
+  readonly principalLevel: number;
+  readonly principalMemberId: string;
+  readonly reason: 'AGENT_POSITION_LEVEL_TOO_LOW';
+}
+
 interface RuntimeTaskCandidate {
   readonly delegationChain: readonly DelegationStep[];
   readonly memberId: string;
   readonly originalMemberId: string;
+  readonly skippedDelegation?: SkippedDelegation;
   readonly sourceType: CandidateSourceType;
+}
+
+interface GradeGatedDelegation extends DelegationResolution {
+  readonly skippedDelegation?: SkippedDelegation;
+}
+
+interface ResolvedRuntimeTaskCandidates {
+  readonly candidates: readonly RuntimeTaskCandidate[];
+  // Collected before the initiator filter and the dedupe, so a refusal on a row
+  // those drop is still on record.
+  readonly skippedDelegations: readonly SkippedDelegation[];
 }
 
 type AdhocTargetValue = {
@@ -315,15 +374,44 @@ export class WorkflowEngineService {
       injectedServiceTaskDispatcher ??
       rootOptions?.workflowServiceTaskDispatcher ??
       new DefaultWorkflowServiceTaskDispatcher();
+    this.organizationTimeZone = resolveBPMOrganizationTimeZone(
+      rootOptions?.organizationTimeZone,
+    );
   }
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
+
+  private readonly organizationTimeZone: string;
+
+  /**
+   * Today's date as the organization sees it (`organizationTimeZone`), for
+   * comparing against the date-only `effectiveFrom` / `effectiveTo` of
+   * memberships and manager resolutions. Not for timestamp columns, which are
+   * compared as instants.
+   */
+  private readOrganizationToday(): string {
+    return formatDateOnlyInTimeZone(new Date(), this.organizationTimeZone);
+  }
 
   async submitApprovalInstance(
     input: SubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
+    if (
+      input.submittedByMemberId !== undefined &&
+      input.submittedByMemberId !== null &&
+      (typeof input.submittedByMemberId !== 'string' ||
+        input.submittedByMemberId.trim() === '')
+    ) {
+      throw new BadRequestException(
+        'submittedByMemberId must be a non-empty string',
+      );
+    }
+
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const businessKey = normalizeBusinessKey(input.businessKey);
+    const submittedByMemberId =
+      input.submittedByMemberId ?? input.initiatorMemberId;
     const template = await this.getTemplateOrThrow(input.templateId);
 
     if (!template.isActive) {
@@ -371,6 +459,15 @@ export class WorkflowEngineService {
       );
     }
 
+    // Named here, before the transaction, so the completion notice that later
+    // says "由 X 代為送出" reads it from the started activity instead of
+    // asking the identity source while an approval holds the instance's locks.
+    const submittedByName =
+      submittedByMemberId === input.initiatorMemberId
+        ? null
+        : await this.notificationService.readMemberDisplayName(
+            submittedByMemberId,
+          );
     const startedAt = new Date();
     const startNode = templateVersion.workflowDefinition.nodes.find(
       (node) => node.type === 'startEvent',
@@ -400,10 +497,12 @@ export class WorkflowEngineService {
               uiSchema: formDefinitionVersion.uiSchema,
               version: formDefinitionVersion.version,
             },
+            businessKey,
             initiatorMemberId: input.initiatorMemberId,
             initiatorMetadataSnapshot,
             startedAt,
             state: ApprovalInstanceStateEnum.RUNNING,
+            submittedByMemberId,
             templateId: template.id,
             templateVersionId: templateVersion.id,
             title: input.title?.trim() || template.name,
@@ -434,6 +533,8 @@ export class WorkflowEngineService {
             instanceId: instance.id,
             nodeId: startNode.id,
             payload: {
+              submittedByMemberId,
+              ...(submittedByName === null ? {} : { submittedByName }),
               templateId: template.id,
               templateVersionId: templateVersion.id,
             },
@@ -454,7 +555,38 @@ export class WorkflowEngineService {
 
         return instance;
       },
+    ).catch((error: unknown): never =>
+      // The insert decides, not a pre-check: two concurrent submits would both
+      // pass a check, and only the unique index sees them as one.
+      throwBusinessKeyConflictOrRethrow(error, businessKey),
     );
+  }
+
+  /**
+   * The instance a host submitted for `businessKey` on `templateId`, whatever
+   * its state (a cancelled or rejected instance still holds its key), or
+   * `null`. The key is trimmed the way submit trims it, so a lookup finds what
+   * a submit stored.
+   */
+  async findApprovalInstanceByBusinessKey(
+    templateId: string,
+    businessKey: string,
+  ): Promise<ApprovalInstanceEntity | null> {
+    const normalizedKey = businessKey.trim();
+
+    // A template id that is not a uuid cannot match a row, and handing it to
+    // Postgres would raise 22P02 (a 500) instead of "not found".
+    if (
+      !isUUID(templateId) ||
+      normalizedKey === '' ||
+      countCodePoints(normalizedKey) > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH
+    ) {
+      return null;
+    }
+
+    return this.approvalInstanceRepository.findOne({
+      where: { businessKey: normalizedKey, templateId },
+    });
   }
 
   private async resolveFormDataOptionSnapshots({
@@ -707,6 +839,36 @@ export class WorkflowEngineService {
           throw new ConflictException(
             `簽核節點「${taskNode.data.label}」不允許申請人自簽，不能將任務轉交給申請人本人`,
           );
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          isInitiatorExcluded(taskNode) &&
+          transferToMemberId !== null &&
+          transferToMemberId === readDistinctSubmitterMemberId(instance)
+        ) {
+          throw new ConflictException(
+            `簽核節點「${taskNode.data.label}」不允許代送人簽核，不能將任務轉交給代為送出此單的人`,
+          );
+        }
+
+        // Same carve-out: a human picking the target on a manager-chain node
+        // must pick someone at least as senior as the member being replaced.
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          transferToMemberId !== null &&
+          !task.isAdhoc &&
+          isOrgManagerChainNode(taskNode)
+        ) {
+          await this.assertTransferTargetGrade(manager, {
+            actorMemberId: input.decidedByMemberId,
+            delegationChain:
+              actorCandidate?.delegationChain ?? task.delegationChain,
+            label: taskNode.data.label,
+            targetMemberId: transferToMemberId,
+          });
         }
 
         const returnToNodeId =
@@ -1654,6 +1816,7 @@ export class WorkflowEngineService {
       (candidate) => candidate.memberId,
     );
     task.openCandidateMemberIds = task.candidateMemberIds;
+    task.nodeLabel = readWorkflowNodeLabel(instance.workflowSnapshot, node.id);
 
     await activityRepository.save(
       activityRepository.create({
@@ -1707,16 +1870,22 @@ export class WorkflowEngineService {
       instance,
       buildAdhocApproverResolver(targetValue),
       `${label}「${node.data.label}」`,
+      '簽核人',
+      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
+    // Ad-hoc approvers are picked by a person, not walked up a manager chain,
+    // so the chain's grade rule does not apply to them.
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       resolvedCandidates,
+      false,
     );
     const candidates = selectNodeCandidates(
       delegatedCandidates,
       isInitiatorExcluded(node),
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
 
     if (candidates.length > 0) {
@@ -1725,7 +1894,9 @@ export class WorkflowEngineService {
 
     throw new ConflictException(
       delegatedCandidates.length > 0
-        ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
+        ? readDistinctSubmitterMemberId(instance) === null
+          ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
+          : `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人或代為送出此單的人，此節點不允許申請人或代送人簽核。`
         : `${label}「${node.data.label}」 did not resolve to any member id`,
     );
   }
@@ -2313,6 +2484,7 @@ export class WorkflowEngineService {
         instance,
         buildAdhocApproverResolver(targetValue),
         '臨時通知對象',
+        '通知對象',
       );
 
       await this.notificationService.createAdhocWorkflowNotifications({
@@ -2472,6 +2644,7 @@ export class WorkflowEngineService {
         : null;
     const assigneeMemberId = assignment?.assigneeMemberId ?? null;
     const skippedByExclusion = assignment?.outcome === 'SKIPPED';
+    const stoppedByAssignment = assignment?.outcome === 'STOPPED';
     const nextLastDecision =
       entryConditionMet && node.type === 'userTask' && !skippedByExclusion
         ? {
@@ -2480,6 +2653,21 @@ export class WorkflowEngineService {
             nodeId: node.id,
           }
         : input.lastDecision;
+    // A node that stops on its assignment, an asynchronous NOTIFY node (at
+    // runtime it consumes its token and never advances) and an end event do
+    // not route any further.
+    const routes =
+      !stoppedByAssignment &&
+      !isAsyncNotifyServiceTask(node) &&
+      node.type !== 'endEvent';
+    const outgoing: DryRunOutgoing = routes
+      ? this.readDryRunOutgoing(
+          input,
+          node,
+          nextLastDecision,
+          entryConditionMet && !skippedByExclusion,
+        )
+      : { edges: [], stopMessage: null };
     const nextSteps = [
       ...input.steps,
       createDryRunStep({
@@ -2489,55 +2677,23 @@ export class WorkflowEngineService {
         edgeReason: readDryRunEdgeReason(input.incomingEdge),
         entryCondition,
         entryConditionMet,
-        message:
-          assignment?.message ?? readDryRunStepMessage(node, entryConditionMet),
+        message: readDryRunStepResultMessage(
+          assignment?.message ?? null,
+          outgoing.stopMessage,
+          readDryRunStepMessage(node, entryConditionMet),
+          !entryConditionMet || skippedByExclusion,
+        ),
         node,
         status:
-          assignment?.outcome ?? readDryRunStepStatus(node, entryConditionMet),
+          outgoing.stopMessage === null
+            ? (assignment?.outcome ??
+              readDryRunStepStatus(node, entryConditionMet))
+            : 'STOPPED',
         stepIndex: input.steps.length,
       }),
     ];
 
-    // The initiator is the only approver and the node cannot proceed: this
-    // branch ends here, as it would fail at runtime.
-    if (assignment?.outcome === 'STOPPED') {
-      return nextSteps;
-    }
-
-    // A NOTIFY node is an asynchronous branch: at runtime it consumes its
-    // token and never advances, so its branch ends here rather than failing
-    // for want of an outgoing edge it is not allowed to have.
-    if (isAsyncNotifyServiceTask(node)) {
-      return nextSteps;
-    }
-
-    if (!entryConditionMet || skippedByExclusion || node.type === 'endEvent') {
-      if (node.type === 'endEvent') {
-        return nextSteps;
-      }
-
-      return readOutgoingEdgesOrThrow(input.workflowDefinition, node.id).reduce(
-        (steps, edge) =>
-          this.simulateWorkflowPath({
-            ...input,
-            depth: input.depth + 1,
-            incomingEdge: edge,
-            lastDecision: nextLastDecision,
-            nodeId: edge.target,
-            steps,
-            visitedNodeIds: nextVisitedNodeIds,
-          }),
-        nextSteps,
-      );
-    }
-
-    const outgoingEdges = this.readDryRunAvailableOutgoingEdges(
-      input,
-      node,
-      nextLastDecision,
-    );
-
-    return outgoingEdges.reduce(
+    return outgoing.edges.reduce(
       (steps, edge) =>
         this.simulateWorkflowPath({
           ...input,
@@ -2552,25 +2708,39 @@ export class WorkflowEngineService {
     );
   }
 
-  private readDryRunAvailableOutgoingEdges(
+  /**
+   * The edges a dry-run step continues along. A node a designer has left
+   * unfinished (nothing drawn out of it, or no branch of a gateway taken) ends
+   * its branch with a readable message instead of failing the whole dry run.
+   */
+  private readDryRunOutgoing(
     input: DryRunSimulationInput,
     node: WorkflowNode,
     lastDecision: Readonly<Record<string, unknown>> | null,
-  ): readonly WorkflowEdge[] {
-    if (node.type === 'endEvent') {
-      return [];
+    evaluatesConditions: boolean,
+  ): DryRunOutgoing {
+    const nodeName = readDryRunNodeName(node);
+    const outgoingEdges = input.workflowDefinition.edges.filter(
+      (edge) => edge.source === node.id,
+    );
+
+    if (outgoingEdges.length === 0) {
+      return {
+        edges: [],
+        stopMessage: `節點「${nodeName}」沒有連到下一個節點，請在流程設計器為此節點接上連線`,
+      };
     }
 
-    const outgoingEdges = readOutgoingEdgesOrThrow(
-      input.workflowDefinition,
-      node.id,
-    );
+    if (!evaluatesConditions) {
+      return { edges: outgoingEdges, stopMessage: null };
+    }
+
     const conditionalEdges = outgoingEdges.filter(
       (edge) => !edge.data.isDefault && edgeHasCondition(edge),
     );
 
     if (conditionalEdges.length === 0) {
-      return outgoingEdges;
+      return { edges: outgoingEdges, stopMessage: null };
     }
 
     const matchingEdges = conditionalEdges.filter((edge) =>
@@ -2578,22 +2748,27 @@ export class WorkflowEngineService {
     );
 
     if (matchingEdges.length > 0) {
-      return node.type === 'exclusiveGateway'
-        ? [matchingEdges[0]]
-        : matchingEdges;
+      return {
+        edges:
+          node.type === 'exclusiveGateway' ? [matchingEdges[0]] : matchingEdges,
+        stopMessage: null,
+      };
     }
 
     const defaultEdges = outgoingEdges.filter((edge) => edge.data.isDefault);
 
     if (defaultEdges.length > 0) {
-      return node.type === 'exclusiveGateway'
-        ? [defaultEdges[0]]
-        : defaultEdges;
+      return {
+        edges:
+          node.type === 'exclusiveGateway' ? [defaultEdges[0]] : defaultEdges,
+        stopMessage: null,
+      };
     }
 
-    throw new ConflictException(
-      `Workflow node ${node.id} has no matching outgoing edge`,
-    );
+    return {
+      edges: [],
+      stopMessage: `節點「${nodeName}」的連出線條件都不符合，且沒有設定預設路徑，請檢查連出線的條件或補上預設路徑`,
+    };
   }
 
   private evaluateDryRunEdge(
@@ -2625,19 +2800,39 @@ export class WorkflowEngineService {
     node: UserTaskNode,
   ): DryRunAssignment {
     const resolver = node.data.approverResolver;
-    const label = `workflow.nodes.${node.id}.data.approverResolver`;
     const excludeInitiator = node.data.excludeInitiator;
-    const memberIds = excludeInitiator
-      ? this.readDryRunMemberIds(input, resolver, label)
-      : null;
+    const memberIds = this.readDryRunMemberIds(
+      input,
+      resolver,
+      `workflow.nodes.${node.id}.data.approverResolver`,
+    );
 
-    if (!excludeInitiator || !memberIds?.includes(input.initiatorMemberId)) {
+    if (memberIds === null) {
       return {
-        assigneeMemberId: this.resolveDryRunAssigneeMemberId(
-          input,
+        assigneeMemberId: readDryRunPlaceholderAssignee(resolver),
+        message: null,
+        outcome: null,
+      };
+    }
+
+    // Nobody to ask yet — typically a node whose approver has not been chosen.
+    // The branch ends here and says which node needs attention, rather than
+    // failing the whole dry run.
+    if (memberIds.length === 0) {
+      return {
+        assigneeMemberId: null,
+        message: readDryRunUnresolvedApproverMessage(
           resolver,
-          label,
+          readDryRunNodeName(node),
+          input.initiatorMemberId,
         ),
+        outcome: 'STOPPED',
+      };
+    }
+
+    if (!excludeInitiator || !memberIds.includes(input.initiatorMemberId)) {
+      return {
+        assigneeMemberId: memberIds[0],
         message: null,
         outcome: null,
       };
@@ -2700,100 +2895,50 @@ export class WorkflowEngineService {
     };
   }
 
+  /**
+   * The member ids a dry run resolves for a user task: an empty list when the
+   * resolver names nobody, `null` for resolvers that only resolve to a
+   * placeholder in a dry run.
+   */
   private readDryRunMemberIds(
     input: DryRunSimulationInput,
     resolver: ApproverResolver,
     label: string,
   ): readonly string[] | null {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdsFromValue(resolver.memberIds, label);
+      return findMemberIdsInValue(resolver.memberIds);
     }
 
     if (resolver.type === 'DYNAMIC_FORM') {
-      return readMemberIdsFromValue(
+      return findMemberIdsInValue(
         readValueAtPath(input.formData, resolver.formPath),
-        `${label}.formPath`,
       );
     }
 
     if (resolver.type === 'EXPRESSION') {
-      return readMemberIdsFromValue(
+      return findMemberIdsInValue(
         this.conditionService.evaluateValue(
           resolver.expression,
           buildDryRunExpressionContext(input, null),
           `${label}.expression`,
         ),
-        `${label}.expression`,
       );
     }
 
     if (resolver.type === 'ORG_MANAGER') {
-      return readMemberIdsFromValue(
+      const managerMemberIds = findMemberIdsInValue(
         readManagerMemberIdFromInitiatorSnapshot(
           input.initiatorMetadataSnapshot,
           resolver.levelsUp,
         ),
-        label,
       );
+
+      return managerMemberIds.length > 0
+        ? managerMemberIds
+        : readDryRunFallbackMemberIds(input, resolver.fallback);
     }
 
     return null;
-  }
-
-  private resolveDryRunAssigneeMemberId(
-    input: DryRunSimulationInput,
-    resolver: ApproverResolver,
-    label: string,
-  ): string {
-    if (resolver.type === 'DIRECT') {
-      return readMemberIdFromValue(resolver.memberIds, label);
-    }
-
-    if (resolver.type === 'DYNAMIC_FORM') {
-      return readMemberIdFromValue(
-        readValueAtPath(input.formData, resolver.formPath),
-        `${label}.formPath`,
-      );
-    }
-
-    if (resolver.type === 'EXPRESSION') {
-      return readMemberIdFromValue(
-        this.conditionService.evaluateValue(
-          resolver.expression,
-          buildDryRunExpressionContext(input, null),
-          `${label}.expression`,
-        ),
-        `${label}.expression`,
-      );
-    }
-
-    if (resolver.type === 'POSITION') {
-      return `position:${resolver.positionId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_MEMBER') {
-      return `orgUnitMember:${resolver.orgUnitId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_POSITION') {
-      return `orgUnitPosition:${resolver.orgUnitId}:${resolver.positionId}`;
-    }
-
-    if (resolver.type === 'ORG_UNIT_MANAGER') {
-      return `orgUnitManager:${resolver.orgUnitId}`;
-    }
-
-    if (resolver.type === 'ORG_MANAGER_CHAIN') {
-      return `orgManagerChain:${resolver.minPositionLevel}`;
-    }
-
-    return readMemberIdFromValue(
-      readManagerMemberIdFromInitiatorSnapshot(
-        input.initiatorMetadataSnapshot,
-        resolver.levelsUp,
-      ),
-      label,
-    );
   }
 
   async getApprovalInstance(
@@ -2928,8 +3073,12 @@ export class WorkflowEngineService {
     const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
 
     if (view === ApprovalInstanceListViewEnum.SENT) {
+      // The assistant who filed on someone's behalf finds it here too.
       queryBuilder.andWhere(
-        '"approvalInstance"."initiator_member_id" = :readableMemberId',
+        `(
+          "approvalInstance"."initiator_member_id" = :readableMemberId
+          OR "approvalInstance"."submitted_by_member_id" = :readableMemberId
+        )`,
         {
           readableMemberId: scope.memberId,
         },
@@ -2964,6 +3113,7 @@ export class WorkflowEngineService {
       `
         (
           "approvalInstance"."initiator_member_id" = :readableMemberId
+          OR "approvalInstance"."submitted_by_member_id" = :readableMemberId
           OR EXISTS (
             SELECT 1
             FROM "tasks" "readableTask"
@@ -3290,18 +3440,78 @@ export class WorkflowEngineService {
         new Map<string, readonly string[]>(),
       );
 
+    const nodeLabels = await this.readTaskNodeLabels(tasks);
+
     return tasks.map((task) =>
       Object.assign(new TaskEntity(), task, {
         candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
+        nodeLabel:
+          nodeLabels.get(readNodeLabelKey(task.instanceId, task.nodeId)) ??
+          null,
         openCandidateMemberIds: openCandidatesByTaskId.get(task.id) ?? [],
       }),
+    );
+  }
+
+  /**
+   * The display names of the nodes a page of tasks sits on, keyed by
+   * {@link readNodeLabelKey}. One query for the whole page, and Postgres picks
+   * the labels out of the snapshots: a workflow snapshot is a whole workflow
+   * definition, and every inbox, history and instance task list runs this, so
+   * shipping the snapshots to the app just to read one string each would cost
+   * page size × snapshot size on every refresh. A missing instance or node, a
+   * snapshot without a `nodes` array, and a blank or non-string label all
+   * leave the task without a label, as `readWorkflowNodeLabel` does.
+   */
+  private async readTaskNodeLabels(
+    tasks: readonly TaskEntity[],
+  ): Promise<ReadonlyMap<string, string>> {
+    // The table as the entity reads it, so a configured `schema` is honoured
+    // here exactly as it is by every repository read of the instance.
+    const { metadata } = this.approvalInstanceRepository;
+    const { driver } = this.approvalInstanceRepository.manager.connection;
+    const instanceTable = [metadata.schema, metadata.tableName]
+      .filter((part): part is string => Boolean(part))
+      .map((part) => driver.escape(part))
+      .join('.');
+    const rows = await this.approvalInstanceRepository.query<
+      readonly {
+        readonly instanceId: string;
+        readonly label: string | null;
+        readonly nodeId: string;
+      }[]
+    >(
+      `SELECT instance.id AS "instanceId",
+              node->>'id' AS "nodeId",
+              CASE WHEN jsonb_typeof(node->'data'->'label') = 'string'
+                   THEN node->'data'->>'label' END AS "label"
+         FROM ${instanceTable} AS instance
+        CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(instance.workflow_snapshot->'nodes') = 'array'
+                   THEN instance.workflow_snapshot->'nodes'
+                   ELSE '[]'::jsonb END
+            ) AS node
+        WHERE instance.id = ANY($1::uuid[])
+          AND node->>'id' = ANY($2::text[])`,
+      [
+        [...new Set(tasks.map((task) => task.instanceId))],
+        [...new Set(tasks.map((task) => task.nodeId))],
+      ],
+    );
+
+    return new Map(
+      rows.flatMap((row) =>
+        typeof row.label === 'string' && row.label.trim()
+          ? [[readNodeLabelKey(row.instanceId, row.nodeId), row.label]]
+          : [],
+      ),
     );
   }
 
   private async readDefaultInitiatorMetadataSnapshot(
     memberId: string,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = (
       await this.approvalInstanceRepository.manager
         .getRepository(MembershipEntity)
@@ -3359,7 +3569,12 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     memberId: string,
   ): Promise<boolean> {
-    if (instance.initiatorMemberId === memberId) {
+    // The member who filed the document on the applicant's behalf can read it
+    // back; resubmit and cancel stay with the initiator.
+    if (
+      instance.initiatorMemberId === memberId ||
+      readDistinctSubmitterMemberId(instance) === memberId
+    ) {
       return true;
     }
 
@@ -3727,6 +3942,13 @@ export class WorkflowEngineService {
     node: WorkflowNode,
     reason: Readonly<Record<string, true>>,
   ): Promise<void> {
+    // A NOTIFY node is an asynchronous branch that may not have an outgoing
+    // edge, so a skipped one ends its branch exactly as an executed one does:
+    // the token is consumed instead of advanced (advancing would throw "has no
+    // outgoing edge" and fail the whole submission). Instance completion is
+    // evaluated by `processRunningInstance` once no ACTIVE token remains.
+    const consumesToken = isAsyncNotifyServiceTask(node);
+
     await manager.getRepository(ActivityLogEntity).save(
       manager.getRepository(ActivityLogEntity).create({
         actorMemberId: null,
@@ -3735,12 +3957,31 @@ export class WorkflowEngineService {
         nodeId: node.id,
         payload: {
           ...reason,
+          ...(consumesToken ? { consumed: true } : {}),
           tokenId: token.id,
         },
         taskId: null,
       }),
     );
+
+    if (consumesToken) {
+      await this.consumeToken(manager, token);
+
+      return;
+    }
+
     await this.advanceTokenToOutgoingNodes(manager, instance, token, node);
+  }
+
+  private async consumeToken(
+    manager: EntityManager,
+    token: WorkflowTokenEntity,
+  ): Promise<void> {
+    await manager.getRepository(WorkflowTokenEntity).save({
+      ...token,
+      consumedAt: new Date(),
+      status: WorkflowTokenStatusEnum.CONSUMED,
+    });
   }
 
   private async readAvailableOutgoingEdges(
@@ -4044,7 +4285,7 @@ export class WorkflowEngineService {
       return;
     }
 
-    const candidates = await this.resolveRuntimeTaskCandidates(
+    const resolvedCandidates = await this.resolveRuntimeTaskCandidates(
       manager,
       instance,
       node,
@@ -4053,11 +4294,13 @@ export class WorkflowEngineService {
     // The initiator was the only approver and the node asks to be skipped in
     // that case: no task, the token moves on. Pending countersign directives
     // stay pending for the next user task that actually gets created.
-    if (candidates === null) {
+    if (resolvedCandidates === null) {
       await this.skipNodeByInitiatorExclusion(manager, instance, token, node);
 
       return;
     }
+
+    const { candidates, skippedDelegations } = resolvedCandidates;
 
     const primaryCandidate = candidates[0];
     // Legacy snapshots may carry no policy at all; they behave as before.
@@ -4160,6 +4403,7 @@ export class WorkflowEngineService {
                 ),
               }
             : {}),
+          ...(skippedDelegations.length > 0 ? { skippedDelegations } : {}),
           tokenId: token.id,
         },
         taskId: task.id,
@@ -4226,13 +4470,16 @@ export class WorkflowEngineService {
     const now = new Date();
     // Delegation was resolved when the task was created; the candidate may have
     // gained a delegate while waiting, so resolve it again for the new turn.
-    const delegation = await this.resolveActivationDelegation({
-      candidate: nextCandidate,
-      candidates,
-      excludesInitiator: isInitiatorExcluded(node),
-      instance,
-      nodeId: task.nodeId,
-    });
+    const { skippedDelegation, ...delegation } =
+      await this.resolveActivationDelegation({
+        candidate: nextCandidate,
+        candidates,
+        excludesInitiator: isInitiatorExcluded(node),
+        gradeGated: isGradeGatedCandidate(node, nextCandidate.sourceType),
+        instance,
+        manager,
+        nodeId: task.nodeId,
+      });
     const activatedCandidate = await manager
       .getRepository(TaskCandidateEntity)
       .save(
@@ -4275,6 +4522,9 @@ export class WorkflowEngineService {
           originalMemberId: activatedCandidate.originalMemberId,
           previousMemberId,
           sequence: activatedCandidate.sequence,
+          ...(skippedDelegation
+            ? { skippedDelegations: [skippedDelegation] }
+            : {}),
           tokenId: task.tokenId,
         },
         taskId: task.id,
@@ -4294,32 +4544,39 @@ export class WorkflowEngineService {
    * are kept: (task_id, member_id) is unique, and that member signs from the
    * row they already have. On a node that excludes the initiator the stored
    * values are kept as well when the new delegation path would run through the
-   * initiator: creation already filtered such paths out, and a delegation added
-   * while the candidate waited must not bring them back.
+   * initiator or the submitter: creation already filtered such paths out, and a
+   * delegation added while the candidate waited must not bring them back.
    */
   private async resolveActivationDelegation({
     candidate,
     candidates,
     excludesInitiator,
+    gradeGated,
     instance,
+    manager,
     nodeId,
   }: {
     readonly candidate: TaskCandidateEntity;
     readonly candidates: readonly TaskCandidateEntity[];
     readonly excludesInitiator: boolean;
+    readonly gradeGated: boolean;
     readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
     readonly nodeId: string;
   }): Promise<{
     readonly delegationChain: TaskCandidateEntity['delegationChain'];
     readonly memberId: string;
+    readonly skippedDelegation?: SkippedDelegation;
   }> {
     const stored = {
       delegationChain: candidate.delegationChain,
       memberId: candidate.memberId,
     };
-    const resolution = await this.delegationService.resolveAssignee(
+    const { skippedDelegation, ...resolution } = await this.resolveDelegation(
+      manager,
       candidate.originalMemberId,
       this.buildDelegationContext(instance, nodeId),
+      gradeGated,
     );
     const collides = candidates.some(
       (other) =>
@@ -4330,21 +4587,23 @@ export class WorkflowEngineService {
     if (
       collides ||
       (excludesInitiator &&
-        isInitiatorOnCandidatePath(
+        isExcludedMemberOnCandidatePath(
           {
             delegationChain: resolution.delegationChain,
             memberId: resolution.finalAssigneeMemberId,
             originalMemberId: candidate.originalMemberId,
           },
-          instance.initiatorMemberId,
+          readInitiatorAndSubmitter(instance),
         ))
     ) {
-      return stored;
+      // The refusal happened even though the stored values are kept.
+      return { ...stored, ...(skippedDelegation ? { skippedDelegation } : {}) };
     }
 
     return {
       delegationChain: resolution.delegationChain,
       memberId: resolution.finalAssigneeMemberId,
+      ...(skippedDelegation ? { skippedDelegation } : {}),
     };
   }
 
@@ -4657,28 +4916,40 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<readonly RuntimeTaskCandidate[] | null> {
+  ): Promise<ResolvedRuntimeTaskCandidates | null> {
     const label = `簽核節點「${node.data.label}」`;
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
       instance,
       node.data.approverResolver,
       label,
+      '簽核人',
+      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       resolvedCandidates,
+      isOrgManagerChainNode(node),
     );
     const excludeInitiator = node.data.excludeInitiator;
+    const hasSubmitter = readDistinctSubmitterMemberId(instance) !== null;
     const uniqueCandidates = selectNodeCandidates(
       delegatedCandidates,
       isInitiatorExcluded(node),
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
 
     if (uniqueCandidates.length > 0) {
-      return uniqueCandidates;
+      return {
+        candidates: uniqueCandidates,
+        skippedDelegations: collectSkippedDelegations(
+          delegatedCandidates,
+          isInitiatorExcluded(node),
+          readInitiatorAndSubmitter(instance),
+        ),
+      };
     }
 
     // Only the initiator was left — what the node does about it is configured.
@@ -4698,17 +4969,21 @@ export class WorkflowEngineService {
         node,
       );
 
-      if (managerCandidates.length > 0) {
+      if (managerCandidates.candidates.length > 0) {
         return managerCandidates;
       }
 
       throw new ConflictException(
-        `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
+        hasSubmitter
+          ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人，此節點不允許申請人或代送人簽核，且找不到申請人的主管可改派。`
+          : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
       );
     }
 
     throw new ConflictException(
-      `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+      hasSubmitter
+        ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。`
+        : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
     );
   }
 
@@ -4716,31 +4991,41 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<readonly RuntimeTaskCandidate[]> {
-    // The initiator's own direct manager: the closest org unit only, and the
-    // initiator himself (a unit head) is skipped so resolution falls through
-    // to the next tier instead of ending on him.
+  ): Promise<ResolvedRuntimeTaskCandidates> {
+    // The initiator's own direct manager: the closest org unit only. The
+    // initiator himself (a unit head) and the member who submitted for him are
+    // skipped before the tier is chosen, so resolution falls through to the
+    // next tier instead of ending on either of them.
     const managerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       instance.initiatorMemberId,
-      toDateOnlyString(new Date()),
+      this.readOrganizationToday(),
       true,
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       managerMemberIds.map((memberId) => ({
         memberId,
         sourceType: 'EXCLUDE_INITIATOR_MANAGER',
       })),
+      isOrgManagerChainNode(node),
     );
 
-    return selectNodeCandidates(
-      delegatedCandidates,
-      true,
-      instance.initiatorMemberId,
-    );
+    return {
+      candidates: selectNodeCandidates(
+        delegatedCandidates,
+        true,
+        readInitiatorAndSubmitter(instance),
+      ),
+      skippedDelegations: collectSkippedDelegations(
+        delegatedCandidates,
+        true,
+        readInitiatorAndSubmitter(instance),
+      ),
+    };
   }
 
   private buildDelegationContext(
@@ -4763,31 +5048,122 @@ export class WorkflowEngineService {
   // Not deduplicated: a node that excludes the initiator filters first, so a
   // first-seen entry that must be dropped cannot shadow a legitimate one.
   private async delegateResolvedCandidates(
+    manager: EntityManager,
     instance: ApprovalInstanceEntity,
     nodeId: string,
     resolvedCandidates: readonly ResolvedApproverCandidate[],
+    gradeGated: boolean,
   ): Promise<readonly RuntimeTaskCandidate[]> {
     const context = this.buildDelegationContext(instance, nodeId);
-    const delegatedCandidates = await Promise.all(
-      resolvedCandidates.map(
-        async (candidate): Promise<RuntimeTaskCandidate> => {
-          const delegationResolution =
-            await this.delegationService.resolveAssignee(
-              candidate.memberId,
-              context,
-            );
+    const resolved = await Promise.all(
+      resolvedCandidates.map(async (candidate) => ({
+        candidate,
+        resolution: await this.delegationService.resolveAssignee(
+          candidate.memberId,
+          context,
+        ),
+      })),
+    );
+    // One batch of grade lookups for the whole node, not two per delegate.
+    const levels = gradeGated
+      ? await this.readMemberPositionLevels(
+          manager,
+          resolved.flatMap(({ candidate, resolution }) =>
+            readGradeGateMemberIds(candidate.memberId, resolution),
+          ),
+          this.readOrganizationToday(),
+        )
+      : new Map<string, number | null>();
 
-          return {
-            delegationChain: delegationResolution.delegationChain,
-            memberId: delegationResolution.finalAssigneeMemberId,
-            originalMemberId: candidate.memberId,
-            sourceType: candidate.sourceType,
-          };
-        },
-      ),
+    return resolved.map(({ candidate, resolution }): RuntimeTaskCandidate => {
+      const { skippedDelegation, ...delegationResolution } = applyGradeGate(
+        candidate.memberId,
+        resolution,
+        gradeGated,
+        levels,
+      );
+
+      return {
+        delegationChain: delegationResolution.delegationChain,
+        memberId: delegationResolution.finalAssigneeMemberId,
+        originalMemberId: candidate.memberId,
+        ...(skippedDelegation ? { skippedDelegation } : {}),
+        sourceType: candidate.sourceType,
+      };
+    });
+  }
+
+  /** One member's delegation, grade-gated as {@link applyGradeGate} says. */
+  private async resolveDelegation(
+    manager: EntityManager,
+    principalMemberId: string,
+    context: Parameters<DelegationService['resolveAssignee']>[1],
+    gradeGated: boolean,
+  ): Promise<GradeGatedDelegation> {
+    const resolution = await this.delegationService.resolveAssignee(
+      principalMemberId,
+      context,
+    );
+    const memberIds = gradeGated
+      ? readGradeGateMemberIds(principalMemberId, resolution)
+      : [];
+    const levels =
+      memberIds.length > 0
+        ? await this.readMemberPositionLevels(
+            manager,
+            memberIds,
+            this.readOrganizationToday(),
+          )
+        : new Map<string, number | null>();
+
+    return applyGradeGate(principalMemberId, resolution, gradeGated, levels);
+  }
+
+  /**
+   * Manual transfer on a manager-chain node: the target must hold at least the
+   * grade of the member being replaced, i.e. the original principal of the
+   * deciding candidate (the first hop of its delegation chain when it was
+   * delegated, otherwise the actor). No grade on the principal means no
+   * constraint.
+   */
+  private async assertTransferTargetGrade(
+    manager: EntityManager,
+    {
+      actorMemberId,
+      delegationChain,
+      label,
+      targetMemberId,
+    }: {
+      readonly actorMemberId: string;
+      readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
+      readonly label: string;
+      readonly targetMemberId: string;
+    },
+  ): Promise<void> {
+    const principalMemberId =
+      readDelegationSteps(delegationChain)[0]?.from ?? actorMemberId;
+    const date = this.readOrganizationToday();
+    const requiredLevel = await this.readMemberPositionLevel(
+      manager,
+      principalMemberId,
+      date,
     );
 
-    return delegatedCandidates;
+    if (requiredLevel === null) {
+      return;
+    }
+
+    const targetLevel = await this.readMemberPositionLevel(
+      manager,
+      targetMemberId,
+      date,
+    );
+
+    if (targetLevel === null || targetLevel < requiredLevel) {
+      throw new ForbiddenException(
+        `簽核節點「${label}」需由職等 ${requiredLevel} 以上的成員簽核，不能轉簽給職等不足的成員`,
+      );
+    }
   }
 
   private async resolveApproverResolver(
@@ -4795,9 +5171,11 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     resolver: ApproverResolver,
     label: string,
+    subject: ResolvedSubject = '簽核人',
+    skippedChainMemberIds: readonly string[] = [],
   ): Promise<readonly ResolvedApproverCandidate[]> {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdsFromValue(resolver.memberIds, label).map(
+      return readMemberIdsFromValue(resolver.memberIds, label, subject).map(
         (memberId) => ({ memberId, sourceType: resolver.type }),
       );
     }
@@ -4805,7 +5183,9 @@ export class WorkflowEngineService {
     if (resolver.type === 'DYNAMIC_FORM') {
       return readMemberIdsFromValue(
         readValueAtPath(instance.formData, resolver.formPath),
-        `${label}.formPath`,
+        label,
+        subject,
+        `依表單欄位「${resolver.formPath}」`,
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4816,7 +5196,9 @@ export class WorkflowEngineService {
           buildWorkflowExpressionContext(instance),
           `${label}.expression`,
         ),
-        `${label}.expression`,
+        label,
+        subject,
+        '依運算式',
       ).map((memberId) => ({ memberId, sourceType: resolver.type }));
     }
 
@@ -4825,6 +5207,7 @@ export class WorkflowEngineService {
         manager,
         resolver.positionId,
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4836,6 +5219,7 @@ export class WorkflowEngineService {
         resolver.orgUnitId,
         Boolean(resolver.includeDescendants),
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4848,6 +5232,7 @@ export class WorkflowEngineService {
         resolver.positionId,
         Boolean(resolver.includeDescendants),
         label,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4861,6 +5246,7 @@ export class WorkflowEngineService {
         resolver.fallback,
         label,
         resolver.preferClosestOrgUnit === true,
+        subject,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4873,6 +5259,8 @@ export class WorkflowEngineService {
         resolver.minPositionLevel,
         resolver.fallback,
         label,
+        subject,
+        skippedChainMemberIds,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4885,6 +5273,7 @@ export class WorkflowEngineService {
       resolver.fallback,
       label,
       resolver.preferClosestOrgUnit === true,
+      subject,
     ).then((memberIds) =>
       memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
     );
@@ -4894,8 +5283,9 @@ export class WorkflowEngineService {
     manager: EntityManager,
     positionId: string,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { positionId },
     });
@@ -4915,7 +5305,7 @@ export class WorkflowEngineService {
 
     if (!activeMemberships.length) {
       throw new ConflictException(
-        `${label} position ${positionId} has no active membership`,
+        `${label} 找不到${subject}：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
@@ -4931,6 +5321,7 @@ export class WorkflowEngineService {
     fallback: ApproverResolverFallback | undefined,
     label: string,
     preferClosestOrgUnit: boolean,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
     const normalizedLevelsUp = Math.max(Math.trunc(levelsUp), 1);
     const resolvedManagerMemberIds =
@@ -4950,6 +5341,7 @@ export class WorkflowEngineService {
         instance,
         fallback,
         label,
+        subject,
         `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
       ),
     ];
@@ -4958,7 +5350,8 @@ export class WorkflowEngineService {
   /**
    * Walks up the initiator's manager chain, nearest manager first, until a
    * manager whose position level reaches `minPositionLevel` is added. The
-   * list is returned nearest manager first.
+   * list is returned nearest manager first. Members in `skippedMemberIds` are
+   * walked past without joining the chain or counting as the stopping point.
    */
   private async resolveOrgManagerChainCandidates(
     manager: EntityManager,
@@ -4966,8 +5359,10 @@ export class WorkflowEngineService {
     minPositionLevel: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    subject: ResolvedSubject,
+    skippedMemberIds: readonly string[],
   ): Promise<readonly string[]> {
-    const date = toDateOnlyString(new Date());
+    const date = this.readOrganizationToday();
     const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
     const chain: string[] = [];
     let currentMemberId = instance.initiatorMemberId;
@@ -4984,7 +5379,7 @@ export class WorkflowEngineService {
         currentMemberId,
         date,
         true,
-        currentMemberId,
+        [currentMemberId],
       );
 
       if (directManagerMemberIds.length === 0) {
@@ -5006,6 +5401,13 @@ export class WorkflowEngineService {
 
       visitedMemberIds.add(managerMemberId);
       currentMemberId = managerMemberId;
+
+      // A member the node keeps out (the person who filed the document) is
+      // climbed through, not stopped at: filtering him after the walk would
+      // lose the chain when he is the manager that reaches the level.
+      if (skippedMemberIds.includes(managerMemberId)) {
+        continue;
+      }
 
       const level = await this.readMemberPositionLevel(
         manager,
@@ -5032,6 +5434,7 @@ export class WorkflowEngineService {
       instance,
       fallback,
       label,
+      subject,
       `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
     );
 
@@ -5046,45 +5449,82 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
   ): Promise<number | null> {
-    const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { memberId },
-    });
-    const positionIds = uniqueTexts(
-      memberships
-        .filter((membership) => isDateRangeActive(membership, date))
-        .map((membership) => membership.positionId)
-        .filter((positionId): positionId is string => Boolean(positionId)),
+    return (
+      (await this.readMemberPositionLevels(manager, [memberId], date)).get(
+        memberId,
+      ) ?? null
     );
+  }
 
-    if (positionIds.length === 0) {
-      return null;
+  /**
+   * {@link readMemberPositionLevel} for several members in two queries: every
+   * requested member is in the map, `null` when they hold no graded position.
+   */
+  private async readMemberPositionLevels(
+    manager: EntityManager,
+    memberIds: readonly string[],
+    date: string,
+  ): Promise<ReadonlyMap<string, number | null>> {
+    const uniqueMemberIds = uniqueTexts(memberIds);
+
+    if (uniqueMemberIds.length === 0) {
+      return new Map();
     }
 
-    const positions = await manager.getRepository(PositionEntity).find({
-      where: { id: In([...positionIds]) },
-    });
+    const memberships = (
+      await manager.getRepository(MembershipEntity).find({
+        where: { memberId: In([...uniqueMemberIds]) },
+      })
+    ).filter(
+      (membership) =>
+        Boolean(membership.positionId) && isDateRangeActive(membership, date),
+    );
+    const positionIds = uniqueTexts(
+      memberships.map((membership) => membership.positionId ?? ''),
+    );
+    const positions =
+      positionIds.length === 0
+        ? []
+        : await manager.getRepository(PositionEntity).find({
+            where: { id: In([...positionIds]) },
+          });
+    const levelByPositionId = new Map(
+      positions.map((position) => [position.id, position.level]),
+    );
 
-    return positions.length === 0
-      ? null
-      : Math.max(...positions.map((position) => position.level));
+    return new Map(
+      uniqueMemberIds.map((memberId) => {
+        const levels = memberships
+          .filter((membership) => membership.memberId === memberId)
+          .flatMap((membership) => {
+            const level = levelByPositionId.get(membership.positionId ?? '');
+
+            return level === undefined ? [] : [level];
+          });
+
+        return [memberId, levels.length === 0 ? null : Math.max(...levels)];
+      }),
+    );
   }
 
   private resolveFallbackAssignee(
     instance: ApprovalInstanceEntity,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    subject: ResolvedSubject,
     failureReason: string,
   ): string {
+    const failure =
+      subject === '通知對象' ? '無法建立通知' : '無法建立待簽任務';
+
     if (!fallback || fallback.type === 'NONE') {
       throw new ConflictException(
-        `${label} 無法建立待簽任務：${failureReason}，且未設定改派固定人。請聯絡流程管理員調整主管規則或模板 fallback。`,
+        `${label} ${failure}：${failureReason}，且未設定改派固定人。請聯絡流程管理員調整主管規則或模板 fallback。`,
       );
     }
 
     if (!fallback.memberId.trim()) {
-      throw new ConflictException(
-        `${label} 無法建立待簽任務：改派固定人未設定。`,
-      );
+      throw new ConflictException(`${label} ${failure}：改派固定人未設定。`);
     }
 
     if (
@@ -5092,7 +5532,7 @@ export class WorkflowEngineService {
       !fallback.allowInitiatorSelfApproval
     ) {
       throw new ConflictException(
-        `${label} 無法建立待簽任務：改派固定人是申請人本人，且此節點未允許申請人自簽。`,
+        `${label} ${failure}：改派固定人是申請人本人，且此節點未允許申請人自簽。`,
       );
     }
 
@@ -5108,7 +5548,7 @@ export class WorkflowEngineService {
     return this.resolveManagerMemberIdsAtLevel(
       manager,
       memberId,
-      toDateOnlyString(new Date()),
+      this.readOrganizationToday(),
       levelsUp,
       preferClosestOrgUnit,
     );
@@ -5152,7 +5592,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
-    excludedManagerMemberId?: string,
+    excludedManagerMemberIds: readonly string[] = [],
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -5188,7 +5628,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
-      excludedManagerMemberId,
+      excludedManagerMemberIds,
     );
   }
 
@@ -5199,8 +5639,9 @@ export class WorkflowEngineService {
     fallback: ApproverResolverFallback | undefined,
     label: string,
     preferClosestOrgUnit: boolean,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const date = toDateOnlyString(new Date());
+    const date = this.readOrganizationToday();
     const orgUnits = await this.readOrgUnitAndAncestors(manager, [orgUnitId]);
     const managerMemberIds = await this.resolveManagerResolutionCandidates(
       manager,
@@ -5219,6 +5660,7 @@ export class WorkflowEngineService {
           instance,
           fallback,
           label,
+          subject,
           `找不到指定組織的主管規則`,
         ),
       ];
@@ -5266,7 +5708,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
-    excludedManagerMemberId?: string,
+    excludedManagerMemberIds: readonly string[] = [],
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -5300,8 +5742,7 @@ export class WorkflowEngineService {
       // through to the next tier instead of ending on the excluded member.
       .filter(
         (resolution) =>
-          excludedManagerMemberId === undefined ||
-          resolution.managerMemberId !== excludedManagerMemberId,
+          !excludedManagerMemberIds.includes(resolution.managerMemberId),
       )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
@@ -5319,15 +5760,23 @@ export class WorkflowEngineService {
     orgUnitId: string,
     includeDescendants: boolean,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const orgUnitIds = await this.readOrgUnitScopeIds(
+    const scope = await this.readOrgUnitScope(
       manager,
       orgUnitId,
       includeDescendants,
     );
-    const today = toDateOnlyString(new Date());
+
+    if (!scope) {
+      throw new ConflictException(
+        readMissingOrgUnitMessage(label, subject, orgUnitId),
+      );
+    }
+
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { orgUnitId: In([...orgUnitIds]) },
+      where: { orgUnitId: In([...scope.orgUnitIds]) },
     });
     const memberIds = memberships
       .filter((membership) => isDateRangeActive(membership, today))
@@ -5336,7 +5785,7 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} orgUnit ${orgUnitId} has no active member`,
+        `${label} 找不到${subject}：組織「${scope.name}」目前沒有任何有效成員，請先將人員加入該組織`,
       );
     }
 
@@ -5349,15 +5798,23 @@ export class WorkflowEngineService {
     positionId: string,
     includeDescendants: boolean,
     label: string,
+    subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const orgUnitIds = await this.readOrgUnitScopeIds(
+    const scope = await this.readOrgUnitScope(
       manager,
       orgUnitId,
       includeDescendants,
     );
-    const today = toDateOnlyString(new Date());
+
+    if (!scope) {
+      throw new ConflictException(
+        readMissingOrgUnitMessage(label, subject, orgUnitId),
+      );
+    }
+
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
-      where: { orgUnitId: In([...orgUnitIds]), positionId },
+      where: { orgUnitId: In([...scope.orgUnitIds]), positionId },
     });
     const memberIds = memberships
       .filter((membership) => isDateRangeActive(membership, today))
@@ -5366,29 +5823,46 @@ export class WorkflowEngineService {
 
     if (memberIds.length === 0) {
       throw new ConflictException(
-        `${label} orgUnit ${orgUnitId} and position ${positionId} has no active membership`,
+        `${label} 找不到${subject}：組織「${scope.name}」的職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
       );
     }
 
     return uniqueTexts(memberIds);
   }
 
-  private async readOrgUnitScopeIds(
+  // Names only make an error readable, so a row that has gone missing falls
+  // back to its id instead of hiding the real problem.
+  private async readPositionName(
+    manager: EntityManager,
+    positionId: string,
+  ): Promise<string> {
+    const position = await manager
+      .getRepository(PositionEntity)
+      .findOne({ where: { id: positionId } });
+
+    return position?.name ?? positionId;
+  }
+
+  /** The org unit's name and the ids it covers, or `null` once it is gone. */
+  private async readOrgUnitScope(
     manager: EntityManager,
     orgUnitId: string,
     includeDescendants: boolean,
-  ): Promise<readonly string[]> {
+  ): Promise<{
+    readonly name: string;
+    readonly orgUnitIds: readonly string[];
+  } | null> {
     const orgUnitRepository = manager.getRepository(OrgUnitEntity);
     const orgUnit = await orgUnitRepository.findOne({
       where: { deletedAt: IsNull(), id: orgUnitId },
     });
 
     if (!orgUnit) {
-      throw new ConflictException(`Org unit ${orgUnitId} was not found`);
+      return null;
     }
 
     if (!includeDescendants) {
-      return [orgUnit.id];
+      return { name: orgUnit.name, orgUnitIds: [orgUnit.id] };
     }
 
     const descendants = await orgUnitRepository
@@ -5397,7 +5871,13 @@ export class WorkflowEngineService {
       .andWhere('orgUnit.path <@ :path', { path: orgUnit.path })
       .getMany();
 
-    return uniqueTexts([orgUnit.id, ...descendants.map((unit) => unit.id)]);
+    return {
+      name: orgUnit.name,
+      orgUnitIds: uniqueTexts([
+        orgUnit.id,
+        ...descendants.map((unit) => unit.id),
+      ]),
+    };
   }
 
   private async processExclusiveGateway(
@@ -5541,6 +6021,7 @@ export class WorkflowEngineService {
             instance,
             action.recipients,
             `知會節點「${node.data.label}」`,
+            '通知對象',
           );
     const recipientMemberIds = uniqueTexts(
       recipients.map((recipient) => recipient.memberId),
@@ -5579,11 +6060,7 @@ export class WorkflowEngineService {
           )
         : [];
 
-    await manager.getRepository(WorkflowTokenEntity).save({
-      ...token,
-      consumedAt: new Date(),
-      status: WorkflowTokenStatusEnum.CONSUMED,
-    });
+    await this.consumeToken(manager, token);
     await activityRepository.save(
       activityRepository.create({
         actorMemberId: null,
@@ -6377,6 +6854,79 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// The members whose grades decide a grade-gated delegation: none when the
+// delegation leaves the seat with its principal.
+function readGradeGateMemberIds(
+  principalMemberId: string,
+  resolution: DelegationResolution,
+): readonly string[] {
+  return resolution.finalAssigneeMemberId === principalMemberId
+    ? []
+    : [principalMemberId, resolution.finalAssigneeMemberId];
+}
+
+/**
+ * On a manager-chain node the delegate must hold at least the grade of the
+ * member they replace: anything lower is not applied, the member stays and
+ * the refused delegation is returned so it can be recorded. Resolution does
+ * not walk further down the delegation chain once it has been refused. A
+ * member without a grade (or a delegate that stays the member) is never
+ * constrained. `levels` holds the grades of `readGradeGateMemberIds`.
+ */
+function applyGradeGate(
+  principalMemberId: string,
+  resolution: DelegationResolution,
+  gradeGated: boolean,
+  levels: ReadonlyMap<string, number | null>,
+): GradeGatedDelegation {
+  if (!gradeGated || resolution.finalAssigneeMemberId === principalMemberId) {
+    return resolution;
+  }
+
+  const principalLevel = levels.get(principalMemberId) ?? null;
+
+  if (principalLevel === null) {
+    return resolution;
+  }
+
+  const agentLevel = levels.get(resolution.finalAssigneeMemberId) ?? null;
+
+  if (agentLevel !== null && agentLevel >= principalLevel) {
+    return resolution;
+  }
+
+  return {
+    delegationChain: [],
+    finalAssigneeMemberId: principalMemberId,
+    skippedDelegation: {
+      agentLevel,
+      agentMemberId: resolution.finalAssigneeMemberId,
+      principalLevel,
+      principalMemberId,
+      reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+    },
+  };
+}
+
+function readNodeLabelKey(instanceId: string, nodeId: string): string {
+  return `${instanceId}\u0000${nodeId}`;
+}
+
+/**
+ * The node's display name from an instance's workflow snapshot, or `null`
+ * when the instance or node is missing, or the node carries no usable label
+ * (older snapshots).
+ */
+function readWorkflowNodeLabel(
+  workflow: WorkflowDefinition | undefined,
+  nodeId: string,
+): string | null {
+  const label = workflow?.nodes.find((candidate) => candidate.id === nodeId)
+    ?.data.label;
+
+  return typeof label === 'string' && label.trim() ? label : null;
+}
+
 function readWorkflowNodeOrThrow(
   workflow: WorkflowDefinition,
   nodeId: string,
@@ -6570,32 +7120,46 @@ function edgeHasCondition(edge: WorkflowEdge): boolean {
   );
 }
 
-function readMemberIdFromValue(value: unknown, label: string): string {
-  return readMemberIdsFromValue(value, label)[0] ?? '';
+function readMissingOrgUnitMessage(
+  label: string,
+  subject: ResolvedSubject,
+  orgUnitId: string,
+): string {
+  return `${label} 找不到${subject}：組織（${orgUnitId}）已不存在，請在流程設計器重新選擇組織`;
 }
 
-function readMemberIdsFromValue(
-  value: unknown,
-  label: string,
-): readonly string[] {
+function findMemberIdsInValue(value: unknown): readonly string[] {
   if (typeof value === 'string' && value.trim()) {
     return [value.trim()];
   }
 
   if (Array.isArray(value)) {
-    const memberIds = value
-      .filter(
-        (candidate): candidate is string =>
-          typeof candidate === 'string' && Boolean(candidate.trim()),
-      )
-      .map((candidate) => candidate.trim());
-
-    if (memberIds.length > 0) {
-      return uniqueTexts(memberIds);
-    }
+    return uniqueTexts(
+      value
+        .filter(
+          (candidate): candidate is string =>
+            typeof candidate === 'string' && Boolean(candidate.trim()),
+        )
+        .map((candidate) => candidate.trim()),
+    );
   }
 
-  throw new ConflictException(`${label} did not resolve to a member id`);
+  return [];
+}
+
+function readMemberIdsFromValue(
+  value: unknown,
+  label: string,
+  subject: ResolvedSubject = '簽核人',
+  source = '',
+): readonly string[] {
+  const memberIds = findMemberIdsInValue(value);
+
+  if (memberIds.length === 0) {
+    throw new ConflictException(`${label} ${source}找不到${subject}`);
+  }
+
+  return memberIds;
 }
 
 function uniqueTexts(values: readonly string[]): readonly string[] {
@@ -6636,23 +7200,93 @@ function isInitiatorExcluded(node: UserTaskNode): boolean {
   return Boolean(node.data.excludeInitiator);
 }
 
+// Everyone a node that excludes the initiator keeps out of its approvers: the
+// applicant and, when someone filed the document for them, that person too
+// (authority rule: the creator must not approve what they created).
+function readInitiatorAndSubmitter(
+  instance: Pick<
+    ApprovalInstanceEntity,
+    'initiatorMemberId' | 'submittedByMemberId'
+  >,
+): readonly string[] {
+  const submitterMemberId = readDistinctSubmitterMemberId(instance);
+
+  return submitterMemberId === null
+    ? [instance.initiatorMemberId]
+    : [instance.initiatorMemberId, submitterMemberId];
+}
+
+function isOrgManagerChainNode(node: UserTaskNode): boolean {
+  return node.data.approverResolver.type === 'ORG_MANAGER_CHAIN';
+}
+
+// Candidates of a manager-chain node that came from the chain (or replaced the
+// excluded initiator's seat); ad-hoc approvers are chosen by a person instead.
+function isGradeGatedCandidate(
+  node: UserTaskNode,
+  sourceType: string | null | undefined,
+): boolean {
+  return (
+    isOrgManagerChainNode(node) &&
+    (sourceType === 'ORG_MANAGER_CHAIN' ||
+      sourceType === 'EXCLUDE_INITIATOR_MANAGER')
+  );
+}
+
+// Source of the additive `skippedDelegations` payload field (absent when
+// nothing was refused, so existing payloads stay byte-identical). One record
+// per principal and delegate pair.
+function collectSkippedDelegations(
+  delegatedCandidates: readonly RuntimeTaskCandidate[],
+  excludeInitiator: boolean,
+  excludedMemberIds: readonly string[],
+): readonly SkippedDelegation[] {
+  const seen = new Set<string>();
+
+  return delegatedCandidates.flatMap((candidate) => {
+    const skipped = candidate.skippedDelegation;
+
+    // A seat the initiator filter removes is not on the task, so a refusal on
+    // it has nothing to report. Rows only the dedupe drops are still on it.
+    if (
+      !skipped ||
+      (excludeInitiator &&
+        isExcludedMemberOnCandidatePath(candidate, excludedMemberIds))
+    ) {
+      return [];
+    }
+
+    const key = `${skipped.principalMemberId}\u0000${skipped.agentMemberId}`;
+
+    if (seen.has(key)) {
+      return [];
+    }
+
+    seen.add(key);
+
+    return [skipped];
+  });
+}
+
 // A delegate acting for the initiator is still the initiator approving their
 // own document, so the initiator anywhere on the delegation path (the
 // pre-delegation member, any hop, or the final assignee) drops the candidate.
-function isInitiatorOnCandidatePath(
+// The submitter is held to exactly the same rule.
+function isExcludedMemberOnCandidatePath(
   candidate: Pick<
     RuntimeTaskCandidate,
     'delegationChain' | 'memberId' | 'originalMemberId'
   >,
-  initiatorMemberId: string,
+  excludedMemberIds: readonly string[],
 ): boolean {
-  return (
-    candidate.memberId === initiatorMemberId ||
-    candidate.originalMemberId === initiatorMemberId ||
-    candidate.delegationChain.some(
-      (step) =>
-        step.from === initiatorMemberId || step.to === initiatorMemberId,
-    )
+  return excludedMemberIds.some(
+    (excludedMemberId) =>
+      candidate.memberId === excludedMemberId ||
+      candidate.originalMemberId === excludedMemberId ||
+      candidate.delegationChain.some(
+        (step) =>
+          step.from === excludedMemberId || step.to === excludedMemberId,
+      ),
   );
 }
 
@@ -6662,13 +7296,13 @@ function isInitiatorOnCandidatePath(
 function selectNodeCandidates(
   delegatedCandidates: readonly RuntimeTaskCandidate[],
   excludeInitiator: boolean,
-  initiatorMemberId: string,
+  excludedMemberIds: readonly string[],
 ): readonly RuntimeTaskCandidate[] {
   return uniqueRuntimeCandidates(
     excludeInitiator
       ? delegatedCandidates.filter(
           (candidate) =>
-            !isInitiatorOnCandidatePath(candidate, initiatorMemberId),
+            !isExcludedMemberOnCandidatePath(candidate, excludedMemberIds),
         )
       : delegatedCandidates,
   );
@@ -7341,10 +7975,6 @@ function compareMembership(
   return right.effectiveFrom.localeCompare(left.effectiveFrom);
 }
 
-function toDateOnlyString(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
-
 function canReadAllWorkflows(scope: WorkflowReadScope): boolean {
   return (
     scope.roles.includes('BPM_ADMIN') ||
@@ -7400,15 +8030,47 @@ function validateSubmittedFormData(
     );
   }
 
-  const tableErrors = visibleFields
-    .filter(isTableFieldDefinition)
-    .flatMap((field) =>
-      validateSubmittedTableValue(
-        field,
-        formData[field.fieldKey],
-        isSubmittedFormFieldRequired(field, schema.fields, formData),
+  // A `DYNAMIC_FORM` resolver reads a member value whether or not its field is
+  // visible, so a hidden field still holding a value must be well-formed too.
+  // Whether a hidden field is *required* stays a visibility question above.
+  const memberErrors = readSubmittedMemberValueErrors(
+    schema.fields.filter(
+      (field) =>
+        visibleFields.includes(field) ||
+        isSubmittedFieldValuePresent(formData[field.fieldKey]),
+    ),
+    formData,
+  );
+
+  if (memberErrors.length > 0) {
+    throw new BadRequestException(memberErrors.join('; '));
+  }
+
+  const tableErrors = [
+    ...visibleFields
+      .filter(isTableFieldDefinition)
+      .flatMap((field) =>
+        validateSubmittedTableValue(
+          field,
+          formData[field.fieldKey],
+          isSubmittedFormFieldRequired(field, schema.fields, formData),
+        ),
       ),
-    );
+    // A hidden table is not "visible", but its stored value still has to be a
+    // well-formed table under the row cap: only the required / minimum checks
+    // are skipped, since nobody can fill the table in.
+    ...schema.fields
+      .filter(isTableFieldDefinition)
+      .filter((field) => field.hidden === true)
+      .flatMap((field) =>
+        validateSubmittedTableValue(
+          field,
+          formData[field.fieldKey],
+          false,
+          true,
+        ),
+      ),
+  ];
 
   if (tableErrors.length > 0) {
     throw new BadRequestException(tableErrors.join('; '));
@@ -7425,11 +8087,14 @@ function validateSubmittedTableValue(
   field: TableFieldDefinition,
   value: unknown,
   required: boolean,
+  shapeOnly = false,
 ): readonly string[] {
   const path = `formData.${field.fieldKey}`;
 
   if (typeof value === 'undefined' || value === null) {
-    return required || readTableMinRows(field) > 0
+    return shapeOnly
+      ? []
+      : required || readTableMinRows(field) > 0
       ? [`${path} must include at least ${readTableRequiredRowCount(field)} row(s)`]
       : [];
   }
@@ -7439,7 +8104,7 @@ function validateSubmittedTableValue(
   }
 
   const rowErrors = value.flatMap((row, index) =>
-    validateSubmittedTableRow(field, row, `${path}[${index}]`),
+    validateSubmittedTableRow(field, row, `${path}[${index}]`, shapeOnly),
   );
 
   // A malformed row cannot be counted against min/max meaningfully; report the
@@ -7448,7 +8113,13 @@ function validateSubmittedTableValue(
     return rowErrors;
   }
 
-  return validateSubmittedTableRowCount(field, value.length, required, path);
+  return validateSubmittedTableRowCount(
+    field,
+    value.length,
+    required,
+    path,
+    shapeOnly,
+  );
 }
 
 function validateSubmittedTableRowCount(
@@ -7456,10 +8127,13 @@ function validateSubmittedTableRowCount(
   rowCount: number,
   required: boolean,
   path: string,
+  shapeOnly = false,
 ): readonly string[] {
-  const minRows = required
-    ? Math.max(readTableMinRows(field), 1)
-    : readTableMinRows(field);
+  const minRows = shapeOnly
+    ? 0
+    : required
+      ? Math.max(readTableMinRows(field), 1)
+      : readTableMinRows(field);
   const maxRows = readTableMaxRows(field);
 
   return [
@@ -7476,6 +8150,7 @@ function validateSubmittedTableRow(
   field: TableFieldDefinition,
   row: unknown,
   path: string,
+  shapeOnly = false,
 ): readonly string[] {
   if (!isRecord(row)) {
     return [`${path} must be an object`];
@@ -7493,13 +8168,17 @@ function validateSubmittedTableRow(
         columnsByKey.has(columnKey) && !isFormTableCellValue(cellValue),
     )
     .map(([columnKey]) => `${path}.${columnKey} is not a valid cell value`);
-  const requiredErrors = field.columns
-    .filter(
-      (column) =>
-        isSubmittedTableColumnRequired(column) &&
-        !isSubmittedFieldValuePresent(readRowCellValue(row, column.fieldKey)),
-    )
-    .map((column) => `${path}.${column.fieldKey} is required`);
+  const requiredErrors = shapeOnly
+    ? []
+    : field.columns
+        .filter(
+          (column) =>
+            isSubmittedTableColumnRequired(column) &&
+            !isSubmittedFieldValuePresent(
+              readRowCellValue(row, column.fieldKey),
+            ),
+        )
+        .map((column) => `${path}.${column.fieldKey} is required`);
 
   return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
 }
@@ -7566,6 +8245,12 @@ function isSubmittedFormFieldVisible(
   fields: readonly FormFieldDefinition[],
   values: Readonly<Record<string, unknown>>,
 ): boolean {
+  // A hidden (store-only) field is never shown, so nobody can fill it in:
+  // treat it like a false `visibleWhen`. Its submitted value is still kept.
+  if (field.hidden) {
+    return false;
+  }
+
   return field.visibleWhen
     ? evaluateFormConditionExpression(field.visibleWhen, fields, values, true)
     : true;
@@ -7796,6 +8481,124 @@ function isNumberFormField(
   return field.type === 'number' || field.type === 'money';
 }
 
+// A node that is skipped and then has nowhere to go keeps saying why it was
+// skipped, then why the branch ends; any other node just says why it ends.
+function readDryRunStepResultMessage(
+  assignmentMessage: string | null,
+  stopMessage: string | null,
+  defaultMessage: string,
+  skipped: boolean,
+): string {
+  const message = assignmentMessage ?? defaultMessage;
+
+  if (stopMessage === null) {
+    return message;
+  }
+
+  return skipped ? `${endSentence(message)}${stopMessage}` : stopMessage;
+}
+
+// The skip reason and the stop reason are two sentences; a reason that does not
+// already end in full-stop punctuation gets one so they do not run together.
+function endSentence(message: string): string {
+  return /[。！？.!?]$/.test(message) ? message : `${message}。`;
+}
+
+type DryRunFallbackProblem = 'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR';
+
+// Why a manager resolver's fixed fallback cannot take over when the initiator
+// has no manager, or `null` when it can: like the runtime, it must exist, name
+// a member, and not be the initiator unless the node allows self-approval.
+function readDryRunFallbackProblem(
+  initiatorMemberId: string,
+  fallback: ApproverResolverFallback | undefined,
+): DryRunFallbackProblem | null {
+  if (!fallback || fallback.type !== 'DIRECT') {
+    return 'NOT_SET';
+  }
+
+  const memberId = fallback.memberId.trim();
+
+  if (memberId === '') {
+    return 'BLANK_MEMBER';
+  }
+
+  return memberId === initiatorMemberId && !fallback.allowInitiatorSelfApproval
+    ? 'IS_INITIATOR'
+    : null;
+}
+
+function readDryRunFallbackMemberIds(
+  input: DryRunSimulationInput,
+  fallback: ApproverResolverFallback | undefined,
+): readonly string[] {
+  return readDryRunFallbackProblem(input.initiatorMemberId, fallback) ===
+    null && fallback?.type === 'DIRECT'
+    ? [fallback.memberId.trim()]
+    : [];
+}
+
+function readDryRunNodeName(node: WorkflowNode): string {
+  return node.data.label?.trim() || node.id;
+}
+
+// The dry run cannot look the organisation up, so these resolvers stand in
+// with a placeholder that names what the runtime would resolve.
+function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
+  if (resolver.type === 'POSITION') {
+    return `position:${resolver.positionId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MEMBER') {
+    return `orgUnitMember:${resolver.orgUnitId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_POSITION') {
+    return `orgUnitPosition:${resolver.orgUnitId}:${resolver.positionId}`;
+  }
+
+  if (resolver.type === 'ORG_UNIT_MANAGER') {
+    return `orgUnitManager:${resolver.orgUnitId}`;
+  }
+
+  return resolver.type === 'ORG_MANAGER_CHAIN'
+    ? `orgManagerChain:${resolver.minPositionLevel}`
+    : resolver.type;
+}
+
+function readDryRunUnresolvedApproverMessage(
+  resolver: ApproverResolver,
+  nodeName: string,
+  initiatorMemberId: string,
+): string {
+  if (resolver.type === 'DIRECT') {
+    return `簽核節點「${nodeName}」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人`;
+  }
+
+  if (resolver.type === 'DYNAMIC_FORM') {
+    return `簽核節點「${nodeName}」依表單欄位找不到簽核人，請確認試跑資料中該欄位有填人員`;
+  }
+
+  if (resolver.type === 'EXPRESSION') {
+    return `簽核節點「${nodeName}」依運算式找不到簽核人，請確認運算式的結果`;
+  }
+
+  const fallbackProblem =
+    resolver.type === 'ORG_MANAGER'
+      ? readDryRunFallbackProblem(initiatorMemberId, resolver.fallback)
+      : null;
+
+  if (fallbackProblem === 'BLANK_MEMBER') {
+    return `簽核節點「${nodeName}」找不到主管，且改派固定人未設定`;
+  }
+
+  if (fallbackProblem === 'IS_INITIATOR') {
+    return `簽核節點「${nodeName}」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽`;
+  }
+
+  return `簽核節點「${nodeName}」依申請人的組織找不到主管，請確認試跑時的申請人資料`;
+}
+
 function createDryRunStep(input: {
   readonly assigneeMemberId: string | null;
   readonly edge: WorkflowEdge | null;
@@ -7909,4 +8712,60 @@ function mapDecisionToResolution(
     case TaskDecisionActionEnum.TRANSFERRED:
       return NotificationResolutionEnum.TRANSFERRED;
   }
+}
+
+// The limit is stated in characters, so a character outside the BMP counts
+// once rather than as its two UTF-16 code units.
+function countCodePoints(value: string): number {
+  return Array.from(value).length;
+}
+
+function normalizeBusinessKey(
+  businessKey: string | null | undefined,
+): string | null {
+  const trimmed = businessKey?.trim() ?? '';
+
+  if (trimmed === '') {
+    return null;
+  }
+
+  if (countCodePoints(trimmed) > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH) {
+    throw new BadRequestException(
+      `業務鍵長度不可超過 ${MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH} 個字元`,
+    );
+  }
+
+  return trimmed;
+}
+
+/**
+ * Turns Postgres rejecting a duplicate (template, business key) into a
+ * Conflict. Any other failure, including other unique violations inside the
+ * same transaction, surfaces as it is.
+ */
+function throwBusinessKeyConflictOrRethrow(
+  error: unknown,
+  businessKey: string | null,
+): never {
+  const { code, constraint, driverError } = (error ?? {}) as {
+    readonly code?: unknown;
+    readonly constraint?: unknown;
+    readonly driverError?: {
+      readonly code?: unknown;
+      readonly constraint?: unknown;
+    };
+  };
+
+  if (
+    businessKey !== null &&
+    (code ?? driverError?.code) === '23505' &&
+    (constraint ?? driverError?.constraint) ===
+      APPROVAL_INSTANCE_BUSINESS_KEY_INDEX
+  ) {
+    throw new ConflictException(
+      `此範本已有相同業務鍵（${businessKey}）的簽核單`,
+    );
+  }
+
+  throw error;
 }

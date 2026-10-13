@@ -179,7 +179,7 @@ function readNodeDetail(node: WorkflowNode): string | null {
     case 'ORG_UNIT_MANAGER':
       return '單位主管';
     case 'DYNAMIC_FORM':
-      return '表單動態指派';
+      return '依表單欄位指定';
     case 'EXPRESSION':
       return '運算式';
     default:

@@ -102,6 +102,11 @@ interface ExcludeInitiatorConfig {
 不會是該節點的簽核人，代理人替申請人簽也算申請人本人。省略此欄位時行為與過去
 完全相同，因此既有模板與進行中的 instance 不受影響。`whenEmpty` 只接受上述三個值，
 runtime 規則見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
+單據有「代送人」（`submittedByMemberId`，建單人替申請人送出時才會與申請人不同）時，
+同一個設定也會把代送人排除，規則與申請人完全一樣。
+Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `null`）就是這個欄位；
+`null`、缺省、或等於 `initiatorMemberId` 都表示申請人自己送出，只有不同的非空值才顯示「由 X 代 Y 送出」。
+讀取權限與通知內文見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
@@ -124,6 +129,11 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 `description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
+> `fieldPermissions` 是**保留欄位，目前不生效**：workflow engine 與所有畫面都不讀它，
+> 設了也不會改變任何欄位的可見性或可編輯性（要先定義「沒有當前節點的檢視者看到什麼」
+> 才能實作節點層級的可見性）。要讓某個欄位不出現在畫面上，用表單欄位的 `hidden`
+> （見 §7）；那同樣只是顯示選項，不是權限邊界。
+
 `SEQUENTIAL`（designer 選項「依序簽核」）依候選簽核人的順序一次只開放一位：
 `task_candidates.sequence`（0 起算）排定順序，輪到的候選人為 `PENDING`，其餘為
 `WAITING`（目前畫面不顯示候選人狀態）；前一位同意後才輪到下一位，任一位拒絕或退回即
@@ -131,6 +141,14 @@ UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與�
 
 Task 相關欄位（`TaskRecord`／activity payload）：
 
+- `nodeLabel`：task 所在節點的顯示名稱（`node.data.label`）。由 server 依 task 所屬
+  案件的 `workflow_snapshot` 解析、不存進 task 資料列（無 migration）；`inboxTasks`／
+  `approvalHistoryTasks`／`tasks` 以一次查詢取得整批 task 的案件快照，不會每筆 task
+  各查一次。快照裡找不到該節點時為 `null`。清單類畫面（待簽、歷史、追蹤）顯示
+  `nodeLabel ?? nodeId`，不再顯示內部 id（如 `band-0`）；臨時加簽／會簽產生的 task
+  沿用它所在節點的名稱，畫面另依 `isAdhoc`／`adhocType` 加「（臨時加簽）」或
+  「（臨時會簽）」。內建 client 一律選取此欄位，舊版 server 會直接拒絕整個查詢，
+  所以 client 與 server 必須同版升級，即同一個 release。
 - `candidateMemberIds`：task 上所有候選人（顯示用摘要，含尚未輪到者）。
 - `openCandidateMemberIds`：現在可以操作的候選人（候選狀態為 `PENDING` 或
   `CLAIMED`），順序同 `candidateMemberIds`。判斷「某人是否能簽」請用這個欄位
@@ -197,10 +215,46 @@ type ApproverResolverFallback =
     };
 ```
 
-Designer 目前提供 direct member、position、org-unit member、org-unit position、
-initiator manager、specific org-unit manager、dynamic form、expression 等模式。
+Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
+指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
+只由 API／AI 建立並照常顯示。「依表單欄位指定」只列出綁定表單中的 `member` 欄位
+（`formPath` = 欄位的 `fieldKey`）；表單沒有人員選擇欄位時會提示先到表單設計加入，儲存值
+已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+#### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
+
+試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
+`assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
+designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
+顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入占位值
+`formMember:<fieldKey>`（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人，
+試跑結果顯示為「表單欄位「<欄位名稱>」選的人（送出時依填寫內容決定）」（欄位沒有名稱或已刪除時顯示 `fieldKey`）。刻意不填試跑發起人：
+真實送出時通常選的是別人，填發起人會讓設了「排除申請人」的節點在試跑中被略過或停住。
+要模擬特定人員，直接把 JSON 中的值改成該成員 id。
+
+`DYNAMIC_FORM` 的 `formPath` 讀到的值必須是成員 id（字串）或成員 id 陣列。表單欄位
+類型 **`member`（人員選擇）** 就是為此而設：
+
+```ts
+type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
+  readonly multiple?: boolean; // 可複選；省略或 false = 單選
+};
+```
+
+- **儲存值**：單選為成員 id 字串，可複選為成員 id 字串陣列；只存 id，不存 `{ id, name }`，
+  名稱在顯示時才以成員目錄解析。沒選人時，單選是省略／`null`，可複選是 `[]`，與其他選填
+  欄位一致。因此 `formPath` 直接寫欄位的 `fieldKey`（例如 `reviewer`）即可。
+- **Builder**：欄位庫的「人員選擇」，設定項有「可複選」與一般欄位共有的標題、必填等；
+  不提供預設值 UI，也不能當作表格欄（V1）。
+- **Renderer**：填寫與唯讀都用同一個成員搜尋（姓名或信箱，與 designer 指定會員同一組
+  `searchMembers`／`resolveMembers` 查詢）；唯讀時顯示姓名，找不到的 id 顯示「未知會員」。
+- **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——成員 id
+  不是人能手打的值。表單內的顯示／必填／唯讀規則也不會把人員選擇欄位列為條件來源。
+- **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
+  為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
@@ -362,3 +416,57 @@ frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補
   不會被 browser bundle 讀取。
 - Auth 使用 `apps/api` 的 signed HTTP-only cookie。Client 登入後會重新讀
   `/auth/me`，未登入時導向 `/login`。
+
+---
+
+## 7. 表單欄位的顯示選項（`hidden`、`displayAs`）
+
+型別來源是 `libs/shared/src/lib/form.ts`。這兩個選項只影響畫面如何呈現，不改變
+`form_data` 的內容。
+
+### `hidden`：只存不顯示
+
+```ts
+{ fieldKey: 'sourceDocId', label: '來源單據', required: false, type: 'text', hidden: true }
+```
+
+給宿主系統放技術欄位用（來源單據編號、版本、型別…）：值由 service 層送進 `form_data`，
+簽核人看不到。
+
+- **畫面**：填寫、唯讀、重送都不渲染這個欄位；案件標題也不會挑它當標題欄位。
+- **值**：照存。renderer 送出的值仍包含隱藏欄位，重送時不會被丟掉。
+- **驗證**：前端與後端 `validateSubmittedFormData` 都把 `hidden` 欄位當成「不可見」，
+  不檢查必填；後端不會剝掉已送入的值。
+- **發布檢查**：`hidden` 必須是 boolean；`hidden: true` 不可與 `required: true` 並用
+  （沒人填得到必填值，表單會送不出去）；table 的 column 不支援 `hidden`。
+- **隱藏的選項來源（DataSource）欄位**：`hidden` 欄位（或 `hidden` table 的 column）若設了
+  `dataSource`，其 `FIELD` 綁定只能指向同為 `hidden` 的欄位；綁定到顯示中的欄位會被發布檢查
+  擋下。原因：隱藏欄位不會被渲染，前端的 DataSource 閘門看不到它，但後端送出時仍會解析；
+  依賴的欄位值有問題時，重送者會被後端擋下卻沒有任何欄位可以修。只依賴其他 `hidden`
+  欄位、或只用常數綁定都允許。
+- **隱藏的 table**：後端仍檢查它的值是合法的 table（必須是列的陣列、每列是物件、欄位 key
+  合法）與 `maxRows` 上限；只略過必填、`minRows` 與列內必填欄位。
+- **與 `visibleWhen` 並用**：允許，`hidden` 優先（永遠不顯示）。`requiredWhen`
+  同理被略過。
+- **仍可被引用**：條件式（`visibleWhen` / `requiredWhen` / 流程條件）、webhook 綁定、
+  dry-run 範例資料都照常讀得到隱藏欄位。
+- **不是權限邊界**：API 回傳的 `formData` 仍然包含這些值，任何能讀案件的人都拿得到。
+- **設計器**：欄位設定的「只存不顯示（系統整合用）」；勾選時會一併取消必填，欄位仍列在
+  設計器清單中並標示「只存不顯示」。
+
+### `displayAs: 'link'`：文字欄位以連結呈現
+
+只能設在 `text` / `textarea` 欄位，值只能是 `'link'`（其他型別、其他值、table column
+都會被發布檢查擋下）。值仍是字串，條件與驗證完全不變。
+
+唯讀畫面（案件詳情等）才會變成連結，填寫畫面維持一般輸入框。只有下列值會變成連結，
+其他一律顯示純文字：
+
+| 值                                  | 呈現                                                 |
+| ----------------------------------- | ---------------------------------------------------- |
+| `/` 開頭、但不是 `//` 開頭的站內路徑 | 同一分頁開啟                                         |
+| `http://` / `https://` 網址         | 新分頁開啟，`rel="noopener noreferrer"`，並附「（另開新分頁）」提示（`title` 與螢幕閱讀器專用文字） |
+| `javascript:`、`data:`、`//host`、含空白或控制字元、含反斜線、帶帳號密碼的網址，以及 `/.//host` 這類 dot segment 化簡後變成 `//` 的路徑 | 純文字 |
+
+判斷邏輯在 `libs/bpm-core-react/src/views/forms/renderer/form-field-link.ts`。
+設計器欄位設定的「以連結顯示」。

@@ -6,6 +6,7 @@ import {
   FormUiSchema,
   FormStaticOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  isMemberFieldDefinition,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
@@ -109,6 +110,14 @@ export interface ApprovalInstanceRecord {
   readonly initiatorMemberId: string;
   readonly startedAt: string;
   readonly state: ApprovalInstanceState;
+  /**
+   * Who actually pressed submit when it was not the applicant. `null` (or
+   * equal to `initiatorMemberId`) means the applicant submitted it
+   * themselves — rows written before the column existed are `null`. Optional
+   * only so hand-built records (fixtures, host-side mocks) written before the
+   * field existed keep compiling; every selection in this client requests it.
+   */
+  readonly submittedByMemberId?: string | null;
   readonly templateId: string;
   readonly templateVersionId: string;
   readonly title: string;
@@ -142,6 +151,14 @@ export interface TaskRecord {
   readonly instanceId: string;
   readonly isAdhoc: boolean;
   readonly nodeId: string;
+  /**
+   * The node's display name, read server-side from the instance's workflow
+   * snapshot; `null` when the node is not in it. The bundled queries always
+   * select it, so an older server rejects them: upgrade client and server
+   * together (same release). Optional only for hosts running their own
+   * queries — show `nodeLabel ?? nodeId`.
+   */
+  readonly nodeLabel?: string | null;
   /**
    * Candidates who may act now (`PENDING`/`CLAIMED`). The bundled queries
    * always select it, so an older server rejects them: upgrade client and
@@ -597,6 +614,7 @@ export async function listApprovalInstances(): Promise<
         initiatorMemberId
         startedAt
         state
+        submittedByMemberId
         templateId
         templateVersionId
         title
@@ -650,6 +668,7 @@ export async function listApprovalInstancesPage({
           initiatorMemberId
           startedAt
           state
+          submittedByMemberId
           templateId
           templateVersionId
           title
@@ -840,6 +859,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         initiatorMemberId
         startedAt
         state
+        submittedByMemberId
         templateId
         templateVersionId
         title
@@ -861,6 +881,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -918,6 +939,7 @@ export async function listInboxTasks(
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -952,6 +974,7 @@ export async function listApprovalHistoryTasks(
         instanceId
         isAdhoc
         nodeId
+        nodeLabel
         openedAt
         originalAssigneeMemberId
         slaDueAt
@@ -1809,6 +1832,7 @@ const ADHOC_TASK_FIELDS = `
   instanceId
   isAdhoc
   nodeId
+  nodeLabel
   openedAt
   originalAssigneeMemberId
   slaDueAt
@@ -2248,18 +2272,25 @@ function readFirstCaseTitleField(
     schema.fields.map((field) => [field.fieldKey, field]),
   );
   // A row count is a poor case title, so a table never becomes the title field
-  // — the first non-table field takes its place (ADR 16 §3.8).
+  // — the first non-table field takes its place (ADR 16 §3.8). A member field
+  // holds raw member ids, which are no better, so it is skipped the same way. A
+  // hidden (store-only) field is never shown to people, so it cannot title a
+  // case either.
   const firstLayoutField = uiSchema?.layout
     .map((layoutItem) => fieldsByKey.get(layoutItem.fieldKey) ?? null)
     .find(
       (field): field is FormFieldDefinition =>
-        field !== null && !isTableFieldDefinition(field),
+        field !== null && isCaseTitleField(field),
     );
 
+  return firstLayoutField ?? schema.fields.find(isCaseTitleField) ?? null;
+}
+
+function isCaseTitleField(field: FormFieldDefinition): boolean {
   return (
-    firstLayoutField ??
-    schema.fields.find((field) => !isTableFieldDefinition(field)) ??
-    null
+    !isTableFieldDefinition(field) &&
+    !isMemberFieldDefinition(field) &&
+    !field.hidden
   );
 }
 

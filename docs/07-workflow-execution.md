@@ -157,6 +157,19 @@ async function processInstance(instanceId: string): Promise<void> {
 }
 ```
 
+節點的 `entryCondition` 在進入上面的 `switch` 之前先判定，且排在匯合就緒檢查
+（`isNodeEntryReady`，多條入邊要等其他分支到齊）之後——所以有 2 條以上入邊的知會節點，
+也是等入邊到齊後才判定 `entryCondition`。不成立就略過該節點（寫一筆
+`TOKEN_ADVANCED` 活動，`payload: { skippedByEntryCondition: true, tokenId }`），
+token 依節點類型處理：
+
+- 一般節點：照常沿出邊前進，就像節點已執行完。
+- 知會節點（`serviceTask` + `NOTIFY`）：**直接 consume token**，不往下走，跟它被觸發時
+  一致。知會節點不得有出邊，所以略過時若去找出邊會讓整次送出失敗
+  （`Workflow node <id> has no outgoing edge`）。活動 payload 多一個 `consumed: true`，
+  不發站內通知、不排 webhook。略過後的流程完成判定與觸發時相同：沒有其他 ACTIVE／WAITING
+  token 就完成 instance，還有其他分支開著就繼續 RUNNING。
+
 ---
 
 ## 3. Gateway 處理細節
@@ -326,7 +339,7 @@ async function resolveApprovers(
 設計器把節點改成主管鏈時，若原本的決策方式會讓一位主管簽完就結案，會自動改成 `SEQUENTIAL`。
 
 - **職等來源**：`PositionEntity.level`（數字越大越高階）。一位主管的職等 = 他**目前有效**
-  （`effective_from`／`effective_to` 涵蓋今天）且有 `positionId` 的所有 membership 中最大的
+  （`effective_from`／`effective_to` 涵蓋今天；「今天」依根選項 `organizationTimeZone` 的日期，預設 `Asia/Taipei`）且有 `positionId` 的所有 membership 中最大的
   `level`；沒有這種 membership 就是「沒有職等」。
 - **每一層怎麼走**：用跟 `ORG_MANAGER` 同一套主管規則（`resolveDirectManagerMemberIds`）找目前這個人的
   直屬主管，但有兩點不同：一律採「只取最近一層」語意（主鏈只有一條路徑，合併上層單位的規則只會
@@ -340,6 +353,10 @@ async function resolveApprovers(
   4. 最多走 20 層（`ORG_MANAGER_CHAIN_MAX_HOPS`），超過視為鏈走完，防止設定錯誤的資料無限往上走。
   5. **略過（不加入清單、繼續往上走）**：這位主管沒有職等，或職等 **不高於** 清單中最後一位
      已加入的主管。申請人本人永遠不會被加入。
+     節點開了 `excludeInitiator` 且單據有代送人（§4.4）時，**代送人同樣被略過**：他不加入清單、
+     也不算「達標的最後一關」，鏈繼續往上走，所以他是剛好達標的那位主管時，會改選他上面的下一位
+     達標主管，而不是在事後把他濾掉、留下一條空鏈（略過他時不會更新「最後一位已加入的職等」）。
+     沒開 `excludeInitiator` 的節點不略過任何人。
   6. 否則加入清單；若職等 `>= minPositionLevel` 就停止，這位主管是最後一關。
 - **未達門檻**：鏈在出現達標主管之前就結束時，走 `fallback`，規則與 `ORG_MANAGER` 完全相同
   （`NONE`／未設定 → 丟 `ConflictException`；改派固定人未填 → 丟錯；固定人是申請人本人且未開
@@ -347,6 +364,26 @@ async function resolveApprovers(
   若他已在清單裡就不重複加入。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
   `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。
+- **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
+  **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
+  的主管，固定門檻會讓他們完全不能代理）。職等一律在動作當下用上面的〈職等來源〉現算；
+  被取代的成員沒有職等（例如 `fallback` 固定人）就不設限。只對 `approverResolver.type === 'ORG_MANAGER_CHAIN'`
+  的 user task 生效，其他節點的代理與轉簽行為不變。
+  - **代理（建立任務與 `SEQUENTIAL` 輪到下一位時）**：照原本流程解析出代理人；若最終代理人與主管不同，
+    且代理人沒有職等或職等較低，**這一關不套用代理、保留原主管**（`delegation_chain` 為空），
+    也不沿代理鏈往下找別人。順序仍是：解析 → 代理（含職等檢查）→ 排除申請人 → 去重 → `whenEmpty`；
+    被拒絕的代理人若剛好是申請人，因為代理沒有套用，主管不會因此被排除。
+  - **為什麼沒套用要查得到**：不寫進 `delegation_chain`（時間軸與外送 payload 會把那裡的每一筆當成真的代理），
+    也沒有新的 `ActivityLogEventTypeEnum` 值；改成在記錄該任務／候選人的 activity payload 加一個可選欄位
+    `skippedDelegations`：`TASK_CREATED`（建立時，所有仍在任務上的成員被拒絕的代理——排除申請人之後、去重之前蒐集，所以只被去重擠掉的那一列仍有記錄，而申請人本人被移除的席位不會留下記錄；同一組主管與代理人只記一筆）與 `TASK_CANDIDATE_ACTIVATED`（輪到時重新解析被拒絕的那一筆；即使因代理人已在 task 上或代理路徑經過申請人而沿用原記下的值，被拒絕這件事仍會記錄），
+    元素為 `{ principalMemberId, agentMemberId, reason: 'AGENT_POSITION_LEVEL_TOO_LOW', principalLevel, agentLevel }`
+    （`agentLevel` 為 `null` 表示代理人沒有職等）。沒有被拒絕的代理時不會出現這個欄位。
+  - **人工轉簽**（GraphQL `decideTask` 與宿主的 S2S 決策端點都走 `decideTask`）：被取代的成員是這位簽核人
+    **原本的主管**——若他是代理人，就是 `delegation_chain` 的第一個 `from`，否則是本人。目標沒有職等或職等較低時，
+    回 `ForbiddenException`：`簽核節點「{label}」需由職等 {N} 以上的成員簽核，不能轉簽給職等不足的成員`
+    （`N` 為被取代者的職等）。臨時加簽／會簽的任務不受影響。
+  - **SLA 升級（`ESCALATE`）不在此限**：它帶 `transferReason`，與 §4.4 的申請人轉交檢查相同，不經過這個檢查
+    （Shuttle 等宿主沒有開啟 SLA 排程）。
 
 ### 4.2 Delegation 解析順序（**重要**）
 
@@ -452,7 +489,7 @@ async function createTasksForNode(node, token) {
   （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
   `sequentialCandidateMemberIds`。
 - **`TASK_CANDIDATE_ACTIVATED` payload**（`actorMemberId` 為 `null`）：
-  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, skippedDelegations?, tokenId }`（`skippedDelegations` 只在主管鏈節點拒絕了代理時出現，見 §4.1.1）。
   前四個欄位與 `TASK_CREATED` 的收件人欄位同名同義，其餘是這個事件專屬。
 - **給事件消費端（BREAKING）**：SEQUENTIAL task 的 `TASK_CREATED` 只點名第一位簽核人；
   **`TASK_CANDIDATE_ACTIVATED` 才是「現在輪到這位」的訊號**，必須和 `TASK_CREATED` 用同一套
@@ -487,6 +524,36 @@ User Task 節點設定 `excludeInitiator: { whenEmpty }` 後，送出單據的�
 runtime 讀的是 `instance.workflowSnapshot`，所以模板之後才開啟此設定時，已經在跑的
 instance 不受影響。
 
+**代送人（`submittedByMemberId`）**：單據可能不是申請人自己送出的——助理、或主管替下屬建單。
+建單人若在申請人的主管鏈上，就會簽到自己建的單（權責分離規則：建單人不得核准自己建立的單）。
+所以送簽指令（服務層 `submitApprovalInstance`）多了選填的 `submittedByMemberId`，
+instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL 欄位 `submittedByMemberId`）：
+
+- GraphQL 的 `submitApprovalInstance` 一律帶**目前登入的人**，輸入型別沒有這個欄位，使用者偽造不了；
+  只有服務層呼叫端能指定「由 X 代 Y 送出」。
+- 沒傳（或 `null`）就等於 `initiatorMemberId`，行為與過去完全相同；傳入空字串或全空白會丟
+  `BadRequestException('submittedByMemberId must be a non-empty string')`。
+- 開了 `excludeInitiator` 的節點，下面各項**對代送人與對申請人套用完全相同的規則**（含代理路徑上任何一步）；
+  `whenEmpty` 的處理也不變。代送人不是申請人本人時，錯誤訊息改用「申請人或代為送出此單的人／代送人」的版本。
+- 舊資料的 `submitted_by_member_id` 是 `NULL`，一律視為「申請人自己送出」，不回填。
+- `INSTANCE_STARTED` activity 的 payload 另帶 `submittedByMemberId`；代送人不是申請人時，再帶送出當下查到的
+  代送人姓名 `submittedByName`。
+- **代送人看得到單據**：代送人（與申請人不同時）可以讀這張單——單據詳情、時間軸、附件，
+  以及「我送出的」（`SENT`）與一般可讀清單裡都找得到，助理才找得回自己送出的案件。
+  **只有讀取**：重送（resubmit）與取消（cancel）仍然只有申請人本人能做，檢查沒有動。
+  不相干的成員讀到的仍是 `Approval instance … was not found`。
+- **申請人的通知會說明是誰代送**：單據完成時寄給申請人的 `INSTANCE_COMPLETED` 通知，內文在有代送人時
+  多一句「（由 {代送人姓名} 代為送出）」，payload 另帶 `submittedByMemberId` 與組好的句子
+  `submittedByNote`（內建模板 `{{submittedByNote}}` 取用它；自訂的 handlebars 模板也可以用）；
+  申請人自己送出的單據內文與 payload 完全不變。姓名在**送出時、送出的 transaction 開始之前**經由主機的
+  身分來源解析一次（與寄信取收件人 email 同一條路），記在 `INSTANCE_STARTED` 的 `submittedByName`；
+  查不到、丟錯，或 2 秒內沒有回應都退回成員 id。單據完成時只讀這筆紀錄，不在核准的 transaction 內呼叫
+  身分來源，避免主機回應慢時拖住核准並握著單據的鎖；沒有這筆紀錄的單據顯示成員 id。其他類型的通知（待簽、SLA、節點通知）收件人不是申請人，沒有改動。
+- **前端顯示**：單據詳情標題下方的說明列在有代送人時多一段「由 {代送人} 代 {申請人} 送出」，時間軸的
+  「案件已發起」那一筆也會有同一句。判斷「是否代送」的規則（`submittedByMemberId` 非空且不同於
+  `initiatorMemberId`）集中在 `libs/bpm-core-react/src/views/instances/detail/submitted-by.ts`；
+  姓名解析沿用頁面既有的成員資料載入，沒載入到的顯示成員 id。
+
 - **建立待簽任務**：先解析、再套用 delegation，然後移除申請人出現在其代理路徑上的候選人
   （代理前的 `originalMemberId`、`delegationChain` 中任何一步的 `from`／`to`，或代理後的
   `memberId`）——代理人替申請人簽，等於申請人自己簽。這一步在「沒有任何候選人」的檢查之前，
@@ -499,14 +566,15 @@ instance 不受影響。
   - `FAIL`：丟出 `ConflictException`，不建立任務。
   - `INITIATOR_MANAGER`：改派申請人的直屬主管（同樣套 delegation、同樣排除申請人），
     候選人的 `sourceType` 為 `EXCLUDE_INITIATOR_MANAGER`；找不到主管同樣丟 `ConflictException`。
-    查主管時只取申請人最近的組織單位，並先排除申請人本人的主管規則再選最高優先序——
-    申請人本人就是單位主管時，會落到上一層的主管，而不是又選回自己。
+    查主管時只取申請人最近的組織單位，並先排除申請人本人與代送人的主管規則再選最高優先序——
+    申請人本人（或替他送出單據的主管）就是單位主管時，會落到上一層的主管，而不是又選回他自己。
   - `SKIP_NODE`：不建立任務，寫一筆 `TOKEN_ADVANCED` activity log
     （`payload: { skippedByInitiatorExclusion: true, tokenId }`），token 直接往下走。
     待處理的會簽 directive 留給下一個真正建立的 user task。
   - 一開始就解析不出任何人（與申請人無關）仍是原本的錯誤，不套用 `whenEmpty`。
 - **轉交**：簽核人手動轉交（`decideTask` 的 `TRANSFERRED`）時，若目標是申請人本人，
-  回 `ConflictException`。
+  回 `ConflictException`；若目標是代送人（且不是申請人），同樣回 `ConflictException`
+  （`簽核節點「…」不允許代送人簽核，不能將任務轉交給代為送出此單的人`）。
 - **臨時加簽／會簽**：建立任務時套用同一個過濾，指定對象只剩申請人時回
   `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個 user task
   建立時才產生，且以「那個節點」自己的設定為準（失敗會取消 directive，不阻塞主流程）。
@@ -519,7 +587,8 @@ instance 不受影響。
 **不涵蓋**：
 
 - SLA 升級（`ESCALATE`）選出的轉交對象——它帶 `transferReason`，不經過上面的轉交檢查，
-  升級對象仍可能是申請人。
+  升級對象仍可能是申請人或代送人。
+- Dry run 沒有「代送人」輸入，所以不模擬代送人的排除。
 - 設定開啟之前就已啟動的 instance（節點讀的是啟動時的 snapshot）。
 - 其餘組織推導型 resolver（`POSITION`／`ORG_UNIT_*` 等）在 dry run 中的比對（dry run 只回傳佔位字串）；
   它們在實際建立任務時仍會被過濾。

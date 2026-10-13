@@ -8,6 +8,7 @@ export * from './org-unit.entity';
 export * from './org-unit-tree-commit-result.object';
 export * from './organization-summary.object';
 export * from './organization.enums';
+export * from './organization-time-zone';
 export * from './organization.module';
 export * from './organization.mutations';
 export * from './organization.queries';

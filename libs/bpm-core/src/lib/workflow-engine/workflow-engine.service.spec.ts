@@ -12,10 +12,15 @@ import {
   ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
-import { ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
-import { FindOperator, ObjectLiteral } from 'typeorm';
+import { FindOperator, In, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
@@ -23,6 +28,7 @@ import { ConditionService } from '../condition/condition.service';
 import {
   DelegationResolution,
   DelegationService,
+  DelegationStep,
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
@@ -426,6 +432,237 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('business key', () => {
+    const TEMPLATE_UUID = '3f1c2a9e-5b7d-4e8a-9c01-2d4f6a8b0c1e';
+    const submitWithBusinessKey = (
+      fixture: ServiceFixture,
+      businessKey?: string | null,
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.submitApprovalInstance({
+        businessKey,
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      });
+    const createPublishedFixture = (
+      options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...options,
+      });
+
+    it('stores the trimmed business key on the submitted instance', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      const instance = await submitWithBusinessKey(fixture, '  PO-2026-001 ');
+
+      expect(instance.businessKey).toBe('PO-2026-001');
+      expect(fixture.savedInstance?.businessKey).toBe('PO-2026-001');
+    });
+
+    it.each([undefined, null, '', '   '])(
+      'stores no business key for %p',
+      async (businessKey): Promise<void> => {
+        const fixture = createPublishedFixture();
+
+        await submitWithBusinessKey(fixture, businessKey);
+
+        expect(fixture.savedInstance?.businessKey).toBeNull();
+      },
+    );
+
+    it('accepts a business key at the length limit and rejects one beyond it', async (): Promise<void> => {
+      const accepted = createPublishedFixture();
+      const rejected = createPublishedFixture();
+
+      await submitWithBusinessKey(accepted, 'k'.repeat(200));
+
+      expect(accepted.savedInstance?.businessKey).toHaveLength(200);
+
+      await expect(
+        submitWithBusinessKey(rejected, 'k'.repeat(201)),
+      ).rejects.toThrow(BadRequestException);
+      expect(rejected.savedInstance).toBeNull();
+    });
+
+    it('counts the length limit in characters, not UTF-16 code units', async (): Promise<void> => {
+      // Each emoji is two UTF-16 code units but one character.
+      const atLimit = '😀'.repeat(200);
+      const accepted = createPublishedFixture();
+      const rejected = createPublishedFixture();
+
+      await submitWithBusinessKey(accepted, atLimit);
+
+      expect(accepted.savedInstance?.businessKey).toBe(atLimit);
+
+      await expect(
+        submitWithBusinessKey(rejected, `${atLimit}😀`),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('looks up a business key that is at the character limit', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+      const atLimit = '😀'.repeat(200);
+
+      await fixture.service.findApprovalInstanceByBusinessKey(
+        TEMPLATE_UUID,
+        atLimit,
+      );
+
+      expect(fixture.rootInstanceFindOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('turns a duplicate (template, business key) into a Conflict', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceSaveError: Object.assign(new Error('duplicate key value'), {
+          code: '23505',
+          constraint: 'approval_instances_business_key_key',
+        }),
+      });
+
+      await expect(submitWithBusinessKey(fixture, ' PO-1 ')).rejects.toThrow(
+        new ConflictException('此範本已有相同業務鍵（PO-1）的簽核單'),
+      );
+    });
+
+    it('finds the violation on the driver error TypeORM wraps', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceSaveError: Object.assign(new Error('query failed'), {
+          driverError: {
+            code: '23505',
+            constraint: 'approval_instances_business_key_key',
+          },
+        }),
+      });
+
+      await expect(submitWithBusinessKey(fixture, 'PO-1')).rejects.toThrow(
+        '此範本已有相同業務鍵（PO-1）的簽核單',
+      );
+    });
+
+    it('leaves other unique violations and failures untouched', async (): Promise<void> => {
+      const otherViolation = Object.assign(new Error('duplicate key value'), {
+        code: '23505',
+        constraint: 'some_other_unique_index',
+      });
+      const fixture = createPublishedFixture({
+        instanceSaveError: otherViolation,
+      });
+
+      await expect(submitWithBusinessKey(fixture, 'PO-1')).rejects.toBe(
+        otherViolation,
+      );
+    });
+
+    it('does not read a violation as a business key conflict when no key was sent', async (): Promise<void> => {
+      const violation = Object.assign(new Error('duplicate key value'), {
+        code: '23505',
+        constraint: 'approval_instances_business_key_key',
+      });
+      const fixture = createPublishedFixture({ instanceSaveError: violation });
+
+      await expect(submitWithBusinessKey(fixture, null)).rejects.toBe(
+        violation,
+      );
+    });
+
+    it('keeps the business key when a returned instance is resubmitted', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processBusinessKey: 'PO-2026-001',
+        processFormData: { amount: 1000 },
+      });
+
+      const resubmitted = await fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":2000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(resubmitted.businessKey).toBe('PO-2026-001');
+      expect(fixture.savedInstance?.businessKey).toBe('PO-2026-001');
+    });
+
+    it('keeps the business key when an instance is cancelled', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        processBusinessKey: 'PO-2026-001',
+        processFormData: { amount: 1200 },
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      });
+
+      const cancelled = await fixture.service.cancelApprovalInstance({
+        cancelledByMemberId: 'member-001',
+        comment: null,
+        instanceId: 'instance-1',
+      });
+
+      expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+      expect(cancelled.businessKey).toBe('PO-2026-001');
+    });
+
+    it('looks an instance up by template and trimmed business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        processBusinessKey: 'PO-2026-001',
+      });
+
+      const found = await fixture.service.findApprovalInstanceByBusinessKey(
+        TEMPLATE_UUID,
+        ' PO-2026-001 ',
+      );
+
+      expect(found?.businessKey).toBe('PO-2026-001');
+      expect(fixture.rootInstanceFindOne).toHaveBeenCalledWith({
+        where: { businessKey: 'PO-2026-001', templateId: TEMPLATE_UUID },
+      });
+    });
+
+    it('returns null when no instance has the business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      fixture.rootInstanceFindOne.mockResolvedValueOnce(null);
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          TEMPLATE_UUID,
+          'PO-404',
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('returns null without querying when the template id is not a uuid', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          'template-1',
+          'PO-1',
+        ),
+      ).resolves.toBeNull();
+      expect(fixture.rootInstanceFindOne).not.toHaveBeenCalled();
+    });
+
+    it('does not query for a blank or over-long business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(TEMPLATE_UUID, '  '),
+      ).resolves.toBeNull();
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          TEMPLATE_UUID,
+          'k'.repeat(201),
+        ),
+      ).resolves.toBeNull();
+      expect(fixture.rootInstanceFindOne).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects submit when the template has no published current version', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: null,
@@ -528,6 +765,288 @@ describe('WorkflowEngineService', () => {
         title: 'Request',
       }),
     ).rejects.toThrow('Form data is missing required fields: 附件');
+  });
+
+  it('does not require a hidden field and keeps its submitted value', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'reason', label: '事由', required: false, type: 'text' },
+          // `required: true` is rejected by the schema lint; the engine still
+          // treats a hidden field as not visible, so it can never be "missing".
+          {
+            fieldKey: 'sourceDocId',
+            hidden: true,
+            label: '來源單據',
+            required: true,
+            type: 'text',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"reason":"r"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+
+    const withValue = await fixture.service.submitApprovalInstance({
+      formDataJson: '{"reason":"r","sourceDocId":"PO-1"}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: 'Request',
+    });
+
+    expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
+  });
+
+  describe('hidden table field', () => {
+    const submit = (
+      hiddenSchema: FormDefinitionSchema,
+      formDataJson: string,
+    ): Promise<unknown> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: hiddenSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    it('still rejects a value that is not an array of rows', async (): Promise<void> => {
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true }),
+          '{"items":{"name":"Bolt"}}',
+        ),
+      ).rejects.toThrow('formData.items must be an array of rows');
+    });
+
+    it('still rejects a malformed row and rows over maxRows', async (): Promise<void> => {
+      await expect(
+        submit(createTableFormSchema({ hidden: true }), '{"items":["junk"]}'),
+      ).rejects.toThrow('formData.items[0] must be an object');
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true, maxRows: 1 }),
+          '{"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
+        ),
+      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+    });
+
+    it('is not required even when declared required', async (): Promise<void> => {
+      await expect(
+        submit(createTableFormSchema({ hidden: true, required: true }), '{}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('needs no minimum rows', async (): Promise<void> => {
+      await expect(
+        submit(createTableFormSchema({ hidden: true, minRows: 2 }), '{}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true, minRows: 2 }),
+          '{"items":[{"name":"a","qty":1}]}',
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('needs no per-column required cells', async (): Promise<void> => {
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true }),
+          '{"items":[{"tags":["a"]}]}',
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    // Hidden wins over visibleWhen: a false condition only makes an ordinary
+    // table skip its checks, a hidden one is still held to its shape.
+    it('is still shape-checked when visibleWhen is false', async (): Promise<void> => {
+      const schema: FormDefinitionSchema = {
+        fields: [
+          {
+            fieldKey: 'needsItems',
+            label: '需要明細',
+            required: false,
+            type: 'boolean',
+          },
+          {
+            columns: createTableColumns(),
+            fieldKey: 'items',
+            hidden: true,
+            label: '請購明細',
+            maxRows: 1,
+            required: false,
+            type: 'table',
+            visibleWhen: 'form.needsItems == true',
+          },
+        ],
+        schemaVersion: 1,
+      };
+
+      await expect(
+        submit(schema, '{"needsItems":false,"items":{"name":"Bolt"}}'),
+      ).rejects.toThrow('formData.items must be an array of rows');
+      await expect(
+        submit(
+          schema,
+          '{"needsItems":false,"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
+        ),
+      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+      await expect(
+        submit(schema, '{"needsItems":false}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+  });
+
+  // The DYNAMIC_FORM publish lint relies on this: a required, always-visible
+  // member field cannot reach the engine without at least one member id.
+  it('never accepts a required member field that names nobody', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'owner', label: '負責人', required: true, type: 'member' },
+          {
+            fieldKey: 'reviewers',
+            label: '審閱者',
+            multiple: true,
+            required: true,
+            type: 'member',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(submit({ owner: '', reviewers: ['m2'] })).rejects.toThrow(
+      'Form data is missing required fields: 負責人',
+    );
+    await expect(submit({ owner: '  ', reviewers: ['m2'] })).rejects.toThrow(
+      'Form data is missing required fields: 負責人',
+    );
+    await expect(submit({ owner: 'm1', reviewers: [] })).rejects.toThrow(
+      'Form data is missing required fields: 審閱者',
+    );
+    await expect(submit({ owner: 'm1', reviewers: [''] })).rejects.toThrow(
+      'formData.reviewers must be an array of member ids',
+    );
+    await expect(
+      submit({ owner: 'm1', reviewers: ['m2'] }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
+  it('rejects a submitted member value that is not a member id (or an array of ids when multiple)', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          {
+            fieldKey: 'owner',
+            label: '負責人',
+            required: false,
+            type: 'member',
+          },
+          {
+            fieldKey: 'reviewers',
+            label: '審閱者',
+            multiple: true,
+            required: false,
+            type: 'member',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(submit({ owner: ['member-002'] })).rejects.toThrow(
+      'formData.owner must be a member id',
+    );
+    await expect(
+      submit({ owner: 'member-002', reviewers: ['member-003', 7] }),
+    ).rejects.toThrow('formData.reviewers must be an array of member ids');
+    await expect(
+      submit({ owner: 'member-002', reviewers: ['member-003', 'member-004'] }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
+  it('shape-checks a hidden member field that still holds a value', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          {
+            fieldKey: 'needsReviewer',
+            label: '需要審核人',
+            required: false,
+            type: 'boolean',
+          },
+          {
+            fieldKey: 'reviewer',
+            label: '審核人',
+            required: true,
+            type: 'member',
+            visibleWhen: 'form.needsReviewer == true',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(
+      submit({ needsReviewer: false, reviewer: 7 }),
+    ).rejects.toThrow('formData.reviewer must be a member id');
+    // A hidden field that is blank / absent is not required and not checked.
+    await expect(
+      submit({ needsReviewer: false, reviewer: '' }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
   });
 
   it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
@@ -1158,9 +1677,255 @@ describe('WorkflowEngineService', () => {
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
 
-    await expect(
-      fixture.service.processInstance('instance-1'),
-    ).rejects.toThrow('did not resolve to a member id');
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      '知會節點「財務知會」 找不到通知對象',
+    );
+  });
+
+  describe('NOTIFY node skipped by its entry condition', (): void => {
+    const skippedFormData = { amount: 100 };
+    const matchedFormData = { amount: 5000 };
+
+    it('consumes the token instead of demanding an outgoing edge and sends nothing', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.notificationService.createServiceTaskNotifications,
+      ).not.toHaveBeenCalled();
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            consumedAt: expect.any(Date),
+            currentNodeId: 'notify_finance',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+        ]),
+      );
+
+      const skipLog = fixture.savedSingleActivityLogs.find(
+        (log) =>
+          log.nodeId === 'notify_finance' &&
+          log.payload?.skippedByEntryCondition === true,
+      );
+
+      expect(skipLog).toMatchObject({
+        actorMemberId: null,
+        eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+        payload: {
+          consumed: true,
+          skippedByEntryCondition: true,
+          tokenId: expect.any(String),
+        },
+        taskId: null,
+      });
+      expect(skipLog?.payload).not.toHaveProperty('action');
+    });
+
+    it('completes the instance when the skipped notify was its only remaining branch', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedInstance).toMatchObject({
+        completedAt: expect.any(Date),
+        state: ApprovalInstanceStateEnum.APPROVED,
+      });
+    });
+
+    it('keeps the instance running while another branch is still open', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow({
+          withApprovalBranch: true,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks).toEqual([
+        expect.objectContaining({
+          nodeId: 'task_a',
+          status: TaskStatusEnum.PENDING,
+        }),
+      ]);
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            currentNodeId: 'notify_finance',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+          expect.objectContaining({
+            currentNodeId: 'task_a',
+            status: WorkflowTokenStatusEnum.WAITING,
+          }),
+        ]),
+      );
+    });
+
+    it('still sends the notification when the entry condition holds', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: matchedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.notificationService.createServiceTaskNotifications,
+      ).toHaveBeenCalledTimes(1);
+
+      const notifyLog = fixture.savedSingleActivityLogs.find(
+        (log) =>
+          log.nodeId === 'notify_finance' && log.payload?.action === 'NOTIFY',
+      );
+
+      expect(notifyLog?.payload).toMatchObject({ action: 'NOTIFY' });
+      expect(notifyLog?.payload).not.toHaveProperty('skippedByEntryCondition');
+      expect(notifyLog?.payload).not.toHaveProperty('consumed');
+    });
+
+    it('still advances a skipped non-NOTIFY service task along its outgoing edge', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionWebhookWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(
+        fixture.savedSingleActivityLogs.find(
+          (log) =>
+            log.nodeId === 'webhook_erp' &&
+            log.payload?.skippedByEntryCondition === true,
+        )?.payload,
+      ).toEqual({
+        skippedByEntryCondition: true,
+        tokenId: expect.any(String),
+      });
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            currentNodeId: 'end',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+        ]),
+      );
+      expect(fixture.savedInstance).toMatchObject({
+        state: ApprovalInstanceStateEnum.APPROVED,
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it('lets a parallel split proceed to its AND join when one branch is a skipped NOTIFY', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createSplitWithSkippedNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      const taskA = readTaskByNodeId(fixture.savedTasks, 'task_a');
+      const taskB = readTaskByNodeId(fixture.savedTasks, 'task_b');
+
+      expect(
+        fixture.savedWorkflowTokens.find(
+          (token) => token.currentNodeId === 'notify_finance',
+        ),
+      ).toMatchObject({ status: WorkflowTokenStatusEnum.CONSUMED });
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskA.assigneeMemberId ?? '',
+        taskId: taskA.id,
+      });
+
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskB.assigneeMemberId ?? '',
+        taskId: taskB.id,
+      });
+
+      expect(
+        fixture.savedTasks.some((task) => task.nodeId === 'task_final'),
+      ).toBe(true);
+      expect(
+        fixture.savedWorkflowTokens.filter(
+          (token) =>
+            token.status === WorkflowTokenStatusEnum.ACTIVE ||
+            token.status === WorkflowTokenStatusEnum.WAITING,
+        ),
+      ).toEqual([
+        expect.objectContaining({ currentNodeId: 'task_final' }),
+      ]);
+    });
+
+    it('records a skipped step and ends the dry run branch at a NOTIFY node whose entry condition fails', (): void => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = fixture.service.dryRunApprovalWorkflow({
+        formDataJson: JSON.stringify(skippedFormData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(
+          createEntryConditionNotifyWorkflow({ withApprovalBranch: true }),
+        ),
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(
+        result.steps.map((step) => [step.nodeId, step.status]),
+      ).toEqual([
+        ['start', 'PASSED'],
+        ['notify_finance', 'SKIPPED'],
+        ['task_a', 'WAITING'],
+        ['end', 'COMPLETED'],
+      ]);
+    });
   });
 
   it('records webhook failures and continues processing', async (): Promise<void> => {
@@ -1465,6 +2230,376 @@ describe('WorkflowEngineService', () => {
     expect(fixture.savedTasks[0]).toMatchObject({
       assigneeMemberId: 'member-manager',
       originalAssigneeMemberId: 'member-manager',
+    });
+  });
+
+  describe('organization time zone', () => {
+    // 01:00 on 2026-10-14 in Asia/Taipei, still 2026-10-13 in UTC.
+    const taipeiEarlyMorning = new Date('2026-10-13T17:00:00.000Z');
+
+    afterEach((): void => {
+      jest.useRealTimers();
+    });
+
+    const useClock = (now: Date): void => {
+      // Only `Date` is faked: the fixture awaits real promises.
+      jest.useFakeTimers({
+        doNotFake: [
+          'cancelAnimationFrame',
+          'cancelIdleCallback',
+          'clearImmediate',
+          'clearInterval',
+          'clearTimeout',
+          'hrtime',
+          'nextTick',
+          'performance',
+          'queueMicrotask',
+          'requestAnimationFrame',
+          'requestIdleCallback',
+          'setImmediate',
+          'setInterval',
+          'setTimeout',
+        ],
+        now,
+      });
+    };
+
+    const createPositionFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            effectiveFrom: '2026-10-14',
+            isPrimary: true,
+            memberId: 'member-position-owner',
+            positionId: 'position-finance',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            positionId: 'position-finance',
+            type: 'POSITION',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const createManagerFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processManagerResolutions: [
+          createManagerResolution({
+            effectiveFrom: '2026-10-14',
+            managerMemberId: 'member-manager',
+            scopeId: 'org-finance',
+            scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+          }),
+        ],
+        processMemberships: [
+          createMembership({
+            memberId: 'member-001',
+            orgUnitId: 'org-finance',
+          }),
+        ],
+        processOrgUnits: [
+          createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    it('uses a membership effective today from local midnight by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture();
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-position-owner',
+      });
+    });
+
+    it('reads the UTC date for a membership when the zone is UTC', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture({ organizationTimeZone: 'UTC' });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('目前沒有任何有效成員');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    it('uses a manager rule effective today from local midnight by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture();
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-manager',
+      });
+    });
+
+    it('reads the UTC date for a manager rule when the zone is UTC', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture({ organizationTimeZone: 'UTC' });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('找不到發起人的第 1 層主管');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    describe('ORG_MANAGER_CHAIN', () => {
+      const createChainFixture = (
+        rootOptions?: BPMRootRuntimeOptions,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...createManagerChainOrg({
+            grades: { 'member-m1': 3 },
+            links: [],
+          }),
+          processManagerResolutions: [
+            createManagerResolution({
+              effectiveFrom: '2026-10-14',
+              managerMemberId: 'member-m1',
+              scopeId: 'member-001',
+              scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+            }),
+          ],
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver: {
+              minPositionLevel: 3,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      it('walks a manager rule effective today from local midnight by default', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createChainFixture();
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-m1']);
+      });
+
+      it('does not walk that rule yet when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createChainFixture({ organizationTimeZone: 'UTC' });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(ConflictException);
+        expect(fixture.savedTaskCandidates).toHaveLength(0);
+      });
+    });
+
+    describe('org-unit resolvers and the initiator manager', () => {
+      const createOrgUnitFixture = (
+        approverResolver: ApproverResolver,
+        rootOptions?: BPMRootRuntimeOptions,
+        excludeInitiator?: ExcludeInitiatorConfig,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processManagerResolutions: [
+            createManagerResolution({
+              effectiveFrom: '2026-10-14',
+              managerMemberId: 'member-manager',
+              scopeId: 'org-finance',
+              scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+            }),
+          ],
+          processMemberships: [
+            createMembership({
+              effectiveFrom: '2026-10-14',
+              id: 'membership-owner',
+              memberId: 'member-owner',
+              orgUnitId: 'org-ops',
+              positionId: 'position-finance',
+            }),
+            createMembership({
+              id: 'membership-initiator',
+              memberId: 'member-001',
+              orgUnitId: 'org-finance',
+            }),
+          ],
+          processOrgUnits: [
+            createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+            createOrgUnit({ code: 'OPS', id: 'org-ops', path: 'org.ops' }),
+          ],
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver,
+            excludeInitiator,
+          }),
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      const cases: readonly [string, ApproverResolver, string, string][] = [
+        [
+          'ORG_UNIT_MEMBER',
+          { orgUnitId: 'org-ops', type: 'ORG_UNIT_MEMBER' },
+          'member-owner',
+          '組織「財務部」目前沒有任何有效成員',
+        ],
+        [
+          'ORG_UNIT_POSITION',
+          {
+            orgUnitId: 'org-ops',
+            positionId: 'position-finance',
+            type: 'ORG_UNIT_POSITION',
+          },
+          'member-owner',
+          '組織「財務部」的職位「position-finance」目前沒有任何有效成員',
+        ],
+        [
+          'ORG_UNIT_MANAGER',
+          { orgUnitId: 'org-finance', type: 'ORG_UNIT_MANAGER' },
+          'member-manager',
+          '找不到指定組織的主管規則',
+        ],
+      ];
+
+      it.each(cases)(
+        '%s uses a rule effective today from local midnight by default',
+        async (_name, resolver, assignee): Promise<void> => {
+          useClock(taipeiEarlyMorning);
+          const fixture = createOrgUnitFixture(resolver);
+
+          await fixture.service.processInstance('instance-1');
+
+          expect(fixture.savedTasks[0]).toMatchObject({
+            assigneeMemberId: assignee,
+          });
+        },
+      );
+
+      it.each(cases)(
+        '%s does not use that rule yet when the zone is UTC',
+        async (_name, resolver, _assignee, failure): Promise<void> => {
+          useClock(taipeiEarlyMorning);
+          const fixture = createOrgUnitFixture(resolver, {
+            organizationTimeZone: 'UTC',
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(failure);
+          expect(fixture.savedTasks).toEqual([]);
+        },
+      );
+
+      it('hands an excluded initiator to the manager whose rule is effective today', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createOrgUnitFixture(
+          { memberIds: ['member-001'], type: 'DIRECT' },
+          undefined,
+          { whenEmpty: 'INITIATOR_MANAGER' },
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks[0]).toMatchObject({
+          assigneeMemberId: 'member-manager',
+        });
+      });
+
+      it('finds no initiator manager before the rule is effective when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createOrgUnitFixture(
+          { memberIds: ['member-001'], type: 'DIRECT' },
+          { organizationTimeZone: 'UTC' },
+          { whenEmpty: 'INITIATOR_MANAGER' },
+        );
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('找不到申請人的主管可改派');
+      });
+    });
+
+    describe('default initiator snapshot', () => {
+      const submitWithoutSnapshot = async (
+        rootOptions?: BPMRootRuntimeOptions,
+      ): Promise<ReturnType<typeof createServiceFixture>> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processMemberships: [
+            createMembership({
+              effectiveFrom: '2026-10-14',
+              id: 'membership-sales',
+              isPrimary: true,
+              orgUnitId: 'org-sales',
+              positionId: 'position-manager',
+            }),
+          ],
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.submitApprovalInstance({
+          formDataJson: '{"amount":1000}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          templateId: 'template-1',
+          title: null,
+        });
+
+        return fixture;
+      };
+
+      it('includes a membership effective today from local midnight by default', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = await submitWithoutSnapshot();
+
+        expect(fixture.savedInstance?.initiatorMetadataSnapshot).toMatchObject({
+          orgUnitIds: ['org-sales'],
+          positionId: 'position-manager',
+        });
+      });
+
+      it('leaves that membership out when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = await submitWithoutSnapshot({
+          organizationTimeZone: 'UTC',
+        });
+
+        expect(fixture.savedInstance?.initiatorMetadataSnapshot).toMatchObject({
+          orgUnitIds: [],
+          positionId: null,
+        });
+      });
+    });
+
+    it('rejects an unknown zone when the engine is created', (): void => {
+      expect(() =>
+        createPositionFixture({ organizationTimeZone: 'Mars/Olympus_Mons' }),
+      ).toThrow('organizationTimeZone');
     });
   });
 
@@ -2478,6 +3613,796 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('submitter exclusion (submittedByMemberId)', () => {
+    const SUBMITTER = 'member-assistant';
+    const delegateTo = (from: string, to: string): DelegationResolution => ({
+      delegationChain: [
+        { from, reason: 'ALL', ruleId: 'delegation-rule-submitter', to },
+      ],
+      finalAssigneeMemberId: to,
+    });
+    const createFiledFixture = (
+      options: Partial<Parameters<typeof createServiceFixture>[0]> & {
+        readonly excludeInitiator?: ExcludeInitiatorConfig;
+        readonly memberIds?: readonly string[];
+      } = {},
+    ): ReturnType<typeof createServiceFixture> => {
+      const { excludeInitiator, memberIds, ...fixtureOptions } = options;
+
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            memberIds: memberIds ?? ['member-finance'],
+            type: 'DIRECT',
+          },
+          excludeInitiator,
+        }),
+        submittedByMemberId: SUBMITTER,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...fixtureOptions,
+      });
+    };
+
+    describe('submitting', () => {
+      it('records who filed the document and says so on the started activity', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        const instance = await fixture.service.submitApprovalInstance({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: '{}',
+          submittedByMemberId: SUBMITTER,
+          templateId: 'template-1',
+          title: null,
+        });
+
+        expect(instance.initiatorMemberId).toBe('member-001');
+        expect(instance.submittedByMemberId).toBe(SUBMITTER);
+        expect(
+          fixture.savedActivityLogs.find(
+            (log) =>
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_STARTED,
+          )?.payload,
+        ).toMatchObject({
+          submittedByMemberId: SUBMITTER,
+          submittedByName: `name-of-${SUBMITTER}`,
+        });
+      });
+
+      it('records no submitter name when the initiator submits themselves', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.submitApprovalInstance({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: '{}',
+          submittedByMemberId: 'member-001',
+          templateId: 'template-1',
+          title: null,
+        });
+
+        expect(
+          fixture.notificationService.readMemberDisplayName,
+        ).not.toHaveBeenCalled();
+        expect(
+          fixture.savedActivityLogs.find(
+            (log) =>
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_STARTED,
+          )?.payload,
+        ).not.toHaveProperty('submittedByName');
+      });
+
+      it.each([
+        ['absent', undefined],
+        ['null', null],
+      ])(
+        'records the initiator as the submitter when submittedByMemberId is %s',
+        async (_label, submittedByMemberId): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          const instance = await fixture.service.submitApprovalInstance({
+            formDataJson: '{}',
+            initiatorMemberId: 'member-001',
+            initiatorMetadataSnapshotJson: '{}',
+            submittedByMemberId,
+            templateId: 'template-1',
+            title: null,
+          });
+
+          expect(instance.submittedByMemberId).toBe('member-001');
+        },
+      );
+
+      it.each([[''], ['   ']])(
+        'rejects a blank submittedByMemberId (%j)',
+        async (submittedByMemberId): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          await expect(
+            fixture.service.submitApprovalInstance({
+              formDataJson: '{}',
+              initiatorMemberId: 'member-001',
+              initiatorMetadataSnapshotJson: '{}',
+              submittedByMemberId,
+              templateId: 'template-1',
+              title: null,
+            }),
+          ).rejects.toThrow('submittedByMemberId must be a non-empty string');
+          expect(fixture.savedInstance).toBeNull();
+        },
+      );
+    });
+
+    describe('creating tasks', () => {
+      it('drops the submitter from a multi-person node', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          memberIds: [SUBMITTER, 'member-other'],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-other']);
+      });
+
+      it('keeps the submitter when the node does not exclude the initiator', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          memberIds: [SUBMITTER, 'member-other'],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual([SUBMITTER, 'member-other']);
+      });
+
+      it('treats a row without a submitter exactly as before', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          memberIds: [SUBMITTER, 'member-other'],
+          submittedByMemberId: null,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual([SUBMITTER, 'member-other']);
+      });
+
+      it('drops an approver whose delegate is the submitter', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          delegationResolutionByMember: {
+            'member-finance': delegateTo('member-finance', SUBMITTER),
+          },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。',
+        );
+        expect(fixture.savedTasks).toEqual([]);
+      });
+
+      it('drops a candidate whose delegation chain passes through the submitter', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          delegationResolutionByMember: {
+            'member-finance': {
+              delegationChain: [
+                {
+                  from: 'member-finance',
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-1',
+                  to: SUBMITTER,
+                },
+                {
+                  from: SUBMITTER,
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-2',
+                  to: 'member-b',
+                },
+              ],
+              finalAssigneeMemberId: 'member-b',
+            },
+          },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('此節點不允許申請人或代送人簽核');
+      });
+
+      it('still drops the initiator on an instance that has a submitter', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          memberIds: ['member-001', 'member-other'],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-other']);
+      });
+
+      it('keeps the legitimate approver when the submitter delegates to them', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          delegationResolutionByMember: {
+            [SUBMITTER]: delegateTo(SUBMITTER, 'member-x'),
+          },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          memberIds: [SUBMITTER, 'member-x'],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-x']);
+      });
+
+      it('skips the node when only the submitter is left and whenEmpty is SKIP_NODE', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processWorkflowSnapshot: createExcludeInitiatorTwoStepWorkflow(
+            { whenEmpty: 'SKIP_NODE' },
+            SUBMITTER,
+          ),
+          submittedByMemberId: SUBMITTER,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks).toEqual([
+          expect.objectContaining({ nodeId: 'task_next' }),
+        ]);
+      });
+
+      it('hands the task to the initiator manager when only the submitter is left and whenEmpty is INITIATOR_MANAGER', async (): Promise<void> => {
+        const fixture = createFiledFixture({
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+          memberIds: [SUBMITTER],
+          processManagerResolutions: [
+            createManagerResolution({
+              managerMemberId: 'member-manager',
+              scopeId: 'org-finance',
+              scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+            }),
+          ],
+          processMemberships: [
+            createMembership({
+              memberId: 'member-001',
+              orgUnitId: 'org-finance',
+            }),
+          ],
+          processOrgUnits: [
+            createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+          ],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-manager']);
+      });
+
+      const createManagerSubmittedFixture = (
+        withNextTier: boolean,
+      ): ReturnType<typeof createServiceFixture> =>
+        createFiledFixture({
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+          memberIds: ['member-001'],
+          processManagerResolutions: [
+            createManagerResolution({
+              id: 'manager-resolution-finance',
+              managerMemberId: SUBMITTER,
+              scopeId: 'org-finance',
+              scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+            }),
+            ...(withNextTier
+              ? [
+                  createManagerResolution({
+                    id: 'manager-resolution-company',
+                    managerMemberId: 'member-ceo',
+                    scopeId: 'org-company',
+                    scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+                  }),
+                ]
+              : []),
+          ],
+          processMemberships: [
+            createMembership({
+              memberId: 'member-001',
+              orgUnitId: 'org-finance',
+            }),
+          ],
+          processOrgUnits: [
+            createOrgUnit({ id: 'org-company', path: 'org' }),
+            createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+          ],
+        });
+
+      it('moves the replacement to the next tier when the submitter is the initiator manager', async (): Promise<void> => {
+        // The manager filing for a subordinate is dropped before the tier is
+        // chosen, exactly like a unit-head initiator, so the parent unit's
+        // manager is tried instead of resolving the submitter again.
+        const fixture = createManagerSubmittedFixture(true);
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-ceo']);
+      });
+
+      it('fails with the existing message when no tier is left past the submitter', async (): Promise<void> => {
+        const fixture = createManagerSubmittedFixture(false);
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(
+          '解析出的簽核人只剩申請人或代為送出此單的人，此節點不允許申請人或代送人簽核，且找不到申請人的主管可改派。',
+        );
+        expect(fixture.savedTasks).toEqual([]);
+      });
+    });
+
+    describe('transferring a task', () => {
+      const createTransferFixture = (
+        excludeInitiator?: ExcludeInitiatorConfig,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          decisionTask: createTask({
+            assigneeMemberId: 'member-finance',
+            nodeId: 'task_finance',
+            status: TaskStatusEnum.PENDING,
+            tokenId: 'token-1',
+          }),
+          decisionToken: createWorkflowToken({
+            currentNodeId: 'task_finance',
+            status: WorkflowTokenStatusEnum.WAITING,
+          }),
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            excludeInitiator,
+          }),
+          submittedByMemberId: SUBMITTER,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const transferTo = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        transferToMemberId: string,
+        options?: Parameters<typeof fixture.service.decideTask>[1],
+      ): Promise<unknown> =>
+        fixture.service.decideTask(
+          {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+            transferToMemberId,
+          },
+          options,
+        );
+
+      it('refuses to hand the task to the submitter with the new message', async (): Promise<void> => {
+        const fixture = createTransferFixture({ whenEmpty: 'FAIL' });
+        const attempt = transferTo(fixture, SUBMITTER);
+
+        await expect(attempt).rejects.toThrow(ConflictException);
+        await expect(attempt).rejects.toThrow(
+          '簽核節點「財務簽核」不允許代送人簽核，不能將任務轉交給代為送出此單的人',
+        );
+      });
+
+      it('keeps the existing message for the initiator on an instance that has a submitter', async (): Promise<void> => {
+        const fixture = createTransferFixture({ whenEmpty: 'FAIL' });
+        const attempt = transferTo(fixture, 'member-001');
+
+        await expect(attempt).rejects.toThrow(ConflictException);
+        await expect(attempt).rejects.toThrow(
+          '簽核節點「財務簽核」不允許申請人自簽，不能將任務轉交給申請人本人',
+        );
+      });
+
+      it('allows handing the task to the submitter when the node does not exclude the initiator', async (): Promise<void> => {
+        const fixture = createTransferFixture();
+
+        await transferTo(fixture, SUBMITTER);
+
+        expect(
+          fixture.savedTasks.some(
+            (task) => task.assigneeMemberId === SUBMITTER,
+          ),
+        ).toBe(true);
+      });
+
+      it('leaves an SLA escalation alone', async (): Promise<void> => {
+        const fixture = createTransferFixture({ whenEmpty: 'FAIL' });
+
+        await transferTo(fixture, SUBMITTER, {
+          transferReason: SLA_ESCALATION_DELEGATION_REASON,
+        });
+
+        expect(
+          fixture.savedTasks.some(
+            (task) => task.assigneeMemberId === SUBMITTER,
+          ),
+        ).toBe(true);
+      });
+    });
+
+    describe('activating a sequential candidate', () => {
+      const lateDelegation = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        to: string,
+      ): void => {
+        fixture.delegationService.resolveAssignee.mockImplementation(
+          (memberId: string): Promise<DelegationResolution> =>
+            Promise.resolve(
+              memberId === 'member-b'
+                ? delegateTo('member-b', to)
+                : { delegationChain: [], finalAssigneeMemberId: memberId },
+            ),
+        );
+      };
+      const approveFirst = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): Promise<unknown> =>
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: '同意',
+          decidedByMemberId: 'member-a',
+          taskId: 'task-seq',
+        });
+
+      it('keeps the stored member when a late delegation would route a waiting candidate to the submitter', async (): Promise<void> => {
+        const fixture = createSequentialDecisionFixture({
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          submittedByMemberId: SUBMITTER,
+        });
+
+        lateDelegation(fixture, SUBMITTER);
+        await approveFirst(fixture);
+
+        expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+          assigneeMemberId: 'member-b',
+          delegationChain: [],
+        });
+      });
+
+      it('still applies a late delegation to the submitter on a node that does not exclude the initiator', async (): Promise<void> => {
+        const fixture = createSequentialDecisionFixture({
+          submittedByMemberId: SUBMITTER,
+        });
+
+        lateDelegation(fixture, SUBMITTER);
+        await approveFirst(fixture);
+
+        expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+          assigneeMemberId: SUBMITTER,
+        });
+      });
+    });
+
+    describe('ad-hoc targets', () => {
+      const createAdhocFixture = (
+        options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          decisionTask: createTask({
+            nodeId: 'task_finance',
+            status: TaskStatusEnum.PENDING,
+            tokenId: 'token-1',
+          }),
+          decisionToken: createWorkflowToken({
+            currentNodeId: 'task_finance',
+            status: WorkflowTokenStatusEnum.WAITING,
+          }),
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            allowAddSigner: true,
+            excludeInitiator: { whenEmpty: 'FAIL' },
+          }),
+          submittedByMemberId: SUBMITTER,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          ...options,
+        });
+      const request = (
+        memberIds: readonly string[],
+      ): Parameters<
+        ReturnType<
+          typeof createServiceFixture
+        >['service']['requestAdhocPreApproval']
+      >[0] => ({
+        comment: null,
+        onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+        requestedByMemberId: 'member-finance',
+        target: { kind: AdhocTargetKindEnum.MEMBER, memberIds },
+        taskId: 'task-1',
+      });
+
+      it('rejects a pre-approval whose only target is the submitter', async (): Promise<void> => {
+        const fixture = createAdhocFixture();
+
+        await expect(
+          fixture.service.requestAdhocPreApproval(request([SUBMITTER])),
+        ).rejects.toThrow(
+          '指定對象只有申請人或代為送出此單的人，此節點不允許申請人或代送人簽核',
+        );
+      });
+
+      it('keeps the legitimate pre-approval target next to the submitter', async (): Promise<void> => {
+        const fixture = createAdhocFixture();
+
+        const task = await fixture.service.requestAdhocPreApproval(
+          request([SUBMITTER, 'member-x']),
+        );
+
+        expect(task).toMatchObject({ assigneeMemberId: 'member-x' });
+      });
+
+      it('rejects a pre-approval whose target delegates to the submitter', async (): Promise<void> => {
+        const fixture = createAdhocFixture({
+          delegationResolutionByMember: {
+            'member-x': delegateTo('member-x', SUBMITTER),
+          },
+        });
+
+        await expect(
+          fixture.service.requestAdhocPreApproval(request(['member-x'])),
+        ).rejects.toThrow('此節點不允許申請人或代送人簽核');
+      });
+
+      it('rejects a countersign request whose only target is the submitter', async (): Promise<void> => {
+        const fixture = createAdhocFixture();
+
+        await expect(
+          fixture.service.requestAdhocCountersign({
+            comment: null,
+            requestedByMemberId: 'member-finance',
+            target: {
+              kind: AdhocTargetKindEnum.MEMBER,
+              memberIds: [SUBMITTER],
+            },
+            taskId: 'task-1',
+          }),
+        ).rejects.toThrow('指定對象只有申請人或代為送出此單的人');
+        expect(fixture.savedAdhocDirectives).toEqual([]);
+      });
+
+      it('allows a pre-approval for the submitter when the node does not exclude the initiator', async (): Promise<void> => {
+        const fixture = createAdhocFixture({
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            allowAddSigner: true,
+          }),
+        });
+
+        const task = await fixture.service.requestAdhocPreApproval(
+          request([SUBMITTER]),
+        );
+
+        expect(task).toMatchObject({ assigneeMemberId: SUBMITTER });
+      });
+    });
+
+    describe('ORG_MANAGER_CHAIN walk', () => {
+      const createFiledChainFixture = ({
+        excludesInitiator = true,
+        fallback,
+        minPositionLevel = 50,
+        org,
+        submittedByMemberId = 'member-m',
+      }: {
+        readonly excludesInitiator?: boolean;
+        readonly fallback?: Extract<
+          ApproverResolver,
+          { type: 'ORG_MANAGER_CHAIN' }
+        >['fallback'];
+        readonly minPositionLevel?: number;
+        readonly org: ReturnType<typeof createManagerChainOrg>;
+        readonly submittedByMemberId?: string | null;
+      }): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...org,
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver: {
+              ...(fallback ? { fallback } : {}),
+              minPositionLevel,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            decisionPolicy: { type: 'SEQUENTIAL' },
+            excludeInitiator: excludesInitiator
+              ? { whenEmpty: 'FAIL' }
+              : undefined,
+          }),
+          submittedByMemberId,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const readMemberIds = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): readonly string[] =>
+        fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+
+      it('climbs past the submitter when he is the manager who reaches the level', async (): Promise<void> => {
+        // Filtering him after the walk would leave the chain empty; the next
+        // hop above him has the same grade, which only counts because he never
+        // became the chain's last level.
+        const fixture = createFiledChainFixture({
+          org: createManagerChainOrg({
+            grades: { 'member-gm': 50, 'member-m': 50 },
+            links: [
+              ['member-001', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-gm']);
+      });
+
+      it('keeps the managers below the submitter and signs the one above him', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          org: createManagerChainOrg({
+            grades: { 'member-a': 30, 'member-gm': 50, 'member-m': 50 },
+            links: [
+              ['member-001', 'member-a'],
+              ['member-a', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-a', 'member-gm']);
+      });
+
+      it('leaves a submitter below the level out of the chain without ending the walk there', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          org: createManagerChainOrg({
+            grades: { 'member-gm': 50, 'member-m': 20 },
+            links: [
+              ['member-001', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-gm']);
+      });
+
+      it('falls back when nobody above the submitter reaches the level', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          fallback: { memberId: 'member-admin', type: 'DIRECT' },
+          org: createManagerChainOrg({
+            grades: { 'member-m': 50 },
+            links: [['member-001', 'member-m']],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-admin']);
+      });
+
+      it('rejects when nobody above the submitter reaches the level and there is no fallback', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          org: createManagerChainOrg({
+            grades: { 'member-m': 50 },
+            links: [['member-001', 'member-m']],
+          }),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('沿主管鏈找不到職等達 50 的主管，且未設定改派固定人');
+        expect(fixture.savedTaskCandidates).toHaveLength(0);
+      });
+
+      it('applies whenEmpty when the fallback is the submitter', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          fallback: { memberId: 'member-m', type: 'DIRECT' },
+          org: createManagerChainOrg({
+            grades: { 'member-m': 10 },
+            links: [['member-001', 'member-m']],
+          }),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('此節點不允許申請人或代送人簽核');
+      });
+
+      it('does not loop when the chain comes back round to the submitter', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          fallback: { memberId: 'member-admin', type: 'DIRECT' },
+          org: createManagerChainOrg({
+            grades: { 'member-a': 10, 'member-m': 20 },
+            links: [
+              ['member-001', 'member-m'],
+              ['member-m', 'member-a'],
+              ['member-a', 'member-m'],
+            ],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-a', 'member-admin']);
+      });
+
+      it('keeps the submitter in the chain on a node that does not exclude the initiator', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          excludesInitiator: false,
+          org: createManagerChainOrg({
+            grades: { 'member-gm': 50, 'member-m': 50 },
+            links: [
+              ['member-001', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-m']);
+      });
+
+      it('walks exactly as before when there is no submitter on the row', async (): Promise<void> => {
+        const fixture = createFiledChainFixture({
+          org: createManagerChainOrg({
+            grades: { 'member-gm': 50, 'member-m': 50 },
+            links: [
+              ['member-001', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          }),
+          submittedByMemberId: null,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readMemberIds(fixture)).toEqual(['member-m']);
+      });
+    });
+  });
+
   describe('ORG_MANAGER_CHAIN approver resolver', () => {
     const createChainFixture = (
       org: ReturnType<typeof createManagerChainOrg>,
@@ -2980,6 +4905,980 @@ describe('WorkflowEngineService', () => {
         await expect(
           fixture.service.processInstance('instance-1'),
         ).rejects.toThrow('沿主管鏈找不到職等達 21 的主管');
+      });
+    });
+
+    describe('grade of a delegate or transfer target', () => {
+      const GRADES = {
+        'agent-equal': 2,
+        'agent-high': 3,
+        'agent-low': 1,
+        'agent-none': null,
+        'member-001': 1,
+        'member-m1': 1,
+        'member-m2': 2,
+      } as const;
+      const CHAIN_LINKS: readonly (readonly [string, string])[] = [
+        ['member-001', 'member-m1'],
+        ['member-m1', 'member-m2'],
+      ];
+      const delegateMember = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        principal: string,
+        agent: string,
+      ): void => {
+        fixture.delegationService.resolveAssignee.mockImplementation(
+          (memberId: string): Promise<DelegationResolution> =>
+            Promise.resolve(
+              memberId === principal
+                ? {
+                    delegationChain: [
+                      {
+                        from: principal,
+                        reason: 'ALL',
+                        ruleId: 'delegation-rule-grade',
+                        to: agent,
+                      },
+                    ],
+                    finalAssigneeMemberId: agent,
+                  }
+                : { delegationChain: [], finalAssigneeMemberId: memberId },
+            ),
+        );
+      };
+      const readTaskCreatedPayload = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): Readonly<Record<string, unknown>> | undefined =>
+        fixture.savedSingleActivityLogs.find(
+          (log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED,
+        )?.payload;
+      const createGradedChainFixture = (
+        resolver: Partial<
+          Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>
+        > = {},
+      ): ReturnType<typeof createServiceFixture> =>
+        createChainFixture(
+          createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+          { minPositionLevel: 2, ...resolver },
+        );
+
+      describe('delegation when the task is created', () => {
+        it('applies a delegation to a delegate of a higher grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-high');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'agent-high',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('reads the grades of every delegated seat on the node in one batch', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> =>
+              Promise.resolve({
+                delegationChain: [],
+                finalAssigneeMemberId:
+                  memberId === 'member-m1'
+                    ? 'agent-high'
+                    : memberId === 'member-m2'
+                      ? 'agent-low'
+                      : memberId,
+              }),
+          );
+          await fixture.service.processInstance('instance-1');
+
+          // The member ids of each membership lookup made by member id list.
+          const memberIdLists = jest
+            .mocked(fixture.membershipFind)
+            .mock.calls.flatMap(([options]): readonly (readonly string[])[] => {
+              const where: unknown = options?.where;
+              const memberId: unknown =
+                typeof where === 'object' && where !== null
+                  ? (where as Readonly<Record<string, unknown>>)['memberId']
+                  : undefined;
+              const value: unknown =
+                memberId instanceof FindOperator ? memberId.value : undefined;
+
+              return Array.isArray(value)
+                ? [value.filter((id): id is string => typeof id === 'string')]
+                : [];
+            });
+          const gradeLookups = memberIdLists.filter((memberIds) =>
+            memberIds.includes('agent-low'),
+          );
+
+          expect(gradeLookups).toHaveLength(1);
+          expect([...(gradeLookups[0] ?? [])].sort()).toEqual([
+            'agent-high',
+            'agent-low',
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'agent-high',
+            'member-m2',
+          ]);
+        });
+
+        it('applies a delegation to a delegate of the same grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-equal');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'agent-equal',
+          ]);
+        });
+
+        it('keeps the member and records why when the delegate has a lower grade', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(
+            fixture.savedTaskCandidates.map((candidate) => ({
+              delegationChain: candidate.delegationChain,
+              memberId: candidate.memberId,
+              originalMemberId: candidate.originalMemberId,
+            })),
+          ).toEqual([
+            {
+              delegationChain: [],
+              memberId: 'member-m1',
+              originalMemberId: 'member-m1',
+            },
+            {
+              delegationChain: [],
+              memberId: 'member-m2',
+              originalMemberId: 'member-m2',
+            },
+          ]);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              {
+                agentLevel: 1,
+                agentMemberId: 'agent-low',
+                principalLevel: 2,
+                principalMemberId: 'member-m2',
+                reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+              },
+            ],
+          });
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'delegationChain',
+          );
+        });
+
+        it('keeps the member when the delegate holds no position', async (): Promise<void> => {
+          const fixture = createGradedChainFixture();
+
+          delegateMember(fixture, 'member-m2', 'agent-none');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              { agentLevel: null, agentMemberId: 'agent-none' },
+            ],
+          });
+        });
+
+        it('leaves the delegation alone when the replaced member has no grade', async (): Promise<void> => {
+          // member-admin is the fallback and holds no position at all.
+          const fixture = createChainFixture(
+            createManagerChainOrg({
+              grades: { ...GRADES, 'member-admin': null },
+              links: CHAIN_LINKS,
+            }),
+            {
+              fallback: { memberId: 'member-admin', type: 'DIRECT' },
+              minPositionLevel: 3,
+            },
+          );
+
+          delegateMember(fixture, 'member-admin', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+            'agent-low',
+          ]);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: { memberIds: ['member-m2'], type: 'DIRECT' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          delegateMember(fixture, 'member-m2', 'agent-low');
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['agent-low']);
+          expect(readTaskCreatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('keeps the record of a refused delegation on a row the dedupe drops', async (): Promise<void> => {
+          // member-m1 delegates to member-m2 (allowed), and member-m2's own
+          // delegation to agent-low is refused. Both rows now end on member-m2,
+          // so the dedupe keeps the first and drops the row that carried the
+          // refusal; the record has to survive that.
+          const fixture = createGradedChainFixture();
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> =>
+              Promise.resolve(
+                memberId === 'member-m1'
+                  ? {
+                      delegationChain: [
+                        {
+                          from: 'member-m1',
+                          reason: 'ALL',
+                          ruleId: 'delegation-rule-up',
+                          to: 'member-m2',
+                        },
+                      ],
+                      finalAssigneeMemberId: 'member-m2',
+                    }
+                  : memberId === 'member-m2'
+                    ? {
+                        delegationChain: [
+                          {
+                            from: 'member-m2',
+                            reason: 'ALL',
+                            ruleId: 'delegation-rule-down',
+                            to: 'agent-low',
+                          },
+                        ],
+                        finalAssigneeMemberId: 'agent-low',
+                      }
+                    : { delegationChain: [], finalAssigneeMemberId: memberId },
+              ),
+          );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['member-m2']);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              {
+                agentMemberId: 'agent-low',
+                principalMemberId: 'member-m2',
+              },
+            ],
+          });
+        });
+
+        it('does not gate the delegation of an ad-hoc approver on a manager-chain node', async (): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            decisionTask: createTask({
+              nodeId: 'task_finance',
+              status: TaskStatusEnum.PENDING,
+              tokenId: 'token-1',
+            }),
+            decisionToken: createWorkflowToken({
+              currentNodeId: 'task_finance',
+              status: WorkflowTokenStatusEnum.WAITING,
+            }),
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({
+              grades: { ...GRADES, 'member-d': 2 },
+              links: CHAIN_LINKS,
+            }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              allowAddSigner: true,
+              approverResolver: {
+                minPositionLevel: 2,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          delegateMember(fixture, 'member-d', 'agent-low');
+
+          const adhocTask = await fixture.service.requestAdhocPreApproval({
+            comment: '請先確認預算',
+            onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+            requestedByMemberId: 'member-finance',
+            target: {
+              kind: AdhocTargetKindEnum.MEMBER,
+              memberIds: ['member-d'],
+            },
+            taskId: 'task-1',
+          });
+
+          expect(adhocTask).toMatchObject({ assigneeMemberId: 'agent-low' });
+        });
+
+        it('gates the delegation of the initiator manager who replaces an excluded initiator', async (): Promise<void> => {
+          // The chain ends at member-m1 (grade 2), who delegates to the
+          // initiator (grade 2, allowed) and so drops out. The initiator's
+          // manager is then member-m1 again, this time delegating to a grade 1
+          // member, which the grade rule refuses.
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({
+              grades: { ...GRADES, 'member-001': 2, 'member-m1': 2 },
+              links: CHAIN_LINKS,
+            }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: {
+                minPositionLevel: 2,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+          const toResolution = (
+            principal: string,
+            agent: string,
+          ): DelegationResolution => ({
+            delegationChain: [
+              {
+                from: principal,
+                reason: 'ALL',
+                ruleId: 'delegation-rule-grade',
+                to: agent,
+              },
+            ],
+            finalAssigneeMemberId: agent,
+          });
+
+          fixture.delegationService.resolveAssignee
+            .mockImplementationOnce(
+              (): Promise<DelegationResolution> =>
+                Promise.resolve(toResolution('member-m1', 'member-001')),
+            )
+            .mockImplementation(
+              (memberId: string): Promise<DelegationResolution> =>
+                Promise.resolve(
+                  memberId === 'member-m1'
+                    ? toResolution('member-m1', 'agent-low')
+                    : { delegationChain: [], finalAssigneeMemberId: memberId },
+                ),
+            );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['member-m1']);
+          expect(readTaskCreatedPayload(fixture)).toMatchObject({
+            skippedDelegations: [
+              { agentMemberId: 'agent-low', principalMemberId: 'member-m1' },
+            ],
+          });
+        });
+
+        it('records no refusal for the initiator seat an excluding node removes', async (): Promise<void> => {
+          // The chain ends below the level, so the fallback (the initiator, who
+          // may approve his own request there) is appended last, then removed
+          // by the exclusion. His refused delegation is not on the task; the
+          // refusal for member-m2, who is, still is.
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: {
+                fallback: {
+                  allowInitiatorSelfApproval: true,
+                  memberId: 'member-001',
+                  type: 'DIRECT',
+                },
+                minPositionLevel: 3,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              decisionPolicy: { type: 'SEQUENTIAL' },
+              excludeInitiator: { whenEmpty: 'FAIL' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+          const agents: Readonly<Record<string, string>> = {
+            'member-001': 'agent-none',
+            'member-m2': 'agent-low',
+          };
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> =>
+              Promise.resolve(
+                agents[memberId]
+                  ? {
+                      delegationChain: [
+                        {
+                          from: memberId,
+                          reason: 'ALL',
+                          ruleId: 'delegation-rule-grade',
+                          to: agents[memberId],
+                        },
+                      ],
+                      finalAssigneeMemberId: agents[memberId],
+                    }
+                  : { delegationChain: [], finalAssigneeMemberId: memberId },
+              ),
+          );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(
+            readTaskCreatedPayload(fixture)?.['skippedDelegations'],
+          ).toEqual([
+            {
+              agentLevel: 1,
+              agentMemberId: 'agent-low',
+              principalLevel: 2,
+              principalMemberId: 'member-m2',
+              reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+            },
+          ]);
+        });
+
+        it('reports only the refusals of the replacement once the initiator manager takes over', async (): Promise<void> => {
+          // First pass: member-m1 delegates to the initiator (applied, dropped)
+          // and the initiator fallback seat is refused a delegation (dropped);
+          // nothing is left, so the initiator's manager (member-m1 again)
+          // replaces them and gets a refused delegation of his own. Only that
+          // one belongs on the task.
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({
+              grades: { ...GRADES, 'member-001': 2, 'member-m1': 2 },
+              links: [['member-001', 'member-m1']],
+            }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: {
+                fallback: {
+                  allowInitiatorSelfApproval: true,
+                  memberId: 'member-001',
+                  type: 'DIRECT',
+                },
+                minPositionLevel: 3,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              decisionPolicy: { type: 'SEQUENTIAL' },
+              excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+          let managerCalls = 0;
+          const delegate = (
+            principal: string,
+            agent: string,
+          ): DelegationResolution => ({
+            delegationChain: [
+              {
+                from: principal,
+                reason: 'ALL',
+                ruleId: 'delegation-rule-grade',
+                to: agent,
+              },
+            ],
+            finalAssigneeMemberId: agent,
+          });
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> => {
+              if (memberId === 'member-m1') {
+                managerCalls += 1;
+
+                return Promise.resolve(
+                  managerCalls === 1
+                    ? delegate('member-m1', 'member-001')
+                    : delegate('member-m1', 'agent-low'),
+                );
+              }
+
+              return Promise.resolve(
+                memberId === 'member-001'
+                  ? delegate('member-001', 'agent-none')
+                  : { delegationChain: [], finalAssigneeMemberId: memberId },
+              );
+            },
+          );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['member-m1']);
+          expect(
+            readTaskCreatedPayload(fixture)?.['skippedDelegations'],
+          ).toEqual([
+            {
+              agentLevel: 1,
+              agentMemberId: 'agent-low',
+              principalLevel: 2,
+              principalMemberId: 'member-m1',
+              reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+            },
+          ]);
+        });
+
+        it('does not bring a delegation through the initiator back as a path', async (): Promise<void> => {
+          // member-001 (grade 1) is the initiator of a node that excludes him.
+          const createExcludingFixture = (
+            minPositionLevel: number,
+          ): ReturnType<typeof createServiceFixture> =>
+            createServiceFixture({
+              currentVersionId: 'template-version-1',
+              formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+              ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+              processWorkflowSnapshot: createLinearUserTaskWorkflow({
+                approverResolver: {
+                  minPositionLevel,
+                  type: 'ORG_MANAGER_CHAIN',
+                },
+                decisionPolicy: { type: 'SEQUENTIAL' },
+                excludeInitiator: { whenEmpty: 'FAIL' },
+              }),
+              templateVersionStatus:
+                ApprovalTemplateVersionStatusEnum.PUBLISHED,
+            });
+          // A grade 2 manager delegating to him is refused by the grade rule,
+          // so the manager stays and the path never touches the initiator.
+          const lowFixture = createExcludingFixture(2);
+
+          delegateMember(lowFixture, 'member-m2', 'member-001');
+          await lowFixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(lowFixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+
+          // A grade 1 manager delegating to him passes the grade rule, and the
+          // initiator exclusion still drops that path as before.
+          const equalFixture = createExcludingFixture(1);
+
+          delegateMember(equalFixture, 'member-m1', 'member-001');
+          await expect(
+            equalFixture.service.processInstance('instance-1'),
+          ).rejects.toThrow('只剩申請人本人');
+        });
+      });
+
+      describe('delegation when a waiting candidate is activated', () => {
+        const createActivationFixture = (
+          resolver: ApproverResolver = {
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+          },
+        ): ServiceFixture =>
+          createSequentialDecisionFixture({
+            approverResolver: resolver,
+            ...createManagerChainOrg({
+              grades: {
+                'agent-high': 3,
+                'agent-low': 1,
+                'member-a': 2,
+                'member-b': 2,
+                'member-c': 3,
+              },
+              links: [],
+            }),
+          });
+        const approveFirst = (fixture: ServiceFixture): Promise<unknown> =>
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: '同意',
+            decidedByMemberId: 'member-a',
+            taskId: 'task-seq',
+          });
+        const readActivatedPayload = (
+          fixture: ServiceFixture,
+        ): Readonly<Record<string, unknown>> | undefined =>
+          fixture.savedSingleActivityLogs.find(
+            (log) =>
+              log.eventType ===
+              ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+          )?.payload;
+
+        it('applies a late delegation to a delegate of an equal or higher grade', async (): Promise<void> => {
+          const fixture = createActivationFixture();
+
+          delegateMember(fixture, 'member-b', 'agent-high');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'agent-high',
+            originalAssigneeMemberId: 'member-b',
+          });
+          expect(readActivatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+
+        it('keeps the member and records why when the late delegate has a lower grade', async (): Promise<void> => {
+          const fixture = createActivationFixture();
+
+          delegateMember(fixture, 'member-b', 'agent-low');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'member-b',
+            delegationChain: [],
+            originalAssigneeMemberId: 'member-b',
+          });
+          expect(readActivatedPayload(fixture)).toMatchObject({
+            assigneeMemberId: 'member-b',
+            skippedDelegations: [
+              {
+                agentLevel: 1,
+                agentMemberId: 'agent-low',
+                principalLevel: 2,
+                principalMemberId: 'member-b',
+                reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+              },
+            ],
+          });
+        });
+
+        it('still records a refused late delegation when the stored member is kept', async (): Promise<void> => {
+          // member-b sits on the task through member-x; member-c is a candidate
+          // through member-b. Resolving member-b again lands on member-b, who
+          // already holds another row, so the stored values are kept; the
+          // refusal of the lower-grade delegate still happened.
+          const fixture = createSequentialDecisionFixture({
+            approverResolver: {
+              minPositionLevel: 3,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            candidateOverrides: {
+              'member-b': { memberId: 'member-x', originalMemberId: 'member-b' },
+              'member-c': { memberId: 'member-b', originalMemberId: 'member-c' },
+            },
+            ...createManagerChainOrg({
+              grades: { 'agent-low': 1, 'member-a': 2, 'member-b': 2 },
+              links: [],
+            }),
+          });
+
+          delegateMember(fixture, 'member-b', 'agent-low');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'member-x',
+            delegationChain: [],
+          });
+          expect(readActivatedPayload(fixture)).toMatchObject({
+            assigneeMemberId: 'member-x',
+            skippedDelegations: [
+              {
+                agentMemberId: 'agent-low',
+                principalLevel: 2,
+                principalMemberId: 'member-b',
+              },
+            ],
+          });
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createActivationFixture({
+            memberIds: ['member-a', 'member-b', 'member-c'],
+            type: 'DIRECT',
+          });
+
+          delegateMember(fixture, 'member-b', 'agent-low');
+          await approveFirst(fixture);
+
+          expect(readLatestTask(fixture, 'task-seq')).toMatchObject({
+            assigneeMemberId: 'agent-low',
+          });
+          expect(readActivatedPayload(fixture)).not.toHaveProperty(
+            'skippedDelegations',
+          );
+        });
+      });
+
+      describe('manual transfer', () => {
+        const createTransferFixture = ({
+          assigneeMemberId = 'member-m2',
+          candidates,
+          decisionPolicy = { type: 'SINGLE' },
+          delegationChain = [],
+          grades = GRADES,
+          resolver = { minPositionLevel: 2, type: 'ORG_MANAGER_CHAIN' },
+          task = {},
+        }: {
+          readonly assigneeMemberId?: string | null;
+          readonly candidates?: readonly TaskCandidateEntity[];
+          readonly decisionPolicy?: DecisionPolicy;
+          readonly delegationChain?: readonly DelegationStep[];
+          readonly grades?: Readonly<Record<string, number | null>>;
+          readonly resolver?: ApproverResolver;
+          readonly task?: Partial<TaskEntity>;
+        } = {}): ServiceFixture =>
+          createServiceFixture({
+            currentVersionId: 'template-version-1',
+            decisionTask: createTask({
+              assigneeMemberId,
+              delegationChain,
+              nodeId: 'task_finance',
+              originalAssigneeMemberId: 'member-m2',
+              status: TaskStatusEnum.PENDING,
+              tokenId: 'token-1',
+              ...task,
+            }),
+            decisionToken: createWorkflowToken({
+              currentNodeId: 'task_finance',
+              status: WorkflowTokenStatusEnum.WAITING,
+            }),
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades, links: [] }),
+            processTaskCandidates: candidates,
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: resolver,
+              decisionPolicy,
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+        const transferTo = (
+          fixture: ServiceFixture,
+          transferToMemberId: string,
+          decidedByMemberId = 'member-m2',
+          options: { readonly transferReason?: string } = {},
+        ): Promise<unknown> =>
+          fixture.service.decideTask(
+            {
+              action: TaskDecisionActionEnum.TRANSFERRED,
+              comment: null,
+              decidedByMemberId,
+              taskId: 'task-1',
+              transferToMemberId,
+            },
+            options,
+          );
+        const GRADE_MESSAGE =
+          '簽核節點「財務簽核」需由職等 2 以上的成員簽核，不能轉簽給職等不足的成員';
+
+        it('rejects a transfer to a lower grade with the grade message', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            ForbiddenException,
+          );
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            GRADE_MESSAGE,
+          );
+        });
+
+        it('rejects a transfer to a member without a position', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(transferTo(fixture, 'agent-none')).rejects.toThrow(
+            GRADE_MESSAGE,
+          );
+        });
+
+        it('allows a transfer to an equal or higher grade', async (): Promise<void> => {
+          const equalFixture = createTransferFixture();
+          const highFixture = createTransferFixture();
+
+          await expect(
+            transferTo(equalFixture, 'agent-equal'),
+          ).resolves.toBeDefined();
+          await expect(
+            transferTo(highFixture, 'agent-high'),
+          ).resolves.toBeDefined();
+        });
+
+        it('allows a transfer when the member being replaced has no grade', async (): Promise<void> => {
+          const fixture = createTransferFixture({
+            grades: { ...GRADES, 'member-m2': null },
+          });
+
+          await expect(transferTo(fixture, 'agent-low')).resolves.toBeDefined();
+        });
+
+        it('measures a transfer by a delegate against the member they act for', async (): Promise<void> => {
+          // member-m2 (grade 2) delegated to agent-high (grade 3), who now
+          // holds the task. Handing it to a grade 2 member is fine because the
+          // member being replaced is member-m2, not the delegate.
+          const delegationChain: readonly DelegationStep[] = [
+            {
+              from: 'member-m2',
+              reason: 'ALL',
+              ruleId: 'delegation-rule-grade',
+              to: 'agent-high',
+            },
+          ];
+          const allowed = createTransferFixture({
+            assigneeMemberId: 'agent-high',
+            delegationChain,
+          });
+          const refused = createTransferFixture({
+            assigneeMemberId: 'agent-high',
+            delegationChain,
+          });
+
+          await expect(
+            transferTo(allowed, 'agent-equal', 'agent-high'),
+          ).resolves.toBeDefined();
+          await expect(
+            transferTo(refused, 'agent-low', 'agent-high'),
+          ).rejects.toThrow(GRADE_MESSAGE);
+        });
+
+        it('does not apply the rule on a node that is not a manager chain', async (): Promise<void> => {
+          const fixture = createTransferFixture({
+            resolver: { memberIds: ['member-m2'], type: 'DIRECT' },
+          });
+
+          await expect(transferTo(fixture, 'agent-low')).resolves.toBeDefined();
+        });
+
+        it('reads the principal from the deciding candidate row, not only from the task', async (): Promise<void> => {
+          // A parallel task keeps no delegation chain of its own; the one that
+          // matters is on the row of the candidate who is deciding. agent-high
+          // (grade 3) acts for member-m2 (grade 2), so a grade 2 target is
+          // fine and a grade 1 target is not. Measured against the actor, the
+          // grade 2 target would have been refused.
+          const createCandidateFixture = (): ServiceFixture =>
+            createTransferFixture({
+              assigneeMemberId: null,
+              candidates: [
+                createTaskCandidate({
+                  delegationChain: [
+                    {
+                      from: 'member-m2',
+                      reason: 'ALL',
+                      ruleId: 'delegation-rule-grade',
+                      to: 'agent-high',
+                    },
+                  ],
+                  id: 'candidate-delegated',
+                  memberId: 'agent-high',
+                  originalMemberId: 'member-m2',
+                  sourceType: 'ORG_MANAGER_CHAIN',
+                  taskId: 'task-1',
+                }),
+                createTaskCandidate({
+                  id: 'candidate-m1',
+                  memberId: 'member-m1',
+                  sourceType: 'ORG_MANAGER_CHAIN',
+                  taskId: 'task-1',
+                }),
+              ],
+              decisionPolicy: { type: 'PARALLEL_ALL' },
+              task: {
+                assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+                candidateMemberIds: ['agent-high', 'member-m1'],
+                decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+              },
+            });
+
+          await expect(
+            transferTo(createCandidateFixture(), 'agent-equal', 'agent-high'),
+          ).resolves.toBeDefined();
+          await expect(
+            transferTo(createCandidateFixture(), 'agent-low', 'agent-high'),
+          ).rejects.toThrow(GRADE_MESSAGE);
+        });
+
+        it('measures a delegated sequential candidate against the member they act for', async (): Promise<void> => {
+          // member-b (grade 2) holds the second seat for member-orig (grade 3).
+          const createSequentialTransferFixture = (): ServiceFixture =>
+            createSequentialDecisionFixture({
+              activeIndex: 1,
+              approverResolver: {
+                minPositionLevel: 3,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              candidateOverrides: {
+                'member-b': {
+                  delegationChain: [
+                    {
+                      from: 'member-orig',
+                      reason: 'ALL',
+                      ruleId: 'delegation-rule-grade',
+                      to: 'member-b',
+                    },
+                  ],
+                  originalMemberId: 'member-orig',
+                },
+              },
+              ...createManagerChainOrg({
+                grades: {
+                  'agent-equal': 2,
+                  'agent-high': 3,
+                  'member-a': 2,
+                  'member-b': 2,
+                  'member-c': 3,
+                  'member-orig': 3,
+                },
+                links: [],
+              }),
+            });
+          const transferFrom = (
+            fixture: ServiceFixture,
+            transferToMemberId: string,
+          ): Promise<unknown> =>
+            fixture.service.decideTask({
+              action: TaskDecisionActionEnum.TRANSFERRED,
+              comment: null,
+              decidedByMemberId: 'member-b',
+              taskId: 'task-seq',
+              transferToMemberId,
+            });
+
+          await expect(
+            transferFrom(createSequentialTransferFixture(), 'agent-equal'),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」需由職等 3 以上的成員簽核，不能轉簽給職等不足的成員',
+          );
+          await expect(
+            transferFrom(createSequentialTransferFixture(), 'agent-high'),
+          ).resolves.toBeDefined();
+        });
+
+        it('does not check the grade of an ad-hoc task transfer', async (): Promise<void> => {
+          const fixture = createTransferFixture({
+            task: {
+              adhocDirectiveId: 'directive-seed-1',
+              adhocOriginTaskId: 'task-origin',
+              adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+              isAdhoc: true,
+            },
+          });
+
+          await expect(transferTo(fixture, 'agent-low')).resolves.toBeDefined();
+        });
+
+        it('leaves an SLA escalation alone', async (): Promise<void> => {
+          const fixture = createTransferFixture();
+
+          await expect(
+            transferTo(fixture, 'agent-low', 'member-m2', {
+              transferReason: SLA_ESCALATION_DELEGATION_REASON,
+            }),
+          ).resolves.toBeDefined();
+        });
       });
     });
   });
@@ -4282,6 +7181,498 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  describe('dry run with an approver that cannot be resolved', (): void => {
+    const runDryRun = (
+      workflow: WorkflowDefinition,
+      options: {
+        readonly formDataJson?: string;
+        readonly initiatorMetadataSnapshotJson?: string | null;
+      } = {},
+    ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.dryRunApprovalWorkflow({
+        formDataJson: options.formDataJson ?? '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson:
+          options.initiatorMetadataSnapshotJson ?? null,
+        workflowDefinitionJson: JSON.stringify(workflow),
+      });
+
+    it('stops at a DIRECT node with nobody chosen and names it by label', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.steps).toEqual([
+        expect.objectContaining({ nodeId: 'start', status: 'PASSED' }),
+        expect.objectContaining({
+          assigneeMemberId: null,
+          message:
+            '簽核節點「財務簽核」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+          nodeId: 'task_finance',
+          status: 'STOPPED',
+        }),
+      ]);
+    });
+
+    it('keeps the steps before the unassigned node and ends only that branch', (): void => {
+      const result = runDryRun(
+        withNodeData(
+          createExcludeInitiatorTwoStepWorkflow({
+            whenEmpty: 'INITIATOR_MANAGER',
+          }),
+          'task_next',
+          { approverResolver: { memberIds: [], type: 'DIRECT' } },
+        ),
+        {
+          initiatorMetadataSnapshotJson: JSON.stringify({
+            managerMemberId: 'member-manager',
+          }),
+        },
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.map((step) => [step.nodeId, step.status])).toEqual([
+        ['start', 'PASSED'],
+        ['task_finance', 'WAITING'],
+        ['task_next', 'STOPPED'],
+      ]);
+      expect(result.steps[2].message).toBe(
+        '簽核節點「下一關」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+      );
+    });
+
+    it('stops an unassigned node even when it excludes the initiator', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」尚未選擇簽核人，請在流程設計器點選此節點設定簽核人',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops a DYNAMIC_FORM node whose form field is empty', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { formPath: 'approver', type: 'DYNAMIC_FORM' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」依表單欄位找不到簽核人，請確認試跑資料中該欄位有填人員',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops an EXPRESSION node whose expression yields nobody', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { expression: '[]', type: 'EXPRESSION' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message: '簽核節點「財務簽核」依運算式找不到簽核人，請確認運算式的結果',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops an ORG_MANAGER node when the initiator snapshot names no manager', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」依申請人的組織找不到主管，請確認試跑時的申請人資料',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('stops at an exclusive gateway when no branch matches and there is no default', (): void => {
+      const workflow = createExclusiveGatewayWorkflow();
+      const result = runDryRun(
+        {
+          ...workflow,
+          edges: workflow.edges.filter(
+            (edge) => edge.id !== 'edge_gateway_default',
+          ),
+        },
+        { formDataJson: '{"amount":500}' },
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.map((step) => [step.nodeId, step.status])).toEqual([
+        ['start', 'PASSED'],
+        ['gateway_amount', 'STOPPED'],
+      ]);
+      expect(result.steps[1].message).toBe(
+        '節點「金額分流」的連出線條件都不符合，且沒有設定預設路徑，請檢查連出線的條件或補上預設路徑',
+      );
+    });
+
+    it('stops at a node that has no outgoing edge', (): void => {
+      const workflow = createLinearUserTaskWorkflow();
+      const result = runDryRun({
+        ...workflow,
+        edges: workflow.edges.filter((edge) => edge.id !== 'edge_task_end'),
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '節點「財務簽核」沒有連到下一個節點，請在流程設計器為此節點接上連線',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('keeps saying why a skipped node was skipped when it also has no outgoing edge', (): void => {
+      const workflow = createExcludeInitiatorTwoStepWorkflow({
+        whenEmpty: 'SKIP_NODE',
+      });
+      const result = runDryRun({
+        ...workflow,
+        edges: workflow.edges.filter((edge) => edge.id !== 'edge_task_next'),
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核人只有申請人本人，依設定略過節點。節點「財務簽核」沒有連到下一個節點，請在流程設計器為此節點接上連線',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('uses a fixed fallback when the initiator snapshot names no manager', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: 'member-fallback', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(
+        result.steps.find((step) => step.nodeId === 'task_finance'),
+      ).toMatchObject({
+        assigneeMemberId: 'member-fallback',
+        status: 'WAITING',
+      });
+    });
+
+    it('does not fall back to the initiator unless the node allows self-approval', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: 'member-001', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('says the fallback member is not set when a manager fallback names nobody', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { memberId: '  ', type: 'DIRECT' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        message: '簽核節點「財務簽核」找不到主管，且改派固定人未設定',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('keeps a placeholder assignee for resolvers that need the organisation', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: { positionId: 'position-cfo', type: 'POSITION' },
+        }),
+      );
+
+      expect(
+        result.steps.find((step) => step.nodeId === 'task_finance'),
+      ).toMatchObject({
+        assigneeMemberId: 'position:position-cfo',
+        status: 'WAITING',
+      });
+    });
+
+    it('keeps running a sibling branch after another branch is stopped', (): void => {
+      const result = runDryRun(
+        withNodeData(createParallelApprovalWorkflow('AND'), 'task_a', {
+          approverResolver: { memberIds: [], type: 'DIRECT' },
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ nodeId: 'task_a', status: 'STOPPED' }),
+          expect.objectContaining({ nodeId: 'task_b', status: 'WAITING' }),
+        ]),
+      );
+    });
+  });
+
+  describe('runtime approver resolution errors name the org and the position', (): void => {
+    const processWith = (
+      approverResolver: ApproverResolver,
+      options: {
+        readonly processOrgUnits?: readonly OrgUnitEntity[];
+        readonly processPositions?: readonly PositionEntity[];
+      },
+    ): Promise<void> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processOrgUnits: options.processOrgUnits,
+        processPositions: options.processPositions,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.processInstance('instance-1');
+
+    it('names the organisation when ORG_UNIT_MEMBER finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        { orgUnitId: 'org-empty', type: 'ORG_UNIT_MEMBER' },
+        {
+          processOrgUnits: [
+            createOrgUnit({
+              id: 'org-empty',
+              name: '空組織',
+              path: 'org.empty',
+            }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織「空組織」目前沒有任何有效成員，請先將人員加入該組織',
+      );
+    });
+
+    it('names the position when POSITION finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        { positionId: 'position-cfo', type: 'POSITION' },
+        {
+          processPositions: [
+            createPosition({ id: 'position-cfo', name: '財務長' }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：職位「財務長」目前沒有任何有效成員',
+      );
+    });
+
+    it('falls back to the id when the position row is missing', async (): Promise<void> => {
+      await expect(
+        processWith({ positionId: 'position-gone', type: 'POSITION' }, {}),
+      ).rejects.toThrow('職位「position-gone」目前沒有任何有效成員');
+    });
+
+    it('names the organisation and the position when ORG_UNIT_POSITION finds no active member', async (): Promise<void> => {
+      const attempt = processWith(
+        {
+          orgUnitId: 'org-empty',
+          positionId: 'position-cfo',
+          type: 'ORG_UNIT_POSITION',
+        },
+        {
+          processOrgUnits: [
+            createOrgUnit({
+              id: 'org-empty',
+              name: '空組織',
+              path: 'org.empty',
+            }),
+          ],
+          processPositions: [
+            createPosition({ id: 'position-cfo', name: '財務長' }),
+          ],
+        },
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織「空組織」的職位「財務長」目前沒有任何有效成員',
+      );
+    });
+
+    it('reports an empty DYNAMIC_FORM field as no approver found', async (): Promise<void> => {
+      await expect(
+        processWith({ formPath: 'approver', type: 'DYNAMIC_FORM' }, {}),
+      ).rejects.toThrow(
+        '簽核節點「財務簽核」 依表單欄位「approver」找不到簽核人',
+      );
+    });
+
+    it('names the expression as the source when an EXPRESSION resolver yields nobody', async (): Promise<void> => {
+      await expect(
+        processWith({ expression: '[]', type: 'EXPRESSION' }, {}),
+      ).rejects.toThrow('簽核節點「財務簽核」 依運算式找不到簽核人');
+    });
+
+    it('reports an empty DIRECT resolver as no approver found', async (): Promise<void> => {
+      await expect(
+        processWith({ memberIds: [], type: 'DIRECT' }, {}),
+      ).rejects.toThrow(/^簽核節點「財務簽核」 找不到簽核人$/);
+    });
+
+    it('says the organisation no longer exists when ORG_UNIT_MEMBER points at a missing org unit', async (): Promise<void> => {
+      const attempt = processWith(
+        { orgUnitId: 'org-gone', type: 'ORG_UNIT_MEMBER' },
+        {},
+      );
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toThrow(
+        '簽核節點「財務簽核」 找不到簽核人：組織（org-gone）已不存在，請在流程設計器重新選擇組織',
+      );
+    });
+
+    it('says the organisation no longer exists when ORG_UNIT_POSITION points at a missing org unit', async (): Promise<void> => {
+      await expect(
+        processWith(
+          {
+            orgUnitId: 'org-gone',
+            positionId: 'position-cfo',
+            type: 'ORG_UNIT_POSITION',
+          },
+          {},
+        ),
+      ).rejects.toThrow('組織（org-gone）已不存在');
+    });
+
+    it('reads the org unit once when it reports an empty organisation', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processOrgUnits: [
+          createOrgUnit({ id: 'org-empty', name: '空組織', path: 'org.empty' }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: { orgUnitId: 'org-empty', type: 'ORG_UNIT_MEMBER' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('組織「空組織」');
+      expect(fixture.orgUnitFindOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not look up names when the position resolves', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            isPrimary: true,
+            memberId: 'member-position-owner',
+            positionId: 'position-finance',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            positionId: 'position-finance',
+            type: 'POSITION',
+          },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.positionFindOne).not.toHaveBeenCalled();
+    });
+
+    it('words a notify recipient resolved through the manager chain as 通知, not 待簽任務', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+          recipients: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow(
+        '知會節點「財務知會」 無法建立通知：找不到發起人的第 1 層主管，且未設定改派固定人',
+      );
+    });
+
+    it('keeps 待簽任務 wording when a task approver has no manager', async (): Promise<void> => {
+      await expect(
+        processWith(
+          { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+          {},
+        ),
+      ).rejects.toThrow('無法建立待簽任務：找不到發起人的第 1 層主管');
+    });
+  });
+
   it('resubmits returned instances from the return point when configured', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -4498,6 +7889,93 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Approval instance instance-1 was not found');
   });
 
+  describe('reading an instance filed on the applicant behalf', () => {
+    function createFiledForFixture(): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        submittedByMemberId: 'member-assistant',
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    }
+
+    it('lets the member who submitted for the applicant read the instance', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-assistant'),
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('still hides it from an unrelated member', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-unrelated'),
+        ),
+      ).rejects.toThrow('Approval instance instance-1 was not found');
+    });
+
+    it('does not let the applicant lose access when they also submitted it', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        submittedByMemberId: 'member-001',
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-001'),
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('lists what an assistant filed in the SENT view and the ordinary readable view', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await fixture.service.listApprovalInstances(
+        createAuthContext('member-assistant'),
+        { view: ApprovalInstanceListViewEnum.SENT },
+      );
+      await fixture.service.listApprovalInstances(
+        createAuthContext('member-assistant'),
+        { view: ApprovalInstanceListViewEnum.ALL },
+      );
+
+      const filters = fixture.rootInstanceQueryBuilder.andWhere.mock.calls.filter(
+        ([sql]) => String(sql).includes('"initiator_member_id"'),
+      );
+
+      expect(filters).toHaveLength(2);
+      filters.forEach(([sql, params]) => {
+        expect(String(sql)).toContain(
+          '"approvalInstance"."submitted_by_member_id" = :readableMemberId',
+        );
+        // The placeholder is bound to the signed-in member, not to a literal.
+        expect(params).toEqual({ readableMemberId: 'member-assistant' });
+      });
+    });
+
+    it('keeps resubmit and cancel with the applicant', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.cancelApprovalInstance({
+          cancelledByMemberId: 'member-assistant',
+          comment: null,
+          instanceId: 'instance-1',
+        }),
+      ).rejects.toThrow('can only be cancelled by its initiator');
+    });
+  });
+
   it('rejects ad-hoc countersign requests when the node disallows added signers', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -4562,6 +8040,8 @@ describe('WorkflowEngineService', () => {
       assigneeMemberId: 'member-d',
       isAdhoc: true,
       nodeId: 'task_finance',
+      // The node it was spawned on — clients add the 臨時加簽 marker themselves.
+      nodeLabel: '財務簽核',
       status: TaskStatusEnum.PENDING,
       tokenId: 'token-1',
     });
@@ -4579,6 +8059,55 @@ describe('WorkflowEngineService', () => {
         task: expect.objectContaining({ assigneeMemberId: 'member-d' }),
       }),
     );
+  });
+
+  it('gives an ad-hoc pre-approval task the same nodeLabel a list would, null for a blank label', async (): Promise<void> => {
+    const workflow = createLinearUserTaskWorkflow({ allowAddSigner: true });
+    const blankLabelWorkflow: WorkflowDefinition = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) =>
+        node.id === 'task_finance'
+          ? ({ ...node, data: { ...node.data, label: '  ' } } as typeof node)
+          : node,
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: blankLabelWorkflow,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const adhocTask = await fixture.service.requestAdhocPreApproval({
+      onReject: AdhocPreApprovalRejectBehaviorEnum.REJECT_INSTANCE,
+      requestedByMemberId: 'member-finance',
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-d'],
+      },
+      taskId: 'task-1',
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({ workflowSnapshot: blankLabelWorkflow }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-listed', nodeId: 'task_finance' }),
+    ]);
+
+    const [listed] = await fixture.service.listInboxTasks('member-finance');
+
+    expect(adhocTask.nodeLabel).toBeNull();
+    expect(listed?.nodeLabel).toBe(adhocTask.nodeLabel);
   });
 
   it('rejects an ad-hoc pre-approval whose only target is the initiator when the node excludes the initiator', async (): Promise<void> => {
@@ -5915,6 +9444,51 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('words an ad-hoc notification that finds nobody as 通知對象, not 簽核人', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          id: 'directive-notify-1',
+          originNodeId: 'task_finance',
+          status: AdhocDirectiveStatusEnum.PENDING,
+          targetKind: AdhocTargetKindEnum.MEMBER,
+          targetValue: { kind: AdhocTargetKindEnum.MEMBER, memberIds: [] },
+          type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(fixture.savedSingleActivityLogs).toContainEqual(
+      expect.objectContaining({
+        eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+        payload: expect.objectContaining({
+          action: 'ADHOC_NOTIFY',
+          error: '臨時通知對象 找不到通知對象',
+        }),
+      }),
+    );
+  });
+
   describe('SEQUENTIAL decision policy', () => {
     it('creates the task for the first candidate only and keeps the rest waiting', async (): Promise<void> => {
       const fixture = createServiceFixture({
@@ -7116,11 +10690,125 @@ describe('WorkflowEngineService', () => {
   });
 });
 
+describe('WorkflowEngineService task node labels', () => {
+  function createLabelFixture(): ReturnType<typeof createServiceFixture> {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        id: 'instance-1',
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+      createApprovalInstance({
+        id: 'instance-2',
+        workflowSnapshot: {
+          edges: [],
+          meta: { schemaVersion: 1 },
+          nodes: [
+            createUserTaskNode('band-0', '部門主管簽核', 'member-finance', 0, 0),
+          ],
+        },
+      }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+      createTask({ id: 'task-b', instanceId: 'instance-2', nodeId: 'band-0' }),
+      createTask({ id: 'task-c', instanceId: 'instance-1', nodeId: 'gone' }),
+      createTask({ id: 'task-d', instanceId: 'missing-instance' }),
+    ]);
+
+    return fixture;
+  }
+
+  it('reads nodeLabel from each instance snapshot, null when the node or instance is unknown', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listInboxTasks('member-finance');
+
+    expect(
+      Object.fromEntries(tasks.map((task) => [task.id, task.nodeLabel])),
+    ).toEqual({
+      'task-a': '財務簽核',
+      'task-b': '部門主管簽核',
+      'task-c': null,
+      'task-d': null,
+    });
+  });
+
+  it('reads the labels for a whole task list in one query, without loading the snapshots', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    await fixture.service.listInboxTasks('member-finance');
+
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledWith(
+      expect.stringContaining('FROM "bpm"."approval_instances" AS instance'),
+      [
+        ['instance-1', 'instance-2', 'missing-instance'],
+        ['task_finance', 'band-0', 'gone'],
+      ],
+    );
+    expect(fixture.rootInstanceFind).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ workflowSnapshot: true }),
+      }),
+    );
+  });
+
+  it('gives an ad-hoc task in a list the plain label of the node it sits on', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        id: 'task-adhoc',
+        instanceId: 'instance-1',
+        isAdhoc: true,
+        nodeId: 'task_finance',
+      }),
+    ]);
+
+    const [task] = await fixture.service.listInboxTasks('member-finance');
+
+    // No 臨時加簽 wording on the server; clients add it from isAdhoc/adhocType.
+    expect(task?.nodeLabel).toBe('財務簽核');
+  });
+
+  it('labels approval history tasks too', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const tasks = await fixture.service.listApprovalHistoryTasks('member-finance');
+
+    expect(tasks.find((task) => task.id === 'task-b')?.nodeLabel).toBe(
+      '部門主管簽核',
+    );
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the tasks of an instance', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a', instanceId: 'instance-1' }),
+    ]);
+
+    const [task] = await fixture.service.listTasks('instance-1');
+
+    expect(task?.nodeLabel).toBe('財務簽核');
+  });
+});
+
 interface ServiceFixture {
   readonly managerQuery: jest.Mock<
     Promise<unknown>,
     [string, readonly unknown[]]
   >;
+  readonly orgUnitFindOne: import('typeorm').Repository<OrgUnitEntity>['findOne'];
+  readonly positionFindOne: import('typeorm').Repository<PositionEntity>['findOne'];
   readonly delegationService: {
     readonly resolveAssignee: jest.Mock<
       Promise<DelegationResolution>,
@@ -7133,6 +10821,7 @@ interface ServiceFixture {
     | 'createInstanceCompletedNotification'
     | 'createServiceTaskNotifications'
     | 'createTaskAssignedNotification'
+    | 'readMemberDisplayName'
     | 'resolveTaskNotifications'
     | 'supersedeInstanceTaskNotifications'
   >;
@@ -7141,6 +10830,15 @@ interface ServiceFixture {
     [Readonly<Record<string, unknown>>]
   >;
   readonly rootInstanceCount: jest.Mock<Promise<number>, []>;
+  readonly membershipFind: import('typeorm').Repository<MembershipEntity>['find'];
+  readonly rootInstanceNodeLabelQuery: jest.Mock<
+    Promise<readonly Readonly<Record<string, unknown>>[]>,
+    [string, readonly [readonly string[], readonly string[]]]
+  >;
+  readonly rootInstanceFindOne: jest.Mock<
+    Promise<ApprovalInstanceEntity | null>,
+    [Readonly<Record<string, unknown>>?]
+  >;
   readonly rootInstanceFind: jest.Mock<
     Promise<readonly ApprovalInstanceEntity[]>,
     [Readonly<Record<string, unknown>>?]
@@ -7202,10 +10900,12 @@ function createServiceFixture({
   formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
+  instanceSaveError,
   instanceState,
   latestReturnActivity,
   processActivityLogs = [],
   processAdhocDirectives = [],
+  processBusinessKey,
   processTaskCandidates = [],
   processFormData,
   processFormDefinitionSnapshot,
@@ -7217,7 +10917,9 @@ function createServiceFixture({
   processPositions = [],
   processWorkflowSnapshot,
   rootInstanceUpdatedAt,
+  rootOptions,
   serviceTaskDispatcher,
+  submittedByMemberId,
   templateIsActive = true,
   templateVersionStatus,
   transactionalInstanceUpdatedAt,
@@ -7234,10 +10936,13 @@ function createServiceFixture({
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formSchema?: FormDefinitionSchema;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
+  // Makes the instance insert fail, the way the database would on a clash.
+  readonly instanceSaveError?: Error;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processActivityLogs?: readonly ActivityLogEntity[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processBusinessKey?: string;
   readonly processTaskCandidates?: readonly TaskCandidateEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
@@ -7250,7 +10955,11 @@ function createServiceFixture({
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
   readonly rootInstanceUpdatedAt?: Date;
+  readonly rootOptions?: BPMRootRuntimeOptions;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
+  // The person who filed the processed instance; unset reads like a row
+  // written before the column existed (the initiator submitted it).
+  readonly submittedByMemberId?: string | null;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
   readonly transactionalInstanceUpdatedAt?: Date;
@@ -7303,21 +11012,49 @@ function createServiceFixture({
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
+  const rootInstanceFindOne = jest.fn<
+    Promise<ApprovalInstanceEntity | null>,
+    [Readonly<Record<string, unknown>>?]
+  >(() =>
+    Promise.resolve(
+      createApprovalInstance({
+        businessKey: processBusinessKey,
+        formData: processFormData,
+        formDataOptionSnapshot: processOptionSnapshot,
+        formDefinitionSnapshot: processFormDefinitionSnapshot,
+        state: instanceState,
+        submittedByMemberId,
+        updatedAt: rootInstanceUpdatedAt,
+        workflowSnapshot: processWorkflowSnapshot,
+      }),
+    ),
+  );
+  const rootInstanceNodeLabelQuery = jest.fn(
+    async (
+      _sql: string,
+      [instanceIds, nodeIds]: readonly [readonly string[], readonly string[]],
+    ): Promise<readonly Readonly<Record<string, unknown>>[]> =>
+      (await rootInstanceFind())
+        .filter((instance) => instanceIds.includes(instance.id))
+        .flatMap((instance) =>
+          (instance.workflowSnapshot?.nodes ?? [])
+            .filter((node) => nodeIds.includes(node.id))
+            .map((node) => ({
+              instanceId: instance.id,
+              label:
+                typeof node.data.label === 'string' ? node.data.label : null,
+              nodeId: node.id,
+            })),
+        ),
+  );
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
-    findOne: jest.fn(() =>
-      Promise.resolve(
-        createApprovalInstance({
-          formData: processFormData,
-          formDataOptionSnapshot: processOptionSnapshot,
-          formDefinitionSnapshot: processFormDefinitionSnapshot,
-          state: instanceState,
-          updatedAt: rootInstanceUpdatedAt,
-          workflowSnapshot: processWorkflowSnapshot,
-        }),
-      ),
-    ),
+    findOne: rootInstanceFindOne,
+    metadata: { schema: 'bpm', tableName: 'approval_instances' },
+    // Stands in for the jsonb node-label query (`readTaskNodeLabels`): the
+    // label of each requested node, read from the instances `find` knows.
+    query: rootInstanceNodeLabelQuery,
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
@@ -7392,7 +11129,7 @@ function createServiceFixture({
             ),
           ),
       ),
-      findOne: jest.fn(
+     findOne: jest.fn(
         (
           options?: Readonly<{ where?: Readonly<{ id?: string }> }>,
         ): Promise<AdhocDirectiveEntity | null> =>
@@ -7456,6 +11193,9 @@ function createServiceFixture({
     createInstanceCompletedNotification: jest.fn(() => Promise.resolve([])),
     createServiceTaskNotifications: jest.fn(() => Promise.resolve([])),
     createTaskAssignedNotification: jest.fn(() => Promise.resolve([])),
+    readMemberDisplayName: jest.fn((memberId: string) =>
+      Promise.resolve(`name-of-${memberId}`),
+    ),
     resolveTaskNotifications: jest.fn(() => Promise.resolve()),
     supersedeInstanceTaskNotifications: jest.fn(() => Promise.resolve()),
   };
@@ -7496,16 +11236,22 @@ function createServiceFixture({
           savedInstance
             ? Object.assign(createApprovalInstance(), savedInstance)
             : createApprovalInstance({
+                businessKey: processBusinessKey,
                 formData: processFormData,
                 formDataOptionSnapshot: processOptionSnapshot,
                 formDefinitionSnapshot: processFormDefinitionSnapshot,
                 state: instanceState,
+                submittedByMemberId,
                 updatedAt: transactionalInstanceUpdatedAt,
                 workflowSnapshot: processWorkflowSnapshot,
               }),
         ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
+        if (instanceSaveError) {
+          return Promise.reject(instanceSaveError);
+        }
+
         // The saved row keeps the prototype it arrived with. Rebuilding it as
         // `Object.assign(createApprovalInstance(), entity)` handed back an
         // entity even when the caller had spread the row into a plain object,
@@ -7893,6 +11639,16 @@ function createServiceFixture({
   };
   const transactionalOrgUnitRepository = createRepository<OrgUnitEntity>({
     createQueryBuilder: jest.fn(() => createOrgUnitQueryBuilder()),
+    findOne: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<OrgUnitEntity | null> =>
+        Promise.resolve(
+          processOrgUnits.find((orgUnit) =>
+            matchesFindWhere(orgUnit, options?.where),
+          ) ?? null,
+        ),
+    ),
     find: jest.fn(
       (
         options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
@@ -7905,6 +11661,16 @@ function createServiceFixture({
     ),
   });
   const transactionalPositionRepository = createRepository<PositionEntity>({
+    findOne: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<PositionEntity | null> =>
+        Promise.resolve(
+          processPositions.find((position) =>
+            matchesFindWhere(position, options?.where),
+          ) ?? null,
+        ),
+    ),
     find: jest.fn(
       (
         options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
@@ -7980,6 +11746,7 @@ function createServiceFixture({
   );
   Object.assign(instanceRepository, {
     manager: {
+      connection: { driver: { escape: (name: string) => `"${name}"` } },
       getRepository: jest.fn((target: unknown): unknown => {
         if (target === MembershipEntity) {
           return transactionalMembershipRepository;
@@ -7994,8 +11761,13 @@ function createServiceFixture({
   return {
     managerQuery,
     notificationFind,
+    orgUnitFindOne: transactionalOrgUnitRepository.findOne,
+    positionFindOne: transactionalPositionRepository.findOne,
     rootInstanceCount,
     rootInstanceFind,
+    rootInstanceFindOne,
+    rootInstanceNodeLabelQuery,
+    membershipFind: transactionalMembershipRepository.find,
     rootInstanceQueryBuilder,
     rootTaskFind,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
@@ -8053,7 +11825,7 @@ function createServiceFixture({
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
       formDataSourceValueResolver,
-      undefined,
+      rootOptions,
       webhookDeliveryService,
     ),
     notificationService,
@@ -8305,10 +12077,12 @@ function createTableColumns(): TableFieldDefinition['columns'] {
 }
 
 function createTableFormSchema({
+  hidden,
   maxRows,
   minRows,
   required = false,
 }: {
+  readonly hidden?: boolean;
   readonly maxRows?: number;
   readonly minRows?: number;
   readonly required?: boolean;
@@ -8318,6 +12092,7 @@ function createTableFormSchema({
       {
         columns: createTableColumns(),
         fieldKey: 'items',
+        ...(typeof hidden === 'boolean' ? { hidden } : {}),
         label: '請購明細',
         ...(typeof maxRows === 'number' ? { maxRows } : {}),
         ...(typeof minRows === 'number' ? { minRows } : {}),
@@ -8373,27 +12148,32 @@ function createConditionalAttachmentFormSchema(): FormDefinitionSchema {
 }
 
 function createApprovalInstance({
+  businessKey,
   formDataOptionSnapshot,
   formDefinitionSnapshot,
   formData,
   id,
   initiatorMemberId,
   state,
+  submittedByMemberId,
   title,
   updatedAt,
   workflowSnapshot,
 }: {
+  readonly businessKey?: string;
   readonly formDataOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly formData?: Readonly<Record<string, unknown>>;
   readonly id?: string;
   readonly initiatorMemberId?: string;
   readonly state?: ApprovalInstanceStateEnum;
+  readonly submittedByMemberId?: string | null;
   readonly title?: string;
   readonly updatedAt?: Date;
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
+    businessKey: businessKey ?? null,
     completedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formData: formData ?? {},
@@ -8409,6 +12189,7 @@ function createApprovalInstance({
     initiatorMetadataSnapshot: {},
     startedAt: new Date('2026-05-04T09:00:00.000Z'),
     state: state ?? ApprovalInstanceStateEnum.RUNNING,
+    submittedByMemberId: submittedByMemberId ?? null,
     templateId: 'template-1',
     templateVersionId: 'template-version-1',
     title: title ?? '費用申請',
@@ -8828,9 +12609,10 @@ function createLinearUserTaskWorkflow({
 // task_next -> end, to observe what the next node does after a skip.
 function createExcludeInitiatorTwoStepWorkflow(
   excludeInitiator: ExcludeInitiatorConfig,
+  firstApproverMemberId = 'member-001',
 ): WorkflowDefinition {
   const linear = createLinearUserTaskWorkflow({
-    approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+    approverResolver: { memberIds: [firstApproverMemberId], type: 'DIRECT' },
     excludeInitiator,
   });
 
@@ -8943,6 +12725,147 @@ function createNotifyServiceTaskWorkflow(
         type: 'serviceTask',
       },
     ],
+  };
+}
+
+function createEntryConditionNotifyWorkflow({
+  withApprovalBranch = false,
+}: {
+  readonly withApprovalBranch?: boolean;
+} = {}): WorkflowDefinition {
+  const base = createNotifyServiceTaskWorkflow();
+  const notifyNode = base.nodes.find((node) => node.id === 'notify_finance');
+
+  if (notifyNode?.type !== 'serviceTask') {
+    throw new Error('notify_finance fixture node was not found');
+  }
+
+  const conditionedNotifyNode = {
+    ...notifyNode,
+    data: { ...notifyNode.data, entryCondition: 'form.amount > 1000' },
+  };
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+  const endNode: WorkflowDefinition['nodes'][number] = {
+    data: { endState: 'APPROVED', label: '完成' },
+    id: 'end',
+    position: { x: 520, y: 80 },
+    type: 'endEvent',
+  };
+  const startNode = base.nodes.find((node) => node.id === 'start');
+
+  if (!startNode) {
+    throw new Error('start fixture node was not found');
+  }
+
+  return {
+    edges: [
+      edge('edge_start_notify', 'start', 'notify_finance'),
+      ...(withApprovalBranch
+        ? [
+            edge('edge_start_a', 'start', 'task_a'),
+            edge('edge_a_end', 'task_a', 'end'),
+          ]
+        : []),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      startNode,
+      conditionedNotifyNode,
+      ...(withApprovalBranch
+        ? [
+            createUserTaskNode('task_a', 'A 簽核', 'member-a', 300, 80),
+            endNode,
+          ]
+        : []),
+    ],
+  };
+}
+
+// start -> parallel split -> { skipped NOTIFY (terminal), task_a, task_b },
+// with task_a and task_b joining at task_final. The NOTIFY has no outgoing
+// edge, so it can never feed the join.
+function createSplitWithSkippedNotifyWorkflow(): WorkflowDefinition {
+  const notify = createEntryConditionNotifyWorkflow().nodes.find(
+    (node) => node.id === 'notify_finance',
+  );
+
+  if (!notify) {
+    throw new Error('notify_finance fixture node was not found');
+  }
+
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  return {
+    edges: [
+      edge('edge_start_split', 'start', 'split'),
+      edge('edge_split_notify', 'split', 'notify_finance'),
+      edge('edge_split_a', 'split', 'task_a'),
+      edge('edge_split_b', 'split', 'task_b'),
+      edge('edge_a_final', 'task_a', 'task_final'),
+      edge('edge_b_final', 'task_b', 'task_final'),
+      edge('edge_final_end', 'task_final', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { direction: 'split', label: '分流' },
+        id: 'split',
+        position: { x: 160, y: 160 },
+        type: 'parallelGateway',
+      },
+      notify,
+      createUserTaskNode('task_a', 'A 簽核', 'member-a', 300, 80),
+      createUserTaskNode('task_b', 'B 簽核', 'member-b', 300, 240),
+      createUserTaskNode('task_final', '彙整簽核', 'member-final', 520, 160),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 740, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function createEntryConditionWebhookWorkflow(): WorkflowDefinition {
+  const base = createWebhookServiceTaskWorkflow();
+
+  return {
+    ...base,
+    nodes: base.nodes.map((node) =>
+      node.id === 'webhook_erp' && node.type === 'serviceTask'
+        ? {
+            ...node,
+            data: { ...node.data, entryCondition: 'form.amount > 1000' },
+          }
+        : node,
+    ),
   };
 }
 
@@ -9253,13 +13176,25 @@ function readTaskByNodeId(
 function createSequentialDecisionFixture({
   activeIndex = 0,
   additionalProcessTasks,
+  approverResolver,
+  candidateOverrides = {},
   excludeInitiator,
   processAdhocDirectives,
+  submittedByMemberId,
+  processMemberships,
+  processPositions,
 }: {
   readonly activeIndex?: number;
   readonly additionalProcessTasks?: readonly TaskEntity[];
+  readonly approverResolver?: ApproverResolver;
+  readonly candidateOverrides?: Readonly<
+    Record<string, Partial<TaskCandidateEntity>>
+  >;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly submittedByMemberId?: string | null;
+  readonly processMemberships?: readonly MembershipEntity[];
+  readonly processPositions?: readonly PositionEntity[];
 } = {}): ServiceFixture {
   const memberIds = ['member-a', 'member-b', 'member-c'];
 
@@ -9284,11 +13219,15 @@ function createSequentialDecisionFixture({
     }),
     formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
     processAdhocDirectives,
+    processMemberships,
+    processPositions,
     processTaskCandidates: memberIds.map((memberId, index) =>
       createTaskCandidate({
         id: `candidate-${memberId.slice(-1)}`,
         memberId,
         sequence: index,
+        sourceType: approverResolver?.type,
+        ...candidateOverrides[memberId],
         status:
           index < activeIndex
             ? TaskCandidateStatusEnum.COMPLETED
@@ -9299,11 +13238,13 @@ function createSequentialDecisionFixture({
       }),
     ),
     processWorkflowSnapshot: createLinearUserTaskWorkflow({
+      approverResolver,
       decisionPolicy: { type: 'SEQUENTIAL' },
       excludeInitiator,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
       slaDuration: 'PT2H',
     }),
+    submittedByMemberId,
     templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
   });
 }

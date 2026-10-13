@@ -22,12 +22,27 @@ interface MockTemplateGraphQlOptions {
   // Opt-in so that adding directory entries for one spec cannot change the
   // option ordering the keyboard-driven specs depend on.
   readonly extraMembers?: readonly MockMember[];
+  // Assignee values the dry run reports for extra waiting steps, in the shapes
+  // the engine uses: a member id, or a `<kind>:<ids>` placeholder.
+  readonly dryRunAssignees?: readonly string[];
+  // A `SelectedMembers` lookup containing this member id is answered with a
+  // GraphQL error, the way the host fails a batch holding an id it cannot
+  // handle.
+  readonly failSelectedMemberId?: string;
+  // The fields of the bound form's unpublished draft, which 編輯表單 loads.
+  // Defaults to the bound (published) fields.
+  readonly formDraftFields?: readonly Readonly<Record<string, unknown>>[];
+  // Replaces the fields of the bound form's schema (the published version).
+  readonly formFields?: readonly Readonly<Record<string, unknown>>[];
+  // Binds the template draft to this form version from the start.
+  readonly initialFormDefinitionVersionId?: string;
   readonly initialWorkflowDefinitionJson?: string;
   // Lets a spec hold a `MemberOptions` response open until it deliberately
   // releases it, so response ordering between two in-flight searches can be
   // controlled deterministically instead of racing real network timing.
   readonly memberSearchGate?: (searchText: string) => Promise<void>;
   readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
+  readonly onSelectedMembersRequest?: (memberIds: readonly string[]) => void;
 }
 
 const TEMPLATE_ID = 'e2e-template';
@@ -35,6 +50,26 @@ const TEMPLATE_VERSION_ID = 'e2e-template-version';
 const FORM_ID = 'e2e-form';
 const FORM_VERSION_ID = 'e2e-form-version';
 const UPDATED_AT = '2026-05-04T09:00:00.000Z';
+// A form with member fields of every kind the 依表單欄位指定 picker has to
+// tell apart: a plain required one, an optional one, and one a visibility rule
+// can hide. `amount` is not a member field and must never be offered.
+const MEMBER_FORM_FIELDS: readonly Readonly<Record<string, unknown>>[] = [
+  { fieldKey: 'amount', label: '申請金額', required: true, type: 'money' },
+  { fieldKey: 'owner', label: '負責人', required: true, type: 'member' },
+  {
+    fieldKey: 'backup',
+    label: '備援審核人',
+    required: false,
+    type: 'member',
+  },
+  {
+    fieldKey: 'delegate',
+    label: '代理人',
+    required: true,
+    type: 'member',
+    visibleWhen: 'form.amount > 1000',
+  },
+];
 
 test.describe('M1 W3 template designer', () => {
   test.beforeEach(async ({ page }): Promise<void> => {
@@ -76,16 +111,19 @@ test.describe('M1 W3 template designer', () => {
     await expect(page.getByRole('combobox', { name: '所有人' })).toBeVisible();
 
     await page.getByRole('button', { name: '簽核節點' }).click();
+    // A new node starts on the initiator's direct manager, a resolver that
+    // needs no member id, rather than on a placeholder member.
     await expect(
-      page
-        .locator('.react-flow__node')
-        .filter({ hasText: '林總經理 (lin.ceo@example.internal)' }),
+      page.locator('.react-flow__node').filter({ hasText: '直屬主管' }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: '發起人主管' }),
     ).toBeVisible();
     await expect(
       page.getByText(
         '可指定多位；多位時所有人都會收到待辦，任一人同意即可通過。',
       ),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(page.locator('.react-flow__edge')).toHaveCount(2);
     await expect(page.getByText('重送策略')).toBeVisible();
     await expect(
@@ -102,7 +140,8 @@ test.describe('M1 W3 template designer', () => {
 
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await page.getByRole('button', { name: '發布草稿' }).click();
-    await expect(page.getByText(/已發布版本/u)).toBeVisible();
+    // The header names the template's own published version.
+    await expect(page.getByText(/已發布 v1/u)).toBeVisible();
 
     await page.goto(`/templates/${TEMPLATE_ID}/versions`);
     await expect(page.getByText('PUBLISHED')).toBeVisible();
@@ -170,11 +209,10 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
 
-    await page.getByRole('combobox', { name: '指定會員' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '發起人主管' })
-      .click();
+    // The new node already starts on 發起人主管.
+    await expect(
+      page.getByRole('combobox', { name: '發起人主管' }),
+    ).toBeVisible();
 
     await expect(page.getByText('無主管時')).toBeVisible();
     await expect(
@@ -230,11 +268,10 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
 
-    await page.getByRole('combobox', { name: '指定會員' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '發起人主管' })
-      .click();
+    // The new node already starts on 發起人主管.
+    await expect(
+      page.getByRole('combobox', { name: '發起人主管' }),
+    ).toBeVisible();
 
     await page.getByRole('combobox', { name: '停止流程並提示' }).click();
     await page
@@ -270,6 +307,11 @@ test.describe('M1 W3 template designer', () => {
           memberId: 'member-201',
           name: '王工程師',
         },
+        {
+          email: 'zhou.accountant@example.internal',
+          memberId: 'member-202',
+          name: '周會計',
+        },
       ],
     });
 
@@ -277,16 +319,24 @@ test.describe('M1 W3 template designer', () => {
     await page.getByRole('combobox', { name: '未設定' }).click();
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
+    // A new node starts on 發起人主管, so switch to the member picker first.
+    await switchApproverToDirectMembers(page);
 
     const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
 
-    // Focus rather than click: the approver picker is multi-select and already
-    // carries the default approver's tag, which intercepts pointer events over
-    // the input.
     await approverSearch.focus();
     await expect(
       page.locator('[role="option"]').filter({ hasText: '王工程師' }),
     ).toBeVisible();
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '周會計' }),
+    ).toBeVisible();
+
+    // 王工程師 becomes the approver already on the node.
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '王工程師' })
+      .click();
 
     await approverSearch.fill('chen');
 
@@ -295,12 +345,12 @@ test.describe('M1 W3 template designer', () => {
     ).toBeVisible();
     // The previous response must not linger beside the new one.
     await expect(
-      page.locator('[role="option"]').filter({ hasText: '王工程師' }),
+      page.locator('[role="option"]').filter({ hasText: '周會計' }),
     ).toHaveCount(0);
     // The approver already on the node stays offered even though the search
     // result does not contain it, otherwise its chip would lose the label.
     await expect(
-      page.locator('[role="option"]').filter({ hasText: '林總經理' }),
+      page.locator('[role="option"]').filter({ hasText: '王工程師' }),
     ).toBeVisible();
   });
 
@@ -336,6 +386,7 @@ test.describe('M1 W3 template designer', () => {
     await page.getByRole('combobox', { name: '未設定' }).click();
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
+    await switchApproverToDirectMembers(page);
 
     const approverSearch = page.getByPlaceholder('搜尋姓名或信箱');
 
@@ -879,41 +930,257 @@ test.describe('M1 W3 template designer', () => {
     page,
   }): Promise<void> => {
     // `resolveWorkflowMemberOptions` runs from an effect that lists
-    // `memberOptions` in its dependencies. Once a failed resolve started
-    // writing "未知會員" placeholders that count as still-missing, a
-    // `mergeMemberOptions` that returned a fresh array every time re-ran the
-    // effect, re-requested the same ids, and looped on the API forever.
+    // `memberOptions` in its dependencies. A failed resolve writes "未知會員"
+    // placeholders, which changes `memberOptions` and re-runs the effect; if
+    // those placeholders count as still-missing, every round re-requests the
+    // same ids (and, with the per-id fallback, one request per id on top).
     //
-    // The mock has no `SelectedMembers` branch, so every resolve here fails —
-    // which is precisely the condition that used to loop.
-    let selectedMembersRequests = 0;
+    // `member-002` makes the host fail any lookup that holds it, so the batch
+    // fails, each id is retried on its own, and `member-002` fails again. It
+    // must then stay 「未知會員」 without being asked for a third time.
+    const selectedMembersRequests: (readonly string[])[] = [];
 
-    page.on('request', (request): void => {
-      if (!request.url().includes('/graphql')) {
-        return;
-      }
-
-      if (request.postData()?.includes('query SelectedMembers')) {
-        selectedMembersRequests += 1;
-      }
-    });
-
-    // The fixture's user task carries two DIRECT approver ids, which is what
-    // makes the designer ask for their profiles on load.
     await mockTemplateGraphQl(page, {
+      failSelectedMemberId: 'member-002',
+      // The fixture's user task carries two DIRECT approver ids, which is what
+      // makes the designer ask for their profiles on load.
       initialWorkflowDefinitionJson: JSON.stringify(
         readWorkflowDefinitionWithDecisionPolicy({ type: 'SINGLE' }),
       ),
+      onSelectedMembersRequest: (memberIds): void => {
+        selectedMembersRequests.push(memberIds);
+      },
     });
     await page.goto(`/templates/${TEMPLATE_ID}/designer`);
     await expect(
       page.locator('.react-flow__node').filter({ hasText: '簽核節點' }),
     ).toBeVisible();
 
-    // Settle: a loop would still be climbing well past this.
-    await page.waitForTimeout(3_000);
+    // The members that do resolve keep their names.
+    await expect(
+      page
+        .locator('.react-flow__node')
+        .filter({ hasText: '林總經理 (lin.ceo@example.internal)' }),
+    ).toBeVisible();
 
-    expect(selectedMembersRequests).toBeLessThanOrEqual(4);
+    // Settle, then make sure nothing is still being requested: a loop would
+    // keep climbing between the two readings.
+    await page.waitForTimeout(2_000);
+
+    const settledRequestCount = selectedMembersRequests.length;
+
+    await page.waitForTimeout(2_000);
+
+    expect(selectedMembersRequests.length).toBe(settledRequestCount);
+    // One batch plus one request per id, once; doubled at most by a dev-mode
+    // effect replay.
+    expect(settledRequestCount).toBeLessThanOrEqual(6);
+    // The failing id is asked for on its own at most once per replay.
+    expect(
+      selectedMembersRequests.filter(
+        (memberIds) => memberIds.length === 1 && memberIds[0] === 'member-002',
+      ).length,
+    ).toBeLessThanOrEqual(2);
+  });
+
+  test('picks the approver from a member field of the bound form and warns about optional or hideable ones', async ({
+    page,
+  }): Promise<void> => {
+    let savedResolver: Readonly<Record<string, unknown>> | null = null;
+
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      formFields: MEMBER_FORM_FIELDS,
+      initialFormDefinitionVersionId: FORM_VERSION_ID,
+      onDraftUpdate: (input): void => {
+        savedResolver = readFirstUserTaskResolver(input.workflowDefinitionJson);
+      },
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    await page.getByRole('combobox', { name: '發起人主管' }).click();
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '依表單欄位指定' })
+      .click();
+    await expect(page.getByText('簽核人取自申請人送出表單時')).toBeVisible();
+
+    await page.getByRole('combobox', { name: '選擇人員選擇欄位' }).click();
+
+    // Only member fields are offered, and the risky ones say why.
+    await expect(
+      page.locator('[role="option"]').filter({ hasText: '申請金額' }),
+    ).toHaveCount(0);
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: /^負責人 \(owner\)$/u }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '備援審核人 (backup)（非必填）' }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator('[role="option"]')
+        .filter({ hasText: '代理人 (delegate)（可能被條件隱藏）' }),
+    ).toBeVisible();
+
+    // A risky field is still selectable; the hint says publishing refuses it.
+    await page
+      .locator('[role="option"]')
+      .filter({ hasText: '備援審核人 (backup)（非必填）' })
+      .click();
+    await expect(
+      page.getByText(
+        '此欄位非必填，空白時此關會找不到人員，發佈時會被拒絕；請在表單設計將它設為必填且不隱藏',
+      ),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator('.react-flow__node')
+        .filter({ hasText: '依表單欄位：備援審核人' }),
+    ).toBeVisible();
+
+    await page.getByRole('button', { name: '儲存草稿' }).click();
+    await expect.poll((): boolean => savedResolver !== null).toBe(true);
+
+    expect(savedResolver).toMatchObject({
+      formPath: 'backup',
+      type: 'DYNAMIC_FORM',
+    });
+  });
+
+  test('marks a stored form path that is not a member field', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      formFields: MEMBER_FORM_FIELDS,
+      initialFormDefinitionVersionId: FORM_VERSION_ID,
+      // `amount` exists in the form but is a money field.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithResolver({
+          formPath: 'amount',
+          type: 'DYNAMIC_FORM',
+        }),
+      ),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+
+    await expect(
+      page
+        .locator('.react-flow__node')
+        .filter({ hasText: '依表單欄位：申請金額（非人員選擇欄位）' }),
+    ).toBeVisible();
+
+    await page
+      .locator('.react-flow__node')
+      .filter({ hasText: '簽核節點' })
+      .click();
+    await expect(page.getByText('請重新選擇')).toBeVisible();
+  });
+
+  test('samples the draft form in the dry run, member fields included', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      // The form draft adds a member field the bound version does not have.
+      formDraftFields: [
+        ...MEMBER_FORM_FIELDS,
+        {
+          fieldKey: 'reviewer',
+          label: '複核人',
+          required: true,
+          type: 'member',
+        },
+      ],
+      formFields: MEMBER_FORM_FIELDS,
+      initialFormDefinitionVersionId: FORM_VERSION_ID,
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+
+    // Apply the form draft without saving it: the dry run must sample what
+    // publish would send, not the bound version.
+    await page.getByRole('button', { exact: true, name: '編輯表單' }).click();
+    await expect(page.getByText('載入中…')).toHaveCount(0);
+    await page.getByRole('button', { exact: true, name: '套用' }).click();
+    await page.getByRole('button', { name: '試跑流程' }).click();
+
+    // The Mezzanine textarea is not tied to its label, so it is found inside
+    // the dry-run dialog (the only text box there).
+    const sampleJson = page
+      .getByRole('dialog')
+      .filter({ hasText: '表單資料 JSON' })
+      .getByRole('textbox');
+
+    // A member field is sampled with a placeholder, not free text and not the
+    // dry-run initiator, so a 依表單欄位指定 node resolves to someone other
+    // than the applicant, as a real submission would.
+    await expect(sampleJson).toHaveValue(/"owner": "formMember:owner"/u);
+    await expect(sampleJson).toHaveValue(/"backup": "formMember:backup"/u);
+    // The member field only the applied draft has is sampled too.
+    await expect(sampleJson).toHaveValue(/"reviewer": "formMember:reviewer"/u);
+  });
+
+  test('names the dry run assignees instead of printing internal ids', async ({
+    page,
+  }): Promise<void> => {
+    await page.setViewportSize({ height: 1200, width: 1440 });
+    await mockTemplateGraphQl(page, {
+      dryRunAssignees: [
+        'position:position-department-head',
+        'orgUnitPosition:org-finance:position-ap-specialist',
+        'orgUnitMember:org-finance',
+        'orgUnitManager:org-finance-ap',
+        'orgManagerChain:3',
+        'formMember:reviewer',
+      ],
+      // The fixture's approvers include member-001, so the designer resolves
+      // that member's name and the dry run can show it.
+      initialWorkflowDefinitionJson: JSON.stringify(
+        readWorkflowDefinitionWithDecisionPolicy({ type: 'SINGLE' }),
+      ),
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('button', { name: '試跑流程' }).click();
+    await page.getByRole('button', { name: '執行試跑' }).click();
+
+    await expect(page.getByText('試跑通過')).toBeVisible();
+    await expect(page.getByText('處理者：林總經理')).toBeVisible();
+    await expect(
+      page.getByText('職位：部門主管（送出時依當下人員決定）'),
+    ).toBeVisible();
+    await expect(
+      page.getByText('組織職位：財務部／應付帳款專員'),
+    ).toBeVisible();
+    await expect(page.getByText('組織任一人：財務部')).toBeVisible();
+    await expect(page.getByText('組織主管：應付帳款組')).toBeVisible();
+    // This fixture's form has no `reviewer` field, so the label falls back to
+    // the field key; a field the form does have is named by its label.
+    await expect(
+      page.getByText('表單欄位「reviewer」選的人（送出時依填寫內容決定）'),
+    ).toBeVisible();
+    await expect(
+      page.getByText('主管鏈：簽到職等 3（送出時依組織決定實際主管）'),
+    ).toBeVisible();
+    // No raw `<kind>:<id>` placeholder is left on screen.
+    await expect(
+      page.getByText('position:position-department-head'),
+    ).toHaveCount(0);
+    await expect(page.getByText('orgManagerChain:3')).toHaveCount(0);
   });
 
   test('hides the business-day選項 for an hour-based SLA', async ({
@@ -935,7 +1202,7 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('label[for="slaEnabled"]').click();
 
     await page.getByRole('combobox', { name: '日', exact: true }).click();
-    await page.locator('[role="option"]').filter({ hasText: '小時' }).click();
+    await clickDropdownOption(page, '小時');
 
     // A business calendar only advances whole days, so the selector goes away.
     await expect(page.getByText('計算方式')).toHaveCount(0);
@@ -966,7 +1233,7 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
     await page.getByRole('button', { name: '簽核節點' }).click();
 
-    await page.getByRole('combobox', { name: '指定會員' }).click();
+    await page.getByRole('combobox', { name: '發起人主管' }).click();
     await page
       .locator('[role="option"]')
       .filter({ hasText: '指定組織主管' })
@@ -1021,15 +1288,11 @@ test.describe('M1 W3 template designer', () => {
       .click();
 
     await page.getByRole('combobox', { name: '指定職位' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '組織特定職位' })
-      .click();
+    // The resolver list is long enough that this option renders below the
+    // viewport.
+    await clickDropdownOption(page, '組織特定職位');
     await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '財務部 · FIN-TW' })
-      .click();
+    await clickDropdownOption(page, '財務部 · FIN-TW');
     await page.getByRole('combobox', { name: '選擇職位' }).click();
     await clickDropdownOption(page, '部門主管 · DEPARTMENT_HEAD');
     await expect(
@@ -1096,7 +1359,8 @@ async function mockTemplateGraphQl(
   let workflowDefinitionJson =
     options.initialWorkflowDefinitionJson ??
     JSON.stringify(readEmptyWorkflowDefinition());
-  let formDefinitionVersionId: string | null = null;
+  let formDefinitionVersionId: string | null =
+    options.initialFormDefinitionVersionId ?? null;
   let templateInitiatorPolicyCel: string | null = null;
 
   await page.route('**/graphql', async (route: Route): Promise<void> => {
@@ -1191,6 +1455,36 @@ async function mockTemplateGraphQl(
       return;
     }
 
+    if (query.includes('query FormBuilder(')) {
+      await fulfillGraphQl(route, {
+        formDefinition: {
+          currentVersionCreatedAt: UPDATED_AT,
+          currentVersionId: FORM_VERSION_ID,
+          currentVersionNumber: 1,
+          currentVersionPublishedAt: UPDATED_AT,
+          description: null,
+          id: FORM_ID,
+          name: 'E2E 表單',
+          updatedAt: UPDATED_AT,
+        },
+        formDefinitionVersions: [
+          {
+            id: `${FORM_VERSION_ID}-draft`,
+            publishedAt: null,
+            schemaJson: JSON.stringify({
+              fields: options.formDraftFields ?? options.formFields ?? [],
+              schemaVersion: 1,
+            }),
+            status: 'DRAFT',
+            uiSchemaJson: JSON.stringify({ layout: [], schemaVersion: 1 }),
+            updatedAt: UPDATED_AT,
+            version: 2,
+          },
+        ],
+      });
+      return;
+    }
+
     if (query.includes('query FormVersions')) {
       await fulfillGraphQl(route, {
         formDefinitionVersions: [
@@ -1199,7 +1493,7 @@ async function mockTemplateGraphQl(
             id: FORM_VERSION_ID,
             publishedAt: UPDATED_AT,
             schemaJson: JSON.stringify({
-              fields: [
+              fields: options.formFields ?? [
                 {
                   fieldKey: 'amount',
                   label: '申請金額',
@@ -1228,6 +1522,22 @@ async function mockTemplateGraphQl(
     }
 
     if (query.includes('query SelectedMembers')) {
+      const requestedMemberIds = readStringArray(payload.variables?.memberIds);
+
+      options.onSelectedMembersRequest?.(requestedMemberIds);
+
+      if (
+        options.failSelectedMemberId &&
+        requestedMemberIds.includes(options.failSelectedMemberId)
+      ) {
+        await route.fulfill({
+          contentType: 'application/json',
+          json: { data: null, errors: [{ message: 'member lookup failed' }] },
+          status: 200,
+        });
+        return;
+      }
+
       await fulfillGraphQl(route, {
         members: [
           {
@@ -1335,6 +1645,22 @@ async function mockTemplateGraphQl(
               nodeType: 'userTask',
               status: 'WAITING',
             },
+            ...(options.dryRunAssignees ?? []).map((assignee, index) => ({
+              assigneeMemberId: assignee,
+              edgeDefault: null,
+              edgeId: null,
+              edgeLabel: null,
+              edgeMatched: null,
+              edgeReason: null,
+              entryCondition: null,
+              entryConditionMatched: null,
+              id: `dry-run-assignee-${index}`,
+              message: '將建立待簽任務。',
+              nodeId: `task_assignee_${index}`,
+              nodeLabel: `指派節點 ${index + 1}`,
+              nodeType: 'userTask',
+              status: 'WAITING',
+            })),
           ],
           valid: true,
         },
@@ -1488,6 +1814,24 @@ function readWorkflowDefinitionWithDecisionPolicy(
         type: 'endEvent',
       },
     ],
+  };
+}
+
+function readWorkflowDefinitionWithResolver(
+  approverResolver: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const definition = readWorkflowDefinitionWithDecisionPolicy({
+    type: 'SINGLE',
+  });
+  const nodes = Array.isArray(definition.nodes) ? definition.nodes : [];
+
+  return {
+    ...definition,
+    nodes: nodes.map((node: unknown) =>
+      isRecord(node) && node.type === 'userTask' && isRecord(node.data)
+        ? { ...node, data: { ...node.data, approverResolver } }
+        : node,
+    ),
   };
 }
 
@@ -1831,6 +2175,12 @@ function readUpdateTemplateDraftInput(
   };
 }
 
+function readStringArray(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
 function readOptionalString(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
@@ -1857,6 +2207,14 @@ async function fulfillGraphQl(
     json: { data },
     status: 200,
   });
+}
+
+// A new approval node starts on 發起人主管; tests of the member picker switch
+// to 指定會員 first (the node then has no approver yet).
+async function switchApproverToDirectMembers(page: Page): Promise<void> {
+  await page.getByRole('combobox', { name: '發起人主管' }).click();
+  await page.locator('[role="option"]').filter({ hasText: '指定會員' }).click();
+  await expect(page.getByRole('combobox', { name: '指定會員' })).toBeVisible();
 }
 
 async function clickDropdownOption(page: Page, text: string): Promise<void> {

@@ -703,6 +703,15 @@ export interface BPMMemberResolver {
 
 ## Organization Data Ownership
 
+> **Upgrading past 0.14.0 — which day is "today".** The workflow engine now
+> reads membership and manager-rule effective dates in the
+> `organizationTimeZone` root option, default `Asia/Taipei`; it used to read
+> the UTC date. Between local midnight and 08:00 a rule effective from today
+> now applies, and one ending today no longer does, up to eight hours earlier
+> than before. If your organization dates are kept in UTC, set
+> `organizationTimeZone: 'UTC'` before upgrading. See
+> [Configuration Reference](#configuration-reference).
+
 > **Read this before integrating BPM into a host that already has its own
 > organization model.** The org-integration shape is **asymmetric** with
 > member integration above — knowing which side owns what saves a day of
@@ -942,6 +951,7 @@ BPMRootModule.forRootAsync({
 | `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                     |
 | `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                     |
 | `identityRegisterResolvers`                      | `true`                         | Set to `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers` GraphQL queries. `IdentityService` stays available either way. |
+| `organizationTimeZone`                           | `Asia/Taipei`                  | IANA zone in which BPM reads "today" when it compares against the date-only `effectiveFrom` / `effectiveTo` of memberships and manager resolutions (manager chains, direct and org-unit managers, position levels, the initiator snapshot, SLA escalation, the "active only" organization views). Set `'UTC'` if your organization dates are kept in UTC. An unknown zone makes BPM fail at startup. Independent of `notificationSlaBusinessCalendarTimeZone`. Before this option the workflow engine read UTC while `OrganizationService` read `Asia/Taipei`; both now follow it. |
 | `notificationInAppEnabled`                       | `true`                         | Enables in-app notification records.                           |
 | `notificationEmailEnabled`                       | `auto`                         | Enables email when SMTP settings are complete.                 |
 | `notificationEmailSmtpHost`                      | `null`                         | SMTP host.                                                     |

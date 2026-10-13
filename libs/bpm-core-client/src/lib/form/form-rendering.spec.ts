@@ -12,6 +12,7 @@ import {
   readFormTableCellPath,
   readFormTableRowBounds,
   readFormTableRows,
+  readVisibleFormRendererFields,
   validateFormRendererValues,
 } from './form-rendering';
 
@@ -345,5 +346,146 @@ describe('table field values', () => {
         type: 'table',
       }),
     ).toEqual({ maxRows: 100, minRows: 0 });
+  });
+});
+
+describe('hidden (store-only) fields', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'reason', label: '事由', required: true, type: 'text' },
+      {
+        fieldKey: 'sourceDocId',
+        hidden: true,
+        label: '來源單據',
+        required: true,
+        type: 'text',
+      },
+      {
+        fieldKey: 'docVersion',
+        hidden: true,
+        label: '版本',
+        required: false,
+        type: 'number',
+        visibleWhen: 'form.reason == "x"',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [
+      { fieldKey: 'sourceDocId', width: 'FULL' },
+      { fieldKey: 'reason', width: 'FULL' },
+    ],
+    schemaVersion: 1,
+  };
+
+  it('is never visible, whatever visibleWhen says', (): void => {
+    const [reason, sourceDocId, docVersion] = schema.fields;
+
+    expect(isFormRendererFieldVisible(reason, schema.fields, {})).toBe(true);
+    expect(isFormRendererFieldVisible(sourceDocId, schema.fields, {})).toBe(
+      false,
+    );
+    expect(
+      isFormRendererFieldVisible(docVersion, schema.fields, { reason: 'x' }),
+    ).toBe(false);
+  });
+
+  it('is left out of the rendered field list', (): void => {
+    expect(
+      readVisibleFormRendererFields(schema, uiSchema, { reason: 'x' }).map(
+        (field) => field.fieldKey,
+      ),
+    ).toEqual(['reason']);
+  });
+
+  it('is skipped by client validation even when marked required', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { reason: 'ok' },
+      }),
+    ).toEqual({ errors: {}, firstInvalidFieldKey: null, valid: true });
+  });
+
+  it('keeps its stored value in the values the renderer emits', (): void => {
+    const emitted = buildFormRendererValues(schema.fields, {
+      docVersion: 3,
+      reason: 'ok',
+      sourceDocId: 'PO-1',
+    });
+
+    expect(emitted).toMatchObject({
+      docVersion: 3,
+      reason: 'ok',
+      sourceDocId: 'PO-1',
+    });
+  });
+});
+
+describe('member fields in the renderer', () => {
+  const single: FormFieldDefinition = {
+    fieldKey: 'reviewer',
+    label: '審核人',
+    required: true,
+    type: 'member',
+  };
+  const multiple: FormFieldDefinition = {
+    fieldKey: 'watchers',
+    label: '關注者',
+    multiple: true,
+    required: true,
+    type: 'member',
+  };
+  const schema: FormDefinitionSchema = {
+    fields: [single, multiple],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [
+      { fieldKey: 'reviewer', width: 'HALF' },
+      { fieldKey: 'watchers', width: 'HALF' },
+    ],
+    schemaVersion: 1,
+  };
+
+  it('starts a single field empty and a multiple field as an empty list', (): void => {
+    const values = buildFormRendererValues(schema.fields, {});
+
+    expect(values.reviewer).toBeUndefined();
+    expect(values.watchers).toEqual([]);
+  });
+
+  it('keeps a stored member value instead of resetting it', (): void => {
+    expect(
+      buildFormRendererValues(schema.fields, {
+        reviewer: 'm1',
+        watchers: ['m1', 'm2'],
+      }),
+    ).toEqual({ reviewer: 'm1', watchers: ['m1', 'm2'] });
+  });
+
+  it('reports a required member field that nobody was picked for', (): void => {
+    const result = validateFormRendererValues({
+      schema,
+      uiSchema,
+      values: buildFormRendererValues(schema.fields, {}),
+    });
+
+    expect(result.errors).toEqual({
+      reviewer: '審核人為必填欄位。',
+      watchers: '關注者為必填欄位。',
+    });
+  });
+
+  it('accepts a required member field once someone is picked', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { reviewer: 'm1', watchers: ['m2'] },
+      }).valid,
+    ).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import {
   BPM_MEMBER_RESOLVER,
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
+import { OrganizationService } from '../organization/organization.service';
 import { BPMRootModule } from './bpm-root.module';
 import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
@@ -101,6 +102,68 @@ describe('BPMRootModule bootstrap', (): void => {
     } finally {
       await moduleRef.close();
     }
+  });
+
+  it('hands the organization time zone from the async factory to the engine and the organization service', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({ organizationTimeZone: 'UTC' }),
+        }),
+      ],
+    }).compile();
+
+    try {
+      expect(
+        moduleRef.get(WorkflowEngineService, { strict: false }),
+      ).toHaveProperty('organizationTimeZone', 'UTC');
+      expect(
+        moduleRef.get(OrganizationService, { strict: false }),
+      ).toHaveProperty('organizationTimeZone', 'UTC');
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('reads organization dates in Asia/Taipei when the host sets no organization time zone', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+    }).compile();
+
+    try {
+      expect(
+        moduleRef.get(WorkflowEngineService, { strict: false }),
+      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
+      expect(
+        moduleRef.get(OrganizationService, { strict: false }),
+      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('fails at startup when forRoot is given an unknown organization time zone', (): void => {
+    expect(() =>
+      BPMRootModule.forRoot({ organizationTimeZone: 'Mars/Olympus_Mons' }),
+    ).toThrow(
+      'BPM option organizationTimeZone must be a valid IANA time zone, received "Mars/Olympus_Mons"',
+    );
+  });
+
+  it('fails at startup when the async factory returns an unknown organization time zone', async (): Promise<void> => {
+    await expect(
+      Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRootAsync({
+            useFactory: () => ({ organizationTimeZone: 'Mars/Olympus_Mons' }),
+          }),
+        ],
+      }).compile(),
+    ).rejects.toThrow(
+      'BPM option organizationTimeZone must be a valid IANA time zone, received "Mars/Olympus_Mons"',
+    );
   });
 
   it('takes a webhook endpoint registry from the async factory', async (): Promise<void> => {

@@ -242,7 +242,7 @@ Form-schema definitions.
 | `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
 | `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
 | `FormTableRowValue` | type | One table row: column key to cell value |
-| `TextFieldDefinition` | type | text / email / textarea |
+| `TextFieldDefinition` | type | text / email / textarea; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
 | `NumberFieldDefinition` | type | number (min/max/precision) |
 | `DateFieldDefinition` | type | date / datetime |
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
@@ -262,6 +262,7 @@ Form-schema definitions.
 | `FormStaticOptionFieldDefinition` | type | Option field narrowed to static options |
 | `BooleanFieldDefinition` | type | Boolean toggle |
 | `FileUploadFieldDefinition` | type | Attachment upload |
+| `MemberFieldDefinition` | type | 人員選擇 field — stores a member id, or an array of ids when `multiple` is true |
 | `TableFieldDefinition` | type | Repeating-row table field (columns, row bounds, add-row label) |
 | `TableColumnDefinition` | type | Union of the field types a table column may use |
 | `TABLE_COLUMN_FIELD_TYPES` | const | Field types the structural lint accepts as a column |
@@ -271,6 +272,9 @@ Form-schema definitions.
 | `isFormOptionFieldDefinition()` | function | Option-control type guard |
 | `isFormDataSourceFieldDefinition()` | function | DataSource-backed option type guard |
 | `isFormStaticOptionFieldDefinition()` | function | Static-option type guard |
+| `isMemberFieldDefinition()` | function | Member field type guard |
+| `isFormMemberValue()` | function | Whether a value is a well-formed member value (non-empty string, or array of non-empty strings when `multiple`) |
+| `readFormMemberIds()` | function | Member ids held by a member field value, whichever shape it has |
 | `isTableFieldDefinition()` | function | Table field type guard |
 | `isTableColumnFieldType()` | function | Whether a field type may be used as a column |
 | `isFormTableCellValue()` | function | Primitive cell-value guard |
@@ -324,16 +328,16 @@ Form-schema definitions.
 | `WorkflowNodeTriggerMode` | type | `'AND' \| 'OR'` |
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
-| `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`) |
+| `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
 | `ApproverResolverFallback` | type | Fallback when primary resolver fails |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
 | `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
-| `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them). `{ whenEmpty }`; absent keeps the previous behaviour |
+| `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them), and neither is the member who submitted on their behalf (`submittedByMemberId`, same rule; an `ORG_MANAGER_CHAIN` walk climbs past him instead of stopping at him). `{ whenEmpty }`; absent keeps the previous behaviour |
 | `ExcludeInitiatorWhenEmpty` | type | What happens when no approver is left after the initiator is removed: `FAIL` / `INITIATOR_MANAGER` / `SKIP_NODE` |
 | `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
-| `FieldPermission` | interface | Per-node read/write permission |
+| `FieldPermission` | interface | Per-node read/write permission — reserved, **not enforced** (the engine and screens never read `fieldPermissions`) |
 | `NotificationOverride` | interface | Node-level notification overrides |
 | `NotificationChannel` | type | `'IN_APP' \| 'EMAIL' \| 'WEBHOOK'` |
 | `ServiceAction` | type | Action runnable by a serviceTask; `NOTIFY` may carry optional `webhooks` (ADR 18) |
@@ -368,7 +372,8 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `readDesignTimeApproverCount` | function | Approvers a resolver is guaranteed to produce; `null` for runtime-resolved strategies |
 | `isDecisionPolicyUnsatisfiable` | function | `true` when a `COUNT` quorum exceeds the approvers the node can ever collect |
 | `defaultWorkflowEdgeId` | function | Default edge id factory |
-| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing |
+| `createWorkflowNode` / `readNextWorkflowNodeIndex` | function | Node factory + id indexing. **Behaviour change:** a new `userTask` approver and a new NOTIFY `recipients` now default to `DEFAULT_MANAGER_RESOLVER` (the initiator's manager) instead of the placeholder `{ type: 'DIRECT', memberIds: ['member-001'] }`; callers that relied on the old placeholder must set a resolver themselves |
+| `DEFAULT_MANAGER_RESOLVER` | const | `{ type: 'ORG_MANAGER', baseFromInitiator: true, levelsUp: 1 }` — the resolver `createWorkflowNode` seeds on new user and NOTIFY nodes, exported so a host can reuse or compare against it |
 | `createWorkflowEdge` / `readInsertedOutgoingEdgeData` | function | Edge factory + inserted-edge data |
 | `insertWorkflowNodeIntoDefinition` / `insertWorkflowNodeAtEdge` / `insertWorkflowNodeAfterNode` | function | Node insertion strategies |
 | `renameWorkflowNode` / `applyWorkflowNodeTriggerMode` | function | Node data transforms |
@@ -594,8 +599,8 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 | Group | Names |
 |---|---|
-| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
-| Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `candidateMemberIds` / `openCandidateMemberIds`), `TaskCandidateRecord` (incl. `sequence`), `TaskDecisionRecord`, `WorkflowTokenRecord` |
+| Instance | `ApprovalInstanceState`, `ApprovalInstanceRecord` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the optional `submittedByMemberId` — the member who filed it when that is not the initiator; `null`, absent or equal to `initiatorMemberId` means the initiator did), `ApprovalInstanceView`, `ApprovalInstancesPageInput / Result`, `ApprovalInstancePageInfoRecord`, `LaunchContext`, `LaunchableTemplateRecord` |
+| Task | `TaskStatus`, `TaskAssignmentType`, `TaskDecisionAction`, `TaskRecord` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `candidateMemberIds` / `openCandidateMemberIds` / `nodeLabel`), `TaskCandidateRecord` (incl. `sequence`), `TaskDecisionRecord`, `WorkflowTokenRecord` |
 | Ad-hoc | `AdhocDirectiveType`, `AdhocDirectiveStatus`, `AdhocTargetKind`, `AdhocPreApprovalRejectBehavior`, `AdhocTargetOptions`, `AdhocDirectiveRecord` |
 | Webhook delivery | `WorkflowWebhookDeliveryStatus`, `WorkflowWebhookDeliveryRecord` (no URL, header or payload; `endpointLabel` is `null` once the endpoint is unregistered) |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
@@ -630,7 +635,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 | Name | Purpose |
 |---|---|
-| `submitApprovalInstance({ ... })` | Launch a new instance |
+| `submitApprovalInstance({ ... })` | Launch a new instance. The service command also takes an optional `submittedByMemberId` (who actually pressed submit when it is not the applicant); the GraphQL mutation always sets it to the signed-in member and does not accept it as input. Absent means the initiator. Nodes with `excludeInitiator` keep that member out of their approvers exactly like the initiator; the instance exposes it as `ApprovalInstance.submittedByMemberId` (nullable — `null` on rows written before the column existed means "the initiator submitted it"), and `INSTANCE_STARTED` carries it in its payload. A distinct submitter can read the instance (detail, timeline, attachments) and finds it in the `SENT` and ordinary readable lists, but resubmit and cancel stay initiator-only; the initiator's `INSTANCE_COMPLETED` notification then reads "…已完成。（由 X 代為送出）" and its payload carries `submittedByMemberId` and the rendered sentence `submittedByNote` (the built-in body is `…已完成。{{submittedByNote}}`; both keys are absent, and the body unchanged, when the initiator submitted it themselves). The name is looked up once at submit, before the submit transaction, and recorded as `submittedByName` on `INSTANCE_STARTED` (absent when the initiator submitted); the lookup (`NotificationService.readMemberDisplayName(memberId)`, public so the engine can call it before opening the transaction; call it outside any transaction) falls back to the member id on error or after 2 s, and completion reads that record instead of calling the identity source inside the approval transaction |
 | `decideTask({ ... })` | Decide a task (APPROVE / REJECT / RETURN) |
 | `cancelApprovalInstance({ ... })` | Cancel an instance |
 | `resubmitApprovalInstance({ ... })` | Re-submit after return |
@@ -673,7 +678,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
 | `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -725,6 +730,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Enums | `OrganizationEnums` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService` |
+| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationQueries`, `OrganizationMutations` |
 
@@ -765,6 +771,43 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `OrganizationModule`-only host is unaffected. Exposed as the `deletePosition`
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
+
+`effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
+manager rule in force?" needs a notion of *today*, and that depends on the
+zone. BPM reads today in the `organizationTimeZone` root option (an IANA name,
+default `Asia/Taipei`, BPM's business time zone) everywhere it compares against
+those two columns: the workflow engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`,
+`POSITION`, org-unit member and org-unit position resolvers, the
+initiator-manager replacement, the default initiator snapshot, the engine's dry run,
+`OrganizationService.resolveManagerMemberId` (SLA escalation and notification
+use it) and the `activeOnly` membership and manager resolution listings. A host
+whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'`. An
+unknown zone makes BPM fail at startup. Stored effective dates and the
+`startAt` / `endAt` / `createdAt` timestamps are untouched. This is separate
+from `notificationSlaBusinessCalendarTimeZone` (SLA business days); a host may
+set both to the same value.
+
+Before this option the workflow engine read the UTC date (so between 00:00 and
+08:00 in UTC+8 a rule effective from today did not apply yet) while
+`OrganizationService` already read `Asia/Taipei`. Both now follow the option;
+the `OrganizationService` reading is unchanged for a host that sets nothing, and
+the engine's moves from UTC to `Asia/Taipei`.
+
+> **Compatibility change.** A host that sets nothing gets a different approver
+> resolution in one window: for a membership or manager rule whose
+> `effectiveFrom` or `effectiveTo` is today, the engine now applies or retires
+> it from local midnight in `Asia/Taipei`, up to eight hours earlier than
+> before. A host whose organization dates are kept in UTC, or that relied on
+> the engine's UTC reading, sets `organizationTimeZone: 'UTC'` before
+> upgrading. Instances already running keep the tasks they have; only
+> resolutions made after the upgrade read the new date.
+
+Known limitation: the template designer's browser-side dry-run snapshot
+(`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
+initiator from the browser's UTC date, because the client has no access to the
+host's `organizationTimeZone`. Between local midnight and the UTC offset that
+preview can disagree with the engine's dry run and with real runs for a
+membership effective from today.
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
@@ -869,6 +912,29 @@ definition snapshot rather than whatever version the template publishes today.
 > `publishApprovalTemplateVersion` / `forkApprovalTemplate`) accept an optional
 > trailing `manager?: EntityManager` for this composition (backward-compatible).
 
+**Publish-time member reference check.** `publishApprovalTemplateVersion` also
+checks every `DYNAMIC_FORM` resolver against the bound form version: each user
+task `approverResolver.formPath` and each NOTIFY `action.recipients.formPath`
+must equal the `fieldKey` of a `member` (人員選擇) field, otherwise publish fails
+with `workflow.nodes.<id>.approverResolver.formPath must reference a member
+(人員選擇) field of the bound form: <path>` (or `...action.recipients.formPath`).
+The field must also be one the submit validation guarantees a value for —
+`required: true`, no `visibleWhen`, not `hidden` — otherwise publish fails with
+`<path> must reference a required member field that no visibility rule or
+hidden flag can leave empty: <fieldKey>`. A path that names no member field, or
+a member field left empty, resolves to nobody at runtime and throws while the
+task or notification is created; on a node past the first one that throw lands
+inside the previous approver's decision, which could then never commit. The
+designer still lists such fields, marked with the reason publishing refuses them.
+
+> **Compatibility change.** This check is new: a `DYNAMIC_FORM` resolver whose
+> `formPath` points at a non-member field can no longer be published. Such a
+> draft could only be written through the API or the AI assistant before the
+> `member` field type existed. It still saves as a draft
+> (`updateApprovalTemplateDraft` does not run the check), but publishing it now
+> fails until the path is re-pointed at a member field.
+> Versions published before the check are not re-validated.
+
 **Template lifecycle.** `ApprovalTemplateEntity.isActive` (column `is_active`,
 `NOT NULL DEFAULT true`, matching `ApprovalTemplateCategoryEntity`) takes a
 template out of service without deleting it or archiving its published version.
@@ -954,11 +1020,12 @@ Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the nullable `businessKey`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt` / `nodeLabel`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
-| Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
+| Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
+| Business key | `MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH` (200 characters, counted as code points) |
 | Tokens | `WorkflowEngineTokens`, `BPM_WORKFLOW_ENGINE_SERVICE`, `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
 | Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
@@ -982,6 +1049,39 @@ runtime value reaches both, because the service resolves it from the global
 `BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
+
+### Business key (host document ↔ instance)
+
+A host that submits instances from its own documents (a purchase order, say)
+labels each one with a **business key** instead of tucking it into `form_data`.
+
+- **Service layer only.** `WorkflowEngineService.submitApprovalInstance` takes an
+  optional `businessKey?: string | null`. The GraphQL `submitApprovalInstance`
+  input has no such field and the mutation always passes `businessKey: null`, so
+  an end user can never claim a key. `ApprovalInstance.businessKey` is a
+  nullable read-only GraphQL field.
+- **Normalised.** The key is trimmed; empty or whitespace-only becomes `null`;
+  more than 200 characters, counted as code points (`MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH`) is a
+  `BadRequestException` (`業務鍵長度不可超過 200 個字元`).
+- **Unique per template.** The partial unique index
+  `approval_instances_business_key_key` on `(template_id, business_key) WHERE
+  business_key IS NOT NULL` is the only arbiter: instances without a key never
+  conflict with each other, and the same key on another template is fine. A
+  second submit with the same `(template, key)` is a `ConflictException`
+  (`此範本已有相同業務鍵（<key>）的簽核單`), raised by translating the unique
+  violation of the insert rather than by a pre-check, so two concurrent submits
+  cannot both succeed.
+- **State does not matter.** A CANCELLED or REJECTED instance still holds its
+  key, and the engine never frees one on its own; what a rejected or cancelled
+  document may do next (submit again under a new key, say) is the host's call.
+- **Immutable.** Resubmitting a returned instance, returning, and cancelling all
+  leave the key unchanged; there is no API to change it after submit.
+- **Lookup.** `findApprovalInstanceByBusinessKey(templateId, businessKey)`
+  returns the instance (any state) or `null`; the key is trimmed first and a
+  blank or over-long key, or a `templateId` that is not a uuid, returns `null`
+  without querying. There is deliberately
+  no GraphQL query or `@rytass/bpm-core-client` wrapper: hosts call the service
+  directly, like every other engine lookup that is not an end-user screen.
 
 ## `@rytass/bpm-core-nestjs-module/workflow-webhook`
 
@@ -1255,6 +1355,8 @@ argument on the `notifications` / `notificationCount` queries.
 24. `WorkflowWebhookDeliveries0000000023000` (creates `workflow_webhook_deliveries`, the NOTIFY webhook outbox: unique `(token_id, target_id)` so a token cannot queue the same target twice, plus indexes for the pending scan and per-instance listing)
 25. `WorkflowWebhookEndpoints0000000024000` (creates `workflow_webhook_endpoints` — database-managed NOTIFY webhook endpoints, unique `(key, version)`, `is_active` index, header values and signing secret only as AES-256-GCM envelopes — and `workflow_webhook_endpoint_audits`, which records who changed which fields and never a value)
 26. `TaskCandidateSequence0000000025000` (adds nullable `task_candidates.sequence` — the 0-based signing order inside a `SEQUENTIAL` task — and nullable `tasks.sla_started_at`; existing rows are not backfilled, so in-flight tasks keep the behaviour they were created under. `down()` first turns `WAITING` candidates back into `PENDING` so no task is stranded)
+27. `ApprovalInstanceBusinessKey0000000026000` (adds nullable `approval_instances.business_key` and the partial unique index `approval_instances_business_key_key` on `(template_id, business_key) WHERE business_key IS NOT NULL`; existing rows stay `NULL`, and the index ignores `state`. `down()` drops the index, then the column)
+28. `ApprovalInstanceSubmittedBy0000000027000` (adds nullable `approval_instances.submitted_by_member_id` plus `IDX_approval_instances_submitted_by_created_desc` on `(submitted_by_member_id, created_at DESC)` so the `SENT` list's `initiator OR submitter` match stays indexed; existing rows stay `NULL`, which the engine reads as "the initiator submitted it". `down()` drops the index, then the column)
 
 ---
 

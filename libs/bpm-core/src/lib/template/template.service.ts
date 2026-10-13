@@ -7,7 +7,11 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+  isMemberFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import {
   EntityManager,
@@ -944,6 +948,10 @@ export class TemplateService {
       version.initiatorPolicyCel,
       formVersion.schema,
     );
+    const memberReferenceErrors = lintWorkflowMemberReferences(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
     const webhookErrors = await this.lintWorkflowWebhooks(
       version.workflowDefinition,
       formVersion.schema,
@@ -952,6 +960,7 @@ export class TemplateService {
       ...workflowResult.errors,
       ...conditionErrors,
       ...tableReferenceErrors,
+      ...memberReferenceErrors,
       ...webhookErrors,
     ];
 
@@ -1324,6 +1333,86 @@ function lintWorkflowTableReferences(
     );
 
   return [...expressionErrors, ...structuredErrors];
+}
+
+/**
+ * A `DYNAMIC_FORM` approver resolver (user task) or recipient resolver (NOTIFY)
+ * reads member ids from the form data at `formPath`. A path that names no
+ * member field of the bound form version resolves to nothing at runtime, which
+ * throws while the task is created and can strand the case — so it is caught
+ * here instead. The same throw happens when the field is merely empty, and on a
+ * node past the first one it lands inside the previous approver's decision,
+ * which then can never commit. So the field must also be one the submit
+ * validation guarantees a value for: required, with no `visibleWhen` that can
+ * hide it and not a store-only `hidden` field.
+ */
+function lintWorkflowMemberReferences(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const memberFields = new Map(
+    (schema?.fields ?? [])
+      .filter(isMemberFieldDefinition)
+      .map((field) => [field.fieldKey, field]),
+  );
+
+  return definition.nodes
+    .flatMap((node) => {
+      if (
+        node.type === 'userTask' &&
+        node.data.approverResolver?.type === 'DYNAMIC_FORM'
+      ) {
+        return [
+          {
+            formPath: node.data.approverResolver.formPath,
+            label: `workflow.nodes.${node.id}.approverResolver.formPath`,
+          },
+        ];
+      }
+
+      if (
+        node.type === 'serviceTask' &&
+        node.data.action?.type === 'NOTIFY' &&
+        node.data.action.recipients?.type === 'DYNAMIC_FORM'
+      ) {
+        return [
+          {
+            formPath: node.data.action.recipients.formPath,
+            label: `workflow.nodes.${node.id}.action.recipients.formPath`,
+          },
+        ];
+      }
+
+      return [];
+    })
+    .flatMap(({ formPath, label }) => {
+      // A blank path is reported by the workflow definition lint already.
+      if (typeof formPath !== 'string' || formPath.trim() === '') {
+        return [];
+      }
+
+      const field = memberFields.get(formPath);
+
+      if (!field) {
+        return [
+          `${label} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+        ];
+      }
+
+      return isMemberFieldAlwaysFilled(field)
+        ? []
+        : [
+            `${label} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+          ];
+    });
+}
+
+function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {
+  return (
+    field.required === true &&
+    field.hidden !== true &&
+    !field.visibleWhen?.trim()
+  );
 }
 
 function readConditionExpressions(

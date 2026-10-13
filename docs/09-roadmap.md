@@ -266,7 +266,7 @@
 **Backend**
 
 - [ ] 加簽 / 減簽 / 跳簽 API
-- [ ] 表單欄位節點級權限（依 fieldPermissions 過濾）
+- [ ] 表單欄位節點級權限（依 fieldPermissions 過濾；型別已保留但**不生效**，見 docs/08 §2；欄位層級的「只存不顯示」另以 `hidden` 提供）
 - [ ] ABAC 發起權限細化（initiator policy 完整支援）
 - [ ] 角色 / 組織代碼目錄查詢 API，並將開始節點發起權限 AutoComplete 改為 server-controlled async
 

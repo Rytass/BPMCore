@@ -69,6 +69,8 @@ import {
   readFormDataSourceFieldStatusMessage,
   useFormDataSourceField,
 } from './form-data-source-field';
+import { resolveFormFieldLink } from './form-field-link';
+import { MemberFieldControl } from './member-field';
 
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
@@ -410,6 +412,15 @@ function FormRendererField({
     </div>
   );
 }
+
+const EXTERNAL_LINK_CUE = '（另開新分頁）';
+const EXTERNAL_LINK_TITLE = '另開新分頁';
+
+const LINK_STYLE: CSSProperties = {
+  color: 'inherit',
+  textDecoration: 'underline',
+  wordBreak: 'break-all',
+};
 
 const DATA_SOURCE_FEEDBACK_STYLE: CSSProperties = {
   alignItems: 'center',
@@ -888,6 +899,40 @@ function renderStaticControl(
     | undefined,
   size: ControlSize = 'main',
 ): ReactElement {
+  const link =
+    readonly &&
+    (field.type === 'text' || field.type === 'textarea') &&
+    field.displayAs === 'link'
+      ? resolveFormFieldLink(value)
+      : null;
+
+  // Only a safe href becomes an anchor; anything else falls through to the
+  // ordinary read-only control, i.e. plain text.
+  if (link) {
+    return (
+      // Typography types its props as a paragraph's, so it cannot take `href`;
+      // it supplies the brand colour and the anchor inherits it.
+      <Typography color="text-brand" component="span" variant="body">
+        <a
+          href={link.href}
+          style={LINK_STYLE}
+          {...(link.external
+            ? {
+                // The cue lives in attributes, not in a child node, so
+                // selecting or copying the link yields just the URL.
+                'aria-label': `${link.href}${EXTERNAL_LINK_CUE}`,
+                rel: 'noopener noreferrer',
+                target: '_blank',
+                title: EXTERNAL_LINK_TITLE,
+              }
+            : {})}
+        >
+          {link.href}
+        </a>
+      </Typography>
+    );
+  }
+
   if (field.type === 'textarea') {
     return (
       <Textarea
@@ -956,6 +1001,20 @@ function renderStaticControl(
         readOnly={readonly}
         size={size}
         value={readSelectOption(options, readStringValue(value))}
+      />
+    );
+  }
+
+  if (field.type === 'member') {
+    return (
+      <MemberFieldControl
+        multiple={field.multiple === true}
+        name={field.fieldKey}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        placeholder={field.placeholder}
+        readonly={readonly}
+        size={size}
+        value={value}
       />
     );
   }
@@ -1281,6 +1340,7 @@ function readInputPlaceholder(type: FormFieldDefinition['type']): string {
     date: '請選擇日期',
     datetime: '請選擇日期與時間',
     file_upload: '請上傳附件',
+    member: '搜尋姓名或信箱',
     money: '請輸入金額',
     number: '請輸入數字',
     radio: '請選擇一個選項',
