@@ -427,6 +427,7 @@ describe('WorkflowEngineService', () => {
   });
 
   describe('business key', () => {
+    const TEMPLATE_UUID = '3f1c2a9e-5b7d-4e8a-9c01-2d4f6a8b0c1e';
     const submitWithBusinessKey = (
       fixture: ServiceFixture,
       businessKey?: string | null,
@@ -481,6 +482,33 @@ describe('WorkflowEngineService', () => {
         submitWithBusinessKey(rejected, 'k'.repeat(201)),
       ).rejects.toThrow(BadRequestException);
       expect(rejected.savedInstance).toBeNull();
+    });
+
+    it('counts the length limit in characters, not UTF-16 code units', async (): Promise<void> => {
+      // Each emoji is two UTF-16 code units but one character.
+      const atLimit = '😀'.repeat(200);
+      const accepted = createPublishedFixture();
+      const rejected = createPublishedFixture();
+
+      await submitWithBusinessKey(accepted, atLimit);
+
+      expect(accepted.savedInstance?.businessKey).toBe(atLimit);
+
+      await expect(
+        submitWithBusinessKey(rejected, `${atLimit}😀`),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('looks up a business key that is at the character limit', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+      const atLimit = '😀'.repeat(200);
+
+      await fixture.service.findApprovalInstanceByBusinessKey(
+        TEMPLATE_UUID,
+        atLimit,
+      );
+
+      expect(fixture.rootInstanceFindOne).toHaveBeenCalledTimes(1);
     });
 
     it('turns a duplicate (template, business key) into a Conflict', async (): Promise<void> => {
@@ -578,13 +606,13 @@ describe('WorkflowEngineService', () => {
       });
 
       const found = await fixture.service.findApprovalInstanceByBusinessKey(
-        'template-1',
+        TEMPLATE_UUID,
         ' PO-2026-001 ',
       );
 
       expect(found?.businessKey).toBe('PO-2026-001');
       expect(fixture.rootInstanceFindOne).toHaveBeenCalledWith({
-        where: { businessKey: 'PO-2026-001', templateId: 'template-1' },
+        where: { businessKey: 'PO-2026-001', templateId: TEMPLATE_UUID },
       });
     });
 
@@ -595,21 +623,33 @@ describe('WorkflowEngineService', () => {
 
       await expect(
         fixture.service.findApprovalInstanceByBusinessKey(
-          'template-1',
+          TEMPLATE_UUID,
           'PO-404',
         ),
       ).resolves.toBeNull();
+    });
+
+    it('returns null without querying when the template id is not a uuid', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          'template-1',
+          'PO-1',
+        ),
+      ).resolves.toBeNull();
+      expect(fixture.rootInstanceFindOne).not.toHaveBeenCalled();
     });
 
     it('does not query for a blank or over-long business key', async (): Promise<void> => {
       const fixture = createPublishedFixture();
 
       await expect(
-        fixture.service.findApprovalInstanceByBusinessKey('template-1', '  '),
+        fixture.service.findApprovalInstanceByBusinessKey(TEMPLATE_UUID, '  '),
       ).resolves.toBeNull();
       await expect(
         fixture.service.findApprovalInstanceByBusinessKey(
-          'template-1',
+          TEMPLATE_UUID,
           'k'.repeat(201),
         ),
       ).resolves.toBeNull();

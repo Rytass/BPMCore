@@ -959,6 +959,7 @@ Workflow execution engine — the heaviest module.
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
 | Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
+| Business key | `MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH` (200 characters, counted as code points) |
 | Tokens | `WorkflowEngineTokens`, `BPM_WORKFLOW_ENGINE_SERVICE`, `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
 | Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum` |
@@ -994,7 +995,7 @@ labels each one with a **business key** instead of tucking it into `form_data`.
   an end user can never claim a key. `ApprovalInstance.businessKey` is a
   nullable read-only GraphQL field.
 - **Normalised.** The key is trimmed; empty or whitespace-only becomes `null`;
-  more than 200 characters (`MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH`) is a
+  more than 200 characters, counted as code points (`MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH`) is a
   `BadRequestException` (`業務鍵長度不可超過 200 個字元`).
 - **Unique per template.** The partial unique index
   `approval_instances_business_key_key` on `(template_id, business_key) WHERE
@@ -1011,7 +1012,8 @@ labels each one with a **business key** instead of tucking it into `form_data`.
   leave the key unchanged; there is no API to change it after submit.
 - **Lookup.** `findApprovalInstanceByBusinessKey(templateId, businessKey)`
   returns the instance (any state) or `null`; the key is trimmed first and a
-  blank or over-long key returns `null` without querying. There is deliberately
+  blank or over-long key, or a `templateId` that is not a uuid, returns `null`
+  without querying. There is deliberately
   no GraphQL query or `@rytass/bpm-core-client` wrapper: hosts call the service
   directly, like every other engine lookup that is not an end-user screen.
 

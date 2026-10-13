@@ -1,3 +1,4 @@
+import { isUUID } from 'class-validator';
 import {
   FORM_TABLE_MAX_ROWS,
   FormDataSourceOptionFieldDefinition,
@@ -484,9 +485,12 @@ export class WorkflowEngineService {
   ): Promise<ApprovalInstanceEntity | null> {
     const normalizedKey = businessKey.trim();
 
+    // A template id that is not a uuid cannot match a row, and handing it to
+    // Postgres would raise 22P02 (a 500) instead of "not found".
     if (
+      !isUUID(templateId) ||
       normalizedKey === '' ||
-      normalizedKey.length > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH
+      countCodePoints(normalizedKey) > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH
     ) {
       return null;
     }
@@ -7950,6 +7954,12 @@ function mapDecisionToResolution(
   }
 }
 
+// The limit is stated in characters, so a character outside the BMP counts
+// once rather than as its two UTF-16 code units.
+function countCodePoints(value: string): number {
+  return Array.from(value).length;
+}
+
 function normalizeBusinessKey(
   businessKey: string | null | undefined,
 ): string | null {
@@ -7959,7 +7969,7 @@ function normalizeBusinessKey(
     return null;
   }
 
-  if (trimmed.length > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH) {
+  if (countCodePoints(trimmed) > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH) {
     throw new BadRequestException(
       `業務鍵長度不可超過 ${MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH} 個字元`,
     );
