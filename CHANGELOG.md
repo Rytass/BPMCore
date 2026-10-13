@@ -1,3 +1,66 @@
+## 0.15.0 (2026-10-13)
+
+### 🚀 Features
+
+- **designer:** pick approvers from a member field and show readable dry-run assignees ([bc9592e](https://github.com/Rytass/BPMCore/commit/bc9592e))
+- **designer:** show who submitted on the applicant's behalf in the instance detail ([4bcb291](https://github.com/Rytass/BPMCore/commit/4bcb291))
+- **forms:** add a member field type ([0fca8d4](https://github.com/Rytass/BPMCore/commit/0fca8d4))
+- **forms:** add store-only hidden fields and link display for text fields ([ae38a92](https://github.com/Rytass/BPMCore/commit/ae38a92))
+- **inbox:** show node names instead of node ids in task lists ([e9e8f46](https://github.com/Rytass/BPMCore/commit/e9e8f46))
+- **organization:** read effective dates in a configurable organizationTimeZone ([905982c](https://github.com/Rytass/BPMCore/commit/905982c))
+- **workflow-client:** select nodeLabel wherever tasks are selected ([273bd4f](https://github.com/Rytass/BPMCore/commit/273bd4f))
+- **workflow-engine:** add business_key column with per-template unique index ([cb1b9bf](https://github.com/Rytass/BPMCore/commit/cb1b9bf))
+- **workflow-engine:** let hosts submit and look up instances by business key ([daa7d9d](https://github.com/Rytass/BPMCore/commit/daa7d9d))
+- **workflow-engine:** require delegates and transfer targets on manager chains to match the grade they replace ([2cc0432](https://github.com/Rytass/BPMCore/commit/2cc0432))
+- **workflow-engine:** add a nullable submitted-by column to approval instances ([06e7c97](https://github.com/Rytass/BPMCore/commit/06e7c97))
+- **workflow-engine:** keep the member who submitted on someone's behalf out of excluding nodes ([0e02334](https://github.com/Rytass/BPMCore/commit/0e02334))
+- **workflow-engine:** let the member who submitted for the applicant read the instance ([7416df8](https://github.com/Rytass/BPMCore/commit/7416df8))
+- **workflow-engine:** tell the applicant who submitted the document on their behalf ([3a20985](https://github.com/Rytass/BPMCore/commit/3a20985))
+- **workflow-engine:** select submittedByMemberId on the client instance record ([81e7f4d](https://github.com/Rytass/BPMCore/commit/81e7f4d))
+- **workflow-engine:** expose the node name on tasks as nodeLabel ([25b0705](https://github.com/Rytass/BPMCore/commit/25b0705))
+
+### 🩹 Fixes
+
+- **designer:** stop re-requesting unresolvable members and warn on optional member fields ([8d6afa5](https://github.com/Rytass/BPMCore/commit/8d6afa5))
+- **designer:** keep capped-out member ids eligible in the form renderer ([b8b4d4b](https://github.com/Rytass/BPMCore/commit/b8b4d4b))
+- **designer:** say the sent list includes cases submitted on someone's behalf ([bfd928f](https://github.com/Rytass/BPMCore/commit/bfd928f))
+- **forms:** keep member ids out of case titles and check member references on publish ([2b3c9c0](https://github.com/Rytass/BPMCore/commit/2b3c9c0))
+- **forms:** harden hidden fields and link display after review ([9ce1f82](https://github.com/Rytass/BPMCore/commit/9ce1f82))
+- **forms:** keep the new-tab cue out of copied link text ([4fcd8e8](https://github.com/Rytass/BPMCore/commit/4fcd8e8))
+- **organization:** default organizationTimeZone to Asia/Taipei ([cc6b908](https://github.com/Rytass/BPMCore/commit/cc6b908))
+- **shared:** default new nodes to the initiator's manager instead of a placeholder member id ([e2aed61](https://github.com/Rytass/BPMCore/commit/e2aed61))
+- **shared:** freeze the default manager resolver every new node shares ([281aeb2](https://github.com/Rytass/BPMCore/commit/281aeb2))
+- **template:** refuse a DYNAMIC_FORM resolver on a member field that can be left empty ([b3a3950](https://github.com/Rytass/BPMCore/commit/b3a3950))
+- **template-designer:** sample a dry-run member field with a placeholder, not the initiator ([b567e41](https://github.com/Rytass/BPMCore/commit/b567e41))
+- **template-designer:** name a member-field dry-run assignee by its field label ([465fcc3](https://github.com/Rytass/BPMCore/commit/465fcc3))
+- **workflow-engine:** name the node and the org in approver-resolution errors and keep the dry run going ([f45bfaf](https://github.com/Rytass/BPMCore/commit/f45bfaf))
+- **workflow-engine:** say 通知對象 for notify recipients ([226dbda](https://github.com/Rytass/BPMCore/commit/226dbda))
+- **workflow-engine:** reject malformed member values on submit ([f13113e](https://github.com/Rytass/BPMCore/commit/f13113e))
+- **workflow-engine:** translate missing org units and finish the dry-run edge cases ([b528aaa](https://github.com/Rytass/BPMCore/commit/b528aaa))
+- **workflow-engine:** name the fallback problem in the dry-run manager message ([7f571f0](https://github.com/Rytass/BPMCore/commit/7f571f0))
+- **workflow-engine:** harden business key lookup and count its length in characters ([844ce82](https://github.com/Rytass/BPMCore/commit/844ce82))
+- **workflow-engine:** skip the submitter before choosing the initiator-manager replacement tier ([355373e](https://github.com/Rytass/BPMCore/commit/355373e))
+- **workflow-engine:** keep every refused delegation on record when the dedupe or a kept stored member hides its row ([aad1c8c](https://github.com/Rytass/BPMCore/commit/aad1c8c))
+- **workflow-engine:** leave out the refusals of seats the initiator exclusion removes ([959912e](https://github.com/Rytass/BPMCore/commit/959912e))
+- **workflow-engine:** index the submitter column that the sent list now matches ([557f458](https://github.com/Rytass/BPMCore/commit/557f458))
+- **workflow-engine:** bound the submitter name lookup inside the approval transaction ([dbf1d3b](https://github.com/Rytass/BPMCore/commit/dbf1d3b))
+- **workflow-engine:** normalise the ad-hoc task nodeLabel like the list paths ([ded39e9](https://github.com/Rytass/BPMCore/commit/ded39e9))
+- **workflow-engine:** consume the token of a NOTIFY node skipped by its entry condition ([#78](https://github.com/Rytass/BPMCore/issues/78))
+- **workflow-engine:** end a dry-run skip reason with a full stop before the stop reason ([8a855f4](https://github.com/Rytass/BPMCore/commit/8a855f4))
+- **workflow-engine:** read task node labels from the entity's own table path ([16d6e8e](https://github.com/Rytass/BPMCore/commit/16d6e8e))
+
+### 🔥 Performance
+
+- **notification:** name the submitter at submit instead of inside the approval transaction ([da64763](https://github.com/Rytass/BPMCore/commit/da64763))
+- **workflow-engine:** read task node labels in Postgres instead of loading whole snapshots ([65bbbe1](https://github.com/Rytass/BPMCore/commit/65bbbe1))
+- **workflow-engine:** batch the grade lookups of a manager-chain node's delegations ([99ae382](https://github.com/Rytass/BPMCore/commit/99ae382))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5.5
+- Kai-Chieh Yang
+
 ## 0.14.0 (2026-10-12)
 
 ### 🚀 Features
