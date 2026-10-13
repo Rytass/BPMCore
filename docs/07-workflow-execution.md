@@ -517,14 +517,14 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
   - `FAIL`：丟出 `ConflictException`，不建立任務。
   - `INITIATOR_MANAGER`：改派申請人的直屬主管（同樣套 delegation、同樣排除申請人），
     候選人的 `sourceType` 為 `EXCLUDE_INITIATOR_MANAGER`；找不到主管同樣丟 `ConflictException`。
-    查主管時只取申請人最近的組織單位，並先排除申請人本人的主管規則再選最高優先序——
-    申請人本人就是單位主管時，會落到上一層的主管，而不是又選回自己。
+    查主管時只取申請人最近的組織單位，並先排除申請人本人與代送人的主管規則再選最高優先序——
+    申請人本人（或替他送出單據的主管）就是單位主管時，會落到上一層的主管，而不是又選回他自己。
   - `SKIP_NODE`：不建立任務，寫一筆 `TOKEN_ADVANCED` activity log
     （`payload: { skippedByInitiatorExclusion: true, tokenId }`），token 直接往下走。
     待處理的會簽 directive 留給下一個真正建立的 user task。
   - 一開始就解析不出任何人（與申請人無關）仍是原本的錯誤，不套用 `whenEmpty`。
 - **轉交**：簽核人手動轉交（`decideTask` 的 `TRANSFERRED`）時，若目標是申請人本人，
-  回 `ConflictException`；若目標是代送人（且不是申請人），回 `ForbiddenException`
+  回 `ConflictException`；若目標是代送人（且不是申請人），同樣回 `ConflictException`
   （`簽核節點「…」不允許代送人簽核，不能將任務轉交給代為送出此單的人`）。
 - **臨時加簽／會簽**：建立任務時套用同一個過濾，指定對象只剩申請人時回
   `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個 user task
