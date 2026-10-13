@@ -340,6 +340,10 @@ async function resolveApprovers(
   4. 最多走 20 層（`ORG_MANAGER_CHAIN_MAX_HOPS`），超過視為鏈走完，防止設定錯誤的資料無限往上走。
   5. **略過（不加入清單、繼續往上走）**：這位主管沒有職等，或職等 **不高於** 清單中最後一位
      已加入的主管。申請人本人永遠不會被加入。
+     節點開了 `excludeInitiator` 且單據有代送人（§4.4）時，**代送人同樣被略過**：他不加入清單、
+     也不算「達標的最後一關」，鏈繼續往上走，所以他是剛好達標的那位主管時，會改選他上面的下一位
+     達標主管，而不是在事後把他濾掉、留下一條空鏈（略過他時不會更新「最後一位已加入的職等」）。
+     沒開 `excludeInitiator` 的節點不略過任何人。
   6. 否則加入清單；若職等 `>= minPositionLevel` 就停止，這位主管是最後一關。
 - **未達門檻**：鏈在出現達標主管之前就結束時，走 `fallback`，規則與 `ORG_MANAGER` 完全相同
   （`NONE`／未設定 → 丟 `ConflictException`；改派固定人未填 → 丟錯；固定人是申請人本人且未開
@@ -487,6 +491,20 @@ User Task 節點設定 `excludeInitiator: { whenEmpty }` 後，送出單據的�
 runtime 讀的是 `instance.workflowSnapshot`，所以模板之後才開啟此設定時，已經在跑的
 instance 不受影響。
 
+**代送人（`submittedByMemberId`）**：單據可能不是申請人自己送出的——助理、或主管替下屬建單。
+建單人若在申請人的主管鏈上，就會簽到自己建的單（權責分離規則：建單人不得核准自己建立的單）。
+所以送簽指令（服務層 `submitApprovalInstance`）多了選填的 `submittedByMemberId`，
+instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL 欄位 `submittedByMemberId`）：
+
+- GraphQL 的 `submitApprovalInstance` 一律帶**目前登入的人**，輸入型別沒有這個欄位，使用者偽造不了；
+  只有服務層呼叫端能指定「由 X 代 Y 送出」。
+- 沒傳（或 `null`）就等於 `initiatorMemberId`，行為與過去完全相同；傳入空字串或全空白會丟
+  `BadRequestException('submittedByMemberId must be a non-empty string')`。
+- 開了 `excludeInitiator` 的節點，下面各項**對代送人與對申請人套用完全相同的規則**（含代理路徑上任何一步）；
+  `whenEmpty` 的處理也不變。代送人不是申請人本人時，錯誤訊息改用「申請人或代為送出此單的人／代送人」的版本。
+- 舊資料的 `submitted_by_member_id` 是 `NULL`，一律視為「申請人自己送出」，不回填。
+- `INSTANCE_STARTED` activity 的 payload 另帶 `submittedByMemberId`。
+
 - **建立待簽任務**：先解析、再套用 delegation，然後移除申請人出現在其代理路徑上的候選人
   （代理前的 `originalMemberId`、`delegationChain` 中任何一步的 `from`／`to`，或代理後的
   `memberId`）——代理人替申請人簽，等於申請人自己簽。這一步在「沒有任何候選人」的檢查之前，
@@ -506,7 +524,8 @@ instance 不受影響。
     待處理的會簽 directive 留給下一個真正建立的 user task。
   - 一開始就解析不出任何人（與申請人無關）仍是原本的錯誤，不套用 `whenEmpty`。
 - **轉交**：簽核人手動轉交（`decideTask` 的 `TRANSFERRED`）時，若目標是申請人本人，
-  回 `ConflictException`。
+  回 `ConflictException`；若目標是代送人（且不是申請人），回 `ForbiddenException`
+  （`簽核節點「…」不允許代送人簽核，不能將任務轉交給代為送出此單的人`）。
 - **臨時加簽／會簽**：建立任務時套用同一個過濾，指定對象只剩申請人時回
   `ConflictException`。臨時加簽是當場建立任務所以當場擋；臨時會簽的任務要到之後某個 user task
   建立時才產生，且以「那個節點」自己的設定為準（失敗會取消 directive，不阻塞主流程）。
@@ -519,7 +538,8 @@ instance 不受影響。
 **不涵蓋**：
 
 - SLA 升級（`ESCALATE`）選出的轉交對象——它帶 `transferReason`，不經過上面的轉交檢查，
-  升級對象仍可能是申請人。
+  升級對象仍可能是申請人或代送人。
+- Dry run 沒有「代送人」輸入，所以不模擬代送人的排除。
 - 設定開啟之前就已啟動的 instance（節點讀的是啟動時的 snapshot）。
 - 其餘組織推導型 resolver（`POSITION`／`ORG_UNIT_*` 等）在 dry run 中的比對（dry run 只回傳佔位字串）；
   它們在實際建立任務時仍會被過濾。

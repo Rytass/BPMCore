@@ -102,6 +102,8 @@ interface ExcludeInitiatorConfig {
 不會是該節點的簽核人，代理人替申請人簽也算申請人本人。省略此欄位時行為與過去
 完全相同，因此既有模板與進行中的 instance 不受影響。`whenEmpty` 只接受上述三個值，
 runtime 規則見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
+單據有「代送人」（`submittedByMemberId`，建單人替申請人送出時才會與申請人不同）時，
+同一個設定也會把代送人排除，規則與申請人完全一樣。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
