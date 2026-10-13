@@ -1679,12 +1679,12 @@ export function FormBuilderView({
               <Toggle
                 checked={field.displayAs === 'link'}
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                  updateSelectedFieldWith(
-                    (current) =>
-                      ({
-                        ...current,
-                        displayAs: event.target.checked ? 'link' : undefined,
-                      }) as FormFieldDefinition,
+                  updateSelectedFieldWith((current) =>
+                    event.target.checked
+                      ? isTextFieldDefinition(current)
+                        ? { ...current, displayAs: 'link' }
+                        : current
+                      : removeFieldKey(current, 'displayAs'),
                   )
                 }
               />,
@@ -1698,13 +1698,10 @@ export function FormBuilderView({
             onChange={(event: ChangeEvent<HTMLInputElement>): void =>
               // A hidden field can never be required (the publish lint
               // rejects the pair), so ticking it also clears 必填.
-              updateSelectedFieldWith(
-                (current) =>
-                  ({
-                    ...current,
-                    hidden: event.target.checked ? true : undefined,
-                    ...(event.target.checked ? { required: false } : {}),
-                  }) as FormFieldDefinition,
+              updateSelectedFieldWith((current) =>
+                event.target.checked
+                  ? { ...current, hidden: true, required: false }
+                  : removeFieldKey(current, 'hidden'),
               )
             }
           />,
@@ -3832,6 +3829,20 @@ function convertTableColumnType(
         type,
       }
     : ({ ...base, type } as TableColumnDefinition);
+}
+
+/**
+ * Drops an optional display key so it is absent from the saved JSON instead of
+ * lingering as `undefined`. Rest-destructuring a union collapses it into one
+ * object type, hence the single cast back.
+ */
+function removeFieldKey(
+  field: FormFieldDefinition,
+  key: 'displayAs' | 'hidden',
+): FormFieldDefinition {
+  return Object.fromEntries(
+    Object.entries(field).filter(([entryKey]) => entryKey !== key),
+  ) as unknown as FormFieldDefinition;
 }
 
 function hasConditionRules(field: FormFieldDefinition): boolean {

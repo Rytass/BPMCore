@@ -6,6 +6,10 @@ describe('resolveFormFieldLink', () => {
     ['/'],
     ['/a/b?x=1&y=2#frag'],
     ['/path/with%20encoded'],
+    ['/a/./b'],
+    ['/a/../b'],
+    ['/a//b'],
+    ['/.hidden/file'],
   ])('keeps the site-relative path %s in this tab', (value): void => {
     expect(resolveFormFieldLink(value)).toEqual({
       external: false,
@@ -64,9 +68,33 @@ describe('resolveFormFieldLink', () => {
     ['C1 control character', '/a\u0085b'],
     ['no-break space', '/a b'],
     ['ideographic space', '　/x'],
-    ['zero-width-free fullwidth slash', '／x'],
+    ['fullwidth slash (not a path separator)', '／x'],
+    ['dot segment collapsing to a protocol-relative path', '/.//evil.example'],
+    ['double-dot segment collapsing to a protocol-relative path', '/..//evil.example'],
+    ['nested dot segments collapsing to //', '/a/..//evil.example'],
+    ['encoded dot segment collapsing to //', '/%2e//evil.example'],
+    ['encoded double-dot segment collapsing to //', '/%2E%2E//evil.example'],
+    // These are only rejected by the `\s` branch of the checker: every code
+    // point below is above U+00A0, so the numeric ranges do not cover it.
+    ['ideographic space inside a path', '/a\u3000b'],
+    ['en quad inside a path', '/a\u2000b'],
+    ['line separator inside a path', '/a\u2028b'],
+    ['paragraph separator inside a path', '/a\u2029b'],
+    ['narrow no-break space inside a path', '/a\u202fb'],
+    ['byte order mark inside a path (counts as whitespace)', '/a\ufeffb'],
+    ['ideographic space around an absolute URL', 'https://example.com/\u3000'],
   ])('renders %s as plain text', (_label, value): void => {
     expect(resolveFormFieldLink(value)).toBeNull();
+  });
+
+  // Documents a known gap rather than a wanted behaviour: a zero-width space is
+  // neither whitespace to `\s` nor a control character, so it is accepted. It
+  // cannot change where the link points (the browser percent-encodes it).
+  it('accepts a zero-width space inside a path', (): void => {
+    expect(resolveFormFieldLink('/a\u200bb')).toEqual({
+      external: false,
+      href: '/a\u200bb',
+    });
   });
 
   it.each([

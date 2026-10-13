@@ -1101,7 +1101,7 @@ describe('form schema validator', () => {
       ]);
 
       expect(result.errors).toEqual([
-        'schema.fields[0].hidden must be a boolean',
+        'schema.fields[0].hidden 必須是布林值',
       ]);
     });
 
@@ -1124,9 +1124,106 @@ describe('form schema validator', () => {
       ]);
 
       expect(result.errors).toEqual([
-        'schema.fields[0].displayAs is only supported for text fields',
-        'schema.fields[1].displayAs must be "link"',
+        'schema.fields[0].displayAs 只能用在文字欄位',
+        'schema.fields[1].displayAs 只支援 "link"',
       ]);
+    });
+
+    it('rejects a hidden DataSource field bound to a displayed field', (): void => {
+      const source = (fieldKey: string): Record<string, unknown> => ({
+        bindings: [
+          { from: { fieldKey, kind: 'FIELD' }, parameter: 'companyId' },
+        ],
+        key: 'vendors',
+        version: 1,
+      });
+      const result = lintFields([
+        { fieldKey: 'company', label: 'Company', required: false, type: 'text' },
+        {
+          fieldKey: 'secret',
+          hidden: true,
+          label: 'Secret',
+          required: false,
+          type: 'text',
+        },
+        {
+          dataSource: source('company'),
+          fieldKey: 'vendorA',
+          hidden: true,
+          label: 'Vendor A',
+          required: false,
+          type: 'select',
+        },
+        {
+          dataSource: source('secret'),
+          fieldKey: 'vendorB',
+          hidden: true,
+          label: 'Vendor B',
+          required: false,
+          type: 'select',
+        },
+        {
+          dataSource: {
+            bindings: [
+              { from: { kind: 'CONSTANT', value: 'x' }, parameter: 'p' },
+            ],
+            key: 'vendors',
+            version: 1,
+          },
+          fieldKey: 'vendorC',
+          hidden: true,
+          label: 'Vendor C',
+          required: false,
+          type: 'select',
+        },
+        {
+          dataSource: source('company'),
+          fieldKey: 'vendorD',
+          label: 'Vendor D',
+          required: false,
+          type: 'select',
+        },
+      ]);
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('schema.fields[2].dataSource');
+      expect(result.errors[0]).toContain('company');
+    });
+
+    it('rejects a hidden table whose column DataSource reads a displayed field', (): void => {
+      const result = lintFields([
+        { fieldKey: 'company', label: 'Company', required: false, type: 'text' },
+        {
+          columns: [
+            {
+              dataSource: {
+                bindings: [
+                  {
+                    from: { fieldKey: 'company', kind: 'FIELD' },
+                    parameter: 'companyId',
+                  },
+                ],
+                key: 'vendors',
+                version: 1,
+              },
+              fieldKey: 'vendor',
+              label: 'Vendor',
+              required: false,
+              type: 'select',
+            },
+          ],
+          fieldKey: 'items',
+          hidden: true,
+          label: 'Items',
+          required: false,
+          type: 'table',
+        },
+      ]);
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain(
+        'schema.fields[1].columns[0].dataSource',
+      );
     });
 
     it('rejects hidden and displayAs inside table columns', (): void => {
@@ -1150,10 +1247,10 @@ describe('form schema validator', () => {
       ]);
 
       expect(result.errors).toContain(
-        'schema.fields[0].columns[0].hidden is not supported for table columns',
+        'schema.fields[0].columns[0].hidden 不支援表格欄位',
       );
       expect(result.errors).toContain(
-        'schema.fields[0].columns[0].displayAs is not supported for table columns',
+        'schema.fields[0].columns[0].displayAs 不支援表格欄位',
       );
     });
   });

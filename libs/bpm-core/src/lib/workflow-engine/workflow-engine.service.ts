@@ -7400,15 +7400,31 @@ function validateSubmittedFormData(
     );
   }
 
-  const tableErrors = visibleFields
-    .filter(isTableFieldDefinition)
-    .flatMap((field) =>
-      validateSubmittedTableValue(
-        field,
-        formData[field.fieldKey],
-        isSubmittedFormFieldRequired(field, schema.fields, formData),
+  const tableErrors = [
+    ...visibleFields
+      .filter(isTableFieldDefinition)
+      .flatMap((field) =>
+        validateSubmittedTableValue(
+          field,
+          formData[field.fieldKey],
+          isSubmittedFormFieldRequired(field, schema.fields, formData),
+        ),
       ),
-    );
+    // A hidden table is not "visible", but its stored value still has to be a
+    // well-formed table under the row cap: only the required / minimum checks
+    // are skipped, since nobody can fill the table in.
+    ...schema.fields
+      .filter(isTableFieldDefinition)
+      .filter((field) => field.hidden === true)
+      .flatMap((field) =>
+        validateSubmittedTableValue(
+          field,
+          formData[field.fieldKey],
+          false,
+          true,
+        ),
+      ),
+  ];
 
   if (tableErrors.length > 0) {
     throw new BadRequestException(tableErrors.join('; '));
@@ -7425,11 +7441,14 @@ function validateSubmittedTableValue(
   field: TableFieldDefinition,
   value: unknown,
   required: boolean,
+  shapeOnly = false,
 ): readonly string[] {
   const path = `formData.${field.fieldKey}`;
 
   if (typeof value === 'undefined' || value === null) {
-    return required || readTableMinRows(field) > 0
+    return shapeOnly
+      ? []
+      : required || readTableMinRows(field) > 0
       ? [`${path} must include at least ${readTableRequiredRowCount(field)} row(s)`]
       : [];
   }
@@ -7439,7 +7458,7 @@ function validateSubmittedTableValue(
   }
 
   const rowErrors = value.flatMap((row, index) =>
-    validateSubmittedTableRow(field, row, `${path}[${index}]`),
+    validateSubmittedTableRow(field, row, `${path}[${index}]`, shapeOnly),
   );
 
   // A malformed row cannot be counted against min/max meaningfully; report the
@@ -7448,7 +7467,13 @@ function validateSubmittedTableValue(
     return rowErrors;
   }
 
-  return validateSubmittedTableRowCount(field, value.length, required, path);
+  return validateSubmittedTableRowCount(
+    field,
+    value.length,
+    required,
+    path,
+    shapeOnly,
+  );
 }
 
 function validateSubmittedTableRowCount(
@@ -7456,10 +7481,13 @@ function validateSubmittedTableRowCount(
   rowCount: number,
   required: boolean,
   path: string,
+  shapeOnly = false,
 ): readonly string[] {
-  const minRows = required
-    ? Math.max(readTableMinRows(field), 1)
-    : readTableMinRows(field);
+  const minRows = shapeOnly
+    ? 0
+    : required
+      ? Math.max(readTableMinRows(field), 1)
+      : readTableMinRows(field);
   const maxRows = readTableMaxRows(field);
 
   return [
@@ -7476,6 +7504,7 @@ function validateSubmittedTableRow(
   field: TableFieldDefinition,
   row: unknown,
   path: string,
+  shapeOnly = false,
 ): readonly string[] {
   if (!isRecord(row)) {
     return [`${path} must be an object`];
@@ -7493,13 +7522,17 @@ function validateSubmittedTableRow(
         columnsByKey.has(columnKey) && !isFormTableCellValue(cellValue),
     )
     .map(([columnKey]) => `${path}.${columnKey} is not a valid cell value`);
-  const requiredErrors = field.columns
-    .filter(
-      (column) =>
-        isSubmittedTableColumnRequired(column) &&
-        !isSubmittedFieldValuePresent(readRowCellValue(row, column.fieldKey)),
-    )
-    .map((column) => `${path}.${column.fieldKey} is required`);
+  const requiredErrors = shapeOnly
+    ? []
+    : field.columns
+        .filter(
+          (column) =>
+            isSubmittedTableColumnRequired(column) &&
+            !isSubmittedFieldValuePresent(
+              readRowCellValue(row, column.fieldKey),
+            ),
+        )
+        .map((column) => `${path}.${column.fieldKey} is required`);
 
   return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
 }

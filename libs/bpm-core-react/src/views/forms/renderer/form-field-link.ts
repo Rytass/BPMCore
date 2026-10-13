@@ -45,12 +45,34 @@ export function resolveFormFieldLink(value: unknown): FormFieldLink | null {
   }
 
   if (value.startsWith('/')) {
-    return value.startsWith('//') ? null : { external: false, href: value };
+    return !value.startsWith('//') && isSafeSiteRelativePath(value)
+      ? { external: false, href: value }
+      : null;
   }
 
   return ABSOLUTE_HTTP_PATTERN.test(value) && isSafeAbsoluteHttpUrl(value)
     ? { external: true, href: value }
     : null;
+}
+
+const PLACEHOLDER_BASE = 'http://placeholder.invalid';
+
+/**
+ * Dot segments collapse before navigation: `/.//evil.example` resolves to the
+ * path `//evil.example`, which a naive `startsWith('//')` check misses. Resolve
+ * the value against a throw-away origin and require that it stays on that
+ * origin and does not come out as a protocol-relative path.
+ */
+function isSafeSiteRelativePath(value: string): boolean {
+  try {
+    const resolved = new URL(value, PLACEHOLDER_BASE);
+
+    return (
+      resolved.origin === PLACEHOLDER_BASE && !resolved.pathname.startsWith('//')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isSafeAbsoluteHttpUrl(value: string): boolean {

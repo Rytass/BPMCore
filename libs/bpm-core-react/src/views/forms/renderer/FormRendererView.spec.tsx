@@ -764,6 +764,8 @@ describe('FormRenderer link display', () => {
         '/document-approval/PO/abc',
       );
       expect(view.anchor?.getAttribute('target')).toBeNull();
+      expect(view.anchor?.getAttribute('title')).toBeNull();
+      expect(view.anchor?.textContent).not.toContain('另開新分頁');
     } finally {
       await view.unmount();
     }
@@ -776,6 +778,8 @@ describe('FormRenderer link display', () => {
       expect(view.anchor?.getAttribute('href')).toBe('https://example.com/x');
       expect(view.anchor?.getAttribute('target')).toBe('_blank');
       expect(view.anchor?.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(view.anchor?.getAttribute('title')).toBe('（另開新分頁）');
+      expect(view.anchor?.textContent).toContain('（另開新分頁）');
     } finally {
       await view.unmount();
     }

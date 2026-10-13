@@ -373,7 +373,7 @@ describe('FormBuilderView field settings', () => {
       expect(harness.container.textContent).toContain('不是權限控管');
 
       toggleSetting(harness.container, 'fieldHidden');
-      expect(readField(harness.readSchema(), 'docId').hidden).toBeUndefined();
+      expect(readField(harness.readSchema(), 'docId')).not.toHaveProperty('hidden');
     } finally {
       await unmount(harness);
     }
@@ -393,9 +393,9 @@ describe('FormBuilderView field settings', () => {
       });
 
       toggleSetting(textHarness.container, 'fieldDisplayAsLink');
-      expect(
-        readField(textHarness.readSchema(), 'source').displayAs,
-      ).toBeUndefined();
+      expect(readField(textHarness.readSchema(), 'source')).not.toHaveProperty(
+        'displayAs',
+      );
     } finally {
       await unmount(textHarness);
     }

@@ -573,6 +573,61 @@ describe('WorkflowEngineService', () => {
     expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
   });
 
+  describe('hidden table field', () => {
+    const submit = (
+      hiddenSchema: FormDefinitionSchema,
+      formDataJson: string,
+    ): Promise<unknown> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: hiddenSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    it('still rejects a value that is not an array of rows', async (): Promise<void> => {
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true }),
+          '{"items":{"name":"Bolt"}}',
+        ),
+      ).rejects.toThrow('formData.items must be an array of rows');
+    });
+
+    it('still rejects a malformed row and rows over maxRows', async (): Promise<void> => {
+      await expect(
+        submit(createTableFormSchema({ hidden: true }), '{"items":["junk"]}'),
+      ).rejects.toThrow('formData.items[0] must be an object');
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true, maxRows: 1 }),
+          '{"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
+        ),
+      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+    });
+
+    it('is not required, needs no minimum rows and no required cells', async (): Promise<void> => {
+      const schema = createTableFormSchema({
+        hidden: true,
+        minRows: 2,
+        required: true,
+      });
+
+      await expect(submit(schema, '{}')).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+      await expect(
+        submit(schema, '{"items":[{"tags":["a"]}]}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+  });
+
   it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
     const formSchema = createRequiredReasonFormSchema();
     const fixture = createServiceFixture({
@@ -8348,10 +8403,12 @@ function createTableColumns(): TableFieldDefinition['columns'] {
 }
 
 function createTableFormSchema({
+  hidden,
   maxRows,
   minRows,
   required = false,
 }: {
+  readonly hidden?: boolean;
   readonly maxRows?: number;
   readonly minRows?: number;
   readonly required?: boolean;
@@ -8361,6 +8418,7 @@ function createTableFormSchema({
       {
         columns: createTableColumns(),
         fieldKey: 'items',
+        ...(typeof hidden === 'boolean' ? { hidden } : {}),
         label: '請購明細',
         ...(typeof maxRows === 'number' ? { maxRows } : {}),
         ...(typeof minRows === 'number' ? { minRows } : {}),

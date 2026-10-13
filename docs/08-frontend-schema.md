@@ -390,6 +390,13 @@ frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補
   不檢查必填；後端不會剝掉已送入的值。
 - **發布檢查**：`hidden` 必須是 boolean；`hidden: true` 不可與 `required: true` 並用
   （沒人填得到必填值，表單會送不出去）；table 的 column 不支援 `hidden`。
+- **隱藏的選項來源（DataSource）欄位**：`hidden` 欄位（或 `hidden` table 的 column）若設了
+  `dataSource`，其 `FIELD` 綁定只能指向同為 `hidden` 的欄位；綁定到顯示中的欄位會被發布檢查
+  擋下。原因：隱藏欄位不會被渲染，前端的 DataSource 閘門看不到它，但後端送出時仍會解析；
+  依賴的欄位值有問題時，重送者會被後端擋下卻沒有任何欄位可以修。只依賴其他 `hidden`
+  欄位、或只用常數綁定都允許。
+- **隱藏的 table**：後端仍檢查它的值是合法的 table（必須是列的陣列、每列是物件、欄位 key
+  合法）與 `maxRows` 上限；只略過必填、`minRows` 與列內必填欄位。
 - **與 `visibleWhen` 並用**：允許，`hidden` 優先（永遠不顯示）。`requiredWhen`
   同理被略過。
 - **仍可被引用**：條件式（`visibleWhen` / `requiredWhen` / 流程條件）、webhook 綁定、
@@ -409,8 +416,8 @@ frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補
 | 值                                  | 呈現                                                 |
 | ----------------------------------- | ---------------------------------------------------- |
 | `/` 開頭、但不是 `//` 開頭的站內路徑 | 同一分頁開啟                                         |
-| `http://` / `https://` 網址         | 新分頁開啟，`rel="noopener noreferrer"`              |
-| `javascript:`、`data:`、`//host`、含空白或控制字元、含反斜線、帶帳號密碼的網址 | 純文字 |
+| `http://` / `https://` 網址         | 新分頁開啟，`rel="noopener noreferrer"`，並附「（另開新分頁）」提示（`title` 與螢幕閱讀器專用文字） |
+| `javascript:`、`data:`、`//host`、含空白或控制字元、含反斜線、帶帳號密碼的網址，以及 `/.//host` 這類 dot segment 化簡後變成 `//` 的路徑 | 純文字 |
 
 判斷邏輯在 `libs/bpm-core-react/src/views/forms/renderer/form-field-link.ts`。
 設計器欄位設定的「以連結顯示」。
