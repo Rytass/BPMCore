@@ -1163,6 +1163,252 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  describe('NOTIFY node skipped by its entry condition', (): void => {
+    const skippedFormData = { amount: 100 };
+    const matchedFormData = { amount: 5000 };
+
+    it('consumes the token instead of demanding an outgoing edge and sends nothing', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.notificationService.createServiceTaskNotifications,
+      ).not.toHaveBeenCalled();
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            consumedAt: expect.any(Date),
+            currentNodeId: 'notify_finance',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+        ]),
+      );
+
+      const skipLog = fixture.savedSingleActivityLogs.find(
+        (log) =>
+          log.nodeId === 'notify_finance' &&
+          log.payload?.skippedByEntryCondition === true,
+      );
+
+      expect(skipLog).toMatchObject({
+        actorMemberId: null,
+        eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+        payload: {
+          consumed: true,
+          skippedByEntryCondition: true,
+          tokenId: expect.any(String),
+        },
+        taskId: null,
+      });
+      expect(skipLog?.payload).not.toHaveProperty('action');
+    });
+
+    it('completes the instance when the skipped notify was its only remaining branch', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedInstance).toMatchObject({
+        completedAt: expect.any(Date),
+        state: ApprovalInstanceStateEnum.APPROVED,
+      });
+    });
+
+    it('keeps the instance running while another branch is still open', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow({
+          withApprovalBranch: true,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks).toEqual([
+        expect.objectContaining({
+          nodeId: 'task_a',
+          status: TaskStatusEnum.PENDING,
+        }),
+      ]);
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            currentNodeId: 'notify_finance',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+          expect.objectContaining({
+            currentNodeId: 'task_a',
+            status: WorkflowTokenStatusEnum.WAITING,
+          }),
+        ]),
+      );
+    });
+
+    it('still sends the notification when the entry condition holds', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: matchedFormData,
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(
+        fixture.notificationService.createServiceTaskNotifications,
+      ).toHaveBeenCalledTimes(1);
+
+      const notifyLog = fixture.savedSingleActivityLogs.find(
+        (log) =>
+          log.nodeId === 'notify_finance' && log.payload?.action === 'NOTIFY',
+      );
+
+      expect(notifyLog?.payload).toMatchObject({ action: 'NOTIFY' });
+      expect(notifyLog?.payload).not.toHaveProperty('skippedByEntryCondition');
+      expect(notifyLog?.payload).not.toHaveProperty('consumed');
+    });
+
+    it('still advances a skipped non-NOTIFY service task along its outgoing edge', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createEntryConditionWebhookWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(
+        fixture.savedSingleActivityLogs.find(
+          (log) =>
+            log.nodeId === 'webhook_erp' &&
+            log.payload?.skippedByEntryCondition === true,
+        )?.payload,
+      ).toEqual({
+        skippedByEntryCondition: true,
+        tokenId: expect.any(String),
+      });
+      expect(fixture.savedWorkflowTokens).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            currentNodeId: 'end',
+            status: WorkflowTokenStatusEnum.CONSUMED,
+          }),
+        ]),
+      );
+      expect(fixture.savedInstance).toMatchObject({
+        state: ApprovalInstanceStateEnum.APPROVED,
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it('lets a parallel split proceed to its AND join when one branch is a skipped NOTIFY', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createSplitWithSkippedNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      const taskA = readTaskByNodeId(fixture.savedTasks, 'task_a');
+      const taskB = readTaskByNodeId(fixture.savedTasks, 'task_b');
+
+      expect(
+        fixture.savedWorkflowTokens.find(
+          (token) => token.currentNodeId === 'notify_finance',
+        ),
+      ).toMatchObject({ status: WorkflowTokenStatusEnum.CONSUMED });
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskA.assigneeMemberId ?? '',
+        taskId: taskA.id,
+      });
+
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskB.assigneeMemberId ?? '',
+        taskId: taskB.id,
+      });
+
+      expect(
+        fixture.savedTasks.some((task) => task.nodeId === 'task_final'),
+      ).toBe(true);
+      expect(
+        fixture.savedWorkflowTokens.filter(
+          (token) =>
+            token.status === WorkflowTokenStatusEnum.ACTIVE ||
+            token.status === WorkflowTokenStatusEnum.WAITING,
+        ),
+      ).toEqual([
+        expect.objectContaining({ currentNodeId: 'task_final' }),
+      ]);
+    });
+
+    it('records a skipped step and ends the dry run branch at a NOTIFY node whose entry condition fails', (): void => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = fixture.service.dryRunApprovalWorkflow({
+        formDataJson: JSON.stringify(skippedFormData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(
+          createEntryConditionNotifyWorkflow({ withApprovalBranch: true }),
+        ),
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(
+        result.steps.map((step) => [step.nodeId, step.status]),
+      ).toEqual([
+        ['start', 'PASSED'],
+        ['notify_finance', 'SKIPPED'],
+        ['task_a', 'WAITING'],
+        ['end', 'COMPLETED'],
+      ]);
+    });
+  });
+
   it('records webhook failures and continues processing', async (): Promise<void> => {
     const fetchSpy = jest
       .spyOn(globalThis, 'fetch')
@@ -9504,6 +9750,147 @@ function createNotifyServiceTaskWorkflow(
         type: 'serviceTask',
       },
     ],
+  };
+}
+
+function createEntryConditionNotifyWorkflow({
+  withApprovalBranch = false,
+}: {
+  readonly withApprovalBranch?: boolean;
+} = {}): WorkflowDefinition {
+  const base = createNotifyServiceTaskWorkflow();
+  const notifyNode = base.nodes.find((node) => node.id === 'notify_finance');
+
+  if (notifyNode?.type !== 'serviceTask') {
+    throw new Error('notify_finance fixture node was not found');
+  }
+
+  const conditionedNotifyNode = {
+    ...notifyNode,
+    data: { ...notifyNode.data, entryCondition: 'form.amount > 1000' },
+  };
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+  const endNode: WorkflowDefinition['nodes'][number] = {
+    data: { endState: 'APPROVED', label: '完成' },
+    id: 'end',
+    position: { x: 520, y: 80 },
+    type: 'endEvent',
+  };
+  const startNode = base.nodes.find((node) => node.id === 'start');
+
+  if (!startNode) {
+    throw new Error('start fixture node was not found');
+  }
+
+  return {
+    edges: [
+      edge('edge_start_notify', 'start', 'notify_finance'),
+      ...(withApprovalBranch
+        ? [
+            edge('edge_start_a', 'start', 'task_a'),
+            edge('edge_a_end', 'task_a', 'end'),
+          ]
+        : []),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      startNode,
+      conditionedNotifyNode,
+      ...(withApprovalBranch
+        ? [
+            createUserTaskNode('task_a', 'A 簽核', 'member-a', 300, 80),
+            endNode,
+          ]
+        : []),
+    ],
+  };
+}
+
+// start -> parallel split -> { skipped NOTIFY (terminal), task_a, task_b },
+// with task_a and task_b joining at task_final. The NOTIFY has no outgoing
+// edge, so it can never feed the join.
+function createSplitWithSkippedNotifyWorkflow(): WorkflowDefinition {
+  const notify = createEntryConditionNotifyWorkflow().nodes.find(
+    (node) => node.id === 'notify_finance',
+  );
+
+  if (!notify) {
+    throw new Error('notify_finance fixture node was not found');
+  }
+
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  return {
+    edges: [
+      edge('edge_start_split', 'start', 'split'),
+      edge('edge_split_notify', 'split', 'notify_finance'),
+      edge('edge_split_a', 'split', 'task_a'),
+      edge('edge_split_b', 'split', 'task_b'),
+      edge('edge_a_final', 'task_a', 'task_final'),
+      edge('edge_b_final', 'task_b', 'task_final'),
+      edge('edge_final_end', 'task_final', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { direction: 'split', label: '分流' },
+        id: 'split',
+        position: { x: 160, y: 160 },
+        type: 'parallelGateway',
+      },
+      notify,
+      createUserTaskNode('task_a', 'A 簽核', 'member-a', 300, 80),
+      createUserTaskNode('task_b', 'B 簽核', 'member-b', 300, 240),
+      createUserTaskNode('task_final', '彙整簽核', 'member-final', 520, 160),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 740, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+function createEntryConditionWebhookWorkflow(): WorkflowDefinition {
+  const base = createWebhookServiceTaskWorkflow();
+
+  return {
+    ...base,
+    nodes: base.nodes.map((node) =>
+      node.id === 'webhook_erp' && node.type === 'serviceTask'
+        ? {
+            ...node,
+            data: { ...node.data, entryCondition: 'form.amount > 1000' },
+          }
+        : node,
+    ),
   };
 }
 

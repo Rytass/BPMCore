@@ -187,7 +187,7 @@ webhook」**。為避免 `recipients` 改為 optional 帶來的型別破壞，`r
 只發 webhook 的節點寫入 `{ type: 'DIRECT', memberIds: [] }`，引擎遇到空的 DIRECT
 resolver 時略過收件人解析與通知建立。
 
-知會節點仍維持「非同步側支、不可接出線」的既有規則（`isAsyncNotifyServiceTask`）。
+知會節點仍維持「非同步側支、不可接出線」的既有規則（`isAsyncNotifyServiceTask`）。因此它的 `entryCondition` 不成立而被略過時，也跟觸發時一樣直接 consume token、不找出邊（見 `07-workflow-execution.md` §2）。
 
 ### 3.3 V1 binding 只接受欄位、常數與案件資訊
 

@@ -157,6 +157,19 @@ async function processInstance(instanceId: string): Promise<void> {
 }
 ```
 
+節點的 `entryCondition` 在進入上面的 `switch` 之前先判定，且排在匯合就緒檢查
+（`isNodeEntryReady`，多條入邊要等其他分支到齊）之後——所以有 2 條以上入邊的知會節點，
+也是等入邊到齊後才判定 `entryCondition`。不成立就略過該節點（寫一筆
+`TOKEN_ADVANCED` 活動，`payload: { skippedByEntryCondition: true, tokenId }`），
+token 依節點類型處理：
+
+- 一般節點：照常沿出邊前進，就像節點已執行完。
+- 知會節點（`serviceTask` + `NOTIFY`）：**直接 consume token**，不往下走，跟它被觸發時
+  一致。知會節點不得有出邊，所以略過時若去找出邊會讓整次送出失敗
+  （`Workflow node <id> has no outgoing edge`）。活動 payload 多一個 `consumed: true`，
+  不發站內通知、不排 webhook。略過後的流程完成判定與觸發時相同：沒有其他 ACTIVE／WAITING
+  token 就完成 instance，還有其他分支開著就繼續 RUNNING。
+
 ---
 
 ## 3. Gateway 處理細節
