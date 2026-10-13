@@ -112,8 +112,9 @@ export interface ApprovalInstanceRecord {
   /**
    * Who actually pressed submit when it was not the applicant. `null` (or
    * equal to `initiatorMemberId`) means the applicant submitted it
-   * themselves — rows written before the column existed are `null`. Absent
-   * when talking to a server that predates the field.
+   * themselves — rows written before the column existed are `null`. Optional
+   * only so hand-built records (fixtures, host-side mocks) written before the
+   * field existed keep compiling; every selection in this client requests it.
    */
   readonly submittedByMemberId?: string | null;
   readonly templateId: string;

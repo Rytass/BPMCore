@@ -31,7 +31,7 @@ export interface BPMRoutes {
   dashboard(): string;
   /** Inbox (待簽) — pending tasks assigned to the current member. */
   inbox(): string;
-  /** Sent (我發起的) — instances the current member initiated. */
+  /** Sent (我發起的) — instances the current member initiated or submitted on someone's behalf. */
   sent(): string;
   /** CC (抄送給我) — instances the current member is copied on. */
   cc(): string;
