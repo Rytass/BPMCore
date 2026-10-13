@@ -38,6 +38,8 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.submitApprovalInstance(
       {
         ...input,
+        // A business key is the host's to set; an end user never claims one.
+        businessKey: null,
         initiatorMemberId: currentMemberId,
         initiatorMetadataSnapshotJson: null,
       },

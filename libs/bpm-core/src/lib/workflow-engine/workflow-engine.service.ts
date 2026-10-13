@@ -129,6 +129,12 @@ import {
  */
 type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
   readonly initiatorMemberId: string;
+  /**
+   * The host document this instance stands for, unique within the template.
+   * Service-level only: it is not on the GraphQL input, and the mutation
+   * always passes `null`, so an end user can never claim a key.
+   */
+  readonly businessKey?: string | null;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
@@ -136,6 +142,9 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
 };
 
 const MAX_PROCESSING_STEPS = 500;
+export const MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH = 200;
+const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
+  'approval_instances_business_key_key';
 // Guards ORG_MANAGER_CHAIN against misconfigured manager rules that never end.
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
@@ -324,6 +333,7 @@ export class WorkflowEngineService {
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const businessKey = normalizeBusinessKey(input.businessKey);
     const template = await this.getTemplateOrThrow(input.templateId);
 
     if (!template.isActive) {
@@ -400,6 +410,7 @@ export class WorkflowEngineService {
               uiSchema: formDefinitionVersion.uiSchema,
               version: formDefinitionVersion.version,
             },
+            businessKey,
             initiatorMemberId: input.initiatorMemberId,
             initiatorMetadataSnapshot,
             startedAt,
@@ -454,7 +465,35 @@ export class WorkflowEngineService {
 
         return instance;
       },
+    ).catch((error: unknown): never =>
+      // The insert decides, not a pre-check: two concurrent submits would both
+      // pass a check, and only the unique index sees them as one.
+      throwBusinessKeyConflictOrRethrow(error, businessKey),
     );
+  }
+
+  /**
+   * The instance a host submitted for `businessKey` on `templateId`, whatever
+   * its state (a cancelled or rejected instance still holds its key), or
+   * `null`. The key is trimmed the way submit trims it, so a lookup finds what
+   * a submit stored.
+   */
+  async findApprovalInstanceByBusinessKey(
+    templateId: string,
+    businessKey: string,
+  ): Promise<ApprovalInstanceEntity | null> {
+    const normalizedKey = businessKey.trim();
+
+    if (
+      normalizedKey === '' ||
+      normalizedKey.length > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH
+    ) {
+      return null;
+    }
+
+    return this.approvalInstanceRepository.findOne({
+      where: { businessKey: normalizedKey, templateId },
+    });
   }
 
   private async resolveFormDataOptionSnapshots({
@@ -7909,4 +7948,54 @@ function mapDecisionToResolution(
     case TaskDecisionActionEnum.TRANSFERRED:
       return NotificationResolutionEnum.TRANSFERRED;
   }
+}
+
+function normalizeBusinessKey(
+  businessKey: string | null | undefined,
+): string | null {
+  const trimmed = businessKey?.trim() ?? '';
+
+  if (trimmed === '') {
+    return null;
+  }
+
+  if (trimmed.length > MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH) {
+    throw new BadRequestException(
+      `業務鍵長度不可超過 ${MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH} 個字元`,
+    );
+  }
+
+  return trimmed;
+}
+
+/**
+ * Turns Postgres rejecting a duplicate (template, business key) into a
+ * Conflict. Any other failure, including other unique violations inside the
+ * same transaction, surfaces as it is.
+ */
+function throwBusinessKeyConflictOrRethrow(
+  error: unknown,
+  businessKey: string | null,
+): never {
+  const { code, constraint, driverError } = (error ?? {}) as {
+    readonly code?: unknown;
+    readonly constraint?: unknown;
+    readonly driverError?: {
+      readonly code?: unknown;
+      readonly constraint?: unknown;
+    };
+  };
+
+  if (
+    businessKey !== null &&
+    (code ?? driverError?.code) === '23505' &&
+    (constraint ?? driverError?.constraint) ===
+      APPROVAL_INSTANCE_BUSINESS_KEY_INDEX
+  ) {
+    throw new ConflictException(
+      `此範本已有相同業務鍵（${businessKey}）的簽核單`,
+    );
+  }
+
+  throw error;
 }

@@ -12,7 +12,7 @@ import {
   ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
@@ -423,6 +423,197 @@ describe('WorkflowEngineService', () => {
       positionId: 'position-manager',
       positionIds: ['position-manager', 'position-staff'],
       primaryOrgUnitId: 'org-sales',
+    });
+  });
+
+  describe('business key', () => {
+    const submitWithBusinessKey = (
+      fixture: ServiceFixture,
+      businessKey?: string | null,
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.submitApprovalInstance({
+        businessKey,
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      });
+    const createPublishedFixture = (
+      options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...options,
+      });
+
+    it('stores the trimmed business key on the submitted instance', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      const instance = await submitWithBusinessKey(fixture, '  PO-2026-001 ');
+
+      expect(instance.businessKey).toBe('PO-2026-001');
+      expect(fixture.savedInstance?.businessKey).toBe('PO-2026-001');
+    });
+
+    it.each([undefined, null, '', '   '])(
+      'stores no business key for %p',
+      async (businessKey): Promise<void> => {
+        const fixture = createPublishedFixture();
+
+        await submitWithBusinessKey(fixture, businessKey);
+
+        expect(fixture.savedInstance?.businessKey).toBeNull();
+      },
+    );
+
+    it('accepts a business key at the length limit and rejects one beyond it', async (): Promise<void> => {
+      const accepted = createPublishedFixture();
+      const rejected = createPublishedFixture();
+
+      await submitWithBusinessKey(accepted, 'k'.repeat(200));
+
+      expect(accepted.savedInstance?.businessKey).toHaveLength(200);
+
+      await expect(
+        submitWithBusinessKey(rejected, 'k'.repeat(201)),
+      ).rejects.toThrow(BadRequestException);
+      expect(rejected.savedInstance).toBeNull();
+    });
+
+    it('turns a duplicate (template, business key) into a Conflict', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceSaveError: Object.assign(new Error('duplicate key value'), {
+          code: '23505',
+          constraint: 'approval_instances_business_key_key',
+        }),
+      });
+
+      await expect(submitWithBusinessKey(fixture, ' PO-1 ')).rejects.toThrow(
+        new ConflictException('此範本已有相同業務鍵（PO-1）的簽核單'),
+      );
+    });
+
+    it('finds the violation on the driver error TypeORM wraps', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceSaveError: Object.assign(new Error('query failed'), {
+          driverError: {
+            code: '23505',
+            constraint: 'approval_instances_business_key_key',
+          },
+        }),
+      });
+
+      await expect(submitWithBusinessKey(fixture, 'PO-1')).rejects.toThrow(
+        '此範本已有相同業務鍵（PO-1）的簽核單',
+      );
+    });
+
+    it('leaves other unique violations and failures untouched', async (): Promise<void> => {
+      const otherViolation = Object.assign(new Error('duplicate key value'), {
+        code: '23505',
+        constraint: 'some_other_unique_index',
+      });
+      const fixture = createPublishedFixture({
+        instanceSaveError: otherViolation,
+      });
+
+      await expect(submitWithBusinessKey(fixture, 'PO-1')).rejects.toBe(
+        otherViolation,
+      );
+    });
+
+    it('does not read a violation as a business key conflict when no key was sent', async (): Promise<void> => {
+      const violation = Object.assign(new Error('duplicate key value'), {
+        code: '23505',
+        constraint: 'approval_instances_business_key_key',
+      });
+      const fixture = createPublishedFixture({ instanceSaveError: violation });
+
+      await expect(submitWithBusinessKey(fixture, null)).rejects.toBe(
+        violation,
+      );
+    });
+
+    it('keeps the business key when a returned instance is resubmitted', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processBusinessKey: 'PO-2026-001',
+        processFormData: { amount: 1000 },
+      });
+
+      const resubmitted = await fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":2000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(resubmitted.businessKey).toBe('PO-2026-001');
+      expect(fixture.savedInstance?.businessKey).toBe('PO-2026-001');
+    });
+
+    it('keeps the business key when an instance is cancelled', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        processBusinessKey: 'PO-2026-001',
+        processFormData: { amount: 1200 },
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      });
+
+      const cancelled = await fixture.service.cancelApprovalInstance({
+        cancelledByMemberId: 'member-001',
+        comment: null,
+        instanceId: 'instance-1',
+      });
+
+      expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+      expect(cancelled.businessKey).toBe('PO-2026-001');
+    });
+
+    it('looks an instance up by template and trimmed business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        processBusinessKey: 'PO-2026-001',
+      });
+
+      const found = await fixture.service.findApprovalInstanceByBusinessKey(
+        'template-1',
+        ' PO-2026-001 ',
+      );
+
+      expect(found?.businessKey).toBe('PO-2026-001');
+      expect(fixture.rootInstanceFindOne).toHaveBeenCalledWith({
+        where: { businessKey: 'PO-2026-001', templateId: 'template-1' },
+      });
+    });
+
+    it('returns null when no instance has the business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      fixture.rootInstanceFindOne.mockResolvedValueOnce(null);
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          'template-1',
+          'PO-404',
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('does not query for a blank or over-long business key', async (): Promise<void> => {
+      const fixture = createPublishedFixture();
+
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey('template-1', '  '),
+      ).resolves.toBeNull();
+      await expect(
+        fixture.service.findApprovalInstanceByBusinessKey(
+          'template-1',
+          'k'.repeat(201),
+        ),
+      ).resolves.toBeNull();
+      expect(fixture.rootInstanceFindOne).not.toHaveBeenCalled();
     });
   });
 
@@ -7141,6 +7332,10 @@ interface ServiceFixture {
     [Readonly<Record<string, unknown>>]
   >;
   readonly rootInstanceCount: jest.Mock<Promise<number>, []>;
+  readonly rootInstanceFindOne: jest.Mock<
+    Promise<ApprovalInstanceEntity | null>,
+    [Readonly<Record<string, unknown>>?]
+  >;
   readonly rootInstanceFind: jest.Mock<
     Promise<readonly ApprovalInstanceEntity[]>,
     [Readonly<Record<string, unknown>>?]
@@ -7202,10 +7397,12 @@ function createServiceFixture({
   formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
+  instanceSaveError,
   instanceState,
   latestReturnActivity,
   processActivityLogs = [],
   processAdhocDirectives = [],
+  processBusinessKey,
   processTaskCandidates = [],
   processFormData,
   processFormDefinitionSnapshot,
@@ -7234,10 +7431,13 @@ function createServiceFixture({
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formSchema?: FormDefinitionSchema;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
+  // Makes the instance insert fail, the way the database would on a clash.
+  readonly instanceSaveError?: Error;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processActivityLogs?: readonly ActivityLogEntity[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processBusinessKey?: string;
   readonly processTaskCandidates?: readonly TaskCandidateEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
@@ -7303,21 +7503,26 @@ function createServiceFixture({
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
+  const rootInstanceFindOne = jest.fn<
+    Promise<ApprovalInstanceEntity | null>,
+    [Readonly<Record<string, unknown>>?]
+  >(() =>
+    Promise.resolve(
+      createApprovalInstance({
+        businessKey: processBusinessKey,
+        formData: processFormData,
+        formDataOptionSnapshot: processOptionSnapshot,
+        formDefinitionSnapshot: processFormDefinitionSnapshot,
+        state: instanceState,
+        updatedAt: rootInstanceUpdatedAt,
+        workflowSnapshot: processWorkflowSnapshot,
+      }),
+    ),
+  );
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
-    findOne: jest.fn(() =>
-      Promise.resolve(
-        createApprovalInstance({
-          formData: processFormData,
-          formDataOptionSnapshot: processOptionSnapshot,
-          formDefinitionSnapshot: processFormDefinitionSnapshot,
-          state: instanceState,
-          updatedAt: rootInstanceUpdatedAt,
-          workflowSnapshot: processWorkflowSnapshot,
-        }),
-      ),
-    ),
+    findOne: rootInstanceFindOne,
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
@@ -7496,6 +7701,7 @@ function createServiceFixture({
           savedInstance
             ? Object.assign(createApprovalInstance(), savedInstance)
             : createApprovalInstance({
+                businessKey: processBusinessKey,
                 formData: processFormData,
                 formDataOptionSnapshot: processOptionSnapshot,
                 formDefinitionSnapshot: processFormDefinitionSnapshot,
@@ -7506,6 +7712,10 @@ function createServiceFixture({
         ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
+        if (instanceSaveError) {
+          return Promise.reject(instanceSaveError);
+        }
+
         // The saved row keeps the prototype it arrived with. Rebuilding it as
         // `Object.assign(createApprovalInstance(), entity)` handed back an
         // entity even when the caller had spread the row into a plain object,
@@ -7996,6 +8206,7 @@ function createServiceFixture({
     notificationFind,
     rootInstanceCount,
     rootInstanceFind,
+    rootInstanceFindOne,
     rootInstanceQueryBuilder,
     rootTaskFind,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
@@ -8373,6 +8584,7 @@ function createConditionalAttachmentFormSchema(): FormDefinitionSchema {
 }
 
 function createApprovalInstance({
+  businessKey,
   formDataOptionSnapshot,
   formDefinitionSnapshot,
   formData,
@@ -8383,6 +8595,7 @@ function createApprovalInstance({
   updatedAt,
   workflowSnapshot,
 }: {
+  readonly businessKey?: string;
   readonly formDataOptionSnapshot?: FormDataSourceValueSnapshots;
   readonly formDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly formData?: Readonly<Record<string, unknown>>;
@@ -8394,6 +8607,7 @@ function createApprovalInstance({
   readonly workflowSnapshot?: WorkflowDefinition;
 } = {}): ApprovalInstanceEntity {
   return Object.assign(new ApprovalInstanceEntity(), {
+    businessKey: businessKey ?? null,
     completedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formData: formData ?? {},
