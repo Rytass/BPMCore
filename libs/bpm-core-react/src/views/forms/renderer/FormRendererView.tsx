@@ -413,18 +413,7 @@ function FormRendererField({
 }
 
 const EXTERNAL_LINK_CUE = '（另開新分頁）';
-
-// Read out by screen readers, invisible on screen.
-const VISUALLY_HIDDEN_STYLE: CSSProperties = {
-  clip: 'rect(0 0 0 0)',
-  height: 1,
-  margin: -1,
-  overflow: 'hidden',
-  padding: 0,
-  position: 'absolute',
-  whiteSpace: 'nowrap',
-  width: 1,
-};
+const EXTERNAL_LINK_TITLE = '另開新分頁';
 
 const LINK_STYLE: CSSProperties = {
   color: 'inherit',
@@ -928,16 +917,16 @@ function renderStaticControl(
           style={LINK_STYLE}
           {...(link.external
             ? {
+                // The cue lives in attributes, not in a child node, so
+                // selecting or copying the link yields just the URL.
+                'aria-label': `${link.href}${EXTERNAL_LINK_CUE}`,
                 rel: 'noopener noreferrer',
                 target: '_blank',
-                title: EXTERNAL_LINK_CUE,
+                title: EXTERNAL_LINK_TITLE,
               }
             : {})}
         >
           {link.href}
-          {link.external ? (
-            <span style={VISUALLY_HIDDEN_STYLE}>{EXTERNAL_LINK_CUE}</span>
-          ) : null}
         </a>
       </Typography>
     );

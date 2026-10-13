@@ -765,7 +765,7 @@ describe('FormRenderer link display', () => {
       );
       expect(view.anchor?.getAttribute('target')).toBeNull();
       expect(view.anchor?.getAttribute('title')).toBeNull();
-      expect(view.anchor?.textContent).not.toContain('另開新分頁');
+      expect(view.anchor?.getAttribute('aria-label')).toBeNull();
     } finally {
       await view.unmount();
     }
@@ -778,8 +778,13 @@ describe('FormRenderer link display', () => {
       expect(view.anchor?.getAttribute('href')).toBe('https://example.com/x');
       expect(view.anchor?.getAttribute('target')).toBe('_blank');
       expect(view.anchor?.getAttribute('rel')).toBe('noopener noreferrer');
-      expect(view.anchor?.getAttribute('title')).toBe('（另開新分頁）');
-      expect(view.anchor?.textContent).toContain('（另開新分頁）');
+      expect(view.anchor?.getAttribute('title')).toBe('另開新分頁');
+      expect(view.anchor?.getAttribute('aria-label')).toBe(
+        'https://example.com/x（另開新分頁）',
+      );
+      // Selecting or copying the link must yield just the URL.
+      expect(view.anchor?.textContent).toBe('https://example.com/x');
+      expect(view.anchor?.children).toHaveLength(0);
     } finally {
       await view.unmount();
     }

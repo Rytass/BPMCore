@@ -3833,8 +3833,8 @@ function convertTableColumnType(
 
 /**
  * Drops an optional display key so it is absent from the saved JSON instead of
- * lingering as `undefined`. Rest-destructuring a union collapses it into one
- * object type, hence the single cast back.
+ * lingering as `undefined`. Rebuilding the object from its entries loses the
+ * union's type, hence the single cast back.
  */
 function removeFieldKey(
   field: FormFieldDefinition,

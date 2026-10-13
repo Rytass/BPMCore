@@ -612,18 +612,69 @@ describe('WorkflowEngineService', () => {
       ).rejects.toThrow('formData.items must include at most 1 row(s)');
     });
 
-    it('is not required, needs no minimum rows and no required cells', async (): Promise<void> => {
-      const schema = createTableFormSchema({
-        hidden: true,
-        minRows: 2,
-        required: true,
-      });
-
-      await expect(submit(schema, '{}')).resolves.toMatchObject({
-        id: 'instance-1',
-      });
+    it('is not required even when declared required', async (): Promise<void> => {
       await expect(
-        submit(schema, '{"items":[{"tags":["a"]}]}'),
+        submit(createTableFormSchema({ hidden: true, required: true }), '{}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('needs no minimum rows', async (): Promise<void> => {
+      await expect(
+        submit(createTableFormSchema({ hidden: true, minRows: 2 }), '{}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true, minRows: 2 }),
+          '{"items":[{"name":"a","qty":1}]}',
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('needs no per-column required cells', async (): Promise<void> => {
+      await expect(
+        submit(
+          createTableFormSchema({ hidden: true }),
+          '{"items":[{"tags":["a"]}]}',
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    // Hidden wins over visibleWhen: a false condition only makes an ordinary
+    // table skip its checks, a hidden one is still held to its shape.
+    it('is still shape-checked when visibleWhen is false', async (): Promise<void> => {
+      const schema: FormDefinitionSchema = {
+        fields: [
+          {
+            fieldKey: 'needsItems',
+            label: '需要明細',
+            required: false,
+            type: 'boolean',
+          },
+          {
+            columns: createTableColumns(),
+            fieldKey: 'items',
+            hidden: true,
+            label: '請購明細',
+            maxRows: 1,
+            required: false,
+            type: 'table',
+            visibleWhen: 'form.needsItems == true',
+          },
+        ],
+        schemaVersion: 1,
+      };
+
+      await expect(
+        submit(schema, '{"needsItems":false,"items":{"name":"Bolt"}}'),
+      ).rejects.toThrow('formData.items must be an array of rows');
+      await expect(
+        submit(
+          schema,
+          '{"needsItems":false,"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
+        ),
+      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+      await expect(
+        submit(schema, '{"needsItems":false}'),
       ).resolves.toMatchObject({ id: 'instance-1' });
     });
   });
