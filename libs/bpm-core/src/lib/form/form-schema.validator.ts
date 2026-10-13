@@ -229,6 +229,7 @@ function lintFieldDefinition(
     ...lintOptionalString(field.requiredWhen, `${path}.requiredWhen`),
     ...lintOptionalString(field.readonlyWhen, `${path}.readonlyWhen`),
     ...lintFieldRequiredFlag(field, path),
+    ...lintFieldHiddenFlag(field, path),
     ...(isSupportedFieldType(type) ? [] : [`${path}.type is not supported`]),
     ...lintConditionTableReferences(field, path, scope.tableFieldKeys),
   ];
@@ -237,7 +238,23 @@ function lintFieldDefinition(
     return basicErrors;
   }
 
-  return [...basicErrors, ...lintFieldTypeSpecifics(field, type, path, scope)];
+  return [
+    ...basicErrors,
+    ...lintDisplayAsTarget(field, type, path),
+    ...lintFieldTypeSpecifics(field, type, path, scope),
+  ];
+}
+
+/** `displayAs` is a text-field option; every other type must not carry it. */
+function lintDisplayAsTarget(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+): readonly string[] {
+  return Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
+    !TEXT_FIELD_TYPES.has(type)
+    ? [`${path}.displayAs is only supported for text fields`]
+    : [];
 }
 
 function lintFieldTypeSpecifics(
@@ -295,6 +312,28 @@ function lintFieldRequiredFlag(
 }
 
 /**
+ * `hidden` is store-only: nobody sees the field, so nobody can fill a required
+ * value in. Combining it with `required: true` would make the form impossible
+ * to submit, hence the hard error. `visibleWhen` stays legal — `hidden` wins.
+ */
+function lintFieldHiddenFlag(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  if (!Object.prototype.hasOwnProperty.call(field, 'hidden')) {
+    return [];
+  }
+
+  if (typeof field.hidden !== 'boolean') {
+    return [`${path}.hidden must be a boolean`];
+  }
+
+  return field.hidden && field.required === true
+    ? [`${path}.hidden 為 true 時不可同時設為必填（required）`]
+    : [];
+}
+
+/**
  * Form-level conditions cannot address a cell: neither the frontend nor the
  * backend condition parser understands bracket paths, so referencing table
  * internals is rejected outright instead of relying on a parse failure
@@ -347,10 +386,17 @@ function lintTextField(
       ? [`${path}.minLength must be less than or equal to ${path}.maxLength`]
       : [];
 
+  const displayAsErrors =
+    Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
+    field.displayAs !== 'link'
+      ? [`${path}.displayAs must be "link"`]
+      : [];
+
   return [
     ...minLengthErrors,
     ...maxLengthErrors,
     ...lengthRangeErrors,
+    ...displayAsErrors,
     ...lintOptionalDefaultValue(field.defaultValue, path, (value) =>
       typeof value === 'string' || value === null,
     ),
@@ -718,6 +764,12 @@ function lintTableColumn(
         `${path}.${conditionKey} is not supported for table columns`,
     ),
     ...lintFieldRequiredFlag(column, path),
+    ...(Object.prototype.hasOwnProperty.call(column, 'hidden')
+      ? [`${path}.hidden is not supported for table columns`]
+      : []),
+    ...(Object.prototype.hasOwnProperty.call(column, 'displayAs')
+      ? [`${path}.displayAs is not supported for table columns`]
+      : []),
     ...lintTableColumnType(type, path),
   ];
 

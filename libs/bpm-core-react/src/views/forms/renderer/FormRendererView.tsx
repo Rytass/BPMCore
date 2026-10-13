@@ -69,6 +69,7 @@ import {
   readFormDataSourceFieldStatusMessage,
   useFormDataSourceField,
 } from './form-data-source-field';
+import { resolveFormFieldLink } from './form-field-link';
 
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
@@ -410,6 +411,12 @@ function FormRendererField({
     </div>
   );
 }
+
+const LINK_STYLE: CSSProperties = {
+  color: 'inherit',
+  textDecoration: 'underline',
+  wordBreak: 'break-all',
+};
 
 const DATA_SOURCE_FEEDBACK_STYLE: CSSProperties = {
   alignItems: 'center',
@@ -888,6 +895,33 @@ function renderStaticControl(
     | undefined,
   size: ControlSize = 'main',
 ): ReactElement {
+  const link =
+    readonly &&
+    (field.type === 'text' || field.type === 'textarea') &&
+    field.displayAs === 'link'
+      ? resolveFormFieldLink(value)
+      : null;
+
+  // Only a safe href becomes an anchor; anything else falls through to the
+  // ordinary read-only control, i.e. plain text.
+  if (link) {
+    return (
+      // Typography types its props as a paragraph's, so it cannot take `href`;
+      // it supplies the brand colour and the anchor inherits it.
+      <Typography color="text-brand" component="span" variant="body">
+        <a
+          href={link.href}
+          style={LINK_STYLE}
+          {...(link.external
+            ? { rel: 'noopener noreferrer', target: '_blank' }
+            : {})}
+        >
+          {link.href}
+        </a>
+      </Typography>
+    );
+  }
+
   if (field.type === 'textarea') {
     return (
       <Textarea

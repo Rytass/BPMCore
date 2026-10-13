@@ -530,6 +530,49 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Form data is missing required fields: 附件');
   });
 
+  it('does not require a hidden field and keeps its submitted value', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'reason', label: '事由', required: false, type: 'text' },
+          // `required: true` is rejected by the schema lint; the engine still
+          // treats a hidden field as not visible, so it can never be "missing".
+          {
+            fieldKey: 'sourceDocId',
+            hidden: true,
+            label: '來源單據',
+            required: true,
+            type: 'text',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"reason":"r"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+
+    const withValue = await fixture.service.submitApprovalInstance({
+      formDataJson: '{"reason":"r","sourceDocId":"PO-1"}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: 'Request',
+    });
+
+    expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
+  });
+
   it('rejects resubmit when returned instance form data is missing required fields', async (): Promise<void> => {
     const formSchema = createRequiredReasonFormSchema();
     const fixture = createServiceFixture({

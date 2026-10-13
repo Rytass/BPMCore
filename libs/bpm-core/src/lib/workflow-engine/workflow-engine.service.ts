@@ -7566,6 +7566,12 @@ function isSubmittedFormFieldVisible(
   fields: readonly FormFieldDefinition[],
   values: Readonly<Record<string, unknown>>,
 ): boolean {
+  // A hidden (store-only) field is never shown, so nobody can fill it in:
+  // treat it like a false `visibleWhen`. Its submitted value is still kept.
+  if (field.hidden) {
+    return false;
+  }
+
   return field.visibleWhen
     ? evaluateFormConditionExpression(field.visibleWhen, fields, values, true)
     : true;

@@ -19,6 +19,13 @@ interface BaseFormFieldDefinition<TType extends string> {
   readonly defaultValue?: FormFieldValue;
   readonly description?: string;
   readonly fieldKey: string;
+  /**
+   * 只存不顯示：值照存進 `form_data`，填寫、唯讀、重送畫面都不渲染；供宿主
+   * 系統放技術欄位（單據編號、版本等）。不是權限邊界 — API 回傳的 `formData`
+   * 仍包含這個值。條件（`visibleWhen` 等）仍可引用它；與 `visibleWhen` 同時
+   * 設定時以 `hidden` 為準；不可與 `required: true` 並用，也不支援 table 欄。
+   */
+  readonly hidden?: boolean;
   readonly label: string;
   readonly placeholder?: string;
   readonly readonlyWhen?: string;
@@ -51,6 +58,11 @@ export type FormFieldValue = FormTableCellValue | readonly FormTableRowValue[];
 export type TextFieldDefinition = BaseFormFieldDefinition<
   'text' | 'textarea'
 > & {
+  /**
+   * 唯讀畫面以連結呈現：值仍是字串，條件與驗證不變。只有站內相對路徑或
+   * `http(s)://` 網址會變成連結，其他值照純文字顯示。不支援 table 欄。
+   */
+  readonly displayAs?: 'link';
   readonly maxLength?: number;
   readonly minLength?: number;
 };

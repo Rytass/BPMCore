@@ -12,6 +12,7 @@ import {
   readFormTableCellPath,
   readFormTableRowBounds,
   readFormTableRows,
+  readVisibleFormRendererFields,
   validateFormRendererValues,
 } from './form-rendering';
 
@@ -345,5 +346,80 @@ describe('table field values', () => {
         type: 'table',
       }),
     ).toEqual({ maxRows: 100, minRows: 0 });
+  });
+});
+
+describe('hidden (store-only) fields', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'reason', label: '事由', required: true, type: 'text' },
+      {
+        fieldKey: 'sourceDocId',
+        hidden: true,
+        label: '來源單據',
+        required: true,
+        type: 'text',
+      },
+      {
+        fieldKey: 'docVersion',
+        hidden: true,
+        label: '版本',
+        required: false,
+        type: 'number',
+        visibleWhen: 'form.reason == "x"',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [
+      { fieldKey: 'sourceDocId', width: 'FULL' },
+      { fieldKey: 'reason', width: 'FULL' },
+    ],
+    schemaVersion: 1,
+  };
+
+  it('is never visible, whatever visibleWhen says', (): void => {
+    const [reason, sourceDocId, docVersion] = schema.fields;
+
+    expect(isFormRendererFieldVisible(reason, schema.fields, {})).toBe(true);
+    expect(isFormRendererFieldVisible(sourceDocId, schema.fields, {})).toBe(
+      false,
+    );
+    expect(
+      isFormRendererFieldVisible(docVersion, schema.fields, { reason: 'x' }),
+    ).toBe(false);
+  });
+
+  it('is left out of the rendered field list', (): void => {
+    expect(
+      readVisibleFormRendererFields(schema, uiSchema, { reason: 'x' }).map(
+        (field) => field.fieldKey,
+      ),
+    ).toEqual(['reason']);
+  });
+
+  it('is skipped by client validation even when marked required', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { reason: 'ok' },
+      }),
+    ).toEqual({ errors: {}, firstInvalidFieldKey: null, valid: true });
+  });
+
+  it('keeps its stored value in the values the renderer emits', (): void => {
+    const emitted = buildFormRendererValues(schema.fields, {
+      docVersion: 3,
+      reason: 'ok',
+      sourceDocId: 'PO-1',
+    });
+
+    expect(emitted).toMatchObject({
+      docVersion: 3,
+      reason: 'ok',
+      sourceDocId: 'PO-1',
+    });
   });
 });
