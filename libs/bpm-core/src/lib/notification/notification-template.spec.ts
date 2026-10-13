@@ -30,4 +30,19 @@ describe('renderNotificationTemplate', () => {
       }).body,
     ).toBe('合約審核 / 法務簽核');
   });
+
+  it('appends who filed the document to the completion notice only when told', (): void => {
+    const render = (
+      payload: Readonly<Record<string, unknown>>,
+    ): string =>
+      renderNotificationTemplate({
+        payload: { instanceTitle: '採購申請', ...payload },
+        type: NotificationTypeEnum.INSTANCE_COMPLETED,
+      }).body;
+
+    expect(render({})).toBe('案件 採購申請 已完成。');
+    expect(render({ submittedByNote: '（由 王助理 代為送出）' })).toBe(
+      '案件 採購申請 已完成。（由 王助理 代為送出）',
+    );
+  });
 });
