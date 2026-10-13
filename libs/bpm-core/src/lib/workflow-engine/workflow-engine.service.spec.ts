@@ -2292,7 +2292,7 @@ describe('WorkflowEngineService', () => {
 
       await expect(
         fixture.service.processInstance('instance-1'),
-      ).rejects.toThrow('has no active membership');
+      ).rejects.toThrow('目前沒有任何有效成員');
       expect(fixture.savedTasks).toHaveLength(0);
     });
 
@@ -2417,7 +2417,7 @@ describe('WorkflowEngineService', () => {
           'ORG_UNIT_MEMBER',
           { orgUnitId: 'org-ops', type: 'ORG_UNIT_MEMBER' },
           'member-owner',
-          'has no active member',
+          '組織「財務部」目前沒有任何有效成員',
         ],
         [
           'ORG_UNIT_POSITION',
@@ -2427,7 +2427,7 @@ describe('WorkflowEngineService', () => {
             type: 'ORG_UNIT_POSITION',
           },
           'member-owner',
-          'has no active membership',
+          '組織「財務部」的職位「position-finance」目前沒有任何有效成員',
         ],
         [
           'ORG_UNIT_MANAGER',
