@@ -74,6 +74,10 @@ import { MembershipEntity } from '../organization/membership.entity';
 import { OrgUnitEntity } from '../organization/org-unit.entity';
 import { PositionEntity } from '../organization/position.entity';
 import { ManagerResolutionScopeTypeEnum } from '../organization/organization.enums';
+import {
+  formatDateOnlyInTimeZone,
+  resolveBPMOrganizationTimeZone,
+} from '../organization/organization-time-zone';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
@@ -315,9 +319,24 @@ export class WorkflowEngineService {
       injectedServiceTaskDispatcher ??
       rootOptions?.workflowServiceTaskDispatcher ??
       new DefaultWorkflowServiceTaskDispatcher();
+    this.organizationTimeZone = resolveBPMOrganizationTimeZone(
+      rootOptions?.organizationTimeZone,
+    );
   }
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
+
+  private readonly organizationTimeZone: string;
+
+  /**
+   * Today's date as the organization sees it (`organizationTimeZone`), for
+   * comparing against the date-only `effectiveFrom` / `effectiveTo` of
+   * memberships and manager resolutions. Not for timestamp columns, which are
+   * compared as instants.
+   */
+  private readOrganizationToday(): string {
+    return formatDateOnlyInTimeZone(new Date(), this.organizationTimeZone);
+  }
 
   async submitApprovalInstance(
     input: SubmitApprovalInstanceCommand,
@@ -3301,7 +3320,7 @@ export class WorkflowEngineService {
   private async readDefaultInitiatorMetadataSnapshot(
     memberId: string,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = (
       await this.approvalInstanceRepository.manager
         .getRepository(MembershipEntity)
@@ -4723,7 +4742,7 @@ export class WorkflowEngineService {
     const managerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       instance.initiatorMemberId,
-      toDateOnlyString(new Date()),
+      this.readOrganizationToday(),
       true,
       instance.initiatorMemberId,
     );
@@ -4895,7 +4914,7 @@ export class WorkflowEngineService {
     positionId: string,
     label: string,
   ): Promise<readonly string[]> {
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { positionId },
     });
@@ -4967,7 +4986,7 @@ export class WorkflowEngineService {
     fallback: ApproverResolverFallback | undefined,
     label: string,
   ): Promise<readonly string[]> {
-    const date = toDateOnlyString(new Date());
+    const date = this.readOrganizationToday();
     const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
     const chain: string[] = [];
     let currentMemberId = instance.initiatorMemberId;
@@ -5108,7 +5127,7 @@ export class WorkflowEngineService {
     return this.resolveManagerMemberIdsAtLevel(
       manager,
       memberId,
-      toDateOnlyString(new Date()),
+      this.readOrganizationToday(),
       levelsUp,
       preferClosestOrgUnit,
     );
@@ -5200,7 +5219,7 @@ export class WorkflowEngineService {
     label: string,
     preferClosestOrgUnit: boolean,
   ): Promise<readonly string[]> {
-    const date = toDateOnlyString(new Date());
+    const date = this.readOrganizationToday();
     const orgUnits = await this.readOrgUnitAndAncestors(manager, [orgUnitId]);
     const managerMemberIds = await this.resolveManagerResolutionCandidates(
       manager,
@@ -5325,7 +5344,7 @@ export class WorkflowEngineService {
       orgUnitId,
       includeDescendants,
     );
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { orgUnitId: In([...orgUnitIds]) },
     });
@@ -5355,7 +5374,7 @@ export class WorkflowEngineService {
       orgUnitId,
       includeDescendants,
     );
-    const today = toDateOnlyString(new Date());
+    const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { orgUnitId: In([...orgUnitIds]), positionId },
     });
@@ -7341,9 +7360,6 @@ function compareMembership(
   return right.effectiveFrom.localeCompare(left.effectiveFrom);
 }
 
-function toDateOnlyString(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
 
 function canReadAllWorkflows(scope: WorkflowReadScope): boolean {
   return (

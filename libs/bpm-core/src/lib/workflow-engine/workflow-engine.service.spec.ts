@@ -16,6 +16,7 @@ import { ConflictException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
@@ -1465,6 +1466,148 @@ describe('WorkflowEngineService', () => {
     expect(fixture.savedTasks[0]).toMatchObject({
       assigneeMemberId: 'member-manager',
       originalAssigneeMemberId: 'member-manager',
+    });
+  });
+
+  describe('organization time zone', () => {
+    // 01:00 on 2026-10-14 in Asia/Taipei, still 2026-10-13 in UTC.
+    const taipeiEarlyMorning = new Date('2026-10-13T17:00:00.000Z');
+
+    afterEach((): void => {
+      jest.useRealTimers();
+    });
+
+    const useClock = (now: Date): void => {
+      // Only `Date` is faked: the fixture awaits real promises.
+      jest.useFakeTimers({
+        doNotFake: [
+          'cancelAnimationFrame',
+          'cancelIdleCallback',
+          'clearImmediate',
+          'clearInterval',
+          'clearTimeout',
+          'hrtime',
+          'nextTick',
+          'performance',
+          'queueMicrotask',
+          'requestAnimationFrame',
+          'requestIdleCallback',
+          'setImmediate',
+          'setInterval',
+          'setTimeout',
+        ],
+        now,
+      });
+    };
+
+    const createPositionFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            effectiveFrom: '2026-10-14',
+            isPrimary: true,
+            memberId: 'member-position-owner',
+            positionId: 'position-finance',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            positionId: 'position-finance',
+            type: 'POSITION',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const createManagerFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processManagerResolutions: [
+          createManagerResolution({
+            effectiveFrom: '2026-10-14',
+            managerMemberId: 'member-manager',
+            scopeId: 'org-finance',
+            scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+          }),
+        ],
+        processMemberships: [
+          createMembership({
+            memberId: 'member-001',
+            orgUnitId: 'org-finance',
+          }),
+        ],
+        processOrgUnits: [
+          createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    it('uses a membership effective today from local midnight when the zone is configured', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture({
+        organizationTimeZone: 'Asia/Taipei',
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-position-owner',
+      });
+    });
+
+    it('still reads the UTC date for a membership by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture();
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('has no active membership');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    it('uses a manager rule effective today from local midnight when the zone is configured', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture({
+        organizationTimeZone: 'Asia/Taipei',
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-manager',
+      });
+    });
+
+    it('still reads the UTC date for a manager rule by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture();
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('找不到發起人的第 1 層主管');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    it('rejects an unknown zone when the engine is created', (): void => {
+      expect(() =>
+        createPositionFixture({ organizationTimeZone: 'Mars/Olympus_Mons' }),
+      ).toThrow('organizationTimeZone');
     });
   });
 
@@ -7217,6 +7360,7 @@ function createServiceFixture({
   processPositions = [],
   processWorkflowSnapshot,
   rootInstanceUpdatedAt,
+  rootOptions,
   serviceTaskDispatcher,
   templateIsActive = true,
   templateVersionStatus,
@@ -7250,6 +7394,7 @@ function createServiceFixture({
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
   readonly rootInstanceUpdatedAt?: Date;
+  readonly rootOptions?: BPMRootRuntimeOptions;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
@@ -8053,7 +8198,7 @@ function createServiceFixture({
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
       formDataSourceValueResolver,
-      undefined,
+      rootOptions,
       webhookDeliveryService,
     ),
     notificationService,

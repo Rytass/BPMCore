@@ -1,4 +1,5 @@
 import { DataSource, Repository } from 'typeorm';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import {
   CommitOrgUnitTreeDraftMoveInput,
   UpdateOrgUnitInput,
@@ -1158,21 +1159,92 @@ describe('OrganizationService', () => {
     expect(positionDelete).not.toHaveBeenCalled();
   });
 
-  it('formats date-only values with the BPM business timezone', (): void => {
-    const service = new OrganizationService(
-      {} as DataSource,
-      {} as Repository<OrgUnitEntity>,
-      {} as Repository<PositionEntity>,
-      {} as Repository<MembershipEntity>,
-      {} as Repository<ManagerResolutionEntity>,
-    );
-    const formatter = service as unknown as {
-      readonly toDateOnly: (date: Date) => string;
-    };
+  describe('organization time zone', () => {
+    const createService = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): OrganizationService =>
+      new OrganizationService(
+        {} as DataSource,
+        {} as Repository<OrgUnitEntity>,
+        {} as Repository<PositionEntity>,
+        {} as Repository<MembershipEntity>,
+        {} as Repository<ManagerResolutionEntity>,
+        rootOptions,
+      );
+    const readDateOnly = (service: OrganizationService, date: Date): string =>
+      (
+        service as unknown as {
+          readonly toDateOnly: (value: Date) => string;
+        }
+      ).toDateOnly(date);
 
-    expect(formatter.toDateOnly(new Date('2026-05-10T16:30:00.000Z'))).toBe(
-      '2026-05-11',
-    );
+    it('formats date-only values in the configured zone', (): void => {
+      const service = createService({ organizationTimeZone: 'Asia/Taipei' });
+
+      expect(readDateOnly(service, new Date('2026-05-10T16:30:00.000Z'))).toBe(
+        '2026-05-11',
+      );
+    });
+
+    it('formats date-only values in UTC when no zone is configured', (): void => {
+      const service = createService();
+
+      expect(readDateOnly(service, new Date('2026-05-10T16:30:00.000Z'))).toBe(
+        '2026-05-10',
+      );
+    });
+
+    it('rejects an unknown zone when the service is created', (): void => {
+      expect(() => createService({ organizationTimeZone: 'Nowhere/City' })).toThrow(
+        'organizationTimeZone',
+      );
+    });
+
+    it('resolves the manager of an instant by the configured zone', async (): Promise<void> => {
+      // 01:00 on 2026-10-14 in Asia/Taipei, 2026-10-13 in UTC.
+      const instant = new Date('2026-10-13T17:00:00.000Z');
+      const createResolving = (
+        rootOptions?: BPMRootRuntimeOptions,
+      ): OrganizationService => {
+        const membershipRepository = {
+          find: jest.fn<Promise<readonly MembershipEntity[]>, []>(() =>
+            Promise.resolve([]),
+          ),
+        } as unknown as Repository<MembershipEntity>;
+        const managerResolutionRepository = {
+          find: jest.fn<Promise<readonly ManagerResolutionEntity[]>, []>(() =>
+            Promise.resolve([
+              {
+                effectiveFrom: '2026-10-14',
+                effectiveTo: null,
+                managerMemberId: 'manager-new',
+                priority: 0,
+                scopeId: 'member-1',
+                scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+              } as ManagerResolutionEntity,
+            ]),
+          ),
+        } as unknown as Repository<ManagerResolutionEntity>;
+
+        return new OrganizationService(
+          {} as DataSource,
+          {} as Repository<OrgUnitEntity>,
+          {} as Repository<PositionEntity>,
+          membershipRepository,
+          managerResolutionRepository,
+          rootOptions,
+        );
+      };
+
+      await expect(
+        createResolving({
+          organizationTimeZone: 'Asia/Taipei',
+        }).resolveManagerMemberId('member-1', instant),
+      ).resolves.toBe('manager-new');
+      await expect(
+        createResolving().resolveManagerMemberId('member-1', instant),
+      ).resolves.toBeNull();
+    });
   });
 });
 

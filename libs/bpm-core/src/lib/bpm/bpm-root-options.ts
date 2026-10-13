@@ -8,6 +8,10 @@ import { BPMFormDataSourceRegistry } from '../form-data-source/form-data-source.
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { BPMRootNotificationOptions } from '../notification/notification-options';
+import {
+  BPMRootOrganizationOptions,
+  resolveBPMOrganizationTimeZone,
+} from '../organization/organization-time-zone';
 import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import { BPMRootWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
@@ -37,6 +41,7 @@ export interface BPMRootRuntimeOptions
     BPMRootAttachmentOptions,
     BPMRootIdentityOptions,
     BPMRootNotificationOptions,
+    BPMRootOrganizationOptions,
     BPMRootSignatureOptions,
     BPMRootWorkflowWebhookOptions {
   /**
@@ -157,6 +162,8 @@ export interface BPMRootOptionsModuleAsyncOptions extends Pick<
 @Module({})
 export class BPMRootOptionsModule {
   static forRoot(options: BPMRootRuntimeOptions = {}): DynamicModule {
+    resolveBPMOrganizationTimeZone(options.organizationTimeZone);
+
     return {
       exports: [BPM_ROOT_OPTIONS],
       module: BPMRootOptionsModule,
@@ -184,8 +191,13 @@ export class BPMRootOptionsModule {
           provide: BPM_ROOT_OPTIONS,
           useFactory: async (
             ...args: readonly unknown[]
-          ): Promise<BPMRootRuntimeOptions> =>
-            useFactory ? await useFactory(...args) : {},
+          ): Promise<BPMRootRuntimeOptions> => {
+            const resolved = useFactory ? await useFactory(...args) : {};
+
+            resolveBPMOrganizationTimeZone(resolved.organizationTimeZone);
+
+            return resolved;
+          },
         },
       ],
     };
