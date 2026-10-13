@@ -157,7 +157,9 @@ async function processInstance(instanceId: string): Promise<void> {
 }
 ```
 
-節點的 `entryCondition` 在進入上面的 `switch` 之前先判定；不成立就略過該節點（寫一筆
+節點的 `entryCondition` 在進入上面的 `switch` 之前先判定，且排在匯合就緒檢查
+（`isNodeEntryReady`，多條入邊要等其他分支到齊）之後——所以有 2 條以上入邊的知會節點，
+也是等入邊到齊後才判定 `entryCondition`。不成立就略過該節點（寫一筆
 `TOKEN_ADVANCED` 活動，`payload: { skippedByEntryCondition: true, tokenId }`），
 token 依節點類型處理：
 
