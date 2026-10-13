@@ -6634,6 +6634,17 @@ describe('WorkflowEngineService', () => {
         slaDueAt: future,
         status: TaskStatusEnum.IN_PROGRESS,
       }),
+      // A PARALLEL_ALL countersign: member-d has voted (the decider is written
+      // into the task's assignee), member-e is still to vote and member-f has
+      // claimed it.
+      createTask({
+        assigneeMemberId: 'member-d',
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        id: 'task-parallel',
+        instanceId: 'instance-3',
+        status: TaskStatusEnum.IN_PROGRESS,
+      }),
       createTask({
         assigneeMemberId: 'member-admin',
         id: 'task-admin-4',
@@ -6663,6 +6674,24 @@ describe('WorkflowEngineService', () => {
         status: TaskCandidateStatusEnum.WAITING,
         taskId: 'task-chain',
       }),
+      createTaskCandidate({
+        id: 'candidate-d',
+        memberId: 'member-d',
+        status: TaskCandidateStatusEnum.COMPLETED,
+        taskId: 'task-parallel',
+      }),
+      createTaskCandidate({
+        id: 'candidate-e',
+        memberId: 'member-e',
+        status: TaskCandidateStatusEnum.PENDING,
+        taskId: 'task-parallel',
+      }),
+      createTaskCandidate({
+        id: 'candidate-f',
+        memberId: 'member-f',
+        status: TaskCandidateStatusEnum.CLAIMED,
+        taskId: 'task-parallel',
+      }),
     ];
 
     function createDashboardFixture(): ServiceFixture {
@@ -6673,13 +6702,27 @@ describe('WorkflowEngineService', () => {
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
 
-      // Everybody can read all four instances, the way an administrator (or a
-      // chain's initiator) can; the counters still have to be personal.
-      fixture.rootInstanceQueryBuilder.getMany.mockResolvedValue(
-        ['instance-1', 'instance-2', 'instance-3', 'instance-4'].map((id) =>
-          createApprovalInstance({ id }),
-        ),
-      );
+      // The administrator reads all four instances; anyone else goes through
+      // the readable-instance filter (the `readableMemberId` condition), which
+      // here leaves out instance-4. Whatever the member can read, the counters
+      // still have to be personal.
+      let readableFilterApplied = false;
+
+      fixture.rootInstanceQueryBuilder.andWhere.mockImplementation((sql) => {
+        readableFilterApplied =
+          readableFilterApplied || sql.includes(':readableMemberId');
+
+        return fixture.rootInstanceQueryBuilder;
+      });
+      fixture.rootInstanceQueryBuilder.getMany.mockImplementation(() => {
+        const ids = readableFilterApplied
+          ? ['instance-1', 'instance-2', 'instance-3']
+          : ['instance-1', 'instance-2', 'instance-3', 'instance-4'];
+
+        readableFilterApplied = false;
+
+        return Promise.resolve(ids.map((id) => createApprovalInstance({ id })));
+      });
       fixture.rootTaskFind.mockImplementation((options) => {
         const where = options.where as
           | Readonly<Record<string, unknown>>
@@ -6706,7 +6749,7 @@ describe('WorkflowEngineService', () => {
       ).resolves.toMatchObject({
         overdueTaskCount: 1,
         pendingTaskCount: 2,
-        totalInstanceCount: 4,
+        totalInstanceCount: 3,
       });
       // The chain's current holder has the one task, and it is past due.
       await expect(
@@ -6725,24 +6768,48 @@ describe('WorkflowEngineService', () => {
     it('matches the length of the same member\'s inbox', async (): Promise<void> => {
       const fixture = createDashboardFixture();
 
-      await Promise.all(
-        ['member-a', 'member-b', 'member-c', 'member-admin'].map(
-          async (memberId): Promise<void> => {
-            const summary = await fixture.service.readWorkflowDashboardSummary(
-              createAuthContext(memberId),
-            );
+      // One at a time: the fixture's readable-instance flag is shared state.
+      await ['member-a', 'member-b', 'member-c'].reduce(
+        async (previous, memberId): Promise<void> => {
+          await previous;
 
-            expect(summary.pendingTaskCount).toBe(
-              (await fixture.service.listInboxTasks(memberId)).length,
-            );
-          },
-        ),
+          const summary = await fixture.service.readWorkflowDashboardSummary(
+            createAuthContext(memberId),
+          );
+
+          expect(summary.pendingTaskCount).toBe(
+            (await fixture.service.listInboxTasks(memberId)).length,
+          );
+        },
+        Promise.resolve(),
       );
+    });
+
+    it('does not count a countersign the member has already voted on, but counts one still waiting on them or claimed by them', async (): Promise<void> => {
+      const fixture = createDashboardFixture();
+      const read = async (
+        memberId: string,
+      ): Promise<readonly [number, number]> => [
+        (
+          await fixture.service.readWorkflowDashboardSummary(
+            createAuthContext(memberId),
+          )
+        ).pendingTaskCount,
+        (await fixture.service.listInboxTasks(memberId)).length,
+      ];
+
+      // member-d is still the task's assignee, but their own candidate row is
+      // COMPLETED: it is no longer theirs, dashboard and inbox alike.
+      await expect(read('member-d')).resolves.toEqual([0, 0]);
+      await expect(read('member-e')).resolves.toEqual([1, 1]);
+      await expect(read('member-f')).resolves.toEqual([1, 1]);
     });
 
     it('does not count other people\'s tasks for an administrator who can read every instance', async (): Promise<void> => {
       const fixture = createDashboardFixture();
 
+      // The administrator reads all four instances, the requester only three,
+      // so the role changes what is in range...
       await expect(
         fixture.service.readWorkflowDashboardSummary({
           ...createAuthContext('member-admin'),
@@ -6753,6 +6820,22 @@ describe('WorkflowEngineService', () => {
         pendingTaskCount: 1,
         totalInstanceCount: 4,
       });
+      // ...but not whose tasks are counted: the administrator's own one only.
+      await expect(
+        fixture.service.readWorkflowDashboardSummary({
+          ...createAuthContext('member-a'),
+          roles: ['BPM_ADMIN'],
+        }),
+      ).resolves.toMatchObject({
+        overdueTaskCount: 1,
+        pendingTaskCount: 2,
+        totalInstanceCount: 4,
+      });
+      await expect(
+        fixture.service.readWorkflowDashboardSummary(
+          createAuthContext('member-admin'),
+        ),
+      ).resolves.toMatchObject({ totalInstanceCount: 3 });
     });
 
     it('leaves the task counters out of an instance range the member\'s tasks are not in', async (): Promise<void> => {
