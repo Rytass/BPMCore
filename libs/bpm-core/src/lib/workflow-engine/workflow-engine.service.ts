@@ -7360,7 +7360,6 @@ function compareMembership(
   return right.effectiveFrom.localeCompare(left.effectiveFrom);
 }
 
-
 function canReadAllWorkflows(scope: WorkflowReadScope): boolean {
   return (
     scope.roles.includes('BPM_ADMIN') ||
