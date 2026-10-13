@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-09-15, pending the release after `v0.13.3`): `libs/shared@0.13.3`, `libs/bpm-core-client@0.13.3`, `libs/bpm-core@0.13.3` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.13.3`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10), the NOTIFY webhook shared contract (ADR 18 P0) the endpoint registry/catalog (ADR 18 P1), the delivery outbox (ADR 18 P2), delivery observability (ADR 18 P3) and the designer webhook panel with its shared catalog lint (ADR 18 P4), the wrapper-host integration (P5) and database-managed endpoints (P6) are inventoried here but not yet released; `nx release` sets the next number at publish time.
+Last verified against (2026-10-14, pending the release after `v0.15.0`): `libs/shared@0.15.0`, `libs/bpm-core-client@0.15.0`, `libs/bpm-core@0.15.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.15.0`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10), the NOTIFY webhook shared contract (ADR 18 P0) the endpoint registry/catalog (ADR 18 P1), the delivery outbox (ADR 18 P2), delivery observability (ADR 18 P3) and the designer webhook panel with its shared catalog lint (ADR 18 P4), the wrapper-host integration (P5) and database-managed endpoints (P6) are inventoried here but not yet released; `nx release` sets the next number at publish time.
 
 The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
 
@@ -1291,11 +1291,24 @@ argument on the `notifications` / `notificationCount` queries.
 | Options | `AttachmentOptions` |
 | Module | `AttachmentModule` |
 
-> `attachmentSignedUrlSecret` is enforced under `NODE_ENV=production`:
-> `resolveBPMAttachmentOptions` throws rather than fall back to the
-> development constant published in this package. The opt-in
-> `attachmentAllowInsecureSignedUrlSecret: true` waives that for throwaway
-> environments; outside production the built-in value still only warns.
+> Every attachment option has a default, so a host can boot with none of them.
+> An unset `attachmentSignedUrlSecret` makes each process generate a random
+> 32-byte secret at boot and warn on stderr (silent under `NODE_ENV=test`);
+> no signing secret ships in this package. A URL then only verifies on the
+> process that signed it, so a host running more than one API replica sets a
+> shared secret. An unset `attachmentPublicBaseUrl` builds each URL from the
+> origin of the GraphQL request that asked for it (`X-Forwarded-Proto` /
+> `X-Forwarded-Host`, else the request's protocol and `Host`), falling back to a
+> root-relative path when there is no request.
+>
+> **Compatibility change.** Before this, `NODE_ENV=production` without a
+> secret refused to boot, outside production the URLs were signed with the
+> published value `bpm-core-local-attachment-url-key-v1`, and the base URL
+> defaulted to `http://localhost:17603`. `attachmentAllowInsecureSignedUrlSecret`
+> is now deprecated and ignored. `BPMResolvedAttachmentOptions.publicBaseUrl`
+> is `string | null` (`null` = from the request), and
+> `DEFAULT_BPM_ATTACHMENT_OPTIONS` no longer carries a `signedUrlSecret`.
+> `AttachmentService.createSignedUrl` takes an optional `requestOrigin`.
 
 ## `@rytass/bpm-core-nestjs-module/signature`
 

@@ -1,14 +1,19 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { BPMAuthContext } from '@rytass/bpm-core-nestjs-module';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto';
 import type { Request, Response } from 'express';
 import { Repository } from 'typeorm';
 import { ApiTestMemberEntity } from './api-test-member.entity';
 
 export const API_SESSION_COOKIE_NAME = 'bpm_api_session';
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const DEFAULT_SESSION_SECRET = 'bpm-api-session-secret';
+const DEVELOPMENT_SESSION_SECRET = 'bpm-api-session-secret';
 
 interface ApiSessionPayload {
   readonly expiresAt: number;
@@ -25,8 +30,37 @@ export interface ApiAuthenticatedMember {
   readonly roles: readonly string[];
 }
 
+/**
+ * HMAC key for the session cookie. A configured `API_SESSION_SECRET` always
+ * wins. Without one, a production process signs with a random key generated
+ * at boot — the fixed development value is in this repository, so a cookie
+ * signed with it could be forged — and says so on stderr, since every restart
+ * then signs everyone out. Outside production the fixed value stays, so a
+ * developer's login survives `pnpm dev` restarting the API.
+ */
+export function resolveApiSessionSecret(): string {
+  const configured = process.env.API_SESSION_SECRET?.trim();
+
+  if (configured) {
+    return configured;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return DEVELOPMENT_SESSION_SECRET;
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[apps/api] API_SESSION_SECRET is unset, so this process signs session cookies with a random key generated at boot. Every restart signs everyone out, and a second replica would reject the first one's sessions: set API_SESSION_SECRET to a shared secret.",
+  );
+
+  return randomBytes(32).toString('hex');
+}
+
 @Injectable()
 export class ApiSessionService {
+  private readonly sessionSecret = resolveApiSessionSecret();
+
   constructor(
     @InjectRepository(ApiTestMemberEntity)
     private readonly testMemberRepository: Repository<ApiTestMemberEntity>,
@@ -222,10 +256,7 @@ export class ApiSessionService {
   }
 
   private createSignature(encodedPayload: string): string {
-    return createHmac(
-      'sha256',
-      process.env.API_SESSION_SECRET ?? DEFAULT_SESSION_SECRET,
-    )
+    return createHmac('sha256', this.sessionSecret)
       .update(encodedPayload)
       .digest('base64url');
   }

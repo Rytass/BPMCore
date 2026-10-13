@@ -13,52 +13,87 @@ describe('resolveBPMAttachmentOptions', () => {
     process.env.NODE_ENV = originalNodeEnv;
   });
 
-  it('does not warn when NODE_ENV is not production, even with default secret', (): void => {
-    process.env.NODE_ENV = 'development';
+  it('boots under NODE_ENV=production with no secret, on a random one', (): void => {
+    process.env.NODE_ENV = 'production';
+
+    const first = resolveBPMAttachmentOptions();
+    const second = resolveBPMAttachmentOptions();
+
+    expect(first.signedUrlSecret).toMatch(/^[0-9a-f]{64}$/u);
+    // Generated per resolution, never a value shipped in the package.
+    expect(second.signedUrlSecret).not.toBe(first.signedUrlSecret);
+    expect(first.signedUrlSecret).not.toBe(
+      'bpm-core-local-attachment-url-key-v1',
+    );
+  });
+
+  it.each(['production', 'staging', 'development'])(
+    'warns on stderr about the generated secret under NODE_ENV=%s',
+    (nodeEnv): void => {
+      process.env.NODE_ENV = nodeEnv;
+
+      resolveBPMAttachmentOptions();
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
+        'attachmentSignedUrlSecret is unset',
+      );
+    },
+  );
+
+  it('stays quiet under NODE_ENV=test', (): void => {
+    process.env.NODE_ENV = 'test';
 
     resolveBPMAttachmentOptions();
 
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('warns when default secret is used outside development and production', (): void => {
-    process.env.NODE_ENV = 'staging';
-
-    const resolved = resolveBPMAttachmentOptions();
-
-    expect(resolved.signedUrlSecret).toBe('bpm-core-local-attachment-url-key-v1');
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
-      'attachmentSignedUrlSecret is using the built-in local development value',
-    );
-  });
-
-  it('refuses to resolve when default secret is used under NODE_ENV=production', (): void => {
+  it('treats a blank secret as unset', (): void => {
     process.env.NODE_ENV = 'production';
 
-    expect((): unknown => resolveBPMAttachmentOptions()).toThrow(
-      /attachmentSignedUrlSecret is unset/,
-    );
+    const resolved = resolveBPMAttachmentOptions({
+      attachmentSignedUrlSecret: '   ',
+    });
+
+    expect(resolved.signedUrlSecret).toMatch(/^[0-9a-f]{64}$/u);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('allows the default secret under production behind the explicit opt-in', (): void => {
+  it('uses a configured secret as is, without warning', (): void => {
+    process.env.NODE_ENV = 'production';
+
+    const resolved = resolveBPMAttachmentOptions({
+      attachmentSignedUrlSecret: 'my-real-secret',
+    });
+
+    expect(resolved.signedUrlSecret).toBe('my-real-secret');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores the deprecated insecure-secret opt-in', (): void => {
     process.env.NODE_ENV = 'production';
 
     const resolved = resolveBPMAttachmentOptions({
       attachmentAllowInsecureSignedUrlSecret: true,
     });
 
-    expect(resolved.signedUrlSecret).toBe('bpm-core-local-attachment-url-key-v1');
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(resolved.signedUrlSecret).toMatch(/^[0-9a-f]{64}$/u);
   });
 
-  it('does not warn when a custom secret is supplied under production', (): void => {
-    process.env.NODE_ENV = 'production';
+  it('leaves the public base URL to the request when unset', (): void => {
+    expect(resolveBPMAttachmentOptions().publicBaseUrl).toBeNull();
+    expect(
+      resolveBPMAttachmentOptions({ attachmentPublicBaseUrl: '  ' })
+        .publicBaseUrl,
+    ).toBeNull();
+  });
 
-    resolveBPMAttachmentOptions({
-      attachmentSignedUrlSecret: 'my-real-secret',
-    });
-
-    expect(warnSpy).not.toHaveBeenCalled();
+  it('trims a trailing slash off a configured public base URL', (): void => {
+    expect(
+      resolveBPMAttachmentOptions({
+        attachmentPublicBaseUrl: 'https://bpm.example.com/',
+      }).publicBaseUrl,
+    ).toBe('https://bpm.example.com');
   });
 });

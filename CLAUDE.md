@@ -282,9 +282,13 @@ pnpm e2e:client
 
 `docker compose` is not required for normal development. Use Vault-backed develop secrets and `bpm_core/develop` unless the user explicitly asks otherwise.
 
-Staging wrapper-host runtime secrets include `API_SESSION_SECRET`,
-`BPM_API_PUBLIC_URL`, and `BPM_ATTACHMENT_SIGNING_SECRET`; the API host passes
-the BPM attachment values into `BPMRootModule`.
+Beyond the database, every runtime secret is optional. `API_SESSION_SECRET`
+and `BPM_ATTACHMENT_SIGNING_SECRET` fall back to a random per-process key under
+`NODE_ENV=production` (with a stderr warning), and an unset
+`BPM_API_PUBLIC_URL` builds attachment URLs from the request origin. Set the two
+secrets anyway on any deployment that runs more than one replica or must keep
+sessions across a restart; the API host passes the BPM attachment values into
+`BPMRootModule`.
 
 ## Dependency Overrides
 

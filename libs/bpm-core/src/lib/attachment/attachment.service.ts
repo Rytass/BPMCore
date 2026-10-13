@@ -20,7 +20,7 @@ import {
 import {
   BPM_ATTACHMENT_OPTIONS,
   BPMResolvedAttachmentOptions,
-  DEFAULT_BPM_ATTACHMENT_OPTIONS,
+  resolveBPMAttachmentOptions,
 } from './attachment-options';
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
@@ -53,7 +53,7 @@ export class AttachmentService {
     private readonly storage: AttachmentStorage,
     @Optional()
     @Inject(BPM_ATTACHMENT_OPTIONS)
-    private readonly attachmentOptions: BPMResolvedAttachmentOptions = DEFAULT_BPM_ATTACHMENT_OPTIONS,
+    private readonly attachmentOptions: BPMResolvedAttachmentOptions = resolveBPMAttachmentOptions(),
   ) {}
 
   async uploadAttachment(
@@ -63,7 +63,9 @@ export class AttachmentService {
     const uploaderMemberId = input.uploaderMemberId?.trim();
 
     if (!uploaderMemberId) {
-      throw new BadRequestException('Attachment uploader member id is required');
+      throw new BadRequestException(
+        'Attachment uploader member id is required',
+      );
     }
 
     if (fileBuffer.length !== input.sizeBytes) {
@@ -187,10 +189,16 @@ export class AttachmentService {
   async createSignedUrl({
     disposition,
     id,
+    requestOrigin = null,
     requestedByMemberId,
   }: {
     readonly disposition: AttachmentDisposition;
     readonly id: string;
+    /**
+     * Origin the request came in on; builds the URL when no public base URL
+     * is configured. Without either, the URL is root-relative.
+     */
+    readonly requestOrigin?: string | null;
     readonly requestedByMemberId: string;
   }): Promise<string> {
     const attachment = await this.readAttachmentOrThrow(id);
@@ -215,7 +223,9 @@ export class AttachmentService {
       this.attachmentOptions.signedUrlSecret,
     );
 
-    return `${this.attachmentOptions.publicBaseUrl}${this.attachmentOptions.routePrefix}/${id}/download?token=${encodeURIComponent(
+    const baseUrl = this.attachmentOptions.publicBaseUrl ?? requestOrigin ?? '';
+
+    return `${baseUrl}${this.attachmentOptions.routePrefix}/${id}/download?token=${encodeURIComponent(
       token,
     )}&disposition=${disposition}`;
   }
@@ -353,7 +363,8 @@ export class AttachmentService {
 
     return candidates.some(
       (candidate) =>
-        candidate.memberId === memberId || candidate.originalMemberId === memberId,
+        candidate.memberId === memberId ||
+        candidate.originalMemberId === memberId,
     );
   }
 
@@ -365,7 +376,9 @@ export class AttachmentService {
       where: { taskId: In([...taskIds]) },
     });
 
-    return decisions.some((decision) => decision.decidedByMemberId === memberId);
+    return decisions.some(
+      (decision) => decision.decidedByMemberId === memberId,
+    );
   }
 }
 

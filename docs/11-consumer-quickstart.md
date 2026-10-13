@@ -949,7 +949,7 @@ const authContext: BPMAuthContext = {
 
 - [ ] DB 有 `uuid-ossp` 與 `ltree` 擴充（或 DBA 已預建）
 - [ ] 跑過 BPM migrations（不要靠 TypeORM `synchronize`）
-- [ ] `BPMRootModule.forRoot` 設了 `attachmentSignedUrlSecret`（**不要** 用預設值 `bpm-core-local-attachment-url-key-v1`）
+- [ ] API 跑多個副本時，`BPMRootModule.forRoot` 設了共用的 `attachmentSignedUrlSecret`（未設定時每個 process 開機自動產生隨機密鑰並在 stderr 警告；單一副本可不設，但重啟會讓最近幾分鐘發出的附件連結失效）
 - [ ] 設了 `signatureKeyProvider`（**不要** 用預設 local key）
 - [ ] 設了 `attachmentPublicBaseUrl` 對外的真實 origin
 - [ ] 宿主沒呼叫 `setGlobalPrefix`

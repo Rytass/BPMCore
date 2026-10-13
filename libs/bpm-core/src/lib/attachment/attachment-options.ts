@@ -1,9 +1,15 @@
 import { InjectionToken } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 
 export interface BPMRootAttachmentOptions {
   /**
    * Public HTTP base URL used to build signed attachment download and preview
    * URLs.
+   *
+   * Optional: when unset, each URL is built from the origin of the GraphQL
+   * request that asked for it (`X-Forwarded-Proto` / `X-Forwarded-Host`, else
+   * the request's own protocol and `Host`), so a host behind a proxy or on
+   * localhost gets a working link without configuring it.
    */
   readonly attachmentPublicBaseUrl?: string | null;
 
@@ -16,19 +22,20 @@ export interface BPMRootAttachmentOptions {
   readonly attachmentRoutePrefix?: string | null;
 
   /**
-   * Opt-in escape hatch that lets a `NODE_ENV=production` process boot while
-   * still signing attachment URLs with the built-in development secret.
-   *
-   * Without it, a production process that never set
-   * `attachmentSignedUrlSecret` refuses to start. Set this only for a
-   * throwaway environment that happens to run with `NODE_ENV=production` and
-   * serves no real attachments — the built-in value is published in this
-   * package, so anyone can forge a signed attachment URL against it.
+   * @deprecated No longer has any effect. An unset
+   * `attachmentSignedUrlSecret` now gets a random per-process secret instead
+   * of a built-in one, so there is nothing insecure left to acknowledge.
    */
   readonly attachmentAllowInsecureSignedUrlSecret?: boolean;
 
   /**
    * HMAC secret used to sign attachment download and preview tokens.
+   *
+   * Optional: when unset, every process generates its own random secret at
+   * boot and warns on stderr. That keeps the URLs unforgeable, but a URL only
+   * verifies on the process that signed it — set a shared secret once the API
+   * runs more than one replica, or when a restart must not invalidate the
+   * links handed out in the last `attachmentSignedUrlTtlSeconds`.
    */
   readonly attachmentSignedUrlSecret?: string | null;
 
@@ -44,7 +51,8 @@ export interface BPMRootAttachmentOptions {
 }
 
 export interface BPMResolvedAttachmentOptions {
-  readonly publicBaseUrl: string;
+  /** `null` builds each URL from the requesting origin. */
+  readonly publicBaseUrl: string | null;
   readonly routePrefix: string;
   readonly signedUrlSecret: string;
   readonly signedUrlTtlSeconds: number;
@@ -54,10 +62,18 @@ export interface BPMResolvedAttachmentOptions {
 export const BPM_ATTACHMENT_OPTIONS: InjectionToken<BPMResolvedAttachmentOptions> =
   Symbol('BPM_ATTACHMENT_OPTIONS');
 
-export const DEFAULT_BPM_ATTACHMENT_OPTIONS: BPMResolvedAttachmentOptions = {
-  publicBaseUrl: 'http://localhost:17603',
+/**
+ * Defaults for every attachment option that has a fixed one. The signing
+ * secret has none on purpose: a value published in this package would make
+ * every signed URL forgeable, so an unset secret is generated per process by
+ * {@link resolveBPMAttachmentOptions}.
+ */
+export const DEFAULT_BPM_ATTACHMENT_OPTIONS: Omit<
+  BPMResolvedAttachmentOptions,
+  'signedUrlSecret'
+> = {
+  publicBaseUrl: null,
   routePrefix: '/attachments',
-  signedUrlSecret: 'bpm-core-local-attachment-url-key-v1',
   signedUrlTtlSeconds: 300,
   storageProviderId: 'local',
 };
@@ -65,52 +81,26 @@ export const DEFAULT_BPM_ATTACHMENT_OPTIONS: BPMResolvedAttachmentOptions = {
 export function resolveBPMAttachmentOptions(
   options: BPMRootAttachmentOptions = {},
 ): BPMResolvedAttachmentOptions {
-  const resolvedSignedUrlSecret =
-    normalizeText(options.attachmentSignedUrlSecret) ??
-    DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
+  const configuredSignedUrlSecret = normalizeText(
+    options.attachmentSignedUrlSecret,
+  );
 
-  const usesBuiltInSecret =
-    resolvedSignedUrlSecret === DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlSecret;
-
-  // A console warning is the wrong instrument for a published constant that
-  // makes every signed attachment URL forgeable: in a container it scrolls past
-  // with the boot log and nobody reads it again. Under `NODE_ENV=production`
-  // the process refuses to start instead, and a host that genuinely wants the
-  // development value there has to say so.
-  if (
-    usesBuiltInSecret &&
-    process.env.NODE_ENV === 'production' &&
-    options.attachmentAllowInsecureSignedUrlSecret !== true
-  ) {
-    throw new Error(
-      [
-        '[@rytass/bpm-core-nestjs-module] attachmentSignedUrlSecret is unset, so BPM would sign attachment URLs with the built-in local development value that ships in this package — anyone could forge one.',
-        'Set BPMRootModuleOptions.attachmentSignedUrlSecret to a strong secret.',
-        'If this service never serves attachments, BPM still mounts AttachmentModule, so set attachmentAllowInsecureSignedUrlSecret: true to acknowledge that the signing key is public and boot anyway.',
-      ].join(' '),
-    );
-  }
-
-  // Outside production, still warn everywhere except an explicit local
-  // development run. Gating the warning on production alone meant a staging
-  // host that never set the variable signed attachment URLs with the published
-  // constant — and said nothing about it. One extra line in a developer's
-  // console is the cheaper trade.
-  if (
-    usesBuiltInSecret &&
-    process.env.NODE_ENV !== 'development' &&
-    process.env.NODE_ENV !== 'test'
-  ) {
+  // No secret is not a reason to refuse to boot — the module is meant to start
+  // with nothing but a database. A random per-process key keeps the signed
+  // URLs unforgeable; the warning is for the one thing it cannot do, which is
+  // verify a URL signed by another process.
+  if (!configuredSignedUrlSecret && process.env.NODE_ENV !== 'test') {
     // eslint-disable-next-line no-console
     console.warn(
-      '[@rytass/bpm-core-nestjs-module] attachmentSignedUrlSecret is using the built-in local development value. Set BPMRootModuleOptions.attachmentSignedUrlSecret to a strong secret before serving production traffic — signed attachment URLs would otherwise be forgeable.',
+      '[@rytass/bpm-core-nestjs-module] attachmentSignedUrlSecret is unset, so this process signs attachment URLs with a random key generated at boot. The URLs stay unforgeable, but each one only verifies on the process that signed it: set BPMRootModuleOptions.attachmentSignedUrlSecret to a shared secret before running more than one API replica, or if a restart must not invalidate the links handed out in the last few minutes.',
     );
   }
 
   return {
     publicBaseUrl: normalizePublicBaseUrl(options.attachmentPublicBaseUrl),
     routePrefix: normalizeRoutePrefix(options.attachmentRoutePrefix),
-    signedUrlSecret: resolvedSignedUrlSecret,
+    signedUrlSecret:
+      configuredSignedUrlSecret ?? randomBytes(32).toString('hex'),
     signedUrlTtlSeconds: normalizePositiveInteger(
       options.attachmentSignedUrlTtlSeconds,
       DEFAULT_BPM_ATTACHMENT_OPTIONS.signedUrlTtlSeconds,
@@ -135,11 +125,10 @@ export function resolveAttachmentControllerPath(
   return normalizedPrefix.replace(/^\//, '');
 }
 
-function normalizePublicBaseUrl(value: string | null | undefined): string {
-  const normalizedValue =
-    normalizeText(value) ?? DEFAULT_BPM_ATTACHMENT_OPTIONS.publicBaseUrl;
-
-  return normalizedValue.replace(/\/+$/, '');
+function normalizePublicBaseUrl(
+  value: string | null | undefined,
+): string | null {
+  return normalizeText(value)?.replace(/\/+$/, '') ?? null;
 }
 
 function normalizeRoutePrefix(value: string | null | undefined): string {
