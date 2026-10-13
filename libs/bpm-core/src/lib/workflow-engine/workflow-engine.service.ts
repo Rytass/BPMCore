@@ -4749,7 +4749,11 @@ export class WorkflowEngineService {
     if (uniqueCandidates.length > 0) {
       return {
         candidates: uniqueCandidates,
-        skippedDelegations: collectSkippedDelegations(delegatedCandidates),
+        skippedDelegations: collectSkippedDelegations(
+          delegatedCandidates,
+          isInitiatorExcluded(node),
+          instance.initiatorMemberId,
+        ),
       };
     }
 
@@ -4816,7 +4820,11 @@ export class WorkflowEngineService {
         true,
         instance.initiatorMemberId,
       ),
-      skippedDelegations: collectSkippedDelegations(delegatedCandidates),
+      skippedDelegations: collectSkippedDelegations(
+        delegatedCandidates,
+        true,
+        instance.initiatorMemberId,
+      ),
     };
   }
 
@@ -6844,13 +6852,21 @@ function isGradeGatedCandidate(
 // per principal and delegate pair.
 function collectSkippedDelegations(
   delegatedCandidates: readonly RuntimeTaskCandidate[],
+  excludeInitiator: boolean,
+  initiatorMemberId: string,
 ): readonly SkippedDelegation[] {
   const seen = new Set<string>();
 
   return delegatedCandidates.flatMap((candidate) => {
     const skipped = candidate.skippedDelegation;
 
-    if (!skipped) {
+    // A seat the initiator filter removes is not on the task, so a refusal on
+    // it has nothing to report. Rows only the dedupe drops are still on it.
+    if (
+      !skipped ||
+      (excludeInitiator &&
+        isInitiatorOnCandidatePath(candidate, initiatorMemberId))
+    ) {
       return [];
     }
 

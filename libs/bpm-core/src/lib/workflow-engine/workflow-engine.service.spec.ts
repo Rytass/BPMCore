@@ -3321,6 +3321,151 @@ describe('WorkflowEngineService', () => {
           });
         });
 
+        it('records no refusal for the initiator seat an excluding node removes', async (): Promise<void> => {
+          // The chain ends below the level, so the fallback (the initiator, who
+          // may approve his own request there) is appended last, then removed
+          // by the exclusion. His refused delegation is not on the task; the
+          // refusal for member-m2, who is, still is.
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({ grades: GRADES, links: CHAIN_LINKS }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: {
+                fallback: {
+                  allowInitiatorSelfApproval: true,
+                  memberId: 'member-001',
+                  type: 'DIRECT',
+                },
+                minPositionLevel: 3,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              decisionPolicy: { type: 'SEQUENTIAL' },
+              excludeInitiator: { whenEmpty: 'FAIL' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+          const agents: Readonly<Record<string, string>> = {
+            'member-001': 'agent-none',
+            'member-m2': 'agent-low',
+          };
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> =>
+              Promise.resolve(
+                agents[memberId]
+                  ? {
+                      delegationChain: [
+                        {
+                          from: memberId,
+                          reason: 'ALL',
+                          ruleId: 'delegation-rule-grade',
+                          to: agents[memberId],
+                        },
+                      ],
+                      finalAssigneeMemberId: agents[memberId],
+                    }
+                  : { delegationChain: [], finalAssigneeMemberId: memberId },
+              ),
+          );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual([
+            'member-m1',
+            'member-m2',
+          ]);
+          expect(
+            readTaskCreatedPayload(fixture)?.['skippedDelegations'],
+          ).toEqual([
+            {
+              agentLevel: 1,
+              agentMemberId: 'agent-low',
+              principalLevel: 2,
+              principalMemberId: 'member-m2',
+              reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+            },
+          ]);
+        });
+
+        it('reports only the refusals of the replacement once the initiator manager takes over', async (): Promise<void> => {
+          // First pass: member-m1 delegates to the initiator (applied, dropped)
+          // and the initiator fallback seat is refused a delegation (dropped);
+          // nothing is left, so the initiator's manager (member-m1 again)
+          // replaces them and gets a refused delegation of his own. Only that
+          // one belongs on the task.
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...createManagerChainOrg({
+              grades: { ...GRADES, 'member-001': 2, 'member-m1': 2 },
+              links: [['member-001', 'member-m1']],
+            }),
+            processWorkflowSnapshot: createLinearUserTaskWorkflow({
+              approverResolver: {
+                fallback: {
+                  allowInitiatorSelfApproval: true,
+                  memberId: 'member-001',
+                  type: 'DIRECT',
+                },
+                minPositionLevel: 3,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              decisionPolicy: { type: 'SEQUENTIAL' },
+              excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+          let managerCalls = 0;
+          const delegate = (
+            principal: string,
+            agent: string,
+          ): DelegationResolution => ({
+            delegationChain: [
+              {
+                from: principal,
+                reason: 'ALL',
+                ruleId: 'delegation-rule-grade',
+                to: agent,
+              },
+            ],
+            finalAssigneeMemberId: agent,
+          });
+
+          fixture.delegationService.resolveAssignee.mockImplementation(
+            (memberId: string): Promise<DelegationResolution> => {
+              if (memberId === 'member-m1') {
+                managerCalls += 1;
+
+                return Promise.resolve(
+                  managerCalls === 1
+                    ? delegate('member-m1', 'member-001')
+                    : delegate('member-m1', 'agent-low'),
+                );
+              }
+
+              return Promise.resolve(
+                memberId === 'member-001'
+                  ? delegate('member-001', 'agent-none')
+                  : { delegationChain: [], finalAssigneeMemberId: memberId },
+              );
+            },
+          );
+          await fixture.service.processInstance('instance-1');
+
+          expect(readCandidateMemberIds(fixture)).toEqual(['member-m1']);
+          expect(
+            readTaskCreatedPayload(fixture)?.['skippedDelegations'],
+          ).toEqual([
+            {
+              agentLevel: 1,
+              agentMemberId: 'agent-low',
+              principalLevel: 2,
+              principalMemberId: 'member-m1',
+              reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+            },
+          ]);
+        });
+
         it('does not bring a delegation through the initiator back as a path', async (): Promise<void> => {
           // member-001 (grade 1) is the initiator of a node that excludes him.
           const createExcludingFixture = (
