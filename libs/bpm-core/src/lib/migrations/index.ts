@@ -25,6 +25,7 @@ import { OrgUnitCodeActiveUnique0000000022000 } from './0000000022000-org-unit-c
 import { WorkflowWebhookDeliveries0000000023000 } from './0000000023000-workflow-webhook-deliveries';
 import { WorkflowWebhookEndpoints0000000024000 } from './0000000024000-workflow-webhook-endpoints';
 import { TaskCandidateSequence0000000025000 } from './0000000025000-task-candidate-sequence';
+import { ApprovalInstanceBusinessKey0000000026000 } from './0000000026000-approval-instance-business-key';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -53,6 +54,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   WorkflowWebhookDeliveries0000000023000,
   WorkflowWebhookEndpoints0000000024000,
   TaskCandidateSequence0000000025000,
+  ApprovalInstanceBusinessKey0000000026000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -81,3 +83,4 @@ export * from './0000000022000-org-unit-code-active-unique';
 export * from './0000000023000-workflow-webhook-deliveries';
 export * from './0000000024000-workflow-webhook-endpoints';
 export * from './0000000025000-task-candidate-sequence';
+export * from './0000000026000-approval-instance-business-key';
