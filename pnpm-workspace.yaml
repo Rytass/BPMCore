@@ -62,6 +62,10 @@ overrides:
   'brace-expansion@5': '^5.0.9'
   'browserslist': '^4.28.7'
   'fast-uri': '^3.1.6'
+  # One copy: `bpm-core`'s peer is `express: >=4.0.0`, so `autoInstallPeers`
+  # resolved it to the newest 5.x beside the one @nestjs/platform-express
+  # brings. A range, not a pin, so both move to the same latest 5.x.
+  'express@5': '^5.3.0'
   'follow-redirects': '^1.16.0'
   'form-data': '^4.0.6'
   'http-proxy-middleware': '^3.0.6'
@@ -87,6 +91,10 @@ overrides:
   # `DocumentCallback` unrelated types (pdf-preview.tsx stops compiling) and
   # would ship two PDF workers. Move this with react-pdf, never on its own.
   'pdfjs-dist': '5.4.296'
+  # One copy, for the same reason and to move with pdfjs-dist above:
+  # `bpm-core-react`'s peer is `react-pdf: >=10.0.0`, so `autoInstallPeers`
+  # installed react-pdf 11 (which wants pdfjs 6) beside the app's 10.
+  'react-pdf': '^10.5.0'
   'piscina': '^4.9.3'
   'postcss': '^8.5.23'
   'postcss-selector-parser': '^7.1.3'
