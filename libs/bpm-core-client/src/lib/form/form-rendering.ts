@@ -292,6 +292,12 @@ export function isFormRendererFieldVisible(
   fields: readonly FormFieldDefinition[],
   values: FormRendererValues,
 ): boolean {
+  // `hidden` is store-only: never rendered, never validated. Its value stays
+  // in the emitted values (buildFormRendererValues walks every schema field).
+  if (field.hidden) {
+    return false;
+  }
+
   return field.visibleWhen
     ? evaluateConditionExpression(field.visibleWhen, fields, values, true)
     : true;

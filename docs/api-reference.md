@@ -242,7 +242,7 @@ Form-schema definitions.
 | `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
 | `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
 | `FormTableRowValue` | type | One table row: column key to cell value |
-| `TextFieldDefinition` | type | text / email / textarea |
+| `TextFieldDefinition` | type | text / email / textarea; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
 | `NumberFieldDefinition` | type | number (min/max/precision) |
 | `DateFieldDefinition` | type | date / datetime |
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
@@ -333,7 +333,7 @@ Form-schema definitions.
 | `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them), and neither is the member who submitted on their behalf (`submittedByMemberId`, same rule; an `ORG_MANAGER_CHAIN` walk climbs past him instead of stopping at him). `{ whenEmpty }`; absent keeps the previous behaviour |
 | `ExcludeInitiatorWhenEmpty` | type | What happens when no approver is left after the initiator is removed: `FAIL` / `INITIATOR_MANAGER` / `SKIP_NODE` |
 | `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
-| `FieldPermission` | interface | Per-node read/write permission |
+| `FieldPermission` | interface | Per-node read/write permission — reserved, **not enforced** (the engine and screens never read `fieldPermissions`) |
 | `NotificationOverride` | interface | Node-level notification overrides |
 | `NotificationChannel` | type | `'IN_APP' \| 'EMAIL' \| 'WEBHOOK'` |
 | `ServiceAction` | type | Action runnable by a serviceTask; `NOTIFY` may carry optional `webhooks` (ADR 18) |

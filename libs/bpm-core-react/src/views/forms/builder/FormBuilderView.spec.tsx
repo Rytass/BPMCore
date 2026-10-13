@@ -356,6 +356,67 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('toggles store-only (hidden) and clears required with it', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'docId', label: '單據', required: true, type: 'text' },
+      ]),
+    );
+
+    try {
+      toggleSetting(harness.container, 'fieldHidden');
+      expect(readField(harness.readSchema(), 'docId')).toMatchObject({
+        hidden: true,
+        required: false,
+      });
+      expect(harness.container.textContent).toContain('只存不顯示');
+      expect(harness.container.textContent).toContain('不是權限控管');
+
+      toggleSetting(harness.container, 'fieldHidden');
+      expect(readField(harness.readSchema(), 'docId')).not.toHaveProperty('hidden');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('offers 以連結顯示 on text fields only', async (): Promise<void> => {
+    const textHarness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'source', label: '來源', required: false, type: 'text' },
+      ]),
+    );
+
+    try {
+      toggleSetting(textHarness.container, 'fieldDisplayAsLink');
+      expect(readField(textHarness.readSchema(), 'source')).toMatchObject({
+        displayAs: 'link',
+      });
+
+      toggleSetting(textHarness.container, 'fieldDisplayAsLink');
+      expect(readField(textHarness.readSchema(), 'source')).not.toHaveProperty(
+        'displayAs',
+      );
+    } finally {
+      await unmount(textHarness);
+    }
+
+    const numberHarness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+      ]),
+    );
+
+    try {
+      expect(
+        numberHarness.container.querySelector(
+          '[data-mock-form-field="fieldDisplayAsLink"]',
+        ),
+      ).toBeNull();
+    } finally {
+      await unmount(numberHarness);
+    }
+  });
+
   it('edits a number field default, minimum and maximum', async (): Promise<void> => {
     const harness = await mountBuilder(
       createSchema([
@@ -1365,6 +1426,20 @@ function typeInto(
   }
 
   setControlValue(input, value);
+}
+
+function toggleSetting(container: HTMLElement, fieldName: string): void {
+  const input = container.querySelector(
+    `[data-mock-form-field="${fieldName}"] input`,
+  ) as HTMLInputElement | null;
+
+  if (!input) {
+    throw new Error(`Settings toggle ${fieldName} was not rendered.`);
+  }
+
+  act((): void => {
+    input.click();
+  });
 }
 
 function typeIntoExpandedSetting(

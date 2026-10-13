@@ -303,6 +303,39 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ).toBe('事由：汰換');
     });
 
+    it('never titles a case with a hidden field', (): void => {
+      const hiddenField: FormFieldDefinition = {
+        fieldKey: 'sourceDocId',
+        hidden: true,
+        label: '來源單據',
+        required: false,
+        type: 'text',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { reason: '汰換', sourceDocId: 'PO-1' },
+          schema: { fields: [hiddenField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'sourceDocId', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { sourceDocId: 'PO-1' },
+          schema: { fields: [hiddenField], schemaVersion: 1 },
+          uiSchema: null,
+        }),
+      ).toBe('fallback');
+    });
+
     it('falls back when a table is the only field', (): void => {
       expect(
         readFormDataCaseTitle({

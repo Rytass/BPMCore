@@ -1672,6 +1672,50 @@ export function FormBuilderView({
           commitSelectedField,
           requestDataSourceFieldChange,
         )}
+        {isTextFieldDefinition(field)
+          ? renderSettingsFormRow(
+              '以連結顯示',
+              'fieldDisplayAsLink',
+              <Toggle
+                checked={field.displayAs === 'link'}
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  updateSelectedFieldWith((current) =>
+                    event.target.checked
+                      ? isTextFieldDefinition(current)
+                        ? { ...current, displayAs: 'link' }
+                        : current
+                      : removeFieldKey(current, 'displayAs'),
+                  )
+                }
+              />,
+            )
+          : null}
+        {renderSettingsFormRow(
+          '只存不顯示（系統整合用）',
+          'fieldHidden',
+          <Toggle
+            checked={field.hidden === true}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              // A hidden field can never be required (the publish lint
+              // rejects the pair), so ticking it also clears 必填.
+              updateSelectedFieldWith((current) =>
+                event.target.checked
+                  ? { ...current, hidden: true, required: false }
+                  : removeFieldKey(current, 'hidden'),
+              )
+            }
+          />,
+        )}
+        {field.hidden === true ? (
+          <Typography
+            color="text-neutral"
+            style={FIELD_SETTINGS_HINT_STYLE}
+            variant="body"
+          >
+            填寫、唯讀與重送畫面都不會顯示這個欄位，值仍會存下來；
+            透過 API 仍然讀得到這個值，不是權限控管。
+          </Typography>
+        ) : null}
       </div>
     );
   }
@@ -3424,6 +3468,7 @@ export function FormBuilderView({
           >
             {readFieldTypeLabel(field.type)} ·
             {field.required ? ' 必填' : ' 選填'} ·{field.fieldKey}
+            {field.hidden ? ' · 只存不顯示' : null}
           </Typography>
         </div>
         <div
@@ -3435,7 +3480,7 @@ export function FormBuilderView({
           <div style={FIELD_BLOCK_REQUIRED_STYLE}>
             <Toggle
               checked={Boolean(field.required)}
-              disabled={isDragging}
+              disabled={isDragging || field.hidden === true}
               label="必填"
               onChange={(event: ChangeEvent<HTMLInputElement>): void =>
                 updateFieldRequired(field.fieldKey, event.target.checked)
@@ -3784,6 +3829,20 @@ function convertTableColumnType(
         type,
       }
     : ({ ...base, type } as TableColumnDefinition);
+}
+
+/**
+ * Drops an optional display key so it is absent from the saved JSON instead of
+ * lingering as `undefined`. Rebuilding the object from its entries loses the
+ * union's type, hence the single cast back.
+ */
+function removeFieldKey(
+  field: FormFieldDefinition,
+  key: 'displayAs' | 'hidden',
+): FormFieldDefinition {
+  return Object.fromEntries(
+    Object.entries(field).filter(([entryKey]) => entryKey !== key),
+  ) as unknown as FormFieldDefinition;
 }
 
 function hasConditionRules(field: FormFieldDefinition): boolean {

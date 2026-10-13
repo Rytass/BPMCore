@@ -129,6 +129,11 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 `description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
+> `fieldPermissions` 是**保留欄位，目前不生效**：workflow engine 與所有畫面都不讀它，
+> 設了也不會改變任何欄位的可見性或可編輯性（要先定義「沒有當前節點的檢視者看到什麼」
+> 才能實作節點層級的可見性）。要讓某個欄位不出現在畫面上，用表單欄位的 `hidden`
+> （見 §7）；那同樣只是顯示選項，不是權限邊界。
+
 `SEQUENTIAL`（designer 選項「依序簽核」）依候選簽核人的順序一次只開放一位：
 `task_candidates.sequence`（0 起算）排定順序，輪到的候選人為 `PENDING`，其餘為
 `WAITING`（目前畫面不顯示候選人狀態）；前一位同意後才輪到下一位，任一位拒絕或退回即
@@ -375,3 +380,57 @@ frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補
   不會被 browser bundle 讀取。
 - Auth 使用 `apps/api` 的 signed HTTP-only cookie。Client 登入後會重新讀
   `/auth/me`，未登入時導向 `/login`。
+
+---
+
+## 7. 表單欄位的顯示選項（`hidden`、`displayAs`）
+
+型別來源是 `libs/shared/src/lib/form.ts`。這兩個選項只影響畫面如何呈現，不改變
+`form_data` 的內容。
+
+### `hidden`：只存不顯示
+
+```ts
+{ fieldKey: 'sourceDocId', label: '來源單據', required: false, type: 'text', hidden: true }
+```
+
+給宿主系統放技術欄位用（來源單據編號、版本、型別…）：值由 service 層送進 `form_data`，
+簽核人看不到。
+
+- **畫面**：填寫、唯讀、重送都不渲染這個欄位；案件標題也不會挑它當標題欄位。
+- **值**：照存。renderer 送出的值仍包含隱藏欄位，重送時不會被丟掉。
+- **驗證**：前端與後端 `validateSubmittedFormData` 都把 `hidden` 欄位當成「不可見」，
+  不檢查必填；後端不會剝掉已送入的值。
+- **發布檢查**：`hidden` 必須是 boolean；`hidden: true` 不可與 `required: true` 並用
+  （沒人填得到必填值，表單會送不出去）；table 的 column 不支援 `hidden`。
+- **隱藏的選項來源（DataSource）欄位**：`hidden` 欄位（或 `hidden` table 的 column）若設了
+  `dataSource`，其 `FIELD` 綁定只能指向同為 `hidden` 的欄位；綁定到顯示中的欄位會被發布檢查
+  擋下。原因：隱藏欄位不會被渲染，前端的 DataSource 閘門看不到它，但後端送出時仍會解析；
+  依賴的欄位值有問題時，重送者會被後端擋下卻沒有任何欄位可以修。只依賴其他 `hidden`
+  欄位、或只用常數綁定都允許。
+- **隱藏的 table**：後端仍檢查它的值是合法的 table（必須是列的陣列、每列是物件、欄位 key
+  合法）與 `maxRows` 上限；只略過必填、`minRows` 與列內必填欄位。
+- **與 `visibleWhen` 並用**：允許，`hidden` 優先（永遠不顯示）。`requiredWhen`
+  同理被略過。
+- **仍可被引用**：條件式（`visibleWhen` / `requiredWhen` / 流程條件）、webhook 綁定、
+  dry-run 範例資料都照常讀得到隱藏欄位。
+- **不是權限邊界**：API 回傳的 `formData` 仍然包含這些值，任何能讀案件的人都拿得到。
+- **設計器**：欄位設定的「只存不顯示（系統整合用）」；勾選時會一併取消必填，欄位仍列在
+  設計器清單中並標示「只存不顯示」。
+
+### `displayAs: 'link'`：文字欄位以連結呈現
+
+只能設在 `text` / `textarea` 欄位，值只能是 `'link'`（其他型別、其他值、table column
+都會被發布檢查擋下）。值仍是字串，條件與驗證完全不變。
+
+唯讀畫面（案件詳情等）才會變成連結，填寫畫面維持一般輸入框。只有下列值會變成連結，
+其他一律顯示純文字：
+
+| 值                                  | 呈現                                                 |
+| ----------------------------------- | ---------------------------------------------------- |
+| `/` 開頭、但不是 `//` 開頭的站內路徑 | 同一分頁開啟                                         |
+| `http://` / `https://` 網址         | 新分頁開啟，`rel="noopener noreferrer"`，並附「（另開新分頁）」提示（`title` 與螢幕閱讀器專用文字） |
+| `javascript:`、`data:`、`//host`、含空白或控制字元、含反斜線、帶帳號密碼的網址，以及 `/.//host` 這類 dot segment 化簡後變成 `//` 的路徑 | 純文字 |
+
+判斷邏輯在 `libs/bpm-core-react/src/views/forms/renderer/form-field-link.ts`。
+設計器欄位設定的「以連結顯示」。

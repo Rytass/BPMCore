@@ -174,6 +174,12 @@ export interface SlaConfig {
 
 export type SlaCalendarMode = 'CALENDAR' | 'BUSINESS_DAY';
 
+/**
+ * Reserved, NOT enforced: neither the engine nor any screen reads
+ * `UserTaskNodeData.fieldPermissions`, so setting it changes nothing. To keep
+ * a field off the screens, use the field-level `hidden` flag (form.ts) — that
+ * is a display option, not a permission boundary either.
+ */
 export interface FieldPermission {
   readonly editable: boolean;
   readonly fieldPath: string;
