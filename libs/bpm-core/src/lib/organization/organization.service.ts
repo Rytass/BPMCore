@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -18,6 +20,10 @@ import {
   Not,
   Repository,
 } from 'typeorm';
+import {
+  BPM_ROOT_OPTIONS,
+  BPMRootRuntimeOptions,
+} from '../bpm/bpm-root-options';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
 import { AdhocDirectiveEntity } from '../workflow-engine/adhoc-directive.entity';
@@ -51,9 +57,12 @@ import { OrgUnitTreeCommitResultObject } from './org-unit-tree-commit-result.obj
 import { CreatePositionInput, UpdatePositionInput } from './dto/position.input';
 import { parseMetadataJson } from './json-metadata';
 import { OrganizationSummaryObject } from './organization-summary.object';
+import {
+  formatDateOnlyInTimeZone,
+  resolveBPMOrganizationTimeZone,
+} from './organization-time-zone';
 
 const ROOT_PATH_PREFIX = 'org';
-const BUSINESS_TIME_ZONE = 'Asia/Taipei';
 
 /**
  * Upper bound for a single paginated page. Callers that need the complete list
@@ -79,7 +88,16 @@ export class OrganizationService {
     private readonly membershipRepository: Repository<MembershipEntity>,
     @InjectRepository(ManagerResolutionEntity)
     private readonly managerResolutionRepository: Repository<ManagerResolutionEntity>,
-  ) {}
+    @Optional()
+    @Inject(BPM_ROOT_OPTIONS)
+    rootOptions?: BPMRootRuntimeOptions,
+  ) {
+    this.organizationTimeZone = resolveBPMOrganizationTimeZone(
+      rootOptions?.organizationTimeZone,
+    );
+  }
+
+  private readonly organizationTimeZone: string;
 
   async createOrgUnit(input: CreateOrgUnitInput): Promise<OrgUnitEntity> {
     await this.assertOrgUnitCodeAvailable(input.code);
@@ -1093,17 +1111,7 @@ export class OrganizationService {
   }
 
   private toDateOnly(date: Date): string {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      day: '2-digit',
-      month: '2-digit',
-      timeZone: BUSINESS_TIME_ZONE,
-      year: 'numeric',
-    }).formatToParts(date);
-    const byType = new Map(
-      parts.map((part): readonly [string, string] => [part.type, part.value]),
-    );
-
-    return `${byType.get('year') ?? '1970'}-${byType.get('month') ?? '01'}-${byType.get('day') ?? '01'}`;
+    return formatDateOnlyInTimeZone(date, this.organizationTimeZone);
   }
 
   private isDateActive(

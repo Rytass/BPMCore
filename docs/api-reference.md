@@ -673,7 +673,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
 | `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -725,6 +725,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Enums | `OrganizationEnums` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService` |
+| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationQueries`, `OrganizationMutations` |
 
@@ -765,6 +766,34 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `OrganizationModule`-only host is unaffected. Exposed as the `deletePosition`
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
+
+`effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
+manager rule in force?" needs a notion of *today*, and that depends on the
+zone. BPM reads today in the `organizationTimeZone` root option (an IANA name,
+default `Asia/Taipei`, BPM's business time zone) everywhere it compares against
+those two columns: the workflow engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`,
+`POSITION`, org-unit member and org-unit position resolvers, the
+initiator-manager replacement, the default initiator snapshot, the engine's dry run,
+`OrganizationService.resolveManagerMemberId` (SLA escalation and notification
+use it) and the `activeOnly` membership and manager resolution listings. A host
+whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'`. An
+unknown zone makes BPM fail at startup. Stored effective dates and the
+`startAt` / `endAt` / `createdAt` timestamps are untouched. This is separate
+from `notificationSlaBusinessCalendarTimeZone` (SLA business days); a host may
+set both to the same value.
+
+Before this option the workflow engine read the UTC date (so between 00:00 and
+08:00 in UTC+8 a rule effective from today did not apply yet) while
+`OrganizationService` already read `Asia/Taipei`. Both now follow the option;
+the `OrganizationService` reading is unchanged for a host that sets nothing, and
+the engine's moves from UTC to `Asia/Taipei`.
+
+Known limitation: the template designer's browser-side dry-run snapshot
+(`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
+initiator from the browser's UTC date, because the client has no access to the
+host's `organizationTimeZone`. Between local midnight and the UTC offset that
+preview can disagree with the engine's dry run and with real runs for a
+membership effective from today.
 
 ## `@rytass/bpm-core-nestjs-module/form`
 

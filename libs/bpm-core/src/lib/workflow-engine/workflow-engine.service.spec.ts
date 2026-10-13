@@ -16,6 +16,7 @@ import { ConflictException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
@@ -1711,6 +1712,376 @@ describe('WorkflowEngineService', () => {
     expect(fixture.savedTasks[0]).toMatchObject({
       assigneeMemberId: 'member-manager',
       originalAssigneeMemberId: 'member-manager',
+    });
+  });
+
+  describe('organization time zone', () => {
+    // 01:00 on 2026-10-14 in Asia/Taipei, still 2026-10-13 in UTC.
+    const taipeiEarlyMorning = new Date('2026-10-13T17:00:00.000Z');
+
+    afterEach((): void => {
+      jest.useRealTimers();
+    });
+
+    const useClock = (now: Date): void => {
+      // Only `Date` is faked: the fixture awaits real promises.
+      jest.useFakeTimers({
+        doNotFake: [
+          'cancelAnimationFrame',
+          'cancelIdleCallback',
+          'clearImmediate',
+          'clearInterval',
+          'clearTimeout',
+          'hrtime',
+          'nextTick',
+          'performance',
+          'queueMicrotask',
+          'requestAnimationFrame',
+          'requestIdleCallback',
+          'setImmediate',
+          'setInterval',
+          'setTimeout',
+        ],
+        now,
+      });
+    };
+
+    const createPositionFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            effectiveFrom: '2026-10-14',
+            isPrimary: true,
+            memberId: 'member-position-owner',
+            positionId: 'position-finance',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            positionId: 'position-finance',
+            type: 'POSITION',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const createManagerFixture = (
+      rootOptions?: BPMRootRuntimeOptions,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processManagerResolutions: [
+          createManagerResolution({
+            effectiveFrom: '2026-10-14',
+            managerMemberId: 'member-manager',
+            scopeId: 'org-finance',
+            scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+          }),
+        ],
+        processMemberships: [
+          createMembership({
+            memberId: 'member-001',
+            orgUnitId: 'org-finance',
+          }),
+        ],
+        processOrgUnits: [
+          createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+        rootOptions,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    it('uses a membership effective today from local midnight by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture();
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-position-owner',
+      });
+    });
+
+    it('reads the UTC date for a membership when the zone is UTC', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createPositionFixture({ organizationTimeZone: 'UTC' });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('has no active membership');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    it('uses a manager rule effective today from local midnight by default', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture();
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-manager',
+      });
+    });
+
+    it('reads the UTC date for a manager rule when the zone is UTC', async (): Promise<void> => {
+      useClock(taipeiEarlyMorning);
+      const fixture = createManagerFixture({ organizationTimeZone: 'UTC' });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow('找不到發起人的第 1 層主管');
+      expect(fixture.savedTasks).toHaveLength(0);
+    });
+
+    describe('ORG_MANAGER_CHAIN', () => {
+      const createChainFixture = (
+        rootOptions?: BPMRootRuntimeOptions,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...createManagerChainOrg({
+            grades: { 'member-m1': 3 },
+            links: [],
+          }),
+          processManagerResolutions: [
+            createManagerResolution({
+              effectiveFrom: '2026-10-14',
+              managerMemberId: 'member-m1',
+              scopeId: 'member-001',
+              scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+            }),
+          ],
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver: {
+              minPositionLevel: 3,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      it('walks a manager rule effective today from local midnight by default', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createChainFixture();
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-m1']);
+      });
+
+      it('does not walk that rule yet when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createChainFixture({ organizationTimeZone: 'UTC' });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(ConflictException);
+        expect(fixture.savedTaskCandidates).toHaveLength(0);
+      });
+    });
+
+    describe('org-unit resolvers and the initiator manager', () => {
+      const createOrgUnitFixture = (
+        approverResolver: ApproverResolver,
+        rootOptions?: BPMRootRuntimeOptions,
+        excludeInitiator?: ExcludeInitiatorConfig,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processManagerResolutions: [
+            createManagerResolution({
+              effectiveFrom: '2026-10-14',
+              managerMemberId: 'member-manager',
+              scopeId: 'org-finance',
+              scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+            }),
+          ],
+          processMemberships: [
+            createMembership({
+              effectiveFrom: '2026-10-14',
+              id: 'membership-owner',
+              memberId: 'member-owner',
+              orgUnitId: 'org-ops',
+              positionId: 'position-finance',
+            }),
+            createMembership({
+              id: 'membership-initiator',
+              memberId: 'member-001',
+              orgUnitId: 'org-finance',
+            }),
+          ],
+          processOrgUnits: [
+            createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+            createOrgUnit({ code: 'OPS', id: 'org-ops', path: 'org.ops' }),
+          ],
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver,
+            excludeInitiator,
+          }),
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      const cases: readonly [string, ApproverResolver, string, string][] = [
+        [
+          'ORG_UNIT_MEMBER',
+          { orgUnitId: 'org-ops', type: 'ORG_UNIT_MEMBER' },
+          'member-owner',
+          'has no active member',
+        ],
+        [
+          'ORG_UNIT_POSITION',
+          {
+            orgUnitId: 'org-ops',
+            positionId: 'position-finance',
+            type: 'ORG_UNIT_POSITION',
+          },
+          'member-owner',
+          'has no active membership',
+        ],
+        [
+          'ORG_UNIT_MANAGER',
+          { orgUnitId: 'org-finance', type: 'ORG_UNIT_MANAGER' },
+          'member-manager',
+          '找不到指定組織的主管規則',
+        ],
+      ];
+
+      it.each(cases)(
+        '%s uses a rule effective today from local midnight by default',
+        async (_name, resolver, assignee): Promise<void> => {
+          useClock(taipeiEarlyMorning);
+          const fixture = createOrgUnitFixture(resolver);
+
+          await fixture.service.processInstance('instance-1');
+
+          expect(fixture.savedTasks[0]).toMatchObject({
+            assigneeMemberId: assignee,
+          });
+        },
+      );
+
+      it.each(cases)(
+        '%s does not use that rule yet when the zone is UTC',
+        async (_name, resolver, _assignee, failure): Promise<void> => {
+          useClock(taipeiEarlyMorning);
+          const fixture = createOrgUnitFixture(resolver, {
+            organizationTimeZone: 'UTC',
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(failure);
+          expect(fixture.savedTasks).toEqual([]);
+        },
+      );
+
+      it('hands an excluded initiator to the manager whose rule is effective today', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createOrgUnitFixture(
+          { memberIds: ['member-001'], type: 'DIRECT' },
+          undefined,
+          { whenEmpty: 'INITIATOR_MANAGER' },
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks[0]).toMatchObject({
+          assigneeMemberId: 'member-manager',
+        });
+      });
+
+      it('finds no initiator manager before the rule is effective when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = createOrgUnitFixture(
+          { memberIds: ['member-001'], type: 'DIRECT' },
+          { organizationTimeZone: 'UTC' },
+          { whenEmpty: 'INITIATOR_MANAGER' },
+        );
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('找不到申請人的主管可改派');
+      });
+    });
+
+    describe('default initiator snapshot', () => {
+      const submitWithoutSnapshot = async (
+        rootOptions?: BPMRootRuntimeOptions,
+      ): Promise<ReturnType<typeof createServiceFixture>> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processMemberships: [
+            createMembership({
+              effectiveFrom: '2026-10-14',
+              id: 'membership-sales',
+              isPrimary: true,
+              orgUnitId: 'org-sales',
+              positionId: 'position-manager',
+            }),
+          ],
+          rootOptions,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.submitApprovalInstance({
+          formDataJson: '{"amount":1000}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          templateId: 'template-1',
+          title: null,
+        });
+
+        return fixture;
+      };
+
+      it('includes a membership effective today from local midnight by default', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = await submitWithoutSnapshot();
+
+        expect(fixture.savedInstance?.initiatorMetadataSnapshot).toMatchObject({
+          orgUnitIds: ['org-sales'],
+          positionId: 'position-manager',
+        });
+      });
+
+      it('leaves that membership out when the zone is UTC', async (): Promise<void> => {
+        useClock(taipeiEarlyMorning);
+        const fixture = await submitWithoutSnapshot({
+          organizationTimeZone: 'UTC',
+        });
+
+        expect(fixture.savedInstance?.initiatorMetadataSnapshot).toMatchObject({
+          orgUnitIds: [],
+          positionId: null,
+        });
+      });
+    });
+
+    it('rejects an unknown zone when the engine is created', (): void => {
+      expect(() =>
+        createPositionFixture({ organizationTimeZone: 'Mars/Olympus_Mons' }),
+      ).toThrow('organizationTimeZone');
     });
   });
 
@@ -8002,6 +8373,7 @@ function createServiceFixture({
   processPositions = [],
   processWorkflowSnapshot,
   rootInstanceUpdatedAt,
+  rootOptions,
   serviceTaskDispatcher,
   templateIsActive = true,
   templateVersionStatus,
@@ -8035,6 +8407,7 @@ function createServiceFixture({
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
   readonly rootInstanceUpdatedAt?: Date;
+  readonly rootOptions?: BPMRootRuntimeOptions;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
@@ -8177,7 +8550,7 @@ function createServiceFixture({
             ),
           ),
       ),
-      findOne: jest.fn(
+     findOne: jest.fn(
         (
           options?: Readonly<{ where?: Readonly<{ id?: string }> }>,
         ): Promise<AdhocDirectiveEntity | null> =>
@@ -8698,6 +9071,16 @@ function createServiceFixture({
           ),
         ),
     ),
+     findOne: jest.fn(
+      (
+        options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+      ): Promise<OrgUnitEntity | null> =>
+        Promise.resolve(
+          processOrgUnits.find((orgUnit) =>
+            matchesFindWhere(orgUnit, options?.where),
+          ) ?? null,
+        ),
+    ),
   });
   const transactionalPositionRepository = createRepository<PositionEntity>({
     findOne: jest.fn(
@@ -8860,7 +9243,7 @@ function createServiceFixture({
       new BPMSlaScheduleService(new BPMWeekdayBusinessCalendar('UTC')),
       serviceTaskDispatcher,
       formDataSourceValueResolver,
-      undefined,
+      rootOptions,
       webhookDeliveryService,
     ),
     notificationService,
