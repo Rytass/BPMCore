@@ -1,3 +1,29 @@
+## 0.16.0 (2026-10-13)
+
+### 🚀 Features
+
+- ⚠️  **attachment:** boot without attachment settings ([808bc65](https://github.com/Rytass/BPMCore/commit/808bc65))
+
+### 🩹 Fixes
+
+- **api:** sign production sessions with a generated key when none is set ([ddf1e16](https://github.com/Rytass/BPMCore/commit/ddf1e16))
+
+### ⚠️  Breaking Changes
+
+- **attachment:** boot without attachment settings  ([808bc65](https://github.com/Rytass/BPMCore/commit/808bc65))
+  BPMResolvedAttachmentOptions.publicBaseUrl is
+  string | null, DEFAULT_BPM_ATTACHMENT_OPTIONS no longer carries a
+  signedUrlSecret, and attachmentAllowInsecureSignedUrlSecret is
+  deprecated and ignored. A host running more than one API replica must
+  set a shared attachmentSignedUrlSecret, since a generated one only
+  verifies on the process that signed the URL.
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Claude Opus 5.5
+
 ## 0.15.0 (2026-10-13)
 
 ### ⚠️  Breaking Changes
