@@ -945,9 +945,9 @@ BPMRootModule.forRootAsync({
 | `formDataSourceRegistryProvider`                 | Empty catalog                  | Single host provider for versioned Select / AutoComplete / Radio / Checkbox DataSources. |
 | `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below). |
 | `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.    |
-| `attachmentPublicBaseUrl`                        | `http://localhost:17603`       | Public base URL for signed attachment URLs.                    |
-| `attachmentSignedUrlSecret`                      | local development secret       | HMAC secret for signed attachment download/preview tokens. Under `NODE_ENV=production` BPM refuses to start while this is unset. |
-| `attachmentAllowInsecureSignedUrlSecret`         | `false`                        | Opt-in that lets a `NODE_ENV=production` process boot on the built-in development secret anyway. Only for throwaway environments — the value is published in this package. |
+| `attachmentPublicBaseUrl`                        | requesting origin              | Public base URL for signed attachment URLs. Unset, each URL uses the origin of the GraphQL request that asked for it (`X-Forwarded-Proto` / `X-Forwarded-Host`, else the request's protocol and `Host`), so a host behind a proxy needs no setting. |
+| `attachmentSignedUrlSecret`                      | random per process             | HMAC secret for signed attachment download/preview tokens. Unset, each process generates one at boot and warns on stderr; a URL then only verifies on the process that signed it, so set a shared secret before running more than one API replica. |
+| `attachmentAllowInsecureSignedUrlSecret`         | —                              | Deprecated and ignored: no signing secret ships in the package any more. |
 | `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                     |
 | `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                     |
 | `identityRegisterResolvers`                      | `true`                         | Set to `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers` GraphQL queries. `IdentityService` stays available either way. |
@@ -1677,16 +1677,12 @@ npm publish --access public
 
 ## Production Notes
 
-- **BREAKING (upgrade note).** Replace all local fallback secrets before
-  production. Under `NODE_ENV=production`, `attachmentSignedUrlSecret` is now
-  enforced: BPM refuses to start rather than sign attachment URLs with the
-  value published in this package. `BPMRootModule` mounts `AttachmentModule`
-  unconditionally, so this applies **even to a host that never serves
-  attachments** — an existing production deployment that never set the secret
-  will fail to boot after upgrading. Set the secret, or set
-  `attachmentAllowInsecureSignedUrlSecret: true` to acknowledge that the
-  signing key is public and boot anyway. Never set that flag on anything
-  serving real attachments.
+- BPM boots with no attachment options at all. An unset
+  `attachmentSignedUrlSecret` is generated per process at boot (with a stderr
+  warning) — never a value published in this package — so set a shared secret
+  once the API runs more than one replica, or when a restart must not
+  invalidate the signed URLs handed out in the last few minutes.
+  `attachmentAllowInsecureSignedUrlSecret` is deprecated and ignored.
 - Use a production storage adapter instead of local filesystem storage.
 - Keep old signature keys available for verification after key rotation.
 - Keep in-process schedulers disabled in API replicas unless a dedicated worker

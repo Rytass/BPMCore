@@ -1,6 +1,7 @@
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { AttachmentEntity } from './attachment.entity';
+import { BPMAttachmentRequestOrigin } from './attachment-request-origin';
 import { AttachmentService } from './attachment.service';
 
 @Resolver()
@@ -36,10 +37,12 @@ export class AttachmentQueries {
     })
     _requestedByMemberId: string | null,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMAttachmentRequestOrigin() requestOrigin: string | null,
   ): Promise<string> {
     return this.attachmentService.createSignedUrl({
       disposition: 'attachment',
       id,
+      requestOrigin,
       requestedByMemberId: currentMemberId,
     });
   }
@@ -55,10 +58,12 @@ export class AttachmentQueries {
     })
     _requestedByMemberId: string | null,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMAttachmentRequestOrigin() requestOrigin: string | null,
   ): Promise<string> {
     return this.attachmentService.createSignedUrl({
       disposition: 'inline',
       id,
+      requestOrigin,
       requestedByMemberId: currentMemberId,
     });
   }

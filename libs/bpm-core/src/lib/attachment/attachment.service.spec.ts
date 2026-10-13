@@ -122,6 +122,63 @@ describe('AttachmentService', () => {
     });
   });
 
+  it.each([
+    [
+      'the requesting origin',
+      'https://bpm.example.com',
+      'https://bpm.example.com/attachments/',
+    ],
+    ['a root-relative path', null, '/attachments/'],
+  ])(
+    'builds an unconfigured public URL from %s',
+    async (_label, requestOrigin, expectedPrefix): Promise<void> => {
+      const attachments: AttachmentEntity[] = [];
+      // No options injected: the service resolves its own defaults, including
+      // a generated signing secret, and must still verify its own URLs.
+      const service = new AttachmentService(
+        createAttachmentRepository(attachments),
+        createRepository<ApprovalInstanceEntity>({}),
+        createRepository<TaskEntity>({}),
+        createRepository<TaskCandidateEntity>({}),
+        createRepository<TaskDecisionEntity>({}),
+        createStorage(),
+      );
+      const attachment = await service.uploadAttachment({
+        checksumSha256:
+          '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+        contentBase64: Buffer.from('hello').toString('base64'),
+        filename: 'hello.pdf',
+        formFieldPath: 'form.file',
+        instanceId: null,
+        mimeType: 'application/pdf',
+        sizeBytes: 5,
+        taskId: null,
+        uploaderMemberId: 'member-001',
+      });
+
+      const signedUrl = await service.createSignedUrl({
+        disposition: 'inline',
+        id: attachment.id,
+        requestOrigin,
+        requestedByMemberId: 'member-001',
+      });
+      const url = new URL(signedUrl, 'http://ignored.invalid');
+
+      expect(
+        signedUrl.startsWith(
+          `${expectedPrefix}${attachment.id}/download?token=`,
+        ),
+      ).toBe(true);
+      await expect(
+        service.readSignedAttachment({
+          disposition: 'inline',
+          id: attachment.id,
+          token: url.searchParams.get('token') ?? '',
+        }),
+      ).resolves.toMatchObject({ attachment });
+    },
+  );
+
   it('builds signed URLs with configured public URL, TTL, and signing secret', async (): Promise<void> => {
     jest
       .spyOn(Date, 'now')
@@ -185,35 +242,35 @@ describe('AttachmentService', () => {
     ['empty', ''],
     ['unsigned', 'no-dot-separator'],
     ['wrongly signed', 'body.badsignature'],
-  ])('rejects a %s download token without leaking internals', async (
-    _label,
-    token,
-  ): Promise<void> => {
-    const attachments: AttachmentEntity[] = [];
-    const service = new AttachmentService(
-      createAttachmentRepository(attachments),
-      createRepository<ApprovalInstanceEntity>({}),
-      createRepository<TaskEntity>({}),
-      createRepository<TaskCandidateEntity>({}),
-      createRepository<TaskDecisionEntity>({}),
-      createStorage(),
-      {
-        publicBaseUrl: 'https://bpm.example.com',
-        routePrefix: '/attachments',
-        signedUrlSecret: 'attachment-secret',
-        signedUrlTtlSeconds: 60,
-        storageProviderId: 'local',
-      },
-    );
+  ])(
+    'rejects a %s download token without leaking internals',
+    async (_label, token): Promise<void> => {
+      const attachments: AttachmentEntity[] = [];
+      const service = new AttachmentService(
+        createAttachmentRepository(attachments),
+        createRepository<ApprovalInstanceEntity>({}),
+        createRepository<TaskEntity>({}),
+        createRepository<TaskCandidateEntity>({}),
+        createRepository<TaskDecisionEntity>({}),
+        createStorage(),
+        {
+          publicBaseUrl: 'https://bpm.example.com',
+          routePrefix: '/attachments',
+          signedUrlSecret: 'attachment-secret',
+          signedUrlTtlSeconds: 60,
+          storageProviderId: 'local',
+        },
+      );
 
-    await expect(
-      service.readSignedAttachment({
-        disposition: 'inline',
-        id: '11111111-1111-4111-8111-111111111111',
-        token,
-      }),
-    ).rejects.toThrow('Attachment token is invalid');
-  });
+      await expect(
+        service.readSignedAttachment({
+          disposition: 'inline',
+          id: '11111111-1111-4111-8111-111111111111',
+          token,
+        }),
+      ).rejects.toThrow('Attachment token is invalid');
+    },
+  );
 
   it('records custom storage provider metadata and uses configured signed URL route prefix', async (): Promise<void> => {
     const attachments: AttachmentEntity[] = [];
@@ -253,9 +310,7 @@ describe('AttachmentService', () => {
     const url = new URL(signedUrl);
 
     expect(attachment.storageProvider).toBe('s3');
-    expect(url.pathname).toBe(
-      `/internal/bpm/files/${attachment.id}/download`,
-    );
+    expect(url.pathname).toBe(`/internal/bpm/files/${attachment.id}/download`);
   });
 
   it('allows workflow-related members to read instance attachments', async (): Promise<void> => {
@@ -354,8 +409,7 @@ describe('AttachmentService', () => {
           Promise.resolve([]),
       }),
       createRepository<TaskDecisionEntity>({
-        find: (): Promise<readonly TaskDecisionEntity[]> =>
-          Promise.resolve([]),
+        find: (): Promise<readonly TaskDecisionEntity[]> => Promise.resolve([]),
       }),
       createStorage(),
     );
@@ -436,9 +490,7 @@ function createAttachmentRepository(
   return repository as unknown as Repository<AttachmentEntity>;
 }
 
-function createAttachment(
-  value: Partial<AttachmentEntity>,
-): AttachmentEntity {
+function createAttachment(value: Partial<AttachmentEntity>): AttachmentEntity {
   return Object.assign(new AttachmentEntity(), {
     checksumSha256:
       '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',

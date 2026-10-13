@@ -45,7 +45,7 @@ describe('importing the package under NODE_ENV=production', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('still refuses the built-in secret once the provider is actually resolved', async (): Promise<void> => {
+  it('generates and warns about a secret only once the provider is actually resolved', async (): Promise<void> => {
     process.env.NODE_ENV = 'production';
 
     const { AttachmentModule } = jest.requireActual<{
@@ -67,10 +67,14 @@ describe('importing the package under NODE_ENV=production', () => {
     ) as { readonly useFactory: () => unknown } | undefined;
 
     expect(provider).toBeDefined();
-    // Deferred, not dropped: the guard still fires, just at the point Nest
-    // builds the provider rather than when the file is read.
-    expect((): unknown => provider?.useFactory()).toThrow(
-      /attachmentSignedUrlSecret is unset/,
-    );
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Resolving the provider is the first point the host's options are known:
+    // with no secret it boots on a generated one and says so, once.
+    const resolved = provider?.useFactory() as
+      { readonly signedUrlSecret?: string } | undefined;
+
+    expect(resolved?.signedUrlSecret).toMatch(/^[0-9a-f]{64}$/u);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
