@@ -1168,6 +1168,8 @@ test.describe('M1 W3 template designer', () => {
     ).toBeVisible();
     await expect(page.getByText('組織任一人：財務部')).toBeVisible();
     await expect(page.getByText('組織主管：應付帳款組')).toBeVisible();
+    // This fixture's form has no `reviewer` field, so the label falls back to
+    // the field key; a field the form does have is named by its label.
     await expect(
       page.getByText('表單欄位「reviewer」選的人（送出時依填寫內容決定）'),
     ).toBeVisible();

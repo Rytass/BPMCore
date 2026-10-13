@@ -4,6 +4,10 @@ import {
 } from './dry-run-assignee-label';
 
 const directory: DryRunAssigneeDirectory = {
+  formFields: [
+    { fieldKey: 'reviewer', label: '複核人' },
+    { fieldKey: 'unlabelled', label: '' },
+  ],
   memberName: (memberId) => (memberId === 'member-001' ? '王小明' : null),
   orgUnits: [
     { id: 'org-1', name: '財務部' },
@@ -43,9 +47,18 @@ describe('readDryRunAssigneeLabel', () => {
     );
   });
 
-  it('describes a member-field sample placeholder by its field key', () => {
+  it('describes a member-field sample placeholder by its field label', () => {
     expect(readDryRunAssigneeLabel('formMember:reviewer', directory)).toBe(
-      '表單欄位「reviewer」選的人（送出時依填寫內容決定）',
+      '表單欄位「複核人」選的人（送出時依填寫內容決定）',
+    );
+  });
+
+  it('falls back to the field key when the field has no label or is gone', () => {
+    expect(readDryRunAssigneeLabel('formMember:unlabelled', directory)).toBe(
+      '表單欄位「unlabelled」選的人（送出時依填寫內容決定）',
+    );
+    expect(readDryRunAssigneeLabel('formMember:removed', directory)).toBe(
+      '表單欄位「removed」選的人（送出時依填寫內容決定）',
     );
   });
 

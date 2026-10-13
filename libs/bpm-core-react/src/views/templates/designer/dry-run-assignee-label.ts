@@ -1,6 +1,10 @@
 type NamedRecord = Readonly<{ id: string; name: string }>;
 
+type FormFieldRecord = Readonly<{ fieldKey: string; label: string }>;
+
 export type DryRunAssigneeDirectory = Readonly<{
+  /** Fields of the schema the dry run samples, to name a member placeholder. */
+  formFields: readonly FormFieldRecord[];
   /** Display name of a real member id, or `null` when it is not known. */
   memberName: (memberId: string) => string | null;
   orgUnits: readonly NamedRecord[];
@@ -26,6 +30,9 @@ export function readDryRunAssigneeLabel(
     directory.orgUnits.find((orgUnit) => orgUnit.id === id)?.name ?? id;
   const positionName = (id: string): string =>
     directory.positions.find((position) => position.id === id)?.name ?? id;
+  const formFieldName = (fieldKey: string): string =>
+    directory.formFields.find((field) => field.fieldKey === fieldKey)?.label ||
+    fieldKey;
 
   if (kind === 'position' && ids.length === 1 && ids[0]) {
     return `職位：${positionName(ids[0])}（送出時依當下人員決定）`;
@@ -45,7 +52,7 @@ export function readDryRunAssigneeLabel(
 
   // The dry-run sample for a member field (`readDryRunFormMemberPlaceholder`).
   if (kind === 'formMember' && ids.length === 1 && ids[0]) {
-    return `表單欄位「${ids[0]}」選的人（送出時依填寫內容決定）`;
+    return `表單欄位「${formFieldName(ids[0])}」選的人（送出時依填寫內容決定）`;
   }
 
   if (kind === 'orgManagerChain' && ids.length === 1 && ids[0]) {

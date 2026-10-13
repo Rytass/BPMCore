@@ -2283,6 +2283,7 @@ export function TemplateDesignerView({
 
   function renderDryRunModal(): ReactElement {
     const dryRunAssigneeDirectory: DryRunAssigneeDirectory = {
+      formFields: webhookFormSchema?.fields ?? [],
       memberName: (memberId) =>
         memberOptions.find(
           (option) => option.memberId === memberId && !option.unresolved,
