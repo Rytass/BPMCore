@@ -8369,7 +8369,13 @@ function readDryRunStepResultMessage(
     return message;
   }
 
-  return skipped ? `${message}${stopMessage}` : stopMessage;
+  return skipped ? `${endSentence(message)}${stopMessage}` : stopMessage;
+}
+
+// The skip reason and the stop reason are two sentences; a reason that does not
+// already end in full-stop punctuation gets one so they do not run together.
+function endSentence(message: string): string {
+  return /[。！？.!?]$/.test(message) ? message : `${message}。`;
 }
 
 type DryRunFallbackProblem = 'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR';
