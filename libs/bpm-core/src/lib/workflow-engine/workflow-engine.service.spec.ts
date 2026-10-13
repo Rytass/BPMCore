@@ -10699,7 +10699,7 @@ describe('WorkflowEngineService task node labels', () => {
 
     expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
     expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledWith(
-      expect.stringContaining('jsonb_array_elements'),
+      expect.stringContaining('FROM "bpm"."approval_instances" AS instance'),
       [
         ['instance-1', 'instance-2', 'missing-instance'],
         ['task_finance', 'band-0', 'gone'],
@@ -11004,6 +11004,7 @@ function createServiceFixture({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
     findOne: rootInstanceFindOne,
+    metadata: { schema: 'bpm', tableName: 'approval_instances' },
     // Stands in for the jsonb node-label query (`readTaskNodeLabels`): the
     // label of each requested node, read from the instances `find` knows.
     query: rootInstanceNodeLabelQuery,
@@ -11698,6 +11699,7 @@ function createServiceFixture({
   );
   Object.assign(instanceRepository, {
     manager: {
+      connection: { driver: { escape: (name: string) => `"${name}"` } },
       getRepository: jest.fn((target: unknown): unknown => {
         if (target === MembershipEntity) {
           return transactionalMembershipRepository;

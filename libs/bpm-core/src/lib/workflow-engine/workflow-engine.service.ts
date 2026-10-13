@@ -3466,6 +3466,14 @@ export class WorkflowEngineService {
   private async readTaskNodeLabels(
     tasks: readonly TaskEntity[],
   ): Promise<ReadonlyMap<string, string>> {
+    // The table as the entity reads it, so a configured `schema` is honoured
+    // here exactly as it is by every repository read of the instance.
+    const { metadata } = this.approvalInstanceRepository;
+    const { driver } = this.approvalInstanceRepository.manager.connection;
+    const instanceTable = [metadata.schema, metadata.tableName]
+      .filter((part): part is string => Boolean(part))
+      .map((part) => driver.escape(part))
+      .join('.');
     const rows = await this.approvalInstanceRepository.query<
       readonly {
         readonly instanceId: string;
@@ -3477,7 +3485,7 @@ export class WorkflowEngineService {
               node->>'id' AS "nodeId",
               CASE WHEN jsonb_typeof(node->'data'->'label') = 'string'
                    THEN node->'data'->>'label' END AS "label"
-         FROM approval_instances AS instance
+         FROM ${instanceTable} AS instance
         CROSS JOIN LATERAL jsonb_array_elements(
               CASE WHEN jsonb_typeof(instance.workflow_snapshot->'nodes') = 'array'
                    THEN instance.workflow_snapshot->'nodes'
