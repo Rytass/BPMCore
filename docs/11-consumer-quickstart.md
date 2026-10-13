@@ -466,6 +466,24 @@ BPMRootModule.forRootAsync({
 - 每次建立、更新、停用／啟用、輪替金鑰、測試送出都寫入稽核紀錄，只記錄欄位名稱與操作者。
 - 有啟用資料庫來源時，重試排程器一律啟用，後台之後新增的端點也會被重試。
 
+### 2d. 組織資料的「今天」時區（`organizationTimeZone`）
+
+membership 與 manager resolution 的 `effectiveFrom`／`effectiveTo` 是日期欄位（不含時間）。
+BPM 在判斷「這筆現在有沒有生效」（主管鏈、直屬主管、職等、預設發起人快照、SLA 升級找主管、
+組織管理頁的「只看生效中」…）時，要先決定「今天」是哪一天，預設以 **UTC** 計算。
+
+台灣（UTC+8）每天 00:00–08:00 這段時間 UTC 日期還是前一天，所以「今天起生效」的規則會晚 8 小時才算數。
+組織資料以本地日期維護的 host 請設定：
+
+```typescript
+BPMRootModule.forRoot({ organizationTimeZone: 'Asia/Taipei' });
+```
+
+- 值是 IANA 時區名稱；不設就是 `UTC`。時區不存在會在啟動時直接報錯。
+- 注意：`OrganizationService`（組織管理頁的「只看生效中」與 `resolveManagerMemberId`）先前固定以 `Asia/Taipei` 計算，現在改為跟隨此選項；UTC+8 的 host 請務必設定，否則這些畫面會改用 UTC 日期。
+- 只影響「今天」怎麼算；不改變已存的生效日，也不影響 `startAt`／`endAt`／`createdAt` 這類時間戳的比較。
+- 與 `notificationSlaBusinessCalendarTimeZone`（SLA 工作日）是兩個獨立設定，可以設成同一個值。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts
