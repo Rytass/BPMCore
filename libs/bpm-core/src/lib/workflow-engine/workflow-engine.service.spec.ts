@@ -12,7 +12,7 @@ import {
   ServiceAction,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, ObjectLiteral } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
@@ -2748,16 +2748,29 @@ describe('WorkflowEngineService', () => {
         ).toEqual(['member-manager']);
       });
 
-      it('never hands the replacement task to the submitter when they are the initiator manager', async (): Promise<void> => {
-        const fixture = createFiledFixture({
+      const createManagerSubmittedFixture = (
+        withNextTier: boolean,
+      ): ReturnType<typeof createServiceFixture> =>
+        createFiledFixture({
           excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
           memberIds: ['member-001'],
           processManagerResolutions: [
             createManagerResolution({
+              id: 'manager-resolution-finance',
               managerMemberId: SUBMITTER,
               scopeId: 'org-finance',
               scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
             }),
+            ...(withNextTier
+              ? [
+                  createManagerResolution({
+                    id: 'manager-resolution-company',
+                    managerMemberId: 'member-ceo',
+                    scopeId: 'org-company',
+                    scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+                  }),
+                ]
+              : []),
           ],
           processMemberships: [
             createMembership({
@@ -2766,9 +2779,26 @@ describe('WorkflowEngineService', () => {
             }),
           ],
           processOrgUnits: [
+            createOrgUnit({ id: 'org-company', path: 'org' }),
             createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
           ],
         });
+
+      it('moves the replacement to the next tier when the submitter is the initiator manager', async (): Promise<void> => {
+        // The manager filing for a subordinate is dropped before the tier is
+        // chosen, exactly like a unit-head initiator, so the parent unit's
+        // manager is tried instead of resolving the submitter again.
+        const fixture = createManagerSubmittedFixture(true);
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-ceo']);
+      });
+
+      it('fails with the existing message when no tier is left past the submitter', async (): Promise<void> => {
+        const fixture = createManagerSubmittedFixture(false);
 
         await expect(
           fixture.service.processInstance('instance-1'),
@@ -2822,7 +2852,7 @@ describe('WorkflowEngineService', () => {
         const fixture = createTransferFixture({ whenEmpty: 'FAIL' });
         const attempt = transferTo(fixture, SUBMITTER);
 
-        await expect(attempt).rejects.toThrow(ForbiddenException);
+        await expect(attempt).rejects.toThrow(ConflictException);
         await expect(attempt).rejects.toThrow(
           '簽核節點「財務簽核」不允許代送人簽核，不能將任務轉交給代為送出此單的人',
         );

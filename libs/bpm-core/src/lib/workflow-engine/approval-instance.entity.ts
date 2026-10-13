@@ -32,8 +32,7 @@ export class ApprovalInstanceEntity {
   /**
    * Who actually pressed submit, when that is not the applicant (an assistant,
    * or a manager filing for a subordinate). NULL on rows written before the
-   * column existed, which means "the initiator submitted it themselves" — read
-   * it through `readExcludedSubmitterMemberIds`, not directly.
+   * column existed, which means "the initiator submitted it themselves".
    */
   @Column('text', { name: 'submitted_by_member_id', nullable: true })
   @Field(() => String, { nullable: true })

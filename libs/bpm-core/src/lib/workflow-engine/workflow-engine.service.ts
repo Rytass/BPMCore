@@ -737,7 +737,7 @@ export class WorkflowEngineService {
           transferToMemberId !== null &&
           transferToMemberId === readDistinctSubmitterMemberId(instance)
         ) {
-          throw new ForbiddenException(
+          throw new ConflictException(
             `簽核節點「${taskNode.data.label}」不允許代送人簽核，不能將任務轉交給代為送出此單的人`,
           );
         }
@@ -4759,15 +4759,16 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
   ): Promise<readonly RuntimeTaskCandidate[]> {
-    // The initiator's own direct manager: the closest org unit only, and the
-    // initiator himself (a unit head) is skipped so resolution falls through
-    // to the next tier instead of ending on him.
+    // The initiator's own direct manager: the closest org unit only. The
+    // initiator himself (a unit head) and the member who submitted for him are
+    // skipped before the tier is chosen, so resolution falls through to the
+    // next tier instead of ending on either of them.
     const managerMemberIds = await this.resolveDirectManagerMemberIds(
       manager,
       instance.initiatorMemberId,
       toDateOnlyString(new Date()),
       true,
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
@@ -5030,7 +5031,7 @@ export class WorkflowEngineService {
         currentMemberId,
         date,
         true,
-        currentMemberId,
+        [currentMemberId],
       );
 
       if (directManagerMemberIds.length === 0) {
@@ -5205,7 +5206,7 @@ export class WorkflowEngineService {
     memberId: string,
     date: string,
     preferClosestOrgUnit: boolean,
-    excludedManagerMemberId?: string,
+    excludedManagerMemberIds: readonly string[] = [],
   ): Promise<readonly string[]> {
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { memberId },
@@ -5241,7 +5242,7 @@ export class WorkflowEngineService {
       date,
       readOrgUnitDepthMap(orgUnits),
       preferClosestOrgUnit,
-      excludedManagerMemberId,
+      excludedManagerMemberIds,
     );
   }
 
@@ -5319,7 +5320,7 @@ export class WorkflowEngineService {
     date: string,
     orgUnitDepths: ReadonlyMap<string, number>,
     preferClosestOrgUnit: boolean,
-    excludedManagerMemberId?: string,
+    excludedManagerMemberIds: readonly string[] = [],
   ): Promise<readonly string[]> {
     const scopeIds = candidatePairs.map((pair) => pair.scopeId);
 
@@ -5353,8 +5354,7 @@ export class WorkflowEngineService {
       // through to the next tier instead of ending on the excluded member.
       .filter(
         (resolution) =>
-          excludedManagerMemberId === undefined ||
-          resolution.managerMemberId !== excludedManagerMemberId,
+          !excludedManagerMemberIds.includes(resolution.managerMemberId),
       )
       .sort((left, right) =>
         compareManagerResolution(left, right, depthLookup),
