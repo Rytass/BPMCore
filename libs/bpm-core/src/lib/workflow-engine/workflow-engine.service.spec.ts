@@ -10642,16 +10642,22 @@ describe('WorkflowEngineService task node labels', () => {
     });
   });
 
-  it('loads the instances for a whole task list in one query', async (): Promise<void> => {
+  it('reads the labels for a whole task list in one query, without loading the snapshots', async (): Promise<void> => {
     const fixture = createLabelFixture();
 
     await fixture.service.listInboxTasks('member-finance');
 
-    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
-    expect(fixture.rootInstanceFind).toHaveBeenCalledWith(
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledWith(
+      expect.stringContaining('jsonb_array_elements'),
+      [
+        ['instance-1', 'instance-2', 'missing-instance'],
+        ['task_finance', 'band-0', 'gone'],
+      ],
+    );
+    expect(fixture.rootInstanceFind).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        select: { id: true, workflowSnapshot: true },
-        where: { id: In(['instance-1', 'instance-2', 'missing-instance']) },
+        select: expect.objectContaining({ workflowSnapshot: true }),
       }),
     );
   });
@@ -10683,7 +10689,7 @@ describe('WorkflowEngineService task node labels', () => {
     expect(tasks.find((task) => task.id === 'task-b')?.nodeLabel).toBe(
       '部門主管簽核',
     );
-    expect(fixture.rootInstanceFind).toHaveBeenCalledTimes(1);
+    expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
   });
 
   it('labels the tasks of an instance', async (): Promise<void> => {
@@ -10727,6 +10733,10 @@ interface ServiceFixture {
     [Readonly<Record<string, unknown>>]
   >;
   readonly rootInstanceCount: jest.Mock<Promise<number>, []>;
+  readonly rootInstanceNodeLabelQuery: jest.Mock<
+    Promise<readonly Readonly<Record<string, unknown>>[]>,
+    [string, readonly [readonly string[], readonly string[]]]
+  >;
   readonly rootInstanceFindOne: jest.Mock<
     Promise<ApprovalInstanceEntity | null>,
     [Readonly<Record<string, unknown>>?]
@@ -10921,10 +10931,31 @@ function createServiceFixture({
       }),
     ),
   );
+  const rootInstanceNodeLabelQuery = jest.fn(
+    async (
+      _sql: string,
+      [instanceIds, nodeIds]: readonly [readonly string[], readonly string[]],
+    ): Promise<readonly Readonly<Record<string, unknown>>[]> =>
+      (await rootInstanceFind())
+        .filter((instance) => instanceIds.includes(instance.id))
+        .flatMap((instance) =>
+          (instance.workflowSnapshot?.nodes ?? [])
+            .filter((node) => nodeIds.includes(node.id))
+            .map((node) => ({
+              instanceId: instance.id,
+              label:
+                typeof node.data.label === 'string' ? node.data.label : null,
+              nodeId: node.id,
+            })),
+        ),
+  );
   const instanceRepository = createRepository<ApprovalInstanceEntity>({
     createQueryBuilder: jest.fn(() => rootInstanceQueryBuilder),
     find: rootInstanceFind,
     findOne: rootInstanceFindOne,
+    // Stands in for the jsonb node-label query (`readTaskNodeLabels`): the
+    // label of each requested node, read from the instances `find` knows.
+    query: rootInstanceNodeLabelQuery,
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
@@ -11635,6 +11666,7 @@ function createServiceFixture({
     rootInstanceCount,
     rootInstanceFind,
     rootInstanceFindOne,
+    rootInstanceNodeLabelQuery,
     rootInstanceQueryBuilder,
     rootTaskFind,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {

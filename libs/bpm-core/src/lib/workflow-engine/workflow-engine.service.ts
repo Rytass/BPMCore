@@ -3394,10 +3394,6 @@ export class WorkflowEngineService {
     });
   }
 
-  // The snapshot load is eager: every task list reads the instances' workflow
-  // snapshots and computes `nodeLabel` even when the query does not select it.
-  // If inbox size ever makes that matter, move the label to a `@ResolveField`
-  // (with a batching loader) so it is only paid for when asked for.
   private async attachTaskCandidateSummaries(
     tasks: readonly TaskEntity[],
   ): Promise<readonly TaskEntity[]> {
@@ -3444,26 +3440,63 @@ export class WorkflowEngineService {
         new Map<string, readonly string[]>(),
       );
 
-    // One query for every instance behind the page of tasks, not one per task.
-    const instances = await this.approvalInstanceRepository.find({
-      select: { id: true, workflowSnapshot: true },
-      where: {
-        id: In([...new Set(tasks.map((task) => task.instanceId))]),
-      },
-    });
-    const snapshotsByInstanceId = new Map(
-      instances.map((instance) => [instance.id, instance.workflowSnapshot]),
-    );
+    const nodeLabels = await this.readTaskNodeLabels(tasks);
 
     return tasks.map((task) =>
       Object.assign(new TaskEntity(), task, {
         candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
-        nodeLabel: readWorkflowNodeLabel(
-          snapshotsByInstanceId.get(task.instanceId),
-          task.nodeId,
-        ),
+        nodeLabel:
+          nodeLabels.get(readNodeLabelKey(task.instanceId, task.nodeId)) ??
+          null,
         openCandidateMemberIds: openCandidatesByTaskId.get(task.id) ?? [],
       }),
+    );
+  }
+
+  /**
+   * The display names of the nodes a page of tasks sits on, keyed by
+   * {@link readNodeLabelKey}. One query for the whole page, and Postgres picks
+   * the labels out of the snapshots: a workflow snapshot is a whole workflow
+   * definition, and every inbox, history and instance task list runs this, so
+   * shipping the snapshots to the app just to read one string each would cost
+   * page size × snapshot size on every refresh. A missing instance or node, a
+   * snapshot without a `nodes` array, and a blank or non-string label all
+   * leave the task without a label, as `readWorkflowNodeLabel` does.
+   */
+  private async readTaskNodeLabels(
+    tasks: readonly TaskEntity[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const rows = await this.approvalInstanceRepository.query<
+      readonly {
+        readonly instanceId: string;
+        readonly label: string | null;
+        readonly nodeId: string;
+      }[]
+    >(
+      `SELECT instance.id AS "instanceId",
+              node->>'id' AS "nodeId",
+              CASE WHEN jsonb_typeof(node->'data'->'label') = 'string'
+                   THEN node->'data'->>'label' END AS "label"
+         FROM approval_instances AS instance
+        CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(instance.workflow_snapshot->'nodes') = 'array'
+                   THEN instance.workflow_snapshot->'nodes'
+                   ELSE '[]'::jsonb END
+            ) AS node
+        WHERE instance.id = ANY($1::uuid[])
+          AND node->>'id' = ANY($2::text[])`,
+      [
+        [...new Set(tasks.map((task) => task.instanceId))],
+        [...new Set(tasks.map((task) => task.nodeId))],
+      ],
+    );
+
+    return new Map(
+      rows.flatMap((row) =>
+        typeof row.label === 'string' && row.label.trim()
+          ? [[readNodeLabelKey(row.instanceId, row.nodeId), row.label]]
+          : [],
+      ),
     );
   }
 
@@ -6794,6 +6827,10 @@ function buildDryRunExpressionContext(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNodeLabelKey(instanceId: string, nodeId: string): string {
+  return `${instanceId}\u0000${nodeId}`;
 }
 
 /**
