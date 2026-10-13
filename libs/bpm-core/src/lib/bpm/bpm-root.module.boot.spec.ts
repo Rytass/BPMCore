@@ -109,7 +109,7 @@ describe('BPMRootModule bootstrap', (): void => {
       imports: [
         FakeDataSourceModule,
         BPMRootModule.forRootAsync({
-          useFactory: () => ({ organizationTimeZone: 'Asia/Taipei' }),
+          useFactory: () => ({ organizationTimeZone: 'UTC' }),
         }),
       ],
     }).compile();
@@ -117,16 +117,16 @@ describe('BPMRootModule bootstrap', (): void => {
     try {
       expect(
         moduleRef.get(WorkflowEngineService, { strict: false }),
-      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
+      ).toHaveProperty('organizationTimeZone', 'UTC');
       expect(
         moduleRef.get(OrganizationService, { strict: false }),
-      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
+      ).toHaveProperty('organizationTimeZone', 'UTC');
     } finally {
       await moduleRef.close();
     }
   });
 
-  it('reads organization dates in UTC when the host sets no organization time zone', async (): Promise<void> => {
+  it('reads organization dates in Asia/Taipei when the host sets no organization time zone', async (): Promise<void> => {
     const moduleRef = await Test.createTestingModule({
       imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
     }).compile();
@@ -134,10 +134,10 @@ describe('BPMRootModule bootstrap', (): void => {
     try {
       expect(
         moduleRef.get(WorkflowEngineService, { strict: false }),
-      ).toHaveProperty('organizationTimeZone', 'UTC');
+      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
       expect(
         moduleRef.get(OrganizationService, { strict: false }),
-      ).toHaveProperty('organizationTimeZone', 'UTC');
+      ).toHaveProperty('organizationTimeZone', 'Asia/Taipei');
     } finally {
       await moduleRef.close();
     }

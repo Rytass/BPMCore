@@ -673,7 +673,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
 | `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `UTC`, see the organization section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -748,24 +748,23 @@ Auth contract layer — lib does not own auth; host plugs in.
 `effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
 manager rule in force?" needs a notion of *today*, and that depends on the
 zone. BPM reads today in the `organizationTimeZone` root option (an IANA name,
-default `UTC`) everywhere it compares against those two columns: the workflow
-engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`, `POSITION`, org-unit member and
-org-unit position resolvers, the initiator-manager replacement, the default
-initiator snapshot, dry run, `OrganizationService.resolveManagerMemberId` (SLA
-escalation and notification use it) and the `activeOnly` membership and manager
-resolution listings. A host whose organization data is kept in UTC+8 dates must
-set `organizationTimeZone: 'Asia/Taipei'`; with the default, between 00:00 and
-08:00 local time the UTC date is still yesterday, so a rule effective from today
-does not apply yet. An unknown zone makes BPM fail at startup. Stored effective
-dates and the `startAt` / `endAt` / `createdAt` timestamps are untouched. This
-is separate from `notificationSlaBusinessCalendarTimeZone` (SLA business days);
-a host may set both to the same value.
+default `Asia/Taipei`, BPM's business time zone) everywhere it compares against
+those two columns: the workflow engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`,
+`POSITION`, org-unit member and org-unit position resolvers, the
+initiator-manager replacement, the default initiator snapshot, dry run,
+`OrganizationService.resolveManagerMemberId` (SLA escalation and notification
+use it) and the `activeOnly` membership and manager resolution listings. A host
+whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'`. An
+unknown zone makes BPM fail at startup. Stored effective dates and the
+`startAt` / `endAt` / `createdAt` timestamps are untouched. This is separate
+from `notificationSlaBusinessCalendarTimeZone` (SLA business days); a host may
+set both to the same value.
 
-Behaviour change for `OrganizationService`: it used to read these dates in a
-hard-coded `Asia/Taipei` while the workflow engine read them in UTC. Both now
-follow `organizationTimeZone`, so a host that relied on the old Taipei reading
-of `resolveManagerMemberId` or the `activeOnly` listings must set
-`organizationTimeZone: 'Asia/Taipei'`.
+Before this option the workflow engine read the UTC date (so between 00:00 and
+08:00 in UTC+8 a rule effective from today did not apply yet) while
+`OrganizationService` already read `Asia/Taipei`. Both now follow the option;
+the `OrganizationService` reading is unchanged for a host that sets nothing, and
+the engine's moves from UTC to `Asia/Taipei`.
 >
 > `UpdateOrgUnitInput.metadataJson` and `UpdatePositionInput.metadataJson` are
 > a known wart rather than a contract: the service tests them for truthiness

@@ -1558,11 +1558,9 @@ describe('WorkflowEngineService', () => {
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
 
-    it('uses a membership effective today from local midnight when the zone is configured', async (): Promise<void> => {
+    it('uses a membership effective today from local midnight by default', async (): Promise<void> => {
       useClock(taipeiEarlyMorning);
-      const fixture = createPositionFixture({
-        organizationTimeZone: 'Asia/Taipei',
-      });
+      const fixture = createPositionFixture();
 
       await fixture.service.processInstance('instance-1');
 
@@ -1571,9 +1569,9 @@ describe('WorkflowEngineService', () => {
       });
     });
 
-    it('still reads the UTC date for a membership by default', async (): Promise<void> => {
+    it('reads the UTC date for a membership when the zone is UTC', async (): Promise<void> => {
       useClock(taipeiEarlyMorning);
-      const fixture = createPositionFixture();
+      const fixture = createPositionFixture({ organizationTimeZone: 'UTC' });
 
       await expect(
         fixture.service.processInstance('instance-1'),
@@ -1581,11 +1579,9 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedTasks).toHaveLength(0);
     });
 
-    it('uses a manager rule effective today from local midnight when the zone is configured', async (): Promise<void> => {
+    it('uses a manager rule effective today from local midnight by default', async (): Promise<void> => {
       useClock(taipeiEarlyMorning);
-      const fixture = createManagerFixture({
-        organizationTimeZone: 'Asia/Taipei',
-      });
+      const fixture = createManagerFixture();
 
       await fixture.service.processInstance('instance-1');
 
@@ -1594,9 +1590,9 @@ describe('WorkflowEngineService', () => {
       });
     });
 
-    it('still reads the UTC date for a manager rule by default', async (): Promise<void> => {
+    it('reads the UTC date for a manager rule when the zone is UTC', async (): Promise<void> => {
       useClock(taipeiEarlyMorning);
-      const fixture = createManagerFixture();
+      const fixture = createManagerFixture({ organizationTimeZone: 'UTC' });
 
       await expect(
         fixture.service.processInstance('instance-1'),

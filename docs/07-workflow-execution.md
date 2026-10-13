@@ -326,7 +326,7 @@ async function resolveApprovers(
 設計器把節點改成主管鏈時，若原本的決策方式會讓一位主管簽完就結案，會自動改成 `SEQUENTIAL`。
 
 - **職等來源**：`PositionEntity.level`（數字越大越高階）。一位主管的職等 = 他**目前有效**
-  （`effective_from`／`effective_to` 涵蓋今天；「今天」依根選項 `organizationTimeZone` 的日期，預設 UTC）且有 `positionId` 的所有 membership 中最大的
+  （`effective_from`／`effective_to` 涵蓋今天；「今天」依根選項 `organizationTimeZone` 的日期，預設 `Asia/Taipei`）且有 `positionId` 的所有 membership 中最大的
   `level`；沒有這種 membership 就是「沒有職等」。
 - **每一層怎麼走**：用跟 `ORG_MANAGER` 同一套主管規則（`resolveDirectManagerMemberIds`）找目前這個人的
   直屬主管，但有兩點不同：一律採「只取最近一層」語意（主鏈只有一條路徑，合併上層單位的規則只會

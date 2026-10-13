@@ -1178,16 +1178,16 @@ describe('OrganizationService', () => {
         }
       ).toDateOnly(date);
 
-    it('formats date-only values in the configured zone', (): void => {
-      const service = createService({ organizationTimeZone: 'Asia/Taipei' });
+    it('formats date-only values in Asia/Taipei when no zone is configured', (): void => {
+      const service = createService();
 
       expect(readDateOnly(service, new Date('2026-05-10T16:30:00.000Z'))).toBe(
         '2026-05-11',
       );
     });
 
-    it('formats date-only values in UTC when no zone is configured', (): void => {
-      const service = createService();
+    it('formats date-only values in the configured zone', (): void => {
+      const service = createService({ organizationTimeZone: 'UTC' });
 
       expect(readDateOnly(service, new Date('2026-05-10T16:30:00.000Z'))).toBe(
         '2026-05-10',
@@ -1200,7 +1200,7 @@ describe('OrganizationService', () => {
       );
     });
 
-    it('resolves the manager of an instant by the configured zone', async (): Promise<void> => {
+    it('resolves the manager of an instant by the zone, Asia/Taipei by default', async (): Promise<void> => {
       // 01:00 on 2026-10-14 in Asia/Taipei, 2026-10-13 in UTC.
       const instant = new Date('2026-10-13T17:00:00.000Z');
       const createResolving = (
@@ -1237,12 +1237,12 @@ describe('OrganizationService', () => {
       };
 
       await expect(
-        createResolving({
-          organizationTimeZone: 'Asia/Taipei',
-        }).resolveManagerMemberId('member-1', instant),
+        createResolving().resolveManagerMemberId('member-1', instant),
       ).resolves.toBe('manager-new');
       await expect(
-        createResolving().resolveManagerMemberId('member-1', instant),
+        createResolving({
+          organizationTimeZone: 'UTC',
+        }).resolveManagerMemberId('member-1', instant),
       ).resolves.toBeNull();
     });
   });

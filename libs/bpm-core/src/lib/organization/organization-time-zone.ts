@@ -1,8 +1,8 @@
 /**
  * Zone in which organization effective dates are read when the host does not
- * set `organizationTimeZone`.
+ * set `organizationTimeZone`: the product's business time zone.
  */
-export const DEFAULT_BPM_ORGANIZATION_TIME_ZONE = 'UTC';
+export const DEFAULT_BPM_ORGANIZATION_TIME_ZONE = 'Asia/Taipei';
 
 /**
  * Root option for how BPM decides what "today" is when it compares against the
@@ -17,10 +17,11 @@ export interface BPMRootOrganizationOptions {
    * and org-unit candidates, the default initiator snapshot, SLA escalation,
    * and the "active only" organization views.
    *
-   * Defaults to `'UTC'`. A host whose organization data is maintained in local
-   * dates should set its own zone: between local midnight and the UTC offset
-   * the UTC date is still yesterday, so a rule effective from today would not
-   * apply yet. An unknown zone makes BPM fail at startup.
+   * Defaults to `'Asia/Taipei'`, BPM's business time zone. Organization data
+   * is kept in local dates, and between local midnight and the zone's UTC
+   * offset the UTC date is still yesterday, so reading it in UTC would not
+   * apply a rule effective from today yet. A host that keeps its dates in UTC
+   * sets `'UTC'`. An unknown zone makes BPM fail at startup.
    *
    * Independent of `notificationSlaBusinessCalendarTimeZone`, which decides
    * business days for SLA clocks; a host may set both to the same value.

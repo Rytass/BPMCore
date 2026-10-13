@@ -42,10 +42,14 @@ describe('formatDateOnlyInTimeZone', (): void => {
 });
 
 describe('resolveBPMOrganizationTimeZone', (): void => {
-  it('defaults to UTC when the host sets nothing', (): void => {
-    expect(resolveBPMOrganizationTimeZone(undefined)).toBe('UTC');
-    expect(resolveBPMOrganizationTimeZone(null)).toBe('UTC');
-    expect(resolveBPMOrganizationTimeZone('  ')).toBe('UTC');
+  it('defaults to Asia/Taipei when the host sets nothing', (): void => {
+    expect(resolveBPMOrganizationTimeZone(undefined)).toBe('Asia/Taipei');
+    expect(resolveBPMOrganizationTimeZone(null)).toBe('Asia/Taipei');
+    expect(resolveBPMOrganizationTimeZone('  ')).toBe('Asia/Taipei');
+  });
+
+  it('lets a host opt into UTC', (): void => {
+    expect(resolveBPMOrganizationTimeZone('UTC')).toBe('UTC');
   });
 
   it('keeps a valid IANA zone, trimmed', (): void => {
