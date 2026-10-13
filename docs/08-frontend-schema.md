@@ -229,8 +229,11 @@ position / org id 是否真實存在。
 `assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
 `orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
 designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
-顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入試跑發起人
-（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人。
+顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入占位值
+`formMember:<fieldKey>`（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人，
+試跑結果顯示為「表單欄位「<fieldKey>」選的人（送出時依填寫內容決定）」。刻意不填試跑發起人：
+真實送出時通常選的是別人，填發起人會讓設了「排除申請人」的節點在試跑中被略過或停住。
+要模擬特定人員，直接把 JSON 中的值改成該成員 id。
 
 `DYNAMIC_FORM` 的 `formPath` 讀到的值必須是成員 id（字串）或成員 id 陣列。表單欄位
 類型 **`member`（人員選擇）** 就是為此而設：

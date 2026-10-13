@@ -6,21 +6,27 @@ import {
 
 export function readDryRunSampleFormData(
   schema: FormDefinitionSchema | null,
-  initiatorMemberId: string,
 ): Readonly<Record<string, unknown>> {
   return (schema?.fields ?? []).reduce<Readonly<Record<string, unknown>>>(
     (formData, field) => ({
       ...formData,
-      [field.fieldKey]: readDryRunSampleFieldValue(field, initiatorMemberId),
+      [field.fieldKey]: readDryRunSampleFieldValue(field),
     }),
     {},
   );
 }
 
-function readDryRunSampleFieldValue(
-  field: FormFieldDefinition,
-  initiatorMemberId: string,
-): unknown {
+/**
+ * Sample value of a member field: a placeholder the dry-run result labels as
+ * "whoever this field names", never the dry-run initiator — a real submitter
+ * picks someone else, and sampling the initiator would make a node that
+ * excludes the initiator look skipped or stopped when it would not be.
+ */
+export function readDryRunFormMemberPlaceholder(fieldKey: string): string {
+  return `formMember:${fieldKey}`;
+}
+
+function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
   if (field.type === 'number') {
     return 1000;
   }
@@ -29,10 +35,12 @@ function readDryRunSampleFieldValue(
     return true;
   }
 
-  // The dry-run initiator, so a 依表單欄位指定 node resolves to a real member
-  // instead of failing on a free-text sample.
+  // A non-empty member placeholder, so a 依表單欄位指定 node resolves to
+  // someone instead of failing on a free-text sample.
   if (field.type === 'member') {
-    return field.multiple ? [initiatorMemberId] : initiatorMemberId;
+    const placeholder = readDryRunFormMemberPlaceholder(field.fieldKey);
+
+    return field.multiple ? [placeholder] : placeholder;
   }
 
   if (isFormStaticOptionFieldDefinition(field)) {

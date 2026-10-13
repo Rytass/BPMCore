@@ -1125,12 +1125,13 @@ test.describe('M1 W3 template designer', () => {
       .filter({ hasText: '表單資料 JSON' })
       .getByRole('textbox');
 
-    // A member field is sampled with the dry-run initiator, not free text, so
-    // a 依表單欄位指定 node resolves to a real member.
-    await expect(sampleJson).toHaveValue(/"owner": "member-001"/u);
-    await expect(sampleJson).toHaveValue(/"backup": "member-001"/u);
+    // A member field is sampled with a placeholder, not free text and not the
+    // dry-run initiator, so a 依表單欄位指定 node resolves to someone other
+    // than the applicant, as a real submission would.
+    await expect(sampleJson).toHaveValue(/"owner": "formMember:owner"/u);
+    await expect(sampleJson).toHaveValue(/"backup": "formMember:backup"/u);
     // The member field only the applied draft has is sampled too.
-    await expect(sampleJson).toHaveValue(/"reviewer": "member-001"/u);
+    await expect(sampleJson).toHaveValue(/"reviewer": "formMember:reviewer"/u);
   });
 
   test('names the dry run assignees instead of printing internal ids', async ({
@@ -1144,6 +1145,7 @@ test.describe('M1 W3 template designer', () => {
         'orgUnitMember:org-finance',
         'orgUnitManager:org-finance-ap',
         'orgManagerChain:3',
+        'formMember:reviewer',
       ],
       // The fixture's approvers include member-001, so the designer resolves
       // that member's name and the dry run can show it.
@@ -1166,6 +1168,9 @@ test.describe('M1 W3 template designer', () => {
     ).toBeVisible();
     await expect(page.getByText('組織任一人：財務部')).toBeVisible();
     await expect(page.getByText('組織主管：應付帳款組')).toBeVisible();
+    await expect(
+      page.getByText('表單欄位「reviewer」選的人（送出時依填寫內容決定）'),
+    ).toBeVisible();
     await expect(
       page.getByText('主管鏈：簽到職等 3（送出時依組織決定實際主管）'),
     ).toBeVisible();

@@ -43,6 +43,11 @@ export function readDryRunAssigneeLabel(
     return `組織主管：${orgUnitName(ids[0])}`;
   }
 
+  // The dry-run sample for a member field (`readDryRunFormMemberPlaceholder`).
+  if (kind === 'formMember' && ids.length === 1 && ids[0]) {
+    return `表單欄位「${ids[0]}」選的人（送出時依填寫內容決定）`;
+  }
+
   if (kind === 'orgManagerChain' && ids.length === 1 && ids[0]) {
     return `主管鏈：簽到職等 ${ids[0]}（送出時依組織決定實際主管）`;
   }

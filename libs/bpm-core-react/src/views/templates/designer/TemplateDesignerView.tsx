@@ -1540,7 +1540,7 @@ export function TemplateDesignerView({
         // The schema publish would send (an applied form edit included), the
         // same one the 依表單欄位指定 picker reads, so a member field just added
         // to the draft gets a sample value.
-        readDryRunSampleFormData(webhookFormSchema, DRY_RUN_MEMBER_ID),
+        readDryRunSampleFormData(webhookFormSchema),
         null,
         2,
       ),

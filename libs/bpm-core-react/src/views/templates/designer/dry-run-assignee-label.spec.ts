@@ -43,6 +43,12 @@ describe('readDryRunAssigneeLabel', () => {
     );
   });
 
+  it('describes a member-field sample placeholder by its field key', () => {
+    expect(readDryRunAssigneeLabel('formMember:reviewer', directory)).toBe(
+      '表單欄位「reviewer」選的人（送出時依填寫內容決定）',
+    );
+  });
+
   it('shows the id when the org unit or position is no longer in the directory', () => {
     expect(
       readDryRunAssigneeLabel('orgUnitPosition:org-gone:pos-gone', directory),
