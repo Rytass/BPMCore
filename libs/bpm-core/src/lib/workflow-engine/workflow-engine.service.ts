@@ -49,6 +49,7 @@ import {
 } from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
 import {
+  DelegationResolution,
   DelegationService,
   DelegationStep,
 } from '../delegation/delegation.service';
@@ -234,11 +235,37 @@ interface ResolvedApproverCandidate {
   readonly sourceType: CandidateSourceType;
 }
 
+/**
+ * A delegation that was resolved for a manager-chain candidate but not applied
+ * because the delegate's grade is below the grade of the member they would
+ * replace. Recorded on the activity payload (not in `delegationChain`, which
+ * consumers read as a real delegation).
+ */
+interface SkippedDelegation {
+  readonly agentLevel: number | null;
+  readonly agentMemberId: string;
+  readonly principalLevel: number;
+  readonly principalMemberId: string;
+  readonly reason: 'AGENT_POSITION_LEVEL_TOO_LOW';
+}
+
 interface RuntimeTaskCandidate {
   readonly delegationChain: readonly DelegationStep[];
   readonly memberId: string;
   readonly originalMemberId: string;
+  readonly skippedDelegation?: SkippedDelegation;
   readonly sourceType: CandidateSourceType;
+}
+
+interface GradeGatedDelegation extends DelegationResolution {
+  readonly skippedDelegation?: SkippedDelegation;
+}
+
+interface ResolvedRuntimeTaskCandidates {
+  readonly candidates: readonly RuntimeTaskCandidate[];
+  // Collected before the initiator filter and the dedupe, so a refusal on a row
+  // those drop is still on record.
+  readonly skippedDelegations: readonly SkippedDelegation[];
 }
 
 type AdhocTargetValue = {
@@ -813,6 +840,24 @@ export class WorkflowEngineService {
           throw new ConflictException(
             `簽核節點「${taskNode.data.label}」不允許代送人簽核，不能將任務轉交給代為送出此單的人`,
           );
+        }
+
+        // Same carve-out: a human picking the target on a manager-chain node
+        // must pick someone at least as senior as the member being replaced.
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          transferToMemberId !== null &&
+          !task.isAdhoc &&
+          isOrgManagerChainNode(taskNode)
+        ) {
+          await this.assertTransferTargetGrade(manager, {
+            actorMemberId: input.decidedByMemberId,
+            delegationChain:
+              actorCandidate?.delegationChain ?? task.delegationChain,
+            label: taskNode.data.label,
+            targetMemberId: transferToMemberId,
+          });
         }
 
         const returnToNodeId =
@@ -1816,10 +1861,14 @@ export class WorkflowEngineService {
       '簽核人',
       isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
+    // Ad-hoc approvers are picked by a person, not walked up a manager chain,
+    // so the chain's grade rule does not apply to them.
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       resolvedCandidates,
+      false,
     );
     const candidates = selectNodeCandidates(
       delegatedCandidates,
@@ -4164,7 +4213,7 @@ export class WorkflowEngineService {
       return;
     }
 
-    const candidates = await this.resolveRuntimeTaskCandidates(
+    const resolvedCandidates = await this.resolveRuntimeTaskCandidates(
       manager,
       instance,
       node,
@@ -4173,11 +4222,13 @@ export class WorkflowEngineService {
     // The initiator was the only approver and the node asks to be skipped in
     // that case: no task, the token moves on. Pending countersign directives
     // stay pending for the next user task that actually gets created.
-    if (candidates === null) {
+    if (resolvedCandidates === null) {
       await this.skipNodeByInitiatorExclusion(manager, instance, token, node);
 
       return;
     }
+
+    const { candidates, skippedDelegations } = resolvedCandidates;
 
     const primaryCandidate = candidates[0];
     // Legacy snapshots may carry no policy at all; they behave as before.
@@ -4280,6 +4331,7 @@ export class WorkflowEngineService {
                 ),
               }
             : {}),
+          ...(skippedDelegations.length > 0 ? { skippedDelegations } : {}),
           tokenId: token.id,
         },
         taskId: task.id,
@@ -4346,13 +4398,16 @@ export class WorkflowEngineService {
     const now = new Date();
     // Delegation was resolved when the task was created; the candidate may have
     // gained a delegate while waiting, so resolve it again for the new turn.
-    const delegation = await this.resolveActivationDelegation({
-      candidate: nextCandidate,
-      candidates,
-      excludesInitiator: isInitiatorExcluded(node),
-      instance,
-      nodeId: task.nodeId,
-    });
+    const { skippedDelegation, ...delegation } =
+      await this.resolveActivationDelegation({
+        candidate: nextCandidate,
+        candidates,
+        excludesInitiator: isInitiatorExcluded(node),
+        gradeGated: isGradeGatedCandidate(node, nextCandidate.sourceType),
+        instance,
+        manager,
+        nodeId: task.nodeId,
+      });
     const activatedCandidate = await manager
       .getRepository(TaskCandidateEntity)
       .save(
@@ -4395,6 +4450,9 @@ export class WorkflowEngineService {
           originalMemberId: activatedCandidate.originalMemberId,
           previousMemberId,
           sequence: activatedCandidate.sequence,
+          ...(skippedDelegation
+            ? { skippedDelegations: [skippedDelegation] }
+            : {}),
           tokenId: task.tokenId,
         },
         taskId: task.id,
@@ -4421,25 +4479,32 @@ export class WorkflowEngineService {
     candidate,
     candidates,
     excludesInitiator,
+    gradeGated,
     instance,
+    manager,
     nodeId,
   }: {
     readonly candidate: TaskCandidateEntity;
     readonly candidates: readonly TaskCandidateEntity[];
     readonly excludesInitiator: boolean;
+    readonly gradeGated: boolean;
     readonly instance: ApprovalInstanceEntity;
+    readonly manager: EntityManager;
     readonly nodeId: string;
   }): Promise<{
     readonly delegationChain: TaskCandidateEntity['delegationChain'];
     readonly memberId: string;
+    readonly skippedDelegation?: SkippedDelegation;
   }> {
     const stored = {
       delegationChain: candidate.delegationChain,
       memberId: candidate.memberId,
     };
-    const resolution = await this.delegationService.resolveAssignee(
+    const { skippedDelegation, ...resolution } = await this.resolveDelegation(
+      manager,
       candidate.originalMemberId,
       this.buildDelegationContext(instance, nodeId),
+      gradeGated,
     );
     const collides = candidates.some(
       (other) =>
@@ -4459,12 +4524,14 @@ export class WorkflowEngineService {
           readInitiatorAndSubmitter(instance),
         ))
     ) {
-      return stored;
+      // The refusal happened even though the stored values are kept.
+      return { ...stored, ...(skippedDelegation ? { skippedDelegation } : {}) };
     }
 
     return {
       delegationChain: resolution.delegationChain,
       memberId: resolution.finalAssigneeMemberId,
+      ...(skippedDelegation ? { skippedDelegation } : {}),
     };
   }
 
@@ -4777,7 +4844,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<readonly RuntimeTaskCandidate[] | null> {
+  ): Promise<ResolvedRuntimeTaskCandidates | null> {
     const label = `簽核節點「${node.data.label}」`;
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
@@ -4788,9 +4855,11 @@ export class WorkflowEngineService {
       isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       resolvedCandidates,
+      isOrgManagerChainNode(node),
     );
     const excludeInitiator = node.data.excludeInitiator;
     const hasSubmitter = readDistinctSubmitterMemberId(instance) !== null;
@@ -4801,7 +4870,14 @@ export class WorkflowEngineService {
     );
 
     if (uniqueCandidates.length > 0) {
-      return uniqueCandidates;
+      return {
+        candidates: uniqueCandidates,
+        skippedDelegations: collectSkippedDelegations(
+          delegatedCandidates,
+          isInitiatorExcluded(node),
+          readInitiatorAndSubmitter(instance),
+        ),
+      };
     }
 
     // Only the initiator was left — what the node does about it is configured.
@@ -4821,7 +4897,7 @@ export class WorkflowEngineService {
         node,
       );
 
-      if (managerCandidates.length > 0) {
+      if (managerCandidates.candidates.length > 0) {
         return managerCandidates;
       }
 
@@ -4843,7 +4919,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<readonly RuntimeTaskCandidate[]> {
+  ): Promise<ResolvedRuntimeTaskCandidates> {
     // The initiator's own direct manager: the closest org unit only. The
     // initiator himself (a unit head) and the member who submitted for him are
     // skipped before the tier is chosen, so resolution falls through to the
@@ -4856,19 +4932,28 @@ export class WorkflowEngineService {
       readInitiatorAndSubmitter(instance),
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
+      manager,
       instance,
       node.id,
       managerMemberIds.map((memberId) => ({
         memberId,
         sourceType: 'EXCLUDE_INITIATOR_MANAGER',
       })),
+      isOrgManagerChainNode(node),
     );
 
-    return selectNodeCandidates(
-      delegatedCandidates,
-      true,
-      readInitiatorAndSubmitter(instance),
-    );
+    return {
+      candidates: selectNodeCandidates(
+        delegatedCandidates,
+        true,
+        readInitiatorAndSubmitter(instance),
+      ),
+      skippedDelegations: collectSkippedDelegations(
+        delegatedCandidates,
+        true,
+        readInitiatorAndSubmitter(instance),
+      ),
+    };
   }
 
   private buildDelegationContext(
@@ -4891,24 +4976,29 @@ export class WorkflowEngineService {
   // Not deduplicated: a node that excludes the initiator filters first, so a
   // first-seen entry that must be dropped cannot shadow a legitimate one.
   private async delegateResolvedCandidates(
+    manager: EntityManager,
     instance: ApprovalInstanceEntity,
     nodeId: string,
     resolvedCandidates: readonly ResolvedApproverCandidate[],
+    gradeGated: boolean,
   ): Promise<readonly RuntimeTaskCandidate[]> {
     const context = this.buildDelegationContext(instance, nodeId);
     const delegatedCandidates = await Promise.all(
       resolvedCandidates.map(
         async (candidate): Promise<RuntimeTaskCandidate> => {
-          const delegationResolution =
-            await this.delegationService.resolveAssignee(
+          const { skippedDelegation, ...delegationResolution } =
+            await this.resolveDelegation(
+              manager,
               candidate.memberId,
               context,
+              gradeGated,
             );
 
           return {
             delegationChain: delegationResolution.delegationChain,
             memberId: delegationResolution.finalAssigneeMemberId,
             originalMemberId: candidate.memberId,
+            ...(skippedDelegation ? { skippedDelegation } : {}),
             sourceType: candidate.sourceType,
           };
         },
@@ -4916,6 +5006,110 @@ export class WorkflowEngineService {
     );
 
     return delegatedCandidates;
+  }
+
+  /**
+   * Resolves a member's delegation. On a manager-chain node the delegate must
+   * hold at least the grade of the member they replace: anything lower is not
+   * applied, the member stays and the refused delegation is returned so it can
+   * be recorded. Resolution does not walk further down the delegation chain
+   * once it has been refused. A member without a grade (or a delegate that
+   * stays the member) is never constrained.
+   */
+  private async resolveDelegation(
+    manager: EntityManager,
+    principalMemberId: string,
+    context: Parameters<DelegationService['resolveAssignee']>[1],
+    gradeGated: boolean,
+  ): Promise<GradeGatedDelegation> {
+    const resolution = await this.delegationService.resolveAssignee(
+      principalMemberId,
+      context,
+    );
+
+    if (!gradeGated || resolution.finalAssigneeMemberId === principalMemberId) {
+      return resolution;
+    }
+
+    const date = this.readOrganizationToday();
+    const principalLevel = await this.readMemberPositionLevel(
+      manager,
+      principalMemberId,
+      date,
+    );
+
+    if (principalLevel === null) {
+      return resolution;
+    }
+
+    const agentLevel = await this.readMemberPositionLevel(
+      manager,
+      resolution.finalAssigneeMemberId,
+      date,
+    );
+
+    if (agentLevel !== null && agentLevel >= principalLevel) {
+      return resolution;
+    }
+
+    return {
+      delegationChain: [],
+      finalAssigneeMemberId: principalMemberId,
+      skippedDelegation: {
+        agentLevel,
+        agentMemberId: resolution.finalAssigneeMemberId,
+        principalLevel,
+        principalMemberId,
+        reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+      },
+    };
+  }
+
+  /**
+   * Manual transfer on a manager-chain node: the target must hold at least the
+   * grade of the member being replaced, i.e. the original principal of the
+   * deciding candidate (the first hop of its delegation chain when it was
+   * delegated, otherwise the actor). No grade on the principal means no
+   * constraint.
+   */
+  private async assertTransferTargetGrade(
+    manager: EntityManager,
+    {
+      actorMemberId,
+      delegationChain,
+      label,
+      targetMemberId,
+    }: {
+      readonly actorMemberId: string;
+      readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
+      readonly label: string;
+      readonly targetMemberId: string;
+    },
+  ): Promise<void> {
+    const principalMemberId =
+      readDelegationSteps(delegationChain)[0]?.from ?? actorMemberId;
+    const date = this.readOrganizationToday();
+    const requiredLevel = await this.readMemberPositionLevel(
+      manager,
+      principalMemberId,
+      date,
+    );
+
+    if (requiredLevel === null) {
+      return;
+    }
+
+    const targetLevel = await this.readMemberPositionLevel(
+      manager,
+      targetMemberId,
+      date,
+    );
+
+    if (targetLevel === null || targetLevel < requiredLevel) {
+      throw new ForbiddenException(
+        `簽核節點「${label}」需由職等 ${requiredLevel} 以上的成員簽核，不能轉簽給職等不足的成員`,
+      );
+    }
   }
 
   private async resolveApproverResolver(
@@ -6858,6 +7052,58 @@ function readInitiatorAndSubmitter(
   return submitterMemberId === null
     ? [instance.initiatorMemberId]
     : [instance.initiatorMemberId, submitterMemberId];
+}
+
+function isOrgManagerChainNode(node: UserTaskNode): boolean {
+  return node.data.approverResolver.type === 'ORG_MANAGER_CHAIN';
+}
+
+// Candidates of a manager-chain node that came from the chain (or replaced the
+// excluded initiator's seat); ad-hoc approvers are chosen by a person instead.
+function isGradeGatedCandidate(
+  node: UserTaskNode,
+  sourceType: string | null | undefined,
+): boolean {
+  return (
+    isOrgManagerChainNode(node) &&
+    (sourceType === 'ORG_MANAGER_CHAIN' ||
+      sourceType === 'EXCLUDE_INITIATOR_MANAGER')
+  );
+}
+
+// Source of the additive `skippedDelegations` payload field (absent when
+// nothing was refused, so existing payloads stay byte-identical). One record
+// per principal and delegate pair.
+function collectSkippedDelegations(
+  delegatedCandidates: readonly RuntimeTaskCandidate[],
+  excludeInitiator: boolean,
+  excludedMemberIds: readonly string[],
+): readonly SkippedDelegation[] {
+  const seen = new Set<string>();
+
+  return delegatedCandidates.flatMap((candidate) => {
+    const skipped = candidate.skippedDelegation;
+
+    // A seat the initiator filter removes is not on the task, so a refusal on
+    // it has nothing to report. Rows only the dedupe drops are still on it.
+    if (
+      !skipped ||
+      (excludeInitiator &&
+        isExcludedMemberOnCandidatePath(candidate, excludedMemberIds))
+    ) {
+      return [];
+    }
+
+    const key = `${skipped.principalMemberId}\u0000${skipped.agentMemberId}`;
+
+    if (seen.has(key)) {
+      return [];
+    }
+
+    seen.add(key);
+
+    return [skipped];
+  });
 }
 
 // A delegate acting for the initiator is still the initiator approving their

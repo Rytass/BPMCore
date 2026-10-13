@@ -364,6 +364,26 @@ async function resolveApprovers(
   若他已在清單裡就不重複加入。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
   `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。
+- **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
+  **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
+  的主管，固定門檻會讓他們完全不能代理）。職等一律在動作當下用上面的〈職等來源〉現算；
+  被取代的成員沒有職等（例如 `fallback` 固定人）就不設限。只對 `approverResolver.type === 'ORG_MANAGER_CHAIN'`
+  的 user task 生效，其他節點的代理與轉簽行為不變。
+  - **代理（建立任務與 `SEQUENTIAL` 輪到下一位時）**：照原本流程解析出代理人；若最終代理人與主管不同，
+    且代理人沒有職等或職等較低，**這一關不套用代理、保留原主管**（`delegation_chain` 為空），
+    也不沿代理鏈往下找別人。順序仍是：解析 → 代理（含職等檢查）→ 排除申請人 → 去重 → `whenEmpty`；
+    被拒絕的代理人若剛好是申請人，因為代理沒有套用，主管不會因此被排除。
+  - **為什麼沒套用要查得到**：不寫進 `delegation_chain`（時間軸與外送 payload 會把那裡的每一筆當成真的代理），
+    也沒有新的 `ActivityLogEventTypeEnum` 值；改成在記錄該任務／候選人的 activity payload 加一個可選欄位
+    `skippedDelegations`：`TASK_CREATED`（建立時，所有仍在任務上的成員被拒絕的代理——排除申請人之後、去重之前蒐集，所以只被去重擠掉的那一列仍有記錄，而申請人本人被移除的席位不會留下記錄；同一組主管與代理人只記一筆）與 `TASK_CANDIDATE_ACTIVATED`（輪到時重新解析被拒絕的那一筆；即使因代理人已在 task 上或代理路徑經過申請人而沿用原記下的值，被拒絕這件事仍會記錄），
+    元素為 `{ principalMemberId, agentMemberId, reason: 'AGENT_POSITION_LEVEL_TOO_LOW', principalLevel, agentLevel }`
+    （`agentLevel` 為 `null` 表示代理人沒有職等）。沒有被拒絕的代理時不會出現這個欄位。
+  - **人工轉簽**（GraphQL `decideTask` 與宿主的 S2S 決策端點都走 `decideTask`）：被取代的成員是這位簽核人
+    **原本的主管**——若他是代理人，就是 `delegation_chain` 的第一個 `from`，否則是本人。目標沒有職等或職等較低時，
+    回 `ForbiddenException`：`簽核節點「{label}」需由職等 {N} 以上的成員簽核，不能轉簽給職等不足的成員`
+    （`N` 為被取代者的職等）。臨時加簽／會簽的任務不受影響。
+  - **SLA 升級（`ESCALATE`）不在此限**：它帶 `transferReason`，與 §4.4 的申請人轉交檢查相同，不經過這個檢查
+    （Shuttle 等宿主沒有開啟 SLA 排程）。
 
 ### 4.2 Delegation 解析順序（**重要**）
 
@@ -469,7 +489,7 @@ async function createTasksForNode(node, token) {
   （讓「通知這個 task 所有人」的消費端不會提前通知還沒輪到的人）；完整順序放在新增的
   `sequentialCandidateMemberIds`。
 - **`TASK_CANDIDATE_ACTIVATED` payload**（`actorMemberId` 為 `null`）：
-  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`。
+  `{ assigneeMemberId, candidateMemberIds: [同一位], originalAssigneeMemberId, assignmentType, candidateMemberId, originalMemberId, sequence, previousMemberId, skippedDelegations?, tokenId }`（`skippedDelegations` 只在主管鏈節點拒絕了代理時出現，見 §4.1.1）。
   前四個欄位與 `TASK_CREATED` 的收件人欄位同名同義，其餘是這個事件專屬。
 - **給事件消費端（BREAKING）**：SEQUENTIAL task 的 `TASK_CREATED` 只點名第一位簽核人；
   **`TASK_CANDIDATE_ACTIVATED` 才是「現在輪到這位」的訊號**，必須和 `TASK_CREATED` 用同一套
