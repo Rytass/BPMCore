@@ -793,6 +793,15 @@ Before this option the workflow engine read the UTC date (so between 00:00 and
 the `OrganizationService` reading is unchanged for a host that sets nothing, and
 the engine's moves from UTC to `Asia/Taipei`.
 
+> **Compatibility change.** A host that sets nothing gets a different approver
+> resolution in one window: for a membership or manager rule whose
+> `effectiveFrom` or `effectiveTo` is today, the engine now applies or retires
+> it from local midnight in `Asia/Taipei`, up to eight hours earlier than
+> before. A host whose organization dates are kept in UTC, or that relied on
+> the engine's UTC reading, sets `organizationTimeZone: 'UTC'` before
+> upgrading. Instances already running keep the tasks they have; only
+> resolutions made after the upgrade read the new date.
+
 Known limitation: the template designer's browser-side dry-run snapshot
 (`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
 initiator from the browser's UTC date, because the client has no access to the
