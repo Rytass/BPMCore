@@ -954,10 +954,10 @@ Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the nullable `businessKey`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput` |
 | Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary` |
-| Engine | `WorkflowEngineService` (incl. `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
+| Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`), `WorkflowConditionEvaluator` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `MANUAL_TRANSFER_DELEGATION_REASON` |
 | Tokens | `WorkflowEngineTokens`, `BPM_WORKFLOW_ENGINE_SERVICE`, `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
@@ -982,6 +982,38 @@ runtime value reaches both, because the service resolves it from the global
 `BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
+
+### Business key (host document ↔ instance)
+
+A host that submits instances from its own documents (a purchase order, say)
+labels each one with a **business key** instead of tucking it into `form_data`.
+
+- **Service layer only.** `WorkflowEngineService.submitApprovalInstance` takes an
+  optional `businessKey?: string | null`. The GraphQL `submitApprovalInstance`
+  input has no such field and the mutation always passes `businessKey: null`, so
+  an end user can never claim a key. `ApprovalInstance.businessKey` is a
+  nullable read-only GraphQL field.
+- **Normalised.** The key is trimmed; empty or whitespace-only becomes `null`;
+  more than 200 characters (`MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH`) is a
+  `BadRequestException` (`業務鍵長度不可超過 200 個字元`).
+- **Unique per template.** The partial unique index
+  `approval_instances_business_key_key` on `(template_id, business_key) WHERE
+  business_key IS NOT NULL` is the only arbiter: instances without a key never
+  conflict with each other, and the same key on another template is fine. A
+  second submit with the same `(template, key)` is a `ConflictException`
+  (`此範本已有相同業務鍵（<key>）的簽核單`), raised by translating the unique
+  violation of the insert rather than by a pre-check, so two concurrent submits
+  cannot both succeed.
+- **State does not matter.** A CANCELLED or REJECTED instance still holds its
+  key, and the engine never frees one on its own; what a rejected or cancelled
+  document may do next (submit again under a new key, say) is the host's call.
+- **Immutable.** Resubmitting a returned instance, returning, and cancelling all
+  leave the key unchanged; there is no API to change it after submit.
+- **Lookup.** `findApprovalInstanceByBusinessKey(templateId, businessKey)`
+  returns the instance (any state) or `null`; the key is trimmed first and a
+  blank or over-long key returns `null` without querying. There is deliberately
+  no GraphQL query or `@rytass/bpm-core-client` wrapper: hosts call the service
+  directly, like every other engine lookup that is not an end-user screen.
 
 ## `@rytass/bpm-core-nestjs-module/workflow-webhook`
 
@@ -1255,6 +1287,7 @@ argument on the `notifications` / `notificationCount` queries.
 24. `WorkflowWebhookDeliveries0000000023000` (creates `workflow_webhook_deliveries`, the NOTIFY webhook outbox: unique `(token_id, target_id)` so a token cannot queue the same target twice, plus indexes for the pending scan and per-instance listing)
 25. `WorkflowWebhookEndpoints0000000024000` (creates `workflow_webhook_endpoints` — database-managed NOTIFY webhook endpoints, unique `(key, version)`, `is_active` index, header values and signing secret only as AES-256-GCM envelopes — and `workflow_webhook_endpoint_audits`, which records who changed which fields and never a value)
 26. `TaskCandidateSequence0000000025000` (adds nullable `task_candidates.sequence` — the 0-based signing order inside a `SEQUENTIAL` task — and nullable `tasks.sla_started_at`; existing rows are not backfilled, so in-flight tasks keep the behaviour they were created under. `down()` first turns `WAITING` candidates back into `PENDING` so no task is stranded)
+27. `ApprovalInstanceBusinessKey0000000026000` (adds nullable `approval_instances.business_key` and the partial unique index `approval_instances_business_key_key` on `(template_id, business_key) WHERE business_key IS NOT NULL`; existing rows stay `NULL`, and the index ignores `state`. `down()` drops the index, then the column)
 
 ---
 
