@@ -123,11 +123,11 @@
     "moment": "^2.31.0",
     "next": "~16.3.8",
     "nodemailer": "^10.1.0",
-    "pdfjs-dist": "5.4.296",
+    "pdfjs-dist": "6.3.289",
     "pg": "^8.23.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-pdf": "^10.5.0",
+    "react-pdf": "^11.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "typeorm": "^0.3.31"

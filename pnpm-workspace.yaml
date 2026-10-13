@@ -85,16 +85,18 @@ overrides:
   'next': '~16.3.6'
   'nodemailer': '^10.1.0'
   # The one deliberate exact pin, and it mirrors react-pdf's own: react-pdf
-  # depends on `pdfjs-dist: 5.4.296` exactly, while bpm-core-react's peer is
-  # `^5.4.296`, so `autoInstallPeers` resolved the peer to 5.7.284 and split the
+  # depends on `pdfjs-dist` exactly (6.3.289 for react-pdf 11), while
+  # bpm-core-react's peer is a range, so `autoInstallPeers` resolved the peer to
+  # the newest matching release (5.7.284 back on react-pdf 10) and split the
   # tree in two. Two copies give `PDFDocumentProxy` and react-pdf's
   # `DocumentCallback` unrelated types (pdf-preview.tsx stops compiling) and
   # would ship two PDF workers. Move this with react-pdf, never on its own.
-  'pdfjs-dist': '5.4.296'
+  'pdfjs-dist': '6.3.289'
   # One copy, for the same reason and to move with pdfjs-dist above:
   # `bpm-core-react`'s peer is `react-pdf: >=10.0.0`, so `autoInstallPeers`
-  # installed react-pdf 11 (which wants pdfjs 6) beside the app's 10.
-  'react-pdf': '^10.5.0'
+  # installs the newest major beside the app's own; that once put react-pdf 11
+  # (pdfjs 6) beside the app's 10.
+  'react-pdf': '^11.0.0'
   'piscina': '^4.9.3'
   'postcss': '^8.5.23'
   'postcss-selector-parser': '^7.1.3'
