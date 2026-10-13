@@ -327,6 +327,52 @@ describe('AttachmentService', () => {
       }),
     ).resolves.toEqual([]);
   });
+
+  it('lets the member who filed the instance for the applicant read its attachments', async (): Promise<void> => {
+    const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
+    const attachment = createAttachment({
+      instanceId,
+      uploaderMemberId: 'member-uploader',
+    });
+    const service = new AttachmentService(
+      createAttachmentRepository([attachment]),
+      createRepository<ApprovalInstanceEntity>({
+        findOne: (): Promise<ApprovalInstanceEntity> =>
+          Promise.resolve(
+            Object.assign(new ApprovalInstanceEntity(), {
+              id: instanceId,
+              initiatorMemberId: 'member-initiator',
+              submittedByMemberId: 'member-assistant',
+            }),
+          ),
+      }),
+      createRepository<TaskEntity>({
+        find: (): Promise<readonly TaskEntity[]> => Promise.resolve([]),
+      }),
+      createRepository<TaskCandidateEntity>({
+        find: (): Promise<readonly TaskCandidateEntity[]> =>
+          Promise.resolve([]),
+      }),
+      createRepository<TaskDecisionEntity>({
+        find: (): Promise<readonly TaskDecisionEntity[]> =>
+          Promise.resolve([]),
+      }),
+      createStorage(),
+    );
+
+    await expect(
+      service.listAttachments({
+        instanceId,
+        requestedByMemberId: 'member-assistant',
+      }),
+    ).resolves.toEqual([attachment]);
+    await expect(
+      service.listAttachments({
+        instanceId,
+        requestedByMemberId: 'member-unrelated',
+      }),
+    ).resolves.toEqual([]);
+  });
 });
 
 function createStorage(): AttachmentStorage & {

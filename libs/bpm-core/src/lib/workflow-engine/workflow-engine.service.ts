@@ -92,6 +92,7 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
@@ -2964,8 +2965,12 @@ export class WorkflowEngineService {
     const view = options.view ?? ApprovalInstanceListViewEnum.ALL;
 
     if (view === ApprovalInstanceListViewEnum.SENT) {
+      // The assistant who filed on someone's behalf finds it here too.
       queryBuilder.andWhere(
-        '"approvalInstance"."initiator_member_id" = :readableMemberId',
+        `(
+          "approvalInstance"."initiator_member_id" = :readableMemberId
+          OR "approvalInstance"."submitted_by_member_id" = :readableMemberId
+        )`,
         {
           readableMemberId: scope.memberId,
         },
@@ -3000,6 +3005,7 @@ export class WorkflowEngineService {
       `
         (
           "approvalInstance"."initiator_member_id" = :readableMemberId
+          OR "approvalInstance"."submitted_by_member_id" = :readableMemberId
           OR EXISTS (
             SELECT 1
             FROM "tasks" "readableTask"
@@ -3395,7 +3401,12 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     memberId: string,
   ): Promise<boolean> {
-    if (instance.initiatorMemberId === memberId) {
+    // The member who filed the document on the applicant's behalf can read it
+    // back; resubmit and cancel stay with the initiator.
+    if (
+      instance.initiatorMemberId === memberId ||
+      readDistinctSubmitterMemberId(instance) === memberId
+    ) {
       return true;
     }
 
@@ -6687,22 +6698,6 @@ function isOrderedSequentialTask(
 // exactly like an absent setting.
 function isInitiatorExcluded(node: UserTaskNode): boolean {
   return Boolean(node.data.excludeInitiator);
-}
-
-// The person who pressed submit when that is not the applicant, else `null`.
-// `submittedByMemberId` is NULL on rows written before the column existed and
-// means "the initiator submitted it themselves", so this is the only place
-// that interprets it.
-function readDistinctSubmitterMemberId(
-  instance: Pick<
-    ApprovalInstanceEntity,
-    'initiatorMemberId' | 'submittedByMemberId'
-  >,
-): string | null {
-  return instance.submittedByMemberId &&
-    instance.submittedByMemberId !== instance.initiatorMemberId
-    ? instance.submittedByMemberId
-    : null;
 }
 
 // Everyone a node that excludes the initiator keeps out of its approvers: the

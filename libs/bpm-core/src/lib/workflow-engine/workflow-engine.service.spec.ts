@@ -5258,6 +5258,91 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Approval instance instance-1 was not found');
   });
 
+  describe('reading an instance filed on the applicant behalf', () => {
+    function createFiledForFixture(): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        submittedByMemberId: 'member-assistant',
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    }
+
+    it('lets the member who submitted for the applicant read the instance', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-assistant'),
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('still hides it from an unrelated member', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-unrelated'),
+        ),
+      ).rejects.toThrow('Approval instance instance-1 was not found');
+    });
+
+    it('does not let the applicant lose access when they also submitted it', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        submittedByMemberId: 'member-001',
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.getApprovalInstance(
+          'instance-1',
+          createAuthContext('member-001'),
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('lists what an assistant filed in the SENT view and the ordinary readable view', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await fixture.service.listApprovalInstances(
+        createAuthContext('member-assistant'),
+        { view: ApprovalInstanceListViewEnum.SENT },
+      );
+      await fixture.service.listApprovalInstances(
+        createAuthContext('member-assistant'),
+        { view: ApprovalInstanceListViewEnum.ALL },
+      );
+
+      const filters = fixture.rootInstanceQueryBuilder.andWhere.mock.calls
+        .map(([sql]) => String(sql))
+        .filter((sql) => sql.includes('"initiator_member_id"'));
+
+      expect(filters).toHaveLength(2);
+      filters.forEach((sql) => {
+        expect(sql).toContain(
+          '"approvalInstance"."submitted_by_member_id" = :readableMemberId',
+        );
+      });
+    });
+
+    it('keeps resubmit and cancel with the applicant', async (): Promise<void> => {
+      const fixture = createFiledForFixture();
+
+      await expect(
+        fixture.service.cancelApprovalInstance({
+          cancelledByMemberId: 'member-assistant',
+          comment: null,
+          instanceId: 'instance-1',
+        }),
+      ).rejects.toThrow('can only be cancelled by its initiator');
+    });
+  });
+
   it('rejects ad-hoc countersign requests when the node disallows added signers', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
