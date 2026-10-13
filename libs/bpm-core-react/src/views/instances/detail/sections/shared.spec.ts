@@ -449,3 +449,58 @@ describe('sequential signing in the instance timeline', () => {
     ).toEqual([]);
   });
 });
+
+describe('instance start on behalf of the applicant', () => {
+  const profiles = new Map<string, MemberProfileRecord>([
+    ['applicant', { email: 'a@example.com', id: 'applicant', name: '陳申請' } as MemberProfileRecord],
+    ['assistant', { email: 'b@example.com', id: 'assistant', name: '王助理' } as MemberProfileRecord],
+  ]);
+
+  function startedSteps(
+    submittedByMemberId: string | null,
+  ): ReturnType<typeof readActivityStepRecords> {
+    return readActivityStepRecords(
+      [
+        {
+          ...createDecisionActivityLog(),
+          actorMemberId: 'applicant',
+          eventType: 'INSTANCE_STARTED',
+          id: 'started',
+          payloadJson: JSON.stringify({ submittedByMemberId }),
+        } as ActivityLogRecord,
+      ],
+      [],
+      [],
+      null,
+      'RUNNING' as never,
+      profiles,
+      new Map(),
+      new Map(),
+      null,
+    );
+  }
+
+  function textOf(
+    step: ReturnType<typeof readActivityStepRecords>[number],
+  ): string {
+    return step.descriptionParts
+      .map((part) => ('text' in part ? part.text : ''))
+      .join(' | ');
+  }
+
+  it('shows who filed it when that is not the applicant', () => {
+    const [started] = startedSteps('assistant');
+
+    expect(started.title).toBe('案件已發起');
+    expect(textOf(started)).toContain('由 王助理 代 陳申請 送出');
+  });
+
+  it.each([
+    ['the applicant submitted it themselves', 'applicant'],
+    ['no submitter was recorded', null],
+  ])('adds nothing when %s', (_label, submittedByMemberId) => {
+    const [started] = startedSteps(submittedByMemberId);
+
+    expect(textOf(started)).not.toContain('代');
+  });
+});
