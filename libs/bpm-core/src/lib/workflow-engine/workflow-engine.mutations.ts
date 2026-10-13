@@ -40,6 +40,9 @@ export class WorkflowEngineMutations {
         ...input,
         initiatorMemberId: currentMemberId,
         initiatorMetadataSnapshotJson: null,
+        // Never read from the input: the person pressing submit is whoever is
+        // signed in, so a client cannot claim someone else filed the document.
+        submittedByMemberId: currentMemberId,
       },
       authContext,
     );

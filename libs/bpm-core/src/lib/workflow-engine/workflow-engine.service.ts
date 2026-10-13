@@ -129,6 +129,12 @@ import {
  */
 type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
   readonly initiatorMemberId: string;
+  /**
+   * Service layer only: the GraphQL mutation always fills it with the
+   * authenticated member and the input type does not expose it. Absent means
+   * the initiator submitted the document themselves.
+   */
+  readonly submittedByMemberId?: string | null;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
@@ -323,7 +329,20 @@ export class WorkflowEngineService {
     input: SubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
+    if (
+      input.submittedByMemberId !== undefined &&
+      input.submittedByMemberId !== null &&
+      (typeof input.submittedByMemberId !== 'string' ||
+        input.submittedByMemberId.trim() === '')
+    ) {
+      throw new BadRequestException(
+        'submittedByMemberId must be a non-empty string',
+      );
+    }
+
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const submittedByMemberId =
+      input.submittedByMemberId ?? input.initiatorMemberId;
     const template = await this.getTemplateOrThrow(input.templateId);
 
     if (!template.isActive) {
@@ -404,6 +423,7 @@ export class WorkflowEngineService {
             initiatorMetadataSnapshot,
             startedAt,
             state: ApprovalInstanceStateEnum.RUNNING,
+            submittedByMemberId,
             templateId: template.id,
             templateVersionId: templateVersion.id,
             title: input.title?.trim() || template.name,
@@ -434,6 +454,7 @@ export class WorkflowEngineService {
             instanceId: instance.id,
             nodeId: startNode.id,
             payload: {
+              submittedByMemberId,
               templateId: template.id,
               templateVersionId: templateVersion.id,
             },
@@ -706,6 +727,18 @@ export class WorkflowEngineService {
         ) {
           throw new ConflictException(
             `簽核節點「${taskNode.data.label}」不允許申請人自簽，不能將任務轉交給申請人本人`,
+          );
+        }
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          isInitiatorExcluded(taskNode) &&
+          transferToMemberId !== null &&
+          transferToMemberId === readDistinctSubmitterMemberId(instance)
+        ) {
+          throw new ForbiddenException(
+            `簽核節點「${taskNode.data.label}」不允許代送人簽核，不能將任務轉交給代為送出此單的人`,
           );
         }
 
@@ -1707,6 +1740,7 @@ export class WorkflowEngineService {
       instance,
       buildAdhocApproverResolver(targetValue),
       `${label}「${node.data.label}」`,
+      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
@@ -1716,7 +1750,7 @@ export class WorkflowEngineService {
     const candidates = selectNodeCandidates(
       delegatedCandidates,
       isInitiatorExcluded(node),
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
 
     if (candidates.length > 0) {
@@ -1725,7 +1759,9 @@ export class WorkflowEngineService {
 
     throw new ConflictException(
       delegatedCandidates.length > 0
-        ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
+        ? readDistinctSubmitterMemberId(instance) === null
+          ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
+          : `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人或代為送出此單的人，此節點不允許申請人或代送人簽核。`
         : `${label}「${node.data.label}」 did not resolve to any member id`,
     );
   }
@@ -4294,8 +4330,8 @@ export class WorkflowEngineService {
    * are kept: (task_id, member_id) is unique, and that member signs from the
    * row they already have. On a node that excludes the initiator the stored
    * values are kept as well when the new delegation path would run through the
-   * initiator: creation already filtered such paths out, and a delegation added
-   * while the candidate waited must not bring them back.
+   * initiator or the submitter: creation already filtered such paths out, and a
+   * delegation added while the candidate waited must not bring them back.
    */
   private async resolveActivationDelegation({
     candidate,
@@ -4330,13 +4366,13 @@ export class WorkflowEngineService {
     if (
       collides ||
       (excludesInitiator &&
-        isInitiatorOnCandidatePath(
+        isExcludedMemberOnCandidatePath(
           {
             delegationChain: resolution.delegationChain,
             memberId: resolution.finalAssigneeMemberId,
             originalMemberId: candidate.originalMemberId,
           },
-          instance.initiatorMemberId,
+          readInitiatorAndSubmitter(instance),
         ))
     ) {
       return stored;
@@ -4664,6 +4700,7 @@ export class WorkflowEngineService {
       instance,
       node.data.approverResolver,
       label,
+      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       instance,
@@ -4671,10 +4708,11 @@ export class WorkflowEngineService {
       resolvedCandidates,
     );
     const excludeInitiator = node.data.excludeInitiator;
+    const hasSubmitter = readDistinctSubmitterMemberId(instance) !== null;
     const uniqueCandidates = selectNodeCandidates(
       delegatedCandidates,
       isInitiatorExcluded(node),
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
 
     if (uniqueCandidates.length > 0) {
@@ -4703,12 +4741,16 @@ export class WorkflowEngineService {
       }
 
       throw new ConflictException(
-        `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
+        hasSubmitter
+          ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人，此節點不允許申請人或代送人簽核，且找不到申請人的主管可改派。`
+          : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
       );
     }
 
     throw new ConflictException(
-      `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+      hasSubmitter
+        ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。`
+        : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
     );
   }
 
@@ -4739,7 +4781,7 @@ export class WorkflowEngineService {
     return selectNodeCandidates(
       delegatedCandidates,
       true,
-      instance.initiatorMemberId,
+      readInitiatorAndSubmitter(instance),
     );
   }
 
@@ -4795,6 +4837,7 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     resolver: ApproverResolver,
     label: string,
+    skippedChainMemberIds: readonly string[] = [],
   ): Promise<readonly ResolvedApproverCandidate[]> {
     if (resolver.type === 'DIRECT') {
       return readMemberIdsFromValue(resolver.memberIds, label).map(
@@ -4873,6 +4916,7 @@ export class WorkflowEngineService {
         resolver.minPositionLevel,
         resolver.fallback,
         label,
+        skippedChainMemberIds,
       ).then((memberIds) =>
         memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
@@ -4958,7 +5002,8 @@ export class WorkflowEngineService {
   /**
    * Walks up the initiator's manager chain, nearest manager first, until a
    * manager whose position level reaches `minPositionLevel` is added. The
-   * list is returned nearest manager first.
+   * list is returned nearest manager first. Members in `skippedMemberIds` are
+   * walked past without joining the chain or counting as the stopping point.
    */
   private async resolveOrgManagerChainCandidates(
     manager: EntityManager,
@@ -4966,6 +5011,7 @@ export class WorkflowEngineService {
     minPositionLevel: number,
     fallback: ApproverResolverFallback | undefined,
     label: string,
+    skippedMemberIds: readonly string[],
   ): Promise<readonly string[]> {
     const date = toDateOnlyString(new Date());
     const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
@@ -5006,6 +5052,13 @@ export class WorkflowEngineService {
 
       visitedMemberIds.add(managerMemberId);
       currentMemberId = managerMemberId;
+
+      // A member the node keeps out (the person who filed the document) is
+      // climbed through, not stopped at: filtering him after the walk would
+      // lose the chain when he is the manager that reaches the level.
+      if (skippedMemberIds.includes(managerMemberId)) {
+        continue;
+      }
 
       const level = await this.readMemberPositionLevel(
         manager,
@@ -6636,23 +6689,57 @@ function isInitiatorExcluded(node: UserTaskNode): boolean {
   return Boolean(node.data.excludeInitiator);
 }
 
+// The person who pressed submit when that is not the applicant, else `null`.
+// `submittedByMemberId` is NULL on rows written before the column existed and
+// means "the initiator submitted it themselves", so this is the only place
+// that interprets it.
+function readDistinctSubmitterMemberId(
+  instance: Pick<
+    ApprovalInstanceEntity,
+    'initiatorMemberId' | 'submittedByMemberId'
+  >,
+): string | null {
+  return instance.submittedByMemberId &&
+    instance.submittedByMemberId !== instance.initiatorMemberId
+    ? instance.submittedByMemberId
+    : null;
+}
+
+// Everyone a node that excludes the initiator keeps out of its approvers: the
+// applicant and, when someone filed the document for them, that person too
+// (authority rule: the creator must not approve what they created).
+function readInitiatorAndSubmitter(
+  instance: Pick<
+    ApprovalInstanceEntity,
+    'initiatorMemberId' | 'submittedByMemberId'
+  >,
+): readonly string[] {
+  const submitterMemberId = readDistinctSubmitterMemberId(instance);
+
+  return submitterMemberId === null
+    ? [instance.initiatorMemberId]
+    : [instance.initiatorMemberId, submitterMemberId];
+}
+
 // A delegate acting for the initiator is still the initiator approving their
 // own document, so the initiator anywhere on the delegation path (the
 // pre-delegation member, any hop, or the final assignee) drops the candidate.
-function isInitiatorOnCandidatePath(
+// The submitter is held to exactly the same rule.
+function isExcludedMemberOnCandidatePath(
   candidate: Pick<
     RuntimeTaskCandidate,
     'delegationChain' | 'memberId' | 'originalMemberId'
   >,
-  initiatorMemberId: string,
+  excludedMemberIds: readonly string[],
 ): boolean {
-  return (
-    candidate.memberId === initiatorMemberId ||
-    candidate.originalMemberId === initiatorMemberId ||
-    candidate.delegationChain.some(
-      (step) =>
-        step.from === initiatorMemberId || step.to === initiatorMemberId,
-    )
+  return excludedMemberIds.some(
+    (excludedMemberId) =>
+      candidate.memberId === excludedMemberId ||
+      candidate.originalMemberId === excludedMemberId ||
+      candidate.delegationChain.some(
+        (step) =>
+          step.from === excludedMemberId || step.to === excludedMemberId,
+      ),
   );
 }
 
@@ -6662,13 +6749,13 @@ function isInitiatorOnCandidatePath(
 function selectNodeCandidates(
   delegatedCandidates: readonly RuntimeTaskCandidate[],
   excludeInitiator: boolean,
-  initiatorMemberId: string,
+  excludedMemberIds: readonly string[],
 ): readonly RuntimeTaskCandidate[] {
   return uniqueRuntimeCandidates(
     excludeInitiator
       ? delegatedCandidates.filter(
           (candidate) =>
-            !isInitiatorOnCandidatePath(candidate, initiatorMemberId),
+            !isExcludedMemberOnCandidatePath(candidate, excludedMemberIds),
         )
       : delegatedCandidates,
   );
