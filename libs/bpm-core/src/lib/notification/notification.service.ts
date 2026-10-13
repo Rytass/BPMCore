@@ -25,6 +25,7 @@ import {
   BPMBusinessCalendar,
 } from '../calendar/business-calendar.token';
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
+import { withDispatchTimeout } from '../common/outbox';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { IdentityService } from '../identity/identity.service';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
@@ -83,6 +84,10 @@ interface CreateNotificationInput {
   readonly type: NotificationTypeEnum;
   readonly customTemplate?: string | null;
 }
+
+// How long the applicant's "filed by" wording may wait for the host's member
+// lookup before the member id is shown instead.
+const MEMBER_NAME_LOOKUP_TIMEOUT_MS = 2000;
 
 interface SlaScanResult {
   readonly overdueCount: number;
@@ -995,14 +1000,19 @@ export class NotificationService {
   /**
    * The name a member goes by in notification text, resolved through the host
    * identity source like the email recipient is. Falls back to the id when
-   * the identity source cannot be reached — wording a notification must never
-   * be the reason an approval fails.
+   * the identity source fails or does not answer within
+   * {@link MEMBER_NAME_LOOKUP_TIMEOUT_MS} — this runs inside the approval
+   * transaction, and wording a notification must never be the reason an
+   * approval fails or stays open.
    */
   private async readMemberDisplayName(memberId: string): Promise<string> {
     try {
-      const member = await this.moduleRef
-        .get(IdentityService, { strict: false })
-        .resolveMember(memberId);
+      const member = await withDispatchTimeout(
+        this.moduleRef
+          .get(IdentityService, { strict: false })
+          .resolveMember(memberId),
+        MEMBER_NAME_LOOKUP_TIMEOUT_MS,
+      );
 
       return member.name.trim() || memberId;
     } catch {

@@ -34,8 +34,10 @@ describe('renderNotificationTemplate', () => {
   it('appends who filed the document to the completion notice only when told', (): void => {
     const render = (
       payload: Readonly<Record<string, unknown>>,
+      engine: 'handlebars' | 'simple' = 'simple',
     ): string =>
       renderNotificationTemplate({
+        engine,
         payload: { instanceTitle: '採購申請', ...payload },
         type: NotificationTypeEnum.INSTANCE_COMPLETED,
       }).body;
@@ -44,5 +46,9 @@ describe('renderNotificationTemplate', () => {
     expect(render({ submittedByNote: '（由 王助理 代為送出）' })).toBe(
       '案件 採購申請 已完成。（由 王助理 代為送出）',
     );
+    expect(render({}, 'handlebars')).toBe('案件 採購申請 已完成。');
+    expect(
+      render({ submittedByNote: '（由 王助理 代為送出）' }, 'handlebars'),
+    ).toBe('案件 採購申請 已完成。（由 王助理 代為送出）');
   });
 });

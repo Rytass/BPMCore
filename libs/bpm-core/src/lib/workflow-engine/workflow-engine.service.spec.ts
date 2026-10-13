@@ -5318,15 +5318,17 @@ describe('WorkflowEngineService', () => {
         { view: ApprovalInstanceListViewEnum.ALL },
       );
 
-      const filters = fixture.rootInstanceQueryBuilder.andWhere.mock.calls
-        .map(([sql]) => String(sql))
-        .filter((sql) => sql.includes('"initiator_member_id"'));
+      const filters = fixture.rootInstanceQueryBuilder.andWhere.mock.calls.filter(
+        ([sql]) => String(sql).includes('"initiator_member_id"'),
+      );
 
       expect(filters).toHaveLength(2);
-      filters.forEach((sql) => {
-        expect(sql).toContain(
+      filters.forEach(([sql, params]) => {
+        expect(String(sql)).toContain(
           '"approvalInstance"."submitted_by_member_id" = :readableMemberId',
         );
+        // The placeholder is bound to the signed-in member, not to a literal.
+        expect(params).toEqual({ readableMemberId: 'member-assistant' });
       });
     });
 

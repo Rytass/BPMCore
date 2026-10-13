@@ -641,6 +641,29 @@ describe('NotificationService', () => {
       );
     });
 
+    it('shows the member id when the identity source never answers', async (): Promise<void> => {
+      jest.useFakeTimers();
+
+      try {
+        const harness = createCompletionHarness(
+          (): Promise<{ readonly name: string }> =>
+            new Promise<{ readonly name: string }>(() => undefined),
+        );
+        const pending = harness.complete({
+          submittedByMemberId: 'member-assistant',
+        });
+
+        await jest.advanceTimersByTimeAsync(2000);
+        await pending;
+
+        expect(harness.saved[0]?.body).toMatch(
+          /已完成。（由 member-assistant 代為送出）$/u,
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it.each([
       ['no submitter recorded', null],
       ['the applicant submitting themselves', 'member-applicant'],
