@@ -1326,6 +1326,61 @@ describe('WorkflowEngineService', () => {
       fetchSpy.mockRestore();
     });
 
+    it('lets a parallel split proceed to its AND join when one branch is a skipped NOTIFY', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: skippedFormData,
+        processWorkflowSnapshot: createSplitWithSkippedNotifyWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      const taskA = readTaskByNodeId(fixture.savedTasks, 'task_a');
+      const taskB = readTaskByNodeId(fixture.savedTasks, 'task_b');
+
+      expect(
+        fixture.savedWorkflowTokens.find(
+          (token) => token.currentNodeId === 'notify_finance',
+        ),
+      ).toMatchObject({ status: WorkflowTokenStatusEnum.CONSUMED });
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskA.assigneeMemberId ?? '',
+        taskId: taskA.id,
+      });
+
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: taskB.assigneeMemberId ?? '',
+        taskId: taskB.id,
+      });
+
+      expect(
+        fixture.savedTasks.some((task) => task.nodeId === 'task_final'),
+      ).toBe(true);
+      expect(
+        fixture.savedWorkflowTokens.filter(
+          (token) =>
+            token.status === WorkflowTokenStatusEnum.ACTIVE ||
+            token.status === WorkflowTokenStatusEnum.WAITING,
+        ),
+      ).toEqual([
+        expect.objectContaining({ currentNodeId: 'task_final' }),
+      ]);
+    });
+
     it('records a skipped step and ends the dry run branch at a NOTIFY node whose entry condition fails', (): void => {
       const fixture = createServiceFixture({
         currentVersionId: 'template-version-1',
@@ -9196,6 +9251,68 @@ function createEntryConditionNotifyWorkflow({
             endNode,
           ]
         : []),
+    ],
+  };
+}
+
+// start -> parallel split -> { skipped NOTIFY (terminal), task_a, task_b },
+// with task_a and task_b joining at task_final. The NOTIFY has no outgoing
+// edge, so it can never feed the join.
+function createSplitWithSkippedNotifyWorkflow(): WorkflowDefinition {
+  const notify = createEntryConditionNotifyWorkflow().nodes.find(
+    (node) => node.id === 'notify_finance',
+  );
+
+  if (!notify) {
+    throw new Error('notify_finance fixture node was not found');
+  }
+
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  return {
+    edges: [
+      edge('edge_start_split', 'start', 'split'),
+      edge('edge_split_notify', 'split', 'notify_finance'),
+      edge('edge_split_a', 'split', 'task_a'),
+      edge('edge_split_b', 'split', 'task_b'),
+      edge('edge_a_final', 'task_a', 'task_final'),
+      edge('edge_b_final', 'task_b', 'task_final'),
+      edge('edge_final_end', 'task_final', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { direction: 'split', label: '分流' },
+        id: 'split',
+        position: { x: 160, y: 160 },
+        type: 'parallelGateway',
+      },
+      notify,
+      createUserTaskNode('task_a', 'A 簽核', 'member-a', 300, 80),
+      createUserTaskNode('task_b', 'B 簽核', 'member-b', 300, 240),
+      createUserTaskNode('task_final', '彙整簽核', 'member-final', 520, 160),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 740, y: 160 },
+        type: 'endEvent',
+      },
     ],
   };
 }
