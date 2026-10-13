@@ -27,8 +27,8 @@ overrides:
   # those peers to whatever is newest — which quietly installed Nest 12
   # alongside the workspace's own 11 the first time 12 shipped. Two copies give
   # @nestjs/typeorm two unrelated TypeOrmModuleOptions types, exactly the
-  # breakage the typeorm override exists to prevent. Raise this block as one
-  # set when the workspace moves to Nest 12.
+  # breakage the typeorm override exists to prevent. The workspace is on Nest
+  # 12 now; raise this block as one set again when Nest 13 ships.
   # Exact, mirroring the app's own pins, for the same reason as pdfjs-dist:
   # `bpm-core-react`'s peer is `>=1.0.0`, so `autoInstallPeers` installed
   # 1.5.1 / 1.2.1 beside the pinned 1.1.0 / 1.0.4. Two copies of a component
@@ -37,13 +37,13 @@ overrides:
   # visual-QA change; move these pins with the app's, deliberately.
   '@mezzanine-ui/core': '1.2.1'
   '@mezzanine-ui/react': '1.5.1'
-  '@nestjs/apollo': '^13.4.5'
-  '@nestjs/common': '^11.2.3'
-  '@nestjs/core': '^11.2.3'
-  '@nestjs/graphql': '^13.4.5'
-  '@nestjs/platform-express': '^11.2.3'
-  '@nestjs/testing': '^11.2.3'
-  '@nestjs/typeorm': '^11.0.3'
+  '@nestjs/apollo': '^14.0.3'
+  '@nestjs/common': '^12.1.3'
+  '@nestjs/core': '^12.1.3'
+  '@nestjs/graphql': '^14.0.3'
+  '@nestjs/platform-express': '^12.1.3'
+  '@nestjs/testing': '^12.1.3'
+  '@nestjs/typeorm': '^12.0.2'
   # One copy: `bpm-core`'s peer is `>=0.4.5` and `autoInstallPeers` installed
   # 0.6.0 beside the app's 0.4.5. It is a NestJS module, so two copies mean two
   # VaultService classes — apps/api injects one into TypeOrmModule.forRootAsync
