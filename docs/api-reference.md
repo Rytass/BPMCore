@@ -744,27 +744,6 @@ Auth contract layer — lib does not own auth; host plugs in.
 > On every other field (`code`, `name`, `type`, `description`, …) the service
 > reads `input.x ?? existing.x`, so `null` and omission are equivalent — those
 > are optional only so a caller can leave out what it is not changing.
-
-`effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
-manager rule in force?" needs a notion of *today*, and that depends on the
-zone. BPM reads today in the `organizationTimeZone` root option (an IANA name,
-default `Asia/Taipei`, BPM's business time zone) everywhere it compares against
-those two columns: the workflow engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`,
-`POSITION`, org-unit member and org-unit position resolvers, the
-initiator-manager replacement, the default initiator snapshot, dry run,
-`OrganizationService.resolveManagerMemberId` (SLA escalation and notification
-use it) and the `activeOnly` membership and manager resolution listings. A host
-whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'`. An
-unknown zone makes BPM fail at startup. Stored effective dates and the
-`startAt` / `endAt` / `createdAt` timestamps are untouched. This is separate
-from `notificationSlaBusinessCalendarTimeZone` (SLA business days); a host may
-set both to the same value.
-
-Before this option the workflow engine read the UTC date (so between 00:00 and
-08:00 in UTC+8 a rule effective from today did not apply yet) while
-`OrganizationService` already read `Asia/Taipei`. Both now follow the option;
-the `OrganizationService` reading is unchanged for a host that sets nothing, and
-the engine's moves from UTC to `Asia/Taipei`.
 >
 > `UpdateOrgUnitInput.metadataJson` and `UpdatePositionInput.metadataJson` are
 > a known wart rather than a contract: the service tests them for truthiness
@@ -787,6 +766,34 @@ the engine's moves from UTC to `Asia/Taipei`.
 > `OrganizationModule`-only host is unaffected. Exposed as the `deletePosition`
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
+
+`effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
+manager rule in force?" needs a notion of *today*, and that depends on the
+zone. BPM reads today in the `organizationTimeZone` root option (an IANA name,
+default `Asia/Taipei`, BPM's business time zone) everywhere it compares against
+those two columns: the workflow engine's `ORG_MANAGER`, `ORG_MANAGER_CHAIN`,
+`POSITION`, org-unit member and org-unit position resolvers, the
+initiator-manager replacement, the default initiator snapshot, the engine's dry run,
+`OrganizationService.resolveManagerMemberId` (SLA escalation and notification
+use it) and the `activeOnly` membership and manager resolution listings. A host
+whose organization dates are kept in UTC sets `organizationTimeZone: 'UTC'`. An
+unknown zone makes BPM fail at startup. Stored effective dates and the
+`startAt` / `endAt` / `createdAt` timestamps are untouched. This is separate
+from `notificationSlaBusinessCalendarTimeZone` (SLA business days); a host may
+set both to the same value.
+
+Before this option the workflow engine read the UTC date (so between 00:00 and
+08:00 in UTC+8 a rule effective from today did not apply yet) while
+`OrganizationService` already read `Asia/Taipei`. Both now follow the option;
+the `OrganizationService` reading is unchanged for a host that sets nothing, and
+the engine's moves from UTC to `Asia/Taipei`.
+
+Known limitation: the template designer's browser-side dry-run snapshot
+(`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
+initiator from the browser's UTC date, because the client has no access to the
+host's `organizationTimeZone`. Between local midnight and the UTC offset that
+preview can disagree with the engine's dry run and with real runs for a
+membership effective from today.
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
