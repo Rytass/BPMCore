@@ -51,7 +51,6 @@ type MemberRow = Readonly<
 
 const MEMBER_PAGE_SIZE_OPTIONS = [10, 20, 50];
 
-
 export function AdminUsersView(): ReactElement {
   const [detailMember, setDetailMember] = useState<MemberProfileRecord | null>(
     null,
@@ -184,85 +183,85 @@ export function AdminUsersView(): ReactElement {
 
   return (
     <>
-        <PageHeader>
-          <ContentHeader
-            description="會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。"
-            title="會員對照"
-          />
-        </PageHeader>
-
-        <SectionGroup>
-          <Section
-            filterArea={
-              <FilterArea className={styles.memberFilterArea}>
-                <FilterLine>
-                  <Filter span={3}>
-                    <FormField
-                      fullWidth
-                      layout={FormFieldLayout.VERTICAL}
-                      name="memberSearchText"
-                    >
-                      <Input
-                        fullWidth
-                        onChange={(
-                          event: ChangeEvent<HTMLInputElement>,
-                        ): void => {
-                          setSearchText(event.target.value);
-                          setMemberPage(1);
-                        }}
-                        placeholder="搜尋姓名或信箱"
-                        size="sub"
-                        value={searchText}
-                        variant="base"
-                      />
-                    </FormField>
-                  </Filter>
-                </FilterLine>
-              </FilterArea>
-            }
-          >
-            {error ? (
-              <Typography color="text-error" variant="body">
-                {error}
-              </Typography>
-            ) : null}
-            <Table
-              actions={tableActions}
-              columns={columns}
-              dataSource={rows}
-              fullWidth
-              loading={loading}
-              pagination={{
-                current: memberPage,
-                onChange: (page): void => {
-                  setMemberPage(page);
-                },
-                onChangePageSize: (pageSize): void => {
-                  setMemberPage(1);
-                  setMemberPageSize(pageSize);
-                },
-                pageSize: memberPageSize,
-                pageSizeLabel: '每頁筆數',
-                pageSizeOptions: MEMBER_PAGE_SIZE_OPTIONS,
-                renderResultSummary: (from, to, total): string =>
-                  `顯示 ${from}-${to} 筆，共 ${total} 筆`,
-                showPageSizeOptions: true,
-                total: memberTotalCount,
-              }}
-            />
-          </Section>
-        </SectionGroup>
-
-        <MemberDetailModal
-          managerProfile={detailManagerProfile}
-          member={detailMember}
-          memberships={detailMemberships}
-          onClose={closeDetail}
-          orgUnitsById={orgUnitsById}
-          positionsById={positionsById}
-          resolvedManager={detailResolvedManager}
+      <PageHeader>
+        <ContentHeader
+          description="會員資料由 host member resolver 提供，BPM 僅維護組織歸屬與主管解析。"
+          title="會員對照"
         />
-      </>
+      </PageHeader>
+
+      <SectionGroup>
+        <Section
+          filterArea={
+            <FilterArea className={styles.memberFilterArea}>
+              <FilterLine>
+                <Filter span={3}>
+                  <FormField
+                    fullWidth
+                    layout={FormFieldLayout.VERTICAL}
+                    name="memberSearchText"
+                  >
+                    <Input
+                      fullWidth
+                      onChange={(
+                        event: ChangeEvent<HTMLInputElement>,
+                      ): void => {
+                        setSearchText(event.target.value);
+                        setMemberPage(1);
+                      }}
+                      placeholder="搜尋姓名或信箱"
+                      size="sub"
+                      value={searchText}
+                      variant="base"
+                    />
+                  </FormField>
+                </Filter>
+              </FilterLine>
+            </FilterArea>
+          }
+        >
+          {error ? (
+            <Typography color="text-error" variant="body">
+              {error}
+            </Typography>
+          ) : null}
+          <Table
+            actions={tableActions}
+            columns={columns}
+            dataSource={rows}
+            fullWidth
+            loading={loading}
+            pagination={{
+              current: memberPage,
+              onChange: (page): void => {
+                setMemberPage(page);
+              },
+              onChangePageSize: (pageSize): void => {
+                setMemberPage(1);
+                setMemberPageSize(pageSize);
+              },
+              pageSize: memberPageSize,
+              pageSizeLabel: '每頁筆數',
+              pageSizeOptions: MEMBER_PAGE_SIZE_OPTIONS,
+              renderResultSummary: (from, to, total): string =>
+                `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+              showPageSizeOptions: true,
+              total: memberTotalCount,
+            }}
+          />
+        </Section>
+      </SectionGroup>
+
+      <MemberDetailModal
+        managerProfile={detailManagerProfile}
+        member={detailMember}
+        memberships={detailMemberships}
+        onClose={closeDetail}
+        orgUnitsById={orgUnitsById}
+        positionsById={positionsById}
+        resolvedManager={detailResolvedManager}
+      />
+    </>
   );
 }
 

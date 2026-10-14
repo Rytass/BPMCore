@@ -7,7 +7,12 @@ import {
   RefCallback,
   forwardRef,
 } from 'react';
-import { Stepper, Tooltip, Typography, type StepProps } from '@mezzanine-ui/react';
+import {
+  Stepper,
+  Tooltip,
+  Typography,
+  type StepProps,
+} from '@mezzanine-ui/react';
 import { stepClasses } from '@mezzanine-ui/core/stepper';
 import {
   ActivityLogRecord,
