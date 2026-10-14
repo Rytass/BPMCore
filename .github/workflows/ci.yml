@@ -70,8 +70,15 @@ jobs:
       # the `--` makes nx forward the flag to each executor instead of
       # consuming it, and the inferred test targets (shared, api, client) fail
       # on the unknown argument.
+      #
+      # Nest 12 is ESM, and jest loads it only under --experimental-vm-modules.
+      # The root .env.test sets that, but nx never overrides a variable the
+      # environment already has, and this self-hosted runner arrives with its
+      # own NODE_OPTIONS, so the flag is appended here instead.
       - name: Test
-        run: pnpm exec nx run-many -t test --parallel=1 --maxWorkers=2
+        run: |
+          NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--experimental-vm-modules" \
+            pnpm exec nx run-many -t test --parallel=1 --maxWorkers=2
 
       - name: Build
         run: pnpm build
