@@ -79,6 +79,7 @@ import {
   OrgUnitTreeDraftEditorState,
 } from '../../../components/org-unit-tree-draft-editor';
 import type { OrgUnitHierarchyDraftChange } from '../../../lib/org-tree-draft';
+import { formatMemberLabel } from '../../../lib/format-member-label';
 import styles from './orgs.module.scss';
 
 type AdminOrgTab = 'MANAGERS' | 'MEMBERSHIPS' | 'ORG_UNITS' | 'POSITIONS';
@@ -2328,7 +2329,9 @@ function readScopeLabel(
 }
 
 function readMemberLabel(member: MemberProfileRecord | undefined): string {
-  return member ? `${member.name} · ${member.email}` : '未知會員';
+  return member
+    ? formatMemberLabel(member.name, member.email, 'dot')
+    : '未知會員';
 }
 
 function readOrgUnitLabel(orgUnit: OrgUnitRecord | undefined): string {

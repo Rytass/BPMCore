@@ -623,7 +623,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `listLaunchableTemplates()` | Templates the current member may launch |
 | `listInboxTasks(memberId)` | My pending tasks |
 | `listApprovalHistoryTasks(memberId)` | My historical decisions |
-| `readWorkflowDashboardSummary({ currentMemberId, from, to })` | Five dashboard metrics |
+| `readWorkflowDashboardSummary({ currentMemberId, from, to })` | Dashboard metrics. The four instance counts (`activeInstanceCount`, `completedInstanceCount`, `rejectedInstanceCount`, `totalInstanceCount`) cover the instances the member can read within the range; `pendingTaskCount` / `overdueTaskCount` count only the member's own to-dos — the same set as `listInboxTasks`, so sequential `WAITING` candidates and a settled countersign vote are not counted — narrowed to those instances |
 | `listTaskDecisions(taskId)` | All decisions on one task |
 | `listAttachments(instanceId)` | Attachment list |
 | `readAttachmentDownloadUrl / PreviewUrl({ ... })` | Signed download/preview URLs |

@@ -12,6 +12,7 @@ import {
   readActivityEventLabel,
   readActivityStepRecords,
   readAdhocTargetDraft,
+  readMemberDisplayText,
   readSequentialActivityPayloadMemberIds,
 } from './shared';
 
@@ -502,5 +503,36 @@ describe('instance start on behalf of the applicant', () => {
     const [started] = startedSteps(submittedByMemberId);
 
     expect(textOf(started)).not.toContain('代');
+  });
+});
+
+describe('readMemberDisplayText', (): void => {
+  const profile = (email: string): MemberProfileRecord =>
+    ({
+      customFieldsJson: '{}',
+      email,
+      memberId: 'member-1',
+      name: '王小明',
+    }) as MemberProfileRecord;
+
+  it('shows the name with the e-mail in fullwidth parentheses', (): void => {
+    expect(
+      readMemberDisplayText(
+        'member-1',
+        new Map([['member-1', profile('ming@example.com')]]),
+      ),
+    ).toBe('王小明（ming@example.com）');
+  });
+
+  it('drops the empty parentheses when the member has no e-mail', (): void => {
+    expect(
+      readMemberDisplayText('member-1', new Map([['member-1', profile('')]])),
+    ).toBe('王小明');
+    expect(
+      readMemberDisplayText(
+        'member-1',
+        new Map([['member-1', profile('  ')]]),
+      ),
+    ).toBe('王小明');
   });
 });

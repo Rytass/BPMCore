@@ -36,6 +36,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { BPMFormField } from '../../components/bpm-form-field';
 import { formatDateTime } from '../../lib/format-date-time';
+import { formatMemberLabel } from '../../lib/format-member-label';
 import { useAuth } from '../../lib/auth-provider';
 import {
   DelegationRuleRecord,
@@ -698,7 +699,7 @@ function readMemberOption(member: MemberProfileRecord): MemberOption {
     displayName: member.name,
     email: member.email,
     id: member.memberId,
-    name: `${member.name} (${member.email})`,
+    name: formatMemberLabel(member.name, member.email),
   };
 }
 
