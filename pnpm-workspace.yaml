@@ -118,7 +118,7 @@ overrides:
   # Forced to a single copy. Two typeorm versions give @nestjs/typeorm two
   # structurally identical but unrelated TypeOrmModuleOptions types, and the
   # host app's forRootAsync factory then fails to typecheck.
-  'typeorm': '^0.3.31'
+  'typeorm': '^1.1.2'
   'undici': '^7.28.0'
   'uuid@11': '^11.1.1'
   # Not yet effective, and kept so it becomes effective on its own: vitest is
