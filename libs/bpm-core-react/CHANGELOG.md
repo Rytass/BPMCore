@@ -1,3 +1,19 @@
+## 0.16.2 (2026-10-14)
+
+### 🚀 Features
+
+- **react:** support react-pdf 11 and pdfjs-dist 6 in the PDF preview ([ab7f3ca](https://github.com/Rytass/BPMCore/commit/ab7f3ca))
+
+### 🩹 Fixes
+
+- **views:** treat a blank member e-mail as missing ([d8504ed](https://github.com/Rytass/BPMCore/commit/d8504ed))
+- **views:** drop empty parentheses when a member has no e-mail ([2b02a60](https://github.com/Rytass/BPMCore/commit/2b02a60))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.16.0 (2026-10-13)
 
 ### 🚀 Features
