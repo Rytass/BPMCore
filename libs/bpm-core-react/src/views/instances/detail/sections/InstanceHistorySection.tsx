@@ -198,7 +198,7 @@ function renderActivityDescriptionPart(
     return part.text;
   }
 
-  if (!part.email) {
+  if (!part.email?.trim()) {
     return `${part.prefix}：${part.label}`;
   }
 

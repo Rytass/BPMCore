@@ -300,7 +300,9 @@ function MemberDetailModal({
         <div className={styles.detailFields}>
           <BaseCard title="基本資料">
             <div className={styles.detailSection}>
-              <Typography variant="body">信箱：{member.email}</Typography>
+              <Typography variant="body">
+                信箱：{member.email?.trim() ? member.email : '未設定'}
+              </Typography>
             </div>
           </BaseCard>
           <BaseCard title="BPM 組織歸屬">
