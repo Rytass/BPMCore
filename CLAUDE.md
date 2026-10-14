@@ -280,6 +280,13 @@ pnpm build
 pnpm e2e:client
 ```
 
+Nest 12 ships as ESM. Jest loads it through `require()` only under
+`--experimental-vm-modules`, which the committed root `.env.test` sets for every
+`test` target (nx loads it). Without it every backend suite fails with "Must use
+import to load ES Module". Keep secrets out of that file. nx never overrides
+a variable already in the environment, so a shell or runner that sets its own
+`NODE_OPTIONS` masks it; append the flag there instead, as `ci.yml` does.
+
 `docker compose` is not required for normal development. Use Vault-backed develop secrets and `bpm_core/develop` unless the user explicitly asks otherwise.
 
 Beyond the database, every runtime secret is optional. `API_SESSION_SECRET`

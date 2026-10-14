@@ -12,7 +12,8 @@
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "importHelpers": true,
-    "lib": ["es2021", "dom"]
+    "lib": ["es2021", "dom"],
+    "ignoreDeprecations": "6.0"
   },
   "files": [],
   "include": [],

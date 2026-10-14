@@ -16,11 +16,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "importHelpers": true
+    "importHelpers": true,
+    "ignoreDeprecations": "6.0"
   },
   "files": [],
   "include": [],
-  "references": [
-    { "path": "./tsconfig.lib.json" }
-  ]
+  "references": [{ "path": "./tsconfig.lib.json" }]
 }

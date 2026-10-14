@@ -2,10 +2,10 @@ import {
   DynamicModule,
   InjectionToken,
   Module,
+  ModuleMetadata,
   Provider,
   Type,
 } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { AttachmentModule } from '../attachment/attachment.module';
 import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModule } from '../bpm-auth/bpm-auth.module';
@@ -352,7 +352,8 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
     SignatureModule.forRootAsync({ inject, useFactory }),
     WorkflowEngineModule.forRoot({
       imports: wiring.imports,
-      serviceTaskDispatcherProvider: wiring.workflowServiceTaskDispatcherProvider,
+      serviceTaskDispatcherProvider:
+        wiring.workflowServiceTaskDispatcherProvider,
     }),
     WorkflowWebhookModule.forRoot({
       imports: wiring.imports,

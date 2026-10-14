@@ -1,5 +1,10 @@
-import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
+import {
+  DynamicModule,
+  Global,
+  Module,
+  ModuleMetadata,
+  Provider,
+} from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
@@ -14,7 +19,10 @@ import {
   BPMFormDataSourceRegistry,
 } from './form-data-source.types';
 
-export interface FormDataSourceModuleOptions extends Pick<ModuleMetadata, 'imports'> {
+export interface FormDataSourceModuleOptions extends Pick<
+  ModuleMetadata,
+  'imports'
+> {
   readonly registryProvider?: Provider<BPMFormDataSourceRegistry>;
 }
 

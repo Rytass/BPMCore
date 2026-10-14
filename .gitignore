@@ -30,6 +30,9 @@ node_modules
 /coverage
 /.env
 /.env.*
+# Committed on purpose: no secrets, only the Node flag jest needs for Nest 12
+# (ESM). nx loads it for every `test` target. Keep secrets out of it.
+!/.env.test
 # Local env files in any package (e.g. apps/client/.env.local)
 .env.local
 .env.*.local
@@ -62,3 +65,5 @@ out
 # Playwright run artifacts
 /test-results
 /playwright-report
+
+.nx/migrate-runs

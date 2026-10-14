@@ -41,7 +41,7 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build"],
       "options": {
-        "command": "pnpm exec attw --pack libs/bpm-core-react"
+        "command": "pnpm exec attw --pack libs/bpm-core-react --profile esm-only"
       }
     },
     "prepublish-check": {

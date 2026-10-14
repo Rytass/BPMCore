@@ -2,9 +2,9 @@ import {
   DynamicModule,
   InjectionToken,
   Module,
+  ModuleMetadata,
   Provider,
 } from '@nestjs/common';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IdentityQueries } from './identity.queries';
 import { IdentityService } from './identity.service';

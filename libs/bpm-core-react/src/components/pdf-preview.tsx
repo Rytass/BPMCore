@@ -199,6 +199,9 @@ export function PDFPreview({
           loading={<PDFPreviewState message="正在載入 PDF..." />}
           noData={<PDFPreviewState message="沒有可預覽的 PDF。" />}
           onLoadSuccess={loadDocument}
+          // react-pdf 11 suspends by default and hands load errors to the
+          // nearest Error Boundary; keep the inline loading / error states.
+          suspense={false}
         >
           <Page
             className={styles.page}

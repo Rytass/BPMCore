@@ -12,12 +12,12 @@ packages:
 # the resolver move forward on its own.
 overrides:
   # The AI assistant packages, forced to one copy each. `bpm-core-react`'s
-  # peers are open (`ai: >=6.0.0`), so `autoInstallPeers` resolved them to the
-  # newest major and installed ai 7 / @ai-sdk 4 next to the workspace's own
-  # 6 / 3. Raise as one set when the assistant moves to ai 7.
-  '@ai-sdk/openai': '^3.0.110'
-  '@ai-sdk/provider-utils': '^4.0.33'
-  '@ai-sdk/react': '^3.0.281'
+  # peers are open (`ai: >=6.0.0`), so `autoInstallPeers` resolves them to the
+  # newest major and once installed ai 7 / @ai-sdk 4 next to the workspace's
+  # 6 / 3. The workspace is on 7 / 4 now; raise these as one set.
+  '@ai-sdk/openai': '^4.0.93'
+  '@ai-sdk/provider-utils': '^5.0.59'
+  '@ai-sdk/react': '^4.0.142'
   '@babel/core': '^7.29.6'
   '@babel/plugin-transform-modules-systemjs': '^7.29.4'
   '@xhmikosr/decompress': '^11.1.3'
@@ -27,8 +27,8 @@ overrides:
   # those peers to whatever is newest — which quietly installed Nest 12
   # alongside the workspace's own 11 the first time 12 shipped. Two copies give
   # @nestjs/typeorm two unrelated TypeOrmModuleOptions types, exactly the
-  # breakage the typeorm override exists to prevent. Raise this block as one
-  # set when the workspace moves to Nest 12.
+  # breakage the typeorm override exists to prevent. The workspace is on Nest
+  # 12 now; raise this block as one set again when Nest 13 ships.
   # Exact, mirroring the app's own pins, for the same reason as pdfjs-dist:
   # `bpm-core-react`'s peer is `>=1.0.0`, so `autoInstallPeers` installed
   # 1.5.1 / 1.2.1 beside the pinned 1.1.0 / 1.0.4. Two copies of a component
@@ -37,13 +37,13 @@ overrides:
   # visual-QA change; move these pins with the app's, deliberately.
   '@mezzanine-ui/core': '1.2.1'
   '@mezzanine-ui/react': '1.5.1'
-  '@nestjs/apollo': '^13.4.5'
-  '@nestjs/common': '^11.2.3'
-  '@nestjs/core': '^11.2.3'
-  '@nestjs/graphql': '^13.4.5'
-  '@nestjs/platform-express': '^11.2.3'
-  '@nestjs/testing': '^11.2.3'
-  '@nestjs/typeorm': '^11.0.3'
+  '@nestjs/apollo': '^14.0.3'
+  '@nestjs/common': '^12.1.3'
+  '@nestjs/core': '^12.1.3'
+  '@nestjs/graphql': '^14.0.3'
+  '@nestjs/platform-express': '^12.1.3'
+  '@nestjs/testing': '^12.1.3'
+  '@nestjs/typeorm': '^12.0.2'
   # One copy: `bpm-core`'s peer is `>=0.4.5` and `autoInstallPeers` installed
   # 0.6.0 beside the app's 0.4.5. It is a NestJS module, so two copies mean two
   # VaultService classes — apps/api injects one into TypeOrmModule.forRootAsync
@@ -52,7 +52,7 @@ overrides:
   '@rytass/secret-adapter-vault-nestjs': '^0.6.0'
   '@vitest/mocker': '^4.1.11'
   'adm-zip': '^0.6.0'
-  'ai': '^6.0.278'
+  'ai': '^7.0.139'
   'axios': '^1.16.0'
   'body-parser@1': '^1.20.6'
   'body-parser@2': '^2.3.0'
@@ -62,6 +62,10 @@ overrides:
   'brace-expansion@5': '^5.0.9'
   'browserslist': '^4.28.7'
   'fast-uri': '^3.1.6'
+  # One copy: `bpm-core`'s peer is `express: >=4.0.0`, so `autoInstallPeers`
+  # resolved it to the newest 5.x beside the one @nestjs/platform-express
+  # brings. A range, not a pin, so both move to the same latest 5.x.
+  'express@5': '^5.3.0'
   'follow-redirects': '^1.16.0'
   'form-data': '^4.0.6'
   'http-proxy-middleware': '^3.0.6'
@@ -79,14 +83,20 @@ overrides:
   # because the root declaration pins the 16.3 minor on purpose; `^` here
   # would override that and pull an unverified 16.4. Patches still flow.
   'next': '~16.3.6'
-  'nodemailer': '^9.1.1'
+  'nodemailer': '^10.1.0'
   # The one deliberate exact pin, and it mirrors react-pdf's own: react-pdf
-  # depends on `pdfjs-dist: 5.4.296` exactly, while bpm-core-react's peer is
-  # `^5.4.296`, so `autoInstallPeers` resolved the peer to 5.7.284 and split the
+  # depends on `pdfjs-dist` exactly (6.3.289 for react-pdf 11), while
+  # bpm-core-react's peer is a range, so `autoInstallPeers` resolved the peer to
+  # the newest matching release (5.7.284 back on react-pdf 10) and split the
   # tree in two. Two copies give `PDFDocumentProxy` and react-pdf's
   # `DocumentCallback` unrelated types (pdf-preview.tsx stops compiling) and
   # would ship two PDF workers. Move this with react-pdf, never on its own.
-  'pdfjs-dist': '5.4.296'
+  'pdfjs-dist': '6.3.289'
+  # One copy, for the same reason and to move with pdfjs-dist above:
+  # `bpm-core-react`'s peer is `react-pdf: >=10.0.0`, so `autoInstallPeers`
+  # installs the newest major beside the app's own; that once put react-pdf 11
+  # (pdfjs 6) beside the app's 10.
+  'react-pdf': '^11.0.0'
   'piscina': '^4.9.3'
   'postcss': '^8.5.23'
   'postcss-selector-parser': '^7.1.3'
@@ -96,9 +106,10 @@ overrides:
   # `reflect-metadata: >=0.1.13`, so `autoInstallPeers` installed 0.2.2 beside
   # the workspace's 0.1.14 — which gave @nestjs/core two snapshots differing
   # only by that peer, hence two `ModuleRef` classes, and every module that
-  # injects one failed to resolve it. Moving the workspace to 0.2.x is a
-  # separate decision (0.x minor is a breaking change); this keeps it at one.
-  'reflect-metadata': '^0.1.14'
+  # injects one failed to resolve it. Now on 0.2: typeorm and @peculiar/x509
+  # depend on `^0.2.2` themselves, so holding 0.1 forced them below their own
+  # range. Whatever the version, keep it to one copy.
+  'reflect-metadata': '^0.2.2'
   'sharp': '^0.35.4'
   'shell-quote': '^1.11.0'
   'svgo@3': '^3.3.5'
@@ -107,7 +118,7 @@ overrides:
   # Forced to a single copy. Two typeorm versions give @nestjs/typeorm two
   # structurally identical but unrelated TypeOrmModuleOptions types, and the
   # host app's forRootAsync factory then fails to typecheck.
-  'typeorm': '^0.3.31'
+  'typeorm': '^1.1.2'
   'undici': '^7.28.0'
   'uuid@11': '^11.1.1'
   # Not yet effective, and kept so it becomes effective on its own: vitest is

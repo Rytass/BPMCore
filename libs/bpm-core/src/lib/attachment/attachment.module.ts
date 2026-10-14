@@ -3,10 +3,10 @@ import {
   Global,
   InjectionToken,
   Module,
+  ModuleMetadata,
   Provider,
 } from '@nestjs/common';
 import { PATH_METADATA } from '@nestjs/common/constants';
-import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
