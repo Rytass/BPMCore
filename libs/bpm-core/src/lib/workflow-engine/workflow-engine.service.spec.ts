@@ -12120,6 +12120,50 @@ describe('administrator task reassignment', (): void => {
     ).resolves.toEqual([]);
   });
 
+  it('reads the template names of every listed task in one query', async (): Promise<void> => {
+    const { fixture, seed } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+    });
+    const other = createTask({
+      assigneeMemberId: 'member-from',
+      id: 'task-2',
+      instanceId: 'instance-2',
+      nodeId: 'task_finance',
+    });
+
+    answerTaskQueriesFromSeeds(fixture, [seed, other]);
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+      Object.assign(
+        createApprovalInstance({
+          workflowSnapshot: createLinearUserTaskWorkflow(),
+        }),
+        { id: 'instance-2', templateId: 'template-2' },
+      ),
+    ]);
+    fixture.templateFind.mockResolvedValue([
+      Object.assign(createTemplate('template-version-1', true), {
+        id: 'template-1',
+        name: '費用申請',
+      }),
+      Object.assign(createTemplate('template-version-2', true), {
+        id: 'template-2',
+        name: '採購申請',
+      }),
+    ]);
+    fixture.templateFindOne.mockClear();
+
+    const rows = await fixture.service.listMemberOpenTasks('member-from');
+
+    expect(fixture.templateFind).toHaveBeenCalledTimes(1);
+    expect(fixture.templateFindOne).not.toHaveBeenCalled();
+    expect(
+      Object.fromEntries(rows.map((row) => [row.taskId, row.templateName])),
+    ).toEqual({ 'task-1': '費用申請', 'task-2': '採購申請' });
+  });
+
   it('records the reassignment in the activity log with the administrator as actor', async (): Promise<void> => {
     const { fixture } = createOpenTaskFixture({
       assigneeMemberId: 'member-from',
@@ -12505,6 +12549,11 @@ interface ServiceFixture {
   readonly savedWorkflowTokens: readonly WorkflowTokenEntity[];
   readonly savedToken: WorkflowTokenEntity | null;
   readonly service: WorkflowEngineService;
+  readonly templateFind: jest.Mock<
+    Promise<readonly ApprovalTemplateEntity[]>,
+    [Readonly<Record<string, unknown>>?]
+  >;
+  readonly templateFindOne: jest.Mock;
   readonly taskCandidateFind: jest.Mock<
     Promise<readonly TaskCandidateEntity[]>,
     [Readonly<{ where?: Readonly<Record<string, unknown>> }>?]
@@ -12857,8 +12906,14 @@ function createServiceFixture({
       ),
     ),
   };
+  const templateFind = jest.fn<
+    Promise<readonly ApprovalTemplateEntity[]>,
+    [Readonly<Record<string, unknown>>?]
+  >(() => Promise.resolve([template]));
+  const templateFindOne = jest.fn(() => Promise.resolve(template));
   const templateRepository = createRepository<ApprovalTemplateEntity>({
-    findOne: jest.fn(() => Promise.resolve(template)),
+    find: templateFind,
+    findOne: templateFindOne,
   });
   const templateVersionRepository =
     createRepository<ApprovalTemplateVersionEntity>({
@@ -13418,6 +13473,8 @@ function createServiceFixture({
     membershipFind: transactionalMembershipRepository.find,
     rootInstanceQueryBuilder,
     rootTaskFind,
+    templateFind,
+    templateFindOne,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
       return processAdhocDirectiveRows;
     },

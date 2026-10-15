@@ -5238,24 +5238,35 @@ export class WorkflowEngineService {
         taskId: In(tasks.map((task) => task.id)),
       },
     });
-    const templateIds = [
-      ...new Set(held.map(({ instance }) => instance.templateId)),
-    ];
-    const templates = await Promise.all(
-      templateIds.map((templateId) =>
-        this.approvalTemplateRepository.findOne({ where: { id: templateId } }),
-      ),
-    );
+    // One query for every template, not one per template: the listing opens
+    // each time an administrator opens the reassignment screen.
+    const templates = await this.approvalTemplateRepository.find({
+      where: {
+        id: In([...new Set(held.map(({ instance }) => instance.templateId))]),
+      },
+    });
     const templateNameById = new Map(
-      templateIds.map((templateId, index): readonly [string, string | null] => [
-        templateId,
-        templates[index]?.name ?? null,
+      templates.map((template): readonly [string, string] => [
+        template.id,
+        template.name,
+      ]),
+    );
+    const openRowByTaskId = new Map(
+      openRows.map((row): readonly [string, TaskCandidateEntity] => [
+        row.taskId,
+        row,
+      ]),
+    );
+    const summaryByTaskId = new Map(
+      tasks.map((summary): readonly [string, (typeof tasks)[number]] => [
+        summary.id,
+        summary,
       ]),
     );
 
     return held.map(({ instance, task }): MemberOpenTaskRecord => {
-      const row = openRows.find((candidate) => candidate.taskId === task.id);
-      const summary = tasks.find((candidate) => candidate.id === task.id);
+      const row = openRowByTaskId.get(task.id);
+      const summary = summaryByTaskId.get(task.id);
 
       return {
         candidateStatus: row?.status ?? null,
