@@ -8,28 +8,38 @@
 
 > 系統不存 user 詳細資料，只存 member_id。Metadata 由外部 SSO / HR 系統解析。
 
-| 實體                       | 職責                                                                   |
-| -------------------------- | ---------------------------------------------------------------------- |
-| **Member**                 | 僅儲存 member_id（外部來源），與系統內各表的 FK                        |
-| **MemberMetadataSnapshot** | Instance 發起時記錄 initiator metadata（防止外部資料變動影響歷史紀錄） |
-| **MemberResolver**         | Adapter interface，呼叫外部系統取得即時 metadata                       |
-| **MemberMetadataCache**    | PostgreSQL-backed resolver 快取，避免每次列表或簽核都打外部系統        |
+| 實體                                                    | 職責                                                                   |
+| ------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Member**                                              | 僅儲存 member_id（外部來源），與系統內各表的 FK                        |
+| initiator snapshot（`approval_instances.initiator_metadata_snapshot`，JSON 欄位） | Instance 發起時記錄 initiator metadata（防止外部資料變動影響歷史紀錄）；非獨立實體 |
+| **BPMMemberResolver**（host 實作，`BPM_MEMBER_RESOLVER`） | Adapter interface，呼叫外部系統取得即時 metadata                       |
+| `member_metadata_cache` 表（`MemberMetadataCacheEntity`） | PostgreSQL-backed resolver 快取，避免每次列表或簽核都打外部系統        |
 
 ```typescript
-interface MemberResolver {
+// libs/bpm-core/src/lib/identity/member-resolver.interface.ts（節錄）
+interface BPMMemberResolver {
+  // 單筆：找不到時必須丟錯
   resolve(memberId: string): Promise<MemberMetadata>;
-  resolveMany(memberIds: string[]): Promise<Map<string, MemberMetadata>>;
+  // 批次：找不到的 id 請略過（不要丟錯）
+  resolveMany(memberIds: readonly string[]): Promise<ReadonlyMap<string, MemberMetadata>>;
+  // 選用：選人器搜尋與目錄分頁
+  search?(searchText: string): Promise<readonly MemberMetadata[]>;
+  searchPaged?(searchText: string, options: BPMMemberSearchPageOptions): Promise<BPMMemberSearchPage>;
 }
 
+// libs/shared/src/lib/identity.ts
 interface MemberMetadata {
-  memberId: string;
-  name: string;
-  email: string;
-  primaryOrgUnitId: string;
-  positionId: string;
-  customFields: Record<string, unknown>;
+  readonly memberId: string;
+  readonly name: string;
+  readonly email: string;
+  readonly customFields: Readonly<Record<string, unknown>>; // 宿主自定 JSON，BPM 不解讀其內容
 }
 ```
+
+> 組織屬性（主要組織單位、職位）不在 `MemberMetadata` 內，而是由 Organization 模組的
+> `memberships` 表提供。
+
+
 
 **快取策略**：目前使用 `member_metadata_cache` PostgreSQL 表 + TTL（預設 5 分鐘）。
 這讓列表、歷程、候選人顯示名稱與 email 可重用 resolver 結果，同時仍由宿主
@@ -138,8 +148,8 @@ interface MemberMetadata {
 
 | 實體                      | 職責                               |
 | ------------------------- | ---------------------------------- |
-| **CelEvaluator**          | CEL 表達式評估器                   |
-| **ContextSchemaRegistry** | 註冊每個應用點當下可存取的變數型別 |
+| **ConditionService**      | CEL 表達式 lint 與評估（`cel-js`），方法見 05 §4 |
+| 各使用點的根識別字白名單  | 未實作為獨立 registry（`ContextSchemaRegistry` 尚不存在），見 05 §2、§5 |
 
 詳見 [05 — CEL 條件機制](./05-conditions-cel.md)。
 
@@ -149,14 +159,18 @@ interface MemberMetadata {
 
 | 實體                | 職責                                              |
 | ------------------- | ------------------------------------------------- |
-| **Signature**       | 簽章紀錄（`signed_payload_hash` + 演算法 + 時戳） |
-| **HmacSigner**      | 使用平台 HMAC 金鑰簽章                            |
-| **TimestampClient** | RFC 3161 時戳取得                                 |
+| **Signature**       | 簽章紀錄（`signed_payload` + `signed_payload_hash` + 演算法 + 金鑰版本 + 時戳） |
+| `SignatureService`  | 以 HMAC-SHA256 簽章；金鑰由宿主 `BPMSignatureKeyProvider` 依 `key_version` 提供 |
+| `BPMSignatureTimestampProvider`（選用） | 為已簽章的 payload 取得時戳 token（`timestamp_token`）。預設為佔位實作，正式環境應替換為 RFC 3161 TSA 等 |
 
-簽章標的（會被 hash）：
+簽章標的（`buildTaskDecisionSignedPayload`）為下列欄位的 JSON；先做穩定排序的字串化並取 SHA-256
+得到 `signed_payload_hash`，再以 HMAC-SHA256 對該 hash 簽章：
 
-- `instance_id + node_id + decision + form_data_snapshot_hash + timestamp`
-- 鏈式簽章：每筆簽章包含前一筆的 hash（防竄改）
+- `action`、`comment`、`decidedAt`、`returnToNodeId`、`transferToMemberId`
+- `formDataHash`（表單資料的 SHA-256）
+- `instanceId`、`nodeId`、`taskId`、`signerMemberId`
+
+鏈式簽章：每筆簽章的 `previous_signature_hash` 為同一 instance 上一筆簽章的 `signed_payload_hash`（防竄改）。
 
 ---
 
@@ -166,7 +180,7 @@ interface MemberMetadata {
 | --------------------- | --------------------------------------- |
 | **Attachment**        | 附件 metadata + 儲存路徑                |
 | **AttachmentStorage** | 可替換的 `@rytass/storages` adapter     |
-| **PdfPreviewService** | 提供 signed URL 給前端 `react-pdf` 渲染 |
+| PDF 預覽（前端 `react-pdf`） | 後端提供 signed URL 給前端渲染；未以獨立 `PdfPreviewService` 類別實作 |
 
 **儲存**：
 
@@ -191,12 +205,12 @@ interface MemberMetadata {
 
 **目前已實作觸發點**：
 
-- 任務派發
-- SLA 預警
-- SLA 逾時
+- 任務派發（`TASK_ASSIGNED`）與轉交（`TASK_TRANSFERRED`）
+- SLA 預警（`SLA_WARNING`）與逾時（`SLA_OVERDUE`）
+- 核准完成通知給申請人（`INSTANCE_COMPLETED`，僅核准完成時送出；拒絕、取消、逾期終止不送）
+- 知會節點（`NOTIFY`）與臨時指令的階段／結案通知（`WORKFLOW_NOTIFICATION`）
 
-流程完成、退回、拒絕、模板發布通知屬於後續可補事件，不是目前 runtime 會送出的
-notification。
+退回、拒絕、模板發布的通知目前沒有獨立的系統通知事件，屬於後續可補事件。
 
 **彙總策略**：可選即時 / 每日摘要（個人化設定）。
 

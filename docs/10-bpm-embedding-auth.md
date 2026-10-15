@@ -12,28 +12,33 @@ member-base 初始化、TypeORM、GraphQL 與 Vault 等基礎設施由宿主系�
 ## 模組邊界
 
 `BPMRootModule` 是可嵌入入口，負責組合 BPM domain modules。`forRoot` /
-`forRootAsync` 回傳的 `DynamicModule` 內含 **11 個 child imports**：
+`forRootAsync` 回傳的 `DynamicModule` 內含 **16 個 child imports**（即 `createBPMFeatureModules` 的清單）：
 
 ```text
 BPMRootModule
-├── NotificationOptionsModule    ← 提供 BPM_NOTIFICATION_OPTIONS token 給其他模組注入
-├── BPMAuthModule                ← @Global，提供 BPMAuthenticatedGuard / BPMAdminGuard / BPMDesignerGuard
+├── BPMRootOptionsModule             ← 提供 BPM_ROOT_OPTIONS（useFactory 只求值一次）
+├── NotificationOptionsModule        ← 提供 BPM_NOTIFICATION_OPTIONS token 給其他模組注入
+├── WorkflowWebhookOptionsModule     ← 提供 workflow webhook 選項
+├── CalendarModule                   ← 工作日行事曆（BPM_BUSINESS_CALENDAR）
+├── BPMAuthModule                    ← @Global，提供 BPMAuthenticatedGuard / BPMAdminGuard / BPMDesignerGuard
 ├── IdentityModule
 ├── OrganizationModule
-├── AttachmentModule             ← @Global，掛 AttachmentController
+├── AttachmentModule                 ← @Global，掛 AttachmentController
 ├── FormModule
+├── FormDataSourceModule             ← 宿主註冊的表單選項 DataSource registry
 ├── TemplateModule
 ├── DelegationModule
 ├── NotificationModule
-├── SignatureModule              ← @Global，註冊 SignatureService
-└── WorkflowEngineModule
+├── SignatureModule                  ← @Global，註冊 SignatureService
+├── WorkflowEngineModule
+└── WorkflowWebhookModule            ← 知會節點 webhook 端點 registry 與投遞
 ```
 
 `NotificationOptionsModule` 是把 `BPMRootModuleOptions.notification*` 欄位
 normalize 成 `BPM_NOTIFICATION_OPTIONS` provider 的中介模組；`NotificationModule`
-和 `WorkflowEngineModule` 都會注入它。三個 `@Global()` 模組
-（`BPMAuthModule` / `AttachmentModule` / `SignatureModule`）會把它們匯出的
-guard 與 service 暴露到整個 host 而不需要 re-import。
+和 `WorkflowEngineModule` 都會注入它。部分橫切模組為 global（例如
+`BPMAuthModule` / `AttachmentModule` / `SignatureModule`，另有 `CalendarModule`、`FormDataSourceModule`
+等），會把它們匯出的 guard 與 service 暴露到整個 host 而不需要 re-import。
 
 `apps/api` 作為本 repo 的宿主範例，仍自行設定 Vault、TypeORM、
 GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部系統只需
@@ -56,10 +61,12 @@ GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部
 - `@rytass/bpm-core-nestjs-module`
 - `@rytass/bpm-core-nestjs-module/attachment`
 - `@rytass/bpm-core-nestjs-module/bpm-auth`
+- `@rytass/bpm-core-nestjs-module/calendar`
 - `@rytass/bpm-core-nestjs-module/condition`
 - `@rytass/bpm-core-nestjs-module/database`
 - `@rytass/bpm-core-nestjs-module/delegation`
 - `@rytass/bpm-core-nestjs-module/form`
+- `@rytass/bpm-core-nestjs-module/form-data-source`
 - `@rytass/bpm-core-nestjs-module/identity`
 - `@rytass/bpm-core-nestjs-module/migrations`
 - `@rytass/bpm-core-nestjs-module/notification`
@@ -67,6 +74,7 @@ GraphQL 與登入/session，再引入 `BPMRootModule`。正式發佈時，外部
 - `@rytass/bpm-core-nestjs-module/signature`
 - `@rytass/bpm-core-nestjs-module/template`
 - `@rytass/bpm-core-nestjs-module/workflow-engine`
+- `@rytass/bpm-core-nestjs-module/workflow-webhook`
 
 ## Auth Contract
 
@@ -333,7 +341,8 @@ import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 
 `apps/api` 已經完全不使用 Nest `setGlobalPrefix`；所有 controller 都以 root 相對路徑掛載，sample endpoint 因此會出現在 host 根目錄下：
 
-- `GET /auth/test-members`：列出可登入的 DB-backed 測試帳號。
+- `GET /auth/test-members`：列出可登入的 DB-backed 測試帳號。此端點由 `apps/api` **無條件註冊**（沒有 `NODE_ENV` 判斷），
+  staging 以 `NODE_ENV=production` 部署時也依賴它；它是示範 host 的設計，**正式 host 不可照抄**，需自行移除此端點或加上防護。
 - `POST /auth/login`：以 `{ identifier, password }` 登入；`identifier` 可用 member id 或 email，
   seeded test password 固定為 `demo`。
 - `GET /auth/me`：讀取目前 session member。

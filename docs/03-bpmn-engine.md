@@ -72,6 +72,10 @@ BPMN 處理 SLA 的標準做法：
 
 含義：簽核 task 上掛一個 3 天計時器，如果 3 天內沒簽，token 從計時器那條邊跑出去做「自動同意」。
 
+> **實作現況**：本系統目前沒有獨立的 Boundary Timer Event 節點。SLA 逾時是 user task 節點的
+> `sla.onTimeout` 策略（`REMIND`／`AUTO_APPROVE`／`ESCALATE`／`TERMINATE_INSTANCE`），由 SLA 掃描器
+> 依 task 的 `sla_due_at` 觸發，上圖是概念模型。各策略的細節見 `docs/07` §6。
+
 ---
 
 ## 4. Gateway — 重點
@@ -114,7 +118,7 @@ Token 進來 → 依序檢查每條出邊的條件 → **只走第一個 true �
 
 #### 分流（Split）
 
-Token 進來 → **所有出邊都發一顆 token**（不檢查條件）
+Token 進來 → **所有出邊都發一顆 token**（概念語意；本系統的 runtime 不提供 Parallel Gateway 節點，見下方 §4.2 註記）
 
 ```
               ┌─ [財務會簽] ─┐
@@ -177,8 +181,13 @@ OR Join 必須知道「**哪些路徑被啟動**」並只等啟動的路徑，�
 
 連線本身可以帶條件（CEL 表達式）：
 
-- 從 XOR 出來的線 → **條件決定走不走**
-- 從 AND 出來的線 → **條件被忽略**（一定走）
+- 從 XOR 出來的線 → **條件決定走不走**，只取第一條條件成立的線
+- 從其他節點出來、帶條件的線 → **同樣會評估條件**：條件成立的線全部都走（分叉），
+  不成立的線不走；沒有任何條件成立時改走 default 線
+- 沒有條件、也不是 default 的線 → 一律走
+
+> 本系統的 runtime 對所有節點類型都會評估 edge 條件（見 `docs/07` §3），
+> 上面「AND 線一定走」的說法僅為 BPMN 概念模型，不是目前實作。
 
 特殊：**Default Flow（預設邊）**
 
@@ -201,7 +210,9 @@ AND Join 等永遠不會到的 token：
            └─→ [C] ─────────────────→ [End]
 ```
 
-這個流程設計錯了：XOR 只走 B 或 C，但 AND Join 卻在等兩個 token，永遠等不到。
+概念上這個流程設計錯了：XOR 只走 B 或 C，但 AND Join 卻在等兩個 token，永遠等不到。
+本系統的 AND 合併會檢查「其他仍存活的 token 是否還可能到達合併點」：不可能到達時不再等待，
+合併以已到達的 token 繼續（見 `docs/07` §3.3）。這避免了死結，但不代表這種分歧是合理設計。
 
 ### 死循環
 
@@ -213,12 +224,15 @@ AND Join 等永遠不會到的 token：
 
 ### 處理方式
 
-- **靜態分析**（模板發布前驗證）：
-  - 結構檢查：所有 token 路徑都能走到 End
-  - XOR 的 default flow 檢查
+- **靜態分析**（模板發布前驗證，`workflow-definition.validator.ts`）：
+  - 不可達節點：從 start 無法到達的節點會被拒絕（`is not reachable from start`）
+  - 無法到達 End 的節點會被拒絕（`does not have a path to an endEvent`）
+  - 循環：整張流程圖中有任何循環都會被拒絕（`lintCycles`），因此「死循環」在發布時即被擋下
+  - XOR 的 default flow 等閘道結構檢查
 - **執行期保護**：
-  - advisory lock 避免同一 instance 被並行處理
-  - SLA scan 由 task due time 驅動，逾時動作依 notification/SLA options 啟用
+  - 同一 instance 的處理以 transaction 層級的 advisory lock 序列化（見 `docs/07` §10）
+  - 有 2 條以上入邊的 AND 合併節點，若還有其他仍可能到達的 token，會先等待；不可能再到達的分支不會卡住合併（見 `docs/07` §3.3）
+  - SLA 掃描由 task 的 `sla_due_at` 驅動，逾時動作需由宿主啟用對應選項才會執行（見 `docs/07` §6.2）
 
 ---
 

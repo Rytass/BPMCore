@@ -144,7 +144,7 @@ Task 相關欄位（`TaskRecord`／activity payload）：
 - `nodeLabel`：task 所在節點的顯示名稱（`node.data.label`）。由 server 依 task 所屬
   案件的 `workflow_snapshot` 解析、不存進 task 資料列（無 migration）；`inboxTasks`／
   `approvalHistoryTasks`／`tasks` 以一次查詢取得整批 task 的案件快照，不會每筆 task
-  各查一次。快照裡找不到該節點時為 `null`。清單類畫面（待簽、歷史、追蹤）顯示
+  各查一次。快照裡找不到該節點時為 `null`。清單類畫面（待簽，以及待簽頁的「歷史簽核記錄」分頁）顯示
   `nodeLabel ?? nodeId`，不再顯示內部 id（如 `band-0`）；臨時加簽／會簽產生的 task
   沿用它所在節點的名稱，畫面另依 `isAdhoc`／`adhocType` 加「（臨時加簽）」或
   「（臨時會簽）」。內建 client 一律選取此欄位，舊版 server 會直接拒絕整個查詢，
@@ -212,8 +212,17 @@ type ApproverResolverFallback =
       readonly allowInitiatorSelfApproval?: boolean;
       readonly memberId: string;
       readonly type: 'DIRECT';
+    }
+  // 未發佈（v0.16.2 之後）：該職位目前所有有效成員都成為候選人
+  | {
+      readonly allowInitiatorSelfApproval?: boolean;
+      readonly positionId: string;
+      readonly type: 'POSITION';
     };
 ```
+
+`readUnsupportedApproverFallbackType(fallback)`（未發佈，v0.16.2 之後）回傳本版本不認得的 fallback `type`
+（例如由較新版本存下的定義），否則為 `null`；Designer 遇到時以唯讀顯示，引擎則在節點啟動時拒絕。
 
 Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
 指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
@@ -395,12 +404,16 @@ apps/client/src/app/templates/[id]/designer
 | 連通性            | 從 Start 可達節點與必要連線會被檢查。                                                                     |
 | User Task         | resolver 必要欄位必須存在。                                                                               |
 | Service Task      | `NOTIFY` 需要知會對象或至少一個 webhook；webhook 端點必須存在且未停用、必填參數有綁定、綁定欄位型別相容。 |
-| Exclusive Gateway | split 需要 default outgoing edge；條件 edge 會做 CEL lint。                                               |
+| Exclusive Gateway | split 需至少兩條 outgoing edge 且需要 default outgoing edge；條件 edge 會做 CEL lint。                                               |
 | CEL               | 目前做 parse/lint，不做 context schema 靜態型別推導。                                                     |
 
-目前尚未實作 cycle detector、XOR 至少兩條出邊檢查、resolver id 存在性查詢、或
-frontend 即時後端 lint endpoint。若要把這些列為正式規則，應補 validator 與測試後
-再更新本文。
+上表之外，以下規則已在 `libs/bpm-core/src/lib/template/workflow-definition.validator.ts` 實作：
+
+- cycle detector（`lintCycles`）：從 Start 可達的環會被拒絕（退回不是流程上的環，不在此檢查範圍）。
+- XOR 至少兩條出邊（`lintExclusiveGateways`）：split 型 exclusive gateway 需至少兩條 outgoing edge，且需有 default。
+
+目前仍未實作：resolver id 存在性查詢（發布驗證不查 member／position 是否存在），以及 frontend 即時後端 lint endpoint
+（目前沒有獨立的 lint query／mutation，驗證只在發布時執行）。若要把這些列為正式規則，應補 validator 與測試後再更新本文。
 
 ---
 

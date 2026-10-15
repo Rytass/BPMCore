@@ -66,11 +66,14 @@ client 執行工具」的分工：
 都是 **Next.js client host 的 server-only env**（`apps/client`，不是 `apps/api`；
 **絕不可** 加 `NEXT_PUBLIC_` 前綴）：
 
-| 變數                       | 必填 | 預設            | 用途                                                        |
-| -------------------------- | ---- | --------------- | ----------------------------------------------------------- |
-| `BPM_AI_ASSISTANT_ENABLED` | 是   | （未設＝隱藏）  | `'true'` 才會顯示 AI 助理按鈕。預設隱藏，各部署 opt-in。     |
-| `OPENAI_API_KEY`           | 是   | —               | OpenAI 金鑰。沒設則按鈕顯示為 disabled placeholder。         |
-| `BPM_LLM_MODEL`            | 否   | `gpt-5.4-mini`  | OpenAI model id（可填 `openai/` 前綴，會自動去除）。         |
+| 變數                           | 必填 | 預設            | 用途                                                        |
+| ------------------------------ | ---- | --------------- | ----------------------------------------------------------- |
+| `BPM_AI_ASSISTANT_ENABLED`     | 否   | （未設＝隱藏）  | `'true'` 才會顯示 AI 助理按鈕。預設隱藏，各部署 opt-in。     |
+| `OPENAI_API_KEY`               | 否   | —               | OpenAI 金鑰。沒設則按鈕顯示為 disabled placeholder。         |
+| `BPM_LLM_MODEL`                | 否   | `gpt-5.4-mini`  | OpenAI model id（可填 `openai/` 前綴，會自動去除）。         |
+| `BPM_TEMPLATE_DRY_RUN_ENABLED` | 否   | （未設＝顯示）  | 設為 `'false'` 才隱藏設計頁的「試跑流程」按鈕。與 AI 無關，列於此因為它與上述變數同樣由 designer page shim 讀取。 |
+
+以上變數皆為選用。不設 `BPM_AI_ASSISTANT_ENABLED` 時 AI 助理隱藏；設了開關但沒有 `OPENAI_API_KEY` 時顯示為 disabled placeholder。兩者都不影響設計器其他功能。
 
 元件層 props（`TemplateDesignerView`，供直接整合者控制）：
 
@@ -127,6 +130,11 @@ kubectl patch secret vault-secret -n bpm-core-staging --type merge \
 
 注意：**runtime 依賴需宣告在 root `package.json`**。Docker 在 `COPY . .` 前就先裝 root 依賴，
 `ai` / `@ai-sdk/react` / `@ai-sdk/openai` 因此同時列在 root 與 `libs/bpm-core-react`。
+
+**對 library 消費端**：`@rytass/bpm-core-react` 把 `ai`、`@ai-sdk/react`、`@ai-sdk/openai` 宣告為 **optional peer**（`peerDependenciesMeta`），
+不用設計器的 host 不必安裝。但設計器頁（`TemplateDesignerView`）靜態 import `WorkflowChatDrawer` 與 `use-workflow-chat`，
+所以掛載設計器的 host 必須安裝 `ai` 與 `@ai-sdk/react`（即使不開啟助理）；`@ai-sdk/openai` 只在掛載
+`next/workflow-chat-route` 時需要。安裝清單見 [11 — 消費端快速開始](./11-consumer-quickstart.md) 的 optional peer 表。
 
 部署流程（push `staging` → GitHub Actions → build images → `kubectl apply` + rollout）見
 [infrastructure.md](./infrastructure.md)。

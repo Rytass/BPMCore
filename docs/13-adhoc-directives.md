@@ -131,7 +131,9 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 - token 推進到下一個 userTask 並建立正常 task 之後，引擎呼叫
   `spawnCountersignTasksForNode`，把所有 `PENDING` 的 COUNTERSIGN 注入為**並行
   task**，directive 轉為 `CONSUMED`。
-- 會簽 task 的決策政策固定為 `SINGLE`。它與該節點原有任務並存，引擎以
+- 會簽 task 的決策政策依解析出的人數決定：解析為 1 人時為 `SINGLE`；多人（例如職位或組織單位）時為
+  `PARALLEL_ALL`，全部被指定的人都要同意該會簽 task 才完成（`createAdhocTaskForDirective`）。
+  它與該節點原有任務並存，引擎以
   `hasOpenTasksForTokenNode` 判斷：**同一 token / 節點下只要還有未完成任務，
   token 維持 `WAITING`、不推進**，直到全部完成。
 - 若會簽對象解析失敗（例如職位查無人），directive 轉 `CANCELLED` 並記錄
@@ -205,12 +207,13 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 
 ### 5.2 COMPLETION_NOTIFY（結案通知）
 
-- 觸發時機：**案件進入終態**。三種終態（核准 / 拒絕 / 取消）皆觸發，對應引擎中數個派發點：
+- 觸發時機：**案件進入終態**。四種終態（核准 / 拒絕 / 取消 / 逾期終止）皆觸發，對應引擎中數個派發點：
   - 自然核准完成（`completeInstanceIfNoOpenRuntimeState` 設定 `APPROVED`）。
   - End Event 收斂為終態（`APPROVED` 或 `REJECTED`）。
   - 案件被拒絕（`rejectInstance`）。
   - 案件被取消（cancel）。
-- 通知文案：`案件「{標題}」已結案（{終態}）。`（終態 label 為 核准 / 拒絕 / 取消）
+  - SLA `TERMINATE_INSTANCE` 結束案件（終態 `EXPIRED`，見 `docs/07` §6.2；未發佈，v0.16.2 之後，之前為 `CANCELLED`）。
+- 通知文案：`案件「{標題}」已結案（{終態}）。`（終態 label 為 核准 / 拒絕 / 取消 / 逾期終止）
 - 範圍為**整個案件**（不限 `originNodeId`）；觸發後 directive 轉 `CONSUMED`。
 
 ---
@@ -229,11 +232,13 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 當案件發生狀態轉移時，引擎自動把仍 `PENDING` 的指令清成 `CANCELLED`，避免殘留
 指令在不合理的時點被觸發：
 
-| 流程事件   | 清除範圍                                            |
-| ---------- | --------------------------------------------------- |
-| 案件取消   | 全部類型的 `PENDING` 指令                           |
-| 案件拒絕   | 全部類型的 `PENDING` 指令                           |
-| 案件退回   | 僅 `COUNTERSIGN` / `PRE_APPROVAL`（保留兩種通知型） |
+| 流程事件                         | 清除範圍                                            |
+| -------------------------------- | --------------------------------------------------- |
+| 案件取消                         | 全部類型的 `PENDING` 指令                           |
+| 案件拒絕                         | 全部類型的 `PENDING` 指令                           |
+| 案件逾期終止（`EXPIRED`）        | 全部類型的 `PENDING` 指令（與取消同一條收尾路徑）    |
+| 案件核准完成                     | 全部類型的 `PENDING` 指令                           |
+| 案件退回                         | 僅 `COUNTERSIGN` / `PRE_APPROVAL`（保留兩種通知型） |
 
 > 退回時保留通知型指令，是因為退回後流程仍可能再次跑到原節點或最終結案，階段 /
 > 結案通知仍有意義；但會簽 / 加簽綁定的關卡語意已被打斷，故一併清除。
@@ -440,8 +445,9 @@ SDK 型別重點：
 
 ## 12. 與其他機制的互動
 
-- **決策政策**：會簽 / 加簽 task 的 `decisionPolicySnapshot` 固定為 `SINGLE`，
-  與原節點的決策政策獨立計算；但是否推進取決於「同 token/節點下所有任務皆完成」。
+- **決策政策**：會簽 / 加簽 task 的 `decisionPolicySnapshot` 在解析為 1 人時為 `SINGLE`，多人時為 `PARALLEL_ALL`
+  （見 §4.1），與原節點的決策政策獨立計算；但是否推進取決於「同 token/節點下所有任務皆完成」。
+  退回後以原始 task 重新開啟的加簽 task 固定為 `SINGLE`。
 - **委派代理（Delegation）**：ad-hoc task 建立時同樣套用 delegation 解析鏈，
   指派目標可能被代理規則改派（見 `docs/07`）。
 - **數位簽章**：ad-hoc task 上的決策與一般決策一致，納入簽章鏈。

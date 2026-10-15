@@ -50,7 +50,7 @@
 - [x] `IdentityModule`：member 查詢 + cache（TTL 5 分鐘）
 - [x] `org_units`、`positions`、`memberships`、`manager_resolutions` 表 + migration
 - [x] `OrganizationModule`：CRUD + 樹狀查詢（path-based hierarchy）
-- [x] 主管解析 service（含優先序邏輯）
+- [x] 主管解析 service（含優先序邏輯：manager rule 的 priority 數字大者優先）
 
 **Frontend**
 
@@ -73,7 +73,7 @@
 
 - [x] `/templates/compose` 表單 + 流程建立 wizard（取代 standalone `/forms` 入口）
 - [x] Wizard 內嵌表單設計器（`FormBuilderView`）
-  - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file / textarea）
+  - 拖拉欄位（基本 6–8 種：text / number / date / select / radio / checkbox / file_upload / textarea）
   - 屬性面板（標籤、必填、預設值）
   - 條件邏輯（顯示/必填/唯讀，先用簡單表達式輸入框）
 - [x] FormRenderer 元件（根據 schema 渲染表單）
@@ -129,7 +129,7 @@
 **Backend**
 
 - [x] Start Event / End Event 處理
-- [x] User Task 處理（含 Approver Resolver 5 種類型）
+- [x] User Task 處理（含 Approver Resolver；目前有 9 種：DIRECT、POSITION、ORG_UNIT_MEMBER、ORG_UNIT_POSITION、ORG_MANAGER、ORG_UNIT_MANAGER、ORG_MANAGER_CHAIN、DYNAMIC_FORM、EXPRESSION）
 - [x] Service Task — `NOTIFY`、`WEBHOOK`、`SET_FORM_FIELD` runtime；`WEBHOOK` 可由宿主注入 dispatcher
 - [x] User Task 單一主要簽核者處理（設計器固定 `decisionPolicy: SINGLE`）
 - [x] Task 決策 API（同意 / 拒絕，先無簽章）
@@ -170,7 +170,7 @@
 - [x] 條件線 / default flow label 顯示
 - [x] pending / completed / cancelled / waiting 節點狀態顯示
 
-> W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，context 含 `form` / `formData` / `initiator` / `instance`，正式 runtime 另提供 `lastDecision`。舊的 structured edge condition 欄位仍保留作為設計器輸入與相容 fallback。
+> W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，context 含 `form` / `formData` / `initiator` / `instance`。**`lastDecision` 已合入 main（未發佈，v0.16.2 之後），只限 edge 條件**（sequence flow condition）：它是該 edge 來源節點上最新一筆決策（形狀見 `LastDecisionContext`，含 `action`、`comment`、`decidedAt`、`decidedByMemberId`、`returnToNodeId`、`taskId`、`transferToMemberId`），尚無決策時為 `null`，因此條件需寫成 `lastDecision != null && …`。其他 CEL（發起權限、進入條件、EXPRESSION resolver、webhook payload、SET_FORM_FIELD value）若引用 `lastDecision`，發布時會被擋下。舊的 structured edge condition 欄位仍保留作為設計器輸入與相容 fallback。
 
 **驗收**：能跑通含 XOR + 多前置節點 AND/OR 的流程；條件分歧基於表單內容正確路由。
 
@@ -179,7 +179,7 @@
 **Backend**
 
 - [x] 退回（target = previous / initiator / specific node）
-- [x] 退回後重新提交（從退回點繼續）
+- [x] 退回後重新提交（從退回點繼續）：退回會結束整個 instance 所有開放中的 token 與 task（含其他平行分支），再從退回節點重新開始
 - [x] 撤銷 instance
 - [x] **Dry Run** API：給定假 initiator + 表單值 → 純記憶體模擬流程
 
@@ -201,6 +201,8 @@
 - [x] `delegation_rules` 表
 - [x] `DelegationModule`：規則 CRUD
 - [x] 引擎整合：建立 task 時套用 delegation 解析（含循環防護、CEL scope）
+- [x] 委派規則優先序（未發佈，v0.16.2 之後）：`priority` 數字大者優先；同 priority 時較早建立者優先（列表排序為 priority DESC、createdAt DESC）
+- [x] 委派條件 CEL 儲存時檢查根識別字（未發佈，v0.16.2 之後），只允許 `env`、`form`、`formData`、`initiator`（含 `memberId`）、`instance`（`id`、`nodeId`、`state`、`templateId`、`templateVersionId`、`title`）、`principal`（`memberId`）；已存在的錯誤規則不會被改動，執行時仍會拋錯
 - [x] Task 轉派（manual transfer）
 
 **Frontend**
@@ -223,11 +225,13 @@
 - [x] SLA Scheduler（cron 每分鐘）
   - [x] 預警 / 逾時通知
   - [x] 自動同意 / 升級 / 終止動作（透過 workflow engine domain method 執行）
+    - AUTO_APPROVE：以 task assignee（無則第一位 candidate）名義呼叫 `decideTask`，comment 為 `SLA timeout auto-approved this task.`；稽核上記為該成員同意，靠 comment 與 `SLA_TRIGGERED` 活動紀錄辨識系統動作
+    - TERMINATE_INSTANCE（未發佈，v0.16.2 之後）：案件結束狀態為 `EXPIRED`（「逾期終止」），activity 為 `INSTANCE_EXPIRED`、actor 為 null；改為 `EXPIRED` 之前已被 SLA 終止的既有案件維持 `CANCELLED`，不回溯改寫
 - [x] Boundary Timer Event 處理（SLA scan 以 task boundary timer due event 觸發 timeout policy）
 
 **Frontend**
 
-- [x] In-app 通知中心列表（`/notifications`）
+- [x] In-app 通知以鈴鐺抽屜（`NotificationDrawer`）呈現；沒有 `/notifications` 頁面（`routes-config` 保留該路徑給宿主自建）
 - [x] Header 鈴鐺入口
 - [x] 通知偏好設定頁
 - [x] Inbox 顯示 SLA due 倒數
@@ -265,27 +269,29 @@
 
 **Backend**
 
-- [ ] 加簽 / 減簽 / 跳簽 API
+- [x] 臨時加簽（`PRE_APPROVAL`）／臨時會簽（`COUNTERSIGN`）：`requestAdhocPreApproval`、`requestAdhocCountersign`，另有 `cancelAdhocDirective`，以及知會類 directive（`STAGE_NOTIFY`、`COMPLETION_NOTIFY`）
+- [ ] 減簽 / 跳簽 API（未實作）
 - [ ] 表單欄位節點級權限（依 fieldPermissions 過濾；型別已保留但**不生效**，見 docs/08 §2；欄位層級的「只存不顯示」另以 `hidden` 提供）
 - [ ] ABAC 發起權限細化（initiator policy 完整支援）
 - [ ] 角色 / 組織代碼目錄查詢 API，並將開始節點發起權限 AutoComplete 改為 server-controlled async
 
 **Frontend**
 
-- [ ] 加簽 / 減簽 / 跳簽 UI
+- [x] 臨時加簽／臨時會簽 UI（案件詳情頁的任務區）
+- [ ] 減簽 / 跳簽 UI（未實作）
 - [ ] FormRenderer 套用欄位權限（visible / editable）
 
 ### W12 — 進階能力 2 + Dashboard
 
 **Backend**
 
-- [ ] 統計 API（流程平均耗時、卡關熱點、SLA 達成率）
-- [ ] 全文搜尋（pg_trgm 或 tsvector）
+- [ ] 統計 API（流程平均耗時、卡關熱點、SLA 達成率）（未實作；`workflowDashboardSummary` 只提供個人計數）
+- [ ] 全文搜尋（pg_trgm 或 tsvector）：目前僅有標題／發起人的關鍵字搜尋，並以 pg_trgm GIN 索引支撐；尚非全文搜尋
 
 **Frontend**
 
-- [ ] `/sent`、`/cc`、`/search` 完整版
-- [ ] `/dashboard` — 流程效能、卡關熱點
+- [x] `/sent`、`/cc`、`/search` 頁面已上線（功能完整度未另行盤點）
+- [ ] `/dashboard` — 流程效能、卡關熱點（未實作；目前 `/dashboard` 為個人工作台計數）
 - [ ] 模板列表頁的「使用情況」統計
 
 **驗收**：管理者可看到流程運作狀態、瓶頸、SLA 達成率。

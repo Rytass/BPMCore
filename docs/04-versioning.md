@@ -25,6 +25,8 @@ ApprovalTemplate
 └── created_at
 ```
 
+> 實際 entity 另有 `category_id`、`is_active`（停用旗標）、`deleted_at`（見上文 3.6）等欄位，以 `approval-template.entity.ts` 為準。
+
 ### ApprovalTemplateVersion（版本實體）
 
 ```
@@ -60,7 +62,7 @@ ApprovalTemplateVersion
             ┌──────────│    PUBLISHED     │
             │          └────────┬─────────┘
             │                   │
-   rollback│ (只剩此版時)       │ 有人 publish 新版
+   rollback│ (current 歸檔、目標版本重新發布)│ 有人 publish 新版
             │                   ▼
             │          ┌──────────────────┐
             └─────────▶│     ARCHIVED     │
@@ -75,75 +77,106 @@ ApprovalTemplateVersion
 
 **關鍵不變式**：在任意時間點，一個 template 最多只有一個 PUBLISHED 版本（即 current）。
 
+**單一 DRAFT 規則**：同一個 template 同時最多只有一個 DRAFT 版本。此規則目前由應用層檢查實現
+（`forkApprovalTemplate` 在已存在 DRAFT 時回 `ConflictException`），資料庫層沒有 partial unique index，
+因此併發建立時理論上仍可能破壞此不變式。一個 template 可以同時有一個 DRAFT 與一個 PUBLISHED（current）。
+
+> 以下操作對應的實作位於 `libs/bpm-core/src/lib/template/template.service.ts`；GraphQL mutation 名稱為實際 API。
+> 本節描述的是目前程式行為，與早期設計不同處以「實際行為」標示。
+
 ---
 
 ## 3. 操作行為
 
 ### 3.1 新增模板
 
+`createApprovalTemplate` mutation（`template.mutations.ts`）：
+
 ```
-POST /templates
-→ 建立 ApprovalTemplate (current_version_id = NULL)
-→ 同時建立 v1 (status = DRAFT)
-→ 回傳 template + v1
+createApprovalTemplate
+→ 建立 ApprovalTemplate (current_version_id = NULL, is_active = true)
+→ 同時建立 v1 (status = DRAFT，workflow_definition 為空的起始結構)
+→ 回傳 template
 ```
 
 ### 3.2 編輯（必為 DRAFT）
 
+`updateApprovalTemplateDraft(input: UpdateApprovalTemplateDraftInput)` mutation，**不是 REST PATCH**：
+
 ```
-PATCH /templates/{id}/versions/{versionId}
-- 僅允許 status = DRAFT 的版本被編輯
-- PUBLISHED / ARCHIVED 不可編輯
+- 僅允許 status = DRAFT 的版本被編輯；其他狀態回 ConflictException（409）
+- 不做 optimistic locking：沒有版本號或 updated_at 比對，後寫入者覆蓋先寫入者（last write wins）
 ```
 
 ### 3.3 從現有版本 fork 新版
 
+`forkApprovalTemplate(templateId: ID)` mutation，**不是 REST `POST /templates/{id}/versions`**：
+
 ```
-POST /templates/{id}/versions
-- 從 current_version_id 複製內容
+- 來源是 template 的 current 版本；沒有 current（尚未發布過）時以空的起始結構建立
 - 新版號 = max(version) + 1
 - status = DRAFT
+- 已存在 DRAFT 時回 ConflictException，不會建立第二個 DRAFT
 - 此操作不影響 current
+- 目前只能從 current 版本 fork；沒有「從任意 ARCHIVED 版本複製到新 DRAFT」的 API
 ```
+
+設計器的儲存行為：編輯 current 版本時，不會在開啟時自動 fork；按「儲存」時若沒有既有 DRAFT 才會呼叫 `forkApprovalTemplate`，
+之後照常以 `updateApprovalTemplateDraft` 寫入。
 
 ### 3.4 發布
 
-```
-POST /templates/{id}/versions/{versionId}/publish
+`publishApprovalTemplateVersion(versionId: ID, publishedByMemberId: ID)` mutation（發布者以登入身分為準）：
 
-事務內：
-  1. 驗證該版本為 DRAFT
-  2. 執行發布驗證（流程結構合法性、CEL parse/lint）
-  3. 若 template 已有 current PUBLISHED 版本：
+```
+1. 驗證該版本為 DRAFT；否則 ConflictException
+2. 發布驗證（不修改任何狀態；失敗回 BadRequestException）：
+   - 必須綁定表單版本，且該表單版本為 PUBLISHED
+   - 流程結構 lint（唯一 Start、連通性、XOR 出邊、cycle detector 等）
+   - CEL parse/lint：非 edge 條件的根識別字白名單；edge 條件另允許 lastDecision
+   - 表單欄位引用、人員欄位引用、知會節點 webhook 端點（存在、未停用、參數綁定與型別）
+3. 事務內：template 已停用（is_active = false）時回 ConflictException
+4. 若 template 已有 current PUBLISHED 版本：
      - 該版本 status → ARCHIVED
      - archived_at = now()
-  4. 此版本 status → PUBLISHED
-  5. published_at = now(), published_by_member_id = current user
-  6. template.current_version_id = 此版本.id
+5. 此版本 status → PUBLISHED
+6. published_at = now(), published_by_member_id = 發布者
+7. template.current_version_id = 此版本.id
 ```
 
 ### 3.5 回退
 
-```
-POST /templates/{id}/rollback?targetVersionId=xxx
+`rollbackApprovalTemplateVersion(versionId: ID)` mutation，**不是 REST `POST /templates/{id}/rollback?targetVersionId=`**：
 
-事務內：
-  1. 驗證 targetVersion 為 ARCHIVED
-  2. current PUBLISHED 版本 status → ARCHIVED
-  3. targetVersion status → PUBLISHED
-  4. template.current_version_id = targetVersion.id
 ```
+1. target 版本不得為 DRAFT（否則 ConflictException）；目前不要求 target 為 ARCHIVED，
+   target 即為 current 時等同重設為 current（仍會寫入）
+2. template 已停用時回 ConflictException
+3. 若 target 不是 current：原 current PUBLISHED 版本 status → ARCHIVED（archived_at = now()）
+4. target status → PUBLISHED（archived_at 清空）
+5. template.current_version_id = target.id
+```
+
+回退**不會**重新執行發布驗證，也不檢查 target 綁定的表單版本目前是否仍為 PUBLISHED。
+目前 target 也可以是歷史上任何非 DRAFT 版本，不限於 ARCHIVED。
 
 > 回退**不影響進行中的 instance**，僅影響「之後發起的新 instance」會用哪個版本。
 
-### 3.6 刪除（軟刪除）
+### 3.6 刪除（軟刪除）— 未實作
+
+**目前沒有刪除模板的 API**（無 `deleteApprovalTemplate` mutation，`DELETE /templates/{id}` 也不存在）。
+`approval_templates` 有 `deleted_at` 欄位（TypeORM `@DeleteDateColumn`），相關查詢也會過濾它，
+但目前沒有任何 API 寫入此欄位。要讓模板不可再發起，目前的做法是 `deactivateApprovalTemplate`（停用，`is_active = false`）。
+
+以下為規劃中的設計，尚未實作：
 
 ```
-DELETE /templates/{id}
 - template.deleted_at = now()
 - 所有版本維持原狀（歷史 instance 仍可引用）
 - 不可被列出 / 不可發起新 instance
 ```
+
+（`deleteApprovalTemplateCategory` 是類別的刪除，與模板無關；類別仍被模板引用時會拒絕刪除。）
 
 ---
 
@@ -177,7 +210,7 @@ ApprovalInstance
 ### 4.3 發起時的處理
 
 ```
-POST /instances
+submitApprovalInstance mutation（GraphQL，不是 REST `POST /instances`）
 { templateId, formData }
 
 引擎：
@@ -222,28 +255,28 @@ POST /instances
 
 ### 模板設計器
 
-- 開啟 current published 版本 → 自動 fork 新 DRAFT 版本（提示使用者）
-- 也可直接從 archived 版本 fork（複製其內容到新 DRAFT）
+- 開啟 current published 版本時不會自動 fork；按「儲存」或「發布」且沒有既有 DRAFT 時，才以 current 為來源 fork 新 DRAFT（見 3.3）。
+- 目前沒有「從任意 archived 版本複製到新 DRAFT」的功能。
 - DRAFT 才能編輯
 
-### 版本管理頁
+### 版本管理頁（`/templates/[id]/versions`）
 
-- 列出所有版本
-- 可比對任兩個版本的差異（diff）
-- 可從 archived 版本複製內容到新 DRAFT
-- **回退按鈕**只在 archived 版本可見
+- 列出所有版本（版本號、狀態、表單版本、發布時間、更新時間）。
+- **未實作**：任兩個版本的差異比對（diff）。
+- **未實作**：從 archived 版本複製內容到新 DRAFT（fork 只來自 current）。
+- **回退（Rollback）按鈕**目前顯示在所有非 DRAFT 列（包含 current 本身），DRAFT 列停用；它並非只在 archived 版本可見。
 
 ---
 
 ## 7. 例外處理
 
-| 情境                               | 處理                                               |
-| ---------------------------------- | -------------------------------------------------- |
-| 多人同時編輯同一個 DRAFT           | Optimistic locking（版本號或 updated_at 衝突偵測） |
-| 發布時靜態分析失敗                 | 回傳錯誤，不修改任何狀態                           |
-| 已發布版本要修正 typo              | 仍須 fork 新版本 → 編輯 → 發布（不允許就地修改）   |
-| Form 還是 DRAFT 但 Template 想發布 | 阻擋發布（綁定的 form 必須是 PUBLISHED）           |
-| 系統清理舊 archived 版本           | **不允許**（除非該版本沒有任何 instance 引用）     |
+| 情境                               | 處理                                                                                      |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| 多人同時編輯同一個 DRAFT           | **未實作** optimistic locking；後寫入者覆蓋先寫入者（規劃：版本號或 updated_at 衝突偵測） |
+| 發布時靜態分析失敗                 | 回傳錯誤，不修改任何狀態                                                                  |
+| 已發布版本要修正 typo              | 仍須 fork 新版本 → 編輯 → 發布（不允許就地修改）                                          |
+| Form 還是 DRAFT 但 Template 想發布 | 阻擋發布（綁定的 form 必須是 PUBLISHED）                                                  |
+| 系統清理舊 archived 版本           | **不允許**（除非該版本沒有任何 instance 引用）                                            |
 
 ---
 

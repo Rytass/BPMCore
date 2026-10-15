@@ -70,28 +70,43 @@
 
 ## 後端模組劃分（NestJS）
 
+`libs/bpm-core/src/lib/` 下的目錄（對外入口為 `BPMRootModule`，子路徑見 [10 — 嵌入式模組與 Auth](./10-bpm-embedding-auth.md)）：
+
 ```
+bpm/              BPMRootModule：組合下列模組的 host 入口
 identity/         會員 ID + 外部 Resolver 介面（不存 user 詳細資料）
 organization/     OrgUnit / Position / Membership / ManagerResolution
 delegation/       代理規則 + 解析
 form/             FormDefinition + 版本
+form-data-source/ 宿主註冊的版本化表單選項 DataSource registry
 template/         ApprovalTemplate + 版本 + 發布/回退
-workflow-engine/  Instance / Task / 狀態機 / Token 管理 / Scheduler
+workflow-engine/  Instance / Task / 狀態機 / Token 管理 / Scheduler / ActivityLog（append-only）/ 臨時加簽與會簽
+workflow-webhook/ 知會節點 webhook 端點 registry 與投遞（ADR 18）
 condition/        CEL parse / lint / evaluate（Context Schema registry 尚未實作）
+calendar/         工作日行事曆（SLA 用，宿主可注入 BPMBusinessCalendar）
 signature/        L1 HMAC + RFC 3161
 attachment/       附件儲存（預設 local，可替換 storage adapter）
 notification/     通知（in-app + email + webhook）
-audit/            ActivityLog (append-only)
-reporting/        Inbox / Notifications 已實作；Sent / CC / Search / Dashboard 規劃中
+bpm-auth/         BPMAuthContext、guard 與 param decorators
+database/         TypeORM DataSource 選項 helper
+migrations/       BPM_CORE_MIGRATIONS
+common/           共用工具（例如 filters、outbox、ISO duration）
+testing/          測試輔助，不屬於對外 API
 ```
 
 ## 前端結構（Next.js）
 
 ```
 /                                   工作台與發起簽核入口
-/inbox                                我的待簽
-/notifications                        通知中心
+/dashboard                            個人工作台（待處理簽核、未讀通知、進行中、逾時、案件總數）
+/inbox                                我的待簽（含「歷史簽核記錄」分頁）
+/sent                                 我發起的案件
+/cc                                   副本案件
+/search                               案件搜尋
+/delegations                          個人代理設定
+/settings/notifications               通知偏好設定
 /templates                            模板列表（IT）
+  /templates/categories               模板類別
   /templates/compose                  表單 + 流程建立 wizard
   /templates/[id]/designer            流程設計器（React Flow）
   /templates/[id]/versions            版本管理
@@ -100,10 +115,15 @@ reporting/        Inbox / Notifications 已實作；Sent / CC / Search / Dashboa
 /admin/orgs                           組織管理
 /admin/users                          帳號管理（member_id 對照）
 /admin/delegations                    代理規則
+/admin/webhook-endpoints              知會節點 webhook 端點管理
+/login                                登入
 ```
 
-`/sent`、`/cc`、`/search`、`/dashboard` 屬於後續 W12 規劃，尚不是目前 client
-實作頁面。
+站內通知**沒有** `/notifications` 頁面：通知以鈴鐺按鈕開啟的通知抽屜（`NotificationDrawer`）呈現。
+`routes-config` 保留了 `/notifications` 路徑給想自建獨立頁面的宿主掛載。
+
+`/sent`、`/cc`、`/search` 與 `/dashboard` 頁面已存在；`/dashboard` 目前是個人工作台計數，
+流程效能統計（平均耗時、卡關熱點、SLA 達成率）仍屬規劃中（見 [09 — 開發路線圖](./09-roadmap.md) W12）。
 
 ## 不在 MVP 範圍
 

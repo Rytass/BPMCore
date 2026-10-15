@@ -31,15 +31,17 @@
          RUNNING ─── 退回到發起人 ───▶ RETURNED ─── resubmit ───▶ RUNNING
 ```
 
-| 狀態          | 描述                           | 終態 |
-| ------------- | ------------------------------ | ---- |
-| **DRAFT**     | 暫存（可選功能）               | ❌   |
-| **RUNNING**   | 流程進行中                     | ❌   |
-| **APPROVED**  | 所有 token 走到 End            | ✅   |
-| **REJECTED**  | 任一 task 拒絕（不可恢復）     | ✅   |
-| **RETURNED**  | 退回到發起人（可重編輯後再送） | ❌   |
-| **CANCELLED** | 發起人主動撤銷                 | ✅   |
-| **EXPIRED**   | SLA 終止策略觸發               | ✅   |
+| 狀態          | 描述                                                                                   | 終態 |
+| ------------- | -------------------------------------------------------------------------------------- | ---- |
+| **DRAFT**     | 保留。目前引擎不會寫入此狀態（UI 的篩選選項會列出，但沒有實際資料），屬未實作的規劃   | ❌   |
+| **RUNNING**   | 流程進行中                                                                             | ❌   |
+| **APPROVED**  | 所有 token 走到 End                                                                    | ✅   |
+| **REJECTED**  | 任一 task 拒絕（不可恢復）                                                             | ✅   |
+| **RETURNED**  | 退回到發起節點（start event）後等待發起人重新送出；退回到其他節點時維持 RUNNING          | ❌   |
+| **CANCELLED** | 發起人主動撤銷                                                                         | ✅   |
+| **EXPIRED**   | 未發佈（v0.16.2 之後）。SLA 的 `TERMINATE_INSTANCE` 策略觸發；收尾與取消相同，但無 actor、不是人為撤銷（見 §6.2） | ✅   |
+
+> 先前已被 SLA 終止的案件仍為 CANCELLED（舊資料不回填）。
 
 ### 1.2 Token 狀態
 
@@ -79,12 +81,13 @@
        │ IN_PROGRESS  │
        └──────┬───────┘
               │
-   ┌──────────┼─────────────────────┬──────────────────┐
-   │          │                     │                  │
-   ▼          ▼                     ▼                  ▼
-COMPLETED  TRANSFERRED         CANCELLED         (timeout 處理)
-(decided)  (轉派他人，本 task    (instance              ↓
-            結束、新建一筆)      cancelled)         依模板策略
+   ┌──────────┼─────────────────────┐
+   │          │                     │
+   ▼          ▼                     ▼
+COMPLETED  TRANSFERRED         CANCELLED
+(decided)  (轉派他人，本 task    (instance cancelled、
+            結束、新建一筆)      expired 或 returned 時
+                                 開放中的 task 皆被結束)
 ```
 
 ---
@@ -184,7 +187,12 @@ W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，並保留�
 - `edge.data.conditionValue`
 - `edge.data.isDefault`
 
-引擎會用 instance 的 `formData`、initiator snapshot、instance metadata 與上一個節點的 latest decision 組成 CEL context，判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。
+引擎會用 `env`、`form`／`formData`、`initiator`、`instance`（id、state、templateId、templateVersionId、title），加上 `lastDecision`（未發佈，v0.16.2 之後）
+組成 CEL context。`lastDecision` 是 edge 來源節點上最新一筆決策（`LastDecisionContext`，形狀見 `docs/05` §3），
+該節點尚無決策時為 `null`，所以條件要寫成 `lastDecision != null && …`。XOR 判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。
+
+> 所有節點類型的 outgoing edge 都會先評估條件：條件成立的 edge 全部都會走（分叉），XOR 只取第一條。
+> 下方示意程式只描述 XOR 的情況。
 
 ```typescript
 function handleExclusiveGateway(node, token) {
@@ -202,13 +210,13 @@ function handleExclusiveGateway(node, token) {
     moveTokenToNode(token, defaultEdge.target);
     return;
   }
-  throw new EngineError('XOR has no matching edge and no default flow');
+  throw new ConflictException(`Workflow node ${node.id} has no matching outgoing edge`); // 實際行為
 }
 ```
 
 ### 3.2 Parallel Gateway (AND) Split
 
-W6 MVP 不要求設計器使用 Parallel Gateway 節點。任何可輸出的節點只要有多條 outgoing edge，runtime 就會把目前 token consume，並為每條 outgoing edge 建立一個 child `ACTIVE` token。這讓「一個簽核節點往後拉兩條線」可直接表達平行分支。
+W6 MVP 不要求設計器使用 Parallel Gateway 節點。任何可輸出的節點只要有多條 outgoing edge，runtime 就會把目前 token consume，並為每條**條件成立（或無條件）**的 outgoing edge 建立一個 child `ACTIVE` token。這讓「一個簽核節點往後拉兩條線」可直接表達平行分支。
 
 ```typescript
 function handleParallelSplit(node, token) {
@@ -230,34 +238,40 @@ function handleParallelSplit(node, token) {
 
 W6 runtime 將 join 語意放在目標節點的 `data.triggerMode`，而不是要求額外的 join gateway：
 
-- `AND`：多條 incoming edge 都抵達後才觸發該節點；先抵達的 token 會暫時轉為 `WAITING`。
+- `AND`（預設）：多條 incoming edge 都抵達後才觸發該節點。先抵達的 token 會暫時轉為 `WAITING`，
+  但只有在「仍有其他存活的 token 可能抵達這個節點」時才等待；若已不可能再到達（例如另一分支已被
+  XOR 排除），合併以已到達的 token 繼續，不會卡住。
 - `OR`：任一 incoming edge 抵達就觸發該節點；其他仍可能抵達同一節點的 sibling branch 會被 consume，相關 pending task 會被標記為 `CANCELLED`。
 
+實際行為對應 `workflow-engine.service.ts` 的 `isNodeEntryReady`。它是每個節點進入時的檢查，只對有 2 條以上入邊的節點生效，
+且排在 `entryCondition` 判定之前（見 §2）。token 狀態只有 `ACTIVE`／`WAITING`／`CONSUMED` 三種，沒有 `WAITING_AT_JOIN`。
+
 ```typescript
-function handleParallelJoin(node, token) {
-  const incoming = workflow.incomingEdges(node.id);
-  const arrivedTokens = await fetchTokensAtNode(node.id, instanceId);
+function isNodeEntryReady(node, token) {
+  if (incomingEdges(node).length < 2) return true;
 
-  if (arrivedTokens.length < incoming.length) {
-    // 還沒到齊，把這顆 token 「掛」在這個節點等
-    setTokenStatus(token, 'WAITING_AT_JOIN');
-    return;
+  const arrived = tokensAt(node.id, status in [ACTIVE, WAITING]); // 含本顆 token
+
+  if (node.data.triggerMode === 'OR') {
+    cancelAlternativeTokens(node.id);     // sibling token consume，相關 pending task → CANCELLED
+    consumeJoinedTokens(arrived.filter(t => t.id !== token.id));
+    return true;
   }
 
-  // 全部到齊：合併成一顆
-  for (const t of arrivedTokens) consumeToken(t);
-  const outgoing = workflow.outgoingEdges(node.id);
-  for (const edge of outgoing) {
-    createToken({
-      instanceId,
-      currentNodeId: edge.target,
-      status: 'ACTIVE',
-    });
+  // AND：還有其他存活 token 可能抵達這個節點時才等待
+  const mayStillArrive = otherLiveTokens.filter(t => hasPathToNode(t.currentNodeId, node.id));
+  if (arrived.length < incomingEdges(node).length && mayStillArrive.length > 0) {
+    setTokenStatus(token, 'WAITING');     // 等待；之後其他分支抵達時會重新檢查
+    return false;
   }
+
+  consumeJoinedTokens(arrived.filter(t => t.id !== token.id)); // 合併成這顆 token
+  return true;                            // 合併後的 token 照常沿出邊前進
 }
 ```
 
-> AND Join 須避免 race condition：用 row lock + serializable transaction。
+> 同一 instance 的所有處理都在同一個 transaction 內，並以 transaction 層級的 advisory lock 序列化（見 §10）。
+> 本系統**沒有**使用 SERIALIZABLE 隔離等級，也沒有 row lock 作為 AND Join 的防護。
 
 ---
 
@@ -296,6 +310,9 @@ node.approverResolver
 
 ### 4.1 候選人解析
 
+> 以下為示意，方法名稱不是實際 API；resolver 型別的完整定義見 `libs/shared/src/lib/workflow.ts` 的 `ApproverResolver`。
+> 實際候選人解析入口為 `workflow-engine.service.ts` 內的候選人解析流程（`ORG_UNIT_*` 與 `POSITION` 由組織資料解析，見下方 §4.3 的順序說明）。
+
 ```typescript
 async function resolveApprovers(
   resolver: ApproverResolver,
@@ -316,6 +333,18 @@ async function resolveApprovers(
     case 'ORG_MANAGER_CHAIN':
       // 沿主管鏈往上，直到某位主管的職等達 minPositionLevel（規則見 §4.1.1）
       return await walkManagerChain(context.initiator, resolver.minPositionLevel);
+
+    case 'ORG_UNIT_MEMBER':
+      // 指定組織單位（可選含子單位）底下的所有成員
+      return await memberships.findByOrgUnit(resolver.orgUnitId, resolver.includeDescendants);
+
+    case 'ORG_UNIT_POSITION':
+      // 指定組織單位（可選含子單位）內、擔任指定職位的成員
+      return await memberships.findByOrgUnitAndPosition(resolver.orgUnitId, resolver.positionId, resolver.includeDescendants);
+
+    case 'ORG_UNIT_MANAGER':
+      // 指定組織單位的主管（主管規則，見 organization 模組）
+      return [await managerResolution.findManagerOfOrgUnit(resolver.orgUnitId, resolver.preferClosestOrgUnit)];
 
     case 'DYNAMIC_FORM':
       // 從表單欄位（user_picker / org_picker）取
@@ -387,8 +416,10 @@ async function resolveApprovers(
 
 #### 4.1.2 無主管時的改派（`fallback`）
 
+> `POSITION` 備援與「未知備援類型守衛」**尚未發佈**（v0.16.2 之後才合入 main）；已發佈版本只有 `NONE` 與 `DIRECT`。
+
 `ORG_MANAGER`、`ORG_UNIT_MANAGER`、`ORG_MANAGER_CHAIN` 找不到主管時，才會讀 `fallback`。
-型別只有三種，都是窄版、不接受任意 resolver：
+型別只有三種（`POSITION` 尚未發佈），都是窄版、不接受任意 resolver：
 
 | `fallback.type` | 解析結果 | 申請人本人 |
 | --- | --- | --- |
@@ -430,21 +461,20 @@ async function applyDelegation(
 
   while (true) {
     if (visited.has(current)) {
-      // 防循環代理 (A 代給 B、B 代給 A)
-      throw new EngineError('Delegation cycle detected');
+      // 防循環代理 (A 代給 B、B 代給 A)；實際丟 ConflictException（"Delegation cycle detected ..."）
+      throw new ConflictException(`Delegation cycle detected for member ${current}`);
     }
     visited.add(current);
 
-    // 1. 找此 principal 當下所有 ACTIVE 的代理規則
+    // 1. 找此 principal 當下所有有效的代理規則（status ACTIVE、startAt 已到、endAt 未過）
     const rules = await delegationRules.findActive(current, env.now);
 
-    // 2. 過濾符合 scope 的規則（依 priority 排序）
-    const applicable = rules.filter((r) => matchesScope(r, context)).sort((a, b) => a.priority - b.priority);
+    // 2. 依優先序排序：priority 數字大者優先（與組織主管規則一致）；同 priority 時較早建立者優先
+    const ordered = [...rules].sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt);
 
-    if (applicable.length === 0) break;
-
-    // 3. 取最高優先序（多筆規則時取一）
-    const rule = applicable[0];
+    // 3. 取第一條 scope 符合的規則；沒有則結束代理鏈
+    const rule = ordered.find((r) => matchesScope(r, context));
+    if (!rule) break;
 
     chain.push({
       from: current,
@@ -461,11 +491,32 @@ async function applyDelegation(
 }
 ```
 
-| Scope 類型        | matchesScope() 邏輯                                        |
-| ----------------- | ---------------------------------------------------------- |
-| `ALL`             | 永遠 true                                                  |
-| `TEMPLATE_LIST`   | `template_id in rule.scope_template_ids`                   |
-| `CONDITION_BASED` | `cel.evaluate(rule.scope_condition_cel, context) === true` |
+| Scope 類型        | matchesScope() 邏輯                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `ALL`             | 永遠 true                                                                                 |
+| `TEMPLATE_LIST`   | `instance.templateId`（即模板 id）在 `rule.scope_template_ids` 內                         |
+| `CONDITION_BASED` | `ConditionService.evaluateBoolean(rule.scope_condition_cel, 委派 context) === true`；條件執行期錯誤會拋出 `BadRequestException` |
+
+**實際行為與上方示意的差異（以程式為準）**：
+
+- 排序是 `priority` DESC（未發佈，v0.16.2 之後；已發佈版本為數字小者優先），同 priority 時 `createdAt` ASC（先建立者勝出）。委派規則的列表頁（後台）則是 `priority` DESC、`createdAt` DESC。
+  這與組織主管規則（manager resolution）一致：數字大者優先。
+- 規則的 `priority` 預設 100；數字越大越優先，不是越小越優先。
+- 找不到可用規則即結束代理鏈；代理鏈中若回到已經出現過的成員，丟 `ConflictException`。
+  規則儲存時也會檢查不得形成循環（`assertNoActiveCycle`），所以正常資料不會走到這裡。
+
+**委派條件（`CONDITION_BASED`）的 CEL context**（`buildDelegationExpressionContext`）：
+
+| 根識別字    | 內容                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| `env`       | `{ now }`（ISO 字串）                                                                      |
+| `form`／`formData` | 任務所屬 instance 的表單資料（兩者相同）                                          |
+| `initiator` | 申請人 snapshot，並展開 `memberId`                                                         |
+| `instance`  | `{ id, nodeId, state, templateId, templateVersionId, title }`；`nodeId` 為被委派任務所在的節點 |
+| `principal` | `{ memberId }`，即被代理的人                                                               |
+
+沒有 `subject`、`task`、`template` 根識別字。儲存規則時會檢查根識別字（未發佈，v0.16.2 之後），只允許上述六個；
+不合法的規則不會被儲存。已經存在的錯誤規則不會被改動，執行期評估時仍會拋錯。
 
 ### 4.3 User Task 派工
 
@@ -696,36 +747,39 @@ async function handleApproval(task) {
 
 ### 5.2 拒絕
 
-依模板設定：
-
-- **預設**：流程立即終止 → instance.state = REJECTED
-- 可設「拒絕視同退回上一關」（少見，模板可選）
+- 拒絕決策必須附非空白的 comment，否則丟 `BadRequestException`（`Reject decision comment is required`）。
+- 流程立即終止 → instance.state = `REJECTED`。其餘開放中的 token 與 task（含平行分支）一併結束，
+  候選人一併關閉，並清除 pending 的 ad-hoc 指令（見 `docs/13` §6.2）。
+- **「拒絕視同退回上一關」未實作（規劃中）**：目前模板沒有這個設定，拒絕一律終止整個流程。
 
 ### 5.3 退回
 
+退回的範圍是**整個 instance**，不只是同一節點（對應 `returnInstanceToNode`）：
+
 ```typescript
 async function handleReturn(task, targetNodeId) {
-  // 1. 終結當前 token
-  await tokens.update(task.token_id, { status: 'CONSUMED' });
+  // 1. 結束整個 instance 所有開放中的 runtime 狀態：
+  //    ACTIVE／WAITING 的 token 全部 CONSUMED（含其他平行分支），
+  //    PENDING／IN_PROGRESS 的 task 全部 CANCELLED，其候選人一併關閉
+  await consumeOpenRuntimeState(task.instance_id, { taskStatus: 'CANCELLED' });
 
-  // 2. 取消同節點其他 pending tasks
-  await cancelSiblingTasks(task);
+  // 2. 清除 pending 的會簽／加簽指令；階段通知依退回結果送出，結案通知保留
+  await cancelPendingAdhocDirectives(task.instance_id, ['COUNTERSIGN', 'PRE_APPROVAL']);
 
-  // 3. 在退回目標節點建立新 token
+  // 3. instance state：退回到 start event 為 RETURNED，退回到其他節點為 RUNNING
+  // 4. 在退回目標節點建立新 token（ACTIVE），之後照常推進
   await tokens.create({
     instanceId: task.instance_id,
     currentNodeId: targetNodeId,
     status: 'ACTIVE',
   });
-
-  // 4. instance state → RETURNED (若退回到發起人) or 保持 RUNNING
-  if (targetNodeId === workflow.startNode.id) {
-    await instances.update(task.instance_id, { state: 'RETURNED' });
-  }
 }
 ```
 
-退回到發起人後，instance 狀態為 RETURNED。發起人可：
+> 退回到其他節點時，整個流程會從該節點重新開始；其他分支的進行中工作都會被取消，不會保留。
+> 「只取消同節點的 task」的做法**未採用**。
+
+退回到發起節點（start event）後，instance 狀態為 RETURNED。發起人可：
 
 - 編輯 form_data → 再次 submit → state 回 RUNNING
 - 主動撤銷 → state = CANCELLED
@@ -790,49 +844,81 @@ BPMCore 不內建任何國別假日資料；未注入時退回內建的週一～
 
 ### 6.2 SLA 掃描器
 
+SLA 掃描器（`NotificationService.runSlaScan`）由 `NotificationSlaSchedulerService` 以 `setInterval` 定期執行，
+預設每 60 秒（`slaScanIntervalMs`），由宿主選項 `slaSchedulerEnabled` 開關。掃描對象是 `PENDING`／`IN_PROGRESS`
+且 `sla_due_at` 有值的 task。流程（示意）：
+
 ```typescript
-// Cron 每分鐘
-async function scanSlaBreaches() {
-  const overdueTasks = await tasks.findOverdue(env.now);
+// 每個掃描到的 task（已逾時）
+async function handleOverdueTask(task) {
+  const node = workflow.findNode(task.node_id);
+  const policy = node.sla.onTimeout ?? 'REMIND'; // 'REMIND' | 'AUTO_APPROVE' | 'ESCALATE' | 'TERMINATE_INSTANCE'
 
-  for (const task of overdueTasks) {
-    const node = workflow.findNode(task.node_id);
-    const policy = node.sla.onTimeout;  // 'REMIND' | 'AUTO_APPROVE' | 'ESCALATE' | 'TERMINATE_INSTANCE'
+  // 1. 先寫 SLA_OVERDUE 通知（同一 task／收件人只寫一次，有唯一索引防重）。
+  //    已存在就直接結束：步驟 2、3 只在「首次建立通知」時執行，因此每個逾時 task 的動作至多執行一次
+  const created = await notifications.createSlaNotificationOnce(task, 'SLA_OVERDUE');
+  if (!created) return;
 
-    switch (policy) {
-      case 'REMIND':
-        await notifications.sendSlaWarning(task);
-        break;
+  // 2. 寫 SLA_TRIGGERED 活動紀錄（actor 為 null，trigger = 'OVERDUE'），在執行動作之前
+  await activityLogs.create({ type: 'SLA_TRIGGERED', actor: null, payload: { onTimeout: policy, ... } });
 
-      case 'AUTO_APPROVE':
-        // 等同有人按了同意（系統作為 actor）
-        await decideTask(task.id, 'APPROVED', { systemActor: true });
-        break;
+  // 3. 宿主有啟用該策略才執行動作；未啟用時只有步驟 1、2（活動紀錄仍會寫入，但動作不會執行）
+  //    預設：REMIND 啟用；AUTO_APPROVE／ESCALATE／TERMINATE_INSTANCE 預設關閉
+  if (!isEnabledByHost(policy)) return;
 
-      case 'ESCALATE':
-        // 升級給上級主管；delegation chain 已有 SLA_ESCALATION 步驟就跳過
-        if (hasSlaEscalationStep(task)) break;
-        const escalateTo = await managerResolution.findManager(
-          task.assignee_member_id, node.sla.escalateLevelsUp ?? 1
-        );
-        await handleTransfer(task, escalateTo, 'SLA_ESCALATION');
-        break;
+  switch (policy) {
+    case 'REMIND':
+      break; // 僅步驟 1 的通知
 
-      case 'TERMINATE_INSTANCE':
-        await cancelInstance(task.instance_id, 'SLA_TIMEOUT');
-        break;
-    }
+    case 'AUTO_APPROVE':
+      // 以 task 的 assignee（無則第一位 candidate，依 createdAt）名義決策，見下方說明
+      await decideTask({ taskId, action: 'APPROVED', decidedByMemberId: actorId,
+                         comment: 'SLA timeout auto-approved this task.' });
+      break;
 
-    await activityLogs.create({ type: 'SLA_TRIGGERED', ... });
+    case 'ESCALATE':
+      // 若 delegation chain 已有 SLA_ESCALATION 步驟就跳過（防止逐層一路升到頂）
+      if (hasSlaEscalationStep(task)) break;
+      // 目標 = 以 actor 為起點往上 escalateLevelsUp 層（至少 1 層）的主管；找不到或等於 actor 就跳過
+      const target = await resolveEscalationTarget(actorId, node.sla.escalateLevelsUp);
+      if (!target || target === actorId) break;
+      await decideTask({ taskId, action: 'TRANSFERRED', decidedByMemberId: actorId,
+                         transferToMemberId: target, comment: 'SLA timeout escalated this task.' },
+                       { transferReason: 'SLA_ESCALATION' });
+      break;
+
+    case 'TERMINATE_INSTANCE':
+      // 結束案件，終態為 EXPIRED（不是 CANCELLED），無 actor
+      await expireApprovalInstance({ instanceId, nodeId, taskId,
+                                     comment: 'SLA timeout terminated this instance.' });
+      break;
   }
 }
+
+// 預警（非逾時）：task 尚未逾時、且已超過 warningAt 比例時，寫一次 SLA_WARNING 通知與 SLA_TRIGGERED（trigger = 'WARNING'）
 ```
+
+**AUTO_APPROVE 的稽核面（決策已定案，維持現況）**：系統並未以獨立的「系統 actor」決策，而是以 task 的 assignee
+（無 assignee 時為 `task_candidates` 中 `createdAt` 最早的一位）名義呼叫 `decideTask`。因此：
+
+- `task_decisions`、簽章（`signatures.signer_member_id`）與 `TASK_DECIDED` 活動紀錄都歸屬於該成員，看起來像他本人同意。
+- 辨識方式：決策的 `comment` 為固定字串 `SLA timeout auto-approved this task.`，且同一 task 之前有一筆 `SLA_TRIGGERED`（`actor_member_id` 為 null）。
+- 稽核時必須以這兩筆紀錄判斷是否為逾時自動同意，不能只看簽章人。
+
+**ESCALATE 的細節**：升級目標不是 delegation rule 查到的，而是組織主管解析（`resolveManagerMemberId`，從 actor 往上
+`escalateLevelsUp` 層，至少 1 層）。實際轉交走 `decideTask(TRANSFERRED)` 並帶 `transferReason: 'SLA_ESCALATION'`，
+因此不受 §4.3 的申請人／代送人轉交檢查約束（見 §4.3 的「不涵蓋」）。
+
+**TERMINATE_INSTANCE 的結果**（未發佈，v0.16.2 之後）：`expireApprovalInstance` 收尾與取消相同（token、task、候選人、通知 supersede、
+ad-hoc 結案通知，標籤為「逾期終止」），案件終態為 `EXPIRED`，活動紀錄為 `INSTANCE_EXPIRED`（actor 為 null，帶逾期任務的 nodeId／taskId）。
+若案件已經結束（另一個逾期任務先到、或已被人決策），原樣返回，不再動作。
 
 ### 6.3 SLA 預警（非逾時）
 
-模板可設定 `sla.warningAt: '50%'`（時限的 50% 時就提醒）。掃描器另一個條件分支處理。
-預警時間點是 `created_at` 與 `sla_due_at` 之間的線性比例；工作日模式下這個比例是
-「跨越區間的日曆時間比例」，不是工作時數比例。
+模板可設定 `sla.warningAt: 0.5`（0 到 1 之間的小數，代表時限的 50% 時提醒；不是字串 `'50%'`）。
+未設定，或值小於等於 0、大於等於 1 時不預警。掃描器另一個條件分支處理，每個 task 只寫一次 `SLA_WARNING` 通知。
+預警起點是 `sla_started_at`，沒有值時為 `created_at`；預警時間點是該起點與 `sla_due_at` 之間的線性比例。
+工作日模式下這個比例是「跨越區間的日曆時間比例」，不是工作時數比例。
 
 ### 6.4 升級的冪等性
 
@@ -848,14 +934,14 @@ async function scanSlaBreaches() {
 
 ## 7. ABAC 評估點整理
 
-| 何時評估                            | Context 內容                               | 失敗行為            |
-| ----------------------------------- | ------------------------------------------ | ------------------- |
-| 發起時驗證 initiator policy         | subject + env                              | 拒絕 submit         |
-| Form 欄位 visible/required/readonly | form (即時更新) + initiator                | 隱藏/標示           |
-| 節點 entryCondition                 | form + initiator + instance                | 跳過此節點          |
-| Edge condition                      | form + initiator + instance + lastDecision | 不走此邊            |
-| Approver resolver expression        | form + initiator + instance                | 解出空集合 → 拋例外 |
-| Delegation scope_condition_cel      | subject + task + instance + template       | 規則不適用          |
+| 何時評估                            | Context 內容（根識別字）                                                    | 失敗行為            |
+| ----------------------------------- | -------------------------------------------------------------------------- | ------------------- |
+| 發起時驗證 initiatorPolicyCel       | `env`、`initiator`（`subject` 為其別名）                                   | 條件為 false：拒絕 submit（`ConflictException`） |
+| Form 欄位 visible/required/readonly | form (即時更新) + initiator（表單層評估，本文件未逐一查證執行位置）          | 隱藏/標示           |
+| 節點 entryCondition                 | `env`、`form`、`formData`、`initiator`、`instance`                         | 條件為 false：跳過此節點（見 §2） |
+| Edge condition                      | 同上，另加 `lastDecision`（見 `docs/05` §3；未發佈，v0.16.2 之後）                               | 不走此邊；沒有任何條件成立時走 default 邊，都沒有則丟 `ConflictException` |
+| Approver resolver expression        | 同 entryCondition（無 `lastDecision`）                                     | 解出空集合 → 拋例外 |
+| Delegation scopeConditionCel        | `env`、`form`、`formData`、`initiator`、`instance`（含 `nodeId`）、`principal` | 條件為 false：規則不適用；執行期錯誤：拋 `BadRequestException` |
 
 ---
 
@@ -874,8 +960,12 @@ async function checkInstanceCompletion(instanceId) {
 }
 ```
 
-目前 runtime 完成 instance 時只更新 instance state / completedAt。`INSTANCE_COMPLETED`
-notification type 與 template 已保留，但尚未在 completion path 送出。
+核准完成時（`completeInstanceIfNoOpenRuntimeState`，state = `APPROVED`）會更新 instance 的 state 與 `completedAt`，
+並建立 `INSTANCE_COMPLETED` 站內通知給申請人（`createInstanceCompletedNotification`）。
+
+- 只有**核准完成**送出 `INSTANCE_COMPLETED`。拒絕（REJECTED）、取消（CANCELLED）、逾期終止（EXPIRED）都不送。
+- 結案的 ad-hoc 結案通知（`COMPLETION_NOTIFY`，見 `docs/13` §5.2）則對四種終態都會派發。
+- 通知的站內文案在有代送人時會註明「由 X 代為送出」（見 §4.4）。
 
 ---
 
@@ -883,28 +973,28 @@ notification type 與 template 已保留，但尚未在 completion path 送出�
 
 | 風險                    | 對策                                                                |
 | ----------------------- | ------------------------------------------------------------------- |
-| Token 處理進入無限迴圈  | 單次 processInstance 最多處理 N 步（例：500），超過拋例外並寫 audit |
-| AND Join race condition | DB row lock + serializable txn                                      |
+| Token 處理進入無限迴圈  | 單次處理最多 500 步（`MAX_PROCESSING_STEPS`），超過丟 `ConflictException`（"exceeded maximum processing steps"）並回滾該交易；超限本身不寫入稽核紀錄 |
+| AND Join race condition | 同 instance 以 transaction 層級 advisory lock 序列化（`pg_advisory_xact_lock`，見 §10）；未使用 SERIALIZABLE 或 row lock |
 | 代理鏈無限遞迴          | visited Set 防循環                                                  |
 | 重複決策                | task.status 檢查（PENDING/IN_PROGRESS 才能決策）                    |
-| 重複提交（按鈕雙擊）    | submit 時帶 client_idempotency_key                                  |
+| 重複提交（按鈕雙擊）    | 沒有通用的 idempotency key。宿主可在 submit 帶選用的 `businessKey`：同一樣板下相同業務鍵只能有一張簽核單（`approval_instances_business_key_key` 部分唯一索引，僅限有值的列），重複送出回 `ConflictException`，可用 `findApprovalInstanceByBusinessKey` 查回既有那張；不帶 `businessKey` 時沒有防重 |
 | 流程定義動態被改        | Instance 用 workflow_snapshot，不查 versions 表                     |
 
 ---
 
 ## 10. 並發策略
 
-- 一個 instance 的處理用 **DB advisory lock**（key = instance_id 的 hash）
-- 同 instance 的多個事件序列化處理，避免 token 狀態混亂
-- 跨 instance 可平行（多 worker）
+- 一個 instance 的處理用 **transaction 層級的 PostgreSQL advisory lock**：`SELECT pg_advisory_xact_lock(hashtext(instance_id))`，
+  在進行變更的交易開頭取得，交易結束（commit 或 rollback）時自動釋放，不需要手動 release。
+- 同 instance 的多個事件序列化處理，避免 token 狀態混亂；決策、取消、逾期終止、ad-hoc 指令等變更入口都在交易內取得同一把鎖（`workflow-engine.service.ts` 中的 `pg_advisory_xact_lock` 呼叫）。
+- 跨 instance 可平行（多 worker）。
+- 本系統未使用 SERIALIZABLE 隔離等級。
 
 ```typescript
 async function processInstance(instanceId) {
-  await db.acquireAdvisoryLock(hashOf(instanceId));
-  try {
-    // ... main loop
-  } finally {
-    await db.releaseAdvisoryLock(hashOf(instanceId));
-  }
+  await transaction(async (manager) => {
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [instanceId]);
+    // ... main loop（見 §2）
+  }); // 交易結束時鎖自動釋放
 }
 ```

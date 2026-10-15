@@ -43,7 +43,8 @@ pnpm add -D @rytass/secret-adapter-vault-nestjs        # 型別需要，見下�
 - **`@nestjs/platform-express`**：`NestFactory.create()` 的預設 HTTP adapter 由它提供，
   沒裝時 app 起不來。
 - **`@as-integrations/express5`**：`@apollo/server` 5 + Express 5 的整合層。缺它時
-  `/graphql` 會回 503，而不是一個講得清楚的錯誤。
+  `@nestjs/apollo` 在開機註冊 `/graphql` 時會印出 `The "@as-integrations/express5" package is missing…`
+  並以 exit code 1 結束程序，不是啟動後 `/graphql` 回 503。
 - **`@rytass/secret-adapter-vault-nestjs`**：`buildTypeOrmModuleOptions(vault)` 的簽章
   用到它的 `VaultService` 型別，型別宣告檔無條件 import 它。**即使不用 Vault**，
   沒裝它 `tsc` 會報找不到模組；裝成 `devDependencies` 即可，執行期不會載入。
@@ -51,20 +52,23 @@ pnpm add -D @rytass/secret-adapter-vault-nestjs        # 型別需要，見下�
 ### 1a. 版本對照
 
 四個套件的 peer range 是刻意放寬的（`@nestjs/core: >=10.0.0`、`graphql: >=16.0.0` 等），
-讓不同版本的 host 都接得上。代價是 **pnpm 的 `autoInstallPeers` 會把每個 peer 解析到最新版**，
-於是裝出 Nest 12 或 typeorm 1.x，出現 `TS1479`、或 module 明明有 import 卻被說沒 import 的
-假錯誤。新專案請照下表釘住主版本（這是 BPMCore 自己驗證的組合）：
+讓不同版本的 host 都接得上。代價是 **pnpm 的 `autoInstallPeers` 會把每個 peer 解析到當下最新版**，
+因此同一個套件可能在依賴樹裡出現兩份複本。
 
-| 套件                     | 驗證版本 |
-| ------------------------ | -------- |
-| `@nestjs/*`              | 11.x     |
-| `@nestjs/graphql` / `@nestjs/apollo` | 13.x |
-| `@apollo/server`         | 5.x      |
-| `graphql`                | 16.x     |
-| `typeorm`                | 0.3.x    |
-| `@nestjs/typeorm`        | 11.x     |
-| `reflect-metadata`       | 0.1.x / 0.2.x（只能有一份） |
-| `pg`                     | 8.x      |
+下表是 BPMCore 根 `package.json` 目前採用的主版本（精確版本以 lockfile 為準）。新專案建議採用相同的主版本，
+讓 peer 解析結果與 BPMCore 自己的驗證一致：
+
+| 套件                                 | BPMCore 目前主版本 |
+| ------------------------------------ | ------------------ |
+| `@nestjs/core`、`common`、`platform-express`、`config` | 12.x |
+| `@nestjs/graphql` / `@nestjs/apollo` | 14.x               |
+| `@nestjs/typeorm`                    | 12.x               |
+| `@apollo/server`                     | 5.x                |
+| `@as-integrations/express5`          | 1.x                |
+| `graphql`                            | 16.x               |
+| `typeorm`                            | 1.x                |
+| `reflect-metadata`                   | 0.2.x（只能有一份）|
+| `pg`                                 | 8.x                |
 
 同一個套件出現兩份複本是最常見的難查問題（兩個 `ModuleRef`、兩組
 `TypeOrmModuleOptions`）。pnpm 專案可用 `overrides` 強制單一複本，作法見
@@ -182,12 +186,14 @@ BPMRootModule.forRoot(); // 或 BPMRootModule.forRootAsync();
 ```
 
 這樣會得到：本機檔案系統附件儲存、把 member 解析成自身 id 的 `DefaultBPMMemberResolver`、
-週一～週五行事曆、空的表單 DataSource 目錄、`fetch` webhook dispatcher，站內通知開啟，
-email／webhook／兩個排程器關閉。功能一律由 host 自行 opt-in。
+週一～週五行事曆、空的表單 DataSource 目錄、`fetch` webhook dispatcher，站內通知開啟。
+email 與 webhook 通道在 SMTP／webhook 參數未設定時自動關閉（`auto`）；通知投遞排程器與 SLA 排程器預設關閉；
+工作流程 webhook 排程器在沒有任何端點時不啟用。功能一律由 host 自行 opt-in。
 
 上面 2. 的寫法只是「一次把常用項目都填好」的樣子，不是必填清單。實務上要補的通常只有兩件：
-`bpmAuthContext`（沒有的話所有需登入的操作都會 401）與正式環境的
-`attachmentSignedUrlSecret`（`NODE_ENV=production` 未設會直接讓程式起不來）。
+`bpmAuthContext`（沒有的話所有需登入的操作都會 401）與多副本部署的 `attachmentSignedUrlSecret`
+（未設定時每個 process 開機自動產生隨機密鑰並在 stderr 警告，URL 仍不可偽造，但只能在簽發它的 process 上驗證；
+單一副本可不設，多副本或需要重啟後連結仍有效時必須設定共用值）。
 
 祕密要從 Vault／KMS 讀時用 `forRootAsync`。**除了必須在 wiring 期決定的少數幾個之外，
 所有選項都能從 `useFactory` 回傳**，包含直接回傳做好的實例：
@@ -204,7 +210,8 @@ BPMRootModule.forRootAsync({
     // 直接給實例，不必自己組 Nest provider —— 祕密此時已經在手上。
     memberResolver: new HostMemberResolver(await vault.get('DIRECTORY_URL')),
     attachmentStorage: new S3Storage({ key: await vault.get('S3_KEY') }),
-    businessCalendar: new HostBusinessCalendar(),
+    // host 自己的工廠，內部建構 HostBusinessCalendar（其建構子需要 repository，見 2b）
+    businessCalendar: createHostBusinessCalendar(await vault.get('HOLIDAY_CALENDAR_URL')),
     formDataSourceRegistry: new HostFormDataSourceRegistry(),
     workflowServiceTaskDispatcher: new HostWebhookDispatcher(
       await vault.get('WEBHOOK_SIGNING_KEY'),
@@ -276,7 +283,8 @@ BPMRootModule.forRoot({
 在 provider 內用 `useFactory` / `inject`。
 
 需要祕密時更建議改回傳實例（`businessCalendar`，見 2a）：實例由 host 自己的工廠建構，
-連帶避開下面那個 provider 版本才有的 DI 循環陷阱。
+連帶避開下面那個 provider 版本才有的 DI 循環陷阱。上面 2a 的 `createHostBusinessCalendar(...)` 即為此類 host 工廠，
+其內部照常 `new HostBusinessCalendar(calendarRepository)`。
 
 `BPMRootModule` 的 `imports` 會一併傳進 `CalendarModule`，所以 calendar provider 的相依
 不需要靠 host 端的 `@Global()` module 才解析得到。
@@ -414,8 +422,8 @@ const signature = request.headers.get('x-bpm-signature-sha256') ?? undefined;
 - 請求沒有自訂 `content-type` 時，BPM 補上 `content-type: application/json`。
 
 **4. 投遞與排程。** 投遞一律在簽核交易 commit 之後進行，外部系統變慢或失敗都不會拖慢或回滾
-簽核。重試由排程器處理：有註冊任何端點時預設啟用，可用 `workflowWebhookDeliverySchedulerEnabled`
-明確開關（多個 API replica 同時掃描是安全的，claim 使用 `FOR UPDATE SKIP LOCKED`）。其餘可調
+簽核。重試由排程器處理。`workflowWebhookDeliverySchedulerEnabled` 未設定時：有啟用資料庫來源就一律啟用；
+否則只有在有端點註冊時才啟用。可用此選項明確開關（多個 API replica 同時掃描是安全的，claim 使用 `FOR UPDATE SKIP LOCKED`）。其餘可調
 選項：`workflowWebhookDeliveryScanIntervalMs`、`workflowWebhookDeliveryBatchSize`、
 `workflowWebhookDeliveryMaxAttempts`、`workflowWebhookDeliveryRetryBaseDelayMs`、
 `workflowWebhookDeliveryMaxRetryDelayMs`、`workflowWebhookDeliveryDefaultTimeoutMs`。
@@ -523,9 +531,10 @@ BPMCore 預期所有 controller 在 host 根路徑下提供 endpoint：
 ### 3a. 錯誤碼契約與 `formatError`
 
 BPM 的領域錯誤是 Nest 的 `HttpException` 子類（例如
-`BPMWorkflowWebhookException extends BadRequestException`），**但 GraphQL 下
-`extensions.code` 一律是 `INTERNAL_SERVER_ERROR`**——這是 Nest + Apollo 的既有行為，
-不代表伺服器壞了。前端要判斷的穩定契約是：
+`BPMWorkflowWebhookException extends BadRequestException`）。`@nestjs/apollo` 會依 HTTP status 設定 GraphQL 的
+`extensions.code`：400 → `BAD_REQUEST`、422 → `BAD_USER_INPUT`、401 → `UNAUTHENTICATED`、403 → `FORBIDDEN`；
+其餘 `HttpException`（例如 404、409）與未處理的錯誤則是 `INTERNAL_SERVER_ERROR`，並附上 `extensions.status`。
+所以 `INTERNAL_SERVER_ERROR` 不一定代表伺服器壞了，前端不應只靠 `code` 判斷錯誤種類。前端要判斷的穩定契約是：
 
 - `extensions.originalError.statusCode`（`400` / `403` / `404` …）
 - `message` 開頭的錯誤碼字串，例如
@@ -552,8 +561,9 @@ formatError: (
 includeStacktraceInErrorResponses: false,
 ```
 
-**`HttpException` 那個判斷是必要的**：若只看 `code` 就替換訊息，上面那些
-前端賴以顯示文案的穩定錯誤碼會一起被吃掉。
+**`HttpException` 那個判斷是必要的**：`409` 之類未列入對應表的 `HttpException` 也是
+`INTERNAL_SERVER_ERROR`，若只看 `code` 就替換訊息，這些 `HttpException` 的訊息（含前端賴以顯示文案的錯誤碼前綴）
+會一起被吃掉。此為簡化範例；`apps/api` 的實際設定可參考 `apps/api/src/app/app.module.ts`（其 `formatError` 另以 `redactInvalidVariableValue` 處理 variables）。
 
 ### 4. 跑 migrations（**必要，且只在 deploy 時跑一次**）
 
@@ -670,7 +680,7 @@ import './global.scss';
 BPMCore 自己的畫面只透過 design token（CSS variable）調整外觀，所以 host 覆寫
 token 就能換色，不需要改元件。
 
-> **Next.js + pnpm strict 必修**：若有裝 `@rytass/bpm-core-react`，`next.config.js` 必須加 `transpilePackages: ['@rytass/bpm-core-react']`，否則 Turbopack 無法解析 lib 內部對 `@rytass/bpm-core-client/workflow` 等 subpath 的 transitive peer-dep 引用，build 會炸 `Module not found`。
+> **Next.js + pnpm strict：依 build 結果決定（未在外部消費端重現驗證）**。`@rytass/bpm-core-react` 以編譯後的 `dist/`（ESM）發佈；BPMCore 自己的 `apps/client` 並未設定 `transpilePackages`，而是透過 tsconfig paths 直接吃原始碼，由 `@nx/next` 處理。若 host 的 `next build` 出現 `Module not found`（例如解析 `@rytass/bpm-core-client/workflow` 等 subpath 的 peer 相依失敗），再於 `next.config.js` 加入：
 >
 > ```js
 > module.exports = {
@@ -687,6 +697,11 @@ token 就能換色，不需要改元件。
 NEXT_PUBLIC_API_URL=https://api.example.com/graphql
 NEXT_PUBLIC_API_AUTH_URL=https://api.example.com   # /auth/* 的 base URL
 ```
+
+以下是 Next.js host 的 **server-only** 變數（不可加 `NEXT_PUBLIC_` 前綴），由 designer 頁的 page shim 讀取：
+
+- `BPM_TEMPLATE_DRY_RUN_ENABLED`：預設顯示設計器的「試跑流程」按鈕；設為 `'false'` 即隱藏。
+- `BPM_AI_ASSISTANT_ENABLED`、`OPENAI_API_KEY`、`BPM_LLM_MODEL`：流程設計器 AI 助理，見 [12 — 流程設計器 AI 助理](./12-ai-assistant.md)。
 
 ### 3. 登入流程（Server Action 或 client component）
 
@@ -855,7 +870,7 @@ export default async function InboxPage(): Promise<ReactElement> {
 
 ## B+. 完整 fixture（可直接 copy-paste 編譯）
 
-下面三段是「最小可編譯」的 valid 範例，型別欄位完全對應 `@rytass/bpm-core-shared` 0.1.0：
+下面三段是「最小可編譯」的 valid 範例，型別欄位對應當前版本的 `@rytass/bpm-core-shared`（版本變動見其 CHANGELOG）：
 
 ```ts
 import type {
