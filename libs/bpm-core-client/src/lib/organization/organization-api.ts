@@ -24,6 +24,18 @@ export interface OrgUnitRecord {
   readonly updatedAt: string;
 }
 
+/**
+ * What retiring an org unit has to deal with. Child units always block the
+ * delete; open memberships and open `ORG_UNIT` manager rules block it unless a
+ * successor unit is passed to {@link deleteOrgUnit}. "Open" means not yet
+ * ended in the organization time zone, including rows that start later.
+ */
+export interface OrgUnitRetirementImpactRecord {
+  readonly childUnitCount: number;
+  readonly openManagerResolutionCount: number;
+  readonly openMembershipCount: number;
+}
+
 export interface PositionRecord {
   readonly code: string;
   readonly createdAt: string;
@@ -106,6 +118,10 @@ interface UpdateOrgUnitMutationData {
 
 interface DeleteOrgUnitMutationData {
   readonly deleteOrgUnit: boolean;
+}
+
+interface OrgUnitRetirementImpactQueryData {
+  readonly orgUnitRetirementImpact: OrgUnitRetirementImpactRecord;
 }
 
 interface CommitOrgUnitTreeDraftMutationData {
@@ -490,12 +506,37 @@ export async function updateOrgUnit(input: {
   return data.updateOrgUnit;
 }
 
-export async function deleteOrgUnit(id: string): Promise<boolean> {
-  const data = await requestGraphQl<DeleteOrgUnitMutationData>(
-    `mutation AdminDeleteOrgUnit($id: String!) {
-      deleteOrgUnit(id: $id)
+export async function readOrgUnitRetirementImpact(
+  id: string,
+): Promise<OrgUnitRetirementImpactRecord> {
+  const data = await requestGraphQl<OrgUnitRetirementImpactQueryData>(
+    `query AdminOrgUnitRetirementImpact($id: String!) {
+      orgUnitRetirementImpact(id: $id) {
+        childUnitCount
+        openManagerResolutionCount
+        openMembershipCount
+      }
     }`,
     { id },
+  );
+
+  return data.orgUnitRetirementImpact;
+}
+
+/**
+ * Retires an org unit. Pass `transferToOrgUnitId` when it still has open
+ * memberships or manager rules: the memberships continue in that unit (ended
+ * here yesterday, started there today) and the manager rules are ended.
+ */
+export async function deleteOrgUnit(
+  id: string,
+  options: { readonly transferToOrgUnitId?: string | null } = {},
+): Promise<boolean> {
+  const data = await requestGraphQl<DeleteOrgUnitMutationData>(
+    `mutation AdminDeleteOrgUnit($id: String!, $transferToOrgUnitId: String) {
+      deleteOrgUnit(id: $id, transferToOrgUnitId: $transferToOrgUnitId)
+    }`,
+    { id, transferToOrgUnitId: options.transferToOrgUnitId ?? null },
   );
 
   return data.deleteOrgUnit;
