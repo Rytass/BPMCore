@@ -12,6 +12,9 @@ import {
 } from 'class-validator';
 import { DelegationScopeTypeEnum } from '../delegation.enums';
 
+const PRIORITY_DESCRIPTION =
+  'Higher wins when several active rules of one principal match; ties go to the rule created first.';
+
 const ISO_DATE_TIME_WITH_TIME_ZONE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
@@ -40,7 +43,10 @@ export class CreateDelegationRuleInput {
   @IsString()
   scopeConditionCel?: string | null;
 
-  @Field(() => Int, { nullable: true })
+  @Field(() => Int, {
+    description: `${PRIORITY_DESCRIPTION} Defaults to 100.`,
+    nullable: true,
+  })
   @IsInt()
   @IsOptional()
   @Min(1)
@@ -98,7 +104,7 @@ export class UpdateDelegationRuleInput {
   @IsString()
   scopeConditionCel?: string | null;
 
-  @Field(() => Int)
+  @Field(() => Int, { description: PRIORITY_DESCRIPTION })
   @IsInt()
   @Min(1)
   priority!: number;

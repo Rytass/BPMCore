@@ -73,9 +73,10 @@ export class DelegationService {
       : undefined;
 
     return this.delegationRuleRepository.find({
+      // Same order as manager rules: higher priority first, newest first.
       order: {
+        priority: 'DESC',
         createdAt: 'DESC',
-        priority: 'ASC',
       },
       ...(normalizedPageSize
         ? {
@@ -196,9 +197,13 @@ export class DelegationService {
   ): Promise<DelegationResolution> {
     const applicableRule = (
       await this.delegationRuleRepository.find({
+        // Higher priority wins, as with manager rules; among equal priorities
+        // the rule created first wins. TypeORM sorts by key order, so
+        // `priority` has to be the first key — it used to come second and
+        // only broke ties between rules created in the same instant.
         order: {
+          priority: 'DESC',
           createdAt: 'ASC',
-          priority: 'ASC',
         },
         where: {
           principalMemberId,

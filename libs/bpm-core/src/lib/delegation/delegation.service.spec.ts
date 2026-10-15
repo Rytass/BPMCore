@@ -204,6 +204,109 @@ describe('DelegationService', () => {
     });
   });
 
+  describe('choosing between rules of one principal', (): void => {
+    // Sorts the way the database would: by each `order` key in turn, in the
+    // order the keys were written.
+    const sortByOrder = (
+      rules: readonly DelegationRuleEntity[],
+      order: Readonly<Record<string, 'ASC' | 'DESC'>>,
+    ): readonly DelegationRuleEntity[] =>
+      [...rules].sort((left, right) =>
+        Object.entries(order).reduce((result, [key, direction]) => {
+          if (result !== 0) {
+            return result;
+          }
+
+          const leftValue = Number(left[key as keyof DelegationRuleEntity]);
+          const rightValue = Number(right[key as keyof DelegationRuleEntity]);
+          const diff = leftValue - rightValue;
+
+          return direction === 'ASC' ? diff : -diff;
+        }, 0),
+      );
+    const resolveWith = (
+      rules: readonly DelegationRuleEntity[],
+    ): Promise<string> =>
+      new DelegationService(
+        createDelegationRuleRepository({
+          find: jest.fn(
+            ({
+              order,
+              where,
+            }: Readonly<{
+              readonly order: Readonly<Record<string, 'ASC' | 'DESC'>>;
+              readonly where: Readonly<{ readonly principalMemberId: string }>;
+            }>): Promise<readonly DelegationRuleEntity[]> =>
+              Promise.resolve(
+                sortByOrder(
+                  rules.filter(
+                    (rule) => rule.principalMemberId === where.principalMemberId,
+                  ),
+                  order,
+                ),
+              ),
+          ),
+        }),
+        new ConditionService(),
+      )
+        .resolveAssignee('member-001', {
+          formData: {},
+          initiatorMemberId: 'member-000',
+          initiatorMetadataSnapshot: {},
+          instanceId: 'instance-1',
+          nodeId: 'task-1',
+          state: 'RUNNING',
+          templateId: 'template-1',
+          templateVersionId: 'template-version-1',
+          title: '費用申請',
+        })
+        .then((resolution) => resolution.finalAssigneeMemberId);
+
+    it('applies the higher priority even when it was created later', async (): Promise<void> => {
+      // Creation time used to be the first sort key, so the older rule won
+      // whatever the 優先序 field said.
+      await expect(
+        resolveWith([
+          createDelegationRule({
+            agentMemberId: 'member-101',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            id: 'rule-old-low',
+            principalMemberId: 'member-001',
+            priority: 10,
+          }),
+          createDelegationRule({
+            agentMemberId: 'member-102',
+            createdAt: new Date('2026-02-01T00:00:00.000Z'),
+            id: 'rule-new-high',
+            principalMemberId: 'member-001',
+            priority: 50,
+          }),
+        ]),
+      ).resolves.toBe('member-102');
+    });
+
+    it('applies the rule created first when priorities tie', async (): Promise<void> => {
+      await expect(
+        resolveWith([
+          createDelegationRule({
+            agentMemberId: 'member-102',
+            createdAt: new Date('2026-02-01T00:00:00.000Z'),
+            id: 'rule-new',
+            principalMemberId: 'member-001',
+            priority: 100,
+          }),
+          createDelegationRule({
+            agentMemberId: 'member-101',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            id: 'rule-old',
+            principalMemberId: 'member-001',
+            priority: 100,
+          }),
+        ]),
+      ).resolves.toBe('member-101');
+    });
+  });
+
   it('rejects direct delegation cycles when creating a rule', async (): Promise<void> => {
     const repository = createDelegationRuleRepository({
       create: jest.fn((entity: Partial<DelegationRuleEntity>) =>

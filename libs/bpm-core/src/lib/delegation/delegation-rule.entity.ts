@@ -43,7 +43,10 @@ export class DelegationRuleEntity {
   scopeConditionCel!: string | null;
 
   @Column('int', { default: 100 })
-  @Field()
+  @Field({
+    description:
+      'Higher wins when several active rules of one principal match; ties go to the rule created first.',
+  })
   priority!: number;
 
   @Column('timestamptz', { name: 'start_at' })

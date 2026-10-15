@@ -1152,7 +1152,7 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 
 | Category | Names |
 |---|---|
-| Entity | `DelegationRuleEntity` |
+| Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules) |
 | DTOs | `DelegationRuleInput` |
 | Enums | `DelegationEnums` |
 | Service | `DelegationService` |

@@ -638,7 +638,11 @@ export function AdminDelegationsView(): ReactElement {
                 />
               </BPMFormField>
             ) : null}
-            <BPMFormField label="優先序" name="priority">
+            <BPMFormField
+              hintText="數字越大越優先。同一位被代理人同時命中多條規則時，採用優先序最高的那條；優先序相同時採用較早建立的。"
+              label="優先序"
+              name="priority"
+            >
               <Input
                 fullWidth
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
