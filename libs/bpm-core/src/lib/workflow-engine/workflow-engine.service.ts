@@ -333,6 +333,15 @@ export interface MemberOpenTaskRecord {
  * Engine-internal decision knobs that are deliberately kept out of
  * {@link DecideTaskInput} so they never reach the GraphQL schema.
  */
+/** Input of {@link WorkflowEngineService.expireApprovalInstance}. */
+export interface ExpireApprovalInstanceCommand {
+  readonly comment?: string | null;
+  readonly instanceId: string;
+  /** The overdue task's node and the task itself, for the activity record. */
+  readonly nodeId?: string | null;
+  readonly taskId?: string | null;
+}
+
 export interface DecideTaskOptions {
   /**
    * Reason stamped on the delegation-chain step when the decision is a
@@ -1354,33 +1363,11 @@ export class WorkflowEngineService {
           );
         }
 
-        const cancelledAt = new Date();
-        await this.consumeOpenRuntimeState(
+        const cancelledInstance = await this.closeInstance(
           manager,
           instance,
-          cancelledAt,
-          TaskStatusEnum.CANCELLED,
-        );
-        await this.notificationService.supersedeInstanceTaskNotifications({
-          instanceId: instance.id,
-          manager,
-        });
-        // Same prototype-preserving reason as `cancelAdhocDirective`: this
-        // entity is returned to the resolver and `ApprovalInstance` exposes
-        // five getter-backed JSON fields.
-        const cancelledInstance = await instanceRepository.save(
-          Object.assign(new ApprovalInstanceEntity(), instance, {
-            completedAt: cancelledAt,
-            state: ApprovalInstanceStateEnum.CANCELLED,
-          }),
-        );
-
-        await this.dispatchAdhocCompletionNotifications(
-          manager,
-          cancelledInstance,
           ApprovalInstanceStateEnum.CANCELLED,
         );
-        await this.cancelPendingAdhocDirectives(manager, instance.id, null);
 
         await manager.getRepository(ActivityLogEntity).save(
           manager.getRepository(ActivityLogEntity).create({
@@ -1398,6 +1385,109 @@ export class WorkflowEngineService {
         return cancelledInstance;
       },
     );
+  }
+
+  /**
+   * Ends a running or returned instance because a task on it ran past its SLA
+   * with `onTimeout: 'TERMINATE_INSTANCE'`. It closes the instance exactly as
+   * a cancellation does, but lands in `EXPIRED` and is recorded with no actor:
+   * nobody chose to end it. An instance that is already closed — another
+   * overdue task of it got here first, or someone decided it meanwhile — is
+   * returned unchanged.
+   */
+  async expireApprovalInstance(
+    input: ExpireApprovalInstanceCommand,
+  ): Promise<ApprovalInstanceEntity> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<ApprovalInstanceEntity> => {
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          input.instanceId,
+        ]);
+
+        const instance = await manager
+          .getRepository(ApprovalInstanceEntity)
+          .findOne({ where: { id: input.instanceId } });
+
+        if (!instance) {
+          throw new NotFoundException(
+            `Approval instance ${input.instanceId} was not found`,
+          );
+        }
+
+        if (
+          instance.state !== ApprovalInstanceStateEnum.RUNNING &&
+          instance.state !== ApprovalInstanceStateEnum.RETURNED
+        ) {
+          return instance;
+        }
+
+        const expiredInstance = await this.closeInstance(
+          manager,
+          instance,
+          ApprovalInstanceStateEnum.EXPIRED,
+        );
+
+        await manager.getRepository(ActivityLogEntity).save(
+          manager.getRepository(ActivityLogEntity).create({
+            actorMemberId: null,
+            eventType: ActivityLogEventTypeEnum.INSTANCE_EXPIRED,
+            instanceId: instance.id,
+            nodeId: input.nodeId ?? null,
+            payload: {
+              comment: input.comment?.trim() || null,
+            },
+            taskId: input.taskId ?? null,
+          }),
+        );
+
+        return expiredInstance;
+      },
+    );
+  }
+
+  // Shared ending of a cancellation and an SLA expiry: everything open on the
+  // instance is closed, its task notifications are superseded, ad-hoc
+  // completion notices go out with the final state, and what is still pending
+  // is dropped. The caller records who (if anyone) ended it.
+  private async closeInstance(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    finalState:
+      | ApprovalInstanceStateEnum.CANCELLED
+      | ApprovalInstanceStateEnum.EXPIRED,
+  ): Promise<ApprovalInstanceEntity> {
+    const closedAt = new Date();
+
+    await this.consumeOpenRuntimeState(
+      manager,
+      instance,
+      closedAt,
+      TaskStatusEnum.CANCELLED,
+    );
+    await this.notificationService.supersedeInstanceTaskNotifications({
+      instanceId: instance.id,
+      manager,
+    });
+    // Same prototype-preserving reason as `cancelAdhocDirective`: this
+    // entity is returned to the resolver and `ApprovalInstance` exposes
+    // five getter-backed JSON fields.
+    const closedInstance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .save(
+        Object.assign(new ApprovalInstanceEntity(), instance, {
+          completedAt: closedAt,
+          state: finalState,
+        }),
+      );
+
+    await this.dispatchAdhocCompletionNotifications(
+      manager,
+      closedInstance,
+      finalState,
+    );
+    await this.cancelPendingAdhocDirectives(manager, instance.id, null);
+
+    return closedInstance;
   }
 
   async resubmitApprovalInstance(
@@ -8883,6 +8973,10 @@ function readInstanceFinalStateLabel(
 
   if (finalState === ApprovalInstanceStateEnum.REJECTED) {
     return '拒絕';
+  }
+
+  if (finalState === ApprovalInstanceStateEnum.EXPIRED) {
+    return '逾期終止';
   }
 
   return '取消';

@@ -1392,6 +1392,23 @@ describe('NotificationService', () => {
 
     expect(fixture.decideTask).toHaveBeenCalledTimes(1);
   });
+
+  it('expires the instance instead of cancelling it in the initiator name', async (): Promise<void> => {
+    const fixture = createEscalationFixture({
+      delegationChain: [],
+      onTimeout: 'TERMINATE_INSTANCE',
+    });
+
+    await fixture.service.runSlaScan(new Date('2026-05-10T09:01:00.000Z'));
+
+    expect(fixture.cancelApprovalInstance).not.toHaveBeenCalled();
+    expect(fixture.expireApprovalInstance).toHaveBeenCalledWith({
+      comment: 'SLA timeout terminated this instance.',
+      instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+      nodeId: 'task_review',
+      taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+    });
+  });
 });
 
 function createSlaScanService(task: TaskEntity): NotificationService {
@@ -1428,13 +1445,23 @@ function createSlaScanService(task: TaskEntity): NotificationService {
 
 function createEscalationFixture({
   delegationChain,
+  onTimeout = 'ESCALATE',
 }: {
   readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
+  readonly onTimeout?: SlaConfig['onTimeout'];
 }): {
+  readonly cancelApprovalInstance: jest.Mock;
   readonly decideTask: jest.Mock;
+  readonly expireApprovalInstance: jest.Mock;
   readonly service: NotificationService;
 } {
   const decideTask = jest.fn(
+    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  );
+  const cancelApprovalInstance = jest.fn(
+    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  );
+  const expireApprovalInstance = jest.fn(
     (): Promise<Record<string, unknown>> => Promise.resolve({}),
   );
   const task = Object.assign(new TaskEntity(), {
@@ -1465,7 +1492,7 @@ function createEscalationFixture({
     createRepository<TaskCandidateEntity>(),
     {
       findOne: (): Promise<ApprovalInstanceEntity> =>
-        Promise.resolve(createApprovalInstance('ESCALATE')),
+        Promise.resolve(createApprovalInstance(onTimeout)),
     } as unknown as Repository<ApprovalInstanceEntity>,
     {
       create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
@@ -1481,12 +1508,16 @@ function createEscalationFixture({
               resolveManagerMemberId: (): Promise<string> =>
                 Promise.resolve('member-manager'),
             }
-          : { decideTask },
+          : { cancelApprovalInstance, decideTask, expireApprovalInstance },
     } as unknown as ModuleRef,
-    { ...DEFAULT_BPM_NOTIFICATION_OPTIONS, slaTimeoutEscalateEnabled: true },
+    {
+      ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+      slaTimeoutEscalateEnabled: true,
+      slaTimeoutTerminateInstanceEnabled: true,
+    },
   );
 
-  return { decideTask, service };
+  return { cancelApprovalInstance, decideTask, expireApprovalInstance, service };
 }
 
 function createNotification(id: string): NotificationEntity {

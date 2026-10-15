@@ -2,7 +2,10 @@ import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.inpu
 import { DecideTaskInput } from './dto/decide-task.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
-import type { DecideTaskOptions } from './workflow-engine.service';
+import type {
+  DecideTaskOptions,
+  ExpireApprovalInstanceCommand,
+} from './workflow-engine.service';
 
 export const BPM_WORKFLOW_ENGINE_SERVICE = Symbol(
   'BPM_WORKFLOW_ENGINE_SERVICE',
@@ -16,4 +19,7 @@ export interface BPMWorkflowEngineService {
     input: DecideTaskInput,
     options?: DecideTaskOptions,
   ): Promise<TaskDecisionEntity>;
+  expireApprovalInstance(
+    input: ExpireApprovalInstanceCommand,
+  ): Promise<ApprovalInstanceEntity>;
 }

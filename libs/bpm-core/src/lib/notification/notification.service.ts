@@ -1182,10 +1182,13 @@ export class NotificationService {
       return;
     }
 
-    await workflowEngine.cancelApprovalInstance({
-      cancelledByMemberId: instance.initiatorMemberId,
+    // EXPIRED, not CANCELLED: nobody cancelled it, and borrowing the
+    // initiator's identity (which cancelling requires) put their name on it.
+    await workflowEngine.expireApprovalInstance({
       comment: 'SLA timeout terminated this instance.',
       instanceId: instance.id,
+      nodeId: node.id,
+      taskId: task.id,
     });
   }
 

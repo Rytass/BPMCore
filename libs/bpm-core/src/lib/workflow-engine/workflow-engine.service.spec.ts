@@ -9967,6 +9967,67 @@ describe('WorkflowEngineService', () => {
     expect(cancelled.formDataJson).toBe(JSON.stringify({ amount: 1200 }));
   });
 
+  describe('expiring an instance on an SLA timeout', (): void => {
+    const readLogs = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] => [
+      ...fixture.savedActivityLogs,
+      ...fixture.savedSingleActivityLogs,
+    ];
+
+    it('ends the instance as EXPIRED with no actor', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1200 },
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const expired = await fixture.service.expireApprovalInstance({
+        comment: 'SLA timeout terminated this instance.',
+        instanceId: 'instance-1',
+        nodeId: 'task_finance',
+        taskId: 'task-1',
+      });
+
+      // The SLA path used to cancel the instance in the initiator's name, so
+      // the record said the initiator withdrew a case they never touched.
+      expect(expired.state).toBe(ApprovalInstanceStateEnum.EXPIRED);
+      expect(expired).toBeInstanceOf(ApprovalInstanceEntity);
+      expect(readLogs(fixture)).toContainEqual(
+        expect.objectContaining({
+          actorMemberId: null,
+          eventType: ActivityLogEventTypeEnum.INSTANCE_EXPIRED,
+          nodeId: 'task_finance',
+          taskId: 'task-1',
+        }),
+      );
+      expect(
+        readLogs(fixture).some(
+          (log) => log.eventType === ActivityLogEventTypeEnum.INSTANCE_CANCELLED,
+        ),
+      ).toBe(false);
+    });
+
+    it('leaves an instance that is already closed alone', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.APPROVED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = await fixture.service.expireApprovalInstance({
+        instanceId: 'instance-1',
+      });
+
+      expect(result.state).toBe(ApprovalInstanceStateEnum.APPROVED);
+      expect(readLogs(fixture)).toEqual([]);
+    });
+  });
+
   it('dispatches ad-hoc completion notifications on reject and cancels pending flow directives', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
