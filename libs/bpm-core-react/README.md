@@ -17,8 +17,10 @@ network query.
 The controlled `FormBuilderView` loads only the host-registered DataSource
 Catalog. It filters sources by control capability, supports typed field and
 constant parameter bindings, preserves bindings when a field key is renamed,
-and asks for confirmation before source/mode changes or removing a field used
-by another dynamic field. The editor can send the complete schema to the
+and asks for confirmation before switching the selection mode, replacing an
+already-configured DataSource, or removing a field used by another dynamic
+field. Picking a source applies at once; switching away from a configured
+source drops its bindings. The editor can send the complete schema to the
 server-side lint contract before publishing.
 
 ## Status
@@ -39,11 +41,22 @@ recipe, see `docs/integration-guide.md`.
 pnpm add @rytass/bpm-core-react @rytass/bpm-core-client @rytass/bpm-core-shared @mezzanine-ui/react @mezzanine-ui/icons
 ```
 
-Peer requirements: React 18+ and `@mezzanine-ui/react` `>=1.0.0` (the declared
-peer range in `package.json`; this workspace develops against `@mezzanine-ui/react`
-1.5.1, pinned in the root `package.json`). Next.js is required only when consuming
-the `pages/*` subpath; framework-agnostic consumers can use `views/*` directly with
-their own router adapter.
+Required peers: `react` / `react-dom` 18+, `@mezzanine-ui/react`, `@mezzanine-ui/core`
+and `@mezzanine-ui/icons` `>=1.0.0` (this workspace develops against Mezzanine
+1.5.1, pinned in the root `package.json`), plus `@rytass/bpm-core-client` and
+`@rytass/bpm-core-shared` at the same version. Every other peer is declared
+optional in `package.json` → `peerDependenciesMeta` and is needed only by the
+feature that imports it:
+
+- `next` (>=15) — the `pages/*` and `next/*` subpaths; framework-agnostic
+  consumers can use `views/*` directly with their own router adapter.
+- `@xyflow/react`, `dagre` — the flow designer and flow diagrams.
+- `@hello-pangea/dnd` — drag-and-drop in the form builder.
+- `@uiw/react-codemirror`, `@codemirror/view`, `@codemirror/lang-json` — JSON editors.
+- `react-pdf` (>=10), `pdfjs-dist` (`^5.4.296 || ^6.3.289`) — PDF preview.
+- `ai` (>=6), `@ai-sdk/react`, `@ai-sdk/openai` — the designer AI assistant.
+
+`package.json` is the authoritative list.
 
 ### Next.js + pnpm setup (conditional)
 

@@ -130,7 +130,7 @@ agent_member_id          text                 -- 代理人
 scope_type               text                 -- 'ALL' | 'TEMPLATE_LIST' | 'CONDITION_BASED'
 scope_template_ids       uuid[] NOT NULL DEFAULT '{}'   -- scope_type = TEMPLATE_LIST 時
 scope_condition_cel      text (nullable)      -- scope_type = CONDITION_BASED 時
-priority                 int DEFAULT 100      -- 數字大者優先；同 priority 時較早建立者優先（未發佈，v0.16.2 之後；之前為數字小者優先）
+priority                 int DEFAULT 100      -- 數字大者優先；同 priority 時較早建立者優先（未發佈，v0.16.2 之後；已發佈版本（實際為最早建立者優先：排序是 `createdAt` ASC 再 `priority` ASC，priority 只在建立時間相同時才比較））
 start_at                 timestamptz
 end_at                   timestamptz (nullable)
 requires_confirmation    boolean DEFAULT false
@@ -726,7 +726,7 @@ ORDER BY t.sla_due_at NULLS LAST, t.created_at;
 | 0007 | 簽章與附件：`signatures`、`attachments`                                        |
 | 0008 | 模板分類：`approval_template_categories`                                       |
 | 0009 | 候選人：`task_candidates`                                                      |
-| 0010–0021 | 通知投遞狀態、SLA 冪等索引、查詢索引、通知結案／封存／靜音、表單選項快照等     |
+| 0010–0021 | 通知投遞狀態、SLA 冪等索引、查詢索引（0013 會建立 `pg_trgm` 擴充）、通知結案／封存／靜音、表單選項快照等     |
 | 0017 | ad-hoc 指令：`task_adhoc_directives` 與 `tasks` 的 ad-hoc 欄位（見 `docs/13`） |
 | 0022 | `org_units.code` 改為未刪除列唯一                                              |
 | 0023–0024 | workflow webhook：deliveries、endpoints                                      |

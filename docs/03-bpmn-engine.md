@@ -227,7 +227,7 @@ AND Join 等永遠不會到的 token：
 - **靜態分析**（模板發布前驗證，`workflow-definition.validator.ts`）：
   - 不可達節點：從 start 無法到達的節點會被拒絕（`is not reachable from start`）
   - 無法到達 End 的節點會被拒絕（`does not have a path to an endEvent`）
-  - 循環：整張流程圖中有任何循環都會被拒絕（`lintCycles`），因此「死循環」在發布時即被擋下
+  - 循環：從 start 可達的循環會被拒絕（`lintCycles`）；不可達節點已由上一條拒絕，因此等同整張圖不得有循環，「死循環」在發布時即被擋下
   - XOR 的 default flow 等閘道結構檢查
 - **執行期保護**：
   - 同一 instance 的處理以 transaction 層級的 advisory lock 序列化（見 `docs/07` §10）

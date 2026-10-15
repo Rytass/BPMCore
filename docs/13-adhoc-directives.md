@@ -234,11 +234,14 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 
 | 流程事件                         | 清除範圍                                            |
 | -------------------------------- | --------------------------------------------------- |
-| 案件取消                         | 全部類型的 `PENDING` 指令                           |
+| 案件取消                         | 全部類型的 `PENDING` 指令（結案通知先派發，見表下）  |
 | 案件拒絕                         | 全部類型的 `PENDING` 指令                           |
 | 案件逾期終止（`EXPIRED`）        | 全部類型的 `PENDING` 指令（與取消同一條收尾路徑）    |
 | 案件核准完成                     | 全部類型的 `PENDING` 指令                           |
 | 案件退回                         | 僅 `COUNTERSIGN` / `PRE_APPROVAL`（保留兩種通知型） |
+
+四種終態的收尾順序是：先派發 `COMPLETION_NOTIFY`（`dispatchAdhocCompletionNotifications`，派發後為 `CONSUMED`），
+再清除剩下的 `PENDING` 指令（`cancelPendingAdhocDirectives`）。所以表中「全部類型」不包含已派發的結案通知，結案通知會照常送出（見 §5.2）。
 
 > 退回時保留通知型指令，是因為退回後流程仍可能再次跑到原節點或最終結案，階段 /
 > 結案通知仍有意義；但會簽 / 加簽綁定的關卡語意已被打斷，故一併清除。
@@ -301,6 +304,8 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
 | `adhoc_directive_id`    | `uuid`                        | 是   | 對應的 directive id                    |
 
 ### 8.3 列舉型別（`adhoc.enums.ts`）
+
+以下為 GraphQL 名稱；TS enum 名稱多一個 `Enum` 後綴（例如 `AdhocDirectiveTypeEnum`、`AdhocPreApprovalRejectBehaviorEnum`）。
 
 ```
 AdhocDirectiveType          = COUNTERSIGN | PRE_APPROVAL | STAGE_NOTIFY | COMPLETION_NOTIFY

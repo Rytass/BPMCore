@@ -386,6 +386,8 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
    `renderTypeSpecificSettings` 新增 `supportsDataSource` 參數，column 傳
    `false` 即不渲染選項來源列；已由手寫 JSON 帶進來的 column dataSource 原樣保留
    並顯示明確提示（比照 ADR 14 §3.10 的 unavailable 處理）。新增 2 個 spec。
+   （P3 之後 column 已支援 DataSource，`supportsDataSource` 參數已移除；現行第四個參數為
+   `rowColumns`，供 `ROW_FIELD` 綁定定址同列欄位。）
 2. **前端必填檢查沿原型鏈讀 cell**：與 P1 後端修過的同一類問題——
    `constructor`／`toString` 是合法 column key，`row[columnKey]` 對空列會取到
    `Object` 而被判為有值，導致前端放行、後端以難懂訊息拒收。修法：改用
@@ -668,7 +670,7 @@ binding 讀值 10、送出 resolve 15、環境 lint 7、client builder 6、結�
 
 `nx release --dry-run` 另確認：changelog 依 `useCommitScope: false` 正確吃到本次
 所有 `feat`／`fix` commit，四個 package manifest 都寫入 `0.12.0`，tag 為
-`v0.12.0`。**未執行** version／tag／publish。
+`v0.12.0`。**未執行** version／tag／publish（當時的快照；其後已正式發布為 v0.12.0）。
 
 **P4 之後補上的 e2e：設計→發布→填寫**
 

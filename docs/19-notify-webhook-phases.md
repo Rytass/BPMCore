@@ -164,6 +164,10 @@ GraphQL（暫時模板 `TMP ADR18 P0 驗證`，驗證後已停用）：
   `workflowWebhookRegistry`；確認兩份 `WorkflowEngineService` 都能取得同一個 registry
   （既有 dispatcher 有 Provider 選項只到一份的前例，要有 boot spec 覆蓋）。
 - Registry 啟動檢查：同 `key` + `version` 重複、參數 key 重複時啟動失敗。
+- （實作名稱註記：上列 `workflow-webhook-registry.provider.ts`、`workflow-webhook-endpoint.object.ts`
+  與下方的 `CompositeWorkflowWebhookRegistry` 最終未以這些名稱落地；實作在
+  `workflow-webhook.provider.ts`、`workflow-webhook-database-source.ts`，來源種類為
+  `workflow-webhook.types.ts` 的 `BPMWorkflowWebhookEndpointSourceKind`（`'DATABASE' | 'REGISTRY'`）。）
 - **端點來源抽象**（ADR §3.13）：`BPMWorkflowWebhookEndpointSource` 介面與合併多來源的
   `CompositeWorkflowWebhookRegistry`；P1 只實作 `REGISTRY`，讓 P6 的 `DATABASE` 來源不必
   改動 catalog、發布 lint 與投遞。descriptor 加 `source` 欄位。

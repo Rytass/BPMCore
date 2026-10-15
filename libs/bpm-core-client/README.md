@@ -235,7 +235,10 @@ data in. Three rules keep the mirror idempotent:
    FK pointer.
 3. **Only `deleteOrgUnit` is a soft delete.** It sets `deletedAt`, and
    live queries (`orgUnits`, `orgUnitCount`, etc.) filter soft-deleted
-   units automatically. `deleteMembership`, `deleteManagerResolution` and
+   units automatically. (Unreleased: `deleteOrgUnit(id, { transferToOrgUnitId })`
+   retires a unit into a successor, and `readOrgUnitRetirementImpact` previews
+   what would move — see "Retiring an org unit" in the
+   `@rytass/bpm-core-nestjs-module` README.) `deleteMembership`, `deleteManagerResolution` and
    `deletePosition` are **hard deletes** — the row and its history are
    gone. To keep history, end a membership or manager rule with
    `updateMembership` / `updateManagerResolution` and an `effectiveTo`
@@ -344,7 +347,7 @@ import { resolveMembers, searchMembers } from '@rytass/bpm-core-client';
 import { listApprovalInstancesPage, listInboxTasks, decideTask, submitApprovalInstance } from '@rytass/bpm-core-client/workflow';
 import { listApprovalTemplates } from '@rytass/bpm-core-client/template';
 import { listFormDefinitions } from '@rytass/bpm-core-client/form';
-import { listOrgUnits, listPositions } from '@rytass/bpm-core-client/organization';
+import { readOrganizationDashboard } from '@rytass/bpm-core-client/organization';
 
 const members = await resolveMembers(['member-001', 'member-002']);
 // Takes no arguments; filter the result in code.

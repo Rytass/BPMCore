@@ -90,6 +90,9 @@ COMPLETED  TRANSFERRED         CANCELLED
                                  開放中的 task 皆被結束)
 ```
 
+> `TRANSFERRED` 的「本 task 結束、新建一筆」只適用 `SINGLE` 與 `SEQUENTIAL`。群組決策（`PARALLEL_ALL`／`PARALLEL_ANY`／`QUORUM`）
+> 的持有人轉派不結束 task，只在原 task 上替換席位（見 §5.4；未發佈，v0.16.2 之後）。
+
 ---
 
 ## 2. Token 引擎主迴圈
@@ -332,7 +335,7 @@ async function resolveApprovers(
 
     case 'ORG_MANAGER_CHAIN':
       // 沿主管鏈往上，直到某位主管的職等達 minPositionLevel（規則見 §4.1.1）
-      return await walkManagerChain(context.initiator, resolver.minPositionLevel);
+      return await walkManagerChain(context.initiator, resolver.minPositionLevel); // 示意；實作為 resolveOrgManagerChainCandidates
 
     case 'ORG_UNIT_MEMBER':
       // 指定組織單位（可選含子單位）底下的所有成員
@@ -499,7 +502,8 @@ async function applyDelegation(
 
 **實際行為與上方示意的差異（以程式為準）**：
 
-- 排序是 `priority` DESC（未發佈，v0.16.2 之後；已發佈版本為數字小者優先），同 priority 時 `createdAt` ASC（先建立者勝出）。委派規則的列表頁（後台）則是 `priority` DESC、`createdAt` DESC。
+- 排序是 `priority` DESC，同 priority 時 `createdAt` ASC（先建立者勝出）。委派規則的列表頁（後台）則是 `priority` DESC、`createdAt` DESC。
+  兩者皆未發佈（v0.16.2 之後）；已發佈版本（實際為最早建立者優先：排序是 `createdAt` ASC 再 `priority` ASC，priority 只在建立時間相同時才比較），列表為 `createdAt` DESC 再 `priority` ASC。
   這與組織主管規則（manager resolution）一致：數字大者優先。
 - 規則的 `priority` 預設 100；數字越大越優先，不是越小越優先。
 - 找不到可用規則即結束代理鏈；代理鏈中若回到已經出現過的成員，丟 `ConflictException`。
@@ -816,6 +820,13 @@ async function handleTransfer(task, transferToMemberId) {
 }
 ```
 
+**群組階段例外**（未發佈，v0.16.2 之後）：決策政策為 `PARALLEL_ALL`、`PARALLEL_ANY` 或 `QUORUM` 時，持有人轉派走
+`transferGroupSeat`：task 保持開啟、id 不變，只把轉派人的席位就地換成目標，其他席位維持原狀態，也不會被 supersede；
+轉派人的決策與簽章仍記在這筆 task 上。`SINGLE` 與 `SEQUENTIAL` 照上方流程。
+
+**管理員改派**（未發佈，v0.16.2 之後）：`reassignTask`／`reassignMemberTasks` 由管理員把開放中的席位就地移給另一位成員，
+task id 不變、不寫決策與簽章，也不受節點 `allowTransfer` 限制（詳見 `docs/api-reference.md`）。
+
 ---
 
 ## 6. SLA 與 Boundary Timer Event
@@ -880,7 +891,7 @@ async function handleOverdueTask(task) {
       // 若 delegation chain 已有 SLA_ESCALATION 步驟就跳過（防止逐層一路升到頂）
       if (hasSlaEscalationStep(task)) break;
       // 目標 = 以 actor 為起點往上 escalateLevelsUp 層（至少 1 層）的主管；找不到或等於 actor 就跳過
-      const target = await resolveEscalationTarget(actorId, node.sla.escalateLevelsUp);
+      const target = await resolveEscalationTarget(actorId, node.sla.escalateLevelsUp); // 示意，非實際 API
       if (!target || target === actorId) break;
       await decideTask({ taskId, action: 'TRANSFERRED', decidedByMemberId: actorId,
                          transferToMemberId: target, comment: 'SLA timeout escalated this task.' },
@@ -905,7 +916,7 @@ async function handleOverdueTask(task) {
 - 辨識方式：決策的 `comment` 為固定字串 `SLA timeout auto-approved this task.`，且同一 task 之前有一筆 `SLA_TRIGGERED`（`actor_member_id` 為 null）。
 - 稽核時必須以這兩筆紀錄判斷是否為逾時自動同意，不能只看簽章人。
 
-**ESCALATE 的細節**：升級目標不是 delegation rule 查到的，而是組織主管解析（`resolveManagerMemberId`，從 actor 往上
+**ESCALATE 的細節**：升級目標不是 delegation rule 查到的，而是組織主管解析（`NotificationService.resolveEscalationTargetMemberId`，逐層呼叫 `OrganizationService.resolveManagerMemberId`，從 actor 往上
 `escalateLevelsUp` 層，至少 1 層）。實際轉交走 `decideTask(TRANSFERRED)` 並帶 `transferReason: 'SLA_ESCALATION'`，
 因此不受 §4.3 的申請人／代送人轉交檢查約束（見 §4.3 的「不涵蓋」）。
 

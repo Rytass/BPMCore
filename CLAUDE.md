@@ -301,6 +301,8 @@ sessions across a restart; the API host passes the BPM attachment values into
 
 Security fixes for transitive dependencies live in `pnpm-workspace.yaml`
 `overrides`. **Always write them as a `^` range, never as an exact version.**
+The one deliberate `~` is `next`, which keeps the 16.3 minor the root pins (see
+the comment beside it).
 
 An exact pin stops pnpm taking the next patch, so an override added to fix one
 advisory silently becomes the thing holding a known-vulnerable version in
@@ -315,7 +317,7 @@ Keep them, and keep the whole `@nx/*` set on the same version as `nx`.
 The mechanism to understand before running `pnpm update`: the published libs
 declare deliberately **open** peer ranges (`@nestjs/core: >=10.0.0`,
 `graphql: >=16.0.0`, `reflect-metadata: >=0.1.13`, `ai: >=6.0.0`,
-`@mezzanine-ui/react: >=1.0.0`, `pdfjs-dist: ^5.4.296`) so hosts on a range of
+`@mezzanine-ui/react: >=1.0.0`, `pdfjs-dist: ^5.4.296 || ^6.3.289`) so hosts on a range of
 versions can consume them — and `autoInstallPeers: true` resolves every one of
 those peers to whatever is **newest**. A `pnpm update` therefore installs a
 second copy of anything whose latest release has moved past the version the

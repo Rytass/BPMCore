@@ -92,9 +92,11 @@ deployment opts into, not a list of required arguments:
 
 `@rytass/bpm-core-nestjs-module` does not own a user table and does not provide
 mock auth fallback. It stores member ids and resolves member profiles through
-the host-provided resolver. In-process delivery and SLA schedulers are off by
-default so API replicas can embed the module without accidentally running
-duplicate worker loops.
+the host-provided resolver. The in-process notification delivery and SLA
+schedulers are off by default so API replicas can embed the module without
+accidentally running duplicate worker loops. The NOTIFY webhook delivery
+scheduler is the exception: it defaults to `auto` and starts as soon as a
+webhook endpoint is configured (it claims rows, so replicas do not double-send).
 
 ## Wrapper App Auth And Seed Data
 

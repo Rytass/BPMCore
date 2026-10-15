@@ -12,14 +12,14 @@
 
 ## Core Capabilities
 
-| 能力     | 描述                                                |
-| -------- | --------------------------------------------------- |
-| 表單建構 | 自訂表單欄位、驗證規則、條件邏輯（IT 主導）         |
-| 流程設計 | 拖拉式設計簽核流程（React Flow），含分歧、會簽、SLA |
-| 條件路由 | 基於組織、人員 metadata、表單內容的 ABAC 條件       |
-| 數位簽章 | 平台簽章（HMAC + RFC 3161 時戳）                    |
-| 代理人   | 規則代理 + 即時轉派                                 |
-| 附件     | 上傳任意檔案，PDF 可線上預覽                        |
+| 能力     | 描述                                                                       |
+| -------- | -------------------------------------------------------------------------- |
+| 表單建構 | 自訂表單欄位、驗證規則、條件邏輯（IT 主導）                                |
+| 流程設計 | 拖拉式設計簽核流程（React Flow），含分歧、會簽、SLA                        |
+| 條件路由 | 基於組織、人員 metadata、表單內容的 ABAC 條件                              |
+| 數位簽章 | 平台簽章（HMAC + RFC 3161 時戳；時戳預設為 mock，正式環境需替換 provider） |
+| 代理人   | 規則代理 + 即時轉派                                                        |
+| 附件     | 上傳任意檔案，PDF 可線上預覽                                               |
 
 ## 角色
 
@@ -62,7 +62,7 @@
 | Exclusive Gateway (XOR) | ✅   | —                                                                                                                                        |
 | Parallel Gateway (AND)  | ✅   | —                                                                                                                                        |
 | Inclusive Gateway (OR)  | ❌   | AND + 各分支內 XOR                                                                                                                       |
-| Boundary Timer Event    | ✅   | SLA 逾時                                                                                                                                 |
+| Boundary Timer Event    | ✅   | 概念採用：實作為 user task 的 `sla.onTimeout`，沒有獨立節點                                                                              |
 | Sub-Process             | ❌   | 後期再加                                                                                                                                 |
 | Pool / Lane             | ❌   | 由 Approver Resolver 取代                                                                                                                |
 
