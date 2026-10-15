@@ -5560,6 +5560,17 @@ export class WorkflowEngineService {
       );
     }
 
+    // A template saved by a newer engine can carry a fallback type this
+    // engine does not know. Refuse it by name instead of reading `memberId`
+    // off a shape it does not have, which surfaced as an opaque TypeError.
+    const unsupportedType = readUnsupportedApproverFallbackType(fallback);
+
+    if (unsupportedType !== null) {
+      throw new ConflictException(
+        `${label} ${failure}：${failureReason}，且此引擎版本不支援改派類型「${unsupportedType}」。請升級 BPMCore 後再發佈或執行此流程。`,
+      );
+    }
+
     if (!fallback.memberId.trim()) {
       throw new ConflictException(`${label} ${failure}：改派固定人未設定。`);
     }
@@ -8541,7 +8552,26 @@ function endSentence(message: string): string {
   return /[。！？.!?]$/.test(message) ? message : `${message}。`;
 }
 
-type DryRunFallbackProblem = 'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR';
+type DryRunFallbackProblem =
+  'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR' | 'UNSUPPORTED';
+
+const SUPPORTED_APPROVER_FALLBACK_TYPES: ReadonlySet<string> = new Set([
+  'NONE',
+  'DIRECT',
+]);
+
+/**
+ * The fallback's type when this engine does not know it, or `null` when it
+ * does. Takes a bare `type` so a newer definition can be checked without the
+ * compiler having narrowed it away first.
+ */
+function readUnsupportedApproverFallbackType(fallback: {
+  readonly type: string;
+}): string | null {
+  return SUPPORTED_APPROVER_FALLBACK_TYPES.has(fallback.type)
+    ? null
+    : fallback.type;
+}
 
 // Why a manager resolver's fixed fallback cannot take over when the initiator
 // has no manager, or `null` when it can: like the runtime, it must exist, name
@@ -8550,6 +8580,10 @@ function readDryRunFallbackProblem(
   initiatorMemberId: string,
   fallback: ApproverResolverFallback | undefined,
 ): DryRunFallbackProblem | null {
+  if (fallback && readUnsupportedApproverFallbackType(fallback) !== null) {
+    return 'UNSUPPORTED';
+  }
+
   if (!fallback || fallback.type !== 'DIRECT') {
     return 'NOT_SET';
   }
@@ -8631,6 +8665,10 @@ function readDryRunUnresolvedApproverMessage(
 
   if (fallbackProblem === 'IS_INITIATOR') {
     return `簽核節點「${nodeName}」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽`;
+  }
+
+  if (fallbackProblem === 'UNSUPPORTED') {
+    return `簽核節點「${nodeName}」找不到主管，且此引擎版本不支援該改派設定，請升級 BPMCore 後再試`;
   }
 
   return `簽核節點「${nodeName}」依申請人的組織找不到主管，請確認試跑時的申請人資料`;
