@@ -32,6 +32,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | SLA TERMINATE_INSTANCE ends the instance as EXPIRED (expireApprovalInstance, ExpireApprovalInstanceCommand, INSTANCE_EXPIRED) | Not yet released |
 | POSITION approver fallback (every current holder of a position) | Not yet released |
 | Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | Not yet released |
+| Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | Not yet released |
 
 ---
 

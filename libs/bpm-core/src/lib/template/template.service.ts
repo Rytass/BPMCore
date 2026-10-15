@@ -63,13 +63,23 @@ import {
   parseWorkflowDefinitionJson,
 } from './workflow-definition.validator';
 
+// The roots each kind of expression is evaluated with, so publish refuses an
+// expression that could only fail at run time. Initiator policies run before
+// an instance exists (workflow-engine `buildInitiatorPolicyContext`); every
+// other workflow expression runs against the instance
+// (`buildWorkflowExpressionContext`), and edge conditions also see the last
+// decision on the node they leave.
+const INITIATOR_POLICY_ROOT_IDENTIFIERS: readonly string[] = [
+  'env',
+  'initiator',
+  'subject',
+];
 const WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS: readonly string[] = [
   'env',
   'form',
   'formData',
   'initiator',
   'instance',
-  'subject',
 ];
 
 interface MaxVersionRow {
@@ -938,10 +948,16 @@ export class TemplateService {
     const workflowResult = lintWorkflowDefinition(version.workflowDefinition);
     const conditionErrors = [
       ...this.conditionService.lintExpressions(
-        readNonEdgeConditionExpressions(
-          version.workflowDefinition,
-          version.initiatorPolicyCel,
-        ),
+        [
+          {
+            expression: version.initiatorPolicyCel,
+            label: 'initiatorPolicyCel',
+          },
+        ],
+        { allowedRootIdentifiers: INITIATOR_POLICY_ROOT_IDENTIFIERS },
+      ),
+      ...this.conditionService.lintExpressions(
+        readNodeConditionExpressions(version.workflowDefinition),
         { allowedRootIdentifiers: WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS },
       ),
       // Edge conditions also see the decision just made on the node they
@@ -1428,7 +1444,9 @@ function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {
   );
 }
 
-function readEdgeConditionExpressions(definition: WorkflowDefinition): readonly {
+function readEdgeConditionExpressions(
+  definition: WorkflowDefinition,
+): readonly {
   readonly expression: string | null | undefined;
   readonly label: string;
 }[] {
@@ -1447,66 +1465,65 @@ function readConditionExpressions(
   readonly label: string;
 }[] {
   return [
-    ...readNonEdgeConditionExpressions(definition, initiatorPolicyCel),
+    { expression: initiatorPolicyCel, label: 'initiatorPolicyCel' },
+    ...readNodeConditionExpressions(definition),
     ...readEdgeConditionExpressions(definition),
   ];
 }
 
-function readNonEdgeConditionExpressions(
+// Node-level expressions: entry conditions, EXPRESSION resolvers, webhook
+// payloads and SET_FORM_FIELD values.
+function readNodeConditionExpressions(
   definition: WorkflowDefinition,
-  initiatorPolicyCel: string | null,
 ): readonly {
   readonly expression: string | null | undefined;
   readonly label: string;
 }[] {
-  return [
-    { expression: initiatorPolicyCel, label: 'initiatorPolicyCel' },
-    ...definition.nodes.flatMap((node) => {
-      if (node.type === 'userTask') {
-        return [
-          {
-            expression: node.data.entryCondition,
-            label: `workflow.nodes.${node.id}.data.entryCondition`,
-          },
-          ...(node.data.approverResolver.type === 'EXPRESSION'
-            ? [
-                {
-                  expression: node.data.approverResolver.expression,
-                  label: `workflow.nodes.${node.id}.data.approverResolver.expression`,
-                },
-              ]
-            : []),
-        ];
-      }
+  return definition.nodes.flatMap((node) => {
+    if (node.type === 'userTask') {
+      return [
+        {
+          expression: node.data.entryCondition,
+          label: `workflow.nodes.${node.id}.data.entryCondition`,
+        },
+        ...(node.data.approverResolver.type === 'EXPRESSION'
+          ? [
+              {
+                expression: node.data.approverResolver.expression,
+                label: `workflow.nodes.${node.id}.data.approverResolver.expression`,
+              },
+            ]
+          : []),
+      ];
+    }
 
-      if (node.type === 'serviceTask') {
-        return [
-          {
-            expression: node.data.entryCondition,
-            label: `workflow.nodes.${node.id}.data.entryCondition`,
-          },
-          ...(node.data.action.type === 'WEBHOOK'
-            ? [
-                {
-                  expression: node.data.action.payload,
-                  label: `workflow.nodes.${node.id}.data.action.payload`,
-                },
-              ]
-            : []),
-          ...(node.data.action.type === 'SET_FORM_FIELD'
-            ? [
-                {
-                  expression: node.data.action.value,
-                  label: `workflow.nodes.${node.id}.data.action.value`,
-                },
-              ]
-            : []),
-        ];
-      }
+    if (node.type === 'serviceTask') {
+      return [
+        {
+          expression: node.data.entryCondition,
+          label: `workflow.nodes.${node.id}.data.entryCondition`,
+        },
+        ...(node.data.action.type === 'WEBHOOK'
+          ? [
+              {
+                expression: node.data.action.payload,
+                label: `workflow.nodes.${node.id}.data.action.payload`,
+              },
+            ]
+          : []),
+        ...(node.data.action.type === 'SET_FORM_FIELD'
+          ? [
+              {
+                expression: node.data.action.value,
+                label: `workflow.nodes.${node.id}.data.action.value`,
+              },
+            ]
+          : []),
+      ];
+    }
 
-      return [];
-    }),
-  ];
+    return [];
+  });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

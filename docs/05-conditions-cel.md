@@ -54,9 +54,9 @@ lastDecision != null && lastDecision.action == 'RETURNED'
 - `initiator` 為發起當下的 member snapshot，並展開 `memberId`。`initiator.roles`、`initiator.org.code` 等欄位取決於宿主提供的 snapshot 內容。
 - `instance` 在流程表達式中為 `id`、`state`、`templateId`、`templateVersionId`、`title`；
   委派條件的 `instance` 另外有 `nodeId`（被委派的任務所在節點）。
-- `subject` 目前只有發起權限的 context 會提供（與 `initiator` 相同內容）。發布 lint 對所有非 edge 的表達式
-  都允許 `subject` 根識別字，因此 entry condition 或 resolver 若引用 `subject`，會通過發布檢查，但執行期找不到該根而失敗。
-  這是目前程式的已知不一致，列於 §5 之後的待辦。
+- `subject` 只有發起權限的 context 會提供（與 `initiator` 相同內容）；反過來，發起權限在案件建立前評估，
+  沒有 `form`、`formData`、`instance`。發布 lint 依使用點分開白名單（見 §5），任一邊寫錯根識別字都會在發布時擋下
+  （未發佈，v0.16.2 之後；之前的版本對所有非 edge 表達式共用同一份含 `subject` 的白名單，寫錯要到執行期才失敗）。
 - `env` 只有 `now`（ISO 8601 字串）。
 - 委派條件的 `principal` 只有 `memberId`。委派條件沒有 `subject`、`task`、`template` 根，
   要用模板時請改用 `instance.templateId`。
@@ -116,9 +116,12 @@ export type ConditionContextType = 'INITIATOR_POLICY' | 'ENTRY_CONDITION' | 'FLO
 
 **模板發布**（`template.service.ts` 的發布路徑）會對 workflow 內所有 CEL 做 lint：
 
-- 非 edge 表達式（發起權限、entry condition、resolver `EXPRESSION` 等）使用白名單
+- 發起權限（`initiatorPolicyCel`）使用白名單 `env`、`initiator`、`subject`。
+- 節點表達式（entry condition、resolver `EXPRESSION`、webhook payload、`SET_FORM_FIELD` 的值）使用白名單
+  `env`、`form`、`formData`、`initiator`、`instance`。
+- edge 條件使用節點表達式的白名單，另加 `lastDecision`（未發佈，v0.16.2 之後）。
+- 依使用點分開白名單是 v0.16.2 之後才有（未發佈）；之前發起權限與節點表達式共用
   `env`、`form`、`formData`、`initiator`、`instance`、`subject`。
-- edge 條件使用同一白名單，另加 `lastDecision`（未發佈，v0.16.2 之後）。
 - 因此 `lastDecision` 出現在 entry condition、resolver、webhook payload 或 `SET_FORM_FIELD` 的值時，發布會被擋下。
 
 **委派規則儲存**（未發佈，v0.16.2 之後）（`delegation.service.ts` 的儲存路徑）對 `scopeConditionCel` 做 lint，白名單為
@@ -148,4 +151,3 @@ export type ConditionContextType = 'INITIATOR_POLICY' | 'ENTRY_CONDITION' | 'FLO
 | Custom function registry    | 統一註冊 `hasRole`、`isInOrg` 等 domain helper。     |
 | Evaluate guard              | 補上 timeout / maxSteps 等 evaluate 防護（長度上限已實作）。 |
 | Editor metadata API         | 支援 Monaco / autocomplete / inline lint。           |
-| 白名單一致化                | 讓非發起權限的運算式不再白名單放行 `subject`，或補上執行期的 `subject`（目前不一致，見 §2）。 |

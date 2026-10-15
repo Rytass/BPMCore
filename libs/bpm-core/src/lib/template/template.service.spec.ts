@@ -979,6 +979,43 @@ describe('TemplateService', () => {
     );
   });
 
+  describe('roots each expression is evaluated with', (): void => {
+    it('publishes an initiator policy that reads subject', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        initiatorPolicyCel: '"unit-1" in subject.orgUnitIds',
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('rejects an initiator policy that reads the form', async (): Promise<void> => {
+      // Initiator policies run before the instance exists, with no form data.
+      const service = createTableConditionPublishService({
+        initiatorPolicyCel: 'form.amount > 0',
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(
+        'initiatorPolicyCel references unsupported identifier form',
+      );
+    });
+
+    it('rejects subject in a workflow expression', async (): Promise<void> => {
+      // `subject` only exists for initiator policies; on a node or an edge it
+      // used to pass publish and then fail every instance that reached it.
+      const service = createTableConditionPublishService({
+        condition: 'subject.orgUnitIds.size() > 0',
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow('references unsupported identifier subject');
+    });
+  });
+
   it('refuses to delete a category that templates still reference', async (): Promise<void> => {
     // This used to succeed and quietly deactivate the category instead, so the
     // caller was told the delete happened while `isActive` was flipped behind
