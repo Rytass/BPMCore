@@ -341,6 +341,51 @@ describe('DelegationService', () => {
     ).rejects.toThrow('Delegation cycle detected');
   });
 
+  describe('scope condition roots', (): void => {
+    const createConditionRule = (
+      scopeConditionCel: string,
+    ): Promise<DelegationRuleEntity> =>
+      new DelegationService(
+        createDelegationRuleRepository({
+          create: jest.fn((entity: Partial<DelegationRuleEntity>) =>
+            Object.assign(new DelegationRuleEntity(), entity),
+          ),
+          find: jest.fn(
+            (): Promise<readonly DelegationRuleEntity[]> => Promise.resolve([]),
+          ),
+          save: jest.fn((rule: DelegationRuleEntity) => Promise.resolve(rule)),
+        }),
+        new ConditionService(),
+      ).createDelegationRule({
+        agentMemberId: 'member-101',
+        createdByMemberId: 'member-001',
+        principalMemberId: 'member-001',
+        priority: 100,
+        requiresConfirmation: false,
+        scopeConditionCel,
+        scopeTemplateIds: [],
+        scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+        startAt: null,
+        endAt: null,
+      });
+
+    it('refuses a root the delegation context never provides', async (): Promise<void> => {
+      // Saving used to check syntax only, so this rule was stored and then
+      // threw on every task its principal was assigned.
+      await expect(
+        createConditionRule('task.nodeId == "review"'),
+      ).rejects.toThrow('scopeConditionCel references unsupported identifier task');
+    });
+
+    it('accepts every root the delegation context provides', async (): Promise<void> => {
+      await expect(
+        createConditionRule(
+          'form.amount > 0 && formData.amount > 0 && initiator.memberId != principal.memberId && instance.templateId != "" && env.now != ""',
+        ),
+      ).resolves.toMatchObject({ scopeType: DelegationScopeTypeEnum.CONDITION_BASED });
+    });
+  });
+
   // `save` here returns exactly what it was handed, which is what real TypeORM
   // does — so these two assertions genuinely check the shape the service
   // passed in. A row spread into a plain object loses the prototype, and with

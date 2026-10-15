@@ -366,6 +366,7 @@ export class DelegationService {
     const lintErrors = this.conditionService.lintExpression(
       scopeConditionCel,
       'scopeConditionCel',
+      { allowedRootIdentifiers: DELEGATION_EXPRESSION_ROOT_IDENTIFIERS },
     );
 
     if (lintErrors.length > 0) {
@@ -393,10 +394,24 @@ export class DelegationService {
   }
 }
 
+// The only roots a delegation condition can read. Saving a rule checks its CEL
+// against this list, and the context below is typed by it, so the two cannot
+// drift apart again.
+const DELEGATION_EXPRESSION_ROOT_IDENTIFIERS = [
+  'env',
+  'form',
+  'formData',
+  'initiator',
+  'instance',
+  'principal',
+] as const;
+
 function buildDelegationExpressionContext(
   principalMemberId: string,
   context: DelegationResolutionContext,
-): Readonly<Record<string, unknown>> {
+): Readonly<
+  Record<(typeof DELEGATION_EXPRESSION_ROOT_IDENTIFIERS)[number], unknown>
+> {
   return {
     env: {
       now: new Date().toISOString(),
