@@ -228,8 +228,8 @@ Audit-condition evaluation context structures.
 | `OrgContext` | interface | Applicant's organization |
 | `PositionContext` | interface | Applicant's position |
 | `EnvContext` | interface | Environment vars (amount, date, etc.) |
-| `InstanceContext` | interface | Current approval instance |
-| `LastDecisionContext` | interface | Previous decision (used for return logic) |
+| `InstanceContext` | interface | `instance` in a workflow expression: `id`, `state`, `templateId`, `templateVersionId`, `title` |
+| `LastDecisionContext` | interface | `lastDecision` in an edge condition: the newest decision on the node the edge leaves (`action`, `comment`, `decidedAt`, `decidedByMemberId`, `returnToNodeId`, `taskId`, `transferToMemberId`), or `null` before that node has one. Edge conditions are the only expressions that may name it |
 
 ## `@rytass/bpm-core-shared/form`
 

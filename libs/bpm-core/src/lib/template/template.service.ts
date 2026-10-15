@@ -63,6 +63,15 @@ import {
   parseWorkflowDefinitionJson,
 } from './workflow-definition.validator';
 
+const WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS: readonly string[] = [
+  'env',
+  'form',
+  'formData',
+  'initiator',
+  'instance',
+  'subject',
+];
+
 interface MaxVersionRow {
   readonly maxVersion?: number | string | null;
 }
@@ -927,22 +936,26 @@ export class TemplateService {
     }
 
     const workflowResult = lintWorkflowDefinition(version.workflowDefinition);
-    const conditionErrors = this.conditionService.lintExpressions(
-      readConditionExpressions(
-        version.workflowDefinition,
-        version.initiatorPolicyCel,
+    const conditionErrors = [
+      ...this.conditionService.lintExpressions(
+        readNonEdgeConditionExpressions(
+          version.workflowDefinition,
+          version.initiatorPolicyCel,
+        ),
+        { allowedRootIdentifiers: WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS },
       ),
-      {
-        allowedRootIdentifiers: [
-          'env',
-          'form',
-          'formData',
-          'initiator',
-          'instance',
-          'subject',
-        ],
-      },
-    );
+      // Edge conditions also see the decision just made on the node they
+      // leave (workflow-engine `evaluateWorkflowEdge` and its dry-run twin).
+      ...this.conditionService.lintExpressions(
+        readEdgeConditionExpressions(version.workflowDefinition),
+        {
+          allowedRootIdentifiers: [
+            ...WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS,
+            'lastDecision',
+          ],
+        },
+      ),
+    ];
     const tableReferenceErrors = lintWorkflowTableReferences(
       version.workflowDefinition,
       version.initiatorPolicyCel,
@@ -1415,6 +1428,17 @@ function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {
   );
 }
 
+function readEdgeConditionExpressions(definition: WorkflowDefinition): readonly {
+  readonly expression: string | null | undefined;
+  readonly label: string;
+}[] {
+  return definition.edges.map((edge) => ({
+    expression: edge.data.condition,
+    label: `workflow.edges.${edge.id}.data.condition`,
+  }));
+}
+
+// Every CEL expression of a template version, edge conditions included.
 function readConditionExpressions(
   definition: WorkflowDefinition,
   initiatorPolicyCel: string | null,
@@ -1423,11 +1447,20 @@ function readConditionExpressions(
   readonly label: string;
 }[] {
   return [
+    ...readNonEdgeConditionExpressions(definition, initiatorPolicyCel),
+    ...readEdgeConditionExpressions(definition),
+  ];
+}
+
+function readNonEdgeConditionExpressions(
+  definition: WorkflowDefinition,
+  initiatorPolicyCel: string | null,
+): readonly {
+  readonly expression: string | null | undefined;
+  readonly label: string;
+}[] {
+  return [
     { expression: initiatorPolicyCel, label: 'initiatorPolicyCel' },
-    ...definition.edges.map((edge) => ({
-      expression: edge.data.condition,
-      label: `workflow.edges.${edge.id}.data.condition`,
-    })),
     ...definition.nodes.flatMap((node) => {
       if (node.type === 'userTask') {
         return [

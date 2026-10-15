@@ -955,6 +955,30 @@ describe('TemplateService', () => {
     ).resolves.toMatchObject({ id: 'template-version-1' });
   });
 
+  it('publishes an edge condition that reads the last decision', async (): Promise<void> => {
+    // The engine and its dry run both hand edge conditions `lastDecision`,
+    // so publishing must not reject the identifier there.
+    const service = createTableConditionPublishService({
+      condition: 'lastDecision != null && lastDecision.action == "APPROVED"',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).resolves.toMatchObject({ id: 'template-version-1' });
+  });
+
+  it('rejects lastDecision outside an edge condition', async (): Promise<void> => {
+    const service = createTableConditionPublishService({
+      initiatorPolicyCel: 'lastDecision != null',
+    });
+
+    await expect(
+      service.publishApprovalTemplateVersion('template-version-1'),
+    ).rejects.toThrow(
+      'initiatorPolicyCel references unsupported identifier lastDecision',
+    );
+  });
+
   it('refuses to delete a category that templates still reference', async (): Promise<void> => {
     // This used to succeed and quietly deactivate the category instead, so the
     // caller was told the delete happened while `isActive` was flipped behind
