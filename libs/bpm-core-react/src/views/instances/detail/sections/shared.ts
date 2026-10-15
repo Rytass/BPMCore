@@ -524,6 +524,8 @@ export function readCurrentActivityStep(
 export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolean {
   return (
     activityLog.eventType === 'INSTANCE_STARTED' ||
+    activityLog.eventType === 'INSTANCE_CANCELLED' ||
+    activityLog.eventType === 'INSTANCE_EXPIRED' ||
     activityLog.eventType === 'TASK_DECIDED' ||
     activityLog.eventType === 'SLA_TRIGGERED' ||
     activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
@@ -619,6 +621,8 @@ export function readActivityEventLabel(
   payload: Readonly<Record<string, unknown>>,
 ): string {
   if (eventType === 'INSTANCE_STARTED') return '案件已發起';
+  if (eventType === 'INSTANCE_CANCELLED') return '案件已取消';
+  if (eventType === 'INSTANCE_EXPIRED') return '案件逾期，已由系統終止';
   if (eventType === 'TOKEN_CREATED') return '流程路徑已建立';
   if (eventType === 'ENGINE_PROCESS_REQUESTED') return '流程引擎已處理';
   if (eventType === 'TOKEN_ADVANCED') return '流程已前進';
@@ -662,6 +666,7 @@ export function isActivityError(
 ): boolean {
   return (
     activityLog.eventType === 'SLA_TRIGGERED' ||
+    activityLog.eventType === 'INSTANCE_EXPIRED' ||
     (activityLog.eventType === 'SERVICE_TASK_FAILED' &&
       isNotifyWebhookActivity(activityLog.eventType, payload)) ||
     readStringField(payload, 'action') === 'REJECTED' ||
@@ -1232,6 +1237,15 @@ export function readActivityStepRecords(
 
 type RuntimeTone = 'cancelled' | 'completed' | 'current' | 'neutral' | 'waiting';
 
+const END_EVENT_STATUS: Readonly<
+  Record<string, Readonly<{ statusLabel: string; tone: RuntimeTone }>>
+> = {
+  APPROVED: { statusLabel: '已完成', tone: 'completed' },
+  CANCELLED: { statusLabel: '已取消', tone: 'cancelled' },
+  EXPIRED: { statusLabel: '已逾期終止', tone: 'cancelled' },
+  REJECTED: { statusLabel: '已拒絕', tone: 'cancelled' },
+};
+
 export function readNodeRuntimeState(
   node: WorkflowNode,
   tasks: readonly TaskRecord[],
@@ -1300,12 +1314,14 @@ export function readNodeRuntimeState(
     };
   }
 
-  if (node.type === 'endEvent' && instanceState !== 'RUNNING') {
-    return {
-      secondaryLabel: instanceState,
-      statusLabel: instanceState === 'REJECTED' ? '已拒絕' : '已完成',
-      tone: instanceState === 'REJECTED' ? 'cancelled' : 'completed',
-    };
+  const endEventStatus =
+    node.type === 'endEvent' ? END_EVENT_STATUS[instanceState] : undefined;
+
+  // Only a closed instance has an outcome to show on its end node. Every
+  // non-running state used to read 已完成 here — a cancelled, expired or
+  // returned case included.
+  if (endEventStatus) {
+    return { ...endEventStatus, secondaryLabel: instanceState };
   }
 
   return {

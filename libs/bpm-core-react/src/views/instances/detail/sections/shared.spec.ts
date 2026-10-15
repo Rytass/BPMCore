@@ -13,6 +13,7 @@ import {
   readActivityStepRecords,
   readAdhocTargetDraft,
   readMemberDisplayText,
+  readNodeRuntimeState,
   readSequentialActivityPayloadMemberIds,
 } from './shared';
 
@@ -551,5 +552,52 @@ describe('administrator reassignment in the timeline', () => {
         taskId: 'task-1',
       } as unknown as ActivityLogRecord),
     ).toBe(true);
+  });
+});
+
+describe('how an instance ended', (): void => {
+  const endNode = {
+    data: { endState: 'APPROVED', label: '結束' },
+    id: 'end',
+    position: { x: 0, y: 0 },
+    type: 'endEvent',
+  } as Parameters<typeof readNodeRuntimeState>[0];
+  const endLabel = (instanceState: string): string =>
+    readNodeRuntimeState(endNode, [], [], instanceState).statusLabel;
+  const instanceLog = (eventType: string): ActivityLogRecord =>
+    ({
+      actorMemberId: null,
+      createdAt: '2026-10-15T08:00:00.000Z',
+      eventType,
+      id: 'activity-end',
+      instanceId: 'instance-1',
+      nodeId: null,
+      payloadJson: '{}',
+      taskId: null,
+    }) as unknown as ActivityLogRecord;
+
+  it('names the outcome on the end node', (): void => {
+    // Every state but RUNNING used to read 已完成 here.
+    expect(endLabel('APPROVED')).toBe('已完成');
+    expect(endLabel('REJECTED')).toBe('已拒絕');
+    expect(endLabel('CANCELLED')).toBe('已取消');
+    expect(endLabel('EXPIRED')).toBe('已逾期終止');
+  });
+
+  it('leaves the end node unreached while the case is still open', (): void => {
+    expect(endLabel('RUNNING')).toBe('未抵達');
+    expect(endLabel('RETURNED')).toBe('未抵達');
+  });
+
+  it('shows a cancellation and an SLA expiry in the timeline', (): void => {
+    expect(isUserMeaningfulActivity(instanceLog('INSTANCE_CANCELLED'))).toBe(
+      true,
+    );
+    expect(isUserMeaningfulActivity(instanceLog('INSTANCE_EXPIRED'))).toBe(true);
+    expect(readActivityEventLabel('INSTANCE_CANCELLED', {})).toBe('案件已取消');
+    expect(readActivityEventLabel('INSTANCE_EXPIRED', {})).toBe(
+      '案件逾期，已由系統終止',
+    );
+    expect(isActivityError(instanceLog('INSTANCE_EXPIRED'), {})).toBe(true);
   });
 });
