@@ -249,6 +249,11 @@ describe('MemberTaskReassignModal', () => {
   });
 
   it('commits the previewed reassignment and shows the result', async (): Promise<void> => {
+    // After the commit the member holds nothing, so the reloaded list is empty;
+    // the result rows must still name the case, not fall back to task ids.
+    api.listMemberOpenTasks
+      .mockResolvedValueOnce([TASK])
+      .mockResolvedValueOnce([]);
     api.reassignMemberTasks
       .mockResolvedValueOnce([WOULD_REASSIGN])
       .mockResolvedValueOnce([REASSIGNED]);
@@ -265,6 +270,9 @@ describe('MemberTaskReassignModal', () => {
       reason: '離職',
       toMemberId: 'member-to',
     });
+    expect(api.listMemberOpenTasks).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('已改派');
+    expect(container.textContent).toContain('採購申請');
+    expect(container.textContent).not.toContain('task-1');
   });
 });
