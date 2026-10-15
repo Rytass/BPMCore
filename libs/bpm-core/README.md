@@ -756,17 +756,27 @@ and observable:
    pagination payload. **For reconciliation, always key on `code`**
    (which IS returned). Treat `metadataJson` as a debugging/audit
    stash, not a live FK pointer.
-3. **Soft delete via `deleteOrgUnit` / `deleteMembership` / `deleteManagerResolution`.** Deletes set
-   `deletedAt` rather than removing rows. BPM's query layer hides
-   soft-deleted rows automatically; reading `orgUnitCount()` will report
-   the live count.
-4. **Positions are intentionally not deletable.** There is no
-   `deletePosition` mutation — positions are part of the historical
-   record (every signed approval task references the assignee's position
-   at sign time, so deleting a position would lose audit data). Retire a
-   position by removing all active memberships referencing it; the
-   position itself stays. Use `updatePosition({ id, name: 'retired-' + oldName, ... })`
-   if you want a UI hint that a position is no longer in use.
+3. **Only `deleteOrgUnit` is a soft delete.** It sets `deletedAt`, and
+   BPM's query layer hides soft-deleted units automatically; reading
+   `orgUnitCount()` reports the live count. `deleteMembership`,
+   `deleteManagerResolution` and `deletePosition` are **hard deletes** —
+   those entities have no `deletedAt` column, so the row and its history
+   are gone.
+4. **End a membership or manager rule with `effectiveTo`, don't delete
+   it.** To keep "who was in this unit / who managed whom, and when",
+   call `updateMembership` / `updateManagerResolution` with `effectiveTo`
+   set to the last day the row should still apply. `effectiveTo` is
+   inclusive, and "today" is read in `organizationTimeZone` (default
+   `Asia/Taipei`), so a row ending yesterday stops applying today. Keep
+   the delete methods for rows written by mistake.
+5. **Positions are deleted only when nothing points at them.**
+   `deletePosition` refuses while any membership or manager resolution
+   (ended ones included) references the position, or while a template or
+   a running ad-hoc directive routes approvers through it. Since the
+   delete is permanent, retire a position by ending the memberships that
+   use it and leaving the position in place; rename it (for example
+   `updatePosition({ id, name: 'retired-' + oldName, ... })`) if you want
+   a UI hint that it is no longer in use.
 
 ### Worked example: idempotent sync
 
@@ -783,7 +793,7 @@ input shapes — no `{id, input: {...}}` wrapping):
 - `commitOrgUnitTreeDraft({ moves: { id, parentId, baseUpdatedAt }[] })` (transactional batch moves — each entry's `baseUpdatedAt` is the row's last-known `updatedAt`, used by BPM for optimistic-locking conflict detection)
 - `createPosition({ code, name, level, metadataJson })` — `level` (1+) controls hierarchy weight (higher = more senior, used by manager-resolution priority sort); `metadataJson` is required (pass `'{}'` if unused)
 - `updatePosition({ id, code, name, level, metadataJson })` — every field except `id` is `T | null`; pass `null` to leave a field unchanged
-- `createMembership({ memberId, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — `positionId` and `effectiveTo` accept `null`; `effectiveFrom` is an ISO timestamp string. Uniqueness key is `(memberId, orgUnitId, positionId)`
+- `createMembership({ memberId, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — `positionId` and `effectiveTo` accept `null`; `effectiveFrom` / `effectiveTo` are `YYYY-MM-DD` date strings (`effectiveTo` is inclusive). Uniqueness key is `(memberId, orgUnitId, positionId, effectiveFrom)`
 - `updateMembership({ id, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — every field except `id` is `T | null`
 - `createManagerResolution({ scopeType, scopeId, managerMemberId, priority, effectiveFrom, effectiveTo })` — `scopeType` is `'MEMBER' | 'ORG_UNIT' | 'POSITION'`; `priority` orders the resolver chain (lower number = checked first)
 - `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId)`)

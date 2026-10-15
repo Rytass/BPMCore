@@ -230,9 +230,14 @@ data in. Three rules keep the mirror idempotent:
    (kept out of paginated payloads). **Always reconcile by `code`**;
    treat `metadataJson` as an audit/debugging breadcrumb, not a live
    FK pointer.
-3. **Soft-delete via the `delete*` mutations.** They set `deletedAt`;
+3. **Only `deleteOrgUnit` is a soft delete.** It sets `deletedAt`, and
    live queries (`orgUnits`, `orgUnitCount`, etc.) filter soft-deleted
-   rows automatically.
+   units automatically. `deleteMembership`, `deleteManagerResolution` and
+   `deletePosition` are **hard deletes** — the row and its history are
+   gone. To keep history, end a membership or manager rule with
+   `updateMembership` / `updateManagerResolution` and an `effectiveTo`
+   (inclusive, read in the organization time zone) instead of deleting
+   it.
 
 Quick wire-up using only this package's exports. Note the flat input
 shape on the create/update mutations (no `{id, input: {...}}` wrapper):
