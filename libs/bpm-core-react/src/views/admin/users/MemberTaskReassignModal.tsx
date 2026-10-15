@@ -43,6 +43,15 @@ interface PreviewState {
 }
 
 /**
+ * A committed run keeps the titles it was started with: the task list reloads
+ * right after, and a member whose every task moved no longer lists any of them.
+ */
+interface CommittedState {
+  readonly results: readonly TaskReassignmentResultRecord[];
+  readonly titleById: ReadonlyMap<string, string>;
+}
+
+/**
  * Administrator reassignment of a member's open tasks. Lists what the member
  * holds, takes a target and a reason, previews every task's outcome (dry run),
  * and only then commits. Confirm stays disabled until the preview matches the
@@ -61,9 +70,7 @@ export function MemberTaskReassignModal({
   const [target, setTarget] = useState<MemberOption | null>(null);
   const [reason, setReason] = useState('');
   const [preview, setPreview] = useState<PreviewState | null>(null);
-  const [committed, setCommitted] = useState<
-    readonly TaskReassignmentResultRecord[]
-  >([]);
+  const [committed, setCommitted] = useState<CommittedState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +98,7 @@ export function MemberTaskReassignModal({
     setTarget(null);
     setReason('');
     setPreview(null);
-    setCommitted([]);
+    setCommitted(null);
     setError(null);
 
     if (!member) {
@@ -103,9 +110,9 @@ export function MemberTaskReassignModal({
     void loadTasks(member.memberId);
   }, [member, loadTasks]);
 
-  const taskById = useMemo(
-    (): ReadonlyMap<string, MemberOpenTaskRecord> =>
-      new Map(tasks.map((task) => [task.taskId, task])),
+  const titleById = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(tasks.map((task) => [task.taskId, task.instanceTitle])),
     [tasks],
   );
 
@@ -127,9 +134,9 @@ export function MemberTaskReassignModal({
 
       if (dryRun) {
         setPreview({ inputKey, results: outcomes });
-        setCommitted([]);
+        setCommitted(null);
       } else {
-        setCommitted(outcomes);
+        setCommitted({ results: outcomes, titleById });
         setPreview(null);
         await loadTasks(member.memberId);
       }
@@ -140,18 +147,17 @@ export function MemberTaskReassignModal({
     }
   }
 
-  const shownResults = committed.length ? committed : (preview?.results ?? []);
-  const shownResultRows = useMemo(
-    (): ResultRow[] =>
-      shownResults.map((result) => ({
-        instanceTitle:
-          taskById.get(result.taskId)?.instanceTitle ?? result.taskId,
-        key: result.taskId,
-        message: result.message,
-        outcomeLabel: readOutcomeLabel(result.outcome),
-      })),
-    [shownResults, taskById],
-  );
+  const shownResultRows = useMemo((): ResultRow[] => {
+    const shownResults = committed?.results ?? preview?.results ?? [];
+    const shownTitleById = committed?.titleById ?? titleById;
+
+    return shownResults.map((result) => ({
+      instanceTitle: shownTitleById.get(result.taskId) ?? result.taskId,
+      key: result.taskId,
+      message: result.message,
+      outcomeLabel: readOutcomeLabel(result.outcome),
+    }));
+  }, [committed, preview, titleById]);
 
   const taskColumns = useMemo(
     (): TableColumn<TaskRow>[] => [
@@ -189,13 +195,13 @@ export function MemberTaskReassignModal({
         dataIndex: 'outcomeLabel',
         key: 'outcomeLabel',
         title: '結果',
-        width: 120,
+        width: 100,
       },
       {
         dataIndex: 'message',
         key: 'message',
         title: '說明',
-        width: 280,
+        width: 160,
       },
     ],
     [],
@@ -251,7 +257,7 @@ export function MemberTaskReassignModal({
               onChange={(option): void => {
                 setTarget(option);
                 setPreview(null);
-                setCommitted([]);
+                setCommitted(null);
               }}
               placeholder="搜尋接手人姓名或信箱"
               value={target}
@@ -264,7 +270,7 @@ export function MemberTaskReassignModal({
               onChange={(event: ChangeEvent<HTMLInputElement>): void => {
                 setReason(event.target.value);
                 setPreview(null);
-                setCommitted([]);
+                setCommitted(null);
               }}
               placeholder="例如：原簽核人已離職"
               value={reason}
