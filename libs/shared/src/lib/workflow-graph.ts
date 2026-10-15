@@ -991,6 +991,16 @@ export function readApproverResolverIssue(
     return '簽核節點需要指定改派固定人。';
   }
 
+  if (
+    (resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    resolver.fallback?.type === 'POSITION' &&
+    !resolver.fallback.positionId.trim()
+  ) {
+    return '簽核節點需要指定改派職位。';
+  }
+
   if (resolver.type === 'POSITION' && !resolver.positionId.trim()) {
     return '簽核節點需要指定職位。';
   }

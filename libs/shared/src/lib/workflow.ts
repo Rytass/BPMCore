@@ -121,6 +121,16 @@ export type ApproverResolverFallback =
       readonly allowInitiatorSelfApproval?: boolean;
       readonly memberId: string;
       readonly type: 'DIRECT';
+    }
+  | {
+      /**
+       * Members of this position, resolved the way a POSITION node resolves
+       * them at the moment the node starts. Only ORG_MANAGER, ORG_UNIT_MANAGER
+       * and ORG_MANAGER_CHAIN take it. Older engines reject it at run time.
+       */
+      readonly allowInitiatorSelfApproval?: boolean;
+      readonly positionId: string;
+      readonly type: 'POSITION';
     };
 
 export type DecisionPolicy =
