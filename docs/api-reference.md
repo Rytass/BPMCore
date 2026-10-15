@@ -63,15 +63,30 @@ tags and the GitHub releases for **all four** published packages. A manual bump
 silently skips the changelog, so consumers get a release whose `CHANGELOG.md`
 still ends at the previous version.
 
+Release in separate processes — this is how v0.14.0 shipped:
+
 ```bash
-# Determines each group's bump from Conventional Commits since its last tag,
-# writes CHANGELOGs, commits, tags, pushes, creates the GitHub release, builds
-# and publishes — in that order, in one process. Add --dry-run first to review.
-npx nx release --otp=<6 digits>
+npx nx release --dry-run        # review the resolved version and changelog
+npx nx release --skip-publish   # version, changelogs, commit, tag, push, GitHub release
+pnpm nx run-many -t build -p shared,bpm-core,bpm-core-client --skip-nx-cache
+npx nx release publish --otp=<6 digits>   # a second process: build, publish
 ```
 
-`--yes` makes it unattended; without it the interactive run prompts before
-publishing.
+Then confirm every package reached the registry; the exit code is not enough:
+
+```bash
+for p in bpm-core-shared bpm-core-nestjs-module bpm-core-client bpm-core-react; do
+  curl -s -o /dev/null -w "$p %{http_code}\n" \
+    "https://registry.npmjs.org/@rytass%2F$p/<version>"   # 404 = never published
+done
+```
+
+The one-command form `npx nx release --otp=<6 digits>` also exists, but on
+v0.13.5 it exited 0 with three packages never published: inside one process the
+build after the version bump hit an nx cache entry written before it, so `dist`
+still carried the old version. An OTP that starts with `0` cannot be passed as
+`--otp=` (nx parses it as a number). CLAUDE.md → Releasing has the full
+mechanism and the recovery path.
 
 While the packages are on 0.x, `version.adjustSemverBumpsForZeroMajorVersion`
 is `true`, so bumps follow the 0.x convention: `BREAKING CHANGE:` resolves to a
@@ -80,8 +95,9 @@ Releasing for the trade-off that was accepted.
 
 All four packages form **one fixed version set**: a shared version number, a
 `v{version}` tag, one workspace `CHANGELOG.md`, one GitHub release, and a
-per-package `CHANGELOG.md` each. `prepublish-check` (typecheck + lint + test +
-build + publint) runs for all four before versioning.
+per-package `CHANGELOG.md` each. `prepublish-check` (typecheck + lint + build +
+publint, plus test for `bpm-core` and `bpm-core-client`) runs for all four before
+versioning.
 
 The trade-off of a fixed set is that any change bumps every package, so
 `bpm-core-react` gets a new version even for a backend-only change. That is
@@ -100,15 +116,16 @@ toward the bump and everything else is forced to `patch` — and this repo scope
 commits by domain (`feat(template)`, `fix(calendar)`), which made a three-feature
 release resolve to `patch`. Do not remove it.
 
-### Publishing — one command for all four
+### Publishing — `nx release publish`
 
 ```bash
 npx nx release publish        # only to retry a failed publish; add --dry-run first
 ```
 
-The full `nx release` above already publishes. Reach for this form only when
-publishing failed on its own (an expired OTP, a registry 5xx) and versioning,
-tagging and pushing are already done.
+This is the last step of the sequence above, and also the retry when publishing
+failed on its own (an expired OTP, a registry 5xx) after versioning, tagging and
+pushing are already done. Rebuild by hand first
+(`pnpm nx run-many -t build -p shared,bpm-core,bpm-core-client --skip-nx-cache`).
 
 Each project declares its own `nx-release-publish.packageRoot`, so this publishes
 every package from the correct directory. `targetDefaults` adds
@@ -198,7 +215,7 @@ Re-exports the seven subpath modules listed below, plus the identity and organiz
 |---|---|---|
 | `MemberMetadata` | interface | Display-time member metadata |
 | `MemberMetadataCacheEntry` | interface | Cached metadata + TTL |
-| `OrgUnitType` | type | `'company' \| 'division' \| 'department' \| 'team'` |
+| `OrgUnitType` | type | `'COMPANY' \| 'DIVISION' \| 'DEPARTMENT' \| 'TEAM'` (uppercase, the GraphQL wire format) |
 | `ManagerResolutionScopeType` | type | `'MEMBER' \| 'ORG_UNIT' \| 'POSITION'` |
 | `OrgUnit` | interface | Org-unit node |
 | `Position` | interface | Position |
@@ -230,8 +247,8 @@ Form-schema definitions.
 | `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
 | `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
 | `FormTableRowValue` | type | One table row: column key to cell value |
-| `TextFieldDefinition` | type | text / email / textarea; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
-| `NumberFieldDefinition` | type | number (min/max/precision) |
+| `TextFieldDefinition` | type | `text` / `textarea`, optional `minLength` / `maxLength`; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
+| `NumberFieldDefinition` | type | `number` / `money`, optional `minimum` / `maximum` |
 | `DateFieldDefinition` | type | date / datetime |
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
 | `FormDataSourceReference` | interface | Registered source key, version, and bindings |
@@ -281,7 +298,7 @@ Form-schema definitions.
 | `ApprovalInstanceState` | type | DRAFT / RUNNING / APPROVED / REJECTED / RETURNED / CANCELLED / EXPIRED |
 | `WorkflowTokenStatus` | type | `'ACTIVE' \| 'WAITING' \| 'CONSUMED'` |
 | `TaskStatus` | type | PENDING / COMPLETED / CANCELLED / etc. |
-| `TaskDecisionAction` | type | APPROVE / REJECT / RETURN |
+| `TaskDecisionAction` | type | `'APPROVED' \| 'REJECTED' \| 'RETURNED' \| 'TRANSFERRED'` |
 | `DelegationRuleStatus` | type | ACTIVE / EXPIRED / REVOKED |
 | `DelegationScopeType` | type | ALL / TEMPLATE_LIST / CONDITION_BASED |
 
@@ -298,7 +315,7 @@ Form-schema definitions.
 | `WorkflowNodeTriggerMode` | type | `'AND' \| 'OR'` |
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
-| `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
+| `ApproverResolver` | type | DIRECT / POSITION / ORG_UNIT_MEMBER / ORG_UNIT_POSITION / ORG_MANAGER / ORG_UNIT_MANAGER / DYNAMIC_FORM / EXPRESSION / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
 | `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` is not yet released. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
 | `readUnsupportedApproverFallbackType(fallback)` | function | Not yet released. The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
@@ -452,7 +469,7 @@ Process-wide overrides read by every request. `configureBPMClient()` replaces th
 | `MemberProfileRecord` | interface | id / name / email / avatar |
 | `MemberDirectoryPage` | interface | Pagination wrapper |
 | `resolveMembers(ids)` | async function | Batch memberId → profile (deduped) |
-| `searchMembers(query)` | async function | Fuzzy search across name/email/phone |
+| `searchMembers(query)` | async function | Sends the query as `searchText`; which fields match is decided by the host's `BPMMemberResolver.search` |
 | `listMemberDirectoryPage({ page, pageSize, searchText })` | async function | Full directory pagination |
 
 ## `@rytass/bpm-core-client/organization`
@@ -620,7 +637,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Name | Purpose |
 |---|---|
 | `submitApprovalInstance({ ... })` | Launch a new instance. The service command also takes an optional `submittedByMemberId` (who actually pressed submit when it is not the applicant); the GraphQL mutation always sets it to the signed-in member and does not accept it as input. Absent means the initiator. Nodes with `excludeInitiator` keep that member out of their approvers exactly like the initiator; the instance exposes it as `ApprovalInstance.submittedByMemberId` (nullable — `null` on rows written before the column existed means "the initiator submitted it"), and `INSTANCE_STARTED` carries it in its payload. A distinct submitter can read the instance (detail, timeline, attachments) and finds it in the `SENT` and ordinary readable lists, but resubmit and cancel stay initiator-only; the initiator's `INSTANCE_COMPLETED` notification then reads "…已完成。（由 X 代為送出）" and its payload carries `submittedByMemberId` and the rendered sentence `submittedByNote` (the built-in body is `…已完成。{{submittedByNote}}`; both keys are absent, and the body unchanged, when the initiator submitted it themselves). The name is looked up once at submit, before the submit transaction, and recorded as `submittedByName` on `INSTANCE_STARTED` (absent when the initiator submitted); the lookup (`NotificationService.readMemberDisplayName(memberId)`, public so the engine can call it before opening the transaction; call it outside any transaction) falls back to the member id on error or after 2 s, and completion reads that record instead of calling the identity source inside the approval transaction |
-| `decideTask({ ... })` | Decide a task (APPROVE / REJECT / RETURN) |
+| `decideTask({ ... })` | Decide a task (`action`: APPROVED / REJECTED / RETURNED / TRANSFERRED) |
 | `cancelApprovalInstance({ ... })` | Cancel an instance |
 | `resubmitApprovalInstance({ ... })` | Re-submit after return |
 | `uploadAttachment({ ... })` | Multipart upload |
@@ -1377,7 +1394,8 @@ argument on the `notifications` / `notificationCount` queries.
     raw `duplicate key value violates unique constraint "org_units_code_key"`,
     naming a row no query returns. Safe on an existing database (the dropped
     constraint already guaranteed the live rows do not collide); `down()`
-    refuses if any code has since been reused.
+    re-adds the global constraint, which the database rejects if any code has
+    since been reused — free the duplicate codes first.
 24. `WorkflowWebhookDeliveries0000000023000` (creates `workflow_webhook_deliveries`, the NOTIFY webhook outbox: unique `(token_id, target_id)` so a token cannot queue the same target twice, plus indexes for the pending scan and per-instance listing)
 25. `WorkflowWebhookEndpoints0000000024000` (creates `workflow_webhook_endpoints` — database-managed NOTIFY webhook endpoints, unique `(key, version)`, `is_active` index, header values and signing secret only as AES-256-GCM envelopes — and `workflow_webhook_endpoint_audits`, which records who changed which fields and never a value)
 26. `TaskCandidateSequence0000000025000` (adds nullable `task_candidates.sequence` — the 0-based signing order inside a `SEQUENTIAL` task — and nullable `tasks.sla_started_at`; existing rows are not backfilled, so in-flight tasks keep the behaviour they were created under. `down()` first turns `WAITING` candidates back into `PENDING` so no task is stranded)
@@ -1532,7 +1550,7 @@ and `@mezzanine-ui/core` also carries the styles — see
 
 ## Pages (Next.js Server Component shims)
 
-19 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
+20 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
 
 ```ts
 export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
@@ -1552,7 +1570,7 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
 | `pages/instances/new` | `/instances/new` | Yes | reads `?templateId=` |
 | `pages/templates` | `/templates` | No | — |
 | `pages/templates/categories` | `/templates/categories` | No | — |
-| `pages/templates/compose` | `/templates/compose` | No | reads `BPM_AI_ASSISTANT_ENABLED` / `OPENAI_API_KEY` → Step 1 designer AI assistant |
+| `pages/templates/compose` | `/templates/compose` | Yes | `await connection()` (forces dynamic rendering), reads `BPM_AI_ASSISTANT_ENABLED` / `OPENAI_API_KEY` → Step 1 designer AI assistant |
 | `pages/templates/designer` | `/templates/[id]/designer` | Yes | `params.id` → `templateId` |
 | `pages/templates/versions` | `/templates/[id]/versions` | Yes | `params.id` → `templateId` |
 | `pages/settings/notifications` | `/settings/notifications` | No | — |
