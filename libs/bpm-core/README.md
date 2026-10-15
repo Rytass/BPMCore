@@ -1497,6 +1497,35 @@ or a `Promise`; the example above uses async because production KMS / TSA
 clients are typically network-bound. Returning a synchronous value is fine
 for in-memory or local-file providers.
 
+## Administrator Task Reassignment
+
+When an open task is held by someone who has left or been replaced, an
+administrator (`@BPMAdminOnly()`) can move it without that person's help:
+
+- `memberOpenTasks(memberId)` lists the open seats a member holds on running
+  instances, as the assignee or as a `PENDING` / `CLAIMED` / `WAITING`
+  candidate.
+- `reassignTask(input)` moves one task's seat from `fromMemberId` to
+  `toMemberId`. `reassignMemberTasks(input)` does the same for every open task
+  the source member holds, one transaction and one result per task.
+
+The rules that differ from the holder's own transfer:
+
+- The task keeps its id and decision policy. Only the moved seat changes; the
+  other seats of a `PARALLEL_ALL`, `PARALLEL_ANY`, `QUORUM` or `SEQUENTIAL`
+  stage stay where they are, and a `WAITING` seat keeps its place in order.
+- It is not a decision. No `TaskDecision` and no signature are written. The
+  delegation chain gets an `ADMIN_REASSIGN` step carrying `actorMemberId` and
+  the typed `comment`, and the activity log records `TASK_REASSIGNED`.
+- The target is not run through delegation rules. The initiator / submitter
+  exclusions and the ORG_MANAGER_CHAIN grade check still apply.
+- A refusal is reported as `REJECTED` with an `errorCode`
+  (`SOURCE_NOT_ON_TASK`, `TARGET_SAME_AS_SOURCE`, `TARGET_ALREADY_ON_TASK`,
+  `TARGET_ALREADY_DECIDED`, `TARGET_IS_INITIATOR`, `TARGET_IS_SUBMITTER`,
+  `TARGET_GRADE_TOO_LOW`, `TASK_NOT_OPEN`, `INSTANCE_NOT_RUNNING`,
+  `REASON_REQUIRED`). `reassignTask` throws a `ConflictException` carrying the
+  code unless `dryRun` is set; `dryRun` always reports and never writes.
+
 ## GraphQL Surface
 
 Importing `BPMRootModule` registers GraphQL resolvers for:

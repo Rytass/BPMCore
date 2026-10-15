@@ -1,10 +1,13 @@
-import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Int, Query, Resolver } from '@nestjs/graphql';
 import {
+  BPMAdminOnly,
   BPMAuthenticated,
   BPMCurrentAuthContext,
   BPMCurrentMemberId,
   BPMAuthContext,
 } from '../bpm-auth';
+import { MemberOpenTaskObject } from './task-reassignment.object';
+import { MemberOpenTaskRecord } from './workflow-engine.service';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
@@ -184,6 +187,18 @@ export class WorkflowEngineQueries {
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<readonly TaskEntity[]> {
     return this.workflowEngineService.listApprovalHistoryTasks(currentMemberId);
+  }
+
+  @Query(() => [MemberOpenTaskObject], {
+    description:
+      'Administrator: the open tasks a member holds (assignee, or a PENDING, ' +
+      'CLAIMED or WAITING candidate seat) on RUNNING instances.',
+  })
+  @BPMAdminOnly()
+  async memberOpenTasks(
+    @Args('memberId', { type: () => ID }) memberId: string,
+  ): Promise<readonly MemberOpenTaskRecord[]> {
+    return this.workflowEngineService.listMemberOpenTasks(memberId);
   }
 
   @Query(() => [ApprovalTemplateEntity])

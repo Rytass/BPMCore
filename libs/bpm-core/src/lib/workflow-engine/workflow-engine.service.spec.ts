@@ -68,13 +68,20 @@ import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
+  MemberTaskRoleEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
+  TaskReassignmentErrorCodeEnum,
+  TaskReassignmentOutcomeEnum,
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
 } from './workflow-engine.enums';
-import { WorkflowEngineService } from './workflow-engine.service';
+import {
+  ADMIN_REASSIGN_DELEGATION_REASON,
+  TaskReassignmentResult,
+  WorkflowEngineService,
+} from './workflow-engine.service';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -10938,6 +10945,794 @@ describe('WorkflowEngineService', () => {
   });
 });
 
+describe('administrator task reassignment', (): void => {
+  const ADMIN_MEMBER_ID = 'admin-001';
+  const REASON = '原簽核人離職';
+
+  // Seeds are read back merged with what the engine saved: the fixture only
+  // answers `find` from rows it has seen, and a seat that did not move is not
+  // among the saved rows.
+  // A single-entity save is recorded apart from an array save in the fixture.
+  const writtenActivityLogs = (
+    fixture: ServiceFixture,
+  ): readonly ActivityLogEntity[] => [
+    ...fixture.savedActivityLogs,
+    ...fixture.savedSingleActivityLogs,
+  ];
+
+  const readSeatRows = (
+    fixture: ServiceFixture,
+    seeds: readonly TaskCandidateEntity[],
+  ): readonly TaskCandidateEntity[] =>
+    readLatestRows([...seeds, ...fixture.savedTaskCandidates]);
+
+  const readTaskState = (
+    fixture: ServiceFixture,
+    seed: TaskEntity,
+  ): TaskEntity => {
+    const task = readLatestRows([seed, ...fixture.savedTasks]).find(
+      (row) => row.id === seed.id,
+    );
+
+    if (!task) {
+      throw new Error(`Task ${seed.id} was not found`);
+    }
+
+    return task;
+  };
+
+  const readStatusByMember = (
+    fixture: ServiceFixture,
+    seeds: readonly TaskCandidateEntity[],
+  ): Readonly<Record<string, TaskCandidateStatusEnum>> =>
+    Object.fromEntries(
+      readSeatRows(fixture, seeds).map((row) => [row.memberId, row.status]),
+    );
+
+  // Answers the root task `find` (inbox, member listing) from the seeded tasks
+  // plus the rows the engine saved, `where` clause included.
+  const answerTaskQueriesFromSeeds = (
+    fixture: ServiceFixture,
+    seeds: readonly TaskEntity[],
+  ): void => {
+    fixture.rootTaskFind.mockImplementation((options) => {
+      const where = options.where as
+        | Readonly<Record<string, unknown>>
+        | readonly Readonly<Record<string, unknown>>[];
+      const clauses = Array.isArray(where) ? where : [where];
+
+      return Promise.resolve(
+        readLatestRows([...seeds, ...fixture.savedTasks]).filter((task) =>
+          clauses.some((clause) => matchesFindWhere(task, clause)),
+        ),
+      );
+    });
+  };
+
+  const createOpenTaskFixture = ({
+    assigneeMemberId = null,
+    candidates = [],
+    decisionPolicy = { type: 'SINGLE' },
+    excludeInitiator,
+    grades,
+    instanceState,
+    resolver = { memberIds: ['member-from'], type: 'DIRECT' },
+    submittedByMemberId,
+    task = {},
+  }: {
+    readonly assigneeMemberId?: string | null;
+    readonly candidates?: readonly TaskCandidateEntity[];
+    readonly decisionPolicy?: DecisionPolicy;
+    readonly excludeInitiator?: ExcludeInitiatorConfig;
+    readonly grades?: Readonly<Record<string, number | null>>;
+    readonly instanceState?: ApprovalInstanceStateEnum;
+    readonly resolver?: ApproverResolver;
+    readonly submittedByMemberId?: string | null;
+    readonly task?: Partial<TaskEntity>;
+  } = {}): { readonly fixture: ServiceFixture; readonly seed: TaskEntity } => {
+    const seed = createTask({
+      assigneeMemberId,
+      decisionPolicySnapshot: decisionPolicy,
+      id: 'task-1',
+      nodeId: 'task_finance',
+      originalAssigneeMemberId: 'member-from',
+      status: TaskStatusEnum.PENDING,
+      tokenId: 'token-1',
+      ...task,
+    });
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: seed,
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState,
+      processTaskCandidates: candidates,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: resolver,
+        decisionPolicy,
+        excludeInitiator,
+      }),
+      submittedByMemberId,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      ...(grades ? createManagerChainOrg({ grades, links: [] }) : {}),
+    });
+
+    return { fixture, seed };
+  };
+
+  const reassign = (
+    fixture: ServiceFixture,
+    options: {
+      readonly dryRun?: boolean;
+      readonly fromMemberId: string;
+      readonly reason?: string;
+      readonly toMemberId: string;
+    },
+    taskId = 'task-1',
+  ): Promise<TaskReassignmentResult> =>
+    fixture.service.reassignTask(taskId, {
+      actorMemberId: ADMIN_MEMBER_ID,
+      reason: REASON,
+      ...options,
+    });
+
+  it('moves a SINGLE task from its assignee in place, with no decision and no signature', async (): Promise<void> => {
+    const { fixture, seed } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+    });
+
+    const result = await reassign(fixture, {
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(result).toEqual({
+      errorCode: null,
+      instanceId: 'instance-1',
+      message: null,
+      nodeId: 'task_finance',
+      outcome: TaskReassignmentOutcomeEnum.REASSIGNED,
+      taskId: 'task-1',
+    });
+    expect(readTaskState(fixture, seed)).toMatchObject({
+      assigneeMemberId: 'member-to',
+      decisionPolicySnapshot: { type: 'SINGLE' },
+      id: 'task-1',
+      openedAt: null,
+      originalAssigneeMemberId: 'member-from',
+      slaDueAt: null,
+      status: TaskStatusEnum.PENDING,
+    });
+    expect(readTaskState(fixture, seed).delegationChain).toEqual([
+      {
+        actorMemberId: ADMIN_MEMBER_ID,
+        comment: REASON,
+        from: 'member-from',
+        reason: ADMIN_REASSIGN_DELEGATION_REASON,
+        ruleId: null,
+        to: 'member-to',
+      },
+    ]);
+    expect(fixture.savedDecision).toBeNull();
+    expect(fixture.savedTaskCandidates).toEqual([]);
+    expect(fixture.savedTasks.map((task) => task.id)).toEqual(['task-1']);
+    expect(writtenActivityLogs(fixture)).toContainEqual(
+      expect.objectContaining({
+        actorMemberId: ADMIN_MEMBER_ID,
+        eventType: ActivityLogEventTypeEnum.TASK_REASSIGNED,
+        payload: expect.objectContaining({
+          actorMemberId: ADMIN_MEMBER_ID,
+          fromMemberId: 'member-from',
+          reason: REASON,
+          toMemberId: 'member-to',
+        }) as unknown,
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('moves a non-assignee candidate seat and leaves the assignee alone', async (): Promise<void> => {
+    const seeds = [
+      createTaskCandidate({ id: 'cand-from', memberId: 'member-from' }),
+    ];
+    const { fixture, seed } = createOpenTaskFixture({ candidates: seeds });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(readStatusByMember(fixture, seeds)).toEqual({
+      'member-from': TaskCandidateStatusEnum.TRANSFERRED,
+      'member-to': TaskCandidateStatusEnum.PENDING,
+    });
+    expect(readTaskState(fixture, seed)).toMatchObject({
+      assigneeMemberId: null,
+      delegationChain: [],
+    });
+    expect(
+      readSeatRows(fixture, seeds).find((row) => row.memberId === 'member-to')
+        ?.delegationChain,
+    ).toEqual([
+      expect.objectContaining({
+        from: 'member-from',
+        reason: ADMIN_REASSIGN_DELEGATION_REASON,
+        to: 'member-to',
+      }),
+    ]);
+    expect(fixture.savedDecision).toBeNull();
+  });
+
+  it('replaces only the reassigned member in a PARALLEL_ALL stage and keeps the threshold', async (): Promise<void> => {
+    const seeds = [
+      createTaskCandidate({ id: 'cand-a', memberId: 'member-a' }),
+      createTaskCandidate({ id: 'cand-b', memberId: 'member-b' }),
+      createTaskCandidate({ id: 'cand-c', memberId: 'member-c' }),
+    ];
+    const { fixture } = createOpenTaskFixture({
+      candidates: seeds,
+      decisionPolicy: { type: 'PARALLEL_ALL' },
+      task: { assigneeMemberId: null },
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-b',
+      toMemberId: 'member-d',
+    });
+
+    expect(readStatusByMember(fixture, seeds)).toEqual({
+      'member-a': TaskCandidateStatusEnum.PENDING,
+      'member-b': TaskCandidateStatusEnum.TRANSFERRED,
+      'member-c': TaskCandidateStatusEnum.PENDING,
+      'member-d': TaskCandidateStatusEnum.PENDING,
+    });
+
+    const decide = (memberId: string): Promise<unknown> =>
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: memberId,
+        taskId: 'task-1',
+      });
+
+    await decide('member-a');
+    await decide('member-c');
+
+    expect(
+      readLatestRows(fixture.savedTasks).find((task) => task.id === 'task-1')
+        ?.status,
+    ).not.toBe(TaskStatusEnum.COMPLETED);
+
+    await decide('member-d');
+
+    expect(
+      readLatestRows(fixture.savedTasks).find((task) => task.id === 'task-1'),
+    ).toMatchObject({
+      decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+      status: TaskStatusEnum.COMPLETED,
+    });
+  });
+
+  it('keeps the other PARALLEL_ANY candidates open and still cancels them on the first approval', async (): Promise<void> => {
+    const seeds = [
+      createTaskCandidate({ id: 'cand-a', memberId: 'member-a' }),
+      createTaskCandidate({ id: 'cand-b', memberId: 'member-b' }),
+    ];
+    const { fixture } = createOpenTaskFixture({
+      candidates: seeds,
+      decisionPolicy: { type: 'PARALLEL_ANY' },
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-b',
+      toMemberId: 'member-c',
+    });
+
+    expect(readStatusByMember(fixture, seeds)).toEqual({
+      'member-a': TaskCandidateStatusEnum.PENDING,
+      'member-b': TaskCandidateStatusEnum.TRANSFERRED,
+      'member-c': TaskCandidateStatusEnum.PENDING,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      comment: null,
+      decidedByMemberId: 'member-c',
+      taskId: 'task-1',
+    });
+
+    expect(readStatusByMember(fixture, seeds)).toEqual({
+      'member-a': TaskCandidateStatusEnum.CANCELLED,
+      'member-b': TaskCandidateStatusEnum.TRANSFERRED,
+      'member-c': TaskCandidateStatusEnum.COMPLETED,
+    });
+  });
+
+  it('counts the replacement toward a QUORUM threshold', async (): Promise<void> => {
+    const seeds = [
+      createTaskCandidate({ id: 'cand-a', memberId: 'member-a' }),
+      createTaskCandidate({ id: 'cand-b', memberId: 'member-b' }),
+      createTaskCandidate({ id: 'cand-c', memberId: 'member-c' }),
+    ];
+    const { fixture } = createOpenTaskFixture({
+      candidates: seeds,
+      decisionPolicy: {
+        threshold: 2,
+        thresholdType: 'COUNT',
+        type: 'QUORUM',
+      },
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-c',
+      toMemberId: 'member-d',
+    });
+
+    expect(readStatusByMember(fixture, seeds)).toEqual({
+      'member-a': TaskCandidateStatusEnum.PENDING,
+      'member-b': TaskCandidateStatusEnum.PENDING,
+      'member-c': TaskCandidateStatusEnum.TRANSFERRED,
+      'member-d': TaskCandidateStatusEnum.PENDING,
+    });
+
+    const decide = (memberId: string): Promise<unknown> =>
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: memberId,
+        taskId: 'task-1',
+      });
+
+    await decide('member-a');
+    expect(
+      readLatestRows(fixture.savedTasks).find((task) => task.id === 'task-1')
+        ?.status,
+    ).not.toBe(TaskStatusEnum.COMPLETED);
+
+    await decide('member-d');
+    expect(
+      readLatestRows(fixture.savedTasks).find((task) => task.id === 'task-1')
+        ?.status,
+    ).toBe(TaskStatusEnum.COMPLETED);
+  });
+
+  it('keeps a WAITING SEQUENTIAL seat in its place and activates a replacement for the current seat', async (): Promise<void> => {
+    const seeds = [
+      createTaskCandidate({
+        id: 'cand-a',
+        memberId: 'member-a',
+        sequence: 0,
+        status: TaskCandidateStatusEnum.COMPLETED,
+      }),
+      createTaskCandidate({
+        id: 'cand-b',
+        memberId: 'member-b',
+        sequence: 1,
+        status: TaskCandidateStatusEnum.PENDING,
+      }),
+      createTaskCandidate({
+        id: 'cand-c',
+        memberId: 'member-c',
+        sequence: 2,
+        status: TaskCandidateStatusEnum.WAITING,
+      }),
+    ];
+    const { fixture, seed } = createOpenTaskFixture({
+      assigneeMemberId: 'member-b',
+      candidates: seeds,
+      decisionPolicy: { type: 'SEQUENTIAL' },
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-c',
+      toMemberId: 'member-d',
+    });
+
+    expect(
+      readSeatRows(fixture, seeds).find((row) => row.memberId === 'member-d'),
+    ).toMatchObject({
+      sequence: 2,
+      status: TaskCandidateStatusEnum.WAITING,
+    });
+    expect(readStatusByMember(fixture, seeds)).toMatchObject({
+      'member-a': TaskCandidateStatusEnum.COMPLETED,
+      'member-b': TaskCandidateStatusEnum.PENDING,
+      'member-c': TaskCandidateStatusEnum.TRANSFERRED,
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-b',
+      toMemberId: 'member-e',
+    });
+
+    expect(
+      readSeatRows(fixture, seeds).find((row) => row.memberId === 'member-e'),
+    ).toMatchObject({
+      sequence: 1,
+      status: TaskCandidateStatusEnum.PENDING,
+    });
+    expect(readTaskState(fixture, seed)).toMatchObject({
+      assigneeMemberId: 'member-e',
+    });
+    expect(
+      fixture.notificationService.createTaskAssignedNotification,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: expect.objectContaining({
+          assigneeMemberId: 'member-e',
+        }) as unknown,
+        transferred: true,
+      }),
+    );
+  });
+
+  it.each([
+    {
+      code: TaskReassignmentErrorCodeEnum.REASON_REQUIRED,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({ assigneeMemberId: 'member-from' }),
+      options: {
+        fromMemberId: 'member-from',
+        reason: '   ',
+        toMemberId: 'member-to',
+      },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_SAME_AS_SOURCE,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({ assigneeMemberId: 'member-from' }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-from' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.SOURCE_NOT_ON_TASK,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({ assigneeMemberId: 'member-other' }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-to' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_ALREADY_ON_TASK,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          candidates: [
+            createTaskCandidate({ id: 'cand-to', memberId: 'member-to' }),
+          ],
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-to' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_ALREADY_DECIDED,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          candidates: [
+            createTaskCandidate({
+              id: 'cand-to',
+              memberId: 'member-to',
+              status: TaskCandidateStatusEnum.COMPLETED,
+            }),
+          ],
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-to' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_IS_INITIATOR,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          excludeInitiator: { whenEmpty: 'FAIL' },
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-001' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_IS_SUBMITTER,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          submittedByMemberId: 'member-proxy',
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-proxy' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_GRADE_TOO_LOW,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          grades: { 'member-from': 2, 'member-low': 1 },
+          resolver: { minPositionLevel: 2, type: 'ORG_MANAGER_CHAIN' },
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-low' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TASK_NOT_OPEN,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          task: { status: TaskStatusEnum.COMPLETED },
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-to' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.INSTANCE_NOT_RUNNING,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          instanceState: ApprovalInstanceStateEnum.RETURNED,
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-to' },
+    },
+  ])(
+    'refuses with $code and writes nothing',
+    async ({ build, code, options }): Promise<void> => {
+      const { fixture } = build();
+
+      const dryRunResult = await reassign(fixture, {
+        ...options,
+        dryRun: true,
+      });
+
+      expect(dryRunResult).toMatchObject({
+        errorCode: code,
+        outcome: TaskReassignmentOutcomeEnum.REJECTED,
+      });
+      await expect(reassign(fixture, options)).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(reassign(fixture, options)).rejects.toThrow(`[${code}]`);
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedTaskCandidates).toEqual([]);
+      expect(writtenActivityLogs(fixture)).toEqual([]);
+    },
+  );
+
+  it('reports what would happen under dryRun and writes nothing', async (): Promise<void> => {
+    const { fixture } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+    });
+
+    const result = await reassign(fixture, {
+      dryRun: true,
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(result).toMatchObject({
+      errorCode: null,
+      outcome: TaskReassignmentOutcomeEnum.WOULD_REASSIGN,
+    });
+    expect(fixture.savedTasks).toEqual([]);
+    expect(fixture.savedTaskCandidates).toEqual([]);
+    expect(writtenActivityLogs(fixture)).toEqual([]);
+    expect(fixture.savedDecision).toBeNull();
+    expect(
+      fixture.notificationService.createTaskAssignedNotification,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('reports each task of a member and lets one refusal stand alone', async (): Promise<void> => {
+    const task1 = createTask({
+      assigneeMemberId: 'member-from',
+      id: 'task-1',
+      nodeId: 'task_finance',
+    });
+    const task2 = createTask({
+      assigneeMemberId: null,
+      decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+      id: 'task-2',
+      nodeId: 'task_finance',
+    });
+    const task3 = createTask({
+      assigneeMemberId: 'member-from',
+      id: 'task-3',
+      nodeId: 'task_finance',
+    });
+    const task2Seats = [
+      createTaskCandidate({
+        id: 'cand-2-from',
+        memberId: 'member-from',
+        taskId: 'task-2',
+      }),
+      createTaskCandidate({
+        id: 'cand-2-to',
+        memberId: 'member-to',
+        taskId: 'task-2',
+      }),
+    ];
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [task2, task3],
+      currentVersionId: 'template-version-1',
+      decisionTask: task1,
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: task2Seats,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    answerTaskQueriesFromSeeds(fixture, [task1, task2, task3]);
+
+    const results = await fixture.service.reassignMemberTasks({
+      actorMemberId: ADMIN_MEMBER_ID,
+      fromMemberId: 'member-from',
+      reason: REASON,
+      toMemberId: 'member-to',
+    });
+
+    expect(
+      results
+        .map((result) => ({
+          errorCode: result.errorCode,
+          outcome: result.outcome,
+          taskId: result.taskId,
+        }))
+        .sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    ).toEqual([
+      {
+        errorCode: null,
+        outcome: TaskReassignmentOutcomeEnum.REASSIGNED,
+        taskId: 'task-1',
+      },
+      {
+        errorCode: TaskReassignmentErrorCodeEnum.TARGET_ALREADY_ON_TASK,
+        outcome: TaskReassignmentOutcomeEnum.REJECTED,
+        taskId: 'task-2',
+      },
+      {
+        errorCode: null,
+        outcome: TaskReassignmentOutcomeEnum.REASSIGNED,
+        taskId: 'task-3',
+      },
+    ]);
+    expect(readTaskState(fixture, task1).assigneeMemberId).toBe('member-to');
+    expect(readTaskState(fixture, task3).assigneeMemberId).toBe('member-to');
+    expect(readStatusByMember(fixture, task2Seats)).toEqual({
+      'member-from': TaskCandidateStatusEnum.PENDING,
+      'member-to': TaskCandidateStatusEnum.PENDING,
+    });
+  });
+
+  it('moves a task out of the old holder inbox and into the new holder inbox', async (): Promise<void> => {
+    const seed = createTask({
+      assigneeMemberId: 'member-from',
+      id: 'task-1',
+      nodeId: 'task_finance',
+    });
+    const { fixture } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+    });
+    answerTaskQueriesFromSeeds(fixture, [seed]);
+
+    expect(
+      (await fixture.service.listInboxTasks('member-from')).map(
+        (task) => task.id,
+      ),
+    ).toEqual(['task-1']);
+
+    await reassign(fixture, {
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(
+      (await fixture.service.listInboxTasks('member-from')).map(
+        (task) => task.id,
+      ),
+    ).toEqual([]);
+    expect(
+      (await fixture.service.listInboxTasks('member-to')).map(
+        (task) => task.id,
+      ),
+    ).toEqual(['task-1']);
+  });
+
+  it('lists a member open seats, labelled as assignee or candidate, and skips instances that are no longer running', async (): Promise<void> => {
+    const seed = createTask({
+      assigneeMemberId: 'member-from',
+      id: 'task-1',
+      nodeId: 'task_finance',
+    });
+    const candidateSeed = createTaskCandidate({
+      id: 'cand-2',
+      memberId: 'member-from',
+      taskId: 'task-2',
+    });
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          assigneeMemberId: null,
+          id: 'task-2',
+          nodeId: 'task_finance',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: seed,
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processTaskCandidates: [candidateSeed],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    answerTaskQueriesFromSeeds(fixture, [
+      seed,
+      createTask({
+        assigneeMemberId: null,
+        id: 'task-2',
+        nodeId: 'task_finance',
+      }),
+    ]);
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+    ]);
+
+    const rows = await fixture.service.listMemberOpenTasks('member-from');
+
+    expect(
+      rows.map((row) => ({
+        candidateStatus: row.candidateStatus,
+        memberRole: row.memberRole,
+        taskId: row.taskId,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          candidateStatus: null,
+          memberRole: MemberTaskRoleEnum.ASSIGNEE,
+          taskId: 'task-1',
+        },
+        {
+          candidateStatus: TaskCandidateStatusEnum.PENDING,
+          memberRole: MemberTaskRoleEnum.CANDIDATE,
+          taskId: 'task-2',
+        },
+      ]),
+    );
+    expect(rows[0]).toMatchObject({
+      decisionPolicyType: 'SINGLE',
+      nodeLabel: '財務簽核',
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([]);
+
+    await expect(
+      fixture.service.listMemberOpenTasks('member-from'),
+    ).resolves.toEqual([]);
+  });
+
+  it('records the reassignment in the activity log with the administrator as actor', async (): Promise<void> => {
+    const { fixture } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+    });
+
+    await reassign(fixture, {
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(
+      writtenActivityLogs(fixture).filter(
+        (log) => log.eventType === ActivityLogEventTypeEnum.TASK_REASSIGNED,
+      ),
+    ).toHaveLength(1);
+    expect(
+      writtenActivityLogs(fixture).some(
+        (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('WorkflowEngineService task node labels', () => {
   function createLabelFixture(): ReturnType<typeof createServiceFixture> {
     const fixture = createServiceFixture({
@@ -11773,6 +12568,9 @@ function createServiceFixture({
             transferToMemberId: entity.transferToMemberId ?? null,
           }),
       ),
+      // Saved decisions are not kept for reads here. The reassignment check on
+      // the target sees none, and the COMPLETED-row case covers the refusal.
+      find: jest.fn(() => Promise.resolve([])),
       save: jest.fn((entity: TaskDecisionEntity) => {
         savedDecision = entity;
 
