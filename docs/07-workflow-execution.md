@@ -385,6 +385,32 @@ async function resolveApprovers(
   - **SLA 升級（`ESCALATE`）不在此限**：它帶 `transferReason`，與 §4.4 的申請人轉交檢查相同，不經過這個檢查
     （Shuttle 等宿主沒有開啟 SLA 排程）。
 
+#### 4.1.2 無主管時的改派（`fallback`）
+
+`ORG_MANAGER`、`ORG_UNIT_MANAGER`、`ORG_MANAGER_CHAIN` 找不到主管時，才會讀 `fallback`。
+型別只有三種，都是窄版、不接受任意 resolver：
+
+| `fallback.type` | 解析結果 | 申請人本人 |
+| --- | --- | --- |
+| `NONE`（或未設定） | 丟 `ConflictException`，流程停下來提示 | — |
+| `DIRECT` | 固定一位會員 `memberId` | 除非 `allowInitiatorSelfApproval`，否則丟錯 |
+| `POSITION` | 該職位**目前**的有效成員（規則同 `POSITION` 節點：組織時區的今天、有效期間內、主要職位優先、依 `effectiveFrom` 由新到舊） | 預設先過濾掉；除非 `allowInitiatorSelfApproval`，否則過濾後若沒人就丟錯 |
+
+- `POSITION` 備援解析成 0 人（職位沒有任何有效成員）→ 與 `NONE` 相同，丟 `ConflictException`。
+- `POSITION` 解析成多人時，這些人全部成為候選人，之後照節點自己的 `decisionPolicy` 處理
+  （`PARALLEL_ANY` 任一人、`PARALLEL_ALL` 全部、`SEQUENTIAL` 依序）。
+- `ORG_MANAGER_CHAIN` 的備援多人時，他們全部接在清單最後一關、與鏈上其他人一樣**全部要簽**
+  （鏈節點的決策政策只允許 `SEQUENTIAL` 或 `PARALLEL_ALL`，不會出現「任一人即可」）。已在清單裡的人不重複加入。
+- 解析後的每一位仍照原本流程經過代理（§4.2）、排除申請人（§4.4）與去重。
+
+**版本相容與發佈順序（重要）**：
+
+- **在途的案件不會換人。** 樣板定義在發起時凍結成快照，備援只在節點啟動時讀取一次；
+  改了樣板的備援，只影響之後新發起的案件，已經在跑的案件沿用當時的快照。
+- **所有 API replica 升級之前，不要發佈含 `POSITION` 備援的樣板。** 舊引擎讀到未知的 `fallback.type`
+  會在節點啟動時丟出「此引擎版本不支援改派類型」的 `ConflictException`（試跑則停在該節點並提示），
+  而不是默默改派。升級期間若有舊 replica 接到新樣板的案件，會停在那一關直到升級完成。
+
 ### 4.2 Delegation 解析順序（**重要**）
 
 ```typescript
