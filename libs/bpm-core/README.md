@@ -1406,10 +1406,10 @@ If any one of those is missing, email stays off even on `auto`. Webhook
 `auto` requires both `notificationWebhookEndpointUrl` and
 `notificationWebhookSigningSecret`.
 
-`notificationTemplateEngine: 'handlebars'` is currently a reserved value; the
-runtime template renderer still uses the built-in `simple` renderer regardless
-of this setting. Leave it as `simple` until the Handlebars implementation is
-wired.
+`notificationTemplateEngine` defaults to `simple`, which only replaces
+`{{path}}` placeholders. `handlebars` renders titles and bodies with Handlebars
+(`noEscape: true`, `strict: false`), so helpers and blocks work and values are
+not HTML-escaped.
 
 Delivery and SLA schedulers are disabled by default. Enable them only in a
 dedicated worker process or in a single-replica host that intentionally owns

@@ -213,8 +213,8 @@ export interface BPMRootNotificationOptions {
    * Template engine used to render notification title and body text.
    *
    * `simple` uses BPM's built-in `{{path}}` replacement renderer. `handlebars`
-   * reserves the host configuration for the Handlebars renderer once the email
-   * template implementation is wired. Defaults to `simple`.
+   * compiles the text with Handlebars (`noEscape: true`, `strict: false`).
+   * Defaults to `simple`.
    */
   readonly notificationTemplateEngine?: NotificationTemplateEngine;
 
