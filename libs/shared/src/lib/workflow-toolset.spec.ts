@@ -799,6 +799,137 @@ describe('set_user_task_decision_policy', () => {
     });
   });
 
+  it('reads a DIRECT fallback on an ORG_MANAGER resolver (it used to be dropped)', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      baseFromInitiator: true,
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      levelsUp: 1,
+      preferClosestOrgUnit: false,
+      type: 'ORG_MANAGER',
+    });
+  });
+
+  it('reads a DIRECT fallback on an ORG_UNIT_MANAGER resolver (it used to be dropped)', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        orgUnitId: 'org-1',
+        type: 'ORG_UNIT_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      orgUnitId: 'org-1',
+      preferClosestOrgUnit: false,
+      type: 'ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('keeps the existing fallback when a rewrite of the same kind omits the key', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+    const rewritten = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: { minPositionLevel: 3, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(rewritten)).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      minPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('keeps the existing fallback when the rewrite switches between manager kinds', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+    const rewritten = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: { orgUnitId: 'org-1', type: 'ORG_UNIT_MANAGER' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(rewritten)).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      orgUnitId: 'org-1',
+      preferClosestOrgUnit: false,
+      type: 'ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('clears the existing fallback when the rewrite says NONE explicitly', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+    const cleared = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { type: 'NONE' },
+        minPositionLevel: 5,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(cleared)).toEqual({
+      fallback: { type: 'NONE' },
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('does not carry a fallback onto a DIRECT resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+    const direct = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(direct)).toEqual({
+      memberIds: ['m1'],
+      type: 'DIRECT',
+    });
+  });
+
   it.each([
     ['missing', undefined],
     ['fractional', 2.5],
