@@ -283,7 +283,7 @@ type QuorumThresholdTypeOption = Readonly<{
   id: 'COUNT' | 'PERCENTAGE';
   name: string;
 }>;
-type ApproverFallbackMode = 'DIRECT' | 'NONE';
+type ApproverFallbackMode = 'DIRECT' | 'NONE' | 'POSITION';
 type ApproverFallbackModeOption = Readonly<{
   id: ApproverFallbackMode | 'UNSUPPORTED';
   name: string;
@@ -595,6 +595,7 @@ const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
 const APPROVER_FALLBACK_MODE_OPTIONS: readonly ApproverFallbackModeOption[] = [
   { id: 'NONE', name: '停止流程並提示' },
   { id: 'DIRECT', name: '固定改派' },
+  { id: 'POSITION', name: '指定職位' },
 ];
 // Shown only for a fallback type this build does not know (saved by a newer
 // engine). It is a label, not a choice: picking it changes nothing.
@@ -2670,6 +2671,10 @@ export function TemplateDesignerView({
       fallback.type === 'DIRECT' && fallback.memberId
         ? readMemberSelectOption(memberOptions, fallback.memberId)
         : null;
+    const fallbackPosition =
+      fallback.type === 'POSITION'
+        ? readSelectedPositionOption(positions, fallback.positionId)
+        : null;
     const resubmitStrategy =
       node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
     const sla = node.data.sla ?? null;
@@ -2923,9 +2928,7 @@ export function TemplateDesignerView({
                   updateUserTaskResolver(
                     updateApproverResolverFallback(
                       resolver,
-                      readApproverFallbackMode(option?.id ?? null) === 'DIRECT'
-                        ? { memberId: '', type: 'DIRECT' }
-                        : { type: 'NONE' },
+                      readApproverFallbackModeDraft(option?.id ?? null),
                     ),
                   );
                 }}
@@ -3014,6 +3017,55 @@ export function TemplateDesignerView({
                           allowInitiatorSelfApproval: event.target.checked,
                           memberId: fallback.memberId,
                           type: 'DIRECT',
+                        }),
+                      )
+                    }
+                  />
+                </BPMFormField>
+              </>
+            ) : null}
+            {fallback.type === 'POSITION' ? (
+              <>
+                <BPMFormField
+                  hintText="指派給目前有效歸屬中擁有此職位的會員；主要歸屬優先。多人時全部成為簽核人，依上方的決策政策處理。"
+                  label="改派職位"
+                  name="approverFallbackPositionId"
+                  required
+                >
+                  <PositionPicker
+                    name="approverFallbackPositionId"
+                    onChange={(option): void =>
+                      updateUserTaskResolver(
+                        updateApproverResolverFallback(resolver, {
+                          allowInitiatorSelfApproval:
+                            fallback.allowInitiatorSelfApproval,
+                          positionId: option?.id ?? '',
+                          type: 'POSITION',
+                        }),
+                      )
+                    }
+                    placeholder="選擇職位"
+                    positions={positions}
+                    value={fallbackPosition}
+                  />
+                </BPMFormField>
+                <BPMFormField
+                  hintText="預設禁止申請人簽自己的案件；只有此流程允許自簽時才開啟。"
+                  label="允許自簽"
+                  name="allowInitiatorSelfApproval"
+                >
+                  <Toggle
+                    checked={Boolean(fallback.allowInitiatorSelfApproval)}
+                    inputProps={{
+                      id: 'allowInitiatorSelfApproval',
+                      name: 'allowInitiatorSelfApproval',
+                    }}
+                    onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                      updateUserTaskResolver(
+                        updateApproverResolverFallback(resolver, {
+                          allowInitiatorSelfApproval: event.target.checked,
+                          positionId: fallback.positionId,
+                          type: 'POSITION',
                         }),
                       )
                     }
@@ -4583,7 +4635,29 @@ function readDefaultApproverResolver(
 }
 
 function readApproverFallbackMode(value: string | null): ApproverFallbackMode {
-  return value === 'DIRECT' ? 'DIRECT' : 'NONE';
+  if (value === 'DIRECT' || value === 'POSITION') {
+    return value;
+  }
+
+  return 'NONE';
+}
+
+// Switching the mode to a fixed member or a position starts it empty, so the
+// user picks the target next; the self-approval flag starts off.
+function readApproverFallbackModeDraft(
+  value: string | null,
+): ApproverResolverFallback {
+  const mode = readApproverFallbackMode(value);
+
+  if (mode === 'DIRECT') {
+    return { memberId: '', type: 'DIRECT' };
+  }
+
+  if (mode === 'POSITION') {
+    return { positionId: '', type: 'POSITION' };
+  }
+
+  return { type: 'NONE' };
 }
 
 function updateApproverResolverFallback(

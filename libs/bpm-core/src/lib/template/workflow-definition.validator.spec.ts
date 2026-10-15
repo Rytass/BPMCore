@@ -806,6 +806,34 @@ describe('workflow definition validator', () => {
       ]);
     });
 
+    it('rejects a POSITION fallback with a blank position id', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          createUserTaskWorkflow({
+            approverResolver: chain({
+              fallback: { positionId: '  ', type: 'POSITION' },
+            }),
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.task_manager.approverResolver.fallback.positionId is required',
+      ]);
+    });
+
+    it('accepts a POSITION fallback on an ORG_MANAGER_CHAIN node', (): void => {
+      expect(
+        lintWorkflowDefinition(
+          createUserTaskWorkflow({
+            approverResolver: chain({
+              fallback: { positionId: 'position-cfo', type: 'POSITION' },
+            }),
+            decisionPolicy: { type: 'SEQUENTIAL' },
+          }),
+        ).errors,
+      ).toEqual([]);
+    });
+
     it.each([
       { type: 'SINGLE' },
       { type: 'PARALLEL_ANY' },

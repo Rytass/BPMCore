@@ -6,6 +6,12 @@ describe('readUnsupportedApproverFallbackType', () => {
     expect(
       readUnsupportedApproverFallbackType({ memberId: 'm-1', type: 'DIRECT' }),
     ).toBeNull();
+    expect(
+      readUnsupportedApproverFallbackType({
+        positionId: 'p-1',
+        type: 'POSITION',
+      }),
+    ).toBeNull();
   });
 
   it('returns the type name for a fallback saved by a newer engine', () => {

@@ -257,6 +257,43 @@ describe('ORG_MANAGER_CHAIN validation', () => {
     ).toBe('簽核節點需要指定改派固定人。');
   });
 
+  it('rejects a POSITION fallback with a blank position id', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        fallback: { positionId: ' ', type: 'POSITION' },
+      }),
+    ).toBe('簽核節點需要指定改派職位。');
+  });
+
+  it('accepts a POSITION fallback with a position id on every manager resolver', () => {
+    const fallback = { positionId: 'position-cfo', type: 'POSITION' } as const;
+
+    expect(readApproverResolverIssue({ ...CHAIN, fallback })).toBeNull();
+    expect(readApproverResolverIssue({ ...ONE_MANAGER, fallback })).toBeNull();
+    expect(
+      readApproverResolverIssue({
+        fallback,
+        orgUnitId: 'org-1',
+        type: 'ORG_UNIT_MANAGER',
+      }),
+    ).toBeNull();
+  });
+
+  it('never counts a POSITION fallback as a design-time approver', () => {
+    // Holders are only known at run time, so the fallback must not make a
+    // QUORUM policy look unsatisfiable (which would block publishing).
+    const withPositionFallback: ApproverResolver = {
+      ...ONE_MANAGER,
+      fallback: { positionId: 'position-cfo', type: 'POSITION' },
+    };
+
+    expect(readDesignTimeApproverCount(withPositionFallback)).toBeNull();
+    expect(isDecisionPolicyUnsatisfiable(quorum(4), withPositionFallback)).toBe(
+      false,
+    );
+  });
+
   it('flags every policy that lets one manager close the node', () => {
     expect(
       isOrgManagerChainDecisionPolicyInvalid(CHAIN, { type: 'SINGLE' }),

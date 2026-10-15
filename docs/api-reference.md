@@ -329,7 +329,7 @@ Form-schema definitions.
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
-| `ApproverResolverFallback` | type | Fallback when primary resolver fails |
+| `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |

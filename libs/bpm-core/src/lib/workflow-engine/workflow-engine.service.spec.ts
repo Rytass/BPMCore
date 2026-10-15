@@ -2930,6 +2930,311 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  describe('POSITION fallback', () => {
+    const createPositionFallbackFixture = ({
+      approverResolver,
+      decisionPolicy = { type: 'PARALLEL_ANY' },
+      delegationResolution,
+      memberships,
+    }: {
+      readonly approverResolver?: ApproverResolver;
+      readonly decisionPolicy?: DecisionPolicy;
+      readonly delegationResolution?: Parameters<
+        typeof createServiceFixture
+      >[0]['delegationResolution'];
+      readonly memberships: readonly MembershipEntity[];
+    }): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        delegationResolution,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: memberships,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: approverResolver ?? {
+            baseFromInitiator: true,
+            fallback: { positionId: 'position-fallback', type: 'POSITION' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+          decisionPolicy,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const holder = (
+      value: Partial<MembershipEntity> & { readonly memberId: string },
+    ): MembershipEntity =>
+      createMembership({
+        positionId: 'position-fallback',
+        ...value,
+      });
+    const readCandidateMemberIds = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly string[] =>
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+
+    it('uses the sole holder of the position as the approver', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        decisionPolicy: { type: 'SINGLE' },
+        memberships: [holder({ id: 'h1', memberId: 'member-holder' })],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-holder',
+        originalAssigneeMemberId: 'member-holder',
+      });
+    });
+
+    it('makes every holder a candidate and lets the node policy decide', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        decisionPolicy: { type: 'PARALLEL_ALL' },
+        memberships: [
+          holder({ id: 'h1', memberId: 'member-holder-a' }),
+          holder({ id: 'h2', memberId: 'member-holder-b' }),
+        ],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-holder-a',
+        'member-holder-b',
+      ]);
+    });
+
+    it('orders holders with the primary membership first, then the most recent start', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        decisionPolicy: { type: 'PARALLEL_ANY' },
+        memberships: [
+          holder({
+            effectiveFrom: '2026-01-01',
+            id: 'h-old',
+            memberId: 'member-old',
+          }),
+          holder({
+            effectiveFrom: '2026-03-01',
+            id: 'h-new',
+            memberId: 'member-new',
+          }),
+          holder({
+            effectiveFrom: '2026-02-01',
+            id: 'h-primary',
+            isPrimary: true,
+            memberId: 'member-primary',
+          }),
+        ],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-primary',
+        'member-new',
+        'member-old',
+      ]);
+    });
+
+    it('ignores holders whose membership is not effective today', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        decisionPolicy: { type: 'SINGLE' },
+        memberships: [
+          holder({
+            effectiveTo: '2026-02-01',
+            id: 'h-expired',
+            memberId: 'member-expired',
+          }),
+          holder({
+            effectiveFrom: '2099-01-01',
+            id: 'h-future',
+            memberId: 'member-future',
+          }),
+          holder({ id: 'h-active', memberId: 'member-active' }),
+        ],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual(['member-active']);
+    });
+
+    it('rejects when the position has no active holder, the same way NONE does', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        memberships: [],
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow(
+        '且改派職位「position-fallback」目前沒有任何有效成員。請聯絡流程管理員調整主管規則或模板 fallback。',
+      );
+      expect(fixture.savedTasks).toEqual([]);
+    });
+
+    it('filters out the initiator by default and keeps the other holders', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        memberships: [
+          holder({ id: 'h-self', memberId: 'member-001' }),
+          holder({ id: 'h-other', memberId: 'member-other' }),
+        ],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual(['member-other']);
+    });
+
+    it('rejects when the only holder is the initiator and self approval is not allowed', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        memberships: [holder({ id: 'h-self', memberId: 'member-001' })],
+      });
+
+      await expect(
+        fixture.service.processInstance('instance-1'),
+      ).rejects.toThrow(
+        '改派職位的有效成員只有申請人本人，此節點未允許申請人自簽',
+      );
+      expect(fixture.savedTasks).toEqual([]);
+    });
+
+    it('keeps the initiator when the position fallback allows self approval', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        approverResolver: {
+          baseFromInitiator: true,
+          fallback: {
+            allowInitiatorSelfApproval: true,
+            positionId: 'position-fallback',
+            type: 'POSITION',
+          },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        decisionPolicy: { type: 'SINGLE' },
+        memberships: [holder({ id: 'h-self', memberId: 'member-001' })],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-001',
+      });
+    });
+
+    it('applies delegation to the resolved holder through the usual pipeline', async (): Promise<void> => {
+      const fixture = createPositionFallbackFixture({
+        decisionPolicy: { type: 'SINGLE' },
+        delegationResolution: {
+          delegationChain: [
+            {
+              from: 'member-holder',
+              reason: 'ALL',
+              ruleId: 'delegation-rule-1',
+              to: 'member-deputy',
+            },
+          ],
+          finalAssigneeMemberId: 'member-deputy',
+        },
+        memberships: [holder({ id: 'h1', memberId: 'member-holder' })],
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-deputy',
+        originalAssigneeMemberId: 'member-holder',
+      });
+    });
+
+    it('works for ORG_UNIT_MANAGER when the unit has no manager rule', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [holder({ id: 'h1', memberId: 'member-holder' })],
+        processOrgUnits: [createOrgUnit({ id: 'org-finance' })],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            fallback: { positionId: 'position-fallback', type: 'POSITION' },
+            orgUnitId: 'org-finance',
+            type: 'ORG_UNIT_MANAGER',
+          },
+          decisionPolicy: { type: 'SINGLE' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(fixture.savedTasks[0]).toMatchObject({
+        assigneeMemberId: 'member-holder',
+      });
+    });
+
+    const createChainFixtureForPositionFallback = (
+      holderMemberIds: readonly string[],
+    ): ReturnType<typeof createServiceFixture> => {
+      const org = createManagerChainOrg({
+        extraMemberships: holderMemberIds.map((memberId, index) =>
+          holder({ id: `h-${index}`, memberId }),
+        ),
+        grades: { 'member-m1': 1, 'member-m2': 2 },
+        links: [
+          ['member-001', 'member-m1'],
+          ['member-m1', 'member-m2'],
+        ],
+      });
+
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        ...org,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            fallback: { positionId: 'position-fallback', type: 'POSITION' },
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+          },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    };
+
+    it('appends every holder to an ORG_MANAGER_CHAIN that ends below the level', async (): Promise<void> => {
+      const fixture = createChainFixtureForPositionFallback([
+        'member-holder-a',
+        'member-holder-b',
+      ]);
+
+      await fixture.service.processInstance('instance-1');
+
+      // The walk ends at member-m2 (below level 3); both holders close the chain.
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+        'member-holder-a',
+        'member-holder-b',
+      ]);
+    });
+
+    it('does not duplicate a chain member who also holds the fallback position', async (): Promise<void> => {
+      const fixture = createChainFixtureForPositionFallback([
+        'member-m2',
+        'member-holder-b',
+      ]);
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(readCandidateMemberIds(fixture)).toEqual([
+        'member-m1',
+        'member-m2',
+        'member-holder-b',
+      ]);
+    });
+  });
+
   it('refuses a fallback type this engine does not know with an upgrade hint instead of a TypeError', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -7721,6 +8026,45 @@ describe('WorkflowEngineService', () => {
 
       expect(result.steps.at(-1)).toMatchObject({
         message: '簽核節點「財務簽核」找不到主管，且改派固定人未設定',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('shows a POSITION fallback the way a POSITION node is shown in a dry run', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { positionId: 'position-cfo', type: 'POSITION' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(
+        result.steps.find((step) => step.nodeId === 'task_finance'),
+      ).toMatchObject({
+        assigneeMemberId: 'position:position-cfo',
+        status: 'WAITING',
+      });
+    });
+
+    it('says the POSITION fallback is not set when its position id is blank', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { positionId: '  ', type: 'POSITION' },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        message: '簽核節點「財務簽核」找不到主管，且改派職位未設定',
         nodeId: 'task_finance',
         status: 'STOPPED',
       });

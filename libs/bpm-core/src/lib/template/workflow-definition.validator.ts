@@ -412,6 +412,20 @@ function lintApproverResolver(
     ];
   }
 
+  // Like the POSITION node itself, existence is not checked here: the lint has
+  // no position directory, and a position may legitimately be empty today.
+  if (
+    (resolver.type === 'ORG_MANAGER' ||
+      resolver.type === 'ORG_UNIT_MANAGER' ||
+      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    resolver.fallback?.type === 'POSITION' &&
+    !resolver.fallback.positionId.trim()
+  ) {
+    return [
+      `workflow.nodes.${nodeId}.approverResolver.fallback.positionId is required`,
+    ];
+  }
+
   if (resolver.type === 'DYNAMIC_FORM' && !resolver.formPath.trim()) {
     return [`workflow.nodes.${nodeId}.approverResolver.formPath is required`];
   }
