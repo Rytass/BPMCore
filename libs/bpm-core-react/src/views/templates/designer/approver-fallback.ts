@@ -1,6 +1,7 @@
 const KNOWN_APPROVER_FALLBACK_TYPES: ReadonlySet<string> = new Set([
   'NONE',
   'DIRECT',
+  'POSITION',
 ]);
 
 /**
