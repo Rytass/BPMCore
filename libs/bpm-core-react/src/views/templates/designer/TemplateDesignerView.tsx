@@ -133,6 +133,7 @@ import {
   readPositionOption,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
+import { readUnsupportedApproverFallbackType } from './approver-fallback';
 import {
   readDefaultMinPositionLevel,
   readMinPositionLevelOptions,
@@ -284,7 +285,7 @@ type QuorumThresholdTypeOption = Readonly<{
 }>;
 type ApproverFallbackMode = 'DIRECT' | 'NONE';
 type ApproverFallbackModeOption = Readonly<{
-  id: ApproverFallbackMode;
+  id: ApproverFallbackMode | 'UNSUPPORTED';
   name: string;
 }>;
 type ExcludeInitiatorWhenEmptyOption = Readonly<{
@@ -595,6 +596,12 @@ const APPROVER_FALLBACK_MODE_OPTIONS: readonly ApproverFallbackModeOption[] = [
   { id: 'NONE', name: '停止流程並提示' },
   { id: 'DIRECT', name: '固定改派' },
 ];
+// Shown only for a fallback type this build does not know (saved by a newer
+// engine). It is a label, not a choice: picking it changes nothing.
+const APPROVER_FALLBACK_UNSUPPORTED_OPTION: ApproverFallbackModeOption = {
+  id: 'UNSUPPORTED',
+  name: '不支援的備援設定',
+};
 const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOption[] =
   [
     { id: 'INITIATOR_MANAGER', name: '改由申請人的直屬主管簽核' },
@@ -2642,6 +2649,15 @@ export function TemplateDesignerView({
       resolver.type === 'ORG_UNIT_MANAGER'
         ? (resolver.fallback ?? { type: 'NONE' as const })
         : { type: 'NONE' as const };
+    const unsupportedFallbackType =
+      readUnsupportedApproverFallbackType(fallback);
+    const approverFallbackModeOptions =
+      unsupportedFallbackType === null
+        ? APPROVER_FALLBACK_MODE_OPTIONS
+        : [
+            ...APPROVER_FALLBACK_MODE_OPTIONS,
+            APPROVER_FALLBACK_UNSUPPORTED_OPTION,
+          ];
     // An empty `memberId` means no one has been picked yet (the just-switched
     // default). `readMemberSelectOption` never returns null, so without this
     // guard it would resolve to the "未知會員" sentinel and offer that
@@ -2777,6 +2793,9 @@ export function TemplateDesignerView({
               onChange={(option): void =>
                 updateUserTaskResolver({
                   baseFromInitiator: true,
+                  // Changing the level must not drop the fallback the user
+                  // configured (or one this build cannot read).
+                  ...(resolver.fallback ? { fallback: resolver.fallback } : {}),
                   levelsUp: readManagerLevelOptionById(option?.id ?? null)
                     .value,
                   type: 'ORG_MANAGER',
@@ -2882,9 +2901,11 @@ export function TemplateDesignerView({
             ) : null}
             <BPMFormField
               hintText={
-                resolver.type === 'ORG_MANAGER_CHAIN'
-                  ? '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。'
-                  : '預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。'
+                unsupportedFallbackType !== null
+                  ? '此改派設定來自較新版本的 BPMCore，本版本無法執行也無法編輯；請升級後再編輯。這裡選擇其他模式會覆寫原設定。'
+                  : resolver.type === 'ORG_MANAGER_CHAIN'
+                    ? '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。'
+                    : '預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。'
               }
               label="無主管時"
               name="approverFallbackMode"
@@ -2892,7 +2913,13 @@ export function TemplateDesignerView({
             >
               <Select
                 clearable={false}
-                onChange={(option): void =>
+                onChange={(option): void => {
+                  // The unsupported label is display-only; leave the saved
+                  // definition untouched.
+                  if (option?.id === 'UNSUPPORTED') {
+                    return;
+                  }
+
                   updateUserTaskResolver(
                     updateApproverResolverFallback(
                       resolver,
@@ -2900,13 +2927,17 @@ export function TemplateDesignerView({
                         ? { memberId: '', type: 'DIRECT' }
                         : { type: 'NONE' },
                     ),
-                  )
+                  );
+                }}
+                options={[...approverFallbackModeOptions]}
+                value={
+                  unsupportedFallbackType !== null
+                    ? APPROVER_FALLBACK_UNSUPPORTED_OPTION
+                    : readSelectOption(
+                        APPROVER_FALLBACK_MODE_OPTIONS,
+                        fallback.type,
+                      )
                 }
-                options={[...APPROVER_FALLBACK_MODE_OPTIONS]}
-                value={readSelectOption(
-                  APPROVER_FALLBACK_MODE_OPTIONS,
-                  fallback.type,
-                )}
               />
             </BPMFormField>
             {fallback.type === 'DIRECT' ? (
