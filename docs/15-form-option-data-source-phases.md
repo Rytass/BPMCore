@@ -5,6 +5,7 @@
 - **規劃日期**：2026-08-11
 - **權威決策**：[14 — ADR：表單選項 DataSource 架構](./14-form-option-data-source-adr.md)
 - **完成定義**：所有 Phase gate、真實 wrapper-host journey 與文件同步完成
+- **稽核日期註記（2026-10-15 補註）**：文中「2026-08-13」「2026-08-16」為稽核進行與修正的日期記錄。依 git 日期：第一輪的文件記錄在 `7a7fafa`（2026-08-13）；第二輪的文件記錄與對應修正在 `e8d9b78`（2026-08-18），§10 相關修正亦同批落地於 `894b7ea`、`3b12d61`、`5a31c6a`（2026-08-18）。落地日期以 git 為準。
 
 截至 2026-08-12，P0–P6 gates 已完成。P6 的 wrapper registry、deterministic seed、
 GraphQL/DB golden path、package consumer wiring 與真實 Chrome golden path 均已驗證；
@@ -90,7 +91,7 @@ spec 預設執行而不再靜默跳過。稽核後 `pnpm e2e:client --workers=1`
     `app.useBodyParser('json'|'urlencoded', { limit: '16mb' })` 對齊（不直接 import
     `express`，它不是 `apps/api` 的依賴）。其三，附件簽名密鑰用到內建預設值時的警告原本只在
     `NODE_ENV === 'production'` 才發，NODE_ENV 沒設好的 staging 會靜默使用套件內公開常數當
-    簽名密鑰；改為只在明確的 `development`／`test` 才靜音。其四，`AllExceptionsFilter` 與
+    簽名密鑰；改為只在明確的 `development`／`test` 才靜音。（後續已變更，2026-10-15 依程式核對：`resolveBPMAttachmentOptions`（`libs/bpm-core/src/lib/attachment/attachment-options.ts`）已不再使用內建常數作為簽名密鑰。未設定 `attachmentSignedUrlSecret` 時改用開機時隨機產生的每程序密鑰，並在非 `test` 環境發出 warning；該 warning 不再依 `NODE_ENV === 'production'` 判斷。多副本部署須設定共用密鑰。本段上述的警告描述已被取代。）其四，`AllExceptionsFilter` 與
     附件 token 守衛都沒有測試保護，補上 `all-exceptions.filter.spec.ts`（10 例，涵蓋
     `expose` 才採信、只收 4xx、`status` 優先於 `statusCode`、非整數與越界拒絕、GraphQL
     context rethrow）與 4 例壞 token 案例；unit suite 由 300 增為 318。
@@ -574,7 +575,7 @@ wrapper app seed 擁有，不放進 reusable BPM domain。建議資料包含：
 
 以下由 2026-08-16 的六輪獨立稽核提出，經評估**不屬於 DataSource 這個題目**，未在本輪處理：
 
-- **`skill-matrix-real.spec.ts:582` 的測試隔離問題**。該斷言要求 seed 通知
+- **`skill-matrix-real.spec.ts` 的測試隔離問題**。該斷言要求 seed 通知
   `SLA 已逾期：鋁合金胚料採購` 出現在通知中心第一頁，而 `notification-drawer.tsx` 以
   `includeRead: true`、`PAGE_SIZE = 50` 取第一頁。每跑一次 e2e 就替 member-001 多累積數筆
   通知，累計超過 50 筆後該 seed 通知被擠到「載入更多」之後，斷言**必然**開始失敗（不是
@@ -582,16 +583,16 @@ wrapper app seed 擁有，不放進 reusable BPM domain。建議資料包含：
   只在剛 reset 過的 DB 上成立。修法擇一：改以 seed 通知 id 篩選、改打
   `notifications(recipientMemberId, page/pageSize)` 直接斷言資料而非 UI 第一頁、或讓該
   spec 在 `beforeAll` 先歸檔測試自產的通知。
-- **`admin-orgs.spec.ts:101`（org tree 拖放）偶發失敗**，屬 mouse 事件時序 flaky，單獨
+- **`admin-orgs.spec.ts`（org tree 拖放）偶發失敗**，屬 mouse 事件時序 flaky，單獨
   重跑會過。
-- **`workflow-org-resolution-real.spec.ts:168`**：該 spec 會在單次執行內連續建立多個模板
+- **`workflow-org-resolution-real.spec.ts`**：該 spec 會在單次執行內連續建立多個模板
   （`exhaustively creates templates`），再回模板列表用名稱定位剛建立的那一列。模板列表變長
   後新建的列會被擠出第一頁，於是
   `getByRole('row').filter({ hasText: '平行 AND 匯合 org-...' })` 等不到而 timeout。這是
   spec 自身的定位設計問題（**與 DataSource 無關**，該檔對 `dataSource`／`costCenter` 的
   grep 命中數為 0），在機器負載高、列表回應變慢時更容易暴露。修法方向：改以模板 id 定位、
   或建立後直接導向該模板頁面，而不是回列表用名稱找。
-- **`adhoc-directives.spec.ts:370` 與 `skill-matrix-real.spec.ts:246`**：跑完整核准流程的
+- **`adhoc-directives.spec.ts` 與 `skill-matrix-real.spec.ts`**：跑完整核准流程的
   重測試，在高機器負載下會出現 `已同意` 等狀態文字等不到的 timeout，單獨重跑即過。
   判定方式：`pnpm dev:ctl restart client` 後 `pnpm demo:reset` 再跑。實測一次：重啟前
   2 failed、重啟後 50 passed。
@@ -649,7 +650,7 @@ P2 完成 public contract 後可有限平行：
 ```bash
 curl -s -o /dev/null -w '%{http_code}' http://localhost:17602
 curl -s -o /dev/null -w '%{http_code}' http://localhost:17603/graphql
-curl -s -o /dev/null -w '%{http_code}' http://localhost:17603/api/health
+curl -s -o /dev/null -w '%{http_code}' http://localhost:17603/health
 ```
 
 若要執行 deterministic full coverage，須先取得對 develop schema destructive reset 的明確

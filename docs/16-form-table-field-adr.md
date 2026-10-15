@@ -11,9 +11,9 @@
 
 ## 1. 背景
 
-目前 `FormDefinitionSchema` 是**嚴格扁平**的欄位陣列（`libs/shared/src/lib/form.ts:1-4`），
+目前 `FormDefinitionSchema` 是**嚴格扁平**的欄位陣列（`libs/shared/src/lib/form.ts` 的 `FormDefinitionSchema`），
 值契約 `FormFieldValue = boolean | number | string | readonly string[] | null`
-（`form.ts:30-35`）不允許 object 或 array-of-object。整個 codebase 沒有任何巢狀表單概念：
+（`form.ts` 的 `FormFieldValue`）不允許 object 或 array-of-object。整個 codebase 沒有任何巢狀表單概念：
 渲染鏈非遞迴、驗證與條件系統都假設 `form.<fieldKey>` 單層索引、DataSource binding 與
 option snapshot 都以 top-level `fieldKey` 為唯一鍵。
 
@@ -44,7 +44,7 @@ binding 要能引用**同一列**的其他欄（例：第 3 列選了「工廠�
 
 ### 3.1 新增 `table` 欄位型別，column 重用既有欄位定義
 
-`FormFieldDefinition` union（`form.ts:6-15`）新增 `TableFieldDefinition`：
+`FormFieldDefinition` union（`form.ts` 的 `FormFieldDefinition`）新增 `TableFieldDefinition`：
 
 ```ts
 export type TableColumnDefinition =
@@ -105,14 +105,14 @@ export type FormFieldValue = FormTableCellValue | readonly FormTableRowValue[];
 
 - 為讓 path 可解析，`table` 的 fieldKey 與所有 column key 必須符合
   `/^[A-Za-z_][A-Za-z0-9_]*$/u`（結構 lint 強制）。這與既有
-  `readFormFieldReference`（`libs/shared/src/lib/workflow-graph.ts:1096-1101`）的
+  `readFormFieldReference`（`libs/shared/src/lib/workflow-graph.ts` 的 `readFormFieldReference`）的
   簡單識別字規則一致；top-level 非 table 欄位維持現行寬鬆規則不變。
 - 前端錯誤 map（`Record<string, string>`）與 DOM 聚焦屬性
   `data-form-field-key` 直接沿用，只是 key 擴充為 instance path 形式。
 
 ### 3.4 Column DataSource：binding 新增 ROW_FIELD kind
 
-`FormDataSourceBinding.from`（`form.ts:61-75`）新增第三種來源：
+`FormDataSourceBinding.from`（`form.ts` 的 `FormDataSourceBinding`）新增第三種來源：
 
 ```ts
 export type FormDataSourceBindingSource =
@@ -125,7 +125,7 @@ export type FormDataSourceBindingSource =
   binding 使用它是結構 lint 錯誤。
 - `FIELD` 維持只指向 top-level 欄位；**不允許指向任何 table 內部欄位**——跨列
   引用（「所有列的某欄」）沒有單值語意，V1 不定義。
-- 依賴圖檢查（`form-schema.validator.ts:642-698`）擴充為兩層：top-level 欄位間
+- 依賴圖檢查（`form-schema.validator.ts` 的 `lintFieldDependencyGraph`）擴充為兩層：top-level 欄位間
   的既有圖，加上每個表格內 column 間的 row-scoped 圖（`ROW_FIELD` 邊）與
   column → top-level（`FIELD` 邊）；任一層 cycle 都阻擋發布。
 - DataSource descriptor **不新增 control 種類**：column 的 select／autocomplete
@@ -150,10 +150,10 @@ endpoint**，input 做 additive 擴充：
 
 ### 3.6 送出時逐 cell 權威 resolve，snapshot key 擴充為 instance path
 
-`resolveFormDataOptionSnapshots`（`form-data-source-value-resolver.service.ts:55-168`）
+`resolveFormDataOptionSnapshots`（`form-data-source-value-resolver.service.ts` 的 `resolveFormDataOptionSnapshots`）
 擴充為同時迭代 top-level 動態欄位與每個表格的每列動態 cell：
 
-- Snapshot map 型別 `FormDataSourceValueSnapshots`（`form.ts:131-133`）**不變**，
+- Snapshot map 型別 `FormDataSourceValueSnapshots`（`form.ts`）**不變**，
   key 擴充為 `<tableKey>[<i>].<columnKey>`。`approval_instances.form_data_option_snapshot`
   jsonb 欄位照用，**不需要 migration**。
 - `bindingHash` 計算納入 row-scoped binding values；全有全無、provider contract
@@ -185,7 +185,7 @@ per-type lint）：
 **環境 lint**（發布時，`lintDefinitionSchemaEnvironment`）：column dataSource 的
 registry key/version、control 相容性、參數齊備檢查與 top-level 完全同一套實作。
 
-**送出驗證**（`validateSubmittedFormData`，`workflow-engine.service.ts:6161-6182`）：
+**送出驗證**（`validateSubmittedFormData`，`workflow-engine.service.ts`）：
 
 - 值形狀（§3.2）、列數上下限、`required` ≥ 1 列。
 - 每列的 required column 逐列檢查，錯誤訊息以 instance path 指名
@@ -194,25 +194,25 @@ registry key/version、control 相容性、參數齊備檢查與 top-level 完�
   等仍屬前端提示層（現況即如此），不在本 ADR 加深。
 
 **前端驗證**（`validateFormRendererValues`，
-`libs/bpm-core-client/src/lib/form/form-rendering.ts:76-106`）：遞迴進表格，
+`libs/bpm-core-client/src/lib/form/form-rendering.ts` 的 `validateFormRendererValues`）：遞迴進表格，
 errors key 用 instance path，`firstInvalidFieldKey` 可為 cell path，聚焦沿用
 `data-form-field-key` 機制。
 
 ### 3.8 條件與 workflow 整合採最小開放
 
 - **邊條件／structured condition UI**：`readConditionOperatorIds`
-  （`workflow-graph.ts:915-943`）對 `table` 只回 `IS_FILLED` / `IS_EMPTY`
+  （`workflow-graph.ts` 的 `readConditionOperatorIds`）對 `table` 只回 `IS_FILLED` / `IS_EMPTY`
   （語意：列數 > 0／= 0），與 `file_upload` 同級。cell 層級 operand V1 不開放。
 - **CEL**：`form.<tableKey>` 在 expression context 中是 list of map（context 建構
-  `workflow-engine.service.ts:5179-5200` 直接掛整包 formData，天然支援）。cel-js
+  `workflow-engine.service.ts` 的 `buildWorkflowExpressionContext` 直接掛整包 formData，天然支援）。cel-js
   對 list macro（`size()`、`exists()`）的實際支援度於 Phase 0 驗證並記錄；V1
   不在 designer 提供產生此類 CEL 的 UI。
 - **`visibleWhen` 等表單內條件**：前端與後端的 condition regex
-  （`form-rendering.ts:186`、`workflow-engine.service.ts:6267`）本就解析不了
+  （`form-rendering.ts` 的 `parseConditionRule`、`workflow-engine.service.ts` 的 `parseFormConditionRule`）本就解析不了
   bracket path；lint 明確禁止條件式引用 table 內部 path，不依賴 parser 失敗作為
   防線。
 - **`SET_FORM_FIELD` / `DYNAMIC_FORM` path**：V1 不支援指向 table 內部
-  （`readValueAtPath` / `writeValueAtPath`，`workflow-engine.service.ts:5662-5718`
+  （`readValueAtPath` / `writeValueAtPath`，`workflow-engine.service.ts`
   不支援陣列索引；遇 table 值安全回 undefined／no-op）。列入 §8。
 - **Case title**：`readFirstCaseTitleField` 跳過 table 欄位；列表摘要
   `readFieldValueLabel` 對 table 顯示列數（如「3 列」）。
@@ -222,7 +222,7 @@ errors key 用 instance path，`firstInvalidFieldKey` 可為 cell path，聚焦�
 **Form Builder**（`FormBuilderView.tsx`）：
 
 - `FIELD_TYPE_OPTIONS` 新增「表格」；新增 `renderTableFieldSettings`：column
-  清單（新增／刪除／拖曳排序，沿用 `renderFieldOptionsTable` :2257 的
+  清單（新增／刪除／拖曳排序，沿用 `FormBuilderView.tsx` 中 `renderFieldOptionsTable` 的
   Mezzanine `Table` + inline 編輯先例），選取 column 後顯示該 column 的型別
   專屬設定。
 - **前置重構**：既有 `renderTextFieldSettings` 等 type-specific 設定函式是綁定

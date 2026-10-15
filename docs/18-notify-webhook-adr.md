@@ -184,8 +184,7 @@ export interface NotifyWebhookTarget {
 
 知會節點的完整性規則由「至少一位知會對象」改為**「至少一位知會對象或至少一個
 webhook」**。為避免 `recipients` 改為 optional 帶來的型別破壞，`recipients` 維持必填；
-只發 webhook 的節點寫入 `{ type: 'DIRECT', memberIds: [] }`，引擎遇到空的 DIRECT
-resolver 時略過收件人解析與通知建立。
+只發 webhook 的節點寫入 `{ type: 'DIRECT', memberIds: [] }`。（2026-10-15 補註：此空 DIRECT 只在節點**同時設定至少一個 webhook target** 時才被接受；發布 lint 與引擎 NOTIFY 分支都以此為條件。條件成立時，引擎略過收件人解析與通知建立；沒有 webhook 的節點仍需至少一位知會對象，空 DIRECT 會被拒絕。）
 
 知會節點仍維持「非同步側支、不可接出線」的既有規則（`isAsyncNotifyServiceTask`）。因此它的 `entryCondition` 不成立而被略過時，也跟觸發時一樣直接 consume token、不找出邊（見 `07-workflow-execution.md` §2）。
 
@@ -319,6 +318,16 @@ export interface BPMWorkflowWebhookEvent {
 claim。排程器在 registry 至少有一個 endpoint 時預設啟用（與通知排程器預設關閉不同，
 因為沒有排程器時失敗的 webhook 永遠不會重試）。
 
+**補註（2026-10-15）：TypeORM 版本。** 本節 subscriber 的語意是以 `typeorm@0.3.31` 原始碼與 P2 的獨立驗證為基礎（見 `19-notify-webhook-phases.md` P2）。專案目前依賴 `typeorm@^1.1.2`（lock 為 1.1.2）。2026-10-15 比對 `node_modules` 內兩版原始碼，結論如下：
+
+- `PostgresQueryRunner.commitTransaction`／`rollbackTransaction`：只有最外層 COMMIT／ROLLBACK 之後才把 `isTransactionActive` 設為 false，之後才廣播 AfterTransactionCommit／Rollback；savepoint 釋放時 `isTransactionActive` 仍為 true。兩版相同。
+- `Broadcaster` 的 `broadcastAfterTransactionCommitEvent`／`broadcastAfterTransactionRollbackEvent`：兩版分派邏輯相同，差異只在事件物件 1.1.2 多帶 `dataSource`（保留 `connection` 別名，subscriber 未使用）。
+- `SubjectExecutor`：insert 後寫回 id 與 `broadcastAfterEventsForAll` 的順序兩版相同，`afterInsert` 取得 id 的前提成立。
+- `DataSource.subscribers` 兩版都存在，subscriber 的註冊方式不受影響。
+- 其餘差異：1.1.2 移除 `broadcastLoadForAllEvent`，與本功能無關。
+
+結論：依源碼比對，1.1.2 上的 outbox 語意與 0.3.31 相同。**未驗證**：未在 1.1.2 上重跑 subscriber 的真實 Postgres 測試，運行期結果仍以 `workflow-webhook-delivery.subscriber.spec.ts` 為準。`libs/bpm-core/package.json` 的 peer 範圍為 `typeorm >=0.3.0`，0.3.x 宿主的語意以 0.3.31 為準。
+
 ### 3.6 投遞語意
 
 - **At-least-once**：接收端逾時但實際有處理成功時，BPM 會重送；接收端必須以
@@ -348,8 +357,9 @@ claim。排程器在 registry 至少有一個 endpoint 時預設啟用（與通�
 失敗時沒有可凍結的事件；投遞時的查詢失敗則會重試。
 
 - **退避**：指數退避加 ±20% jitter，`base * 2^(attempt-1)`，套用 jitter 後再取上限，所以
-  任何一次延遲都不超過上限；預設 base 30 秒、上限 1 小時、最多 6 次（約涵蓋 30 分鐘的對方
-  停機）。重試時間從該次嘗試結束的時間起算。以 `BPMRootModule` 選項
+  任何一次延遲都不超過上限；預設 base 30 秒、上限 1 小時、最多 6 次。第 6 次失敗即轉 `FAILED`，因此共 5 段等待。名目等待為 30、60、120、240、480 秒，合計 930 秒（約 15.5 分鐘）；每段套用 ±20% jitter 後，整段重試窗口落在約 744–1116 秒（約 12.4–18.6 分鐘）之間。預設值下 1 小時上限不會生效（單段最長約 576 秒）。
+  （2026-10-15 補註：原文「約涵蓋 30 分鐘」為計算錯誤，依 `workflow-webhook-delivery.service.ts` 的 `readRetryDelay` 與 `record` 改正。若要容忍 30 分鐘以上的停機，須調高 `workflowWebhookDelivery*` 選項。）
+  重試時間從該次嘗試結束的時間起算。以 `BPMRootModule` 選項
   `workflowWebhookDelivery*` 調整。
 - **拒絕送出的請求**：URL 非 http(s) 或帶帳密、method 不是 `POST`／`PUT`／`PATCH`、
   `buildRequest()` 回傳值沒有字串 `url`，一律 `WEBHOOK_INVALID_REQUEST` 直接失敗。
@@ -607,13 +617,15 @@ http://localhost:17603/*              明寫才允許的本機目的地
    參數，且不得重複。
 7. `FIELD` binding 指向的欄位存在於同版本表單，且型別相容：
 
-| 參數型別      | 可綁定的欄位類型（`libs/shared/src/lib/form.ts`）                              |
-| ------------- | ------------------------------------------------------------------------------ |
-| `string`      | `text`、`textarea`、`date`、`datetime`、`radio`、單選 `select`／`autocomplete` |
-| `number`      | `number`、`money`                                                              |
-| `boolean`     | `boolean`                                                                      |
-| `stringArray` | `checkbox`、複選 `select`／`autocomplete`                                      |
-| `json`        | 任何欄位，含 `table` 與 `file_upload`                                          |
+| 參數型別      | 可綁定的欄位類型（`libs/shared/src/lib/form.ts`）                                             |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `string`      | `text`、`textarea`、`date`、`datetime`、`radio`、單選 `select`／`autocomplete`、單選 `member` |
+| `number`      | `number`、`money`                                                                             |
+| `boolean`     | `boolean`                                                                                     |
+| `stringArray` | `checkbox`、複選 `select`／`autocomplete`、多選 `member`                                      |
+| `json`        | 任何欄位，含 `table` 與 `file_upload`                                                         |
+
+`member` 欄位依 `multiple` 旗標對應：單選為 `string`，多選為 `stringArray`（見 `isFormFieldCompatibleWithWebhookParameter`，`libs/shared/src/lib/workflow-graph.ts`）。
 
 8. `CONSTANT` 的值型別與參數型別相容。
 9. 單一節點 webhook target 上限 10 個。

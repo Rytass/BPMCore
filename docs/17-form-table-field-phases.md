@@ -121,10 +121,11 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
   `readAttachmentRefsFromFormData` 是通用遞迴，可安全走過 row record，補測即可
   （V1 無 file_upload column，需確認不誤判）。
   **`writeValueAtPath` 需改行為，不只是補測**：`writeNestedValue`
-  （`workflow-engine.service.ts:5691-5717`）在中繼值不是 record 時用 `{}` 取代，
+  （`workflow-engine.service.ts` 的 `writeNestedValue`）在中繼值不是 record 時用 `{}` 取代，
   因此 `SET_FORM_FIELD` 路徑若指向 `items.qty`，會把整個表格的列陣列覆寫成
   `{ qty: ... }`，不是 ADR §3.8 所述的 no-op。P0 的獨立驗證發現，lint 已擋下
   已發布模板走到這條路徑，但縱深防禦這一層要在 P1 補上。
+  （後續已變更，2026-10-15 依程式核對：`writeNestedValue` 已加入 no-op guard，遇到非 record 的中繼值直接回傳原值，見 ADR 16 §3.8。）
 - 條件 lint：發布時擋下引用 table 內部 path 的 edge structured condition
   （ADR §3.8）。form schema 側的 `visibleWhen`／`requiredWhen`／`readonlyWhen`
   已於 P0 完成，本 phase 只補 workflow 發布路徑那一半。
@@ -169,7 +170,7 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
 `form-rendering.spec.ts`（3 例）的新增段落。獨立驗證後再補 5 例（見下）。
 
 **Gate 結果**：`pnpm typecheck` 6 專案全過、`pnpm lint` 0 error（2 個既有
-warning，位於 `attachment-options.ts:70` 與 `signature-options.ts:85`，皆不在
+warning，位於 `attachment-options.ts` 與 `signature-options.ts`，皆不在
 本次 diff 內）、`nx run-many -t test --skip-nx-cache` 6 專案 569 tests 全過
 （P0 為 530）。`docs/api-reference.md` 不需更新——本 phase 沒有新增、移除或改名
 任何 `libs/*/src/**` 的公開 export，`form-table-reference.ts` 刻意不從
@@ -216,7 +217,7 @@ attachment 2）。**必修 3 項，已全數修復並複驗歸零**：
   UUID 形狀字串」這個既有限制下可達；若未來開放 cell 附件需改為 instance path。
 - `isFormTableCellValue` 接受 `NaN`／`Infinity`。目前三個送出 call site 一律走
   `JSON.parse`，兩者穿不過 JSON 邊界，故不可達；若日後新增非 JSON 送出路徑需補
-  `Number.isFinite`。
+  `Number.isFinite`。（觀察註記，2026-10-15 核對：`isFormTableCellValue`（`libs/shared/src/lib/form.ts`）仍以 `typeof value === 'number'` 接受 `NaN`／`Infinity`，尚未修正；目前仍不可達，維持觀察。）
 - `readFormDataCaseTitle` 在 uiSchema 只列出 table 時，會取用 layout 之外的第一
   個純量欄位當標題。行為符合本 phase 的意圖，僅記錄此為相對 P0 的語意變化。
 
@@ -697,7 +698,7 @@ PLAYWRIGHT_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Googl
 ```
 
 完整 e2e 套件不是每次都綠：第二輪驗證者第一次跑到 63 passed / 1 failed，失敗在
-`skill-matrix-real.spec.ts:407` 的 `waitForURL` 逾時（該表單沒有表格欄位，與本次
+`skill-matrix-real.spec.ts` 的 `waitForURL` 逾時（該表單沒有表格欄位，與本次
 修正無關，單跑該 spec 3 passed），`pnpm demo:reset` 後重跑即 64 passed。表格 spec
 本身也觀察到 1/14 的 flake（測試 2 送出到 `quantity` 仍是 120），已在
 `fillCell` 與「重新送出」之間補上明確等待條件。

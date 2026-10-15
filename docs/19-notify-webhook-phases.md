@@ -1,6 +1,6 @@
 # 19 — 知會節點 Webhook 開發 Phase
 
-- **狀態**：P0–P6 VERIFIED（ADR 18 於 2026-09-15 Accepted；發布待使用者執行）
+- **狀態**：P0–P6 VERIFIED，已於 v0.13.4 發布（tag 日期 2026-09-18；`git tag --contains` 確認 P0（`e240632`）至 P6（`63e2f95`）的功能提交皆含於 `v0.13.4`）（ADR 18 於 2026-09-15 Accepted）
 - **規劃日期**：2026-09-15
 - **權威決策**：[18 — ADR：知會節點 Webhook 管道](./18-notify-webhook-adr.md)
 - **完成定義**：所有 Phase gate、wrapper-host golden path、repository-wide e2e 與文件同步完成
@@ -336,7 +336,7 @@ shared 97、bpm-core-react 69、bpm-core-client 66、api 19）全綠。
 **獨立驗證第一輪（2026-09-15，未參與實作者）**：結論 NOT VERIFIED。Outbox 核心保證（交易內
 不發 HTTP、commit 後才觸發、rollback 不留紀錄）以真實 TypeORM Broadcaster 實測成立，驗證者並
 讀 `typeorm@0.3.31` 原始碼確認 `afterInsert` 時 id 已產生、commit／rollback 事件拿到同一個
-query runner、初始化後加入的 subscriber 仍有效。必修 3 項，已全部修正：
+query runner、初始化後加入的 subscriber 仍有效。（2026-10-15 補註：專案目前為 typeorm 1.1.2，已以原始碼比對延伸至 1.1.2，結論與未驗證範圍見 `18-notify-webhook-adr.md` §3.5 補註。）必修 3 項，已全部修正：
 
 - **必修 1**：一批 claim 的紀錄逐筆送出時，排在後面的紀錄會被另一個 worker 當成過期回收而重複
   投遞，回寫也不帶條件，後寫者會把 `SENT` 蓋掉。修正：每筆在自己的嘗試開始時以條件式 UPDATE
@@ -733,7 +733,7 @@ AI 助理修改知會節點後保留 webhook：E2E 需要真的呼叫 LLM、結�
 未採納的 nit：demo 端點用 literal registry 而非 `StaticBPMWorkflowWebhookRegistry`（為避免 api
 spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM 的寫法。
 
-**發布**：`npx nx release --dry-run`（2026-09-15）解析目前版本為 `v0.13.3`，四個套件（固定版本組）將一起升為 **0.13.4**（0.x 期間 `feat` 只算 patch）。P0–P5 已可一起發布（backlog #13：P0 不可單獨發版的限制已解除）。實際發布 `npx nx release --otp=<6 digits>` 由使用者執行；若希望這批功能以 minor 發布，改用 `npx nx release minor --otp=<6 digits>`。
+**發布**：`npx nx release --dry-run`（2026-09-15）解析目前版本為 `v0.13.3`，四個套件（固定版本組）將一起升為 **0.13.4**（0.x 期間 `feat` 只算 patch）。P0–P5 已可一起發布（backlog #13：P0 不可單獨發版的限制已解除）。實際發布 `npx nx release --otp=<6 digits>` 由使用者執行；若希望這批功能以 minor 發布，改用 `npx nx release minor --otp=<6 digits>`。（後續已變更：實際發布為 v0.13.4，見上方狀態行。）
 
 ## P6 — DB 管理端點、加密欄位與管理頁
 
@@ -885,6 +885,10 @@ spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM �
 ## 範圍外，另列 backlog
 
 盤點既有 webhook 路徑時發現、但不在本計畫處理的問題：
+
+> **2026-10-15 查證（只讀，未改程式）**：#13 已由 v0.13.4 發布解除。#7 的 email 段 JSDoc 已與程式一致，但 webhook 段仍寫「auto 只需 signing secret」，而程式 `Boolean(webhookEndpointUrl && webhookSigningSecret)` 同時需要 URL，故仍未完成。#8 設計器仍保留私有 `readWorkflowDefinitionIssue`（`libs/bpm-core-react/src/views/templates/designer/TemplateDesignerView.tsx`），未與 shared 版統一。#17 端點管理頁仍沒有最近投遞；案件頁的 `InstanceWebhookDeliveriesSection` 只顯示單一案件。#19 開機時只檢查加密金鑰（`parseWorkflowWebhookSecretKey`），registry 端點的 `signingSecret` 未檢查。
+>
+> 其餘已逐條核對、仍未完成者：#1（預設投遞沿用 `fetch` 的預設 redirect）、#2（設計器 `updateNotifyRecipients` 會把 WEBHOOK 動作改成 NOTIFY）、#3（`parseServiceAction` 的 WEBHOOK 分支未讀 `headers`）、#4（ad-hoc 目標仍直接呼叫 `dispatchWebhook`、無重試，`@IsUrl({ require_tld: false })`）、#5（錯誤訊息仍截 500 字，`workflow-service-task-dispatcher.token.ts`）、#6（`notificationDeliverySchedulerEnabled` 預設 `false`）、#11（`readConditionExpressions` 讀取 `node.data` 前無防護）、#12（每批上限 5，無程序層級上限）、#15（只接受一把金鑰）、#16（AES-GCM 未設 AAD）、#20（`configureBPMClient` 只有全域 `headers`，無 per-call header）。#9、#10、#14、#18 本次未逐條查證，維持原狀。
 
 1. 系統節點 `WEBHOOK` 動作（路徑 A）：URL／headers 明文存模板並經 GraphQL 回傳、交易內
    同步 HTTP 無逾時、commit 前副作用、payload CEL 執行錯誤會回滾送出／簽核交易。

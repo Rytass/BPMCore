@@ -11,6 +11,13 @@
 - **適用範圍**：Form Builder、FormRenderer、案件發起、案件退回編輯與重新送出、BPM 宿主整合
 - **交付規劃**：[15 — 表單選項 DataSource 開發 Phase](./15-form-option-data-source-phases.md)
 
+> **命名說明（2026-10-15 補註）**：本文件使用設計期名稱，程式實作的對應如下，不影響決策內容。
+>
+> - 宿主介面、錯誤碼與參數型別對外以 `BPMFormDataSource*` 命名，例如 `BPMFormDataSourceValueResolver`、`BPMFormDataSourceErrorCode`；shared 內的資料型別（如 `FormDataSourceBinding`、`FormDataSourceValueSnapshots`）維持無前綴。
+> - 內部 record 型別以 `*Record` 結尾，例如 `FormDataSourceDescriptorRecord`。
+> - 選項欄位的型別聯集在程式中為 `FormFieldOptionSource`；本文件中的「選項來源」指此欄位型別，不是獨立型別。
+> - 匯出名稱以 `docs/api-reference.md` 為準。
+
 ## 1. 背景
 
 目前 `select`、`radio`、`checkbox` 欄位只接受寫在 Form Definition Schema
