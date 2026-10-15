@@ -59,21 +59,21 @@ path — new projects should opt in to modern resolution.
 
 ### What is identical across runtimes
 
-| Concern             | Behavior                                                                                                                                          |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Transport           | Always `globalThis.fetch`. No `axios`, no `node-fetch`, no `cross-fetch`, no Apollo Link.                                                         |
-| Serialization       | `Content-Type: application/json`; `POST { query, variables }`.                                                                                    |
-| Error model         | Throws `Error` on non-2xx HTTP, on `payload.errors[]`, or on missing `data`.                                                                      |
-| Type guarantees     | Every function returns a typed `Promise<T>` — return shape is identical regardless of where the call runs.                                        |
+| Concern         | Behavior                                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| Transport       | Always `globalThis.fetch`. No `axios`, no `node-fetch`, no `cross-fetch`, no Apollo Link.                  |
+| Serialization   | `Content-Type: application/json`; `POST { query, variables }`.                                             |
+| Error model     | Throws `Error` on non-2xx HTTP, on `payload.errors[]`, or on missing `data`.                               |
+| Type guarantees | Every function returns a typed `Promise<T>` — return shape is identical regardless of where the call runs. |
 
 ### What differs across runtimes
 
-| Concern                | Browser                                                                                  | Node SSR / Server Component / CLI                                                                                                     |
-| ---------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Default endpoint       | Same-origin `/graphql` resolves to `https://your-host/graphql`.                          | Same-origin `/graphql` **throws** `TypeError: Failed to parse URL`. Set `NEXT_PUBLIC_API_URL` to an absolute URL.                     |
-| Session cookie         | `credentials: 'include'` automatically sends the HttpOnly cookie issued by `/auth/login`.| `fetch` has no cookie jar; the host must forward the incoming request's `Cookie` header manually.                                     |
-| `loginApi()` storage   | Cookie lands in browser jar, persists across navigations.                                | Returned `Set-Cookie` header is dropped — caller must read and reuse it explicitly.                                                   |
-| `window.location`      | Used to detect `localhost` for the dev fallback endpoint.                                | `typeof window === 'undefined'` → endpoint resolver returns `/graphql` (relative), which is invalid in Node unless overridden.        |
+| Concern              | Browser                                                                                   | Node SSR / Server Component / CLI                                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Default endpoint     | Same-origin `/graphql` resolves to `https://your-host/graphql`.                           | Same-origin `/graphql` **throws** `TypeError: Failed to parse URL`. Set `NEXT_PUBLIC_API_URL` to an absolute URL.              |
+| Session cookie       | `credentials: 'include'` automatically sends the HttpOnly cookie issued by `/auth/login`. | `fetch` has no cookie jar; the host must forward the incoming request's `Cookie` header manually.                              |
+| `loginApi()` storage | Cookie lands in browser jar, persists across navigations.                                 | Returned `Set-Cookie` header is dropped — caller must read and reuse it explicitly.                                            |
+| `window.location`    | Used to detect `localhost` for the dev fallback endpoint.                                 | `typeof window === 'undefined'` → endpoint resolver returns `/graphql` (relative), which is invalid in Node unless overridden. |
 
 ### Server Component / Server Action recipe
 
@@ -123,14 +123,11 @@ import { listApprovalInstancesPage } from '@rytass/bpm-core-client/workflow';
 process.env.NEXT_PUBLIC_API_URL ??= 'https://bpm.your-host.example/graphql';
 
 // 1. Log in and capture the session cookie manually.
-const loginResponse = await fetch(
-  'https://bpm.your-host.example/auth/login',
-  {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: 'svc-bot', password: '...' }),
-  },
-);
+const loginResponse = await fetch('https://bpm.your-host.example/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ identifier: 'svc-bot', password: '...' }),
+});
 const cookieJar = loginResponse.headers.get('set-cookie') ?? '';
 
 // 2. Hand the cookie to subsequent fetches via a small fetch override.
@@ -143,8 +140,12 @@ globalThis.fetch = ((input, init = {}) =>
 
 // 3. Call typed BPM functions as usual.
 const { instances } = await listApprovalInstancesPage({
-  view: 'ALL', state: 'RUNNING', page: 1, pageSize: 1000,
-  searchText: '', templateId: null,
+  view: 'ALL',
+  state: 'RUNNING',
+  page: 1,
+  pageSize: 1000,
+  searchText: '',
+  templateId: null,
 });
 console.log(instances.length, 'running instances');
 ```
@@ -161,21 +162,15 @@ By default the client targets the same origin (no `/api` prefix) — see the
 "Embedding & auth" section of `@rytass/bpm-core-nestjs-module`'s README for
 the host-side contract. Endpoint resolution rules:
 
-| Source                                          | Behavior                                                                   |
-| ----------------------------------------------- | -------------------------------------------------------------------------- |
-| `process.env.NEXT_PUBLIC_API_URL`               | If set, used as the GraphQL endpoint URL.                                  |
-| `process.env.NEXT_PUBLIC_API_AUTH_URL`          | If set, used as the base URL for the REST `/auth/*` endpoints.             |
-| Browser hostname `localhost` or `127.0.0.1`     | GraphQL defaults to `http://localhost:17603/graphql`.                      |
-| Deployed hostname (anything else, or SSR)       | GraphQL defaults to same-origin `/graphql`; auth uses same-origin root.    |
+| Source                                      | Behavior                                                                |
+| ------------------------------------------- | ----------------------------------------------------------------------- |
+| `process.env.NEXT_PUBLIC_API_URL`           | If set, used as the GraphQL endpoint URL.                               |
+| `process.env.NEXT_PUBLIC_API_AUTH_URL`      | If set, used as the base URL for the REST `/auth/*` endpoints.          |
+| Browser hostname `localhost` or `127.0.0.1` | GraphQL defaults to `http://localhost:17603/graphql`.                   |
+| Deployed hostname (anything else, or SSR)   | GraphQL defaults to same-origin `/graphql`; auth uses same-origin root. |
 
 ```ts
-import {
-  loginApi,
-  readApiCurrentMember,
-  readApiBaseUrl,
-  readGraphQlEndpoint,
-  requestGraphQl,
-} from '@rytass/bpm-core-client';
+import { loginApi, readApiCurrentMember, readApiBaseUrl, readGraphQlEndpoint, requestGraphQl } from '@rytass/bpm-core-client';
 
 console.log(readGraphQlEndpoint());
 console.log(readApiBaseUrl());
@@ -200,13 +195,13 @@ on subsequent calls.
 
 ## Subpath Overview
 
-| Import path                              | Contents                                                                                                |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `@rytass/bpm-core-client`                | GraphQL transport, endpoint resolution, REST auth client, member directory queries.                    |
-| `@rytass/bpm-core-client/organization`   | Org unit CRUD, position CRUD, membership CRUD, manager resolution.                                     |
-| `@rytass/bpm-core-client/form`           | Form definition CRUD, form version management, schema parsing helpers (`form-rendering`).              |
-| `@rytass/bpm-core-client/template`       | Approval template CRUD, category management, version publish/revert.                                   |
-| `@rytass/bpm-core-client/workflow`       | Instance submit / decide / cancel, task queries, notification queries, attachment & signature reads.   |
+| Import path                            | Contents                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `@rytass/bpm-core-client`              | GraphQL transport, endpoint resolution, REST auth client, member directory queries.                  |
+| `@rytass/bpm-core-client/organization` | Org unit CRUD, position CRUD, membership CRUD, manager resolution.                                   |
+| `@rytass/bpm-core-client/form`         | Form definition CRUD, form version management, schema parsing helpers (`form-rendering`).            |
+| `@rytass/bpm-core-client/template`     | Approval template CRUD, category management, version publish/revert.                                 |
+| `@rytass/bpm-core-client/workflow`     | Instance submit / decide / cancel, task queries, notification queries, attachment & signature reads. |
 
 Every subpath uses the same `requestGraphQl` transport from the root. Hosts
 can mix and match — for example a read-only dashboard might only import
@@ -243,26 +238,14 @@ Quick wire-up using only this package's exports. Note the flat input
 shape on the create/update mutations (no `{id, input: {...}}` wrapper):
 
 ```ts
-import {
-  readOrganizationDashboard,
-  createOrgUnit,
-  updateOrgUnit,
-} from '@rytass/bpm-core-client/organization';
+import { readOrganizationDashboard, createOrgUnit, updateOrgUnit } from '@rytass/bpm-core-client/organization';
 import type { OrgUnitType } from '@rytass/bpm-core-shared';
 
-async function upsertOrgUnit(hostUnit: {
-  code: string;
-  name: string;
-  type: OrgUnitType;
-  parentCode: string | null;
-  hostId: string;
-}): Promise<string> {
+async function upsertOrgUnit(hostUnit: { code: string; name: string; type: OrgUnitType; parentCode: string | null; hostId: string }): Promise<string> {
   // One round trip pulls every org unit; index by code in your sync loop.
   const dash = await readOrganizationDashboard({ orgUnitPageSize: null });
   const existing = dash.orgUnits.find((u) => u.code === hostUnit.code);
-  const parentId = hostUnit.parentCode
-    ? dash.orgUnits.find((u) => u.code === hostUnit.parentCode)?.id ?? null
-    : null;
+  const parentId = hostUnit.parentCode ? (dash.orgUnits.find((u) => u.code === hostUnit.parentCode)?.id ?? null) : null;
   const metadataJson = JSON.stringify({ hostId: hostUnit.hostId });
 
   if (existing) {
@@ -322,12 +305,12 @@ lifetime — call `configureBPMClient` again to replace.
 The BPM wrapper-host exposes the following endpoints under the host root (no
 `/api` prefix; do not enable Nest `setGlobalPrefix` on a BPM host):
 
-| Method | Path                  | Function                                  |
-| ------ | --------------------- | ----------------------------------------- |
-| GET    | `/auth/test-members`  | `listApiTestMembers()`                    |
-| POST   | `/auth/login`         | `loginApi({ identifier, password })`      |
-| GET    | `/auth/me`            | `readApiCurrentMember()` (returns `null` on `401`) |
-| POST   | `/auth/logout`        | `logoutApi()`                             |
+| Method | Path                 | Function                                           |
+| ------ | -------------------- | -------------------------------------------------- |
+| GET    | `/auth/test-members` | `listApiTestMembers()`                             |
+| POST   | `/auth/login`        | `loginApi({ identifier, password })`               |
+| GET    | `/auth/me`           | `readApiCurrentMember()` (returns `null` on `401`) |
+| POST   | `/auth/logout`       | `logoutApi()`                                      |
 
 If your production host names its auth endpoints differently, set
 `NEXT_PUBLIC_API_AUTH_URL` so the client points at the right base URL, and
@@ -341,11 +324,7 @@ Examples:
 
 ```ts
 import { resolveMembers, searchMembers } from '@rytass/bpm-core-client';
-import {
-  listApprovalInstances,
-  decideTask,
-  submitApprovalInstance,
-} from '@rytass/bpm-core-client/workflow';
+import { listApprovalInstances, decideTask, submitApprovalInstance } from '@rytass/bpm-core-client/workflow';
 import { listApprovalTemplates } from '@rytass/bpm-core-client/template';
 import { listFormDefinitions } from '@rytass/bpm-core-client/form';
 import { listOrgUnits, listPositions } from '@rytass/bpm-core-client/organization';
@@ -367,14 +346,14 @@ template to set `allowAddSigner: true`; the notification directives work on
 any user-task node. All calls act as the current session member, who must be
 the task's assignee or candidate.
 
-| Function | Effect |
-|---|---|
-| `requestAdhocCountersign({ taskId, target, comment? })` | Target joins the **next** stage as a parallel task — the flow only advances once the original task **and** every countersign task are approved. A countersigner's rejection rejects the instance. Returns the `AdhocDirectiveRecord` (`PENDING` until consumed). |
-| `requestAdhocPreApproval({ taskId, target, onReject, comment? })` | Spawns a blocking task on the **current** stage; the flow waits until the pre-approver approves. `onReject: 'REJECT_INSTANCE'` rejects the whole instance, `'RETURN_TO_ORIGIN'` hands the decision back to the original approver. Returns the spawned `TaskRecord` (`isAdhoc: true`). |
-| `configureAdhocStageNotification({ taskId, target, channels? })` | Notifies the target when the current stage ends — approved, rejected, or returned. |
-| `configureAdhocCompletionNotification({ taskId, target, channels? })` | Notifies the target when the instance reaches a terminal state — `APPROVED`, `REJECTED`, or `CANCELLED`. |
-| `cancelAdhocDirective(directiveId)` | Withdraws a still-`PENDING` directive (creator only). |
-| `listAdhocDirectives(instanceId)` | Every directive on one instance, ordered by creation time. |
+| Function                                                              | Effect                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `requestAdhocCountersign({ taskId, target, comment? })`               | Target joins the **next** stage as a parallel task — the flow only advances once the original task **and** every countersign task are approved. A countersigner's rejection rejects the instance. Returns the `AdhocDirectiveRecord` (`PENDING` until consumed).                      |
+| `requestAdhocPreApproval({ taskId, target, onReject, comment? })`     | Spawns a blocking task on the **current** stage; the flow waits until the pre-approver approves. `onReject: 'REJECT_INSTANCE'` rejects the whole instance, `'RETURN_TO_ORIGIN'` hands the decision back to the original approver. Returns the spawned `TaskRecord` (`isAdhoc: true`). |
+| `configureAdhocStageNotification({ taskId, target, channels? })`      | Notifies the target when the current stage ends — approved, rejected, or returned.                                                                                                                                                                                                    |
+| `configureAdhocCompletionNotification({ taskId, target, channels? })` | Notifies the target when the instance reaches a terminal state — `APPROVED`, `REJECTED`, or `CANCELLED`.                                                                                                                                                                              |
+| `cancelAdhocDirective(directiveId)`                                   | Withdraws a still-`PENDING` directive (creator only).                                                                                                                                                                                                                                 |
+| `listAdhocDirectives(instanceId)`                                     | Every directive on one instance, ordered by creation time.                                                                                                                                                                                                                            |
 
 `target` is polymorphic (`AdhocTargetOptions`): set the fields matching
 `kind` — `MEMBER` → `memberIds`, `POSITION` → `positionId`,
@@ -383,11 +362,7 @@ the task's assignee or candidate.
 two notification directives.
 
 ```ts
-import {
-  configureAdhocCompletionNotification,
-  requestAdhocCountersign,
-  requestAdhocPreApproval,
-} from '@rytass/bpm-core-client/workflow';
+import { configureAdhocCompletionNotification, requestAdhocCountersign, requestAdhocPreApproval } from '@rytass/bpm-core-client/workflow';
 
 // Ask member-301 to co-sign the next stage.
 await requestAdhocCountersign({
