@@ -225,6 +225,42 @@ describe('MemberTaskReassignModal', () => {
     expect(container.textContent).toContain('採購申請');
   });
 
+  it('ignores a late listing of the member shown before', async (): Promise<void> => {
+    let answerFirst: (tasks: MemberOpenTaskRecord[]) => void = (): void =>
+      undefined;
+    const OTHER: MemberProfileRecord = {
+      ...MEMBER,
+      memberId: 'member-other',
+      name: '另一位',
+    };
+
+    api.listMemberOpenTasks
+      .mockImplementationOnce(
+        (): Promise<MemberOpenTaskRecord[]> =>
+          new Promise((resolve): void => {
+            answerFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([{ ...TASK, instanceTitle: '另一位的案件' }]);
+
+    await act(async (): Promise<void> => {
+      root.render(
+        <MemberTaskReassignModal member={MEMBER} onClose={jest.fn()} />,
+      );
+    });
+    await act(async (): Promise<void> => {
+      root.render(
+        <MemberTaskReassignModal member={OTHER} onClose={jest.fn()} />,
+      );
+    });
+    await act(async (): Promise<void> => {
+      answerFirst([TASK]);
+    });
+
+    expect(container.textContent).toContain('另一位的案件');
+    expect(container.textContent).not.toContain('採購申請');
+  });
+
   it('keeps confirm disabled until a preview matches the current target and reason', async (): Promise<void> => {
     api.reassignMemberTasks.mockResolvedValueOnce([WOULD_REASSIGN]);
     await render();

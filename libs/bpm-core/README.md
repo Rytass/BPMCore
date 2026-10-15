@@ -1519,6 +1519,9 @@ The rules that differ from the holder's own transfer:
   the typed `comment`, and the activity log records `TASK_REASSIGNED`.
 - The target is not run through delegation rules. The initiator / submitter
   exclusions and the ORG_MANAGER_CHAIN grade check still apply.
+- The node's `allowTransfer` is not consulted. It governs what a holder may do
+  with their own task; an administrator override exists for holders who are
+  gone, and a node that forbids transfers must not strand its tasks on them.
 - A refusal is reported as `REJECTED` with an `errorCode`
   (`SOURCE_NOT_ON_TASK`, `TARGET_SAME_AS_SOURCE`, `TARGET_ALREADY_ON_TASK`,
   `TARGET_ALREADY_DECIDED`, `TARGET_IS_INITIATOR`, `TARGET_IS_SUBMITTER`,

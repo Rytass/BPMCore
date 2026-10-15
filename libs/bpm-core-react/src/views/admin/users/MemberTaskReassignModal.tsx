@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { Button, Input, Modal, Table, Typography } from '@mezzanine-ui/react';
@@ -82,15 +83,30 @@ export function MemberTaskReassignModal({
     previewIsCurrent &&
     preview.results.some((result) => result.outcome === 'WOULD_REASSIGN');
 
+  // Only the latest request may write: switching members while an earlier
+  // listing is in flight must not let its late answer replace the current one.
+  const latestRequestRef = useRef(0);
+
   const loadTasks = useCallback(async (memberId: string): Promise<void> => {
+    const request = latestRequestRef.current + 1;
+
+    latestRequestRef.current = request;
     setTasksLoading(true);
 
     try {
-      setTasks(await listMemberOpenTasks(memberId));
+      const loaded = await listMemberOpenTasks(memberId);
+
+      if (latestRequestRef.current === request) {
+        setTasks(loaded);
+      }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      if (latestRequestRef.current === request) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
-      setTasksLoading(false);
+      if (latestRequestRef.current === request) {
+        setTasksLoading(false);
+      }
     }
   }, []);
 
@@ -102,11 +118,14 @@ export function MemberTaskReassignModal({
     setError(null);
 
     if (!member) {
+      latestRequestRef.current += 1;
       setTasks([]);
+      setTasksLoading(false);
 
       return;
     }
 
+    setTasks([]);
     void loadTasks(member.memberId);
   }, [member, loadTasks]);
 
