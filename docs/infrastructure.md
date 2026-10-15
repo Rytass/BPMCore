@@ -47,9 +47,9 @@ real secret values. The BPM core TypeORM helpers (`libs/bpm-core`, the
 `typeorm.config` module) read `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`,
 `DB_NAME`, and `DB_SCHEMA` from the selected Vault path.
 
-`tools/vault-secrets.example.json` also lists `DB_SYNC` (`"false"`), but no code
-reads it. TypeORM `synchronize` is hard-coded to `false` in the BPM core
-TypeORM config, so schema changes apply only through migrations.
+TypeORM `synchronize` is hard-coded to `false` in the BPM core TypeORM
+config, so schema changes apply only through migrations; there is no
+`DB_SYNC` switch.
 
 The wrapper API host also reads Kubernetes environment variables from
 `vault-secret` for runtime-only settings that are not part of the reusable BPM
