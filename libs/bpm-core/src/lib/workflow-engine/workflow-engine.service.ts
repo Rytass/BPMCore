@@ -5322,6 +5322,29 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
   ): Promise<readonly string[]> {
+    const memberIds = await this.readActivePositionMemberIds(
+      manager,
+      positionId,
+    );
+
+    if (!memberIds.length) {
+      throw new ConflictException(
+        `${label} 找不到${subject}：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
+      );
+    }
+
+    return memberIds;
+  }
+
+  /**
+   * The members who hold the position today (organisation time zone) within
+   * their effective period. Primary memberships come first, then the most
+   * recently started. Empty when nobody holds it; never throws.
+   */
+  private async readActivePositionMemberIds(
+    manager: EntityManager,
+    positionId: string,
+  ): Promise<readonly string[]> {
     const today = this.readOrganizationToday();
     const memberships = await manager.getRepository(MembershipEntity).find({
       where: { positionId },
@@ -5339,12 +5362,6 @@ export class WorkflowEngineService {
 
         return second.effectiveFrom.localeCompare(first.effectiveFrom);
       });
-
-    if (!activeMemberships.length) {
-      throw new ConflictException(
-        `${label} 找不到${subject}：職位「${await this.readPositionName(manager, positionId)}」目前沒有任何有效成員`,
-      );
-    }
 
     return uniqueTexts(
       activeMemberships.map((membership) => membership.memberId),
@@ -5373,15 +5390,14 @@ export class WorkflowEngineService {
       return resolvedManagerMemberIds;
     }
 
-    return [
-      this.resolveFallbackAssignee(
-        instance,
-        fallback,
-        label,
-        subject,
-        `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
-      ),
-    ];
+    return this.resolveFallbackAssignees(
+      manager,
+      instance,
+      fallback,
+      label,
+      subject,
+      `找不到發起人的第 ${normalizedLevelsUp} 層主管`,
+    );
   }
 
   /**
@@ -5467,7 +5483,10 @@ export class WorkflowEngineService {
       }
     }
 
-    const fallbackMemberId = this.resolveFallbackAssignee(
+    // A position fallback can name several holders. They all join the last
+    // tier, so they all have to sign, the same as every other chain member.
+    const fallbackMemberIds = await this.resolveFallbackAssignees(
+      manager,
       instance,
       fallback,
       label,
@@ -5475,9 +5494,7 @@ export class WorkflowEngineService {
       `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
     );
 
-    return chain.includes(fallbackMemberId)
-      ? chain
-      : [...chain, fallbackMemberId];
+    return uniqueTexts([...chain, ...fallbackMemberIds]);
   }
 
   /** Highest position level over the member's active memberships, or `null`. */
@@ -5544,9 +5561,70 @@ export class WorkflowEngineService {
     );
   }
 
-  private resolveFallbackAssignee(
+  /**
+   * Every member a manager resolver's fallback yields. A `DIRECT` or `NONE`
+   * fallback yields at most one; a `POSITION` fallback yields the position's
+   * current holders, minus the initiator unless the fallback allows self
+   * approval. Failure throws, as the single-member path does.
+   */
+  private async resolveFallbackAssignees(
+    manager: EntityManager,
     instance: ApprovalInstanceEntity,
     fallback: ApproverResolverFallback | undefined,
+    label: string,
+    subject: ResolvedSubject,
+    failureReason: string,
+  ): Promise<readonly string[]> {
+    if (fallback?.type !== 'POSITION') {
+      return [
+        this.resolveFallbackAssignee(
+          instance,
+          fallback,
+          label,
+          subject,
+          failureReason,
+        ),
+      ];
+    }
+
+    const failure =
+      subject === '通知對象' ? '無法建立通知' : '無法建立待簽任務';
+
+    if (!fallback.positionId.trim()) {
+      throw new ConflictException(`${label} ${failure}：改派職位未設定。`);
+    }
+
+    const holderMemberIds = await this.readActivePositionMemberIds(
+      manager,
+      fallback.positionId,
+    );
+
+    if (holderMemberIds.length === 0) {
+      throw new ConflictException(
+        `${label} ${failure}：${failureReason}，且改派職位「${await this.readPositionName(manager, fallback.positionId)}」目前沒有任何有效成員。請聯絡流程管理員調整主管規則或模板 fallback。`,
+      );
+    }
+
+    const assignees = fallback.allowInitiatorSelfApproval
+      ? holderMemberIds
+      : holderMemberIds.filter(
+          (memberId) => memberId !== instance.initiatorMemberId,
+        );
+
+    if (assignees.length === 0) {
+      throw new ConflictException(
+        `${label} ${failure}：${failureReason}，且改派職位的有效成員只有申請人本人，此節點未允許申請人自簽。`,
+      );
+    }
+
+    return assignees;
+  }
+
+  private resolveFallbackAssignee(
+    instance: ApprovalInstanceEntity,
+    fallback:
+      | Exclude<ApproverResolverFallback, { readonly type: 'POSITION' }>
+      | undefined,
     label: string,
     subject: ResolvedSubject,
     failureReason: string,
@@ -5703,15 +5781,14 @@ export class WorkflowEngineService {
     );
 
     if (!managerMemberIds.length) {
-      return [
-        this.resolveFallbackAssignee(
-          instance,
-          fallback,
-          label,
-          subject,
-          `找不到指定組織的主管規則`,
-        ),
-      ];
+      return this.resolveFallbackAssignees(
+        manager,
+        instance,
+        fallback,
+        label,
+        subject,
+        `找不到指定組織的主管規則`,
+      );
     }
 
     return managerMemberIds;
@@ -8553,11 +8630,16 @@ function endSentence(message: string): string {
 }
 
 type DryRunFallbackProblem =
-  'NOT_SET' | 'BLANK_MEMBER' | 'IS_INITIATOR' | 'UNSUPPORTED';
+  | 'NOT_SET'
+  | 'BLANK_MEMBER'
+  | 'BLANK_POSITION'
+  | 'IS_INITIATOR'
+  | 'UNSUPPORTED';
 
 const SUPPORTED_APPROVER_FALLBACK_TYPES: ReadonlySet<string> = new Set([
   'NONE',
   'DIRECT',
+  'POSITION',
 ]);
 
 /**
@@ -8584,6 +8666,12 @@ function readDryRunFallbackProblem(
     return 'UNSUPPORTED';
   }
 
+  if (fallback?.type === 'POSITION') {
+    // The holders are only known at run time, so the dry run cannot tell
+    // whether the position is empty; it only rules out a blank position.
+    return fallback.positionId.trim() === '' ? 'BLANK_POSITION' : null;
+  }
+
   if (!fallback || fallback.type !== 'DIRECT') {
     return 'NOT_SET';
   }
@@ -8603,9 +8691,17 @@ function readDryRunFallbackMemberIds(
   input: DryRunSimulationInput,
   fallback: ApproverResolverFallback | undefined,
 ): readonly string[] {
-  return readDryRunFallbackProblem(input.initiatorMemberId, fallback) ===
-    null && fallback?.type === 'DIRECT'
-    ? [fallback.memberId.trim()]
+  if (readDryRunFallbackProblem(input.initiatorMemberId, fallback) !== null) {
+    return [];
+  }
+
+  if (fallback?.type === 'DIRECT') {
+    return [fallback.memberId.trim()];
+  }
+
+  // Same placeholder a POSITION node gets in a dry run; the label names it.
+  return fallback?.type === 'POSITION'
+    ? [`position:${fallback.positionId.trim()}`]
     : [];
 }
 
@@ -8665,6 +8761,10 @@ function readDryRunUnresolvedApproverMessage(
 
   if (fallbackProblem === 'IS_INITIATOR') {
     return `簽核節點「${nodeName}」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽`;
+  }
+
+  if (fallbackProblem === 'BLANK_POSITION') {
+    return `簽核節點「${nodeName}」找不到主管，且改派職位未設定`;
   }
 
   if (fallbackProblem === 'UNSUPPORTED') {
