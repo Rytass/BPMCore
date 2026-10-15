@@ -1,3 +1,51 @@
+## 0.17.0 (2026-10-15)
+
+### 🚀 Features
+
+- ⚠️  **workflow-engine:** end SLA-terminated instances as EXPIRED ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+- **template:** allow lastDecision in edge conditions ([e8b4788](https://github.com/Rytass/BPMCore/commit/e8b4788))
+- **react:** add member task reassignment modal to admin users ([f12e9f8](https://github.com/Rytass/BPMCore/commit/f12e9f8))
+- **workflow-engine:** add administrator in-place task reassignment ([02ce920](https://github.com/Rytass/BPMCore/commit/02ce920))
+- **template-designer:** let the fallback mode pick a position ([257a361](https://github.com/Rytass/BPMCore/commit/257a361))
+- **views:** ask for a successor unit before retiring an org unit ([b79cd5c](https://github.com/Rytass/BPMCore/commit/b79cd5c))
+- ⚠️  **organization:** retire org units into a successor unit ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+
+### 🩹 Fixes
+
+- **migrations:** check pg_trgm with the other required extensions ([30a1e58](https://github.com/Rytass/BPMCore/commit/30a1e58))
+- **template:** check CEL roots per call site on publish ([868d236](https://github.com/Rytass/BPMCore/commit/868d236))
+- **instance-detail:** show how a closed instance ended ([a110e08](https://github.com/Rytass/BPMCore/commit/a110e08))
+- ⚠️  **delegation:** order rules by priority, higher first ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+- **react:** drop a late member task listing in the reassignment modal ([1a7724e](https://github.com/Rytass/BPMCore/commit/1a7724e))
+- **react:** keep reassigned task titles and fit the result table ([3b90530](https://github.com/Rytass/BPMCore/commit/3b90530))
+- **template-designer:** keep unknown approver fallbacks read-only ([5ea88fe](https://github.com/Rytass/BPMCore/commit/5ea88fe))
+
+### ⚠️  Breaking Changes
+
+- **workflow-engine:** end SLA-terminated instances as EXPIRED  ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+  an instance ended by SLA `TERMINATE_INSTANCE` is now
+  `EXPIRED` instead of `CANCELLED`, and its activity log is
+  `INSTANCE_EXPIRED` with a null actor instead of `INSTANCE_CANCELLED` in
+  the initiator's name. Instances terminated before this change stay
+  CANCELLED. A host implementing `BPMWorkflowEngineService` itself must add
+  `expireApprovalInstance`.
+- **delegation:** order rules by priority, higher first  ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+  when several active delegation rules of one principal
+  match a task, the rule with the highest priority now applies instead of
+  the oldest. No data migration is needed: priority had no effect before,
+  but principals with overlapping rules may now be delegated differently,
+  so review their priorities.
+- **organization:** retire org units into a successor unit  ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+  deleteOrgUnit now also refuses a unit that has no open
+  memberships but still has an open ORG_UNIT-scoped manager rule; it used to
+  retire it and leave the rule silently dormant. Pass transferToOrgUnitId (or
+  end the rule first) to retire such a unit. The refusal message keeps its
+  leading "Org unit with memberships cannot be deleted" sentence.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.16.2 (2026-10-14)
 
 ### 🚀 Features

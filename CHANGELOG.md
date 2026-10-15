@@ -1,3 +1,67 @@
+## 0.17.0 (2026-10-15)
+
+### 🚀 Features
+
+- **client:** pass a successor unit when retiring an org unit ([e527c3c](https://github.com/Rytass/BPMCore/commit/e527c3c))
+- **client:** add administrator task reassignment API wrappers ([eac273c](https://github.com/Rytass/BPMCore/commit/eac273c))
+- ⚠️  **organization:** retire org units into a successor unit ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+- **react:** add member task reassignment modal to admin users ([f12e9f8](https://github.com/Rytass/BPMCore/commit/f12e9f8))
+- **shared:** add POSITION approver fallback type ([2744b99](https://github.com/Rytass/BPMCore/commit/2744b99))
+- **template:** lint blank POSITION fallback position ids ([2a29ece](https://github.com/Rytass/BPMCore/commit/2a29ece))
+- **template:** allow lastDecision in edge conditions ([e8b4788](https://github.com/Rytass/BPMCore/commit/e8b4788))
+- **template-designer:** let the fallback mode pick a position ([257a361](https://github.com/Rytass/BPMCore/commit/257a361))
+- **toolset:** accept POSITION fallbacks in the assistant toolset ([7d0ddff](https://github.com/Rytass/BPMCore/commit/7d0ddff))
+- **views:** ask for a successor unit before retiring an org unit ([b79cd5c](https://github.com/Rytass/BPMCore/commit/b79cd5c))
+- **workflow-engine:** resolve POSITION fallbacks to every current holder ([a42bf54](https://github.com/Rytass/BPMCore/commit/a42bf54))
+- **workflow-engine:** add administrator in-place task reassignment ([02ce920](https://github.com/Rytass/BPMCore/commit/02ce920))
+- ⚠️  **workflow-engine:** end SLA-terminated instances as EXPIRED ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+
+### 🩹 Fixes
+
+- ⚠️  **delegation:** order rules by priority, higher first ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+- **delegation:** check scope condition roots when a rule is saved ([bc8af75](https://github.com/Rytass/BPMCore/commit/bc8af75))
+- **instance-detail:** show how a closed instance ended ([a110e08](https://github.com/Rytass/BPMCore/commit/a110e08))
+- **migrations:** check pg_trgm with the other required extensions ([30a1e58](https://github.com/Rytass/BPMCore/commit/30a1e58))
+- **organization:** keep a continued membership's original end date ([ce1f84f](https://github.com/Rytass/BPMCore/commit/ce1f84f))
+- **react:** keep reassigned task titles and fit the result table ([3b90530](https://github.com/Rytass/BPMCore/commit/3b90530))
+- **react:** drop a late member task listing in the reassignment modal ([1a7724e](https://github.com/Rytass/BPMCore/commit/1a7724e))
+- **template:** check CEL roots per call site on publish ([868d236](https://github.com/Rytass/BPMCore/commit/868d236))
+- **template-designer:** keep unknown approver fallbacks read-only ([5ea88fe](https://github.com/Rytass/BPMCore/commit/5ea88fe))
+- **toolset:** read manager fallbacks and keep them across rewrites ([099b72f](https://github.com/Rytass/BPMCore/commit/099b72f))
+- **workflow-engine:** refuse unknown approver fallback types by name ([15b8d1c](https://github.com/Rytass/BPMCore/commit/15b8d1c))
+- **workflow-engine:** keep a group stage open when a holder transfers ([2cb0a96](https://github.com/Rytass/BPMCore/commit/2cb0a96))
+- **workflow-engine:** keep the task holder and reject decided targets on group transfer ([515b3c2](https://github.com/Rytass/BPMCore/commit/515b3c2))
+
+### 🔥 Performance
+
+- **workflow-engine:** read member open task templates in one query ([49ae231](https://github.com/Rytass/BPMCore/commit/49ae231))
+
+### ⚠️  Breaking Changes
+
+- **workflow-engine:** end SLA-terminated instances as EXPIRED  ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+  an instance ended by SLA `TERMINATE_INSTANCE` is now
+  `EXPIRED` instead of `CANCELLED`, and its activity log is
+  `INSTANCE_EXPIRED` with a null actor instead of `INSTANCE_CANCELLED` in
+  the initiator's name. Instances terminated before this change stay
+  CANCELLED. A host implementing `BPMWorkflowEngineService` itself must add
+  `expireApprovalInstance`.
+- **delegation:** order rules by priority, higher first  ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+  when several active delegation rules of one principal
+  match a task, the rule with the highest priority now applies instead of
+  the oldest. No data migration is needed: priority had no effect before,
+  but principals with overlapping rules may now be delegated differently,
+  so review their priorities.
+- **organization:** retire org units into a successor unit  ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+  deleteOrgUnit now also refuses a unit that has no open
+  memberships but still has an open ORG_UNIT-scoped manager rule; it used to
+  retire it and leave the rule silently dormant. Pass transferToOrgUnitId (or
+  end the rule first) to retire such a unit. The refusal message keeps its
+  leading "Org unit with memberships cannot be deleted" sentence.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.16.2 (2026-10-14)
 
 ### 🚀 Features

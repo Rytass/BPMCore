@@ -1,3 +1,47 @@
+## 0.17.0 (2026-10-15)
+
+### 🚀 Features
+
+- ⚠️  **workflow-engine:** end SLA-terminated instances as EXPIRED ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+- **template:** allow lastDecision in edge conditions ([e8b4788](https://github.com/Rytass/BPMCore/commit/e8b4788))
+- **workflow-engine:** add administrator in-place task reassignment ([02ce920](https://github.com/Rytass/BPMCore/commit/02ce920))
+- **toolset:** accept POSITION fallbacks in the assistant toolset ([7d0ddff](https://github.com/Rytass/BPMCore/commit/7d0ddff))
+- **shared:** add POSITION approver fallback type ([2744b99](https://github.com/Rytass/BPMCore/commit/2744b99))
+- ⚠️  **organization:** retire org units into a successor unit ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+
+### 🩹 Fixes
+
+- **migrations:** check pg_trgm with the other required extensions ([30a1e58](https://github.com/Rytass/BPMCore/commit/30a1e58))
+- **template:** check CEL roots per call site on publish ([868d236](https://github.com/Rytass/BPMCore/commit/868d236))
+- ⚠️  **delegation:** order rules by priority, higher first ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+- **toolset:** read manager fallbacks and keep them across rewrites ([099b72f](https://github.com/Rytass/BPMCore/commit/099b72f))
+
+### ⚠️  Breaking Changes
+
+- **workflow-engine:** end SLA-terminated instances as EXPIRED  ([7dcca4e](https://github.com/Rytass/BPMCore/commit/7dcca4e))
+  an instance ended by SLA `TERMINATE_INSTANCE` is now
+  `EXPIRED` instead of `CANCELLED`, and its activity log is
+  `INSTANCE_EXPIRED` with a null actor instead of `INSTANCE_CANCELLED` in
+  the initiator's name. Instances terminated before this change stay
+  CANCELLED. A host implementing `BPMWorkflowEngineService` itself must add
+  `expireApprovalInstance`.
+- **delegation:** order rules by priority, higher first  ([96cca55](https://github.com/Rytass/BPMCore/commit/96cca55))
+  when several active delegation rules of one principal
+  match a task, the rule with the highest priority now applies instead of
+  the oldest. No data migration is needed: priority had no effect before,
+  but principals with overlapping rules may now be delegated differently,
+  so review their priorities.
+- **organization:** retire org units into a successor unit  ([514e0b2](https://github.com/Rytass/BPMCore/commit/514e0b2))
+  deleteOrgUnit now also refuses a unit that has no open
+  memberships but still has an open ORG_UNIT-scoped manager rule; it used to
+  retire it and leave the rule silently dormant. Pass transferToOrgUnitId (or
+  end the rule first) to retire such a unit. The refusal message keeps its
+  leading "Org unit with memberships cannot be deleted" sentence.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.16.2 (2026-10-14)
 
 ### 🚀 Features
