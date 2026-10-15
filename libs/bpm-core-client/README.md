@@ -90,7 +90,7 @@ import { cookies } from 'next/headers';
 
 async function fetchInbox(): Promise<unknown> {
   const cookieHeader = (await cookies()).toString();
-  const response = await fetch(`${process.env.BPM_API_URL}/graphql`, {
+  const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/graphql`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
