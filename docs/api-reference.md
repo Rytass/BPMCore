@@ -33,6 +33,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | POSITION approver fallback (every current holder of a position) | Not yet released |
 | Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | Not yet released |
 | Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | Not yet released |
+| The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | Not yet released |
 
 ---
 
@@ -1340,10 +1341,12 @@ argument on the `notifications` / `notificationCount` queries.
 
 28 ordered migrations:
 
-1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` are
+1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` / `pg_trgm` are
    missing and the migration role has no CREATE privilege on the database, it
    fails with the SQL to run and who must run it, instead of a bare `42501`.
-   `down()` is a no-op: the extensions may predate BPM.
+   `down()` is a no-op: the extensions may predate BPM. The `pg_trgm` check is
+   not yet released; `WorkflowQueryIndexes0000000013000` still creates `pg_trgm`
+   itself for databases migrated before it.
 2. `IdentityOrganizationFoundation0000000001000`
 3. `FormBuilderFoundation0000000002000`
 4. `ApprovalTemplateFoundation0000000003000`

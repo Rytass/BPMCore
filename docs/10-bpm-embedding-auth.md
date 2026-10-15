@@ -318,7 +318,7 @@ import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 `buildBPMDataSourceOptions()`、`buildDataSourceOptionsFromVaultEnv()` 與
 `buildTypeOrmModuleOptions()` 都使用同一份 list，並保持 `migrationsRun: false`。
 部署時應明確執行 migration。第一個 migration 會嘗試建立 `uuid-ossp` 與
-`ltree`；若資料庫使用者不能 `CREATE EXTENSION`，DBA 必須先在目標 DB 建好 extension。
+`ltree` 與 `pg_trgm`（`pg_trgm` 的檢查未發佈，v0.16.2 之後；之前由 `0000000013000` 建立）；若資料庫使用者不能 `CREATE EXTENSION`，DBA 必須先在目標 DB 建好 extension。
 多 schema 宿主應以各自的 TypeORM `schema` 跑同一份 migration list。
 
 ## API Host App

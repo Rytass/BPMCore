@@ -716,7 +716,7 @@ ORDER BY t.sla_due_at NULLS LAST, t.created_at;
 
 | 編號 | 內容（摘要）                                                                  |
 | ---- | ----------------------------------------------------------------------------- |
-| 0000000000001 | PostgreSQL extensions：`uuid-ossp`、`ltree`（其餘 migration 的前提） |
+| 0000000000001 | PostgreSQL extensions：`uuid-ossp`、`ltree`、`pg_trgm`（其餘 migration 的前提；`pg_trgm` 的檢查未發佈，v0.16.2 之後） |
 | 0001 | 組織與身分基礎：`org_units`、`positions`、`memberships`、`manager_resolutions`、`member_metadata_cache` |
 | 0002 | 表單：`form_definitions`、`form_definition_versions`                           |
 | 0003 | 模板：`approval_templates`、`approval_template_versions`                       |

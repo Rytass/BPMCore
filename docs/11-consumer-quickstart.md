@@ -2,7 +2,7 @@
 
 把 `@rytass/bpm-core-nestjs-module`、`@rytass/bpm-core-client`、`@rytass/bpm-core-shared` 三個套件接到自己的專案的最短路徑。
 
-本文件假設你已經有一個 PostgreSQL（含 `uuid-ossp` 與 `ltree` 擴充）、自己的 member directory，以及任何形式的 session / cookie 機制（BPMCore 不擁有登入流程）。
+本文件假設你已經有一個 PostgreSQL（含 `uuid-ossp`、`ltree` 與 `pg_trgm` 擴充）、自己的 member directory，以及任何形式的 session / cookie 機制（BPMCore 不擁有登入流程）。
 
 > 三個套件的角色：
 > - **`@rytass/bpm-core-shared`** — 純 TypeScript 型別契約，前後端共用。
@@ -588,7 +588,7 @@ await dataSource.runMigrations();
 await dataSource.destroy();
 ```
 
-第一條 migration 會嘗試 `CREATE EXTENSION IF NOT EXISTS uuid-ossp, ltree`。若 DB user 沒有權限，請 DBA 先建好擴充。
+第一條 migration 會對 `uuid-ossp`、`ltree` 與 `pg_trgm` 各執行一次 `CREATE EXTENSION IF NOT EXISTS "<名稱>"`（`pg_trgm` 未發佈，v0.16.2 之後；之前由 `0000000013000` 建立）。若 DB user 沒有權限，請 DBA 先建好這三個擴充。
 
 ### 5. Role / Permission 契約
 
@@ -962,7 +962,7 @@ const authContext: BPMAuthContext = {
 
 啟用前確認：
 
-- [ ] DB 有 `uuid-ossp` 與 `ltree` 擴充（或 DBA 已預建）
+- [ ] DB 有 `uuid-ossp`、`ltree` 與 `pg_trgm` 擴充（或 DBA 已預建）
 - [ ] 跑過 BPM migrations（不要靠 TypeORM `synchronize`）
 - [ ] API 跑多個副本時，`BPMRootModule.forRoot` 設了共用的 `attachmentSignedUrlSecret`（未設定時每個 process 開機自動產生隨機密鑰並在 stderr 警告；單一副本可不設，但重啟會讓最近幾分鐘發出的附件連結失效）
 - [ ] 設了 `signatureKeyProvider`（**不要** 用預設 local key）

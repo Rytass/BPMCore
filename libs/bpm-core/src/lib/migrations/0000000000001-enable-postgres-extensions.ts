@@ -5,9 +5,13 @@ const INSUFFICIENT_PRIVILEGE = '42501';
 /**
  * PostgreSQL extensions every later BPM migration depends on: `uuid-ossp` for
  * `uuid_generate_v4()` defaults, `ltree` for the org unit `path` column and its
- * ancestor/descendant operators.
+ * ancestor/descendant operators, and `pg_trgm` for the instance search indexes
+ * of `WorkflowQueryIndexes0000000013000`. That migration still creates
+ * `pg_trgm` itself, but checking it here means a least-privilege role is told
+ * every missing extension up front instead of failing twelve migrations later
+ * with a bare `42501`.
  */
-const REQUIRED_EXTENSIONS = ['uuid-ossp', 'ltree'] as const;
+const REQUIRED_EXTENSIONS = ['uuid-ossp', 'ltree', 'pg_trgm'] as const;
 
 export class EnablePostgresExtensions0000000000001 implements MigrationInterface {
   readonly name = 'EnablePostgresExtensions0000000000001';

@@ -1119,18 +1119,22 @@ moduleNameMapper: { '^cel-js$': '<rootDir>/test/cel-js.stub.ts' },
 
 ### Database prerequisites
 
-BPM's first migration enables two PostgreSQL extensions — `uuid-ossp` for
-`uuid_generate_v4()` defaults and `ltree` for the org unit `path` column:
+BPM's first migration enables three PostgreSQL extensions — `uuid-ossp` for
+`uuid_generate_v4()` defaults, `ltree` for the org unit `path` column, and
+`pg_trgm` for the instance search indexes of
+`WorkflowQueryIndexes0000000013000` (which also creates it, for databases
+migrated before the first migration checked it):
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "ltree";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 ```
 
 `CREATE EXTENSION` needs the CREATE privilege **on the database**, which a
 least-privilege application role normally does not have — including on Rytass
 platforms, where that privilege is revoked by convention. Have a superuser,
-the database owner, or `rds_superuser` run the two statements once before the
+the database owner, or `rds_superuser` run the three statements once before the
 first migration run.
 
 PostgreSQL itself returns early from `CREATE EXTENSION IF NOT EXISTS` when the
@@ -1284,8 +1288,11 @@ import { BPM_CORE_MIGRATIONS } from '@rytass/bpm-core-nestjs-module/migrations';
 `TypeOrmModule` setup still keeps `migrationsRun: false`; run migrations
 explicitly during deploy.
 
-The first migration attempts to create required PostgreSQL extensions
-(`uuid-ossp`, `ltree`) if they do not exist. Hosts that cannot grant
+The first migration attempts to create the required PostgreSQL extensions
+(`uuid-ossp`, `ltree`, `pg_trgm`) if they do not exist. When one is missing and
+the role cannot create it, the migration fails with the SQL to run and who must
+run it (the `pg_trgm` check is unreleased; earlier versions surfaced a missing
+`pg_trgm` as a bare `42501` from migration `0000000013000`). Hosts that cannot grant
 `CREATE EXTENSION` should pre-provision those extensions in the target database
 before running BPM migrations. Schema selection comes from the TypeORM `schema`
 option, so multi-schema hosts should run the same migration list once per BPM
