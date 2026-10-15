@@ -31,12 +31,7 @@ import {
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import {
-  CloseIcon,
-  EditIcon,
-  PlusIcon,
-  SaveIcon,
-} from '@mezzanine-ui/icons';
+import { CloseIcon, EditIcon, PlusIcon, SaveIcon } from '@mezzanine-ui/icons';
 import type { IconDefinition } from '@mezzanine-ui/icons';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
@@ -64,9 +59,11 @@ import {
   ManagerResolutionScopeType,
   MembershipRecord,
   OrgUnitRecord,
+  OrgUnitRetirementImpactRecord,
   OrgUnitType,
   PositionRecord,
   readOrganizationDashboard,
+  readOrgUnitRetirementImpact,
   updateManagerResolution,
   updateMembership,
   updateOrgUnit,
@@ -244,7 +241,6 @@ const POSITION_TABLE_MIN_WIDTH = 948;
 const MEMBERSHIP_TABLE_MIN_WIDTH = 1292;
 const MANAGER_TABLE_MIN_WIDTH = 1124;
 
-
 export function AdminOrgsView(): ReactElement {
   const [activeTab, setActiveTab] = useState<AdminOrgTab>('ORG_UNITS');
   const [deleteConfirmation, setDeleteConfirmation] =
@@ -308,12 +304,56 @@ export function AdminOrgsView(): ReactElement {
     readonly MembershipRecord[]
   >([]);
   const [saving, setSaving] = useState(false);
+  // Retiring an org unit that still has open memberships or manager rules
+  // needs a successor unit; the impact is read when the confirmation opens so
+  // the question is asked before the delete instead of after it fails.
+  const [retirementImpact, setRetirementImpact] =
+    useState<OrgUnitRetirementImpactRecord | null>(null);
+  const [retirementSuccessor, setRetirementSuccessor] =
+    useState<OrgUnitOption | null>(null);
 
   useEffect((): void => {
     if (deleteConfirmation) {
       setLastDeleteConfirmation(deleteConfirmation);
     }
   }, [deleteConfirmation]);
+
+  useEffect((): (() => void) => {
+    let cancelled = false;
+
+    setRetirementImpact(null);
+    setRetirementSuccessor(null);
+
+    if (deleteConfirmation?.type === 'ORG_UNIT') {
+      readOrgUnitRetirementImpact(deleteConfirmation.id)
+        .then((impact): void => {
+          if (!cancelled) {
+            setRetirementImpact(impact);
+          }
+        })
+        .catch((requestError: unknown): void => {
+          if (!cancelled) {
+            setError(readErrorMessage(requestError));
+          }
+        });
+    }
+
+    return (): void => {
+      cancelled = true;
+    };
+  }, [deleteConfirmation]);
+
+  const retiringOrgUnit = deleteConfirmation?.type === 'ORG_UNIT';
+  const retirementNeedsSuccessor =
+    retiringOrgUnit &&
+    retirementImpact !== null &&
+    (retirementImpact.openMembershipCount > 0 ||
+      retirementImpact.openManagerResolutionCount > 0);
+  const retirementBlocked =
+    retiringOrgUnit &&
+    (retirementImpact === null ||
+      retirementImpact.childUnitCount > 0 ||
+      (retirementNeedsSuccessor && !retirementSuccessor));
 
   const visibleDeleteConfirmation =
     deleteConfirmation ?? lastDeleteConfirmation;
@@ -578,7 +618,9 @@ export function AdminOrgsView(): ReactElement {
     setPositionSearchText(value);
   }
 
-  function updateMembershipActiveFilter(value: ActiveFilterOption | null): void {
+  function updateMembershipActiveFilter(
+    value: ActiveFilterOption | null,
+  ): void {
     setMembershipPage(1);
     setMembershipActiveFilter(value);
   }
@@ -618,7 +660,11 @@ export function AdminOrgsView(): ReactElement {
 
     await runMutation(async (): Promise<void> => {
       if (deleteConfirmation.type === 'ORG_UNIT') {
-        await deleteOrgUnit(deleteConfirmation.id);
+        await deleteOrgUnit(deleteConfirmation.id, {
+          transferToOrgUnitId: retirementNeedsSuccessor
+            ? (retirementSuccessor?.id ?? null)
+            : null,
+        });
       }
 
       if (deleteConfirmation.type === 'POSITION') {
@@ -918,8 +964,15 @@ export function AdminOrgsView(): ReactElement {
       />
       <Modal
         cancelText="取消"
-        confirmButtonProps={{ variant: 'destructive-primary' }}
-        confirmText={visibleDeleteConfirmation?.confirmText ?? ''}
+        confirmButtonProps={{
+          disabled: retirementBlocked,
+          variant: 'destructive-primary',
+        }}
+        confirmText={
+          retirementNeedsSuccessor
+            ? '轉移並停用'
+            : (visibleDeleteConfirmation?.confirmText ?? '')
+        }
         loading={saving}
         modalStatusType="error"
         modalType="standard"
@@ -936,6 +989,36 @@ export function AdminOrgsView(): ReactElement {
         <Typography color="text-neutral" variant="body">
           {visibleDeleteConfirmation?.description ?? ''}
         </Typography>
+        {retiringOrgUnit && retirementImpact === null && !error ? (
+          <Typography color="text-neutral" variant="body">
+            正在確認這個組織目前的歸屬與主管規則…
+          </Typography>
+        ) : null}
+        {retiringOrgUnit &&
+        retirementImpact &&
+        retirementImpact.childUnitCount > 0 ? (
+          <Typography color="text-error" variant="body">
+            {`這個組織底下還有 ${retirementImpact.childUnitCount} 個子組織，請先移動或停用子組織。`}
+          </Typography>
+        ) : null}
+        {retirementNeedsSuccessor && retirementImpact ? (
+          <>
+            <Typography color="text-neutral" variant="body">
+              {`這個組織還有 ${retirementImpact.openMembershipCount} 筆尚未結束的會員歸屬（含未來才生效的）、${retirementImpact.openManagerResolutionCount} 筆簽核主管規則。請選擇承接組織：已生效的歸屬會在昨天結束，並自今天起改掛到承接組織，保留歷史；尚未生效的歸屬直接改掛；這個組織的簽核主管規則會一併結束。`}
+            </Typography>
+            <BPMFormField label="承接組織" name="successorOrgUnitId">
+              <OrgUnitPicker
+                name="successorOrgUnitId"
+                onChange={setRetirementSuccessor}
+                orgUnits={orgUnits.filter(
+                  (orgUnit) => orgUnit.id !== deleteConfirmation?.id,
+                )}
+                placeholder="選擇承接組織"
+                value={retirementSuccessor}
+              />
+            </BPMFormField>
+          </>
+        ) : null}
         {/*
           A rejected delete leaves this modal open, and the page-level error
           line sits behind it — so without this the user sees the spinner stop

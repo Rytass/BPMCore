@@ -50,11 +50,16 @@ export class OrganizationMutations {
     return this.organizationService.commitOrgUnitTreeDraft(input);
   }
 
-  @Mutation(() => Boolean)
+  @Mutation(() => Boolean, {
+    description:
+      'Retires an org unit (soft delete). Refused while live child units remain, or while open memberships or ORG_UNIT manager rules remain and transferToOrgUnitId is not given; with it, open memberships move to that unit and the manager rules are ended.',
+  })
   async deleteOrgUnit(
     @Args('id', { type: () => String }) id: string,
+    @Args('transferToOrgUnitId', { nullable: true, type: () => String })
+    transferToOrgUnitId?: string | null,
   ): Promise<boolean> {
-    return this.organizationService.deleteOrgUnit(id);
+    return this.organizationService.deleteOrgUnit(id, { transferToOrgUnitId });
   }
 
   @Mutation(() => PositionEntity)

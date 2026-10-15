@@ -477,9 +477,9 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | Category | Names |
 |---|---|
 | Types | `OrgUnitType`, `ManagerResolutionScopeType` |
-| Records | `OrgUnitRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `ResolvedManagerRecord` |
-| Queries | `readOrganizationDashboard()`, `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()` |
-| OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit()`, `commitOrgUnitTreeDraft()` |
+| Records | `OrgUnitRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `ResolvedManagerRecord` |
+| Queries | `readOrganizationDashboard()`, `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()`, `readOrgUnitRetirementImpact(id)` |
+| OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit(id, { transferToOrgUnitId? })`, `commitOrgUnitTreeDraft()` |
 | Position Mutations | `createPosition()`, `updatePosition()`, `deletePosition(id)` |
 | Membership Mutations | `createMembership()`, `updateMembership()`, `deleteMembership()` |
 | ManagerResolution Mutations | `createManagerResolution()`, `updateManagerResolution()`, `deleteManagerResolution()` |
@@ -726,10 +726,10 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Category | Names |
 |---|---|
 | Entities | `OrgUnitEntity`, `PositionEntity`, `MembershipEntity`, `ManagerResolutionEntity` |
-| ObjectTypes | `OrgUnitTreeCommitResult`, `OrganizationSummary`, `ResolvedManager` |
+| ObjectTypes | `OrgUnitRetirementImpact` (`OrgUnitRetirementImpactObject`), `OrgUnitTreeCommitResult`, `OrganizationSummary`, `ResolvedManager` |
 | Enums | `OrganizationEnums` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
-| Service | `OrganizationService` |
+| Service | `OrganizationService`, `DeleteOrgUnitOptions` |
 | Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationQueries`, `OrganizationMutations` |
@@ -771,6 +771,23 @@ Auth contract layer — lib does not own auth; host plugs in.
 > `OrganizationModule`-only host is unaffected. Exposed as the `deletePosition`
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
+>
+> `OrganizationService.deleteOrgUnit(id, { transferToOrgUnitId? })` retires a
+> unit with a soft delete. It always refuses while live child units remain. It
+> also refuses while the unit has **open** memberships or open
+> `ORG_UNIT`-scoped manager rules — open meaning `effectiveTo` is empty or
+> today or later in `organizationTimeZone`, which includes rows that only start
+> later — unless `transferToOrgUnitId` names a live successor. With one, in a
+> single transaction: a membership that already started is ended yesterday and
+> continued in the successor from today (unless the member already holds that
+> position there); a membership starting today or later is moved as it is; the
+> unit's open manager rules are ended, and ones that never took effect are
+> removed. Ended rows never block the delete and stay pointing at the retired
+> unit as history. The refusal message still starts with
+> `Org unit with memberships cannot be deleted`.
+> `readOrgUnitRetirementImpact(id)` (GraphQL `orgUnitRetirementImpact`) returns
+> the three counts so a UI can ask for the successor before deleting; the
+> admin organization view does exactly that.
 
 `effectiveFrom` / `effectiveTo` are plain dates, so "is this membership or
 manager rule in force?" needs a notion of *today*, and that depends on the

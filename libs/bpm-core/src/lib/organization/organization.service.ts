@@ -34,6 +34,7 @@ import {
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
+import { OrgUnitRetirementImpactObject } from './org-unit-retirement-impact.object';
 import {
   ManagerResolutionScopeTypeEnum,
   OrgUnitTypeEnum,
@@ -236,14 +237,17 @@ export class OrganizationService {
           // alone", which is the one outcome a move must never produce.
           const nextParentId = move.parentId ?? null;
           const parent = nextParentId
-            ? orgUnitById.get(nextParentId) ?? null
+            ? (orgUnitById.get(nextParentId) ?? null)
             : null;
           const previousPath = existing.path;
           const nextPath = parent
             ? `${parent.path}.${this.buildPathSegment(existing.id)}`
             : `${ROOT_PATH_PREFIX}.${this.buildPathSegment(existing.id)}`;
 
-          if (existing.parentId === nextParentId && existing.path === nextPath) {
+          if (
+            existing.parentId === nextParentId &&
+            existing.path === nextPath
+          ) {
             affectedOrgUnits.set(existing.id, existing);
             continue;
           }
@@ -284,31 +288,209 @@ export class OrganizationService {
     );
   }
 
-  async deleteOrgUnit(id: string): Promise<boolean> {
+  /**
+   * Counts what stands between an org unit and its retirement. See
+   * {@link OrgUnitRetirementImpactObject} for what "open" means.
+   */
+  async readOrgUnitRetirementImpact(
+    id: string,
+  ): Promise<OrgUnitRetirementImpactObject> {
     await this.getOrgUnitOrThrow(id);
-    const childCount = await this.orgUnitRepository.count({
-      where: { deletedAt: IsNull(), parentId: id },
-    });
+    const today = this.toDateOnly(new Date());
+    const [childUnitCount, openMembershipCount, openManagerResolutionCount] =
+      await Promise.all([
+        this.orgUnitRepository.count({
+          where: { deletedAt: IsNull(), parentId: id },
+        }),
+        this.membershipRepository.count({
+          where: createOpenRowWhere<MembershipEntity>({ orgUnitId: id }, today),
+        }),
+        this.managerResolutionRepository.count({
+          where: createOpenRowWhere<ManagerResolutionEntity>(
+            {
+              scopeId: id,
+              scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+            },
+            today,
+          ),
+        }),
+      ]);
 
-    if (childCount > 0) {
-      throw new BadRequestException(
-        'Org unit with child units cannot be deleted',
+    return { childUnitCount, openManagerResolutionCount, openMembershipCount };
+  }
+
+  /**
+   * Retires an org unit (soft delete; ended memberships keep pointing at it as
+   * history).
+   *
+   * A unit with live child units is always refused. A unit that still has open
+   * memberships or open `ORG_UNIT` manager rules is refused unless
+   * `transferToOrgUnitId` names a live successor; then, in one transaction:
+   *
+   * - a membership that already started is ended yesterday and continued in
+   *   the successor from today, so "who was in this unit" survives;
+   * - a membership starting today or later has no history yet and is moved to
+   *   the successor as it is;
+   * - the unit's open manager rules are ended (or, if they have not started,
+   *   removed) — the successor keeps its own manager rather than inheriting
+   *   this one.
+   *
+   * Ended memberships and manager rules never block the delete.
+   */
+  async deleteOrgUnit(
+    id: string,
+    { transferToOrgUnitId }: DeleteOrgUnitOptions = {},
+  ): Promise<boolean> {
+    await this.getOrgUnitOrThrow(id);
+
+    return this.dataSource.transaction(async (manager): Promise<boolean> => {
+      const orgUnitRepository = manager.getRepository(OrgUnitEntity);
+      const membershipRepository = manager.getRepository(MembershipEntity);
+      const managerResolutionRepository = manager.getRepository(
+        ManagerResolutionEntity,
       );
-    }
+      const today = this.toDateOnly(new Date());
+      const childCount = await orgUnitRepository.count({
+        where: { deletedAt: IsNull(), parentId: id },
+      });
 
-    const membershipCount = await this.membershipRepository.count({
-      where: { orgUnitId: id },
+      if (childCount > 0) {
+        throw new BadRequestException(
+          'Org unit with child units cannot be deleted',
+        );
+      }
+
+      const openMemberships = await membershipRepository.find({
+        where: createOpenRowWhere<MembershipEntity>({ orgUnitId: id }, today),
+      });
+      const openManagerResolutions = await managerResolutionRepository.find({
+        where: createOpenRowWhere<ManagerResolutionEntity>(
+          {
+            scopeId: id,
+            scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+          },
+          today,
+        ),
+      });
+      const successorId = transferToOrgUnitId?.trim() || null;
+
+      if (
+        !successorId &&
+        (openMemberships.length > 0 || openManagerResolutions.length > 0)
+      ) {
+        // The leading sentence is the message this method has always thrown,
+        // kept verbatim for hosts that match on it.
+        throw new BadRequestException(
+          `Org unit with memberships cannot be deleted: ${openMemberships.length} open membership(s) and ${openManagerResolutions.length} open manager rule(s) remain. Pass transferToOrgUnitId to move the memberships to a successor unit and end the manager rules.`,
+        );
+      }
+
+      if (successorId) {
+        if (successorId === id) {
+          throw new BadRequestException(
+            'An org unit cannot be its own successor',
+          );
+        }
+
+        const successor = await orgUnitRepository.findOne({
+          where: { deletedAt: IsNull(), id: successorId },
+        });
+
+        if (!successor) {
+          throw new NotFoundException(`Org unit ${successorId} was not found`);
+        }
+
+        const yesterday = shiftDateOnly(today, -1);
+        // A member who already sits in the successor in the same position is
+        // not given a second, overlapping row there (and would collide with
+        // the (member, unit, position, effectiveFrom) key if it started on
+        // the same day).
+        const successorMemberships = await membershipRepository.find({
+          where: createOpenRowWhere<MembershipEntity>(
+            { orgUnitId: successorId },
+            today,
+          ),
+        });
+        const isAlreadyInSuccessor = (membership: MembershipEntity): boolean =>
+          successorMemberships.some(
+            (successorMembership) =>
+              successorMembership.memberId === membership.memberId &&
+              successorMembership.positionId === membership.positionId &&
+              (successorMembership.effectiveFrom <= today ||
+                successorMembership.effectiveFrom === membership.effectiveFrom),
+          );
+        const startedMemberships = openMemberships.filter(
+          (membership) => membership.effectiveFrom < today,
+        );
+        const unstartedMemberships = openMemberships.filter(
+          (membership) => membership.effectiveFrom >= today,
+        );
+        const duplicateUnstartedMembershipIds = unstartedMemberships
+          .filter(isAlreadyInSuccessor)
+          .map((membership) => membership.id);
+
+        // Built before anything below merges into the started rows: `merge`
+        // writes into the entity it is given, so reading `effectiveTo` after
+        // ending a row would hand its continuation yesterday's date.
+        const continuedMemberships = startedMemberships
+          .filter((membership) => !isAlreadyInSuccessor(membership))
+          .map((membership): MembershipEntity =>
+            membershipRepository.create({
+              effectiveFrom: today,
+              effectiveTo: membership.effectiveTo,
+              isPrimary: membership.isPrimary,
+              memberId: membership.memberId,
+              orgUnitId: successorId,
+              positionId: membership.positionId,
+            }),
+          );
+
+        await membershipRepository.save([
+          ...startedMemberships.map((membership): MembershipEntity =>
+            membershipRepository.merge(membership, {
+              effectiveTo: yesterday,
+            }),
+          ),
+          ...continuedMemberships,
+          ...unstartedMemberships
+            .filter((membership) => !isAlreadyInSuccessor(membership))
+            .map((membership): MembershipEntity =>
+              membershipRepository.merge(membership, {
+                orgUnitId: successorId,
+              }),
+            ),
+        ]);
+
+        if (duplicateUnstartedMembershipIds.length > 0) {
+          await membershipRepository.delete(duplicateUnstartedMembershipIds);
+        }
+
+        const startedManagerResolutions = openManagerResolutions.filter(
+          (resolution) => resolution.effectiveFrom < today,
+        );
+        const unstartedManagerResolutionIds = openManagerResolutions
+          .filter((resolution) => resolution.effectiveFrom >= today)
+          .map((resolution) => resolution.id);
+
+        await managerResolutionRepository.save(
+          startedManagerResolutions.map((resolution): ManagerResolutionEntity =>
+            managerResolutionRepository.merge(resolution, {
+              effectiveTo: yesterday,
+            }),
+          ),
+        );
+
+        if (unstartedManagerResolutionIds.length > 0) {
+          await managerResolutionRepository.delete(
+            unstartedManagerResolutionIds,
+          );
+        }
+      }
+
+      await orgUnitRepository.softDelete(id);
+
+      return true;
     });
-
-    if (membershipCount > 0) {
-      throw new BadRequestException(
-        'Org unit with memberships cannot be deleted',
-      );
-    }
-
-    await this.orgUnitRepository.softDelete(id);
-
-    return true;
   }
 
   async getOrgUnit(id: string): Promise<OrgUnitEntity> {
@@ -403,12 +585,14 @@ export class OrganizationService {
       );
     }
 
-    const managerResolutionCount = await this.managerResolutionRepository.count({
-      where: {
-        scopeId: id,
-        scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+    const managerResolutionCount = await this.managerResolutionRepository.count(
+      {
+        where: {
+          scopeId: id,
+          scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+        },
       },
-    });
+    );
 
     if (managerResolutionCount > 0) {
       throw new BadRequestException(
@@ -1162,9 +1346,7 @@ function createOrgUnitWhere({
   readonly parentId?: string | null;
   readonly searchText?: string | null;
   readonly type?: OrgUnitTypeEnum | null;
-}):
-  | FindOptionsWhere<OrgUnitEntity>
-  | FindOptionsWhere<OrgUnitEntity>[] {
+}): FindOptionsWhere<OrgUnitEntity> | FindOptionsWhere<OrgUnitEntity>[] {
   const parentWhere: FindOptionsWhere<OrgUnitEntity> =
     parentId === undefined
       ? {}
@@ -1192,9 +1374,7 @@ function createPositionWhere({
   searchText,
 }: {
   readonly searchText?: string | null;
-}):
-  | FindOptionsWhere<PositionEntity>
-  | FindOptionsWhere<PositionEntity>[] {
+}): FindOptionsWhere<PositionEntity> | FindOptionsWhere<PositionEntity>[] {
   const trimmedSearchText = searchText?.trim();
 
   if (!trimmedSearchText) {
@@ -1204,6 +1384,38 @@ function createPositionWhere({
   const searchPattern = `%${trimmedSearchText}%`;
 
   return [{ code: ILike(searchPattern) }, { name: ILike(searchPattern) }];
+}
+
+export interface DeleteOrgUnitOptions {
+  /**
+   * The live org unit that takes over the retired unit's open memberships.
+   * Required when any remain; see `OrganizationService.deleteOrgUnit`.
+   */
+  readonly transferToOrgUnitId?: string | null;
+}
+
+/**
+ * Rows that have not ended by `date`: `effectiveTo` empty or on/after it.
+ * Unlike the `activeOnly` filters this does not look at `effectiveFrom`, so a
+ * row that only starts later still counts.
+ */
+function createOpenRowWhere<T extends { effectiveTo: string | null }>(
+  baseWhere: FindOptionsWhere<T>,
+  date: string,
+): FindOptionsWhere<T>[] {
+  return [
+    { ...baseWhere, effectiveTo: IsNull() } as FindOptionsWhere<T>,
+    { ...baseWhere, effectiveTo: MoreThanOrEqual(date) } as FindOptionsWhere<T>,
+  ];
+}
+
+/** Moves a `YYYY-MM-DD` date by whole days, calendar-wise. */
+function shiftDateOnly(date: string, days: number): string {
+  const dayInMs = 24 * 60 * 60 * 1000;
+
+  return new Date(Date.parse(`${date}T00:00:00.000Z`) + days * dayInMs)
+    .toISOString()
+    .slice(0, 10);
 }
 
 function createMembershipWhere({
@@ -1218,9 +1430,7 @@ function createMembershipWhere({
   readonly memberId?: string | null;
   readonly orgUnitId?: string | null;
   readonly positionId?: string | null;
-}):
-  | FindOptionsWhere<MembershipEntity>
-  | FindOptionsWhere<MembershipEntity>[] {
+}): FindOptionsWhere<MembershipEntity> | FindOptionsWhere<MembershipEntity>[] {
   const baseWhere: FindOptionsWhere<MembershipEntity> = {
     ...(memberId ? { memberId } : {}),
     ...(orgUnitId ? { orgUnitId } : {}),
@@ -1431,7 +1641,9 @@ function calculateOrgUnitTreeDraftMoveDepth(
  */
 function referencesPositionId(value: unknown, positionId: string): boolean {
   if (Array.isArray(value)) {
-    return value.some((item): boolean => referencesPositionId(item, positionId));
+    return value.some((item): boolean =>
+      referencesPositionId(item, positionId),
+    );
   }
 
   if (typeof value !== 'object' || value === null) {
@@ -1447,9 +1659,6 @@ function referencesPositionId(value: unknown, positionId: string): boolean {
   );
 }
 
-function compareOrgUnitPath(
-  left: OrgUnitEntity,
-  right: OrgUnitEntity,
-): number {
+function compareOrgUnitPath(left: OrgUnitEntity, right: OrgUnitEntity): number {
   return left.path.localeCompare(right.path);
 }

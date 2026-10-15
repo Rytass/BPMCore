@@ -1,4 +1,8 @@
-import { createOrgUnit, deleteOrgUnit } from './organization-api';
+import {
+  createOrgUnit,
+  deleteOrgUnit,
+  readOrgUnitRetirementImpact,
+} from './organization-api';
 
 interface CapturedRequest {
   readonly query: string;
@@ -80,8 +84,48 @@ describe('@rytass/bpm-core-client/organization', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('deleteOrgUnit');
-        expect(request.variables).toEqual({ id: 'unit-1' });
+        expect(request.variables).toEqual({
+          id: 'unit-1',
+          transferToOrgUnitId: null,
+        });
         expect(result).toBe(true);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('passes the successor unit when one is given', async (): Promise<void> => {
+      const harness = installFetchMock({ deleteOrgUnit: true });
+      try {
+        await deleteOrgUnit('unit-1', { transferToOrgUnitId: 'unit-2' });
+        const request = harness.capture();
+
+        expect(request.query).toContain('transferToOrgUnitId');
+        expect(request.variables).toEqual({
+          id: 'unit-1',
+          transferToOrgUnitId: 'unit-2',
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('readOrgUnitRetirementImpact', () => {
+    it('returns the counts the API reports', async (): Promise<void> => {
+      const impact = {
+        childUnitCount: 0,
+        openManagerResolutionCount: 1,
+        openMembershipCount: 3,
+      };
+      const harness = installFetchMock({ orgUnitRetirementImpact: impact });
+      try {
+        const result = await readOrgUnitRetirementImpact('unit-1');
+        const request = harness.capture();
+
+        expect(request.query).toContain('orgUnitRetirementImpact');
+        expect(request.variables).toEqual({ id: 'unit-1' });
+        expect(result).toEqual(impact);
       } finally {
         harness.restore();
       }
