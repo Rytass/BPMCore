@@ -5,6 +5,7 @@ export * from './dto/position.input';
 export * from './manager-resolution.entity';
 export * from './membership.entity';
 export * from './org-unit.entity';
+export * from './org-unit-retirement-impact.object';
 export * from './org-unit-tree-commit-result.object';
 export * from './organization-summary.object';
 export * from './organization.enums';

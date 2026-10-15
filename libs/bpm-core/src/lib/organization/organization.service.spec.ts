@@ -1,3 +1,4 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DataSource, FindOperator, Repository } from 'typeorm';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import {
@@ -1445,3 +1446,430 @@ function createOrgUnitTreeDraftRepository(
     save,
   } as unknown as Repository<OrgUnitEntity>;
 }
+
+describe('OrganizationService.deleteOrgUnit', () => {
+  // 01:00 on 2026-10-14 in Asia/Taipei, still 2026-10-13 in UTC: "today" for
+  // the organization is the 14th.
+  const instant = new Date('2026-10-13T17:00:00.000Z');
+  const RETIRING_ID = '00000000-0000-4000-8000-0000000000a1';
+  const SUCCESSOR_ID = '00000000-0000-4000-8000-0000000000b2';
+
+  type Row = Record<string, unknown> & { id: string };
+
+  beforeEach((): void => {
+    jest.useFakeTimers({ now: instant });
+  });
+
+  afterEach((): void => {
+    jest.useRealTimers();
+  });
+
+  const matchesValue = (actual: unknown, expected: unknown): boolean => {
+    if (expected instanceof FindOperator) {
+      const operand = expected.value as string;
+
+      switch (expected.type) {
+        case 'isNull':
+          return actual === null || actual === undefined;
+        case 'moreThanOrEqual':
+          return typeof actual === 'string' && actual >= operand;
+        case 'lessThanOrEqual':
+          return typeof actual === 'string' && actual <= operand;
+        default:
+          throw new Error(`Unsupported operator ${expected.type}`);
+      }
+    }
+
+    return actual === expected;
+  };
+
+  const matchesWhere = (row: Row, where: unknown): boolean => {
+    if (Array.isArray(where)) {
+      return where.some((clause) => matchesWhere(row, clause));
+    }
+
+    return Object.entries((where ?? {}) as Record<string, unknown>).every(
+      ([key, expected]) => matchesValue(row[key], expected),
+    );
+  };
+
+  const createStoreRepository = (
+    rows: Row[],
+  ): Repository<ObjectLiteralRow> => {
+    const find = jest.fn(
+      ({ where }: { readonly where?: unknown } = {}): Promise<Row[]> =>
+        Promise.resolve(rows.filter((row) => matchesWhere(row, where))),
+    );
+
+    return {
+      count: jest.fn(
+        ({ where }: { readonly where?: unknown } = {}): Promise<number> =>
+          Promise.resolve(
+            rows.filter((row) => matchesWhere(row, where)).length,
+          ),
+      ),
+      create: jest.fn((value: Record<string, unknown>): Row => ({
+        ...value,
+        id: '',
+      })),
+      delete: jest.fn((ids: readonly string[]): Promise<void> => {
+        const remaining = rows.filter((row) => !ids.includes(row.id));
+
+        rows.splice(0, rows.length, ...remaining);
+
+        return Promise.resolve();
+      }),
+      find,
+      findOne: jest.fn(
+        ({ where }: { readonly where?: unknown }): Promise<Row | null> =>
+          Promise.resolve(
+            rows.find((row) => matchesWhere(row, where)) ?? null,
+          ),
+      ),
+      merge: jest.fn(
+        (row: Row, patch: Record<string, unknown>): Row => ({
+          ...row,
+          ...patch,
+        }),
+      ),
+      save: jest.fn((values: readonly Row[]): Promise<readonly Row[]> => {
+        values.forEach((value, index) => {
+          const position = rows.findIndex((row) => row.id === value.id);
+
+          if (value.id && position >= 0) {
+            rows.splice(position, 1, value);
+          } else {
+            rows.push({ ...value, id: `new-${rows.length}-${index}` });
+          }
+        });
+
+        return Promise.resolve(values);
+      }),
+      softDelete: jest.fn((id: string): Promise<void> => {
+        const position = rows.findIndex((row) => row.id === id);
+
+        rows.splice(position, 1, { ...rows[position], deletedAt: instant } as Row);
+
+        return Promise.resolve();
+      }),
+    } as unknown as Repository<ObjectLiteralRow>;
+  };
+
+  type ObjectLiteralRow = Record<string, unknown>;
+
+  const membership = (value: Partial<MembershipEntity>): Row => ({
+    effectiveFrom: '2026-01-01',
+    effectiveTo: null,
+    isPrimary: true,
+    memberId: 'member-1',
+    orgUnitId: RETIRING_ID,
+    positionId: 'position-1',
+    ...value,
+    id: value.id ?? `membership-${Math.random()}`,
+  });
+
+  const managerRule = (value: Partial<ManagerResolutionEntity>): Row => ({
+    effectiveFrom: '2026-01-01',
+    effectiveTo: null,
+    managerMemberId: 'manager-1',
+    priority: 100,
+    scopeId: RETIRING_ID,
+    scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+    ...value,
+    id: value.id ?? `rule-${Math.random()}`,
+  });
+
+  const setUp = ({
+    managerRules = [],
+    memberships = [],
+    orgUnits = [
+      createOrgUnitFixture({ code: 'OLD', id: RETIRING_ID }) as unknown as Row,
+      createOrgUnitFixture({ code: 'NEW', id: SUCCESSOR_ID }) as unknown as Row,
+    ],
+  }: {
+    readonly managerRules?: Row[];
+    readonly memberships?: Row[];
+    readonly orgUnits?: Row[];
+  }): {
+    readonly managerRules: Row[];
+    readonly memberships: Row[];
+    readonly orgUnits: Row[];
+    readonly service: OrganizationService;
+  } => {
+    const repositories = new Map<unknown, Repository<ObjectLiteralRow>>([
+      [OrgUnitEntity, createStoreRepository(orgUnits)],
+      [MembershipEntity, createStoreRepository(memberships)],
+      [ManagerResolutionEntity, createStoreRepository(managerRules)],
+    ]);
+    const manager = {
+      getRepository: (entity: unknown): unknown => repositories.get(entity),
+    };
+    const dataSource = {
+      transaction: (
+        callback: (value: typeof manager) => Promise<unknown>,
+      ): Promise<unknown> => callback(manager),
+    } as unknown as DataSource;
+    const service = new OrganizationService(
+      dataSource,
+      repositories.get(OrgUnitEntity) as unknown as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      repositories.get(
+        MembershipEntity,
+      ) as unknown as Repository<MembershipEntity>,
+      repositories.get(
+        ManagerResolutionEntity,
+      ) as unknown as Repository<ManagerResolutionEntity>,
+    );
+
+    return { managerRules, memberships, orgUnits, service };
+  };
+
+  const isRetired = (orgUnits: readonly Row[]): boolean =>
+    orgUnits.find((orgUnit) => orgUnit.id === RETIRING_ID)?.['deletedAt'] !==
+    null;
+
+  it('retires a unit whose memberships have all ended', async (): Promise<void> => {
+    const { orgUnits, service } = setUp({
+      memberships: [membership({ effectiveTo: '2026-10-13' })],
+    });
+
+    await expect(service.deleteOrgUnit(RETIRING_ID)).resolves.toBe(true);
+    expect(isRetired(orgUnits)).toBe(true);
+  });
+
+  it('refuses while a membership ends today, in the organization time zone', async (): Promise<void> => {
+    // effectiveTo is inclusive and "today" is 2026-10-14 in Asia/Taipei,
+    // although the UTC date is still the 13th.
+    const { orgUnits, service } = setUp({
+      memberships: [membership({ effectiveTo: '2026-10-14' })],
+    });
+
+    await expect(service.deleteOrgUnit(RETIRING_ID)).rejects.toThrow(
+      'Org unit with memberships cannot be deleted: 1 open membership(s) and 0 open manager rule(s) remain.',
+    );
+    expect(isRetired(orgUnits)).toBe(false);
+  });
+
+  it('refuses while a membership only starts in the future', async (): Promise<void> => {
+    const { service } = setUp({
+      memberships: [membership({ effectiveFrom: '2026-11-01' })],
+    });
+
+    await expect(service.deleteOrgUnit(RETIRING_ID)).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('refuses while an ORG_UNIT manager rule is still open, even with no memberships', async (): Promise<void> => {
+    const { service } = setUp({ managerRules: [managerRule({})] });
+
+    await expect(service.deleteOrgUnit(RETIRING_ID)).rejects.toThrow(
+      '0 open membership(s) and 1 open manager rule(s) remain.',
+    );
+  });
+
+  it('ignores ended manager rules and rules scoped to something else', async (): Promise<void> => {
+    const { orgUnits, service } = setUp({
+      managerRules: [
+        managerRule({ effectiveTo: '2026-10-13' }),
+        managerRule({
+          scopeId: RETIRING_ID,
+          scopeType: ManagerResolutionScopeTypeEnum.MEMBER,
+        }),
+      ],
+    });
+
+    await expect(service.deleteOrgUnit(RETIRING_ID)).resolves.toBe(true);
+    expect(isRetired(orgUnits)).toBe(true);
+  });
+
+  it('still refuses while live child units remain, successor or not', async (): Promise<void> => {
+    const { service } = setUp({
+      orgUnits: [
+        createOrgUnitFixture({ id: RETIRING_ID }) as unknown as Row,
+        createOrgUnitFixture({ id: SUCCESSOR_ID }) as unknown as Row,
+        createOrgUnitFixture({
+          id: '00000000-0000-4000-8000-0000000000c3',
+          parentId: RETIRING_ID,
+        }) as unknown as Row,
+      ],
+    });
+
+    await expect(
+      service.deleteOrgUnit(RETIRING_ID, { transferToOrgUnitId: SUCCESSOR_ID }),
+    ).rejects.toThrow('Org unit with child units cannot be deleted');
+  });
+
+  it('ends started memberships yesterday and continues them in the successor from today', async (): Promise<void> => {
+    const { memberships, orgUnits, service } = setUp({
+      memberships: [
+        membership({
+          effectiveTo: '2027-12-31',
+          id: 'started',
+          isPrimary: true,
+        }),
+      ],
+    });
+
+    await service.deleteOrgUnit(RETIRING_ID, {
+      transferToOrgUnitId: SUCCESSOR_ID,
+    });
+
+    expect(memberships).toEqual([
+      expect.objectContaining({
+        effectiveFrom: '2026-01-01',
+        effectiveTo: '2026-10-13',
+        id: 'started',
+        orgUnitId: RETIRING_ID,
+      }),
+      expect.objectContaining({
+        effectiveFrom: '2026-10-14',
+        effectiveTo: '2027-12-31',
+        isPrimary: true,
+        memberId: 'member-1',
+        orgUnitId: SUCCESSOR_ID,
+        positionId: 'position-1',
+      }),
+    ]);
+    expect(isRetired(orgUnits)).toBe(true);
+  });
+
+  it('moves a membership that starts today or later without ending it', async (): Promise<void> => {
+    const { memberships, service } = setUp({
+      memberships: [
+        membership({ effectiveFrom: '2026-10-14', id: 'today' }),
+        membership({
+          effectiveFrom: '2026-12-01',
+          id: 'future',
+          memberId: 'member-2',
+        }),
+      ],
+    });
+
+    await service.deleteOrgUnit(RETIRING_ID, {
+      transferToOrgUnitId: SUCCESSOR_ID,
+    });
+
+    expect(memberships).toEqual([
+      expect.objectContaining({
+        effectiveFrom: '2026-10-14',
+        id: 'today',
+        orgUnitId: SUCCESSOR_ID,
+      }),
+      expect.objectContaining({
+        effectiveFrom: '2026-12-01',
+        id: 'future',
+        orgUnitId: SUCCESSOR_ID,
+      }),
+    ]);
+  });
+
+  it('leaves ended memberships pointing at the retired unit as history', async (): Promise<void> => {
+    const { memberships, service } = setUp({
+      memberships: [
+        membership({ effectiveTo: '2025-12-31', id: 'ended' }),
+        membership({ id: 'open', memberId: 'member-2' }),
+      ],
+    });
+
+    await service.deleteOrgUnit(RETIRING_ID, {
+      transferToOrgUnitId: SUCCESSOR_ID,
+    });
+
+    expect(memberships.find((row) => row.id === 'ended')).toEqual(
+      expect.objectContaining({
+        effectiveTo: '2025-12-31',
+        orgUnitId: RETIRING_ID,
+      }),
+    );
+  });
+
+  it('does not give a member a second row in a successor they already sit in', async (): Promise<void> => {
+    const { memberships, service } = setUp({
+      memberships: [
+        membership({ id: 'old' }),
+        membership({
+          effectiveFrom: '2026-10-20',
+          id: 'old-future',
+          positionId: 'position-2',
+        }),
+        membership({
+          effectiveFrom: '2026-03-01',
+          id: 'already',
+          orgUnitId: SUCCESSOR_ID,
+        }),
+        membership({
+          effectiveFrom: '2026-10-20',
+          id: 'already-future',
+          orgUnitId: SUCCESSOR_ID,
+          positionId: 'position-2',
+        }),
+      ],
+    });
+
+    await service.deleteOrgUnit(RETIRING_ID, {
+      transferToOrgUnitId: SUCCESSOR_ID,
+    });
+
+    expect(memberships.map((row) => row.id).sort()).toEqual([
+      'already',
+      'already-future',
+      'old',
+    ]);
+    expect(memberships.find((row) => row.id === 'old')).toEqual(
+      expect.objectContaining({ effectiveTo: '2026-10-13' }),
+    );
+  });
+
+  it('ends started manager rules and removes ones that never took effect', async (): Promise<void> => {
+    const { managerRules, service } = setUp({
+      managerRules: [
+        managerRule({ id: 'started' }),
+        managerRule({ effectiveFrom: '2026-11-01', id: 'future' }),
+      ],
+    });
+
+    await service.deleteOrgUnit(RETIRING_ID, {
+      transferToOrgUnitId: SUCCESSOR_ID,
+    });
+
+    expect(managerRules).toEqual([
+      expect.objectContaining({ effectiveTo: '2026-10-13', id: 'started' }),
+    ]);
+  });
+
+  it('refuses a successor that is the unit itself or is gone', async (): Promise<void> => {
+    const { service } = setUp({ memberships: [membership({})] });
+
+    await expect(
+      service.deleteOrgUnit(RETIRING_ID, { transferToOrgUnitId: RETIRING_ID }),
+    ).rejects.toThrow('An org unit cannot be its own successor');
+    await expect(
+      service.deleteOrgUnit(RETIRING_ID, {
+        transferToOrgUnitId: '00000000-0000-4000-8000-0000000000ff',
+      }),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('reports the retirement impact with the same notion of open', async (): Promise<void> => {
+    const { service } = setUp({
+      managerRules: [
+        managerRule({}),
+        managerRule({ effectiveTo: '2026-10-13' }),
+      ],
+      memberships: [
+        membership({}),
+        membership({ effectiveFrom: '2026-11-01', memberId: 'member-2' }),
+        membership({ effectiveTo: '2026-10-13', memberId: 'member-3' }),
+      ],
+    });
+
+    await expect(
+      service.readOrgUnitRetirementImpact(RETIRING_ID),
+    ).resolves.toEqual({
+      childUnitCount: 0,
+      openManagerResolutionCount: 1,
+      openMembershipCount: 2,
+    });
+  });
+});

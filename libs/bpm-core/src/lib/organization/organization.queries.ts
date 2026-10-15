@@ -7,6 +7,7 @@ import {
   ManagerResolutionScopeTypeEnum,
   OrgUnitTypeEnum,
 } from './organization.enums';
+import { OrgUnitRetirementImpactObject } from './org-unit-retirement-impact.object';
 import { OrganizationSummaryObject } from './organization-summary.object';
 import { OrganizationService } from './organization.service';
 import { PositionEntity } from './position.entity';
@@ -22,6 +23,16 @@ export class OrganizationQueries {
     @Args('id', { type: () => String }) id: string,
   ): Promise<OrgUnitEntity> {
     return this.organizationService.getOrgUnit(id);
+  }
+
+  @Query(() => OrgUnitRetirementImpactObject, {
+    description:
+      'What deleteOrgUnit would have to deal with: live child units (always blocking), and open memberships and ORG_UNIT manager rules (blocking unless a successor unit is given).',
+  })
+  async orgUnitRetirementImpact(
+    @Args('id', { type: () => String }) id: string,
+  ): Promise<OrgUnitRetirementImpactObject> {
+    return this.organizationService.readOrgUnitRetirementImpact(id);
   }
 
   @Query(() => [OrgUnitEntity])
