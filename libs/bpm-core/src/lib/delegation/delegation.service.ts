@@ -36,6 +36,10 @@ export interface DelegationResolution {
 
 export interface DelegationStep extends Readonly<Record<string, unknown>> {
   readonly from: string;
+  /** Set on an administrator reassignment: the administrator who made it. */
+  readonly actorMemberId?: string;
+  /** Set on an administrator reassignment: the reason they typed. */
+  readonly comment?: string;
   readonly reason: string;
   readonly ruleId: string | null;
   readonly to: string;

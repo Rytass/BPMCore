@@ -36,6 +36,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
@@ -107,9 +108,12 @@ import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
+  MemberTaskRoleEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
+  TaskReassignmentErrorCodeEnum,
+  TaskReassignmentOutcomeEnum,
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
 } from './workflow-engine.enums';
@@ -202,6 +206,127 @@ interface DryRunPathInput extends DryRunSimulationInput {
  * opposed to {@link SLA_ESCALATION_DELEGATION_REASON}.
  */
 export const MANUAL_TRANSFER_DELEGATION_REASON = 'MANUAL_TRANSFER';
+
+/**
+ * Delegation-chain reason for a seat an administrator moved to another member
+ * (see {@link WorkflowEngineService.reassignTask}). The step's `actorMemberId`
+ * names the administrator and `comment` carries the reason they typed.
+ */
+export const ADMIN_REASSIGN_DELEGATION_REASON = 'ADMIN_REASSIGN';
+
+const TASK_REASSIGNMENT_MESSAGES: Readonly<
+  Record<TaskReassignmentErrorCodeEnum, string>
+> = {
+  [TaskReassignmentErrorCodeEnum.INSTANCE_NOT_RUNNING]: '案件已不在進行中',
+  [TaskReassignmentErrorCodeEnum.REASON_REQUIRED]: '必須填寫改派原因',
+  [TaskReassignmentErrorCodeEnum.SOURCE_NOT_ON_TASK]:
+    '來源成員已不在此任務的待簽名單上',
+  [TaskReassignmentErrorCodeEnum.TARGET_ALREADY_DECIDED]:
+    '接手人已對此任務簽過核',
+  [TaskReassignmentErrorCodeEnum.TARGET_ALREADY_ON_TASK]:
+    '接手人已在此任務的待簽名單上',
+  [TaskReassignmentErrorCodeEnum.TARGET_GRADE_TOO_LOW]:
+    '接手人職等不足，不能取代此簽核位置',
+  [TaskReassignmentErrorCodeEnum.TARGET_IS_INITIATOR]:
+    '此節點不允許申請人自簽，接手人不能是申請人',
+  [TaskReassignmentErrorCodeEnum.TARGET_IS_SUBMITTER]:
+    '此節點不允許代送人簽核，接手人不能是代為送出此單的人',
+  [TaskReassignmentErrorCodeEnum.TARGET_SAME_AS_SOURCE]: '接手人與原簽核人相同',
+  [TaskReassignmentErrorCodeEnum.TASK_NOT_OPEN]: '任務已不在待簽狀態',
+  [TaskReassignmentErrorCodeEnum.UNEXPECTED_ERROR]: '改派時發生非預期錯誤',
+};
+
+/** Statuses in which a candidate row still holds a seat on the task. */
+const OPEN_SEAT_STATUSES: readonly TaskCandidateStatusEnum[] = [
+  TaskCandidateStatusEnum.PENDING,
+  TaskCandidateStatusEnum.CLAIMED,
+  TaskCandidateStatusEnum.WAITING,
+];
+
+/** Closed row states that a member can be moved back into (one row per member per task). */
+const REUSABLE_SEAT_STATUSES: readonly TaskCandidateStatusEnum[] = [
+  TaskCandidateStatusEnum.CANCELLED,
+  TaskCandidateStatusEnum.SUPERSEDED,
+  TaskCandidateStatusEnum.TRANSFERRED,
+];
+
+const OPEN_TASK_STATUSES: readonly TaskStatusEnum[] = [
+  TaskStatusEnum.PENDING,
+  TaskStatusEnum.IN_PROGRESS,
+];
+
+interface TaskReassignmentPlan {
+  readonly instance: ApprovalInstanceEntity;
+  readonly node: UserTaskNode;
+  readonly reusableRow: TaskCandidateEntity | null;
+  readonly sourceRow: TaskCandidateEntity | null;
+  readonly task: TaskEntity;
+}
+
+interface TaskSeatReplacement {
+  readonly assigneeMoved: boolean;
+  /** Status of the target's new seat, or null when the source had no candidate row. */
+  readonly seatStatus: TaskCandidateStatusEnum | null;
+  readonly task: TaskEntity;
+}
+
+function buildTaskReassignmentResult(
+  task: Pick<TaskEntity, 'id' | 'instanceId' | 'nodeId'>,
+  outcome: TaskReassignmentOutcomeEnum,
+  errorCode: TaskReassignmentErrorCodeEnum | null,
+): TaskReassignmentResult {
+  return {
+    errorCode,
+    instanceId: task.instanceId,
+    message: errorCode ? TASK_REASSIGNMENT_MESSAGES[errorCode] : null,
+    nodeId: task.nodeId,
+    outcome,
+    taskId: task.id,
+  };
+}
+
+/** A refused reassignment: raised while planning, before anything is written. */
+class TaskReassignmentRejectedError extends Error {
+  readonly errorCode: TaskReassignmentErrorCodeEnum;
+
+  constructor(errorCode: TaskReassignmentErrorCodeEnum) {
+    super(TASK_REASSIGNMENT_MESSAGES[errorCode]);
+    this.errorCode = errorCode;
+  }
+}
+
+export interface TaskReassignmentResult {
+  readonly errorCode: TaskReassignmentErrorCodeEnum | null;
+  readonly instanceId: string;
+  readonly message: string | null;
+  readonly nodeId: string;
+  readonly outcome: TaskReassignmentOutcomeEnum;
+  readonly taskId: string;
+}
+
+export interface ReassignTaskOptions {
+  readonly actorMemberId: string;
+  readonly dryRun?: boolean | null;
+  readonly fromMemberId: string;
+  readonly reason: string;
+  readonly toMemberId: string;
+}
+
+export interface MemberOpenTaskRecord {
+  readonly candidateStatus: TaskCandidateStatusEnum | null;
+  readonly createdAt: Date;
+  readonly decisionPolicyType: string;
+  readonly businessKey: string | null;
+  readonly instanceId: string;
+  readonly instanceTitle: string;
+  readonly memberRole: MemberTaskRoleEnum;
+  readonly nodeId: string;
+  readonly nodeLabel: string | null;
+  readonly slaDueAt: Date | null;
+  readonly taskId: string;
+  readonly templateId: string;
+  readonly templateName: string | null;
+}
 
 /**
  * Engine-internal decision knobs that are deliberately kept out of
@@ -319,6 +444,8 @@ const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
 
 @Injectable()
 export class WorkflowEngineService {
+  private readonly logger = new Logger(WorkflowEngineService.name);
+
   constructor(
     @InjectRepository(ApprovalInstanceEntity)
     private readonly approvalInstanceRepository: Repository<ApprovalInstanceEntity>,
@@ -3313,6 +3440,10 @@ export class WorkflowEngineService {
    */
   private async readOpenInboxTasks(
     assigneeMemberId: string,
+    candidateStatuses: readonly TaskCandidateStatusEnum[] = [
+      TaskCandidateStatusEnum.PENDING,
+      TaskCandidateStatusEnum.CLAIMED,
+    ],
   ): Promise<readonly TaskEntity[]> {
     const directTasks = await this.taskRepository.find({
       order: { createdAt: 'DESC' },
@@ -3326,10 +3457,7 @@ export class WorkflowEngineService {
     const candidateRows = await this.taskCandidateRepository.find({
       where: {
         memberId: assigneeMemberId,
-        status: In([
-          TaskCandidateStatusEnum.PENDING,
-          TaskCandidateStatusEnum.CLAIMED,
-        ]),
+        status: In(candidateStatuses),
       },
     });
     const candidateTasks = candidateRows.length
@@ -4944,6 +5072,599 @@ export class WorkflowEngineService {
   }
 
   /**
+   * Administrator reassignment of one open task, moved in place: the task keeps
+   * its id, decision policy, SLA and every other seat. Only `fromMemberId`'s
+   * seat (and the assignee field, when it is theirs) moves to `toMemberId`.
+   *
+   * This is not a decision by the holder: it writes no TaskDecision and no
+   * signature. It is recorded as a TASK_REASSIGNED activity and an
+   * {@link ADMIN_REASSIGN_DELEGATION_REASON} delegation step.
+   *
+   * Unlike the holder's transfer, the target is NOT run through the delegation
+   * rules (a rule for `toMemberId` does not apply). The initiator and submitter
+   * exclusions and the grade check of ORG_MANAGER_CHAIN nodes still do.
+   *
+   * A refused reassignment is reported as `REJECTED` with an error code. When
+   * `dryRun` is off, a refusal is thrown as a ConflictException whose message
+   * carries that code.
+   */
+  async reassignTask(
+    taskId: string,
+    options: ReassignTaskOptions,
+  ): Promise<TaskReassignmentResult> {
+    const task = await this.taskRepository.findOne({ where: { id: taskId } });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} was not found`);
+    }
+
+    const result = await this.executeTaskReassignment(task, options);
+
+    if (
+      result.outcome === TaskReassignmentOutcomeEnum.REJECTED &&
+      !options.dryRun
+    ) {
+      throw new ConflictException(
+        `[${result.errorCode}] ${result.message ?? ''}`.trim(),
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Runs {@link reassignTask} for every open task `fromMemberId` holds, each in
+   * its own transaction, and reports one result per task. A failing task does
+   * not stop the others: a refusal is a REJECTED result, and an unexpected
+   * error is reported as REJECTED with UNEXPECTED_ERROR for that task alone.
+   */
+  async reassignMemberTasks(
+    options: ReassignTaskOptions,
+  ): Promise<readonly TaskReassignmentResult[]> {
+    const held = await this.readRunningMemberTasks(options.fromMemberId);
+
+    return held.reduce<Promise<readonly TaskReassignmentResult[]>>(
+      async (
+        previous,
+        { task },
+      ): Promise<readonly TaskReassignmentResult[]> => {
+        const results = await previous;
+        const result = await this.executeTaskReassignment(task, options).catch(
+          (error: unknown): TaskReassignmentResult => {
+            this.logger.warn(
+              `Reassigning task ${task.id} failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+
+            return buildTaskReassignmentResult(
+              task,
+              TaskReassignmentOutcomeEnum.REJECTED,
+              TaskReassignmentErrorCodeEnum.UNEXPECTED_ERROR,
+            );
+          },
+        );
+
+        return [...results, result];
+      },
+      Promise.resolve([]),
+    );
+  }
+
+  /**
+   * The open tasks a member holds, for the administrator's reassignment screen.
+   * Same definition as the inbox, plus WAITING sequential seats, restricted to
+   * RUNNING instances.
+   */
+  async listMemberOpenTasks(
+    memberId: string,
+  ): Promise<readonly MemberOpenTaskRecord[]> {
+    const held = await this.readRunningMemberTasks(memberId);
+
+    if (!held.length) {
+      return [];
+    }
+
+    const tasks = await this.attachTaskCandidateSummaries(
+      held.map(({ task }) => task),
+    );
+    const openRows = await this.taskCandidateRepository.find({
+      where: {
+        memberId,
+        status: In(OPEN_SEAT_STATUSES),
+        taskId: In(tasks.map((task) => task.id)),
+      },
+    });
+    const templateIds = [
+      ...new Set(held.map(({ instance }) => instance.templateId)),
+    ];
+    const templates = await Promise.all(
+      templateIds.map((templateId) =>
+        this.approvalTemplateRepository.findOne({ where: { id: templateId } }),
+      ),
+    );
+    const templateNameById = new Map(
+      templateIds.map((templateId, index): readonly [string, string | null] => [
+        templateId,
+        templates[index]?.name ?? null,
+      ]),
+    );
+
+    return held.map(({ instance, task }): MemberOpenTaskRecord => {
+      const row = openRows.find((candidate) => candidate.taskId === task.id);
+      const summary = tasks.find((candidate) => candidate.id === task.id);
+
+      return {
+        candidateStatus: row?.status ?? null,
+        createdAt: task.createdAt,
+        decisionPolicyType: readDecisionPolicySnapshot(task).type,
+        businessKey: instance.businessKey,
+        instanceId: instance.id,
+        instanceTitle: instance.title,
+        memberRole: row
+          ? MemberTaskRoleEnum.CANDIDATE
+          : MemberTaskRoleEnum.ASSIGNEE,
+        nodeId: task.nodeId,
+        nodeLabel: summary?.nodeLabel ?? null,
+        slaDueAt: task.slaDueAt,
+        taskId: task.id,
+        templateId: instance.templateId,
+        templateName: templateNameById.get(instance.templateId) ?? null,
+      };
+    });
+  }
+
+  /**
+   * The open tasks `memberId` holds on RUNNING instances, with the instance
+   * each belongs to. The instance filter is applied here, not only in the query.
+   */
+  private async readRunningMemberTasks(
+    memberId: string,
+  ): Promise<
+    readonly {
+      readonly instance: ApprovalInstanceEntity;
+      readonly task: TaskEntity;
+    }[]
+  > {
+    const tasks = await this.readOpenInboxTasks(memberId, OPEN_SEAT_STATUSES);
+
+    if (!tasks.length) {
+      return [];
+    }
+
+    const instances = await this.approvalInstanceRepository.find({
+      where: { id: In([...new Set(tasks.map((task) => task.instanceId))]) },
+    });
+    const runningById = new Map(
+      instances
+        .filter(
+          (instance) => instance.state === ApprovalInstanceStateEnum.RUNNING,
+        )
+        .map((instance): readonly [string, ApprovalInstanceEntity] => [
+          instance.id,
+          instance,
+        ]),
+    );
+
+    return tasks.flatMap((task) => {
+      const instance = runningById.get(task.instanceId);
+
+      return instance ? [{ instance, task }] : [];
+    });
+  }
+
+  private async executeTaskReassignment(
+    preRead: TaskEntity,
+    options: ReassignTaskOptions,
+  ): Promise<TaskReassignmentResult> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<TaskReassignmentResult> => {
+        try {
+          const plan = await this.planTaskReassignment(
+            manager,
+            preRead.id,
+            options,
+          );
+
+          if (options.dryRun) {
+            return buildTaskReassignmentResult(
+              preRead,
+              TaskReassignmentOutcomeEnum.WOULD_REASSIGN,
+              null,
+            );
+          }
+
+          await this.applyTaskReassignment(manager, plan, options);
+
+          return buildTaskReassignmentResult(
+            preRead,
+            TaskReassignmentOutcomeEnum.REASSIGNED,
+            null,
+          );
+        } catch (error) {
+          // Planning writes nothing, so a refusal commits no change.
+          if (error instanceof TaskReassignmentRejectedError) {
+            return buildTaskReassignmentResult(
+              preRead,
+              TaskReassignmentOutcomeEnum.REJECTED,
+              error.errorCode,
+            );
+          }
+
+          throw error;
+        }
+      },
+    );
+  }
+
+  /**
+   * Checks every rule of an administrator reassignment under the instance lock,
+   * against the rows as they are now. Writes nothing; a refusal throws
+   * {@link TaskReassignmentRejectedError}.
+   */
+  private async planTaskReassignment(
+    manager: EntityManager,
+    taskId: string,
+    options: ReassignTaskOptions,
+  ): Promise<TaskReassignmentPlan> {
+    const fromMemberId = options.fromMemberId;
+    const toMemberId = options.toMemberId;
+
+    if (!options.reason.trim()) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.REASON_REQUIRED,
+      );
+    }
+
+    if (fromMemberId === toMemberId) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TARGET_SAME_AS_SOURCE,
+      );
+    }
+
+    const taskRepository = manager.getRepository(TaskEntity);
+    const unlockedTask = await taskRepository.findOne({
+      where: { id: taskId },
+    });
+
+    if (!unlockedTask) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TASK_NOT_OPEN,
+      );
+    }
+
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      unlockedTask.instanceId,
+    ]);
+
+    // Read again under the lock: the task may have been decided or moved while
+    // this request waited for it.
+    const task = await taskRepository.findOne({ where: { id: taskId } });
+
+    if (!task || !OPEN_TASK_STATUSES.includes(task.status)) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TASK_NOT_OPEN,
+      );
+    }
+
+    const instance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .findOne({ where: { id: task.instanceId } });
+
+    if (!instance || instance.state !== ApprovalInstanceStateEnum.RUNNING) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.INSTANCE_NOT_RUNNING,
+      );
+    }
+
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
+
+    if (node.type !== 'userTask') {
+      throw new ConflictException(
+        `Task ${task.id} is not bound to a user task node`,
+      );
+    }
+
+    const candidates = await manager
+      .getRepository(TaskCandidateEntity)
+      .find({ where: { taskId: task.id } });
+    const sourceRow =
+      candidates.find(
+        (candidate) =>
+          candidate.memberId === fromMemberId &&
+          OPEN_SEAT_STATUSES.includes(candidate.status),
+      ) ?? null;
+    // A holder with no candidate row at all is the assignee of a direct task.
+    // Anyone with a row that is not open (COMPLETED, TRANSFERRED, ...) no
+    // longer has a seat, so they are refused even when they are the assignee.
+    const sourceHasAnyRow = candidates.some(
+      (candidate) => candidate.memberId === fromMemberId,
+    );
+
+    if (
+      !sourceRow &&
+      !(task.assigneeMemberId === fromMemberId && !sourceHasAnyRow)
+    ) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.SOURCE_NOT_ON_TASK,
+      );
+    }
+
+    const targetRows = candidates.filter(
+      (candidate) => candidate.memberId === toMemberId,
+    );
+    const targetDecisions = await manager
+      .getRepository(TaskDecisionEntity)
+      .find({ where: { decidedByMemberId: toMemberId, taskId: task.id } });
+
+    // Checked before "already on task": a member who has decided here may
+    // still be the assignee field, and the decided reason is the useful one.
+    if (
+      targetDecisions.length > 0 ||
+      targetRows.some(
+        (candidate) => candidate.status === TaskCandidateStatusEnum.COMPLETED,
+      )
+    ) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TARGET_ALREADY_DECIDED,
+      );
+    }
+
+    if (
+      task.assigneeMemberId === toMemberId ||
+      targetRows.some((candidate) =>
+        OPEN_SEAT_STATUSES.includes(candidate.status),
+      )
+    ) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TARGET_ALREADY_ON_TASK,
+      );
+    }
+
+    if (isInitiatorExcluded(node)) {
+      if (toMemberId === instance.initiatorMemberId) {
+        throw new TaskReassignmentRejectedError(
+          TaskReassignmentErrorCodeEnum.TARGET_IS_INITIATOR,
+        );
+      }
+
+      if (toMemberId === readDistinctSubmitterMemberId(instance)) {
+        throw new TaskReassignmentRejectedError(
+          TaskReassignmentErrorCodeEnum.TARGET_IS_SUBMITTER,
+        );
+      }
+    }
+
+    if (!task.isAdhoc && isOrgManagerChainNode(node)) {
+      const requiredGrade = await this.readTransferTargetRequiredGrade(
+        manager,
+        {
+          actorMemberId: fromMemberId,
+          delegationChain: sourceRow?.delegationChain ?? task.delegationChain,
+          targetMemberId: toMemberId,
+        },
+      );
+
+      if (requiredGrade !== null) {
+        throw new TaskReassignmentRejectedError(
+          TaskReassignmentErrorCodeEnum.TARGET_GRADE_TOO_LOW,
+        );
+      }
+    }
+
+    return {
+      instance,
+      node,
+      reusableRow:
+        targetRows.find((candidate) =>
+          REUSABLE_SEAT_STATUSES.includes(candidate.status),
+        ) ?? null,
+      sourceRow,
+      task,
+    };
+  }
+
+  private async applyTaskReassignment(
+    manager: EntityManager,
+    plan: TaskReassignmentPlan,
+    options: ReassignTaskOptions,
+  ): Promise<void> {
+    const decidedAt = new Date();
+    const reason = options.reason.trim();
+    const step: DelegationStep = {
+      actorMemberId: options.actorMemberId,
+      comment: reason,
+      from: options.fromMemberId,
+      reason: ADMIN_REASSIGN_DELEGATION_REASON,
+      ruleId: null,
+      to: options.toMemberId,
+    };
+    const seat = await this.replaceOpenSeat(manager, {
+      decidedAt,
+      fromMemberId: options.fromMemberId,
+      reusableRow: plan.reusableRow,
+      sourceRow: plan.sourceRow,
+      step,
+      task: plan.task,
+      toMemberId: options.toMemberId,
+    });
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: options.actorMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_REASSIGNED,
+        instanceId: plan.instance.id,
+        nodeId: plan.task.nodeId,
+        payload: {
+          actorMemberId: options.actorMemberId,
+          assigneeChanged: seat.assigneeMoved,
+          candidateStatus: plan.sourceRow?.status ?? null,
+          fromMemberId: options.fromMemberId,
+          reason,
+          sequence: plan.sourceRow?.sequence ?? null,
+          toMemberId: options.toMemberId,
+        },
+        taskId: plan.task.id,
+      }),
+    );
+
+    await this.notifySeatReplaced(manager, {
+      fromMemberId: options.fromMemberId,
+      instance: plan.instance,
+      node: plan.node,
+      seat,
+      toMemberId: options.toMemberId,
+    });
+  }
+
+  /**
+   * Moves one open seat from `fromMemberId` to `toMemberId` on the same task.
+   *
+   * With a source candidate row: that row is marked TRANSFERRED, and the target
+   * takes a row with the same sequence, source type and original member. A
+   * WAITING seat stays WAITING; anything else becomes PENDING. A closed row the
+   * target already has (CANCELLED, SUPERSEDED, TRANSFERRED) is reused, because
+   * the database allows one row per (task, member).
+   *
+   * Without one (a direct assignee with no candidate row) only the assignee
+   * field moves. When the source is the assignee, the assignee moves too and
+   * the step is appended to the task's chain.
+   */
+  private async replaceOpenSeat(
+    manager: EntityManager,
+    {
+      decidedAt,
+      fromMemberId,
+      reusableRow,
+      sourceRow,
+      step,
+      task,
+      toMemberId,
+    }: {
+      readonly decidedAt: Date;
+      readonly fromMemberId: string;
+      readonly reusableRow: TaskCandidateEntity | null;
+      readonly sourceRow: TaskCandidateEntity | null;
+      readonly step: DelegationStep;
+      readonly task: TaskEntity;
+      readonly toMemberId: string;
+    },
+  ): Promise<TaskSeatReplacement> {
+    const taskRepository = manager.getRepository(TaskEntity);
+    const candidateRepository = manager.getRepository(TaskCandidateEntity);
+    const assigneeMoved = task.assigneeMemberId === fromMemberId;
+
+    if (sourceRow) {
+      await candidateRepository.save(
+        Object.assign(new TaskCandidateEntity(), sourceRow, {
+          decidedAt,
+          status: TaskCandidateStatusEnum.TRANSFERRED,
+        }),
+      );
+    }
+
+    const seatStatus = sourceRow
+      ? sourceRow.status === TaskCandidateStatusEnum.WAITING
+        ? TaskCandidateStatusEnum.WAITING
+        : TaskCandidateStatusEnum.PENDING
+      : null;
+
+    if (sourceRow) {
+      const seat = {
+        claimedAt: null,
+        decidedAt: null,
+        delegationChain: [
+          ...readDelegationSteps(sourceRow.delegationChain),
+          step,
+        ],
+        memberId: toMemberId,
+        originalMemberId: sourceRow.originalMemberId,
+        sequence: sourceRow.sequence,
+        sourceType: sourceRow.sourceType,
+        status: seatStatus ?? TaskCandidateStatusEnum.PENDING,
+      };
+
+      if (reusableRow) {
+        await candidateRepository.save(
+          Object.assign(new TaskCandidateEntity(), reusableRow, seat),
+        );
+      } else {
+        await candidateRepository.save(
+          candidateRepository.create({ ...seat, taskId: task.id }),
+        );
+      }
+    }
+
+    const nextTask = assigneeMoved
+      ? await taskRepository.save(
+          Object.assign(new TaskEntity(), task, {
+            assigneeMemberId: toMemberId,
+            delegationChain: [
+              ...readDelegationSteps(task.delegationChain),
+              step,
+            ],
+            openedAt: null,
+          }),
+        )
+      : task;
+
+    return { assigneeMoved, seatStatus, task: nextTask };
+  }
+
+  /**
+   * Notifications for a replaced seat: the member who gave it up is resolved as
+   * TRANSFERRED (their notifications on this task only), and the member who
+   * takes it is notified now if the seat is active. A WAITING seat notifies
+   * when its turn comes, through the normal sequential activation.
+   */
+  private async notifySeatReplaced(
+    manager: EntityManager,
+    {
+      fromMemberId,
+      instance,
+      node,
+      seat,
+      toMemberId,
+    }: {
+      readonly fromMemberId: string;
+      readonly instance: ApprovalInstanceEntity;
+      readonly node: UserTaskNode;
+      readonly seat: TaskSeatReplacement;
+      readonly toMemberId: string;
+    },
+  ): Promise<void> {
+    await this.notificationService.resolveTaskNotifications({
+      actingMemberId: fromMemberId,
+      manager,
+      resolution: NotificationResolutionEnum.TRANSFERRED,
+      supersedeOthers: false,
+      taskId: seat.task.id,
+    });
+
+    const isActive =
+      seat.seatStatus === null ||
+      seat.seatStatus === TaskCandidateStatusEnum.PENDING;
+
+    if (!isActive) {
+      return;
+    }
+
+    await this.notificationService.createTaskAssignedNotification({
+      instance,
+      manager,
+      node,
+      task: Object.assign(new TaskEntity(), seat.task, {
+        assigneeMemberId: toMemberId,
+      }),
+      transferred: true,
+    });
+  }
+
+  /**
    * Resolves who gets the node's task. `null` means the node asked to be
    * skipped (`excludeInitiator.whenEmpty = SKIP_NODE`) because the initiator
    * was the only approver — the sole caller creates no task and advances the
@@ -5165,18 +5886,43 @@ export class WorkflowEngineService {
    */
   private async assertTransferTargetGrade(
     manager: EntityManager,
-    {
-      actorMemberId,
-      delegationChain,
-      label,
-      targetMemberId,
-    }: {
+    args: {
       readonly actorMemberId: string;
       readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
       readonly label: string;
       readonly targetMemberId: string;
     },
   ): Promise<void> {
+    const requiredLevel = await this.readTransferTargetRequiredGrade(
+      manager,
+      args,
+    );
+
+    if (requiredLevel !== null) {
+      throw new ForbiddenException(
+        `簽核節點「${args.label}」需由職等 ${requiredLevel} 以上的成員簽核，不能轉簽給職等不足的成員`,
+      );
+    }
+  }
+
+  /**
+   * The grade a transfer target must reach, or `null` when the target passes.
+   * Seniority is measured from the member being replaced: the first delegator
+   * on their chain, or that member themselves. Shared by the user transfer
+   * (which throws) and the administrator reassignment (which reports).
+   */
+  private async readTransferTargetRequiredGrade(
+    manager: EntityManager,
+    {
+      actorMemberId,
+      delegationChain,
+      targetMemberId,
+    }: {
+      readonly actorMemberId: string;
+      readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
+      readonly targetMemberId: string;
+    },
+  ): Promise<number | null> {
     const principalMemberId =
       readDelegationSteps(delegationChain)[0]?.from ?? actorMemberId;
     const date = this.readOrganizationToday();
@@ -5187,7 +5933,7 @@ export class WorkflowEngineService {
     );
 
     if (requiredLevel === null) {
-      return;
+      return null;
     }
 
     const targetLevel = await this.readMemberPositionLevel(
@@ -5196,11 +5942,9 @@ export class WorkflowEngineService {
       date,
     );
 
-    if (targetLevel === null || targetLevel < requiredLevel) {
-      throw new ForbiddenException(
-        `簽核節點「${label}」需由職等 ${requiredLevel} 以上的成員簽核，不能轉簽給職等不足的成員`,
-      );
-    }
+    return targetLevel === null || targetLevel < requiredLevel
+      ? requiredLevel
+      : null;
   }
 
   private async resolveApproverResolver(
@@ -6938,8 +7682,13 @@ function readDelegationSteps(
         return null;
       }
 
+      const actorMemberId = readStringValue(step.actorMemberId);
+      const comment = readStringValue(step.comment);
+
       return {
         from,
+        ...(actorMemberId ? { actorMemberId } : {}),
+        ...(comment ? { comment } : {}),
         reason,
         ruleId: readStringValue(step.ruleId),
         to,
@@ -7572,6 +8321,13 @@ function readDecisionPolicySnapshot(task: TaskEntity): DecisionPolicy {
   return { type: 'SINGLE' };
 }
 
+/** Candidate states in which the seat is no longer part of the task. */
+const SEAT_LEFT_STATUSES: readonly TaskCandidateStatusEnum[] = [
+  TaskCandidateStatusEnum.CANCELLED,
+  TaskCandidateStatusEnum.SUPERSEDED,
+  TaskCandidateStatusEnum.TRANSFERRED,
+];
+
 function shouldCompleteTaskAfterDecision({
   action,
   candidates,
@@ -7595,7 +8351,16 @@ function shouldCompleteTaskAfterDecision({
   const completedCount = candidates.filter(
     (candidate) => candidate.status === TaskCandidateStatusEnum.COMPLETED,
   ).length;
-  const totalCount = Math.max(candidates.length, 1);
+  // A seat that has left the task (transferred away, cancelled, superseded)
+  // no longer belongs to the stage. Counting it kept a PARALLEL_ALL or
+  // SEQUENTIAL stage from ever reaching "every seat decided" once a seat had
+  // been reassigned.
+  const totalCount = Math.max(
+    candidates.filter(
+      (candidate) => !SEAT_LEFT_STATUSES.includes(candidate.status),
+    ).length,
+    1,
+  );
 
   if (
     decisionPolicy.type === 'PARALLEL_ALL' ||

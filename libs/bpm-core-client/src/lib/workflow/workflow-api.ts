@@ -198,6 +198,55 @@ export interface WorkflowTokenRecord {
   readonly status: 'ACTIVE' | 'CONSUMED' | 'WAITING';
 }
 
+/**
+ * An open task an administrator can see on a member's behalf. `memberRole` says
+ * whether the member is the assignee or holds a candidate seat, and
+ * `candidateStatus` is that seat's status (null for an assignee with no seat).
+ */
+export interface MemberOpenTaskRecord {
+  readonly businessKey: string | null;
+  readonly candidateStatus: string | null;
+  readonly createdAt: string;
+  readonly decisionPolicyType: string;
+  readonly instanceId: string;
+  readonly instanceTitle: string;
+  readonly memberRole: MemberTaskRole;
+  readonly nodeId: string;
+  readonly nodeLabel: string | null;
+  readonly slaDueAt: string | null;
+  readonly taskId: string;
+  readonly templateId: string;
+  readonly templateName: string | null;
+}
+
+export type MemberTaskRole = 'ASSIGNEE' | 'CANDIDATE';
+
+export type TaskReassignmentOutcome =
+  'REASSIGNED' | 'REJECTED' | 'WOULD_REASSIGN';
+
+export type TaskReassignmentErrorCode =
+  | 'INSTANCE_NOT_RUNNING'
+  | 'REASON_REQUIRED'
+  | 'SOURCE_NOT_ON_TASK'
+  | 'TARGET_ALREADY_DECIDED'
+  | 'TARGET_ALREADY_ON_TASK'
+  | 'TARGET_GRADE_TOO_LOW'
+  | 'TARGET_IS_INITIATOR'
+  | 'TARGET_IS_SUBMITTER'
+  | 'TARGET_SAME_AS_SOURCE'
+  | 'TASK_NOT_OPEN'
+  | 'UNEXPECTED_ERROR';
+
+/** One task's outcome of an administrator reassignment. */
+export interface TaskReassignmentResultRecord {
+  readonly errorCode: TaskReassignmentErrorCode | null;
+  readonly instanceId: string;
+  readonly message: string | null;
+  readonly nodeId: string;
+  readonly outcome: TaskReassignmentOutcome;
+  readonly taskId: string;
+}
+
 export interface TaskDecisionRecord {
   readonly action: TaskDecisionAction;
   readonly comment: string | null;
@@ -541,6 +590,18 @@ interface SubmitApprovalInstanceMutationData {
 
 interface DecideTaskMutationData {
   readonly decideTask: TaskDecisionRecord;
+}
+
+interface MemberOpenTasksQueryData {
+  readonly memberOpenTasks: readonly MemberOpenTaskRecord[];
+}
+
+interface ReassignTaskMutationData {
+  readonly reassignTask: TaskReassignmentResultRecord;
+}
+
+interface ReassignMemberTasksMutationData {
+  readonly reassignMemberTasks: readonly TaskReassignmentResultRecord[];
 }
 
 interface CancelApprovalInstanceMutationData {
@@ -1742,6 +1803,106 @@ export async function decideTask({
   );
 
   return data.decideTask;
+}
+
+/**
+ * Administrator: the open tasks a member holds on running instances.
+ */
+export async function listMemberOpenTasks(
+  memberId: string,
+): Promise<readonly MemberOpenTaskRecord[]> {
+  const data = await requestGraphQl<MemberOpenTasksQueryData>(
+    `query MemberOpenTasks($memberId: ID!) {
+      memberOpenTasks(memberId: $memberId) {
+        businessKey
+        candidateStatus
+        createdAt
+        decisionPolicyType
+        instanceId
+        instanceTitle
+        memberRole
+        nodeId
+        nodeLabel
+        slaDueAt
+        taskId
+        templateId
+        templateName
+      }
+    }`,
+    { memberId },
+  );
+
+  return data.memberOpenTasks;
+}
+
+const TASK_REASSIGNMENT_RESULT_SELECTION = `
+  errorCode
+  instanceId
+  message
+  nodeId
+  outcome
+  taskId
+`;
+
+/**
+ * Administrator: moves one open seat of a task to another member, in place.
+ * With `dryRun` the outcome is reported and nothing is written. A refused
+ * reassignment (not dry-run) rejects with the error code in the message.
+ */
+export async function reassignTask({
+  dryRun = false,
+  fromMemberId,
+  reason,
+  taskId,
+  toMemberId,
+}: {
+  readonly dryRun?: boolean;
+  readonly fromMemberId: string;
+  readonly reason: string;
+  readonly taskId: string;
+  readonly toMemberId: string;
+}): Promise<TaskReassignmentResultRecord> {
+  const data = await requestGraphQl<ReassignTaskMutationData>(
+    `mutation ReassignTask($input: ReassignTaskInput!) {
+      reassignTask(input: $input) {
+        ${TASK_REASSIGNMENT_RESULT_SELECTION}
+      }
+    }`,
+    {
+      input: { dryRun, fromMemberId, reason, taskId, toMemberId },
+    },
+  );
+
+  return data.reassignTask;
+}
+
+/**
+ * Administrator: moves every open task `fromMemberId` holds to `toMemberId`,
+ * one result per task. A refused task does not stop the others.
+ */
+export async function reassignMemberTasks({
+  dryRun = false,
+  fromMemberId,
+  reason,
+  toMemberId,
+}: {
+  readonly dryRun?: boolean;
+  readonly fromMemberId: string;
+  readonly reason: string;
+  readonly toMemberId: string;
+}): Promise<readonly TaskReassignmentResultRecord[]> {
+  const data = await requestGraphQl<ReassignMemberTasksMutationData>(
+    `mutation ReassignMemberTasks($input: ReassignMemberTasksInput!) {
+      reassignMemberTasks(input: $input) {
+        ${TASK_REASSIGNMENT_RESULT_SELECTION}
+      }
+    }`,
+    {
+      input: { dryRun, fromMemberId, reason, toMemberId },
+    },
+  );
+
+  return data.reassignMemberTasks;
 }
 
 export async function cancelApprovalInstance({

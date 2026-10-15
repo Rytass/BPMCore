@@ -4,6 +4,9 @@ import {
   listApprovalInstances,
   listApprovalInstancesPage,
   listInboxTasks,
+  listMemberOpenTasks,
+  reassignMemberTasks,
+  reassignTask,
   readApprovalInstance,
   requestAdhocPreApproval,
   readFormDataCaseTitle,
@@ -261,6 +264,94 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const [first] = await listInboxTasks('member-001');
 
         expect(first?.nodeLabel).toBe('部門主管簽核');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('administrator task reassignment', () => {
+    it('lists a member open tasks with the member id as a variable', async (): Promise<void> => {
+      const harness = installFetchMock({ memberOpenTasks: [] });
+      try {
+        const rows = await listMemberOpenTasks('member-from');
+        const request = harness.capture();
+
+        expect(request.query).toContain('query MemberOpenTasks');
+        expect(request.query).toContain('memberRole');
+        expect(request.variables).toEqual({ memberId: 'member-from' });
+        expect(rows).toEqual([]);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends a single reassignment with dryRun off unless asked', async (): Promise<void> => {
+      const result = {
+        errorCode: null,
+        instanceId: 'instance-1',
+        message: null,
+        nodeId: 'task_finance',
+        outcome: 'REASSIGNED',
+        taskId: 'task-1',
+      };
+      const harness = installFetchMock({ reassignTask: result });
+      try {
+        const returned = await reassignTask({
+          fromMemberId: 'member-from',
+          reason: '離職',
+          taskId: 'task-1',
+          toMemberId: 'member-to',
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain('mutation ReassignTask');
+        expect(request.variables).toEqual({
+          input: {
+            dryRun: false,
+            fromMemberId: 'member-from',
+            reason: '離職',
+            taskId: 'task-1',
+            toMemberId: 'member-to',
+          },
+        });
+        expect(returned).toEqual(result);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('returns one result per task for a member-wide reassignment preview', async (): Promise<void> => {
+      const results = [
+        {
+          errorCode: 'TARGET_ALREADY_ON_TASK',
+          instanceId: 'instance-1',
+          message: '接手人已在此任務的待簽名單上',
+          nodeId: 'task_finance',
+          outcome: 'REJECTED',
+          taskId: 'task-2',
+        },
+      ];
+      const harness = installFetchMock({ reassignMemberTasks: results });
+      try {
+        const returned = await reassignMemberTasks({
+          dryRun: true,
+          fromMemberId: 'member-from',
+          reason: '離職',
+          toMemberId: 'member-to',
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain('mutation ReassignMemberTasks');
+        expect(request.variables).toEqual({
+          input: {
+            dryRun: true,
+            fromMemberId: 'member-from',
+            reason: '離職',
+            toMemberId: 'member-to',
+          },
+        });
+        expect(returned).toEqual(results);
       } finally {
         harness.restore();
       }

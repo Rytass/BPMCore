@@ -17,10 +17,13 @@ import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
+import { ReassignMemberTasksInput } from './dto/reassign-member-tasks.input';
+import { ReassignTaskInput } from './dto/reassign-task.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
+import { TaskReassignmentResultObject } from './task-reassignment.object';
 import { WorkflowDryRunResultObject } from './workflow-dry-run.object';
 import { WorkflowEngineService } from './workflow-engine.service';
 
@@ -68,6 +71,47 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.decideTask({
       ...input,
       decidedByMemberId: currentMemberId,
+    });
+  }
+
+  @Mutation(() => [TaskReassignmentResultObject], {
+    description:
+      'Administrator: moves every open task the source member holds to the ' +
+      'target, one transaction per task, one result per task. Set dryRun to ' +
+      'report the outcomes without writing.',
+  })
+  @BPMAdminOnly()
+  async reassignMemberTasks(
+    @Args('input') input: ReassignMemberTasksInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<readonly TaskReassignmentResultObject[]> {
+    return this.workflowEngineService.reassignMemberTasks({
+      actorMemberId: currentMemberId,
+      dryRun: input.dryRun,
+      fromMemberId: input.fromMemberId,
+      reason: input.reason,
+      toMemberId: input.toMemberId,
+    });
+  }
+
+  @Mutation(() => TaskReassignmentResultObject, {
+    description:
+      'Administrator: moves one open seat of a task from the source member to ' +
+      'the target in place (the task id does not change). Not a decision: no ' +
+      'signature is written. A refusal throws a ConflictException carrying the ' +
+      'error code, unless dryRun is set.',
+  })
+  @BPMAdminOnly()
+  async reassignTask(
+    @Args('input') input: ReassignTaskInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<TaskReassignmentResultObject> {
+    return this.workflowEngineService.reassignTask(input.taskId, {
+      actorMemberId: currentMemberId,
+      dryRun: input.dryRun,
+      fromMemberId: input.fromMemberId,
+      reason: input.reason,
+      toMemberId: input.toMemberId,
     });
   }
 

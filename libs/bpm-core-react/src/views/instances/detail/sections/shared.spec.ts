@@ -536,3 +536,20 @@ describe('readMemberDisplayText', (): void => {
     ).toBe('王小明');
   });
 });
+
+describe('administrator reassignment in the timeline', () => {
+  it('puts a TASK_REASSIGNED entry on the user timeline', () => {
+    expect(
+      isUserMeaningfulActivity({
+        actorMemberId: 'admin-001',
+        createdAt: '2026-10-15T10:00:00.000Z',
+        eventType: 'TASK_REASSIGNED',
+        id: 'log-reassigned',
+        instanceId: 'instance-1',
+        nodeId: 'task_finance',
+        payloadJson: '{}',
+        taskId: 'task-1',
+      } as unknown as ActivityLogRecord),
+    ).toBe(true);
+  });
+});
