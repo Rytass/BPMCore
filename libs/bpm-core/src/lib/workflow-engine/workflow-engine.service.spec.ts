@@ -11010,6 +11010,7 @@ describe('administrator task reassignment', (): void => {
   };
 
   const createOpenTaskFixture = ({
+    allowTransfer,
     assigneeMemberId = null,
     candidates = [],
     decisionPolicy = { type: 'SINGLE' },
@@ -11020,6 +11021,7 @@ describe('administrator task reassignment', (): void => {
     submittedByMemberId,
     task = {},
   }: {
+    readonly allowTransfer?: boolean;
     readonly assigneeMemberId?: string | null;
     readonly candidates?: readonly TaskCandidateEntity[];
     readonly decisionPolicy?: DecisionPolicy;
@@ -11051,6 +11053,7 @@ describe('administrator task reassignment', (): void => {
       instanceState,
       processTaskCandidates: candidates,
       processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowTransfer,
         approverResolver: resolver,
         decisionPolicy,
         excludeInitiator,
@@ -11132,6 +11135,24 @@ describe('administrator task reassignment', (): void => {
         taskId: 'task-1',
       }),
     );
+  });
+
+  it('moves a task on a node that forbids holder transfers', async (): Promise<void> => {
+    // allowTransfer limits what a holder does with their own task. The
+    // administrator path exists for holders who are gone, so it must not strand
+    // the task on them.
+    const { fixture, seed } = createOpenTaskFixture({
+      allowTransfer: false,
+      assigneeMemberId: 'member-from',
+    });
+
+    const result = await reassign(fixture, {
+      fromMemberId: 'member-from',
+      toMemberId: 'member-to',
+    });
+
+    expect(result.outcome).toBe(TaskReassignmentOutcomeEnum.REASSIGNED);
+    expect(readTaskState(fixture, seed).assigneeMemberId).toBe('member-to');
   });
 
   it('moves a non-assignee candidate seat and leaves the assignee alone', async (): Promise<void> => {
