@@ -25,6 +25,9 @@
       "@rytass/bpm-core-nestjs-module/database": [
         "./libs/bpm-core/src/lib/database/index.ts"
       ],
+      "@rytass/bpm-core-nestjs-module/calendar": [
+        "./libs/bpm-core/src/lib/calendar/index.ts"
+      ],
       "@rytass/bpm-core-nestjs-module/condition": [
         "./libs/bpm-core/src/lib/condition/index.ts"
       ],
@@ -33,6 +36,9 @@
       ],
       "@rytass/bpm-core-nestjs-module/form": [
         "./libs/bpm-core/src/lib/form/index.ts"
+      ],
+      "@rytass/bpm-core-nestjs-module/form-data-source": [
+        "./libs/bpm-core/src/lib/form-data-source/index.ts"
       ],
       "@rytass/bpm-core-nestjs-module/identity": [
         "./libs/bpm-core/src/lib/identity/index.ts"
@@ -159,9 +165,6 @@
       ],
       "@rytass/bpm-core-react/views/templates/versions": [
         "./libs/bpm-core-react/src/views/templates/versions/index.ts"
-      ],
-      "@rytass/bpm-core-react/views/forms": [
-        "./libs/bpm-core-react/src/views/forms/index.ts"
       ],
       "@rytass/bpm-core-react/views/forms/builder": [
         "./libs/bpm-core-react/src/views/forms/builder/index.ts"

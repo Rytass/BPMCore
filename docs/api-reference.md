@@ -2,61 +2,36 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-15, pending the release after `v0.16.2`): `libs/shared@0.16.2`, `libs/bpm-core-client@0.16.2`, `libs/bpm-core@0.16.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.16.2`. All four packages are one fixed version set, so these numbers move together. The table field work (ADR 16, P0–P4) shipped in `v0.12.0`. The builder usability round that followed P4 (see `tasks.md`) changed no export, so this inventory is unchanged by it. The upstream-integration round below shipped in `v0.13.0`. `v0.13.1` changed the release pipeline only. The org unit code fix (BPM-10), the NOTIFY webhook shared contract (ADR 18 P0) the endpoint registry/catalog (ADR 18 P1), the delivery outbox (ADR 18 P2), delivery observability (ADR 18 P3) and the designer webhook panel with its shared catalog lint (ADR 18 P4), the wrapper-host integration (P5) and database-managed endpoints (P6) are inventoried here but not yet released; `nx release` sets the next number at publish time. The administrator task reassignment (issue #37: `reassignTask`, `reassignMemberTasks`, `memberOpenTasks` and their client wrappers) is inventoried here as well and is likewise unreleased. So are `lastDecision` in edge conditions (with the reshaped `LastDecisionContext` / `InstanceContext`), the delegation-rule priority order, the save-time root check of delegation CEL, and SLA `TERMINATE_INSTANCE` ending an instance as `EXPIRED` (`expireApprovalInstance`, `ExpireApprovalInstanceCommand`, `INSTANCE_EXPIRED`).
+Last verified against (2026-10-15, pending the release after `v0.16.2`): `libs/shared@0.16.2`, `libs/bpm-core-client@0.16.2`, `libs/bpm-core@0.16.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.16.2`. All four packages are one fixed version set, so these numbers move together.
 
-The 2026-08-16 round (issues #7–#11) adds form option source contracts, `autocomplete` schema support, source normalization, structural DataSource publish lint, the host registry contract, guarded GraphQL option queries, typed client catalog/preview/runtime wrappers, immutable client option-state and builder binding helpers, Mezzanine async renderer controls, runtime context wiring, server-side submit/resubmit resolution, persisted option snapshots, the reversible snapshot migration, the visual builder's catalog/binding/confirmation flow, explicit API-base URL normalization for the client GraphQL endpoint, legacy workflow edge-data normalization in the designer, a distinct unresolvable-value error code with client-side message mapping, and registry-less publish/submit guards for DataSource-backed fields.
+Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
-The 2026-08-16 DataSource audit round adds, on top of that: read-only `resolveFormFieldOptions` / `previewResolveFormFieldOptions` queries returning `BPMFormDataSourceResolveResult` (partial resolution reported through `unresolvedValues` instead of throwing, while submit/resubmit stays all-or-nothing), `waitingForFieldKeys` on both the options and resolve results as the authoritative dependency-wait signal, an optional `revalidationPolicy` on `FormDataSourceValueSnapshot`, `readFormDataSourceSelectedValues()`, a `canRetry` flag on `FormDataSourceFieldState`, per-request `AbortSignal` support on `requestGraphQl()` and every DataSource client query, and `@MaxLength` bounds on every DataSource GraphQL input field.
+### Release status
 
-The 2026-09-09 zero-configuration round makes every `BPMRootModule` option
-optional and every runtime option settable from `forRootAsync`. It adds
-`BPMRootRuntimeOptions` (the flat object a `useFactory` returns, now including
-ready instances: `memberResolver`, `attachmentStorage`, `businessCalendar`,
-`formDataSourceRegistry`, `workflowServiceTaskDispatcher`), the
-`BPM_ROOT_OPTIONS` token and `BPMRootOptionsModule` /
-`BPMRootOptionsModuleAsyncOptions` that publish it once per application,
-`DefaultBPMMemberResolver` / `defaultMemberResolverProvider` and
-`defaultFormDataSourceRegistryProvider`. `memberResolverProvider` and
-`useFactory` became optional, so `BPMRootModule.forRoot()` and
-`BPMRootModule.forRootAsync()` now boot with no arguments;
-`BPMRootModuleAsyncFactoryOptions` survives as a deprecated alias of
-`BPMRootRuntimeOptions`. The host factory is also resolved **once** rather than
-once per consuming sub-module, which is what makes an instance-returning
-factory safe.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.16.2` and ship with the next `nx release`.
 
-The 2026-09-03 upstream-integration round (Meridian ERP report, BPM-1 to BPM-9)
-adds `resolverMetadataFactory` / `applyBPMResolverMetadata` /
-`listBPMResolverHandlers` / `BPMResolverMetadataFactory` /
-`BPMResolverHandlerDescriptor` / `BPMResolverAccessLevel` /
-`withBPMResolverAccess` to `@rytass/bpm-core-nestjs-module/bpm-auth`;
-`identityRegisterResolvers` to `BPMRootIdentityOptions` (and to
-`BPMRootModuleAsyncOptions`, read at wiring time);
-`attachmentAllowInsecureSignedUrlSecret` to `BPMRootAttachmentOptions`;
-`OrganizationService.deletePosition` and the `deletePosition` GraphQL mutation,
-mirrored as `deletePosition(id)` in `@rytass/bpm-core-client/organization`; and
-the organization / attachment / notification input DTOs to the package root,
-which were previously unreachable from outside. It also makes every
-GraphQL-nullable field on the organization and approval-template update inputs
-optional in TypeScript, so "leave unchanged" and "clear this" stop being the
-same call.
-
-Versions are bumped by `nx release` at publish time — the numbers above are the last published ones, not the pending release.
-
-PR #12 (2026-08-17, decision-policy designer) additionally adds `DEFAULT_QUORUM_THRESHOLD`, `composeQuorumThreshold`, `readDesignTimeApproverCount` and `isDecisionPolicyUnsatisfiable` to `@rytass/bpm-core-shared/workflow-graph`, and extends the `WorkflowCommand` union and the `WORKFLOW_TOOLSET` catalog with the user-task decision policy.
-
-Argus integration follow-ups (2026-08-18, against `@0.9.1`) additionally add:
-`BPM_TEMPLATE_OBSERVER` / `BPMTemplateObserver` / `BPMTemplateChangedEvent` /
-`BPMTemplateChangeActionEnum` to `@rytass/bpm-core-nestjs-module/template`; the
-`notification-schedule` helpers and `NotificationEntity.silenced` to
-`@rytass/bpm-core-nestjs-module/notification`; the optional `dispatchDigest`
-method on `BPMNotificationDispatcher`; the
-`notificationQuietHoursTimeZone` / `notificationEmailDigestHour` root options;
-migration `NotificationSilenced0000000021000`; a trailing
-`rolledBackByMemberId` on `TemplateService.rollbackApprovalTemplateVersion`;
-and `silenced` on the client's `NotificationRecord`. Behavioural changes in the
-same set: in-app notifications are recorded even when silenced, quiet hours and
-`emailDigestMode` are enforced, and publish / rollback refuse a deactivated
-template.
+| Change set | First released in |
+| ---------- | ----------------- |
+| Form option data-source schema contracts (first commits of the 2026-08 issue rounds) | `v0.7.1` |
+| Decision-policy designer and shared decision-policy command (PR #12) | `v0.9.0` |
+| Template observer, refusal of publish on a deactivated template, notification preferences and quiet hours (Argus follow-ups; a delivery fix followed in `v0.11.0`) | `v0.10.0` |
+| DataSource resolve queries and dependency-wait signals (DataSource audit round) | `v0.10.0` |
+| ADR 16 table fields, P0-P4 | `v0.12.0` |
+| Upstream-integration round (BPM-1 to BPM-9) | `v0.13.0` |
+| Release pipeline only | `v0.13.1` |
+| Organization unit code fix (BPM-10) | `v0.13.2` |
+| NOTIFY webhooks, ADR 18 P0-P6 (shared contract, endpoint registry and catalog, delivery outbox, observability, designer panel, wrapper-host integration, database-managed endpoints) | `v0.13.4` |
+| Zero-configuration BPMRootModule round | `v0.13.4` |
+| SEQUENTIAL signs one candidate at a time; ORG_MANAGER_CHAIN resolver; excludeInitiator | `v0.14.0` |
+| Approval instance business key; submittedByMemberId; organizationTimeZone | `v0.15.0` |
+| Attachment signing-secret zero-config (PR #84) | `v0.16.0` |
+| Administrator task reassignment (issue #37): reassignTask, reassignMemberTasks, listMemberOpenTasks and their client wrappers | Not yet released |
+| Organization unit retirement into a successor unit: transferToOrgUnitId, readOrgUnitRetirementImpact and the hard-delete exception | Not yet released |
+| lastDecision in edge conditions, with the reshaped LastDecisionContext and InstanceContext | Not yet released |
+| Delegation rule priority (higher first; ties go to the rule created first) and the save-time root check of delegation CEL | Not yet released |
+| SLA TERMINATE_INSTANCE ends the instance as EXPIRED (expireApprovalInstance, ExpireApprovalInstanceCommand, INSTANCE_EXPIRED) | Not yet released |
+| POSITION approver fallback (every current holder of a position) | Not yet released |
+| Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | Not yet released |
 
 ---
 
@@ -215,7 +190,18 @@ Pure type contracts. No runtime code.
 
 ## `@rytass/bpm-core-shared` (root)
 
-Re-exports the 6 child modules: `condition`, `form`, `identity`, `organization`, `status`, `workflow`.
+Re-exports the seven subpath modules listed below, plus the identity and organization contract types in the table that follows. There are no `identity` or `organization` subpaths: neither appears in the `exports` map, so `@rytass/bpm-core-shared/identity` and `@rytass/bpm-core-shared/organization` do not resolve.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `MemberMetadata` | interface | Display-time member metadata |
+| `MemberMetadataCacheEntry` | interface | Cached metadata + TTL |
+| `OrgUnitType` | type | `'company' \| 'division' \| 'department' \| 'team'` |
+| `ManagerResolutionScopeType` | type | `'MEMBER' \| 'ORG_UNIT' \| 'POSITION'` |
+| `OrgUnit` | interface | Org-unit node |
+| `Position` | interface | Position |
+| `Membership` | interface | member × orgUnit × position relation |
+| `ManagerResolution` | interface | "Who is whose manager" rule |
 
 ## `@rytass/bpm-core-shared/condition`
 
@@ -285,24 +271,6 @@ Form-schema definitions.
 | `readFormFieldSelectionMode()` | function | Normalized control selection mode |
 | `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization, recursing into table columns |
 
-## `@rytass/bpm-core-shared/identity`
-
-| Name | Kind | Purpose |
-|---|---|---|
-| `MemberMetadata` | interface | Display-time member metadata |
-| `MemberMetadataCacheEntry` | interface | Cached metadata + TTL |
-
-## `@rytass/bpm-core-shared/organization`
-
-| Name | Kind | Purpose |
-|---|---|---|
-| `OrgUnitType` | type | `'company' \| 'division' \| 'department' \| 'team'` |
-| `ManagerResolutionScopeType` | type | `'MEMBER' \| 'ORG_UNIT' \| 'POSITION'` |
-| `OrgUnit` | interface | Org-unit node |
-| `Position` | interface | Position |
-| `Membership` | interface | member × orgUnit × position relation |
-| `ManagerResolution` | interface | "Who is whose manager" rule |
-
 ## `@rytass/bpm-core-shared/status`
 
 | Name | Kind | Values |
@@ -329,8 +297,8 @@ Form-schema definitions.
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_MANAGER / CANDIDATE_GROUP / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
-| `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
-| `readUnsupportedApproverFallbackType(fallback)` | function | The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
+| `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` is not yet released. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
+| `readUnsupportedApproverFallbackType(fallback)` | function | Not yet released. The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
@@ -451,6 +419,18 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `resolveDefaultGraphQlEndpoint(hostname)` | function | Pure helper to derive endpoint from hostname |
 | `readApiBaseUrl()` | function | Resolve REST auth base URL |
 | `resolveApiBaseUrlFromGraphQlEndpoint(url)` | function | Reverse-derive auth base URL from GraphQL URL |
+
+### Client configuration
+
+Process-wide overrides read by every request. `configureBPMClient()` replaces the whole configuration on each call; it does not merge.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `BPMClientConfig` | interface | Optional `baseUrl`, `authBaseUrl`, `fetch` and `headers` |
+| `configureBPMClient(config)` | function | Replace the active configuration |
+| `readBPMClientConfig()` | function | Return the active configuration (for tests and inspection; do not mutate it) |
+| `resolveBPMFetch()` | function | The configured `fetch`, falling back to the global `fetch` |
+| `readBPMConfiguredHeaders()` | function | The configured `headers`, or an empty record; internal transports merge them into outbound requests |
 
 ### REST Auth Client
 
@@ -687,7 +667,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 26-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 28-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -696,12 +676,17 @@ Auth contract layer — lib does not own auth; host plugs in.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMAuthContext` | interface | Current-user context provided by host |
-| `BPMAuthGuard` | Guard | Route protection |
+| `BPMAuthContext` | interface | Current-user context the host provides |
+| `BPMAuthContextFactory` | type | Host callback that produces the `BPMAuthContext` for a request |
+| `BPMAuthContextAccessor` | interface | Reads the current auth context (bound to `BPM_AUTH_CONTEXT_ACCESSOR`) |
+| `BPM_AUTH_CONTEXT_ACCESSOR`, `BPM_AUTH_MODULE_OPTIONS` | injection token (`Symbol`) | Accessor binding and resolved module options |
 | `BPMAuthModule` | Module | Auth contract module |
-| `BPMAuthOptions` | interface | Module options (e.g., `authContextFactory`) |
-| `@CurrentMember()`, `@CurrentMemberId()` | decorators | Inject current member in resolvers |
-| `BPMAuthAuthorization` | service | Permission service |
+| `BPMAuthModuleOptions`, `BPMAuthModuleAsyncOptions` | interface | Module options (e.g., `authContextFactory`) and their async variant |
+| `readAuthenticatedBPMContext()` | async function | Read the current auth context, failing when there is none |
+| `BPMAuthenticatedGuard`, `BPMAdminGuard`, `BPMDesignerGuard` | Guard | Route protection for any signed-in member, administrators, and designers |
+| `BPMAuthenticated()`, `BPMAdminOnly()`, `BPMDesignerOnly()` | decorator | Class or method decorators that set the guard requirement |
+| `BPMCurrentAuthContext()`, `BPMCurrentMemberId()` | parameter decorator | Inject the current auth context or member id into a resolver argument |
+| `isBPMAdmin()`, `isBPMDesigner()` | function | Role predicates behind the admin and designer guards |
 | `BPMResolverAccessLevel` | type | `'admin' \| 'designer' \| 'authenticated'` — the authority BPM's own guards require for one handler |
 | `BPMResolverHandlerDescriptor` | interface | `{ access, resolverName, methodName }` describing one BPM GraphQL handler |
 | `BPMResolverMetadataFactory` | type | Host callback returning the route metadata to stamp on a handler |
@@ -719,7 +704,10 @@ Auth contract layer — lib does not own auth; host plugs in.
 | `defaultMemberResolverProvider` | provider | Registers `BPM_MEMBER_RESOLVER`, preferring a `memberResolver` instance published under `BPM_ROOT_OPTIONS` and otherwise `DefaultBPMMemberResolver` |
 | `BPMMemberResolver`, `MemberResolver` (deprecated alias) | interface | Resolver contract — `resolve`/`resolveMany`/`search?`/`searchPaged?` |
 | `BPMMemberSearchPage`, `BPMMemberSearchPageOptions` | interface | Paged-search result (`items` + `total`) and 1-based page request for `searchPaged?` |
-| `IdentityOptions` | interface | Identity module options — `identityMemberMetadataCacheTtlMs`, plus `identityRegisterResolvers` (default `true`; set `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers`, keeping `IdentityService` available without the colliding GraphQL fields) |
+| `BPMRootIdentityOptions` | interface | Host-facing identity options: `identityMemberMetadataCacheTtlMs`, and `identityRegisterResolvers` (default `true`; set `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers`, keeping `IdentityService` without the colliding GraphQL fields) |
+| `BPMResolvedIdentityOptions`, `DEFAULT_BPM_IDENTITY_OPTIONS`, `BPM_IDENTITY_OPTIONS` | interface / const / injection token | Resolved identity options, their defaults, and the token that carries them |
+| `resolveBPMIdentityOptions()` | function | Apply defaults to a `BPMRootIdentityOptions` |
+| `MemberNotFoundException` | exception | Raised when a member id cannot be resolved |
 | `BPMMemberBaseDirectory`, `BPMMemberBaseSearchPage` | interface | Host directory contract (incl. optional `searchMembersPaged`) and its host-shaped page |
 | `BPMMemberBaseAdapterOptions`, `BPMMemberBaseResolverProviderOptions` | interface | Field readers + provider options for the member-base adapter |
 | `BPMMemberBaseResolverAdapter` | class | Adapts a `BPMMemberBaseDirectory` into a `BPMMemberResolver` (exposes `searchPaged` only when the directory implements `searchMembersPaged`) |
@@ -730,8 +718,8 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Category | Names |
 |---|---|
 | Entities | `OrgUnitEntity`, `PositionEntity`, `MembershipEntity`, `ManagerResolutionEntity` |
-| ObjectTypes | `OrgUnitRetirementImpact` (`OrgUnitRetirementImpactObject`), `OrgUnitTreeCommitResult`, `OrganizationSummary`, `ResolvedManager` |
-| Enums | `OrganizationEnums` |
+| ObjectTypes | `OrgUnitRetirementImpactObject`, `OrgUnitTreeCommitResultObject`, `OrganizationSummaryObject`, `ResolvedManagerObject` |
+| Enums | `OrgUnitTypeEnum`, `ManagerResolutionScopeTypeEnum` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService`, `DeleteOrgUnitOptions` |
 | Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
@@ -776,7 +764,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
 >
-> `OrganizationService.deleteOrgUnit(id, { transferToOrgUnitId? })` retires a
+> `OrganizationService.deleteOrgUnit(id, { transferToOrgUnitId? })` (successor retirement is not yet released; see Release status) retires a
 > unit with a soft delete. It always refuses while live child units remain. It
 > also refuses while the unit has **open** memberships or open
 > `ORG_UNIT`-scoped manager rules — open meaning `effectiveTo` is empty or
@@ -835,10 +823,10 @@ membership effective from today.
 | Category | Names |
 |---|---|
 | Entities | `FormDefinitionEntity`, `FormDefinitionVersionEntity` |
-| DTOs | `FormDefinitionInput` |
-| Objects | `FormSchemaLintResult` |
-| Validators | `FormSchemaValidator` |
-| Enums | `FormEnums` |
+| DTOs | `CreateFormDefinitionInput`, `UpdateFormDefinitionInput`, `UpdateFormDefinitionDraftInput`, `PublishFormDefinitionContentInput`, `LintFormSchemaInput` |
+| Objects | `FormSchemaLintResult`, `FormSchemaLintResultObject` |
+| Functions | `lintFormSchemaJson()`, `parseAndValidateFormSchemas()`, `ParsedFormSchemas` (type), `EMPTY_FORM_SCHEMA`, `EMPTY_FORM_UI_SCHEMA` |
+| Enums | `FormDefinitionListStatusEnum`, `FormDefinitionVersionStatusEnum` |
 | Service | `FormService` |
 | Module | `FormModule` |
 
@@ -917,10 +905,10 @@ definition snapshot rather than whatever version the template publishes today.
 | Category | Names |
 |---|---|
 | Entities | `ApprovalTemplateEntity`, `ApprovalTemplateVersionEntity`, `ApprovalTemplateCategoryEntity` |
-| DTOs | `ApprovalTemplateInput`, `ComposeApprovalTemplateWithFormInput` |
-| Objects | `ComposeApprovalTemplateWithFormObject` (`ComposeApprovalTemplateWithFormResult`) |
-| Validators | `WorkflowDefinitionValidator` |
-| Enums | `TemplateEnums` |
+| DTOs | `CreateApprovalTemplateInput`, `UpdateApprovalTemplateInput`, `UpdateApprovalTemplateDraftInput`, `CreateApprovalTemplateCategoryInput`, `UpdateApprovalTemplateCategoryInput`, `ComposeApprovalTemplateWithFormInput` |
+| Objects | `ComposeApprovalTemplateWithFormObject` (the client's result type is `ComposeApprovalTemplateWithFormResult`) |
+| Functions | `parseWorkflowDefinitionJson()`, `lintWorkflowDefinition()`, `WorkflowDefinitionLintResult` (type), `EMPTY_WORKFLOW_DEFINITION` |
+| Enums | `ApprovalTemplateListStatusEnum`, `ApprovalTemplateActivationStatusEnum`, `ApprovalTemplateCategoryStatusEnum`, `ApprovalTemplateVersionStatusEnum`, `BPMTemplateChangeActionEnum` |
 | Service | `TemplateService` |
 | Token | `BPM_TEMPLATE_OBSERVER` + `BPMTemplateObserver` / `BPMTemplateChangedEvent` / `BPMTemplateChangeActionEnum` (host observes template changes, for audit) |
 | Module | `TemplateModule` |
@@ -1043,13 +1031,13 @@ Workflow execution engine — the heaviest module.
 |---|---|
 | Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the nullable `businessKey`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt` / `nodeLabel`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput`, `ReassignTaskInput`, `ReassignMemberTasksInput` |
-| Objects | `ApprovalInstancePageInfo`, `WorkflowDryRunResult`, `WorkflowDashboardSummary`, `TaskReassignmentResult` (`taskId`, `instanceId`, `nodeId`, `outcome`, `errorCode`, `message`), `MemberOpenTask`. The last two are exported as the classes `TaskReassignmentResultObject` and `MemberOpenTaskObject` |
-| Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`, `reassignTask` / `reassignMemberTasks` / `listMemberOpenTasks`), `WorkflowConditionEvaluator` |
+| Objects | `ApprovalInstancePageInfoObject`, `WorkflowDryRunResultObject`, `WorkflowDryRunStepObject`, `WorkflowDashboardSummaryObject`, `TaskReassignmentResultObject` (fields `taskId`, `instanceId`, `nodeId`, `outcome`, `errorCode`, `message`; the engine's plain shape is the interface `TaskReassignmentResult`), `MemberOpenTaskObject` |
+| Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`, `reassignTask` / `reassignMemberTasks` / `listMemberOpenTasks`), `evaluateWorkflowEdgeCondition()`, `WorkflowConditionContext` |
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema), `ExpireApprovalInstanceCommand` (`instanceId`, optional `comment`, `nodeId`, `taskId`; the input of `WorkflowEngineService.expireApprovalInstance`, which SLA `TERMINATE_INSTANCE` calls), `ReassignTaskOptions` (`actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `dryRun`; the options of `WorkflowEngineService.reassignTask` / `reassignMemberTasks`), the engine's plain return shapes `TaskReassignmentResult` (interface, same name as the GraphQL object) and `MemberOpenTaskRecord`, `MANUAL_TRANSFER_DELEGATION_REASON`, `ADMIN_REASSIGN_DELEGATION_REASON` (`'ADMIN_REASSIGN'`, the delegation-chain reason of an administrator reassignment; its step carries `actorMemberId` and `comment`, both optional on `DelegationStep`) |
 | Business key | `MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH` (200 characters, counted as code points) |
 | Tokens | `BPM_WORKFLOW_ENGINE_SERVICE` (typed by the `BPMWorkflowEngineService` interface: `cancelApprovalInstance`, `decideTask`, `expireApprovalInstance`), `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based) |
-| Enums | `WorkflowEngineEnums`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum`, `MemberTaskRoleEnum`, `TaskReassignmentOutcomeEnum`, `TaskReassignmentErrorCodeEnum`. `ActivityLogEventTypeEnum` gains `INSTANCE_EXPIRED` (an SLA `TERMINATE_INSTANCE` ended the instance; no actor, the overdue task's `nodeId` / `taskId`) and `TASK_REASSIGNED`, written once per administrator reassignment with `actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `assigneeChanged`, `candidateStatus` and `sequence` in its payload |
+| Enums | `ApprovalInstanceStateEnum`, `ApprovalInstanceListViewEnum`, `WorkflowTokenStatusEnum`, `TaskStatusEnum`, `TaskAssignmentTypeEnum`, `TaskCandidateStatusEnum`, `TaskDecisionActionEnum`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum`, `MemberTaskRoleEnum`, `TaskReassignmentOutcomeEnum`, `TaskReassignmentErrorCodeEnum`. `ActivityLogEventTypeEnum` gains `INSTANCE_EXPIRED` (an SLA `TERMINATE_INSTANCE` ended the instance; no actor, the overdue task's `nodeId` / `taskId`) and `TASK_REASSIGNED`, written once per administrator reassignment with `actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `assigneeChanged`, `candidateStatus` and `sequence` in its payload |
 | Module | `WorkflowEngineModule`, `WorkflowEngineModuleOptions` |
 
 `WorkflowEngineService` picks its dispatcher rather than reading a registered
@@ -1153,8 +1141,8 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 | Category | Names |
 |---|---|
 | Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules) |
-| DTOs | `DelegationRuleInput` |
-| Enums | `DelegationEnums` |
+| DTOs | `CreateDelegationRuleInput`, `UpdateDelegationRuleInput` |
+| Enums | `DelegationRuleStatusEnum`, `DelegationScopeTypeEnum` |
 | Service | `DelegationService` |
 | Module | `DelegationModule` |
 
@@ -1193,11 +1181,11 @@ narrow, read-only service rather than from a BPM provider.
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
-| Token | `NOTIFICATION_DISPATCHER` (host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
+| Token | `BPM_NOTIFICATION_DISPATCHER` (interface `BPMNotificationDispatcher`; host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | DTOs | `UpdateNotificationPreferenceInput` |
-| Options | `NotificationOptions`, `NotificationOptionsModule` |
-| Enums | `NotificationEnums` |
+| Options | `BPMRootNotificationOptions`, `BPMResolvedNotificationOptions`, `DEFAULT_BPM_NOTIFICATION_OPTIONS`, `BPM_NOTIFICATION_OPTIONS`, `resolveBPMNotificationOptions()`, `NotificationOptionsModule`, `NotificationOptionsModuleAsyncOptions`, `NotificationFeatureToggle`, `NotificationTemplateEngine` |
+| Enums | `NotificationChannelEnum`, `NotificationDigestModeEnum`, `NotificationResolutionEnum`, `NotificationStatusEnum`, `NotificationTypeEnum` |
 | Schedule | `isWithinQuietHours`, `resolveQuietHoursEnd`, `resolveEmailReleaseAt`, `normalizeDigestHour`, `DEFAULT_EMAIL_DIGEST_HOUR`, `DEFAULT_QUIET_HOURS_TIME_ZONE`, `NotificationQuietHours`, `EmailReleaseOptions` (pure functions behind quiet-hours / digest scheduling) |
 | Const | `SLA_ESCALATION_DELEGATION_REASON` (delegation-chain marker that makes SLA `ESCALATE` idempotent) |
 | Module | `NotificationModule` |
@@ -1306,10 +1294,10 @@ argument on the `notifications` / `notificationCount` queries.
 | Category | Names |
 |---|---|
 | Service | `AttachmentService` |
-| Provider | `AttachmentStorageProvider` (host injects S3 / local-FS adapter), `attachmentStorageProvider` (default — prefers an `attachmentStorage` instance from `BPM_ROOT_OPTIONS`, else `@rytass/storages-adapter-local` under `.storage/attachments`) |
+| Provider | `attachmentStorageProvider` (default: prefers an `attachmentStorage` instance from `BPM_ROOT_OPTIONS`, else `@rytass/storages-adapter-local` under `.storage/attachments`; a host with S3 or another adapter supplies its own through this provider or that runtime value) |
 | Token | `ATTACHMENT_STORAGE` |
 | DTOs | `UploadAttachmentInput` |
-| Options | `AttachmentOptions` |
+| Options | `AttachmentModuleOptions`, `AttachmentModuleAsyncOptions`, `BPMRootAttachmentOptions`, `BPMResolvedAttachmentOptions`, `DEFAULT_BPM_ATTACHMENT_OPTIONS`, `BPM_ATTACHMENT_OPTIONS`, `resolveBPMAttachmentOptions()` |
 | Module | `AttachmentModule` |
 
 > Every attachment option has a default, so a host can boot with none of them.
@@ -1336,8 +1324,8 @@ argument on the `notifications` / `notificationCount` queries.
 | Category | Names |
 |---|---|
 | Service | `SignatureService` |
-| Object | `SignatureVerification` |
-| Options | `SignatureOptions` |
+| Object | `SignatureVerificationObject` |
+| Options | `BPMRootSignatureOptions`, `BPMResolvedSignatureOptions`, `DEFAULT_BPM_SIGNATURE_OPTIONS`, `BPM_SIGNATURE_OPTIONS`, `resolveBPMSignatureOptions()`, `BPMSignatureKeyProvider`, `BPMSignatureTimestampProvider`, `BPMSignatureTimestampInput` |
 | Module | `SignatureModule` |
 
 ## `@rytass/bpm-core-nestjs-module/database`
@@ -1345,11 +1333,11 @@ argument on the `notifications` / `notificationCount` queries.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 26-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 28-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-26 ordered migrations:
+28 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` are
    missing and the migration role has no CREATE privilege on the database, it
@@ -1438,7 +1426,7 @@ React UI library. Four export families: root barrel (foundation + host integrati
 | `NotificationDrawer` | Component | Mezzanine Drawer + NotificationCenter (overlay portal; mounted by `<Providers>`) |
 | `ApprovalInstanceListPage` | Component | Shared list page body (inbox / sent / cc / search). Returns content fragment — host wraps in its own layout. |
 | `ApprovalInstanceListPageProps` | interface | `{ defaultState, description, emptyMessage, searchPlaceholder, title, view }` |
-| `DashboardPage` | Component | Five-metric workflow dashboard (content fragment); takes no props, so there is no `DashboardPageProps` |
+| `DashboardPage` | Component | Five-metric workflow dashboard (content fragment); takes no props, so it has no props type |
 | `BPMFormField` | Component | Mezzanine FormField wrapper (TIGHT / HORIZONTAL defaults) |
 | `MemberPicker` / `OrgUnitPicker` / `PositionPicker` | Component | Picker components for admin pages |
 | `readMemberOption()` / `readOrgUnitOption()` / `readPositionOption()` | function | record → picker option |
@@ -1495,6 +1483,11 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `views/cc` | `CcView` |
 | `views/search` | `SearchView` |
 | `views/delegations` | `DelegationsView` |
+| `views/admin/users` | `AdminUsersView` |
+| `views/admin/orgs` | `AdminOrgsView` (carries `OrgUnitTreeDraftEditor`) |
+| `views/admin/delegations` | `AdminDelegationsView` |
+| `views/admin/webhook-endpoints` | `AdminWebhookEndpointsView` |
+| `views/settings/notifications` | `SettingsNotificationsView` |
 | ~~`views/root`~~ | `RootView` exists in the source but has **no `exports` entry and no Vite entry** — it is not importable and not published. It is a null placeholder; the root path is served by `pages/root`, which redirects to `/dashboard` on the server. |
 
 ### Heavy views (must stay isolated, fat dependencies)
@@ -1566,11 +1559,95 @@ export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
 
 ---
 
+## Appendix: remaining exports (names only)
+
+Each name below is exported by the entry point named in its heading but has no row in a table above. The definition file is the source of truth for its signature. Names are grouped by entry point so the inventory stays complete.
+
+### `@rytass/bpm-core-shared`
+
+`WorkflowDirectory`, `WorkflowDirectoryItem`
+
+### `@rytass/bpm-core-shared/workflow-toolset`
+
+`WorkflowDirectory`, `WorkflowDirectoryItem`
+
+### `@rytass/bpm-core-nestjs-module`
+
+`AttachmentStorage`, `BPMDatabaseConnectionOptions`, `CelEvaluationContext`, `DelegationResolution`, `DelegationResolutionContext`, `SignTaskDecisionInput`, `SignatureModuleAsyncOptions`, `buildBPMDataSourceOptions`, `buildDataSourceOptionsFromVaultEnv`, `calculateTaskSlaDueAt`, `createLocalAttachmentStorage`, `resolveAttachmentControllerPath`
+
+### `@rytass/bpm-core-nestjs-module/attachment`
+
+`AttachmentStorage`, `createLocalAttachmentStorage`, `resolveAttachmentControllerPath`
+
+### `@rytass/bpm-core-nestjs-module/database`
+
+`BPMDatabaseConnectionOptions`, `buildBPMDataSourceOptions`, `buildDataSourceOptionsFromVaultEnv`
+
+### `@rytass/bpm-core-nestjs-module/condition`
+
+`CelEvaluationContext`
+
+### `@rytass/bpm-core-nestjs-module/delegation`
+
+`DelegationResolution`, `DelegationResolutionContext`
+
+### `@rytass/bpm-core-nestjs-module/notification`
+
+`calculateTaskSlaDueAt`
+
+### `@rytass/bpm-core-nestjs-module/signature`
+
+`SignTaskDecisionInput`, `SignatureModuleAsyncOptions`
+
+### `@rytass/bpm-core-client/form`
+
+`isFormRendererFieldReadonly`, `isFormRendererFieldRequired`, `readConditionOperatorOption`, `readDefaultConditionValue`
+
+### `@rytass/bpm-core-client/workflow`
+
+`ApprovalInstancesPageResult`, `readAttachmentPreviewUrl`
+
+### `@rytass/bpm-core-react/next`
+
+`BPMNextProvidersProps`
+
+### `@rytass/bpm-core-react/views/instances`
+
+`InstanceNewViewProps`
+
+### `@rytass/bpm-core-react/views/instances/detail`
+
+`InstanceAttachmentsSectionProps`, `InstanceFormSectionProps`, `InstanceHistorySectionProps`, `InstanceSignaturesSectionProps`, `InstanceTasksSectionProps`, `InstanceWebhookDeliveriesSectionProps`
+
+### `@rytass/bpm-core-react/views/instances/new`
+
+`InstanceNewViewProps`
+
+### `@rytass/bpm-core-react/views/templates`
+
+`TemplateCategoryOption`, `TemplateVersionsViewProps`
+
+### `@rytass/bpm-core-react/views/templates/compose`
+
+`EMPTY_COMPOSE_FORM_SCHEMA`, `EMPTY_COMPOSE_FORM_UI_SCHEMA`
+
+### `@rytass/bpm-core-react/views/templates/versions`
+
+`TemplateVersionsViewProps`
+
+### `@rytass/bpm-core-react/views/forms/builder`
+
+`FormBuilderViewProps`
+
+---
+
 ## Quick statistics
 
-| Package | Subpaths | Approx exports |
+Counts come from the TypeScript export scan of each package's entry points at the version above. "Distinct exported names" counts distinct names across all of a package's entry points, so a name re-exported by several entry points is counted once per package.
+
+| Package | Subpaths (excluding root) | Distinct exported names |
 |---|---|---|
-| `@rytass/bpm-core-shared` | 7 | ~70 types/interfaces |
-| `@rytass/bpm-core-client` | 5 | ~120 (types + functions) |
-| `@rytass/bpm-core-nestjs-module` | 12 | ~80 (entities + services + modules + DTOs) |
-| `@rytass/bpm-core-react` | 41 | ~70 (hooks + components + views + pages) |
+| `@rytass/bpm-core-shared` | 7 | 225 |
+| `@rytass/bpm-core-nestjs-module` | 16 | 431 |
+| `@rytass/bpm-core-client` | 4 | 281 |
+| `@rytass/bpm-core-react` | 47 | 105 |
