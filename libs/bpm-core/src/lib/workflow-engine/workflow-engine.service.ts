@@ -934,6 +934,25 @@ export class WorkflowEngineService {
           );
         }
 
+        // A member who has decided keeps a COMPLETED row, and the database
+        // allows one row per (task, member): moving a seat to them would hit
+        // that index instead of answering why. Mirrors TARGET_ALREADY_DECIDED
+        // on the administrator reassignment.
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          transferToMemberId !== null &&
+          isGroupDecisionPolicy(readDecisionPolicySnapshot(task)) &&
+          taskCandidates.some(
+            (candidate) =>
+              candidate.memberId === transferToMemberId &&
+              candidate.status === TaskCandidateStatusEnum.COMPLETED,
+          )
+        ) {
+          throw new ConflictException(
+            'Transfer target has already decided this task',
+          );
+        }
+
         if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
           throw new ConflictException(
             `Approval instance ${instance.id} is not running`,
@@ -1097,6 +1116,7 @@ export class WorkflowEngineService {
               ) ?? null,
             signature,
             task: claimedTask,
+            taskBeforeClaim: task,
             toMemberId: transferToMemberId,
             transferReason:
               options.transferReason ?? MANUAL_TRANSFER_DELEGATION_REASON,
@@ -5582,6 +5602,7 @@ export class WorkflowEngineService {
       reusableRow,
       signature,
       task,
+      taskBeforeClaim,
       toMemberId,
       transferReason,
     }: {
@@ -5596,12 +5617,25 @@ export class WorkflowEngineService {
         readonly signedPayloadHash: string;
       };
       readonly task: TaskEntity;
+      readonly taskBeforeClaim: TaskEntity;
       readonly toMemberId: string;
       readonly transferReason: string;
     },
   ): Promise<void> {
     const activityRepository = manager.getRepository(ActivityLogEntity);
     const fromMemberId = decision.decidedByMemberId;
+    // decideTask claims the task for whoever decides, writing them into the
+    // task-level assignee. A seat transfer is not a claim of the whole stage:
+    // put the task-level holder back first, so the seat replacement only moves
+    // the assignee, the delegation chain and openedAt when the transferring
+    // member really held the task.
+    const unclaimedTask = await manager.getRepository(TaskEntity).save(
+      Object.assign(new TaskEntity(), task, {
+        assigneeMemberId: taskBeforeClaim.assigneeMemberId,
+        openedAt: taskBeforeClaim.openedAt,
+        originalAssigneeMemberId: taskBeforeClaim.originalAssigneeMemberId,
+      }),
+    );
     const seat = await this.replaceOpenSeat(manager, {
       decidedAt,
       fromMemberId,
@@ -5613,7 +5647,7 @@ export class WorkflowEngineService {
         ruleId: null,
         to: toMemberId,
       },
-      task,
+      task: unclaimedTask,
       toMemberId,
     });
 

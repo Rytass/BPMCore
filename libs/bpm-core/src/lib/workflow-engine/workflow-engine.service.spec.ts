@@ -11775,6 +11775,49 @@ describe('administrator task reassignment', (): void => {
       });
     });
 
+    it('rejects a holder transfer to a member who has already decided', async (): Promise<void> => {
+      const seeds = seedsFor();
+      const { fixture } = createOpenTaskFixture({
+        candidates: seeds,
+        decisionPolicy: { type: 'PARALLEL_ALL' },
+        task: { assigneeMemberId: null },
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: 'member-a',
+        taskId: 'task-1',
+      });
+
+      await expect(transfer(fixture, 'member-b', 'member-a')).rejects.toThrow(
+        'Transfer target has already decided this task',
+      );
+      expect(readStatusByMember(fixture, seeds)).toEqual({
+        'member-a': TaskCandidateStatusEnum.COMPLETED,
+        'member-b': TaskCandidateStatusEnum.PENDING,
+        'member-c': TaskCandidateStatusEnum.PENDING,
+      });
+    });
+
+    it('leaves the task-level assignee, delegation chain and openedAt untouched', async (): Promise<void> => {
+      const { fixture } = createOpenTaskFixture({
+        candidates: seedsFor(),
+        decisionPolicy: { type: 'PARALLEL_ALL' },
+        task: { assigneeMemberId: null, openedAt: null },
+      });
+
+      await transfer(fixture, 'member-b', 'member-d');
+
+      const latest = readLatestRows(fixture.savedTasks).find(
+        (task) => task.id === 'task-1',
+      );
+
+      expect(latest?.assigneeMemberId).toBeNull();
+      expect(latest?.openedAt).toBeNull();
+      expect(latest?.delegationChain ?? []).toEqual([]);
+    });
+
     it('keeps a PARALLEL_ALL stage open and moves only the transferring seat', async (): Promise<void> => {
       const seeds = seedsFor();
       const { fixture } = createOpenTaskFixture({
