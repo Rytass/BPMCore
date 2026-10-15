@@ -237,14 +237,17 @@ export class OrganizationService {
           // alone", which is the one outcome a move must never produce.
           const nextParentId = move.parentId ?? null;
           const parent = nextParentId
-            ? orgUnitById.get(nextParentId) ?? null
+            ? (orgUnitById.get(nextParentId) ?? null)
             : null;
           const previousPath = existing.path;
           const nextPath = parent
             ? `${parent.path}.${this.buildPathSegment(existing.id)}`
             : `${ROOT_PATH_PREFIX}.${this.buildPathSegment(existing.id)}`;
 
-          if (existing.parentId === nextParentId && existing.path === nextPath) {
+          if (
+            existing.parentId === nextParentId &&
+            existing.path === nextPath
+          ) {
             affectedOrgUnits.set(existing.id, existing);
             continue;
           }
@@ -403,7 +406,10 @@ export class OrganizationService {
         // the (member, unit, position, effectiveFrom) key if it started on
         // the same day).
         const successorMemberships = await membershipRepository.find({
-          where: createOpenRowWhere<MembershipEntity>({ orgUnitId: successorId }, today),
+          where: createOpenRowWhere<MembershipEntity>(
+            { orgUnitId: successorId },
+            today,
+          ),
         });
         const isAlreadyInSuccessor = (membership: MembershipEntity): boolean =>
           successorMemberships.some(
@@ -411,8 +417,7 @@ export class OrganizationService {
               successorMembership.memberId === membership.memberId &&
               successorMembership.positionId === membership.positionId &&
               (successorMembership.effectiveFrom <= today ||
-                successorMembership.effectiveFrom ===
-                  membership.effectiveFrom),
+                successorMembership.effectiveFrom === membership.effectiveFrom),
           );
         const startedMemberships = openMemberships.filter(
           (membership) => membership.effectiveFrom < today,
@@ -424,33 +429,35 @@ export class OrganizationService {
           .filter(isAlreadyInSuccessor)
           .map((membership) => membership.id);
 
+        // Built before anything below merges into the started rows: `merge`
+        // writes into the entity it is given, so reading `effectiveTo` after
+        // ending a row would hand its continuation yesterday's date.
+        const continuedMemberships = startedMemberships
+          .filter((membership) => !isAlreadyInSuccessor(membership))
+          .map((membership): MembershipEntity =>
+            membershipRepository.create({
+              effectiveFrom: today,
+              effectiveTo: membership.effectiveTo,
+              isPrimary: membership.isPrimary,
+              memberId: membership.memberId,
+              orgUnitId: successorId,
+              positionId: membership.positionId,
+            }),
+          );
+
         await membershipRepository.save([
-          ...startedMemberships.map(
-            (membership): MembershipEntity =>
-              membershipRepository.merge(membership, {
-                effectiveTo: yesterday,
-              }),
+          ...startedMemberships.map((membership): MembershipEntity =>
+            membershipRepository.merge(membership, {
+              effectiveTo: yesterday,
+            }),
           ),
-          ...startedMemberships
-            .filter((membership) => !isAlreadyInSuccessor(membership))
-            .map(
-              (membership): MembershipEntity =>
-                membershipRepository.create({
-                  effectiveFrom: today,
-                  effectiveTo: membership.effectiveTo,
-                  isPrimary: membership.isPrimary,
-                  memberId: membership.memberId,
-                  orgUnitId: successorId,
-                  positionId: membership.positionId,
-                }),
-            ),
+          ...continuedMemberships,
           ...unstartedMemberships
             .filter((membership) => !isAlreadyInSuccessor(membership))
-            .map(
-              (membership): MembershipEntity =>
-                membershipRepository.merge(membership, {
-                  orgUnitId: successorId,
-                }),
+            .map((membership): MembershipEntity =>
+              membershipRepository.merge(membership, {
+                orgUnitId: successorId,
+              }),
             ),
         ]);
 
@@ -466,11 +473,10 @@ export class OrganizationService {
           .map((resolution) => resolution.id);
 
         await managerResolutionRepository.save(
-          startedManagerResolutions.map(
-            (resolution): ManagerResolutionEntity =>
-              managerResolutionRepository.merge(resolution, {
-                effectiveTo: yesterday,
-              }),
+          startedManagerResolutions.map((resolution): ManagerResolutionEntity =>
+            managerResolutionRepository.merge(resolution, {
+              effectiveTo: yesterday,
+            }),
           ),
         );
 
@@ -579,12 +585,14 @@ export class OrganizationService {
       );
     }
 
-    const managerResolutionCount = await this.managerResolutionRepository.count({
-      where: {
-        scopeId: id,
-        scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+    const managerResolutionCount = await this.managerResolutionRepository.count(
+      {
+        where: {
+          scopeId: id,
+          scopeType: ManagerResolutionScopeTypeEnum.POSITION,
+        },
       },
-    });
+    );
 
     if (managerResolutionCount > 0) {
       throw new BadRequestException(
@@ -1338,9 +1346,7 @@ function createOrgUnitWhere({
   readonly parentId?: string | null;
   readonly searchText?: string | null;
   readonly type?: OrgUnitTypeEnum | null;
-}):
-  | FindOptionsWhere<OrgUnitEntity>
-  | FindOptionsWhere<OrgUnitEntity>[] {
+}): FindOptionsWhere<OrgUnitEntity> | FindOptionsWhere<OrgUnitEntity>[] {
   const parentWhere: FindOptionsWhere<OrgUnitEntity> =
     parentId === undefined
       ? {}
@@ -1368,9 +1374,7 @@ function createPositionWhere({
   searchText,
 }: {
   readonly searchText?: string | null;
-}):
-  | FindOptionsWhere<PositionEntity>
-  | FindOptionsWhere<PositionEntity>[] {
+}): FindOptionsWhere<PositionEntity> | FindOptionsWhere<PositionEntity>[] {
   const trimmedSearchText = searchText?.trim();
 
   if (!trimmedSearchText) {
@@ -1395,9 +1399,10 @@ export interface DeleteOrgUnitOptions {
  * Unlike the `activeOnly` filters this does not look at `effectiveFrom`, so a
  * row that only starts later still counts.
  */
-function createOpenRowWhere<
-  T extends { effectiveTo: string | null },
->(baseWhere: FindOptionsWhere<T>, date: string): FindOptionsWhere<T>[] {
+function createOpenRowWhere<T extends { effectiveTo: string | null }>(
+  baseWhere: FindOptionsWhere<T>,
+  date: string,
+): FindOptionsWhere<T>[] {
   return [
     { ...baseWhere, effectiveTo: IsNull() } as FindOptionsWhere<T>,
     { ...baseWhere, effectiveTo: MoreThanOrEqual(date) } as FindOptionsWhere<T>,
@@ -1425,9 +1430,7 @@ function createMembershipWhere({
   readonly memberId?: string | null;
   readonly orgUnitId?: string | null;
   readonly positionId?: string | null;
-}):
-  | FindOptionsWhere<MembershipEntity>
-  | FindOptionsWhere<MembershipEntity>[] {
+}): FindOptionsWhere<MembershipEntity> | FindOptionsWhere<MembershipEntity>[] {
   const baseWhere: FindOptionsWhere<MembershipEntity> = {
     ...(memberId ? { memberId } : {}),
     ...(orgUnitId ? { orgUnitId } : {}),
@@ -1638,7 +1641,9 @@ function calculateOrgUnitTreeDraftMoveDepth(
  */
 function referencesPositionId(value: unknown, positionId: string): boolean {
   if (Array.isArray(value)) {
-    return value.some((item): boolean => referencesPositionId(item, positionId));
+    return value.some((item): boolean =>
+      referencesPositionId(item, positionId),
+    );
   }
 
   if (typeof value !== 'object' || value === null) {
@@ -1654,9 +1659,6 @@ function referencesPositionId(value: unknown, positionId: string): boolean {
   );
 }
 
-function compareOrgUnitPath(
-  left: OrgUnitEntity,
-  right: OrgUnitEntity,
-): number {
+function compareOrgUnitPath(left: OrgUnitEntity, right: OrgUnitEntity): number {
   return left.path.localeCompare(right.path);
 }

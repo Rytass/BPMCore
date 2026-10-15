@@ -180,8 +180,8 @@ describe('OrganizationService', () => {
   });
 
   it('pushes org unit filters into repository query', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly OrgUnitEntity[]> =>
+      Promise.resolve([]),
     );
     const orgUnitRepository = {
       find,
@@ -223,11 +223,11 @@ describe('OrganizationService', () => {
   });
 
   it('pushes organization table filters into paginated repository queries', async (): Promise<void> => {
-    const positionFind = jest.fn(
-      (): Promise<readonly PositionEntity[]> => Promise.resolve([]),
+    const positionFind = jest.fn((): Promise<readonly PositionEntity[]> =>
+      Promise.resolve([]),
     );
-    const membershipFind = jest.fn(
-      (): Promise<readonly MembershipEntity[]> => Promise.resolve([]),
+    const membershipFind = jest.fn((): Promise<readonly MembershipEntity[]> =>
+      Promise.resolve([]),
     );
     const managerResolutionCount = jest.fn((): Promise<number> =>
       Promise.resolve(0),
@@ -301,8 +301,8 @@ describe('OrganizationService', () => {
   });
 
   it('fetches every org unit without pagination when all is true', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly OrgUnitEntity[]> =>
+      Promise.resolve([]),
     );
     const orgUnitRepository = {
       find,
@@ -329,8 +329,8 @@ describe('OrganizationService', () => {
   });
 
   it('returns the full org unit list when pageSize is omitted', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly OrgUnitEntity[]> =>
+      Promise.resolve([]),
     );
     const orgUnitRepository = {
       find,
@@ -354,8 +354,8 @@ describe('OrganizationService', () => {
   });
 
   it('clamps an oversized pageSize to the maximum page size', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly OrgUnitEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly OrgUnitEntity[]> =>
+      Promise.resolve([]),
     );
     const orgUnitRepository = {
       find,
@@ -438,9 +438,7 @@ describe('OrganizationService', () => {
       '00000000-0000-4000-8000-000000000002',
       '00000000-0000-4000-8000-000000000003',
     ]);
-    expect(orgUnits[1]?.parentId).toBe(
-      '00000000-0000-4000-8000-000000000004',
-    );
+    expect(orgUnits[1]?.parentId).toBe('00000000-0000-4000-8000-000000000004');
     expect(orgUnits[1]?.path).toBe(
       'org.n00000000_0000_4000_8000_000000000001.n00000000_0000_4000_8000_000000000004.n00000000_0000_4000_8000_000000000002',
     );
@@ -1081,8 +1079,12 @@ describe('OrganizationService', () => {
       dataSource,
       {} as Repository<OrgUnitEntity>,
       positionRepository,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<MembershipEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<ManagerResolutionEntity>,
     );
 
     await expect(service.deletePosition('position-1')).rejects.toThrow(
@@ -1125,8 +1127,12 @@ describe('OrganizationService', () => {
       dataSource,
       {} as Repository<OrgUnitEntity>,
       positionRepository,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<MembershipEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<ManagerResolutionEntity>,
     );
 
     await expect(service.deletePosition('position-1')).resolves.toBe(true);
@@ -1150,8 +1156,12 @@ describe('OrganizationService', () => {
       dataSource,
       {} as Repository<OrgUnitEntity>,
       positionRepository,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<MembershipEntity>,
-      { count: jest.fn(() => Promise.resolve(0)) } as unknown as Repository<ManagerResolutionEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<MembershipEntity>,
+      {
+        count: jest.fn(() => Promise.resolve(0)),
+      } as unknown as Repository<ManagerResolutionEntity>,
     );
 
     await expect(service.deletePosition('position-1')).rejects.toThrow(
@@ -1196,9 +1206,9 @@ describe('OrganizationService', () => {
     });
 
     it('rejects an unknown zone when the service is created', (): void => {
-      expect(() => createService({ organizationTimeZone: 'Nowhere/City' })).toThrow(
-        'organizationTimeZone',
-      );
+      expect(() =>
+        createService({ organizationTimeZone: 'Nowhere/City' }),
+      ).toThrow('organizationTimeZone');
     });
 
     describe('activeOnly listings and counts', () => {
@@ -1243,7 +1253,11 @@ describe('OrganizationService', () => {
         await call(service);
 
         const calls = query.mock.calls as unknown as readonly [
-          { readonly where: readonly { readonly effectiveFrom: FindOperator<string> }[] },
+          {
+            readonly where: readonly {
+              readonly effectiveFrom: FindOperator<string>;
+            }[];
+          },
         ][];
 
         return calls[0][0].where[0].effectiveFrom.value;
@@ -1350,9 +1364,7 @@ describe('OrganizationService', () => {
   });
 });
 
-function createOrgUnitFixture(
-  value: Partial<OrgUnitEntity>,
-): OrgUnitEntity {
+function createOrgUnitFixture(value: Partial<OrgUnitEntity>): OrgUnitEntity {
   return {
     code: value.code ?? 'ORG',
     createdAt: value.createdAt ?? baseUpdatedAt,
@@ -1395,10 +1407,8 @@ function createOrgUnitTreeDraftRepository(
     return Promise.resolve(entity);
   });
   const merge = jest.fn(
-    (
-      entity: OrgUnitEntity,
-      patch: Partial<OrgUnitEntity>,
-    ): OrgUnitEntity => Object.assign(entity, patch),
+    (entity: OrgUnitEntity, patch: Partial<OrgUnitEntity>): OrgUnitEntity =>
+      Object.assign(entity, patch),
   );
   const createQueryBuilder = jest.fn((): OrgUnitTreeDraftQueryBuilder => {
     const parameters: { id?: string; previousPath?: string } = {};
@@ -1493,9 +1503,7 @@ describe('OrganizationService.deleteOrgUnit', () => {
     );
   };
 
-  const createStoreRepository = (
-    rows: Row[],
-  ): Repository<ObjectLiteralRow> => {
+  const createStoreRepository = (rows: Row[]): Repository<ObjectLiteralRow> => {
     const find = jest.fn(
       ({ where }: { readonly where?: unknown } = {}): Promise<Row[]> =>
         Promise.resolve(rows.filter((row) => matchesWhere(row, where))),
@@ -1522,15 +1530,13 @@ describe('OrganizationService.deleteOrgUnit', () => {
       find,
       findOne: jest.fn(
         ({ where }: { readonly where?: unknown }): Promise<Row | null> =>
-          Promise.resolve(
-            rows.find((row) => matchesWhere(row, where)) ?? null,
-          ),
+          Promise.resolve(rows.find((row) => matchesWhere(row, where)) ?? null),
       ),
-      merge: jest.fn(
-        (row: Row, patch: Record<string, unknown>): Row => ({
-          ...row,
-          ...patch,
-        }),
+      // TypeORM's merge writes into the entity it is given and returns it,
+      // so a stub that copied instead would hide a caller reading the entity
+      // again after merging into it.
+      merge: jest.fn((row: Row, patch: Record<string, unknown>): Row =>
+        Object.assign(row, patch),
       ),
       save: jest.fn((values: readonly Row[]): Promise<readonly Row[]> => {
         values.forEach((value, index) => {
@@ -1548,7 +1554,10 @@ describe('OrganizationService.deleteOrgUnit', () => {
       softDelete: jest.fn((id: string): Promise<void> => {
         const position = rows.findIndex((row) => row.id === id);
 
-        rows.splice(position, 1, { ...rows[position], deletedAt: instant } as Row);
+        rows.splice(position, 1, {
+          ...rows[position],
+          deletedAt: instant,
+        } as Row);
 
         return Promise.resolve();
       }),
