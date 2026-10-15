@@ -1499,6 +1499,14 @@ The rules that differ from the holder's own transfer:
   `REASON_REQUIRED`). `reassignTask` throws a `ConflictException` carrying the
   code unless `dryRun` is set; `dryRun` always reports and never writes.
 
+A holder's own transfer on a `PARALLEL_ALL`, `PARALLEL_ANY` or `QUORUM` stage
+also moves only the transferring seat in place and keeps the task open. It
+still writes a `TaskDecision` with a signature, which the administrator path
+does not. Its target must not already hold an open seat on the task, nor have
+decided it already (both answer a `ConflictException`). The task-level
+assignee, delegation chain and `openedAt` stay as they were: a seat transfer is
+not a claim of the whole stage.
+
 ## GraphQL Surface
 
 Importing `BPMRootModule` registers GraphQL resolvers for:
