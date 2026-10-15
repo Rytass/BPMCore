@@ -25,8 +25,10 @@ its own navigation chrome.
      point at the right BPM URLs)
    - `useRouterAdapter()` — current pathname for active-link styling
 
-BPMCore does **not** ship a layout. There is no `<AppLayout>` in the
-public surface as of 0.4.0.
+BPMCore does **not** ship a layout. Since 0.4.0 (see
+`libs/bpm-core-react/CHANGELOG.md`) the package has no `<AppLayout>` in its
+public surface; the bundled navigation shell that earlier versions included was
+removed in that release.
 
 ---
 

@@ -23,7 +23,15 @@ server-side lint contract before publishing.
 
 ## Status
 
-`0.4.0` (breaking) — drops the bundled navigation shell. BPM views no longer wrap themselves in an `<AppLayout>` / Mezzanine `<Navigation>`; the host owns the layout chrome and mounts BPM views inside its own sidebar / top bar. New host-facing widgets ship in the root barrel: `useBPMMember`, `useBPMLogout`, `<BPMNotificationBellButton />`. See `CHANGELOG.md` for the migration walkthrough, and `docs/integration-guide.md` for a host integration recipe.
+The current version is in `package.json` and `CHANGELOG.md` (the packages
+share one version number under `nx release`).
+
+Version 0.4.0 was a breaking release that dropped the bundled navigation shell:
+BPM views no longer wrap themselves in an `<AppLayout>` / Mezzanine `<Navigation>`,
+and the host owns the layout chrome. The 0.4.0 entry in `CHANGELOG.md` has the
+migration walkthrough. Host-facing widgets in the root barrel are `useBPMMember`,
+`useBPMLogout`, and `<BPMNotificationBellButton />`. For a host integration
+recipe, see `docs/integration-guide.md`.
 
 ## Install
 
@@ -31,11 +39,24 @@ server-side lint contract before publishing.
 pnpm add @rytass/bpm-core-react @rytass/bpm-core-client @rytass/bpm-core-shared @mezzanine-ui/react @mezzanine-ui/icons
 ```
 
-Peer requirements: React 18+, Mezzanine UI 1.1+. Next.js is required only when consuming the `pages/*` subpath; framework-agnostic consumers can use `views/*` directly with their own router adapter.
+Peer requirements: React 18+ and `@mezzanine-ui/react` `>=1.0.0` (the declared
+peer range in `package.json`; this workspace develops against `@mezzanine-ui/react`
+1.5.1, pinned in the root `package.json`). Next.js is required only when consuming
+the `pages/*` subpath; framework-agnostic consumers can use `views/*` directly with
+their own router adapter.
 
-### Next.js + pnpm setup
+### Next.js + pnpm setup (conditional)
 
-If your host uses Next.js (15+) with pnpm strict mode, add the package to `transpilePackages` in `next.config.js`. Without this, Next's Turbopack cannot resolve transitive peer-dep imports such as `@rytass/bpm-core-client/workflow` from inside pnpm-isolated `node_modules/.pnpm/...` paths.
+`transpilePackages` is **not required by default**. The published packages ship
+compiled `dist/` output with `exports` maps. This repository's `apps/client`
+does not set `transpilePackages` (`apps/client/next.config.js`) and imports the
+libraries through tsconfig path aliases to their source.
+
+Add the setting only if your build reports an unresolved transitive import
+under pnpm strict mode, for example `@rytass/bpm-core-client/workflow` imported
+from inside `node_modules/.pnpm/...`. This README has **not** reproduced that
+failure against the published packages; treat the snippet below as the workaround
+to try in that case, not as a requirement.
 
 ```js
 /** @type {import('next').NextConfig} */
@@ -53,6 +74,20 @@ module.exports = {
   ],
 };
 ```
+
+### Designer feature flags (Next.js host env)
+
+The designer page shim (`pages/templates/designer`) reads these server-side
+environment variables. Set them in the host's `.env.local` or deployment config.
+
+- `BPM_AI_ASSISTANT_ENABLED=true`: shows the designer AI assistant. It is hidden
+  by default. It also needs `OPENAI_API_KEY` (server-only); without the key the
+  toggle shows as a disabled placeholder.
+- `BPM_TEMPLATE_DRY_RUN_ENABLED=false`: hides the 試跑流程 (dry-run) button. The
+  button is shown by default; only the exact value `'false'` hides it.
+
+For direct control, `TemplateDesignerView` accepts `showAiAssistant`,
+`aiAssistantAvailable`, and `showDryRun` props.
 
 ## Usage
 

@@ -43,9 +43,13 @@ PGPASSWORD="<dbfather-password>" psql \
 ## Vault Keys
 
 Use `tools/vault-secrets.example.json` as the Vault DB key list. Do not commit
-real secret values. The BPM core TypeORM helpers read `DB_HOST`, `DB_PORT`,
-`DB_USER`, `DB_PASS`, `DB_NAME`, `DB_SCHEMA`, and `DB_SYNC` from the selected
-Vault path.
+real secret values. The BPM core TypeORM helpers (`libs/bpm-core`, the
+`typeorm.config` module) read `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`,
+`DB_NAME`, and `DB_SCHEMA` from the selected Vault path.
+
+`tools/vault-secrets.example.json` also lists `DB_SYNC` (`"false"`), but no code
+reads it. TypeORM `synchronize` is hard-coded to `false` in the BPM core
+TypeORM config, so schema changes apply only through migrations.
 
 The wrapper API host also reads Kubernetes environment variables from
 `vault-secret` for runtime-only settings that are not part of the reusable BPM

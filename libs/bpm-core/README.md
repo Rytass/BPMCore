@@ -21,7 +21,9 @@ and keeps transport details and credentials out of form JSON.
 
 ## Package Status
 
-Current version: `0.1.10`
+The released versions and their changes are listed in
+[CHANGELOG.md](./CHANGELOG.md). Sections marked **unreleased** describe code
+that is on `main` but not in any published version yet.
 
 The package is intended for NestJS backend hosts. It does not include the
 Next.js backoffice UI and does not provide a production auth system by itself.
@@ -68,7 +70,10 @@ Your host application must provide:
 - A configured TypeORM `DataSource` / `TypeOrmModule`.
 - Auth/session/JWT logic.
 - A `BPMAuthContext` bridge from the request execution context.
-- A `BPM_MEMBER_RESOLVER` provider for member metadata lookup.
+- A member resolver for member metadata lookup (`memberResolverProvider`, or
+  the `BPM_MEMBER_RESOLVER` provider it registers). It is optional: without one,
+  BPM uses `DefaultBPMMemberResolver`, which shows raw member ids as names and
+  empty emails. That keeps a new host booting; it is not an identity system.
 - Attachment storage configuration when local storage is not acceptable.
 - A dedicated worker or host dispatcher when email/webhook/SLA work should not
   run inside API replicas.
@@ -296,6 +301,9 @@ Response status contract that BPM's React client expects:
 `roles` and `permissions` MUST be arrays (use `[]` for no claim), not
 `null` or `undefined` — the React client's `member.roles.includes(...)`
 checks would crash otherwise.
+
+The table above is the contract the React client needs. The reference host
+(`apps/api`) answers `POST /auth/logout` with `200` and `{ "ok": true }`.
 
 #### Pattern B — Run BPM on a separate auth host
 
@@ -623,7 +631,9 @@ console.table([...listBPMResolverHandlers()]);
 ## Member Resolver
 
 The package resolves display names, email addresses, and approver candidates
-through `BPM_MEMBER_RESOLVER`.
+through `BPM_MEMBER_RESOLVER`. Registering one is optional: without it BPM
+falls back to `DefaultBPMMemberResolver` (see Runtime Responsibilities), which
+logs a warning outside `development` and `test`.
 
 For a member-base-like directory, prefer the package helper. It creates a Nest
 provider without forcing BPM to depend on the host identity package:
@@ -720,8 +730,9 @@ exist, and the rest of this section explains why and what to do instead.
 The BPM workflow engine reads the org graph on hot paths:
 
 - **Approver routing** — every running instance evaluates `UserTaskNode`
-  candidates (resolved via `DIRECT`, `POSITION`, `ORG_MANAGER`, or
-  `CANDIDATE_GROUP`) against the current org snapshot. A `ParallelGateway`
+  candidates (resolved via `DIRECT`, `POSITION`, `ORG_UNIT_MEMBER`,
+  `ORG_UNIT_POSITION`, `ORG_MANAGER`, `ORG_UNIT_MANAGER`, or
+  `ORG_MANAGER_CHAIN`) against the current org snapshot. A `ParallelGateway`
   fanning out to "all managers in the IT division" may touch dozens of
   membership rows in one step.
 - **Tree-diff commits** — `commitOrgUnitTreeDraft` writes batched moves
@@ -756,9 +767,12 @@ and observable:
    pagination payload. **For reconciliation, always key on `code`**
    (which IS returned). Treat `metadataJson` as a debugging/audit
    stash, not a live FK pointer.
-3. **Only `deleteOrgUnit` is a soft delete.** It sets `deletedAt`, and
+3. **`deleteOrgUnit` is a soft delete, with a hard-delete exception.** It sets `deletedAt`, and
    BPM's query layer hides soft-deleted units automatically; reading
-   `orgUnitCount()` reports the live count. `deleteMembership`,
+   `orgUnitCount()` reports the live count. Retiring a unit with a successor
+   (see "Retiring an org unit", unreleased) also hard-deletes not-yet-started
+   memberships that duplicate a row in the successor, and not-yet-started
+   `ORG_UNIT` manager rules. `deleteMembership`,
    `deleteManagerResolution` and `deletePosition` are **hard deletes** —
    those entities have no `deletedAt` column, so the row and its history
    are gone.
@@ -772,11 +786,39 @@ and observable:
 5. **Positions are deleted only when nothing points at them.**
    `deletePosition` refuses while any membership or manager resolution
    (ended ones included) references the position, or while a template or
-   a running ad-hoc directive routes approvers through it. Since the
+   a `PENDING` ad-hoc directive routes approvers through it. Since the
    delete is permanent, retire a position by ending the memberships that
    use it and leaving the position in place; rename it (for example
    `updatePosition({ id, name: 'retired-' + oldName, ... })`) if you want
    a UI hint that it is no longer in use.
+
+### Retiring an org unit (unreleased)
+
+> Not in a published version yet. It landed after `v0.16.2`.
+
+`deleteOrgUnit(id, { transferToOrgUnitId })` retires a unit. The GraphQL
+mutation takes the same two values as arguments (`deleteOrgUnit(id,
+transferToOrgUnitId)`), and the client takes `deleteOrgUnit(id, { transferToOrgUnitId })`.
+
+- A unit with live child units is always refused.
+- A unit with open memberships or open `ORG_UNIT` manager rules is refused,
+  unless `transferToOrgUnitId` names a different live unit.
+- With a successor, one transaction runs:
+  - a membership that has already started is ended yesterday and continued in
+    the successor from today, so "who was in this unit" survives;
+  - a membership that starts today or later is moved to the successor as it
+    is, unless the successor already has that row, in which case it is
+    hard-deleted;
+  - an `ORG_UNIT` manager rule that has already started is ended yesterday;
+    one that has not started is hard-deleted. The successor keeps its own
+    managers.
+- The unit is then soft-deleted. Ended memberships and manager rules never
+  block the delete.
+
+Preview what a retirement would have to handle with the
+`orgUnitRetirementImpact(id)` query, which returns `childUnitCount`,
+`openMembershipCount` and `openManagerResolutionCount`. The client exposes the
+same data as `readOrgUnitRetirementImpact(id)`.
 
 ### Worked example: idempotent sync
 
@@ -789,15 +831,15 @@ input shapes — no `{id, input: {...}}` wrapping):
 - `readOrganizationDashboard({ orgUnitPageSize, orgUnitSearchText, ... })`
 - `createOrgUnit({ code, name, type, parentId, metadataJson })`
 - `updateOrgUnit({ id, code, name, type, parentId, metadataJson })`
-- `deleteOrgUnit(id)` (soft-delete)
+- `deleteOrgUnit(id)` (soft delete; refused while open memberships or ORG_UNIT manager rules remain, unless `transferToOrgUnitId` is given — unreleased, see "Retiring an org unit")
 - `commitOrgUnitTreeDraft({ moves: { id, parentId, baseUpdatedAt }[] })` (transactional batch moves — each entry's `baseUpdatedAt` is the row's last-known `updatedAt`, used by BPM for optimistic-locking conflict detection)
-- `createPosition({ code, name, level, metadataJson })` — `level` (1+) controls hierarchy weight (higher = more senior, used by manager-resolution priority sort); `metadataJson` is required (pass `'{}'` if unused)
+- `createPosition({ code, name, level, metadataJson })` — `level` (1+) is the position grade; higher is more senior. The `ORG_MANAGER_CHAIN` resolver reads it: it walks up the manager chain, adds only managers whose grade is higher than the last one added, and stops at the first grade reaching `minPositionLevel`. Manager-rule `priority` does not use it. `metadataJson` is required (pass `'{}'` if unused)
 - `updatePosition({ id, code, name, level, metadataJson })` — every field except `id` is `T | null`; pass `null` to leave a field unchanged
 - `createMembership({ memberId, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — `positionId` and `effectiveTo` accept `null`; `effectiveFrom` / `effectiveTo` are `YYYY-MM-DD` date strings (`effectiveTo` is inclusive). Uniqueness key is `(memberId, orgUnitId, positionId, effectiveFrom)`
-- `updateMembership({ id, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — every field except `id` is `T | null`
-- `createManagerResolution({ scopeType, scopeId, managerMemberId, priority, effectiveFrom, effectiveTo })` — `scopeType` is `'MEMBER' | 'ORG_UNIT' | 'POSITION'`; `priority` orders the resolver chain (lower number = checked first)
-- `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId)`)
-- `createManagerResolution` / `updateManagerResolution`
+- `updateMembership({ id, orgUnitId, positionId, isPrimary, effectiveFrom, effectiveTo })` — every field except `id` is `T | null`. Passing `null` leaves `orgUnitId`, `isPrimary` and `effectiveFrom` unchanged, but clears `positionId` and `effectiveTo` (an open-ended row)
+- `createManagerResolution({ scopeType, scopeId, managerMemberId, priority, effectiveFrom, effectiveTo })` — `scopeType` is `'MEMBER' | 'ORG_UNIT' | 'POSITION'`; `priority` orders the rules: the highest number is checked first, and every rule that ties with the top priority and scope type applies. `manager_resolutions` has no unique constraint, so several rules for one scope can coexist
+- `createMembership` / `updateMembership` (unique by `(memberId, orgUnitId, positionId, effectiveFrom)`)
+- `createManagerResolution` / `updateManagerResolution` — `updateManagerResolution` follows the same `null` rule: `null` clears `effectiveTo` and keeps the other fields
 
 ```ts
 import { readOrganizationDashboard, createOrgUnit, updateOrgUnit, type OrgUnitRecord } from '@rytass/bpm-core-client/organization';
@@ -848,8 +890,9 @@ async function syncOrgTree(hostNodes: readonly HostOrgUnit[]): Promise<void> {
 ```
 
 The same pattern works for `Position` (key on `code`), `Membership`
-(unique by `memberId × orgUnitId × positionId`), and
-`ManagerResolution` (unique by scope shape + active flag). For bulk
+(unique by `memberId × orgUnitId × positionId × effectiveFrom`), and
+`ManagerResolution` (no database unique constraint: look up existing rules by
+scope and manager before inserting). For bulk
 tree-shape changes (multi-node moves under a single parent),
 `commitOrgUnitTreeDraft` accepts the full draft in one transaction.
 
@@ -872,6 +915,29 @@ Member identity itself stays in your host's user table — BPM reaches it
 through `BPMMemberResolver` (see the previous section). Only the
 **org structure** (who reports where, what unit they sit in, who manages
 them) needs to live inside BPM.
+
+## Approver Fallback
+
+`ORG_MANAGER`, `ORG_UNIT_MANAGER` and `ORG_MANAGER_CHAIN` approver resolvers
+take an optional `fallback`. It supplies approvers when the org chart yields
+none:
+
+- `ORG_MANAGER` and `ORG_UNIT_MANAGER`: the fallback is used only when no manager
+  is found.
+- `ORG_MANAGER_CHAIN`: the chain walk collects managers until one reaches
+  `minPositionLevel`. If the walk ends before that, the fallback's members are
+  added after the managers already collected. The chain is not replaced. If the
+  chain is empty, the fallback alone supplies the approver. With no fallback, or
+  `NONE`, a walk that ends below the level fails the whole step with a conflict
+  error; the managers it did find are not used on their own.
+
+Fallback types:
+
+| Type       | Behavior                                                                                                                                                                                                                                        |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NONE`     | No approver. The step raises a conflict error. An absent `fallback` behaves the same way.                                                                                                                                                       |
+| `DIRECT`   | A fixed `memberId`. If that member is the initiator, the step fails unless `allowInitiatorSelfApproval` is `true`.                                                                                                                              |
+| `POSITION` | The current holders of `positionId`, minus the initiator unless `allowInitiatorSelfApproval` is `true`. If nobody remains, the step raises a conflict error. Not released yet (it landed after `v0.16.2`); older engines reject it at run time. |
 
 ## Root Module Configuration
 
@@ -916,57 +982,75 @@ BPMRootModule.forRootAsync({
 
 ### Configuration Reference
 
-| Option                                           | Default                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `authContextFactory`                             | `undefined`                    | Reads `BPMAuthContext` from NestJS `ExecutionContext`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `memberResolverProvider`                         | required                       | Provider for `BPM_MEMBER_RESOLVER`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `resolverMetadataFactory`                        | `undefined`                    | Stamps the host's own route metadata onto every BPM GraphQL handler. Required when the host installs a global metadata-driven guard — see "Coexisting with a host global guard".                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `attachmentStorageProvider`                      | local `.storage/attachments`   | Host-provided `@rytass/storages` adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher    | Host provider for executable workflow `WEBHOOK` service tasks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `businessCalendarProvider`                       | Monday–Friday calendar         | Host provider for `BPM_BUSINESS_CALENDAR`, used by `BUSINESS_DAY` SLAs. BPMCore ships no holiday data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `formDataSourceRegistryProvider`                 | Empty catalog                  | Single host provider for versioned Select / AutoComplete / Radio / Checkbox DataSources.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `attachmentRoutePrefix`                          | `/attachments`                 | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below).                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `attachmentStorageProviderId`                    | `local`                        | Value stored on attachment metadata for the active adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `attachmentPublicBaseUrl`                        | requesting origin              | Public base URL for signed attachment URLs. Unset, each URL uses the origin of the GraphQL request that asked for it (`X-Forwarded-Proto` / `X-Forwarded-Host`, else the request's protocol and `Host`), so a host behind a proxy needs no setting.                                                                                                                                                                                                                                                                                                                                |
-| `attachmentSignedUrlSecret`                      | random per process             | HMAC secret for signed attachment download/preview tokens. Unset, each process generates one at boot and warns on stderr; a URL then only verifies on the process that signed it, so set a shared secret before running more than one API replica.                                                                                                                                                                                                                                                                                                                                 |
-| `attachmentAllowInsecureSignedUrlSecret`         | —                              | Deprecated and ignored: no signing secret ships in the package any more.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `attachmentSignedUrlTtlSeconds`                  | `300`                          | Signed attachment URL lifetime in seconds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `identityMemberMetadataCacheTtlMs`               | `300000`                       | Member metadata cache TTL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `identityRegisterResolvers`                      | `true`                         | Set to `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers` GraphQL queries. `IdentityService` stays available either way.                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `organizationTimeZone`                           | `Asia/Taipei`                  | IANA zone in which BPM reads "today" when it compares against the date-only `effectiveFrom` / `effectiveTo` of memberships and manager resolutions (manager chains, direct and org-unit managers, position levels, the initiator snapshot, SLA escalation, the "active only" organization views). Set `'UTC'` if your organization dates are kept in UTC. An unknown zone makes BPM fail at startup. Independent of `notificationSlaBusinessCalendarTimeZone`. Before this option the workflow engine read UTC while `OrganizationService` read `Asia/Taipei`; both now follow it. |
-| `notificationInAppEnabled`                       | `true`                         | Enables in-app notification records.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `notificationEmailEnabled`                       | `auto`                         | Enables email when SMTP settings are complete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `notificationEmailSmtpHost`                      | `null`                         | SMTP host.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `notificationEmailSmtpPort`                      | `null`                         | SMTP port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `notificationEmailSmtpSecure`                    | `false`                        | `true` for implicit TLS, `false` for STARTTLS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `notificationEmailSmtpUsername`                  | `null`                         | SMTP username.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `notificationEmailSmtpPassword`                  | `null`                         | SMTP password or app password.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `notificationEmailFrom`                          | `null`                         | Email sender address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `notificationWebhookEnabled`                     | `auto`                         | Enables webhook when URL and signing secret are complete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `notificationWebhookEndpointUrl`                 | `null`                         | Default webhook endpoint URL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `notificationWebhookSigningSecret`               | `null`                         | HMAC secret for webhook payload signatures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `notificationDeliverySchedulerEnabled`           | `false`                        | Runs pending email/webhook delivery loop in this process.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `notificationDeliveryScanIntervalMs`             | `30000`                        | Delivery scheduler interval.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `notificationDeliveryBatchSize`                  | `25`                           | Maximum pending notifications per delivery scan.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `notificationDeliveryMaxAttempts`                | `3`                            | Attempts before a notification is marked failed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `notificationDeliveryRetryBaseDelayMs`           | `60000`                        | Base retry delay multiplied by attempt count.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `notificationSlaSchedulerEnabled`                | `false`                        | Runs automatic SLA scan loop in this process.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `notificationSlaScanIntervalMs`                  | `60000`                        | SLA scheduler interval.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `notificationSlaBusinessCalendarTimeZone`        | `UTC`                          | IANA zone for the built-in weekday calendar. Ignored when `businessCalendarProvider` is set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `notificationSlaTimeoutRemindEnabled`            | `true`                         | Enables SLA timeout `REMIND`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `notificationSlaTimeoutAutoApproveEnabled`       | `false`                        | Enables SLA timeout `AUTO_APPROVE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `notificationSlaTimeoutEscalateEnabled`          | `false`                        | Enables SLA timeout `ESCALATE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `notificationSlaTimeoutTerminateInstanceEnabled` | `false`                        | Enables SLA timeout `TERMINATE_INSTANCE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `notificationTemplateEngine`                     | `simple`                       | `simple` only — `handlebars` is reserved and currently rendered as `simple`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `notificationDefaultChannels`                    | `[IN_APP]`                     | Fallback channels when a workflow node has no channel list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `notificationDefaultEmailDigestMode`             | `INSTANT`                      | Default digest mode for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `notificationDefaultInAppPreferenceEnabled`      | `true`                         | Default in-app preference for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `notificationDefaultEmailPreferenceEnabled`      | `true`                         | Default email preference for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `notificationQuietHoursTimeZone`                 | registered calendar's zone     | IANA zone the members' `quietHoursStart` / `quietHoursEnd` are read in. Falls back to `BPM_BUSINESS_CALENDAR.timeZone`, then `UTC`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `notificationEmailDigestHour`                    | `9`                            | Local hour a `DAILY` recipient's held email is flushed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `signatureCurrentKeyVersion`                     | `1`                            | Key version used for new signatures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `signatureKeyProvider`                           | local development key provider | Host key provider for signing and verification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `signatureTimestampProvider`                     | mock timestamp provider        | Host timestamp token provider.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+Every option is optional, and `BPMRootModule.forRoot()` boots with the defaults
+below.
+
+Options that are Nest providers have a **runtime twin**: a ready instance on the
+options object that a `forRootAsync` factory can return instead. Prefer the twin
+when the value needs a secret, because the factory runs after secrets are
+loaded. The twins are: `attachmentStorageProvider` / `attachmentStorage`,
+`businessCalendarProvider` / `businessCalendar`,
+`formDataSourceRegistryProvider` / `formDataSourceRegistry`,
+`memberResolverProvider` / `memberResolver`,
+`workflowServiceTaskDispatcherProvider` / `workflowServiceTaskDispatcher`, and
+`workflowWebhookRegistryProvider` / `workflowWebhookRegistry`.
+`resolverMetadataFactory`, `attachmentRoutePrefix` and `identityRegisterResolvers`
+have no twin: Nest reads them while it builds routes and the schema, before any
+factory runs.
+
+| Option                                           | Default                                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `authContextFactory`                             | `undefined`                             | Reads `BPMAuthContext` from NestJS `ExecutionContext`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `memberResolverProvider`                         | `undefined`                             | Optional. Provider for `BPM_MEMBER_RESOLVER`; without it `DefaultBPMMemberResolver` is used. Runtime twin: `memberResolver`.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `resolverMetadataFactory`                        | `undefined`                             | Stamps the host's own route metadata onto every BPM GraphQL handler. Required when the host installs a global metadata-driven guard — see "Coexisting with a host global guard".                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `attachmentStorageProvider`                      | local `.storage/attachments`            | Host-provided `@rytass/storages` adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher             | Host provider for executable workflow `WEBHOOK` service tasks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `workflowWebhookRegistryProvider`                | Empty catalog                           | Host catalog of NOTIFY webhook endpoints (`BPMWorkflowWebhookRegistry`). Runtime twin: `workflowWebhookRegistry`. See "NOTIFY webhooks".                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `businessCalendarProvider`                       | Monday–Friday calendar                  | Host provider for `BPM_BUSINESS_CALENDAR`, used by `BUSINESS_DAY` SLAs. BPMCore ships no holiday data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `formDataSourceRegistryProvider`                 | Empty catalog                           | Single host provider for versioned Select / AutoComplete / Radio / Checkbox DataSources.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `attachmentRoutePrefix`                          | `/attachments`                          | Drives both the BPM signed URL path and the Nest controller mount path for `AttachmentController`. Must be set at module wiring time (see "Attachment Storage" below).                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `attachmentStorageProviderId`                    | `local`                                 | Value stored on attachment metadata for the active adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `attachmentPublicBaseUrl`                        | requesting origin                       | Public base URL for signed attachment URLs. Unset, each URL uses the origin of the GraphQL request that asked for it (`X-Forwarded-Proto` / `X-Forwarded-Host`, else the request's protocol and `Host`), so a host behind a proxy needs no setting.                                                                                                                                                                                                                                                                                                                                |
+| `attachmentSignedUrlSecret`                      | random per process                      | HMAC secret for signed attachment download/preview tokens. Unset, each process generates one at boot and warns on stderr; a URL then only verifies on the process that signed it, so set a shared secret before running more than one API replica.                                                                                                                                                                                                                                                                                                                                 |
+| `attachmentAllowInsecureSignedUrlSecret`         | —                                       | Deprecated and ignored: no signing secret ships in the package any more.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `attachmentSignedUrlTtlSeconds`                  | `300`                                   | Signed attachment URL lifetime in seconds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `identityMemberMetadataCacheTtlMs`               | `300000`                                | Member metadata cache TTL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `identityRegisterResolvers`                      | `true`                                  | Set to `false` when the host already publishes `member` / `members` / `memberCount` / `searchMembers` GraphQL queries. `IdentityService` stays available either way.                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `organizationTimeZone`                           | `Asia/Taipei`                           | IANA zone in which BPM reads "today" when it compares against the date-only `effectiveFrom` / `effectiveTo` of memberships and manager resolutions (manager chains, direct and org-unit managers, position levels, the initiator snapshot, SLA escalation, the "active only" organization views). Set `'UTC'` if your organization dates are kept in UTC. An unknown zone makes BPM fail at startup. Independent of `notificationSlaBusinessCalendarTimeZone`. Before this option the workflow engine read UTC while `OrganizationService` read `Asia/Taipei`; both now follow it. |
+| `notificationInAppEnabled`                       | `true`                                  | Enables in-app notification records.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `notificationEmailEnabled`                       | `auto`                                  | Enables email when SMTP settings are complete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `notificationEmailSmtpHost`                      | `null`                                  | SMTP host.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `notificationEmailSmtpPort`                      | `null`                                  | SMTP port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `notificationEmailSmtpSecure`                    | `false`                                 | `true` for implicit TLS, `false` for STARTTLS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `notificationEmailSmtpUsername`                  | `null`                                  | SMTP username.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `notificationEmailSmtpPassword`                  | `null`                                  | SMTP password or app password.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `notificationEmailFrom`                          | `null`                                  | Email sender address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `notificationWebhookEnabled`                     | `auto`                                  | Enables webhook when URL and signing secret are complete.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `notificationWebhookEndpointUrl`                 | `null`                                  | Default webhook endpoint URL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `notificationWebhookSigningSecret`               | `null`                                  | HMAC secret for webhook payload signatures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `notificationDeliverySchedulerEnabled`           | `false`                                 | Runs pending email/webhook delivery loop in this process.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `notificationDeliveryScanIntervalMs`             | `30000`                                 | Delivery scheduler interval.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `notificationDeliveryBatchSize`                  | `25`                                    | Maximum pending notifications per delivery scan.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `notificationDeliveryMaxAttempts`                | `3`                                     | Attempts before a notification is marked failed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `notificationDeliveryRetryBaseDelayMs`           | `60000`                                 | Base retry delay multiplied by attempt count.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `notificationDeliveryDispatchTimeoutMs`          | `30000`                                 | Maximum time for one delivery dispatch before it is recorded as a failed attempt. `0` waits indefinitely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `notificationSlaSchedulerEnabled`                | `false`                                 | Runs automatic SLA scan loop in this process.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `notificationSlaScanIntervalMs`                  | `60000`                                 | SLA scheduler interval.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `notificationSlaBusinessCalendarTimeZone`        | `UTC`                                   | IANA zone for the built-in weekday calendar. Ignored when `businessCalendarProvider` is set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `notificationSlaTimeoutRemindEnabled`            | `true`                                  | Enables SLA timeout `REMIND`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `notificationSlaTimeoutAutoApproveEnabled`       | `false`                                 | Enables SLA timeout `AUTO_APPROVE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `notificationSlaTimeoutEscalateEnabled`          | `false`                                 | Enables SLA timeout `ESCALATE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `notificationSlaTimeoutTerminateInstanceEnabled` | `false`                                 | Enables SLA timeout `TERMINATE_INSTANCE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `notificationTemplateEngine`                     | `simple`                                | `simple` only — `handlebars` is reserved and currently rendered as `simple`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `notificationDefaultChannels`                    | `[IN_APP]`                              | Fallback channels when a workflow node has no channel list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `notificationDefaultEmailDigestMode`             | `INSTANT`                               | Default digest mode for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `notificationDefaultInAppPreferenceEnabled`      | `true`                                  | Default in-app preference for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `notificationDefaultEmailPreferenceEnabled`      | `true`                                  | Default email preference for missing preferences.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `notificationQuietHoursTimeZone`                 | registered calendar's zone              | IANA zone the members' `quietHoursStart` / `quietHoursEnd` are read in. Falls back to `BPM_BUSINESS_CALENDAR.timeZone`, then `UTC`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `notificationEmailDigestHour`                    | `9`                                     | Local hour a `DAILY` recipient's held email is flushed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `signatureCurrentKeyVersion`                     | `1`                                     | Key version used for new signatures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `signatureKeyProvider`                           | built-in local development key provider | Host key provider for signing and verification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `signatureTimestampProvider`                     | built-in mock timestamp provider        | Host timestamp token provider (RFC 3161-style). Replace the built-in mock in production.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Production deployments should override all local development secrets.
 
@@ -987,14 +1071,14 @@ import { OrganizationModule, OrganizationService } from '@rytass/bpm-core-nestjs
 export class HostOrganizationModule {}
 ```
 
-| Module               | Self-contained | Notes                                                                                                                                                                                                                          |
-| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OrganizationModule` | yes            | Org units, positions, memberships, manager resolution. Mounted alone, `deletePosition` silently skips its approval-template and ad-hoc-directive reference checks (it logs when it does) — those tables are not in the schema. |
-| `FormModule`         | yes            | Form definitions and versions.                                                                                                                                                                                                 |
-| `TemplateModule`     | yes            | Approval templates, versions, categories.                                                                                                                                                                                      |
-| `ConditionModule`    | yes            | CEL lint and evaluation only.                                                                                                                                                                                                  |
-| `IdentityModule`     | no             | Needs `memberResolverProvider`; use `IdentityModule.forRoot(...)`.                                                                                                                                                             |
-| `AttachmentModule`   | no             | Needs storage and signed-URL options; use `AttachmentModule.forRoot(...)`.                                                                                                                                                     |
+| Module               | Self-contained | Notes                                                                                                                                                                                                                               |
+| -------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OrganizationModule` | yes            | Org units, positions, memberships, manager resolution. Mounted alone, `deletePosition` skips its approval-template and ad-hoc-directive reference checks, logging a warning each time it does — those tables are not in the schema. |
+| `FormModule`         | yes            | Form definitions and versions.                                                                                                                                                                                                      |
+| `TemplateModule`     | yes            | Approval templates, versions, categories.                                                                                                                                                                                           |
+| `ConditionModule`    | yes            | CEL lint and evaluation only.                                                                                                                                                                                                       |
+| `IdentityModule`     | no             | Takes an optional `memberResolverProvider` (defaults to `DefaultBPMMemberResolver`); use `IdentityModule.forRoot(...)`.                                                                                                             |
+| `AttachmentModule`   | no             | Needs storage and signed-URL options; use `AttachmentModule.forRoot(...)`.                                                                                                                                                          |
 
 What you still owe them:
 
@@ -1130,47 +1214,37 @@ Required environment variables for direct Vault loading:
 
 ### Sharing a Postgres cluster with the host
 
-Hosts that already run their own Postgres (and their own Vault path,
-e.g. `shuttle/develop`) have three options for where BPM's 22 tables
-live. Pick the one that matches your operational model:
+Hosts that already run their own Postgres (and their own Vault path, e.g.
+`shuttle/develop`) need to decide where BPM's 25 tables live.
 
-| Option                                           | When to use                              | Trade-off                                                                                                                                                  |
-| ------------------------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Same database, same schema (`public`)**        | Tiny prototypes, monorepo dev            | Table-name collision risk — BPM owns `org_units`, `positions`, etc., common names. Audit your host's tables before choosing.                               |
-| **Same database, separate schema** (recommended) | Most production hosts                    | Clean isolation; pg_dump per-schema; one connection pool. Set `DB_SCHEMA=bpm_core` in BPM's Vault path. Host stays on its own schema (typically `public`). |
-| **Separate database**                            | Hard multi-tenant or compliance boundary | Two pools; cross-schema joins impossible (BPM doesn't need them); migration runners stay completely independent.                                           |
+BPM has no connection-name option. Its repositories bind to the **default**
+TypeORM DataSource of the Nest application, and `BPMRootModule` has no
+`typeormConnectionName`. A process has one default DataSource, so when BPM runs
+inside the host's Nest application, BPM and the host share that connection and
+its `schema` setting. Choose one of these layouts:
 
-For option B (separate schema), the host's own TypeORM `forRoot()` and
-BPM's `buildTypeOrmModuleOptions` create **two distinct connections**
-to the same Postgres cluster with different `schema:` settings — that
-is the cleanest separation Nest's TypeORM module supports.
+| Option                                                                   | When to use                                                  | Trade-off                                                                                                                                                                                  |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Same database, same schema (`public`)**                                | Tiny prototypes, monorepo dev                                | Table-name collision risk: BPM owns `org_units`, `positions`, and other common names. Audit the host's tables before choosing.                                                             |
+| **Shared DataSource with a dedicated schema**                            | Host and BPM in one Nest application                         | The one DataSource's `schema` applies to both, so the host's own entities must also resolve in the BPM schema. Only practical when the host's tables live in that schema too.              |
+| **Dedicated BPM application** (needed for a separate schema or database) | Compliance or multi-tenant boundary, or a different database | BPM runs in its own Nest application with its own DataSource and Vault path. The host integrates through GraphQL, not through shared TypeORM repositories. Migrations run per application. |
 
-Concrete wiring:
+A dedicated BPM application wires its DataSource from its own Vault path:
 
 ```ts
-// apps/api/src/app/app.module.ts
 @Module({
   imports: [
-    // Host's existing TypeORM connection (default name, host's schema).
     TypeOrmModule.forRootAsync({
-      imports: [HostVaultModule],
-      inject: [HostVaultService],
-      useFactory: (vault) => buildHostDataSourceOptions(vault),  // schema: 'public'
+      imports: [VaultModule],
+      inject: [VaultService],
+      useFactory: buildTypeOrmModuleOptions, // reads DB_SCHEMA=bpm_core from Vault
     }),
-    // BPM's own connection (named, separate schema, separate Vault path).
-    TypeOrmModule.forRootAsync({
-      name: 'bpm',                              // <-- distinct connection name
-      imports: [BPMVaultModule],
-      inject: [BPMVaultService],
-      useFactory: buildTypeOrmModuleOptions,    // reads DB_SCHEMA=bpm_core from Vault
-    }),
-    // Hand BPM the connection name so its repositories bind to the right pool.
     BPMRootModule.forRootAsync({
-      typeormConnectionName: 'bpm',
       // ...
     }),
   ],
 })
+export class BPMApplicationModule {}
 ```
 
 If the host runs only one Vault path (e.g. `shuttle/develop`) and you
@@ -1290,23 +1364,22 @@ This means:
   `attachmentPublicBaseUrl` pointing at a CDN edge that enforces its own
   authz on top — BPM's signature is freshness, not authorization.
 
-### Disabling the `/auth/test-members` endpoint in production
+### The demo `/auth/test-members` endpoint
 
-Hosts wired with the demo seed (typical for `pnpm demo:reset` /
-`pnpm staging:reset`) expose `GET /auth/test-members` so the login form
-shows a clickable list of fixture accounts. **Do not ship this in
-production.** Two ways to keep it out:
+`@rytass/bpm-core-nestjs-module` does not register `GET /auth/test-members`.
+The endpoint belongs to the wrapper host. BPMCore's demo host (`apps/api`)
+registers it **unconditionally**, with no `NODE_ENV` check, so the demo login
+form can list the fixture accounts seeded by `pnpm demo:reset` and
+`pnpm staging:reset`. Staging runs with `NODE_ENV=production` and depends on
+that endpoint.
 
-1. The endpoint is **owned by the wrapper host**, not by BPM —
-   `@rytass/bpm-core-nestjs-module` does not register it. Simply omit
-   the wrapper module / controller that serves
-   `/auth/test-members`. The reference implementation in BPMCore's
-   `apps/api` only exposes it when `NODE_ENV !== 'production'`; copy
-   that pattern in your own auth controller.
-2. The browser-side `listApiTestMembers()` client function tolerates a
-   `404` / `401` and returns an empty array, so removing the endpoint
-   degrades gracefully — the login form simply hides the demo-account
-   picker.
+Do not copy that wiring into a production host as it is. Either omit the
+controller that serves `/auth/test-members`, or guard it yourself, for example
+by returning 404 unless an explicit non-production setting is on.
+
+If the endpoint is missing or fails, the browser client `listApiTestMembers()`
+rejects, and `LoginView` in `@rytass/bpm-core-react` catches the error and hides
+the demo-account picker. The login page still works.
 
 ## Notifications and SLA
 
@@ -1371,7 +1444,8 @@ export class HostNotificationModule {}
 ```
 
 Workflow service tasks are a separate integration point from notification
-delivery. `WEBHOOK` service-task nodes run inside the workflow engine and use
+delivery. Their `WEBHOOK` action and the webhooks attached to a `NOTIFY` action
+are different mechanisms; see "NOTIFY webhooks" below. `WEBHOOK` service-task nodes run inside the workflow engine and use
 `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`. The default dispatcher sends a JSON
 `POST` with `fetch`; wrapper apps can replace it when outbound workflow actions
 must be signed, queued, audited, or routed through an internal integration
@@ -1430,11 +1504,68 @@ BPMRootModule.forRoot({
 
 SLA timeout actions that change workflow state are disabled by default:
 
-- `AUTO_APPROVE`
-- `ESCALATE`
-- `TERMINATE_INSTANCE`
+- `AUTO_APPROVE` decides the overdue task as its assignee (or as the first
+  candidate when there is no assignee), with the comment `SLA timeout
+auto-approved this task.`. The decision, its signature and the `TASK_DECIDED`
+  event are attributed to that member, not to the system. Only the comment and
+  the `SLA_TRIGGERED` activity entry show that the decision was automatic, so
+  audit reviews must read them.
+- `ESCALATE` is also disabled by default.
+- `TERMINATE_INSTANCE` ends the instance as `EXPIRED` (unreleased; earlier
+  versions ended it as `CANCELLED`). The activity log records `INSTANCE_EXPIRED`
+  with no actor, and the instance's node and task are the overdue ones. Ad-hoc
+  completion notifications label it 逾期終止. An instance that an earlier version
+  already ended by SLA remains `CANCELLED`.
 
 Enable them only after the host application's business policy is explicit.
+
+### NOTIFY webhooks
+
+A `NOTIFY` service action can call external endpoints through its `webhooks`
+list (`NotifyWebhookTarget`). A template stores only the endpoint reference
+(`key` and `version`) and parameter bindings, never a URL, header or secret. Each
+target has a stable `id`, which the delivery outbox uses for idempotency.
+
+Endpoints come from the sources in `workflowWebhookTargetSources` (default
+`['REGISTRY']`):
+
+- `REGISTRY`: endpoints that host code registers through
+  `workflowWebhookRegistryProvider` (or the `workflowWebhookRegistry` twin). A
+  `BPMWorkflowWebhookRegistry` exposes `get(key, version)` and `list()`. Each
+  endpoint's `buildRequest(event)` returns the URL, method, headers and optional
+  `signingSecret`. It runs once per delivery attempt, so a rotated credential
+  applies to queued deliveries too. Without a registry, a template that
+  references webhook endpoints cannot be published (`REGISTRY_MISSING`).
+- `DATABASE`: endpoints an administrator maintains in the database. The source
+  stays off unless `workflowWebhookAllowedUrlPatterns` is non-empty and
+  `workflowWebhookSecretEncryptionKey` is set. Header values and signing secrets
+  are encrypted with that key.
+
+The request body, when the endpoint does not build one, is the JSON of a
+`BPMWorkflowWebhookEvent`. It carries `deliveryId` (the receiver's idempotency
+key), `attempt`, `endpoint`, `instance`, `node`, `initiator`, `occurredAt`, and
+only the parameters the template bound.
+
+Deliveries are written to `workflow_webhook_deliveries` and sent by a scheduler.
+The scheduler is enabled automatically once at least one endpoint is
+registered, and is always off under `NODE_ENV=test`. Options, all optional:
+
+| Option                                       | Default        | Description                                                                                                           |
+| -------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `workflowWebhookTargetSources`               | `['REGISTRY']` | Endpoint sources to enable.                                                                                           |
+| `workflowWebhookAllowedUrlPatterns`          | `[]`           | URL patterns such as `https://*.example.com/hooks/*`. An invalid pattern fails boot. Empty does not mean "allow all". |
+| `workflowWebhookEnforceAllowlistForRegistry` | `false`        | Also check `REGISTRY` endpoint URLs against the allowlist.                                                            |
+| `workflowWebhookSecretEncryptionKey`         | `null`         | Encryption key for database-managed endpoints: 32 bytes, hex or base64.                                               |
+| `workflowWebhookDeliverySchedulerEnabled`    | auto           | Runs the retry and release scan in this process.                                                                      |
+| `workflowWebhookDeliveryScanIntervalMs`      | `15000`        | Scheduler scan interval.                                                                                              |
+| `workflowWebhookDeliveryBatchSize`           | `25`           | Deliveries claimed per scan.                                                                                          |
+| `workflowWebhookDeliveryMaxAttempts`         | `6`            | Attempts before a retryable failure becomes `FAILED`.                                                                 |
+| `workflowWebhookDeliveryRetryBaseDelayMs`    | `30000`        | First retry delay. Each further attempt doubles it, with ±20 % jitter.                                                |
+| `workflowWebhookDeliveryMaxRetryDelayMs`     | `3600000`      | Ceiling for one retry delay.                                                                                          |
+| `workflowWebhookDeliveryDefaultTimeoutMs`    | `10000`        | Request timeout when an endpoint sets none. An endpoint's own timeout is capped at 30 000 ms.                         |
+
+The WEBHOOK service-task dispatcher (`workflowServiceTaskDispatcherProvider`)
+is separate from these options and from the notification dispatcher.
 
 ## Signatures
 
@@ -1467,7 +1598,9 @@ or a `Promise`; the example above uses async because production KMS / TSA
 clients are typically network-bound. Returning a synchronous value is fine
 for in-memory or local-file providers.
 
-## Administrator Task Reassignment
+## Administrator Task Reassignment (unreleased)
+
+Not in a published version yet. It landed after `v0.16.2`.
 
 When an open task is held by someone who has left or been replaced, an
 administrator (`@BPMAdminOnly()`) can move it without that person's help:
@@ -1496,7 +1629,9 @@ The rules that differ from the holder's own transfer:
   (`SOURCE_NOT_ON_TASK`, `TARGET_SAME_AS_SOURCE`, `TARGET_ALREADY_ON_TASK`,
   `TARGET_ALREADY_DECIDED`, `TARGET_IS_INITIATOR`, `TARGET_IS_SUBMITTER`,
   `TARGET_GRADE_TOO_LOW`, `TASK_NOT_OPEN`, `INSTANCE_NOT_RUNNING`,
-  `REASON_REQUIRED`). `reassignTask` throws a `ConflictException` carrying the
+  `REASON_REQUIRED`, `UNEXPECTED_ERROR`). `UNEXPECTED_ERROR` is reported by
+  `reassignMemberTasks` for the one task that failed, and the other tasks are still
+  processed. `reassignTask` throws a `ConflictException` carrying the
   code unless `dryRun` is set; `dryRun` always reports and never writes.
 
 A holder's own transfer on a `PARALLEL_ALL`, `PARALLEL_ANY` or `QUORUM` stage
@@ -1507,11 +1642,29 @@ decided it already (both answer a `ConflictException`). The task-level
 assignee, delegation chain and `openedAt` stay as they were: a seat transfer is
 not a claim of the whole stage.
 
+## Delegation Rules
+
+> The priority order and the root check below are unreleased (they landed after
+> `v0.16.2`). Earlier versions ordered rules by creation time first.
+
+A delegation rule passes a principal's approval seats to another member,
+optionally only when a CEL condition holds. When several active rules apply, the
+one with the higher `priority` number wins, as with manager rules. Between rules
+with equal priority, the one created first wins. The rule list is shown in
+priority-descending, newest-first order.
+
+A rule's condition may read only these roots: `env`, `form`, `formData`,
+`initiator` (with `memberId`), `instance` (`id`, `nodeId`, `state`,
+`templateId`, `templateVersionId`, `title`), and `principal` (with `memberId`).
+Saving a rule with any other root is refused. Rules saved before that check was
+added are not changed. They still fail when evaluated.
+
 ## GraphQL Surface
 
 Importing `BPMRootModule` registers GraphQL resolvers for:
 
-- Organization units, positions, memberships, manager resolution, and summary.
+- Organization units (including the unreleased `orgUnitRetirementImpact` query),
+  positions, memberships, manager resolution, and summary.
 - Member profile lookup and member metadata cache inspection.
 - Form definitions and form definition versions.
 - Form option DataSource catalog, designer preview, authenticated runtime option
@@ -1535,12 +1688,12 @@ Stage approvers can attach **instance-scoped** directives to the single
 approval instance they are deciding — the workflow template is never
 modified. Four directive types exist (`AdhocDirectiveTypeEnum`):
 
-| Type                | Trigger                                                | Effect                                                                                                                                                                                                                                                            |
-| ------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COUNTERSIGN`       | Next user task is created                              | Spawns a parallel ad-hoc task for the target on that stage. The token only advances once the original task **and** every countersign task are approved; a countersigner's rejection rejects the instance.                                                         |
-| `PRE_APPROVAL`      | Immediately                                            | Spawns a blocking ad-hoc task on the current stage. `onReject` (`AdhocPreApprovalRejectBehaviorEnum`) chooses `REJECT_INSTANCE` (whole instance rejected) or `RETURN_TO_ORIGIN` (decision handed back to the original approver, re-opening their task if needed). |
-| `STAGE_NOTIFY`      | Current stage ends (approved / rejected / returned)    | Notifies the target — members through `NotificationService`, webhooks through `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`.                                                                                                                                             |
-| `COMPLETION_NOTIFY` | Instance reaches `APPROVED` / `REJECTED` / `CANCELLED` | Same delivery as `STAGE_NOTIFY`.                                                                                                                                                                                                                                  |
+| Type                | Trigger                                                            | Effect                                                                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COUNTERSIGN`       | Next user task is created                                          | Spawns a parallel ad-hoc task for the target on that stage. The token only advances once the original task **and** every countersign task are approved; a countersigner's rejection rejects the instance.                                                         |
+| `PRE_APPROVAL`      | Immediately                                                        | Spawns a blocking ad-hoc task on the current stage. `onReject` (`AdhocPreApprovalRejectBehaviorEnum`) chooses `REJECT_INSTANCE` (whole instance rejected) or `RETURN_TO_ORIGIN` (decision handed back to the original approver, re-opening their task if needed). |
+| `STAGE_NOTIFY`      | Current stage ends (approved / rejected / returned)                | Notifies the target — members through `NotificationService`, webhooks through `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`.                                                                                                                                             |
+| `COMPLETION_NOTIFY` | Instance reaches `APPROVED` / `REJECTED` / `CANCELLED` / `EXPIRED` | Same delivery as `STAGE_NOTIFY`.                                                                                                                                                                                                                                  |
 
 GraphQL surface: mutations `requestAdhocCountersign(taskId, target, comment?)`,
 `requestAdhocPreApproval(taskId, target, onReject, comment?)`,
@@ -1578,7 +1731,7 @@ Workflow, form, condition, identity, organization, and status contracts live in
 
 ```ts
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
-import type { FormSchema } from '@rytass/bpm-core-shared/form';
+import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 ```
 
 Use shared contracts when building UI clients or host-side integration tests.
@@ -1657,20 +1810,17 @@ pnpm test
 pnpm build
 ```
 
-## Publishing Checklist
+## Publishing
 
-1. Confirm package metadata in `libs/bpm-core/package.json`.
-2. Confirm `@rytass/bpm-core-shared` is published at the required version.
-3. Run `pnpm nx build bpm-core`.
-4. Inspect `dist/libs/bpm-core/package.json`.
-5. Confirm `dist/libs/bpm-core/README.md` is present.
-6. Confirm `src/index.ts` exports every intended public API.
-7. Publish from the built package directory:
+Releases are cut with `nx release` for all four published packages
+(`shared`, `bpm-core`, `bpm-core-client`, `bpm-core-react`). They share one
+version number. Do not run `npm publish` by hand and do not edit `version` in
+`package.json`. The full procedure, including the build steps and the order of
+the release commands, is in the repository root `CLAUDE.md` ("Releasing") and in
+[`docs/api-reference.md`](../../docs/api-reference.md) ("Publish Procedure").
 
-```bash
-cd dist/libs/bpm-core
-npm publish --access public
-```
+Check the registry after every release, because the command's exit code alone
+does not prove that every package was published.
 
 ## Production Notes
 

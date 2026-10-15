@@ -14,7 +14,7 @@ The package root exports every shared contract currently used by BPMCore:
 import type { WorkflowDefinition, FormDefinitionSchema, MemberMetadata, OrgUnit, ApprovalInstanceState } from '@rytass/bpm-core-shared';
 ```
 
-Stable subpaths are available for narrower imports:
+Subpaths declared in `package.json` `exports` are available for narrower imports:
 
 ```ts
 import type { ConditionContextType } from '@rytass/bpm-core-shared/condition';
@@ -23,16 +23,20 @@ import type { ApprovalInstanceState } from '@rytass/bpm-core-shared/status';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 ```
 
+The subpaths are `condition`, `form`, `status`, `workflow`, `workflow-graph`,
+`workflow-command`, and `workflow-toolset`. There is no `identity` or
+`organization` subpath; import those contracts from the package root.
+
 ## Contract Areas
 
-| Area          | Source module        | Notes                                                         |
-| ------------- | -------------------- | ------------------------------------------------------------- |
-| Workflow JSON | `./lib/workflow`     | React Flow-aligned workflow nodes, edges, resolvers, actions. |
-| Form schema   | `./lib/form`         | Form builder schema, UI schema, validation rules.             |
-| Conditions    | `./lib/condition`    | CEL lint/evaluation result shapes shared with clients.        |
-| Identity      | `./lib/identity`     | Member metadata shape used by picker and resolver UIs.        |
-| Organization  | `./lib/organization` | Org unit, position, membership, manager rule contracts.       |
-| Status        | `./lib/status`       | Approval instance/task/status display contracts.              |
+| Area          | Source module        | Notes                                                                                                           |
+| ------------- | -------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Workflow JSON | `./lib/workflow`     | React Flow-aligned workflow nodes, edges, resolvers, actions.                                                   |
+| Form schema   | `./lib/form`         | Form builder schema (`FormDefinitionSchema`), UI schema, validation rules.                                      |
+| Conditions    | `./lib/condition`    | CEL lint/evaluation result shapes and the expression context shapes (`InstanceContext`, `LastDecisionContext`). |
+| Identity      | `./lib/identity`     | Member metadata shape used by picker and resolver UIs. Root import only.                                        |
+| Organization  | `./lib/organization` | Org unit, position, membership, manager rule contracts. Root import only.                                       |
+| Status        | `./lib/status`       | Approval instance/task/status display contracts. `ApprovalInstanceState` includes `EXPIRED`.                    |
 
 ## Form option sources
 
@@ -54,10 +58,30 @@ without a `mode` normalize to `single`; `radio` is always single and
 - `WorkflowEdgeData.condition` is the executable CEL expression. The structured
   fields (`conditionFieldKey`, `conditionOperator`, `conditionValue`) are kept
   for designer UI compatibility and fallback display.
-- `ApproverResolver` includes direct member, position, org-unit member,
-  org-unit position, org-manager, dynamic-form, and expression resolvers.
-- Service actions include broader schema support for `NOTIFY`, `WEBHOOK`, and
-  `SET_FORM_FIELD`; the current designer/runtime only execute `NOTIFY`.
+- An edge condition may read `lastDecision` (unreleased; it landed after `v0.16.2`), the newest decision recorded on
+  the node the edge leaves (`LastDecisionContext`). It is `null` until that
+  node has a decision, so guard it with `lastDecision != null && ...`. Publish
+  rejects `lastDecision` in every other expression: initiator policy, entry
+  condition, `EXPRESSION` resolver, webhook payload, and `SET_FORM_FIELD` value.
+- `ApproverResolver` has these types: `DIRECT`, `POSITION`, `ORG_UNIT_MEMBER`,
+  `ORG_UNIT_POSITION`, `ORG_MANAGER`, `ORG_UNIT_MANAGER`, `ORG_MANAGER_CHAIN`,
+  `DYNAMIC_FORM`, and `EXPRESSION`. `ORG_MANAGER`, `ORG_UNIT_MANAGER`, and
+  `ORG_MANAGER_CHAIN` accept an optional `fallback` (`NONE`, `DIRECT`, or
+  `POSITION`). The `POSITION` fallback type is not released yet (it landed after
+  `v0.16.2`); older engines reject it at run time.
+- Service task actions (`ServiceAction`) have three types. The workflow engine
+  executes all three at run time:
+  - `NOTIFY`: `channels`, `recipients` (an `ApproverResolver`), optional
+    `template`, and optional `webhooks` (host-registered NOTIFY webhook
+    endpoints, referenced by key and version; no URL or secret is stored).
+  - `WEBHOOK`: `url`, optional `headers` and `payload`.
+  - `SET_FORM_FIELD`: `fieldPath` and `value`.
+- The designer's service-task panel creates and edits `NOTIFY` actions only.
+  `WEBHOOK` and `SET_FORM_FIELD` actions can be stored in a workflow JSON
+  document, and the workflow-assistant toolset (`workflow-toolset`) can produce
+  all three, but the panel does not offer them as choices. Editing a
+  non-`NOTIFY` action's recipients in the panel replaces it with a `NOTIFY`
+  action.
 
 ## Commands
 

@@ -15,7 +15,7 @@ This repository is an Nx integrated monorepo. The important boundary is:
   resolvers/mutations, entities, migrations, TypeORM helpers, auth contracts,
   and `BPMRootModule`.
 - `apps/client` is the Next.js backoffice UI. It talks to `apps/api` through
-  GraphQL and `/api/auth/*`.
+  GraphQL (`/graphql`) and the root-level REST auth endpoints (`/auth/*`).
 - `libs/shared` owns frontend/backend shared BPM contracts such as workflow,
   form, condition, identity, organization, and status types.
 
@@ -27,19 +27,19 @@ imports `BPMRootModule` from `@rytass/bpm-core-nestjs-module`.
 
 Local development uses two processes:
 
-- API: `apps/api`, served by `pnpm api`, default
-  `http://localhost:17603/api`.
-- GraphQL: served by `apps/api` at `http://localhost:17603/graphql`.
+- API: `apps/api`, served by `pnpm api`, default `http://localhost:17603`.
+  The API has no global prefix: GraphQL is at `/graphql`, and the REST auth
+  and attachment endpoints are at the root (`/auth/*`, `/attachments/*`).
 - Client: `apps/client`, served by `pnpm client`, default
   `http://localhost:17602`.
 
 The client endpoint resolver is host-aware:
 
 - Browser hostname `localhost` or `127.0.0.1`: GraphQL defaults to
-  `http://localhost:17603/graphql`; auth defaults to
-  `http://localhost:17603/api`.
+  `http://localhost:17603/graphql`; auth defaults to `http://localhost:17603`
+  (root-level `/auth/*`).
 - Deployed hostnames: GraphQL defaults to same-origin `/graphql`; auth defaults
-  to same-origin `/api`.
+  to same-origin root paths (`/auth/*`).
 - `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_API_AUTH_URL` can override these
   defaults when an external deployment needs a split API host.
 
@@ -50,10 +50,11 @@ must call a different API origin.
 Staging is deployed at:
 
 - Client: `https://bpm-core-staging.rytass.info/`
-- API: `https://bpm-core-staging.rytass.info/api`
-- GraphQL: `https://bpm-core-staging.rytass.info/graphql`
+- API (GraphQL and auth): `https://bpm-core-staging.rytass.info` (GraphQL at
+  `/graphql`, auth at `/auth/*`, attachments at `/attachments/*`)
 
-The staging ingress routes `/api` and `/graphql` to the API container and all
+The staging ingress (`tools/deployment-staging.yml`, Traefik `IngressRoute`)
+routes `/graphql`, `/auth` and `/attachments` to the API container and all
 other paths to the client container. The GitHub Actions `Staging Server`
 workflow builds both images, runs migrations in the API init container, applies
 `tools/deployment-staging.yml`, and waits for the GKE rollout. The checked-in
@@ -104,10 +105,15 @@ treated as a production identity system.
 
 Runtime auth endpoints:
 
-- `GET /api/auth/test-members`: lists available DB-backed test accounts.
-- `POST /api/auth/login`: writes the signed HTTP-only session cookie.
-- `GET /api/auth/me`: reads the current session member.
-- `POST /api/auth/logout`: clears the session cookie.
+- `GET /auth/test-members`: lists available DB-backed test accounts.
+- `POST /auth/login`: writes the signed HTTP-only session cookie.
+- `GET /auth/me`: reads the current session member.
+- `POST /auth/logout`: clears the session cookie.
+
+`GET /auth/test-members` is registered unconditionally by the `apps/api` demo
+host; it is not gated by `NODE_ENV`. The staging host runs with
+`NODE_ENV=production` and depends on this endpoint, so it stays. A production
+host that copies this shell must remove the endpoint or guard it itself.
 
 Reset/seeding commands:
 
@@ -136,12 +142,17 @@ pnpm dev
 `pnpm migration:run` separately only when you need migrations without resetting
 the seed scenario.
 
-`pnpm dev` launches both long-running dev servers — `pnpm api`
-(http://localhost:17603/graphql) and `pnpm client` (http://localhost:17602) —
-in a single tiled **tmux** session (`scripts/dev-tmux.sh`). Re-running attaches
-to the existing session; stop everything with `tmux kill-session -t bpm-core-dev`.
-Prefer separate terminals (or no tmux)? Run `pnpm api` and `pnpm client`
-individually instead.
+`pnpm dev` starts the dev supervisor (`scripts/dev-supervisor.mts`). It runs
+`pnpm api` (http://localhost:17603/graphql) and `pnpm client`
+(http://localhost:17602) under one parent process, keeps per-service logs, and
+reports service exits. After a code change, `pnpm dev:ctl restart <api|client>`
+restarts one service without stopping the other (`scripts/dev-ctl.mts` documents
+the exit codes).
+
+`pnpm dev:tmux` is the separate tmux variant (`scripts/dev-tmux.sh`): both
+servers in one tiled **tmux** session. Re-running attaches to the existing
+session; stop it with `tmux kill-session -t bpm-core-dev`. Prefer separate
+terminals (or no supervisor)? Run `pnpm api` and `pnpm client` individually.
 
 ## Designer AI Assistant
 

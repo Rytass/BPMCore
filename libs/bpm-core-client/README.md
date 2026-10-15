@@ -17,14 +17,16 @@ It does **not** ship React components, hooks, or UI. Hosts can call the
 functions directly from any framework (Next.js / Vite / Remix / plain Node).
 
 Form clients can import the shared option-field contracts from
-`@rytass/bpm-core-shared/form`. `createFieldDefinition()` includes the
-`autocomplete` variant, while the pure form-rendering helpers retain the
+`@rytass/bpm-core-shared/form`. `createFieldDefinition()` is exported from
+`@rytass/bpm-core-client/form`; it includes the `autocomplete` variant, while the
+pure form-rendering helpers (`form-rendering`, same subpath) retain the
 primitive value contract and distinguish static option fields from dynamic
 DataSource references.
 
 ## Package Status
 
-Current version: `0.1.10`
+The version is set by `nx release`; see `CHANGELOG.md` in this package for the
+current version and history.
 
 The package intentionally stays framework-agnostic so it can be reused from
 Next.js Server Components, Server Actions, plain React, or non-React
@@ -102,12 +104,13 @@ async function fetchInbox(): Promise<unknown> {
 }
 ```
 
-> For SSR cases that need to call **many** typed functions, the cleanest
-> long-term option is to add a `configureBPMClient({ fetch, endpoint })`
-> hook so the typed wrappers can be reused. That is not yet shipped — if
-> you need it, file an issue. Today, Server Component callers either talk
-> to the host directly (as above) or proxy through a Route Handler that
-> runs inside the consumer's browser session.
+> For SSR cases that need to call **many** typed functions, call
+> `configureBPMClient({ baseUrl, authBaseUrl, fetch, headers })` once at
+> startup (see [Server-side base URL override](#server-side-base-url-override))
+> so the typed wrappers reuse the same endpoint. The configuration is
+> process-wide and static, so it cannot carry a per-request session cookie; for
+> per-request cookies use the direct `fetch` above, or proxy through a Route
+> Handler that runs inside the consumer's browser session.
 
 ### Node CLI recipe
 
@@ -287,8 +290,17 @@ are independent and partial-failures stay committed.
 
 The GraphQL client resolves its endpoint via `NEXT_PUBLIC_API_URL` or
 same-origin. Node scripts that aren't running inside Next.js (cron
-workers, one-off org seeds, integration tests) should call
-`configureBPMClient` from the root package barrel once at startup:
+workers, one-off org seeds, integration tests) can call `configureBPMClient`
+from the root package barrel once at startup. Its `BPMClientConfig` fields are:
+
+- `baseUrl`: GraphQL endpoint override; an origin without `/graphql` also
+  derives the REST `/auth/*` base.
+- `authBaseUrl`: REST `/auth/*` base, set independently for split-origin hosts.
+- `fetch`: replacement for the global `fetch`.
+- `headers`: extra headers merged into every request.
+
+Each call **replaces** the previous configuration (it does not merge); pass `{}`
+to reset to the environment-based defaults.
 
 ```ts
 import { configureBPMClient } from '@rytass/bpm-core-client';
@@ -302,8 +314,8 @@ configureBPMClient({
 ```
 
 All subsequent calls to `requestGraphQl` and the REST auth client honor
-the override. Both `baseUrl` and `headers` are static for the process
-lifetime — call `configureBPMClient` again to replace.
+the override. The configuration is process-wide; call `configureBPMClient`
+again to replace it.
 
 ## Auth REST Endpoints
 
@@ -329,14 +341,25 @@ Examples:
 
 ```ts
 import { resolveMembers, searchMembers } from '@rytass/bpm-core-client';
-import { listApprovalInstances, decideTask, submitApprovalInstance } from '@rytass/bpm-core-client/workflow';
+import { listApprovalInstancesPage, listInboxTasks, decideTask, submitApprovalInstance } from '@rytass/bpm-core-client/workflow';
 import { listApprovalTemplates } from '@rytass/bpm-core-client/template';
 import { listFormDefinitions } from '@rytass/bpm-core-client/form';
 import { listOrgUnits, listPositions } from '@rytass/bpm-core-client/organization';
 
 const members = await resolveMembers(['member-001', 'member-002']);
-const templates = await listApprovalTemplates({ status: 'PUBLISHED' });
-const inbox = await listApprovalInstances({ assigneeMemberId: members[0]?.memberId ?? null });
+// Takes no arguments; filter the result in code.
+const templates = (await listApprovalTemplates()).filter((t) => t.status === 'PUBLISHED');
+// 待簽 (my pending tasks): the inbox is keyed by assignee member id.
+const inbox = await listInboxTasks('member-001');
+// Paged instance list (state, view, templateId, searchText are all required keys).
+const { instances } = await listApprovalInstancesPage({
+  view: 'SENT',
+  state: null,
+  page: 1,
+  pageSize: 20,
+  searchText: null,
+  templateId: null,
+});
 ```
 
 The available operations track the BPM resolvers; consult the GraphQL schema
