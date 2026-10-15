@@ -27,6 +27,7 @@ import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { formatMemberLabel } from '../../../lib/format-member-label';
 import styles from './users.module.scss';
+import { MemberTaskReassignModal } from './MemberTaskReassignModal';
 import {
   listMemberDirectoryPage,
   MemberProfileRecord,
@@ -70,6 +71,8 @@ export function AdminUsersView(): ReactElement {
   const [members, setMembers] = useState<readonly MemberProfileRecord[]>([]);
   const [orgUnits, setOrgUnits] = useState<readonly OrgUnitRecord[]>([]);
   const [positions, setPositions] = useState<readonly PositionRecord[]>([]);
+  const [reassignMember, setReassignMember] =
+    useState<MemberProfileRecord | null>(null);
   const [searchText, setSearchText] = useState('');
 
   const orgUnitsById = useMemo(
@@ -167,9 +170,15 @@ export function AdminUsersView(): ReactElement {
             void openDetail(record);
           },
         },
+        {
+          name: '改派待辦',
+          onClick: (record): void => {
+            setReassignMember(record);
+          },
+        },
       ],
       variant: 'base-secondary',
-      width: 88,
+      width: 176,
     }),
     [openDetail],
   );
@@ -251,6 +260,13 @@ export function AdminUsersView(): ReactElement {
           />
         </Section>
       </SectionGroup>
+
+      <MemberTaskReassignModal
+        member={reassignMember}
+        onClose={(): void => {
+          setReassignMember(null);
+        }}
+      />
 
       <MemberDetailModal
         managerProfile={detailManagerProfile}

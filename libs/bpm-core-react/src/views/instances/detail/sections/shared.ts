@@ -527,6 +527,7 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
     activityLog.eventType === 'TASK_DECIDED' ||
     activityLog.eventType === 'SLA_TRIGGERED' ||
     activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
+    activityLog.eventType === 'TASK_REASSIGNED' ||
     isSequentialTaskCreation(activityLog) ||
     isNotifyWebhookActivity(
       activityLog.eventType,
@@ -627,6 +628,7 @@ export function readActivityEventLabel(
     return readTaskDecisionEventLabel(readStringField(payload, 'action'));
   }
   if (eventType === 'SLA_TRIGGERED') return '時限提醒已觸發';
+  if (eventType === 'TASK_REASSIGNED') return '管理者改派待辦';
   if (isNotifyWebhookActivity(eventType, payload)) {
     const endpointLabel = readNotifyWebhookEndpointLabel(payload);
 
