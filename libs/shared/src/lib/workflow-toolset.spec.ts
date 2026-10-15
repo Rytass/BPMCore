@@ -799,6 +799,55 @@ describe('set_user_task_decision_policy', () => {
     });
   });
 
+  it('reads a POSITION fallback, with its self-approval flag, on a manager resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const afterApprover = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: {
+          allowInitiatorSelfApproval: true,
+          positionId: 'position-cfo',
+          type: 'POSITION',
+        },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(afterApprover)).toEqual({
+      baseFromInitiator: true,
+      fallback: {
+        allowInitiatorSelfApproval: true,
+        positionId: 'position-cfo',
+        type: 'POSITION',
+      },
+      levelsUp: 1,
+      preferClosestOrgUnit: false,
+      type: 'ORG_MANAGER',
+    });
+  });
+
+  it.each([
+    ['a POSITION fallback without a position id', { type: 'POSITION' }],
+    ['a blank position id', { positionId: '  ', type: 'POSITION' }],
+  ])(
+    'drops a malformed POSITION fallback (%s) but keeps the manager resolver',
+    async (_label, fallback) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const afterApprover = await runTool(state, 'set_user_task_approver', {
+        approverResolver: { fallback, levelsUp: 1, type: 'ORG_MANAGER' },
+        nodeId,
+      });
+
+      expect(readApproverResolver(afterApprover)).toEqual({
+        baseFromInitiator: true,
+        levelsUp: 1,
+        preferClosestOrgUnit: false,
+        type: 'ORG_MANAGER',
+      });
+    },
+  );
+
   it('reads a DIRECT fallback on an ORG_MANAGER resolver (it used to be dropped)', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const afterApprover = await runTool(state, 'set_user_task_approver', {

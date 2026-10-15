@@ -105,6 +105,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
     'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
   properties: {
     type: {
@@ -1425,25 +1426,35 @@ function parseApproverResolverFallback(
     return { type: 'NONE' };
   }
 
-  const memberId = readNonEmptyString(value['memberId']);
   const allowInitiatorSelfApproval = value['allowInitiatorSelfApproval'];
 
   if (
-    value['type'] !== 'DIRECT' ||
-    !memberId ||
-    (allowInitiatorSelfApproval !== undefined &&
-      typeof allowInitiatorSelfApproval !== 'boolean')
+    allowInitiatorSelfApproval !== undefined &&
+    typeof allowInitiatorSelfApproval !== 'boolean'
   ) {
     return null;
   }
 
-  return {
-    memberId,
-    type: 'DIRECT',
-    ...(allowInitiatorSelfApproval === undefined
+  const selfApprovalField =
+    allowInitiatorSelfApproval === undefined
       ? {}
-      : { allowInitiatorSelfApproval }),
-  };
+      : { allowInitiatorSelfApproval };
+
+  if (value['type'] === 'POSITION') {
+    const positionId = readNonEmptyString(value['positionId']);
+
+    return positionId
+      ? { ...selfApprovalField, positionId, type: 'POSITION' }
+      : null;
+  }
+
+  const memberId = readNonEmptyString(value['memberId']);
+
+  if (value['type'] !== 'DIRECT' || !memberId) {
+    return null;
+  }
+
+  return { ...selfApprovalField, memberId, type: 'DIRECT' };
 }
 
 function readNonEmptyString(value: unknown): string | null {
