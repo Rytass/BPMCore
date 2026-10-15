@@ -133,6 +133,34 @@ export type ApproverResolverFallback =
       readonly type: 'POSITION';
     };
 
+// Keyed by the union so that adding a fallback type fails to compile until it
+// is listed here: the engine and the designer both read this one table.
+const KNOWN_APPROVER_FALLBACK_TYPES: Readonly<
+  Record<ApproverResolverFallback['type'], true>
+> = {
+  DIRECT: true,
+  NONE: true,
+  POSITION: true,
+};
+
+/**
+ * The fallback's type when this build does not know it (a definition saved by
+ * a newer version), or `null` when it does. Takes a bare `type` so a newer
+ * definition can be checked without the compiler having narrowed it away.
+ * The engine refuses such a fallback at run time; the designer keeps it
+ * untouched and shows it read-only.
+ */
+export function readUnsupportedApproverFallbackType(fallback: {
+  readonly type: string;
+}): string | null {
+  return Object.prototype.hasOwnProperty.call(
+    KNOWN_APPROVER_FALLBACK_TYPES,
+    fallback.type,
+  )
+    ? null
+    : fallback.type;
+}
+
 export type DecisionPolicy =
   | { readonly type: 'SINGLE' }
   | { readonly type: 'SEQUENTIAL' }

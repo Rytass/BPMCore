@@ -22,6 +22,7 @@ import {
   ServiceTaskNode,
   ApproverResolver,
   ApproverResolverFallback,
+  readUnsupportedApproverFallbackType,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -9570,25 +9571,6 @@ type DryRunFallbackProblem =
   | 'BLANK_POSITION'
   | 'IS_INITIATOR'
   | 'UNSUPPORTED';
-
-const SUPPORTED_APPROVER_FALLBACK_TYPES: ReadonlySet<string> = new Set([
-  'NONE',
-  'DIRECT',
-  'POSITION',
-]);
-
-/**
- * The fallback's type when this engine does not know it, or `null` when it
- * does. Takes a bare `type` so a newer definition can be checked without the
- * compiler having narrowed it away first.
- */
-function readUnsupportedApproverFallbackType(fallback: {
-  readonly type: string;
-}): string | null {
-  return SUPPORTED_APPROVER_FALLBACK_TYPES.has(fallback.type)
-    ? null
-    : fallback.type;
-}
 
 // Why a manager resolver's fixed fallback cannot take over when the initiator
 // has no manager, or `null` when it can: like the runtime, it must exist, name

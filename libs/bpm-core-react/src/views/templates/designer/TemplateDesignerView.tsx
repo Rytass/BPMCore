@@ -88,6 +88,7 @@ import {
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
   NotifyWebhookTarget,
+  readUnsupportedApproverFallbackType,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -133,7 +134,6 @@ import {
   readPositionOption,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
-import { readUnsupportedApproverFallbackType } from './approver-fallback';
 import {
   readDefaultMinPositionLevel,
   readMinPositionLevelOptions,
