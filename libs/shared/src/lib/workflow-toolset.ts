@@ -193,7 +193,8 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'set_user_task_approver',
     description:
       '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。' +
-      '原有的決策政策會保留；只有當新的簽核人員人數已撐不住原本的 QUORUM 門檻（那樣這一關將永遠無法通過）時，' +
+      '原有的決策政策會保留；若新的 approverResolver 沒有 fallback 欄位，原有的無主管時備援也會保留（要清除請明確傳入 fallback.type 為 NONE）。' +
+      '只有當新的簽核人員人數已撐不住原本的 QUORUM 門檻（那樣這一關將永遠無法通過）時，' +
       '才會自動重設為 SINGLE（單人簽核）。若發生重設，請主動告知使用者，並視需要用 ' +
       'set_user_task_decision_policy 協助重新設定一個合理的門檻。',
     inputSchema: objectSchema(
@@ -681,13 +682,79 @@ export async function executeWorkflowTool(
       return finalizeMutation('macro', result);
     }
 
-    const command = buildPrimitiveCommand(toolName, input);
+    const command = carryOverApproverFallback(
+      buildPrimitiveCommand(toolName, input),
+      state,
+      input,
+    );
     const result = applyWorkflowCommand(state, command, options);
 
     return finalizeMutation('mutation', result);
   } catch (error: unknown) {
     return { error: readToolError(error), ok: false };
   }
+}
+
+type FallbackCapableApproverResolver = Extract<
+  ApproverResolver,
+  { readonly type: 'ORG_MANAGER' | 'ORG_UNIT_MANAGER' | 'ORG_MANAGER_CHAIN' }
+>;
+
+function isFallbackCapableApproverResolver(
+  resolver: ApproverResolver | undefined,
+): resolver is FallbackCapableApproverResolver {
+  return (
+    resolver?.type === 'ORG_MANAGER' ||
+    resolver?.type === 'ORG_UNIT_MANAGER' ||
+    resolver?.type === 'ORG_MANAGER_CHAIN'
+  );
+}
+
+/**
+ * `set_user_task_approver` replaces the whole resolver, so a call that leaves
+ * `fallback` out would silently drop the fallback the node already has. When
+ * the call omits the key and both the old and the new resolver take a
+ * fallback, the existing one is kept. A `fallback` key in the call (including
+ * `{ type: 'NONE' }`) is always obeyed as written.
+ */
+function carryOverApproverFallback(
+  command: WorkflowCommand,
+  state: WorkflowDesignerState,
+  input: Readonly<Record<string, unknown>>,
+): WorkflowCommand {
+  if (command.type !== 'setUserTaskApprover') {
+    return command;
+  }
+
+  const rawResolver = input['approverResolver'];
+
+  if (isRecord(rawResolver) && 'fallback' in rawResolver) {
+    return command;
+  }
+
+  const nextResolver = command.approverResolver;
+  const node = state.definition.nodes.find(
+    (candidate) => candidate.id === command.nodeId,
+  );
+  const currentResolver =
+    node?.type === 'userTask' ? node.data.approverResolver : undefined;
+
+  if (
+    !isFallbackCapableApproverResolver(nextResolver) ||
+    nextResolver.fallback !== undefined ||
+    !isFallbackCapableApproverResolver(currentResolver) ||
+    currentResolver.fallback === undefined
+  ) {
+    return command;
+  }
+
+  return {
+    ...command,
+    approverResolver: {
+      ...nextResolver,
+      fallback: currentResolver.fallback,
+    },
+  };
 }
 
 function finalizeMutation(
@@ -1138,13 +1205,17 @@ function parseApproverResolver(value: unknown): ApproverResolver {
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
-    case 'ORG_MANAGER':
+    case 'ORG_MANAGER': {
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
       return {
         baseFromInitiator: value['baseFromInitiator'] !== false,
         levelsUp: readPositiveInteger(value['levelsUp'], 1),
         preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'ORG_MANAGER',
+        ...(fallback ? { fallback } : {}),
       };
+    }
     case 'ORG_MANAGER_CHAIN': {
       const minPositionLevel = value['minPositionLevel'];
       const fallback = parseApproverResolverFallback(value['fallback']);
@@ -1160,12 +1231,14 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     }
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
+      const fallback = parseApproverResolverFallback(value['fallback']);
 
       return orgUnitId
         ? {
             orgUnitId,
             preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
             type: 'ORG_UNIT_MANAGER',
+            ...(fallback ? { fallback } : {}),
           }
         : DEFAULT_MANAGER_RESOLVER;
     }

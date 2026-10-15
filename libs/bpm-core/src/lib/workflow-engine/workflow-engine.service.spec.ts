@@ -2930,6 +2930,29 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('refuses a fallback type this engine does not know with an upgrade hint instead of a TypeError', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        approverResolver: {
+          baseFromInitiator: true,
+          // A definition saved by a newer engine: this engine has no such type.
+          fallback: { type: 'FUTURE_KIND' } as unknown as {
+            readonly type: 'NONE';
+          },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      '此引擎版本不支援改派類型「FUTURE_KIND」',
+    );
+  });
+
   it('allows self fallback only when the workflow explicitly allows initiator self approval', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -7657,6 +7680,28 @@ describe('WorkflowEngineService', () => {
       expect(result.steps.at(-1)).toMatchObject({
         message:
           '簽核節點「財務簽核」找不到主管，且改派固定人是申請人本人，此節點未允許申請人自簽',
+        nodeId: 'task_finance',
+        status: 'STOPPED',
+      });
+    });
+
+    it('explains an unsupported fallback type in the dry run instead of blaming the org chart', (): void => {
+      const result = runDryRun(
+        createLinearUserTaskWorkflow({
+          approverResolver: {
+            baseFromInitiator: true,
+            fallback: { type: 'FUTURE_KIND' } as unknown as {
+              readonly type: 'NONE';
+            },
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        }),
+      );
+
+      expect(result.steps.at(-1)).toMatchObject({
+        message:
+          '簽核節點「財務簽核」找不到主管，且此引擎版本不支援該改派設定，請升級 BPMCore 後再試',
         nodeId: 'task_finance',
         status: 'STOPPED',
       });
