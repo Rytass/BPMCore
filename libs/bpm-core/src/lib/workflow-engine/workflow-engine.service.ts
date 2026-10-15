@@ -919,6 +919,21 @@ export class WorkflowEngineService {
           );
         }
 
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          transferToMemberId !== null &&
+          isGroupDecisionPolicy(readDecisionPolicySnapshot(task)) &&
+          taskCandidates.some(
+            (candidate) =>
+              candidate.memberId === transferToMemberId &&
+              OPEN_SEAT_STATUSES.includes(candidate.status),
+          )
+        ) {
+          throw new ConflictException(
+            'Transfer target already holds an open seat on this task',
+          );
+        }
+
         if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
           throw new ConflictException(
             `Approval instance ${instance.id} is not running`,
@@ -1062,6 +1077,33 @@ export class WorkflowEngineService {
             transferToMemberId,
           }),
         );
+
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          transferToMemberId !== null &&
+          isGroupDecisionPolicy(readDecisionPolicySnapshot(claimedTask))
+        ) {
+          await this.transferGroupSeat(manager, {
+            actorCandidate: claimedCandidate,
+            decidedAt,
+            decision,
+            instance,
+            node: taskNode,
+            reusableRow:
+              taskCandidates.find(
+                (candidate) =>
+                  candidate.memberId === transferToMemberId &&
+                  REUSABLE_SEAT_STATUSES.includes(candidate.status),
+              ) ?? null,
+            signature,
+            task: claimedTask,
+            toMemberId: transferToMemberId,
+            transferReason:
+              options.transferReason ?? MANUAL_TRANSFER_DELEGATION_REASON,
+          });
+
+          return decision;
+        }
 
         if (input.action === TaskDecisionActionEnum.TRANSFERRED) {
           await this.transferTask(
@@ -5522,6 +5564,87 @@ export class WorkflowEngineService {
   }
 
   /**
+   * A holder's transfer of their seat on a group stage (PARALLEL_ALL,
+   * PARALLEL_ANY, QUORUM). The stage stays open: the transferring seat moves
+   * to the target in place, the other seats keep their state, and the task
+   * keeps its id. Unlike transferTask, no replacement SINGLE task is created
+   * and the other voters are not superseded. The transferring member's
+   * decision and signature are kept on the task.
+   */
+  private async transferGroupSeat(
+    manager: EntityManager,
+    {
+      actorCandidate,
+      decidedAt,
+      decision,
+      instance,
+      node,
+      reusableRow,
+      signature,
+      task,
+      toMemberId,
+      transferReason,
+    }: {
+      readonly actorCandidate: TaskCandidateEntity | null;
+      readonly decidedAt: Date;
+      readonly decision: TaskDecisionEntity;
+      readonly instance: ApprovalInstanceEntity;
+      readonly node: UserTaskNode;
+      readonly reusableRow: TaskCandidateEntity | null;
+      readonly signature: {
+        readonly id: string;
+        readonly signedPayloadHash: string;
+      };
+      readonly task: TaskEntity;
+      readonly toMemberId: string;
+      readonly transferReason: string;
+    },
+  ): Promise<void> {
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const fromMemberId = decision.decidedByMemberId;
+    const seat = await this.replaceOpenSeat(manager, {
+      decidedAt,
+      fromMemberId,
+      reusableRow,
+      sourceRow: actorCandidate,
+      step: {
+        from: fromMemberId,
+        reason: transferReason,
+        ruleId: null,
+        to: toMemberId,
+      },
+      task,
+      toMemberId,
+    });
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: fromMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: decision.comment,
+          decisionId: decision.id,
+          signatureId: signature.id,
+          signedPayloadHash: signature.signedPayloadHash,
+          transferToMemberId: toMemberId,
+        },
+        taskId: task.id,
+      }),
+    );
+
+    await this.notifySeatReplaced(manager, {
+      fromMemberId,
+      instance,
+      node,
+      seat,
+      toMemberId,
+    });
+  }
+
+  /**
    * Moves one open seat from `fromMemberId` to `toMemberId` on the same task.
    *
    * With a source candidate row: that row is marked TRANSFERRED, and the target
@@ -8231,6 +8354,19 @@ function readDecisionPolicySnapshot(task: TaskEntity): DecisionPolicy {
   }
 
   return { type: 'SINGLE' };
+}
+
+/**
+ * Stages where several seats decide together. A holder's transfer on one of
+ * them moves that seat in place; SINGLE and SEQUENTIAL keep the replacement
+ * task path.
+ */
+function isGroupDecisionPolicy(policy: DecisionPolicy): boolean {
+  return (
+    policy.type === 'PARALLEL_ALL' ||
+    policy.type === 'PARALLEL_ANY' ||
+    policy.type === 'QUORUM'
+  );
 }
 
 /** Candidate states in which the seat is no longer part of the task. */
