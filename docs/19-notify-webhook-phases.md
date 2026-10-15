@@ -886,7 +886,7 @@ spec 載入整個 lib）；`imports: [VaultModule]` 雖多餘但沿用 TypeORM �
 
 盤點既有 webhook 路徑時發現、但不在本計畫處理的問題：
 
-> **2026-10-15 查證（只讀，未改程式）**：#13 已由 v0.13.4 發布解除。#7 的 email 段 JSDoc 已與程式一致，但 webhook 段仍寫「auto 只需 signing secret」，而程式 `Boolean(webhookEndpointUrl && webhookSigningSecret)` 同時需要 URL，故仍未完成。#8 設計器仍保留私有 `readWorkflowDefinitionIssue`（`libs/bpm-core-react/src/views/templates/designer/TemplateDesignerView.tsx`），未與 shared 版統一。#17 端點管理頁仍沒有最近投遞；案件頁的 `InstanceWebhookDeliveriesSection` 只顯示單一案件。#19 開機時只檢查加密金鑰（`parseWorkflowWebhookSecretKey`），registry 端點的 `signingSecret` 未檢查。
+> **2026-10-15 查證**（查證本身只讀；之後同日只改了 #7 的 JSDoc）：#13 已由 v0.13.4 發布解除。#7 的 email 段 JSDoc 已與程式一致；webhook 段原本寫「auto 只需 signing secret」，而程式 `Boolean(webhookEndpointUrl && webhookSigningSecret)` 同時需要 URL，已於同日改正 JSDoc（未發佈，v0.16.2 之後），#7 完成。#8 設計器仍保留私有 `readWorkflowDefinitionIssue`（`libs/bpm-core-react/src/views/templates/designer/TemplateDesignerView.tsx`），未與 shared 版統一。#17 端點管理頁仍沒有最近投遞；案件頁的 `InstanceWebhookDeliveriesSection` 只顯示單一案件。#19 開機時只檢查加密金鑰（`parseWorkflowWebhookSecretKey`），registry 端點的 `signingSecret` 未檢查。
 >
 > 其餘已逐條核對、仍未完成者：#1（預設投遞沿用 `fetch` 的預設 redirect）、#2（設計器 `updateNotifyRecipients` 會把 WEBHOOK 動作改成 NOTIFY）、#3（`parseServiceAction` 的 WEBHOOK 分支未讀 `headers`）、#4（ad-hoc 目標仍直接呼叫 `dispatchWebhook`、無重試，`@IsUrl({ require_tld: false })`）、#5（錯誤訊息仍截 500 字，`workflow-service-task-dispatcher.token.ts`）、#6（`notificationDeliverySchedulerEnabled` 預設 `false`）、#11（`readConditionExpressions` 讀取 `node.data` 前無防護）、#12（每批上限 5，無程序層級上限）、#15（只接受一把金鑰）、#16（AES-GCM 未設 AAD）、#20（`configureBPMClient` 只有全域 `headers`，無 per-call header）。#9、#10、#14、#18 本次未逐條查證，維持原狀。
 
@@ -900,7 +900,7 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
    寫入所有案件讀者可見的活動紀錄。
 6. 通知管道 `WEBHOOK`（路徑 B）在引擎交易內建立的列只靠排程器送出，而排程器預設關閉；
    每位收件人各送一次到同一全域 URL。
-7. `notification-options.ts` JSDoc 說 `auto` 只需 secret，程式實際需要 URL 與 secret。
+7. ~~`notification-options.ts` JSDoc 說 `auto` 只需 secret，程式實際需要 URL 與 secret。~~ 已修正 JSDoc（2026-10-15，未發佈）。
 8. **設計器私有 `readWorkflowDefinitionIssue` 與 shared 版仍有規則漂移**（P0 驗證發現）：
    shared 版另有「會簽門檻人數無法達成」與「條件分流缺預設路徑」兩條，設計器版沒有。
    兩者後端發布時都會擋，但設計器目前允許儲存含這兩種問題的草稿。整份改用 shared 版會

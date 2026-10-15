@@ -82,9 +82,9 @@ export interface BPMRootNotificationOptions {
   /**
    * Controls whether BPM may create and dispatch webhook notifications.
    *
-   * Use `auto` to enable webhooks only when
-   * `notificationWebhookSigningSecret` is present. Use `false` to force
-   * webhooks off. Defaults to `auto`.
+   * Use `auto` to enable webhooks only when both
+   * `notificationWebhookEndpointUrl` and `notificationWebhookSigningSecret`
+   * are present. Use `false` to force webhooks off. Defaults to `auto`.
    */
   readonly notificationWebhookEnabled?: NotificationFeatureToggle;
 
