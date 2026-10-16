@@ -1206,6 +1206,9 @@ async function verifyTemplateCategoryCrud(
     .click();
   await expect(page.getByRole('heading', { name: '刪除分類' })).toBeVisible();
   await page.getByRole('dialog').getByRole('button', { name: '刪除' }).click();
+  // The dialog stays open until the mutation settles; while it is open the
+  // table is hidden behind the modal, so the row check alone passes early.
+  await expect(page.getByRole('heading', { name: '刪除分類' })).toBeHidden();
   await expect(
     page.getByRole('row').filter({ hasText: updatedCategoryName }),
   ).toBeHidden();
@@ -1224,12 +1227,10 @@ async function verifyTemplateCategoryCrud(
     { searchText: updatedCategoryName },
   );
 
-  expect(categoryData.approvalTemplateCategories).toContainEqual(
-    expect.objectContaining({
-      isActive: false,
-      name: updatedCategoryName,
-      sortOrder: 77,
-    }),
+  // Deleting an unreferenced category removes the row outright; `status: ALL`
+  // would still list it if it had only been deactivated.
+  expect(categoryData.approvalTemplateCategories).not.toContainEqual(
+    expect.objectContaining({ name: updatedCategoryName }),
   );
   await page.context().close();
 }
