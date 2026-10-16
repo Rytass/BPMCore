@@ -362,7 +362,7 @@ export function TemplateCategoriesView(): ReactElement {
         showModalFooter
         showModalHeader
         size="regular"
-        supportingText="若分類已被模板使用，系統會改為停用分類並保留既有模板關聯。"
+        supportingText="已被模板使用的分類無法刪除，請改用「停用」。"
         title="刪除分類"
       >
         <Typography color="text-neutral" variant="body">
