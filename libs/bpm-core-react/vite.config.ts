@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -123,6 +123,30 @@ function fullySpecifyDeclarationImports(
   );
 }
 
+// A .d.ts inside a `"type": "module"` package is ESM to TypeScript, so a
+// `require` consumer resolving it gets ESM types for a CJS entry. Emit a
+// .d.cts twin per declaration, pointing its relative imports at the sibling
+// .cjs files, for the `require.types` conditions in `package.json#exports`.
+function emitCommonJsDeclarations(emittedFiles: Map<string, string>): void {
+  [...emittedFiles.keys()]
+    .filter((filePath) => filePath.endsWith('.d.ts'))
+    .forEach((filePath) => {
+      writeFileSync(
+        filePath.replace(/\.d\.ts$/, '.d.cts'),
+        readFileSync(filePath, 'utf8').replace(
+          RELATIVE_SPECIFIER,
+          (
+            match: string,
+            lead: string,
+            quote: string,
+            specifier: string,
+          ): string =>
+            `${lead}${quote}${specifier.replace(/\.js$/, '.cjs')}${quote}`,
+        ),
+      );
+    });
+}
+
 export default defineConfig({
   plugins: [
     react(),
@@ -151,6 +175,7 @@ export default defineConfig({
         filePath.endsWith('.d.ts')
           ? { content: fullySpecifyDeclarationImports(filePath, content) }
           : undefined,
+      afterBuild: emitCommonJsDeclarations,
     }),
   ],
   build: {
