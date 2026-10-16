@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-15, pending the release after `v0.16.2`): `libs/shared@0.16.2`, `libs/bpm-core-client@0.16.2`, `libs/bpm-core@0.16.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.16.2`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-16, pending the release after `v0.17.0`): `libs/shared@0.17.0`, `libs/bpm-core-client@0.17.0`, `libs/bpm-core@0.17.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.0`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.16.2` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.0` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -25,15 +25,15 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | SEQUENTIAL signs one candidate at a time; ORG_MANAGER_CHAIN resolver; excludeInitiator | `v0.14.0` |
 | Approval instance business key; submittedByMemberId; organizationTimeZone | `v0.15.0` |
 | Attachment signing-secret zero-config (PR #84) | `v0.16.0` |
-| Administrator task reassignment (issue #37): reassignTask, reassignMemberTasks, listMemberOpenTasks and their client wrappers | Not yet released |
-| Organization unit retirement into a successor unit: transferToOrgUnitId, readOrgUnitRetirementImpact and the hard-delete exception | Not yet released |
-| lastDecision in edge conditions, with the reshaped LastDecisionContext and InstanceContext | Not yet released |
-| Delegation rule priority (higher first; ties go to the rule created first) and the save-time root check of delegation CEL | Not yet released |
-| SLA TERMINATE_INSTANCE ends the instance as EXPIRED (expireApprovalInstance, ExpireApprovalInstanceCommand, INSTANCE_EXPIRED) | Not yet released |
-| POSITION approver fallback (every current holder of a position) | Not yet released |
-| Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | Not yet released |
-| Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | Not yet released |
-| The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | Not yet released |
+| Administrator task reassignment (issue #37): reassignTask, reassignMemberTasks, listMemberOpenTasks and their client wrappers | `v0.17.0` |
+| Organization unit retirement into a successor unit: transferToOrgUnitId, readOrgUnitRetirementImpact and the hard-delete exception | `v0.17.0` |
+| lastDecision in edge conditions, with the reshaped LastDecisionContext and InstanceContext | `v0.17.0` |
+| Delegation rule priority (higher first; ties go to the rule created first) and the save-time root check of delegation CEL | `v0.17.0` |
+| SLA TERMINATE_INSTANCE ends the instance as EXPIRED (expireApprovalInstance, ExpireApprovalInstanceCommand, INSTANCE_EXPIRED) | `v0.17.0` |
+| POSITION approver fallback (every current holder of a position) | `v0.17.0` |
+| Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | `v0.17.0` |
+| Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | `v0.17.0` |
+| The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 
 ---
 
