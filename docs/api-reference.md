@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-16, pending the release after `v0.17.0`): `libs/shared@0.17.0`, `libs/bpm-core-client@0.17.0`, `libs/bpm-core@0.17.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.0`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-16): `libs/shared@0.17.1`, `libs/bpm-core-client@0.17.1`, `libs/bpm-core@0.17.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.1`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.0` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.1` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -34,7 +34,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Unknown approver fallback types refused by name (readUnsupportedApproverFallbackType; the designer keeps them read-only) | `v0.17.0` |
 | Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | `v0.17.0` |
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
-| `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | Not yet released |
+| `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 
 ---
 
@@ -318,7 +318,7 @@ Form-schema definitions.
 | `UserTaskNodeData` | interface | userTask-specific data |
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_UNIT_MEMBER / ORG_UNIT_POSITION / ORG_MANAGER / ORG_UNIT_MANAGER / DYNAMIC_FORM / EXPRESSION / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
 | `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` is not yet released. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
-| `readUnsupportedApproverFallbackType(fallback)` | function | Not yet released. The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
+| `readUnsupportedApproverFallbackType(fallback)` | function | The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
