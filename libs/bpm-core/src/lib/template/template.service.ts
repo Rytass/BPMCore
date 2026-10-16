@@ -593,9 +593,12 @@ export class TemplateService {
       );
     }
 
+    // `remove()` clears the primary key on the entity it is handed, and `id` is
+    // non-null in the schema — returning it bare failed the mutation *after*
+    // the row was already gone. Put the id back for the response.
     await this.templateCategoryRepository.remove(category);
 
-    return category;
+    return Object.assign(category, { id });
   }
 
   async listApprovalTemplateVersions(

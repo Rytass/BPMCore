@@ -1069,10 +1069,14 @@ describe('TemplateService', () => {
 
   it('deletes a category that no template references', async (): Promise<void> => {
     const category = createApprovalTemplateCategory('category-1');
+    // TypeORM's `remove()` clears the primary key on the entity it removes.
     const categoryRemove = jest.fn(
       (
         value: ApprovalTemplateCategoryEntity,
-      ): Promise<ApprovalTemplateCategoryEntity> => Promise.resolve(value),
+      ): Promise<ApprovalTemplateCategoryEntity> =>
+        Promise.resolve(
+          Object.assign(value, { id: undefined as unknown as string }),
+        ),
     );
     const service = new TemplateService(
       {
@@ -1096,6 +1100,8 @@ describe('TemplateService', () => {
 
     expect(categoryRemove).toHaveBeenCalledWith(category);
     expect(deleted).toBe(category);
+    // `id` is non-null in the GraphQL schema; losing it fails the mutation.
+    expect(deleted.id).toBe('category-1');
   });
 });
 
