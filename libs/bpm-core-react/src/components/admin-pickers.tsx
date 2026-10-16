@@ -26,6 +26,13 @@ export type PositionOption = Readonly<{
   name: string;
 }>;
 
+// Without a cap the Mezzanine dropdown grows with its options and never
+// mounts its scrollbar, so a long org-unit or position list runs off the
+// viewport with no way to reach the items below the fold. The pickers also
+// set `flip`: near the bottom of a modal the capped menu still overflows
+// unless it may open upwards.
+const PICKER_MENU_MAX_HEIGHT = 320;
+
 interface MemberPickerProps {
   readonly disabled?: boolean;
   readonly name: string;
@@ -140,7 +147,9 @@ export function OrgUnitPicker({
       <Select
         clearable
         disabled={disabled}
+        flip
         fullWidth
+        menuMaxHeight={PICKER_MENU_MAX_HEIGHT}
         onChange={(option): void => onChange(readOrgUnitOptionFromValue(option))}
         options={[...options]}
         placeholder={placeholder}
@@ -171,7 +180,9 @@ export function PositionPicker({
       <Select
         clearable
         disabled={disabled}
+        flip
         fullWidth
+        menuMaxHeight={PICKER_MENU_MAX_HEIGHT}
         onChange={(option): void => onChange(readPositionOptionFromValue(option))}
         options={[...options]}
         placeholder={placeholder}
