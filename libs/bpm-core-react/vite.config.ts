@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import dts from 'vite-plugin-dts';
@@ -85,6 +85,44 @@ const entries: Record<string, string> = Object.fromEntries(
   ),
 );
 
+const SOURCE_ROOT = resolve(__dirname, 'src');
+const DECLARATION_ROOT = resolve(__dirname, 'dist');
+const RELATIVE_SPECIFIER =
+  /(\bfrom\s+|\bimport\s*\(\s*)(['"])(\.\.?\/[^'"]*?)\2/g;
+
+// The package is `"type": "module"`, so a consumer resolving its types under
+// `moduleResolution: node16 / nodenext` reads every emitted .d.ts as ESM, where
+// a relative specifier must name the file: `./lib/auth-provider` and
+// `./notifications` (a directory) do not resolve, and everything they
+// re-export silently disappears. tsc copies the source specifiers verbatim, so
+// fully specify them here against the source tree.
+function fullySpecifyDeclarationImports(
+  filePath: string,
+  content: string,
+): string {
+  const sourceDir = resolve(
+    SOURCE_ROOT,
+    relative(DECLARATION_ROOT, dirname(filePath)),
+  );
+  return content.replace(
+    RELATIVE_SPECIFIER,
+    (match: string, lead: string, quote: string, specifier: string): string => {
+      if (/\.(c|m)?js$/.test(specifier)) return match;
+      const base = resolve(sourceDir, specifier);
+      const isFile = ['.ts', '.tsx'].some((ext) => existsSync(`${base}${ext}`));
+      const isDir = ['index.ts', 'index.tsx'].some((name) =>
+        existsSync(resolve(base, name)),
+      );
+      if (!isFile && !isDir) {
+        throw new Error(
+          `Cannot fully specify "${specifier}" in ${filePath}: no source module at ${base}`,
+        );
+      }
+      return `${lead}${quote}${specifier}${isFile ? '.js' : '/index.js'}${quote}`;
+    },
+  );
+}
+
 export default defineConfig({
   plugins: [
     react(),
@@ -109,6 +147,10 @@ export default defineConfig({
       // path map for the publish build so import specifiers stay as the
       // original package names.
       compilerOptions: { paths: {} },
+      beforeWriteFile: (filePath: string, content: string) =>
+        filePath.endsWith('.d.ts')
+          ? { content: fullySpecifyDeclarationImports(filePath, content) }
+          : undefined,
     }),
   ],
   build: {
