@@ -1,3 +1,14 @@
+## 0.17.1 (2026-10-16)
+
+### 🩹 Fixes
+
+- **react:** give the require condition CommonJS declarations ([ab0121b](https://github.com/Rytass/BPMCore/commit/ab0121b))
+- **template:** return the id of a deleted category ([784f69e](https://github.com/Rytass/BPMCore/commit/784f69e))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.0 (2026-10-15)
 
 ### 🚀 Features

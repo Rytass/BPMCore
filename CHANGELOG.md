@@ -1,3 +1,17 @@
+## 0.17.1 (2026-10-16)
+
+### 🩹 Fixes
+
+- **react:** fully specify relative imports in emitted declarations ([022b3e2](https://github.com/Rytass/BPMCore/commit/022b3e2))
+- **react:** keep org unit and position picker menus on screen ([bb5cbaa](https://github.com/Rytass/BPMCore/commit/bb5cbaa))
+- **react:** give the require condition CommonJS declarations ([ab0121b](https://github.com/Rytass/BPMCore/commit/ab0121b))
+- **template:** return the id of a deleted category ([784f69e](https://github.com/Rytass/BPMCore/commit/784f69e))
+- **template:** say a category in use cannot be deleted ([ab4236b](https://github.com/Rytass/BPMCore/commit/ab4236b))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.0 (2026-10-15)
 
 ### 🚀 Features
