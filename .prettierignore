@@ -3,3 +3,5 @@
 /coverage
 /.nx/cache
 /.nx/workspace-data
+# Record-style tables stay single-spaced; prettier would pad every row to the widest cell
+/docs/api-reference.md
