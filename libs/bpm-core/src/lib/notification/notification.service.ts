@@ -3,6 +3,7 @@ import {
   UserTaskNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -11,13 +12,17 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
+import { isUUID } from 'class-validator';
 import {
   EntityManager,
+  FindOptionsWhere,
   In,
   IsNull,
+  LessThan,
   LessThanOrEqual,
   MoreThan,
   Not,
+  Raw,
   Repository,
 } from 'typeorm';
 import {
@@ -25,7 +30,7 @@ import {
   BPMBusinessCalendar,
 } from '../calendar/business-calendar.token';
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
-import { withDispatchTimeout } from '../common/outbox';
+import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { IdentityService } from '../identity/identity.service';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
@@ -51,6 +56,7 @@ import {
   resolveEmailReleaseAt,
 } from './notification-schedule';
 import { NotificationEntity } from './notification.entity';
+import { NotificationSummaryObject } from './notification-summary.object';
 import {
   NotificationChannelEnum,
   NotificationResolutionEnum,
@@ -85,6 +91,14 @@ interface CreateNotificationInput {
   readonly customTemplate?: string | null;
 }
 
+/** The most distinct ids one `markNotificationsRead` call accepts. */
+export const MARK_NOTIFICATIONS_READ_LIMIT = 500;
+
+// Full-precision `created_at` of the keyset cursor row; comparing in SQL keeps
+// the microseconds a JavaScript `Date` would drop.
+const NOTIFICATION_CURSOR_CREATED_AT_SQL =
+  'SELECT "cursor"."created_at" FROM "notifications" "cursor" WHERE "cursor"."id" = :cursorId';
+
 // How long the applicant's "filed by" wording may wait for the host's member
 // lookup before the member id is shown instead.
 const MEMBER_NAME_LOOKUP_TIMEOUT_MS = 2000;
@@ -118,13 +132,38 @@ export class NotificationService {
     private readonly notificationOptions: BPMResolvedNotificationOptions = DEFAULT_BPM_NOTIFICATION_OPTIONS,
   ) {}
 
+  /**
+   * Lists a member's in-app notifications, newest first. Rows sharing a
+   * `createdAt` are ordered by `id`, so the order is total and pages never
+   * swap rows at their boundary.
+   *
+   * Two ways to page:
+   * - `page` / `pageSize` — offset paging, as before.
+   * - `beforeId` — keyset paging: the rows that sort after the notification
+   *   with that id (pass the last id of the previous page). The comparison
+   *   runs in SQL against the stored microsecond timestamp, so it is stable
+   *   while new notifications arrive. It refuses to combine with `page > 1`,
+   *   and an id that is not one of the member's in-app notifications is
+   *   reported as not found.
+   *
+   * `changedSince` returns only rows whose `updatedAt` is later than the given
+   * time, and then **ignores** `includeRead` / `includeArchived`: a row that
+   * was just read or archived is exactly the change a syncing host must see.
+   * `updatedAt` is stamped when the writing statement runs, which can be
+   * before its transaction commits, so pass a watermark a few seconds earlier
+   * than the latest `updatedAt` already seen and de-duplicate by `id`.
+   */
   async listNotifications({
+    beforeId = null,
+    changedSince = null,
     includeArchived = false,
     includeRead = false,
     page = 1,
     pageSize = 10,
     recipientMemberId,
   }: {
+    readonly beforeId?: string | null;
+    readonly changedSince?: Date | null;
     readonly includeArchived?: boolean;
     readonly includeRead?: boolean;
     readonly page?: number;
@@ -132,20 +171,118 @@ export class NotificationService {
     readonly recipientMemberId: string;
   }): Promise<readonly NotificationEntity[]> {
     const normalizedPageSize = normalizePageSize(pageSize);
+    const cursorId = beforeId?.trim() || null;
+    const tracksChanges = changedSince !== null;
+    const baseWhere: FindOptionsWhere<NotificationEntity> = {
+      channel: NotificationChannelEnum.IN_APP,
+      recipientMemberId,
+      ...(tracksChanges ? { updatedAt: MoreThan(changedSince) } : {}),
+      ...(includeRead || tracksChanges
+        ? {}
+        : { status: Not(NotificationStatusEnum.READ) }),
+      ...(includeArchived || tracksChanges ? {} : { archivedAt: IsNull() }),
+    };
+
+    if (cursorId !== null) {
+      await this.assertNotificationCursor({
+        cursorId,
+        page,
+        recipientMemberId,
+      });
+    }
 
     const notifications = await this.notificationRepository.find({
-      order: { createdAt: 'DESC' },
-      skip: (normalizePage(page) - 1) * normalizedPageSize,
+      order: { createdAt: 'DESC', id: 'DESC' },
+      ...(cursorId === null
+        ? { skip: (normalizePage(page) - 1) * normalizedPageSize }
+        : {}),
       take: normalizedPageSize,
-      where: {
-        channel: NotificationChannelEnum.IN_APP,
-        recipientMemberId,
-        ...(includeRead ? {} : { status: Not(NotificationStatusEnum.READ) }),
-        ...(includeArchived ? {} : { archivedAt: IsNull() }),
-      },
+      where:
+        cursorId === null
+          ? baseWhere
+          : [
+              {
+                ...baseWhere,
+                createdAt: Raw(
+                  (column) =>
+                    `${column} < (${NOTIFICATION_CURSOR_CREATED_AT_SQL})`,
+                  { cursorId },
+                ),
+              },
+              {
+                ...baseWhere,
+                createdAt: Raw(
+                  (column) =>
+                    `${column} = (${NOTIFICATION_CURSOR_CREATED_AT_SQL})`,
+                  { cursorId },
+                ),
+                id: LessThan(cursorId),
+              },
+            ],
     });
 
     return this.attachLegacyTaskPolicies(notifications);
+  }
+
+  private async assertNotificationCursor({
+    cursorId,
+    page,
+    recipientMemberId,
+  }: {
+    readonly cursorId: string;
+    readonly page: number;
+    readonly recipientMemberId: string;
+  }): Promise<void> {
+    if (normalizePage(page) > 1) {
+      throw new BadRequestException(
+        'beforeId cannot be combined with a page after the first',
+      );
+    }
+
+    const cursor = isUUID(cursorId)
+      ? await this.notificationRepository.findOne({
+          select: { id: true },
+          where: {
+            channel: NotificationChannelEnum.IN_APP,
+            id: cursorId,
+            recipientMemberId,
+          },
+        })
+      : null;
+
+    if (!cursor) {
+      throw new NotFoundException(`Notification ${cursorId} was not found`);
+    }
+  }
+
+  /**
+   * A cheap change probe: the unread badge count plus the latest `updatedAt`
+   * across all of the member's in-app notifications, read and archived ones
+   * included. A host re-reads the list only when either value moved.
+   */
+  async readNotificationSummary(
+    recipientMemberId: string,
+  ): Promise<NotificationSummaryObject> {
+    const [unreadCount, latest] = await Promise.all([
+      this.countUnreadNotifications(recipientMemberId),
+      this.notificationRepository
+        .createQueryBuilder('notification')
+        .select('MAX(notification.updatedAt)', 'latestUpdatedAt')
+        .where('notification.channel = :channel', {
+          channel: NotificationChannelEnum.IN_APP,
+        })
+        .andWhere('notification.recipientMemberId = :recipientMemberId', {
+          recipientMemberId,
+        })
+        .getRawOne<{ readonly latestUpdatedAt: Date | string | null }>(),
+    ]);
+    const latestUpdatedAt = latest?.latestUpdatedAt ?? null;
+
+    return Object.assign(new NotificationSummaryObject(), {
+      latestUpdatedAt:
+        latestUpdatedAt === null ? null : new Date(latestUpdatedAt),
+      unreadCount,
+    });
   }
 
   private async attachLegacyTaskPolicies(
@@ -291,13 +428,77 @@ export class NotificationService {
       throw new NotFoundException(`Notification ${id} was not found`);
     }
 
-    return this.notificationRepository.save(
+    const saved = await this.notificationRepository.save(
       this.notificationRepository.create({
         ...notification,
         readAt: notification.readAt ?? new Date(),
         status: NotificationStatusEnum.READ,
       }),
     );
+
+    // `updatedAt` is stamped by a trigger, so the saved entity still carries
+    // the value read before the update.
+    return (
+      (await this.notificationRepository.findOne({ where: { id } })) ?? saved
+    );
+  }
+
+  /**
+   * Marks several of a member's in-app notifications read in one statement
+   * and returns the ids that actually changed, in the order given.
+   *
+   * Ids that are blank, malformed, unknown, belong to another member, are not
+   * in-app (an email row's status is its delivery state), or were already read
+   * are skipped silently and are absent from the result — so the result's
+   * length is the number of notifications this call turned read. The update
+   * is atomic: either every listed row changes or, on error, none does. At
+   * most `MARK_NOTIFICATIONS_READ_LIMIT` distinct ids per call.
+   */
+  async markNotificationsRead({
+    ids,
+    readerMemberId,
+  }: {
+    readonly ids: readonly string[];
+    readonly readerMemberId: string;
+  }): Promise<readonly string[]> {
+    const trimmedReaderMemberId = readerMemberId.trim();
+    // Postgres returns uuids in lowercase; normalise so the changed ids can be
+    // matched back and two spellings of one id count once.
+    const targetIds = [
+      ...new Set(
+        ids.map((id) => id.trim().toLowerCase()).filter((id) => isUUID(id)),
+      ),
+    ];
+
+    if (targetIds.length > MARK_NOTIFICATIONS_READ_LIMIT) {
+      throw new BadRequestException(
+        `markNotificationsRead accepts at most ${MARK_NOTIFICATIONS_READ_LIMIT} ids`,
+      );
+    }
+
+    if (!trimmedReaderMemberId || targetIds.length === 0) {
+      return [];
+    }
+
+    const result = await this.notificationRepository
+      .createQueryBuilder()
+      .update(NotificationEntity)
+      .set({ readAt: new Date(), status: NotificationStatusEnum.READ })
+      .where('id IN (:...ids)', { ids: targetIds })
+      .andWhere('recipient_member_id = :recipientMemberId', {
+        recipientMemberId: trimmedReaderMemberId,
+      })
+      .andWhere('channel = :channel', {
+        channel: NotificationChannelEnum.IN_APP,
+      })
+      .andWhere('status <> :readStatus', {
+        readStatus: NotificationStatusEnum.READ,
+      })
+      .returning(['id'])
+      .execute();
+    const changedIds = new Set(readClaimedIds(result.raw));
+
+    return targetIds.filter((id) => changedIds.has(id));
   }
 
   /**

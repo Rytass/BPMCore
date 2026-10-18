@@ -3,6 +3,7 @@ import { BPMAuthenticated, BPMCurrentMemberId } from '../bpm-auth';
 import { NotificationPreferenceEntity } from './notification-preference.entity';
 import { NotificationEntity } from './notification.entity';
 import { NotificationService } from './notification.service';
+import { NotificationSummaryObject } from './notification-summary.object';
 
 @Resolver()
 @BPMAuthenticated()
@@ -21,9 +22,25 @@ export class NotificationQueries {
     page?: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize?: number | null,
+    @Args('beforeId', {
+      description:
+        'Keyset paging: rows that sort after this notification id (the last id of the previous page). Cannot be combined with page > 1.',
+      nullable: true,
+      type: () => String,
+    })
+    beforeId?: string | null,
+    @Args('changedSince', {
+      description:
+        'Only rows whose updatedAt is later than this time; includeRead and includeArchived are then ignored so reads and archives are reported.',
+      nullable: true,
+      type: () => Date,
+    })
+    changedSince?: Date | null,
     @BPMCurrentMemberId() currentMemberId?: string,
   ): Promise<readonly NotificationEntity[]> {
     return this.notificationService.listNotifications({
+      beforeId: beforeId ?? null,
+      changedSince: changedSince ?? null,
       includeArchived: includeArchived ?? false,
       includeRead: includeRead ?? false,
       page: page ?? 1,
@@ -58,6 +75,13 @@ export class NotificationQueries {
     return this.notificationService.countUnreadNotifications(
       currentMemberId ?? recipientMemberId,
     );
+  }
+
+  @Query(() => NotificationSummaryObject)
+  async notificationSummary(
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<NotificationSummaryObject> {
+    return this.notificationService.readNotificationSummary(currentMemberId);
   }
 
   @Query(() => NotificationPreferenceEntity)

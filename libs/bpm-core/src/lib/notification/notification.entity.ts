@@ -133,6 +133,22 @@ export class NotificationEntity {
   @Field()
   createdAt!: Date;
 
+  /**
+   * When any column of the row last changed — read, archived, unarchived,
+   * resolved, delivered. Stamped by a database trigger at millisecond
+   * precision (migration `NotificationUpdatedAt0000000028000`), so BPM never
+   * writes it and every update path advances it, raw SQL included.
+   */
+  @Column({
+    default: () => "date_trunc('milliseconds', clock_timestamp())",
+    insert: false,
+    name: 'updated_at',
+    type: 'timestamptz',
+    update: false,
+  })
+  @Field()
+  updatedAt!: Date;
+
   @Field(() => String)
   get payloadJson(): string {
     return JSON.stringify(this.payload ?? {});

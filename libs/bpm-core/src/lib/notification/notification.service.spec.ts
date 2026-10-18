@@ -1623,12 +1623,16 @@ function createModuleRef(): ModuleRef {
 function createNotificationRepository(
   notification: NotificationEntity,
 ): Repository<NotificationEntity> {
+  let stored = notification;
   const repository = {
     create: (entity: Partial<NotificationEntity>): NotificationEntity =>
       Object.assign(new NotificationEntity(), entity),
-    findOne: (): Promise<NotificationEntity> => Promise.resolve(notification),
-    save: (entity: NotificationEntity): Promise<NotificationEntity> =>
-      Promise.resolve(entity),
+    findOne: (): Promise<NotificationEntity> => Promise.resolve(stored),
+    save: (entity: NotificationEntity): Promise<NotificationEntity> => {
+      stored = entity;
+
+      return Promise.resolve(entity);
+    },
   };
 
   return repository as unknown as Repository<NotificationEntity>;

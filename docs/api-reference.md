@@ -35,6 +35,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | `v0.17.0` |
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
+| Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | Not yet released |
 
 ---
 
@@ -1201,6 +1202,8 @@ narrow, read-only service rather than from a BPM provider.
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
+| Objects | `NotificationSummaryObject` (GraphQL `NotificationSummary`: `unreadCount`, `latestUpdatedAt`) — not yet released |
+| Const | `MARK_NOTIFICATIONS_READ_LIMIT` (`500`, the most distinct ids one `markNotificationsRead` call accepts) — not yet released |
 | Token | `BPM_NOTIFICATION_DISPATCHER` (interface `BPMNotificationDispatcher`; host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | DTOs | `UpdateNotificationPreferenceInput` |
@@ -1309,6 +1312,67 @@ are independent dimensions — the archive filter is `archivedAt IS NULL`, not a
 `@BPMCurrentMemberId()`, never a client argument) and an `includeArchived`
 argument on the `notifications` / `notificationCount` queries.
 
+**Paging, change detection and batch read (not yet released).** For hosts that
+keep their own copy of a member's notifications (an SSE feed, a notification
+centre) and must page and resync it cheaply:
+
+- **Total order.** `listNotifications` orders by `createdAt DESC, id DESC`.
+  Rows created in the same instant no longer swap places across offset pages.
+- **Keyset paging.** `listNotifications({ beforeId })` returns the rows that
+  sort after that notification — pass the last `id` of the previous page.
+  The comparison runs in SQL against the cursor row's stored timestamp
+  (microseconds; a JavaScript `Date` keeps only milliseconds), so it does not
+  skip or repeat rows while new ones arrive. It refuses `page > 1`
+  (`BadRequestException`), and a `beforeId` that is not one of the member's
+  in-app notifications is a `NotFoundException`. GraphQL: `notifications(beforeId:)`.
+- **`NotificationEntity.updatedAt`** — when any column of the row last
+  changed: read, archived, unarchived, resolved, superseded, delivered. A
+  database trigger stamps it (migration `NotificationUpdatedAt0000000028000`),
+  only when a column actually changed, at millisecond precision so a watermark
+  taken from it compares cleanly. BPM never writes it, so every update path —
+  raw SQL included — advances it.
+- **`changedSince`.** `listNotifications({ changedSince })` returns only rows
+  whose `updatedAt` is later than the given time, and **ignores**
+  `includeRead` / `includeArchived` — a row that was just read or archived is
+  exactly the change a syncing host must see; read `status` / `archivedAt` on
+  the returned rows. Combine with `beforeId` to page a large change set.
+  `updatedAt` is stamped when the writing statement runs, which can precede
+  its commit (a long approval transaction), so poll with a watermark a few
+  seconds before the latest `updatedAt` already seen and de-duplicate by `id`.
+  GraphQL: `notifications(changedSince:)`.
+- **`readNotificationSummary(recipientMemberId)`** →
+  `NotificationSummaryObject { unreadCount, latestUpdatedAt }`. `unreadCount`
+  equals `countUnreadNotifications`; `latestUpdatedAt` is the latest
+  `updatedAt` over all of the member's in-app rows, read and archived included,
+  or `null` when there are none. One indexed `MAX` plus the badge count: poll
+  it and re-read the list only when a value moved. GraphQL:
+  `notificationSummary` (signed-in member).
+- **`markNotificationsRead({ ids, readerMemberId })`** → the ids that
+  actually changed, in the order given. One atomic `UPDATE … RETURNING id`
+  scoped to `recipientMemberId = readerMemberId`, `channel = IN_APP` and
+  `status <> READ`: ids that are blank, malformed, unknown, another member's,
+  not in-app (an email row's status is its delivery state) or already read are
+  skipped and absent from the result, so its length is the number of
+  notifications this call turned read. More than
+  `MARK_NOTIFICATIONS_READ_LIMIT` (500) distinct ids is a
+  `BadRequestException`. GraphQL: `markNotificationsRead(ids): [String!]!`
+  (member taken from `@BPMCurrentMemberId()`).
+- `markNotificationRead` now re-reads the row after saving, so the returned
+  entity carries the new `updatedAt`.
+
+**Deploy order.** `NotificationEntity` now selects `updated_at` on every read
+and returns it from every insert, so run `NotificationUpdatedAt0000000028000`
+**before** deploying this version: without the column, every notification
+query fails, and so does any approval transaction that creates a notification.
+Deploy the API before a client or `bpm-core-react` build of this version —
+their notification query asks for `updatedAt`.
+
+The summary shares `changedSince`'s commit-lag blind spot, and adds one of its
+own: archiving an already-read row leaves `unreadCount` unchanged, and a
+lagging commit can leave `latestUpdatedAt` unchanged too. Treat the summary as
+a cheap trigger, and keep an occasional `changedSince` poll with the overlap
+window as the backstop.
+
 ## `@rytass/bpm-core-nestjs-module/attachment`
 
 | Category | Names |
@@ -1357,7 +1421,7 @@ argument on the `notifications` / `notificationCount` queries.
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
-28 ordered migrations:
+29 ordered migrations:
 
 1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` / `pg_trgm` are
    missing and the migration role has no CREATE privilege on the database, it
@@ -1402,6 +1466,7 @@ argument on the `notifications` / `notificationCount` queries.
 26. `TaskCandidateSequence0000000025000` (adds nullable `task_candidates.sequence` — the 0-based signing order inside a `SEQUENTIAL` task — and nullable `tasks.sla_started_at`; existing rows are not backfilled, so in-flight tasks keep the behaviour they were created under. `down()` first turns `WAITING` candidates back into `PENDING` so no task is stranded)
 27. `ApprovalInstanceBusinessKey0000000026000` (adds nullable `approval_instances.business_key` and the partial unique index `approval_instances_business_key_key` on `(template_id, business_key) WHERE business_key IS NOT NULL`; existing rows stay `NULL`, and the index ignores `state`. `down()` drops the index, then the column)
 28. `ApprovalInstanceSubmittedBy0000000027000` (adds nullable `approval_instances.submitted_by_member_id` plus `IDX_approval_instances_submitted_by_created_desc` on `(submitted_by_member_id, created_at DESC)` so the `SENT` list's `initiator OR submitter` match stays indexed; existing rows stay `NULL`, which the engine reads as "the initiator submitted it". `down()` drops the index, then the column)
+29. `NotificationUpdatedAt0000000028000` — not yet released. Adds `notifications.updated_at` (`timestamptz NOT NULL`, default `date_trunc('milliseconds', clock_timestamp())`), backfilled with each row's latest recorded timestamp (`GREATEST` of created / read / resolved / archived / sent / delivered / last-attempt, truncated to milliseconds); the `BEFORE UPDATE` trigger `TRG_notifications_updated_at` (function `bpm_notifications_touch_updated_at`) that advances it only when a column changed; and `IDX_notifications_recipient_updated_at` on `(recipient_member_id, updated_at)`. The backfill rewrites every notification row once. `down()` drops the index, trigger, function, then the column
 
 ---
 

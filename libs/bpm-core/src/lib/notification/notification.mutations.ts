@@ -23,6 +23,20 @@ export class NotificationMutations {
     });
   }
 
+  @Mutation(() => [String], {
+    description:
+      "Marks the signed-in member's listed in-app notifications read; returns the ids that changed (already-read, unknown or foreign ids are skipped).",
+  })
+  async markNotificationsRead(
+    @Args('ids', { type: () => [String] }) ids: readonly string[],
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<readonly string[]> {
+    return this.notificationService.markNotificationsRead({
+      ids,
+      readerMemberId: currentMemberId,
+    });
+  }
+
   @Mutation(() => Int)
   async markAllNotificationsRead(
     @BPMCurrentMemberId() currentMemberId: string,
