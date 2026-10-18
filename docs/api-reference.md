@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-16): `libs/shared@0.17.1`, `libs/bpm-core-client@0.17.1`, `libs/bpm-core@0.17.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.1`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-18): `libs/shared@0.17.2`, `libs/bpm-core-client@0.17.2`, `libs/bpm-core@0.17.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.2`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.1` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.2` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -35,7 +35,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Template publish checks CEL roots per call site: initiatorPolicyCel allows env / initiator / subject; node expressions allow env / form / formData / initiator / instance; edge conditions add lastDecision | `v0.17.0` |
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
-| Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | Not yet released |
+| Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
 
 ---
 
@@ -662,7 +662,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 ### Notification
 
-`listNotifications({ ... })` (accepts `includeArchived`; not yet released: `beforeId` keyset paging and `changedSince`, and `NotificationRecord.updatedAt`), `readUnreadNotificationCount(memberId)`, `readNotificationSummary()` (not yet released; `NotificationSummaryRecord` — `{ unreadCount, latestUpdatedAt }`), `markNotificationRead({ ... })`, `markNotificationsRead({ ids })` (not yet released; resolves to the ids that changed), `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
+`listNotifications({ ... })` (accepts `includeArchived`, `beforeId` keyset paging and `changedSince`; records carry `NotificationRecord.updatedAt`), `readUnreadNotificationCount(memberId)`, `readNotificationSummary()` (`NotificationSummaryRecord` — `{ unreadCount, latestUpdatedAt }`), `markNotificationRead({ ... })`, `markNotificationsRead({ ids })` (resolves to the ids that changed), `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
 ### Pure helpers
 
@@ -1202,8 +1202,8 @@ narrow, read-only service rather than from a BPM provider.
 |---|---|
 | Services | `NotificationService`, `NotificationDeliveryService` |
 | Entities | `NotificationEntity`, `NotificationPreferenceEntity` — hosts needing cross-recipient reads (delivery statistics, audit) can now get the repository type-safely instead of looking it up by entity-name string |
-| Objects | `NotificationSummaryObject` (GraphQL `NotificationSummary`: `unreadCount`, `latestUpdatedAt`) — not yet released |
-| Const | `MARK_NOTIFICATIONS_READ_LIMIT` (`500`, the most distinct ids one `markNotificationsRead` call accepts) — not yet released |
+| Objects | `NotificationSummaryObject` (GraphQL `NotificationSummary`: `unreadCount`, `latestUpdatedAt`) |
+| Const | `MARK_NOTIFICATIONS_READ_LIMIT` (`500`, the most distinct ids one `markNotificationsRead` call accepts) |
 | Token | `BPM_NOTIFICATION_DISPATCHER` (interface `BPMNotificationDispatcher`; host injects email/webhook adapter; optional `dispatchDigest(notifications, options)` for combined daily-digest sends) |
 | Token | `BPM_NOTIFICATION_OBSERVER` + `BPMNotificationObserver` / `BPMNotificationsCreatedEvent` (host observes rows as they are created, every channel) |
 | DTOs | `UpdateNotificationPreferenceInput` |
@@ -1312,7 +1312,7 @@ are independent dimensions — the archive filter is `archivedAt IS NULL`, not a
 `@BPMCurrentMemberId()`, never a client argument) and an `includeArchived`
 argument on the `notifications` / `notificationCount` queries.
 
-**Paging, change detection and batch read (not yet released).** For hosts that
+**Paging, change detection and batch read (since `v0.17.2`).** For hosts that
 keep their own copy of a member's notifications (an SSE feed, a notification
 centre) and must page and resync it cheaply:
 
@@ -1466,7 +1466,7 @@ window as the backstop.
 26. `TaskCandidateSequence0000000025000` (adds nullable `task_candidates.sequence` — the 0-based signing order inside a `SEQUENTIAL` task — and nullable `tasks.sla_started_at`; existing rows are not backfilled, so in-flight tasks keep the behaviour they were created under. `down()` first turns `WAITING` candidates back into `PENDING` so no task is stranded)
 27. `ApprovalInstanceBusinessKey0000000026000` (adds nullable `approval_instances.business_key` and the partial unique index `approval_instances_business_key_key` on `(template_id, business_key) WHERE business_key IS NOT NULL`; existing rows stay `NULL`, and the index ignores `state`. `down()` drops the index, then the column)
 28. `ApprovalInstanceSubmittedBy0000000027000` (adds nullable `approval_instances.submitted_by_member_id` plus `IDX_approval_instances_submitted_by_created_desc` on `(submitted_by_member_id, created_at DESC)` so the `SENT` list's `initiator OR submitter` match stays indexed; existing rows stay `NULL`, which the engine reads as "the initiator submitted it". `down()` drops the index, then the column)
-29. `NotificationUpdatedAt0000000028000` — not yet released. Adds `notifications.updated_at` (`timestamptz NOT NULL`, default `date_trunc('milliseconds', clock_timestamp())`), backfilled with each row's latest recorded timestamp (`GREATEST` of created / read / resolved / archived / sent / delivered / last-attempt, truncated to milliseconds); the `BEFORE UPDATE` trigger `TRG_notifications_updated_at` (function `bpm_notifications_touch_updated_at`) that advances it only when a column changed; and `IDX_notifications_recipient_updated_at` on `(recipient_member_id, updated_at)`. The backfill rewrites every notification row once. `down()` drops the index, trigger, function, then the column
+29. `NotificationUpdatedAt0000000028000` — since `v0.17.2`. Adds `notifications.updated_at` (`timestamptz NOT NULL`, default `date_trunc('milliseconds', clock_timestamp())`), backfilled with each row's latest recorded timestamp (`GREATEST` of created / read / resolved / archived / sent / delivered / last-attempt, truncated to milliseconds); the `BEFORE UPDATE` trigger `TRG_notifications_updated_at` (function `bpm_notifications_touch_updated_at`) that advances it only when a column changed; and `IDX_notifications_recipient_updated_at` on `(recipient_member_id, updated_at)`. The backfill rewrites every notification row once. `down()` drops the index, trigger, function, then the column
 
 ---
 
