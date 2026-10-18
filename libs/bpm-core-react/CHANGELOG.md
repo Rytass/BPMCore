@@ -1,3 +1,14 @@
+## 0.17.2 (2026-10-18)
+
+### 🚀 Features
+
+- **client:** add notification sync wrappers ([c89d759](https://github.com/Rytass/BPMCore/commit/c89d759))
+- **notification:** page and sync notifications without rescanning ([f03f981](https://github.com/Rytass/BPMCore/commit/f03f981))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.1 (2026-10-16)
 
 ### 🩹 Fixes
