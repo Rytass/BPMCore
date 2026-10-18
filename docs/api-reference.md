@@ -662,7 +662,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 ### Notification
 
-`listNotifications({ ... })` (accepts `includeArchived`), `readUnreadNotificationCount(memberId)`, `markNotificationRead({ ... })`, `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
+`listNotifications({ ... })` (accepts `includeArchived`; not yet released: `beforeId` keyset paging and `changedSince`, and `NotificationRecord.updatedAt`), `readUnreadNotificationCount(memberId)`, `readNotificationSummary()` (not yet released; `NotificationSummaryRecord` — `{ unreadCount, latestUpdatedAt }`), `markNotificationRead({ ... })`, `markNotificationsRead({ ids })` (not yet released; resolves to the ids that changed), `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
 ### Pure helpers
 

@@ -341,6 +341,18 @@ export interface NotificationRecord {
   readonly taskId: string | null;
   readonly title: string;
   readonly type: NotificationType;
+  /**
+   * When any column of the row last changed (read, archived, resolved,
+   * delivered), at millisecond precision. Drives `changedSince` polling.
+   */
+  readonly updatedAt: string;
+}
+
+export interface NotificationSummaryRecord {
+  /** Latest `updatedAt` across every in-app notification of the member; `null` when there are none. */
+  readonly latestUpdatedAt: string | null;
+  /** Unread, unarchived in-app notifications — the bell badge count. */
+  readonly unreadCount: number;
 }
 
 export interface NotificationPreferenceRecord {
@@ -1521,13 +1533,26 @@ export async function revokeDelegationRule({
   return data.revokeDelegationRule;
 }
 
+/**
+ * Lists in-app notifications newest first (ties broken by id).
+ *
+ * `beforeId` pages by keyset — pass the last id of the previous page — and
+ * cannot be combined with `page > 1`. `changedSince` (ISO time) returns only
+ * rows changed after it and then ignores `includeRead` / `includeArchived`, so
+ * reads and archives are reported; use a watermark a few seconds before the
+ * latest `updatedAt` seen and de-duplicate by `id`.
+ */
 export async function listNotifications({
+  beforeId = null,
+  changedSince = null,
   includeArchived = false,
   includeRead = true,
   page = 1,
   pageSize = 10,
   recipientMemberId,
 }: {
+  readonly beforeId?: string | null;
+  readonly changedSince?: string | null;
   readonly includeArchived?: boolean;
   readonly includeRead?: boolean;
   readonly page?: number;
@@ -1545,8 +1570,12 @@ export async function listNotifications({
       $includeArchived: Boolean
       $page: Int
       $pageSize: Int
+      $beforeId: String
+      $changedSince: DateTime
     ) {
       notifications(
+        beforeId: $beforeId
+        changedSince: $changedSince
         includeArchived: $includeArchived
         includeRead: $includeRead
         page: $page
@@ -1578,6 +1607,7 @@ export async function listNotifications({
         taskId
         title
         type
+        updatedAt
       }
       notificationCount(
         includeArchived: $includeArchived
@@ -1586,7 +1616,15 @@ export async function listNotifications({
       )
       unreadNotificationCount(recipientMemberId: $recipientMemberId)
     }`,
-    { includeArchived, includeRead, page, pageSize, recipientMemberId },
+    {
+      beforeId,
+      changedSince,
+      includeArchived,
+      includeRead,
+      page,
+      pageSize,
+      recipientMemberId,
+    },
   );
 
   return {
@@ -1630,6 +1668,48 @@ export async function markNotificationRead({
   );
 
   return data.markNotificationRead;
+}
+
+/**
+ * Cheap change probe for the signed-in member: re-read the list only when
+ * `latestUpdatedAt` or `unreadCount` moved.
+ */
+export async function readNotificationSummary(): Promise<NotificationSummaryRecord> {
+  const data = await requestGraphQl<{
+    readonly notificationSummary: NotificationSummaryRecord;
+  }>(
+    `query NotificationSummary {
+      notificationSummary {
+        latestUpdatedAt
+        unreadCount
+      }
+    }`,
+    {},
+  );
+
+  return data.notificationSummary;
+}
+
+/**
+ * Marks several of the signed-in member's in-app notifications read in one
+ * atomic update. Resolves to the ids that actually changed; already-read,
+ * unknown or foreign ids are skipped. At most 500 ids per call.
+ */
+export async function markNotificationsRead({
+  ids,
+}: {
+  readonly ids: readonly string[];
+}): Promise<readonly string[]> {
+  const data = await requestGraphQl<{
+    readonly markNotificationsRead: readonly string[];
+  }>(
+    `mutation MarkNotificationsRead($ids: [String!]!) {
+      markNotificationsRead(ids: $ids)
+    }`,
+    { ids },
+  );
+
+  return data.markNotificationsRead;
 }
 
 export async function markAllNotificationsRead({
