@@ -1367,6 +1367,16 @@ query fails, and so does any approval transaction that creates a notification.
 Deploy the API before a client or `bpm-core-react` build of this version —
 their notification query asks for `updatedAt`.
 
+**Hosts that generate their own migrations.** A host that does not run
+`BPM_CORE_MIGRATIONS` and instead lets TypeORM `migration:generate` diff the
+entities gets only the column: generate cannot produce the backfill, the
+`bpm_notifications_touch_updated_at` function or the `BEFORE UPDATE` trigger.
+Without the trigger `updatedAt` never moves after insert, so `changedSince`
+and `latestUpdatedAt` silently stop reporting reads, archives and
+resolutions — nothing errors. Hand-write that part, following
+`NotificationUpdatedAt0000000028000` statement for statement, and check it by
+updating a row and reading `updated_at` back.
+
 The summary shares `changedSince`'s commit-lag blind spot, and adds one of its
 own: archiving an already-read row leaves `unreadCount` unchanged, and a
 lagging commit can leave `latestUpdatedAt` unchanged too. Treat the summary as
