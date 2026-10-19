@@ -1,5 +1,8 @@
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
-import { readWorkflowLintMessage } from './workflow-lint-errors';
+import {
+  readWorkflowLintMessage,
+  type WorkflowLintLanguage,
+} from './workflow-lint-errors';
 
 // The English lines below are the backend lint output verbatim
 // (`libs/bpm-core/src/lib/template/workflow-definition.validator.ts`), joined
@@ -218,5 +221,134 @@ describe('readWorkflowLintMessage', (): void => {
 
     expect(readWorkflowLintMessage(foreign, definition)).toBe(foreign);
     expect(readWorkflowLintMessage(foreign, null)).toBe(foreign);
+  });
+
+  it('writes the same lines in English when asked', (): void => {
+    expect(
+      readWorkflowLintMessage(
+        [
+          'workflow.nodes.exclusiveGateway_1 must include a default outgoing edge',
+          'workflow.nodes[2].data.label must be a non-empty string',
+          'workflow must include at least one endEvent node',
+          'workflow.edges.edge-notify.source cannot be a NOTIFY serviceTask',
+        ].join('; '),
+        definition,
+        'en',
+      ),
+    ).toBe(
+      [
+        'One outgoing connection of the condition split "金額判斷" must have "Otherwise take this path" (其他情況走這條) turned on, so the flow has somewhere to go when no condition matches.',
+        'A "Condition split (條件分流)" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.',
+        'The flow needs at least one "End" (結束) node.',
+        'The notify node "通知財務" cannot have outgoing connections (it only sends a notice; the flow does not continue from it). Delete the connection leaving it.',
+      ].join('; '),
+    );
+  });
+
+  it('falls back to Chinese for a language it does not have', (): void => {
+    expect(
+      readWorkflowLintMessage(
+        'workflow must include at least one endEvent node',
+        definition,
+        'ja' as WorkflowLintLanguage,
+      ),
+    ).toBe('流程至少要有一個「結束」節點。');
+  });
+
+  it('still translates the readable nodes when one entry is malformed', (): void => {
+    // Only the broken entry loses its translation; its index still counts, so
+    // the shape lint's `nodes[2]` keeps pointing at the node it named.
+    const partlyBroken = {
+      ...definition,
+      edges: [...definition.edges, null, { id: 7, source: 'start' }],
+      nodes: [null, { id: 42 }, ...definition.nodes.slice(2)],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      readWorkflowLintMessage(
+        [
+          'workflow.nodes[0].id must be a non-empty string',
+          'workflow.nodes[2].data.label must be a non-empty string',
+          'workflow.nodes.userTask_1 is not reachable from start',
+        ].join('; '),
+        partlyBroken,
+      ),
+    ).toBe(
+      [
+        'workflow.nodes[0].id must be a non-empty string',
+        '有一個「條件分流」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。',
+        '從「開始」走不到節點「主管簽核」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+      ].join('; '),
+    );
+  });
+
+  it('names a node whose type is an Object prototype key as unknown', (): void => {
+    const prototypeType = {
+      ...definition,
+      nodes: [
+        ...definition.nodes,
+        {
+          data: {},
+          id: 'odd_2',
+          position: { x: 0, y: 0 },
+          type: 'constructor',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      readWorkflowLintMessage(
+        'workflow.nodes.odd_2 is not reachable from start',
+        prototypeType,
+      ),
+    ).toBe(
+      '從「開始」走不到節點「未知類型」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+    );
+  });
+
+  it('names the first node when two share an id', (): void => {
+    const duplicated = {
+      ...definition,
+      nodes: [
+        ...definition.nodes,
+        {
+          data: { label: '重複的知會' },
+          id: 'serviceTask_1',
+          position: { x: 0, y: 0 },
+          type: 'serviceTask',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      readWorkflowLintMessage(
+        [
+          'workflow.edges.edge-notify.source cannot be a NOTIFY serviceTask',
+          'workflow.nodes.serviceTask_1 is not reachable from start',
+        ].join('; '),
+        duplicated,
+      ),
+    ).toBe(
+      [
+        '知會節點「通知財務」不能往下接連線（知會只負責通知，流程不會從它繼續）。請刪除從它拉出的連線。',
+        '從「開始」走不到節點「通知財務」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+      ].join('; '),
+    );
+  });
+
+  it('keeps the backend message when reading the definition throws', (): void => {
+    const throwing = {
+      ...definition,
+      nodes: [
+        {
+          get id(): string {
+            throw new Error('unreadable draft');
+          },
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+    const backend = 'workflow must include at least one endEvent node';
+
+    expect(readWorkflowLintMessage(backend, throwing)).toBe(backend);
   });
 });

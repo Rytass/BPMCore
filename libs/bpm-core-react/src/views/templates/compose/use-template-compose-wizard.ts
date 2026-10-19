@@ -6,6 +6,10 @@ import type {
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  useBPMLanguage,
+  type BPMLanguage,
+} from '../../../lib/language-provider';
 import { readFormSchemaLintMessage } from '@rytass/bpm-core-client/form';
 import {
   ComposeApprovalTemplateWithFormResult,
@@ -67,6 +71,7 @@ export interface TemplateComposeWizard {
  * mutation.
  */
 export function useTemplateComposeWizard(): TemplateComposeWizard {
+  const language = useBPMLanguage();
   const [currentStep, setCurrentStep] = useState<ComposeWizardStep>(0);
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState<string | null>(null);
@@ -156,7 +161,9 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
 
         return result;
       } catch (requestError: unknown) {
-        setPublishError(readErrorMessage(requestError, submittedDefinition));
+        setPublishError(
+          readErrorMessage(requestError, submittedDefinition, language),
+        );
         setPublishPhase('error');
 
         return null;
@@ -166,6 +173,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
       formSchema,
       formUiSchema,
       initiatorPolicyCel,
+      language,
       name,
       workflowDefinition,
     ]);
@@ -212,16 +220,22 @@ const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
   ],
 };
 
+const UNKNOWN_ERROR_MESSAGES: Readonly<Record<BPMLanguage, string>> = {
+  en: 'An unknown error occurred',
+  'zh-TW': '發生未知錯誤',
+};
+
 function readErrorMessage(
   error: unknown,
   submittedDefinition: WorkflowDefinition,
+  language: BPMLanguage,
 ): string {
   // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes and
   // structural lines that name nodes by id; map both to readable copy and
   // leave every other message untouched.
   return error instanceof Error
     ? readFormSchemaLintMessage(
-        readWorkflowLintMessage(error.message, submittedDefinition),
+        readWorkflowLintMessage(error.message, submittedDefinition, language),
       )
-    : '發生未知錯誤';
+    : UNKNOWN_ERROR_MESSAGES[language];
 }

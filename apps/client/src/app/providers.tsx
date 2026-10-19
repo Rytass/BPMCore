@@ -2,6 +2,7 @@
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
 import { BPMNextProviders } from '@rytass/bpm-core-react/next';
+import { HostLanguageProvider } from './_components/host-language';
 import { HostShell } from './_components/host-shell';
 
 interface ProvidersProps {
@@ -23,9 +24,13 @@ function PdfWorkerSetup(): null {
 
 export function Providers({ children }: ProvidersProps): ReactElement {
   return (
-    <BPMNextProviders>
-      <PdfWorkerSetup />
-      <HostShell>{children}</HostShell>
-    </BPMNextProviders>
+    <HostLanguageProvider>
+      {(language): ReactNode => (
+        <BPMNextProviders language={language}>
+          <PdfWorkerSetup />
+          <HostShell>{children}</HostShell>
+        </BPMNextProviders>
+      )}
+    </HostLanguageProvider>
   );
 }

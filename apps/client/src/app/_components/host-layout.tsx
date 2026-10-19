@@ -35,6 +35,7 @@ import {
   useRouterAdapter,
   type BPMRoutes,
 } from '@rytass/bpm-core-react';
+import { useHostLanguage } from './host-language';
 import styles from './host-layout.module.scss';
 
 interface NavigationItem {
@@ -103,6 +104,7 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
   const routes = useBPMRoutes();
   const member = useBPMMember();
   const logout = useBPMLogout();
+  const { language, setLanguage } = useHostLanguage();
   const isAdmin = isBPMAdminMember(member);
   const groups = createNavigationGroups(routes);
   const visibleGroups = groups
@@ -139,10 +141,19 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
       <NavigationUserMenu
         options={[
           { id: 'notification-settings', name: '通知設定' },
+          // Written in the language it switches to, so a reader of that
+          // language can find it.
+          language === 'en'
+            ? { id: 'language:zh-TW', name: '切換為繁體中文' }
+            : { id: 'language:en', name: 'Switch to English' },
         ]}
         onSelect={(option): void => {
           if (option.id === 'notification-settings') {
             router.push(routes.notificationSettings());
+          } else if (option.id === 'language:en') {
+            setLanguage('en');
+          } else if (option.id === 'language:zh-TW') {
+            setLanguage('zh-TW');
           }
         }}
       >

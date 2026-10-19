@@ -352,6 +352,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `ConditionOperatorOption` / `ConditionValueOption` | interface | Condition UI option shapes |
 | `WORKFLOW_INPUT_HANDLE_ID` / `WORKFLOW_OUTPUT_HANDLE_ID` | const | ReactFlow handle ids |
 | `WORKFLOW_NODE_TYPE_LABELS` | const | zh-TW node type labels |
+| `WORKFLOW_LINT_MESSAGES` | const | Builders for the structural publish-lint lines (`blankNodeLabel`, `cycle`, `endEventMissing`, `exclusiveSplitDefaultEdge`, `exclusiveSplitOutgoingEdges`, `noPathToEnd`, `notifyOutgoingEdge`, `parallelJoinIncomingEdges`, `startEventCount`, `unreachableNode`). The backend lint writes these lines with them and `readWorkflowLintMessage` matches them, so the two cannot drift; the English wording is unchanged. Not yet released |
 | `CONDITION_OPERATOR_OPTIONS` / `CONDITION_OPERATORS_REQUIRING_VALUE` | const | Condition operator catalog |
 | `SlaDurationUnit` / `SlaDurationParts` / `SlaOption` | type/interface | Single-unit SLA duration authoring shapes |
 | `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
@@ -592,7 +593,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
 | Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
-| Publish lint copy | `readWorkflowLintMessage(message, definition)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges) into Chinese, naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition` and a definition it cannot read pass the message through unchanged. Not yet released |
+| Publish lint copy | `readWorkflowLintMessage(message, definition, language?)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges) into `language` (`'zh-TW'` by default, or `'en'`), naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition`, and nodes or edges it cannot read pass through unchanged, and an unsupported `language` falls back to `'zh-TW'`. `WorkflowLintLanguage` (`'en' \| 'zh-TW'`), `WORKFLOW_LINT_LANGUAGES`, `DEFAULT_WORKFLOW_LINT_LANGUAGE`. Not yet released |
 | Webhook catalog | `listWorkflowWebhookEndpoints({ includeDeprecated? })` (designer-only; no URL, header or secret), `WorkflowWebhookEndpointRecord` (P6 adds `disabled`), `WorkflowWebhookParameterRecord`, `WorkflowWebhookEndpointSource` |
 | Webhook endpoint administration (P6) | `readWorkflowWebhookEndpointManagement()`, `listWorkflowWebhookManagedEndpoints()`, `listWorkflowWebhookEndpointAudits(endpointId)`, `createWorkflowWebhookEndpoint(input)`, `updateWorkflowWebhookEndpoint(input)`, `setWorkflowWebhookEndpointActive(id, active)`, `rotateWorkflowWebhookEndpointSecret(id, signingSecret)`, `testWorkflowWebhookEndpoint(id)`; records `WorkflowWebhookEndpointManagementRecord`, `WorkflowWebhookManagedEndpointRecord` (header names and `hasSigningSecret` only), `WorkflowWebhookEndpointAuditRecord`, `WorkflowWebhookEndpointAuditAction`, `WorkflowWebhookEndpointTestResultRecord`; inputs `CreateWorkflowWebhookEndpointInput`, `UpdateWorkflowWebhookEndpointInput`, `WorkflowWebhookEndpointHeaderInput`, `WorkflowWebhookEndpointParameterInput` (administrator-only) |
 
@@ -1493,7 +1494,11 @@ React UI library. Four export families: root barrel (foundation + host integrati
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`) is not yet released |
+| `BPMLanguage` | type | `'en' \| 'zh-TW'` — language BPM views write their messages in. Not yet released |
+| `BPMLanguageProvider` | Component | `{ language, children }`; hosts pass the user's choice as state to switch it. Not yet released |
+| `useBPMLanguage()` | hook | Active `BPMLanguage`; `'zh-TW'` when no provider. Not yet released |
+| `BPM_LANGUAGES` / `DEFAULT_BPM_LANGUAGE` | const | Supported languages / `'zh-TW'`. Not yet released |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
@@ -1544,7 +1549,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary |
+| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (not yet released) |
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 
