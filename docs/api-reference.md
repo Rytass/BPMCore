@@ -36,7 +36,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
-| Activity log write order: `ActivityLogEntity.seq`, migration `ActivityLogSeq0000000029000` | Not yet released |
+| Activity log write order: `ActivityLogEntity.seq`, activity logs read in write order (`listActivityLogs` / GraphQL `activityLogs` and two engine lookups), migration `ActivityLogSeq0000000029000` | Not yet released |
 
 ---
 
@@ -1126,6 +1126,11 @@ after the first step.
 - **`ActivityLogEntity.seq`** — the write order. A `GENERATED ALWAYS` identity:
   the database numbers every insert and refuses a hand-written value. `bigint`,
   so it reads as a `string`. Not exposed through GraphQL.
+- **Readers sort by it.** `listActivityLogs` (GraphQL `activityLogs`) returns
+  rows in `seq` order instead of `createdAt`; the latest-return lookup behind
+  resubmission and the submit record behind the completion notification's
+  "filed on behalf of" name use it too. `@rytass/bpm-core-react` displays the
+  history in the order it receives, so the history view follows.
 - **Sort by `seq` in your own SQL.** A host reading `activity_logs` directly
   should order by `seq`, not `created_at, id`. It is insert order, not commit
   order: a long transaction can make a smaller `seq` visible after a larger

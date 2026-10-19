@@ -3863,7 +3863,7 @@ export class WorkflowEngineService {
     await this.getApprovalInstance(instanceId, scope);
 
     return this.activityLogRepository.find({
-      order: { createdAt: 'ASC' },
+      order: { seq: 'ASC' },
       where: { instanceId },
     });
   }
@@ -7358,7 +7358,7 @@ export class WorkflowEngineService {
     instanceId: string,
   ): Promise<ReturnedInstanceContext | null> {
     const activity = await manager.getRepository(ActivityLogEntity).findOne({
-      order: { createdAt: 'DESC' },
+      order: { seq: 'DESC' },
       where: {
         eventType: ActivityLogEventTypeEnum.INSTANCE_RETURNED,
         instanceId,

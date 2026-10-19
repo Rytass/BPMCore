@@ -6922,6 +6922,58 @@ describe('WorkflowEngineService', () => {
     ).resolves.toMatchObject([{ id: 'task-90' }]);
   });
 
+  it('lists activity logs in write order (seq), not by created_at', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.listActivityLogs('instance-1');
+
+    // created_at is the transaction start time, shared by every row one
+    // transaction writes; only seq orders those rows.
+    expect(fixture.rootActivityLogFind).toHaveBeenCalledWith({
+      order: { seq: 'ASC' },
+      where: { instanceId: 'instance-1' },
+    });
+  });
+
+  it('resumes a resubmission from the latest return by write order (seq)', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      latestReturnActivity: createActivityLog({
+        eventType: ActivityLogEventTypeEnum.INSTANCE_RETURNED,
+        nodeId: 'task_finance',
+        payload: {
+          resubmitStrategy: 'FROM_RETURN_POINT',
+          returnedFromNodeId: 'task_finance',
+          returnToNodeId: 'start',
+          taskId: 'task-1',
+        },
+      }),
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.resubmitApprovalInstance({
+      formDataJson: '{"amount":1200}',
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    });
+
+    expect(fixture.transactionalActivityLogFindOne).toHaveBeenCalledWith({
+      order: { seq: 'DESC' },
+      where: {
+        eventType: ActivityLogEventTypeEnum.INSTANCE_RETURNED,
+        instanceId: 'instance-1',
+      },
+    });
+  });
+
   it('lists pending inbox tasks by assignee', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -12594,11 +12646,16 @@ interface ServiceFixture {
     [Readonly<Record<string, unknown>>?]
   >;
   readonly rootInstanceQueryBuilder: ApprovalInstanceQueryBuilderMock;
+  readonly rootActivityLogFind: jest.Mock<
+    Promise<readonly ActivityLogEntity[]>,
+    [Readonly<Record<string, unknown>>]
+  >;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
   >;
   readonly savedDecision: TaskDecisionEntity | null;
+  readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
   readonly savedActivityLogs: readonly ActivityLogEntity[];
   readonly savedInstance: ApprovalInstanceEntity | null;
   readonly savedAdhocDirectives: readonly AdhocDirectiveEntity[];
@@ -12846,7 +12903,13 @@ function createServiceFixture({
   const notificationRepository = createRepository<NotificationEntity>({
     find: notificationFind,
   });
-  const activityLogRepository = createRepository<ActivityLogEntity>({});
+  const rootActivityLogFind = jest.fn<
+    Promise<readonly ActivityLogEntity[]>,
+    [Readonly<Record<string, unknown>>]
+  >(() => Promise.resolve([]));
+  const activityLogRepository = createRepository<ActivityLogEntity>({
+    find: rootActivityLogFind,
+  });
   let processAdhocDirectiveRows: readonly AdhocDirectiveEntity[] = [
     ...processAdhocDirectives,
   ];
@@ -13533,9 +13596,11 @@ function createServiceFixture({
     rootInstanceNodeLabelQuery,
     membershipFind: transactionalMembershipRepository.find,
     rootInstanceQueryBuilder,
+    rootActivityLogFind,
     rootTaskFind,
     templateFind,
     templateFindOne,
+    transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
       return processAdhocDirectiveRows;
     },
