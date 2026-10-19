@@ -206,8 +206,16 @@ const EXPECTED_MULTI: Readonly<
 };
 
 describe('multiple-selection condition expressions under cel-js', () => {
-  const multi = evaluateAll(CHECKBOX, SHAPES);
-  const single = evaluateAll(SINGLE_SELECT, SINGLE_SHAPES);
+  // Evaluated once, in a hook rather than the describe body: a cel-js load or
+  // child-process failure then fails each test by name instead of breaking
+  // test collection.
+  let multi: Readonly<Record<string, unknown>> = {};
+  let single: Readonly<Record<string, unknown>> = {};
+
+  beforeAll((): void => {
+    multi = evaluateAll(CHECKBOX, SHAPES);
+    single = evaluateAll(SINGLE_SELECT, SINGLE_SHAPES);
+  });
 
   it.each(
     OPERATORS.flatMap((operator) =>
