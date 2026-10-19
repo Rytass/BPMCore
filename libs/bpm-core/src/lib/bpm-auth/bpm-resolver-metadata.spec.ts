@@ -47,7 +47,12 @@ describe('BPM resolver metadata', () => {
           handler.methodName === methodName,
       );
 
-    expect(find('OrganizationQueries', 'orgUnits')?.access).toBe('admin');
+    // Class-level `@BPMDesignerOnly()`: the designer pages read the
+    // organization, so these reads are open to designers...
+    expect(find('OrganizationQueries', 'orgUnits')?.access).toBe('designer');
+    // ...while a method-level `@BPMAdminOnly()` keeps the reads no designer
+    // page needs behind administrators.
+    expect(find('OrganizationQueries', 'orgUnit')?.access).toBe('admin');
     expect(find('OrganizationMutations', 'deletePosition')?.access).toBe(
       'admin',
     );
@@ -74,9 +79,17 @@ describe('BPM resolver metadata', () => {
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,
-        OrganizationQueries.prototype.orgUnits,
+        OrganizationQueries.prototype.orgUnit,
       ),
     ).toEqual(['bpm:admin']);
+    // `orgUnits` is a designer-level read, which this factory maps to
+    // everything that is not `admin`.
+    expect(
+      Reflect.getMetadata(
+        HOST_PERMISSION_KEY,
+        OrganizationQueries.prototype.orgUnits,
+      ),
+    ).toEqual(['bpm:use']);
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,

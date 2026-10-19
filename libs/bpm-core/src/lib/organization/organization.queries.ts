@@ -1,5 +1,5 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
-import { BPMAdminOnly } from '../bpm-auth';
+import { BPMAdminOnly, BPMDesignerOnly } from '../bpm-auth';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
@@ -13,12 +13,26 @@ import { OrganizationService } from './organization.service';
 import { PositionEntity } from './position.entity';
 import { ResolvedManagerObject } from './resolved-manager.object';
 
+/**
+ * Read-only organization queries.
+ *
+ * The class is `@BPMDesignerOnly()` because the template designer, the compose
+ * wizard and the form builder load the organization (units, positions,
+ * memberships) to fill their approver pickers, and a designer is not
+ * necessarily an administrator. Nest runs class-level and method-level guards
+ * together, so a method can only be made *stricter* than the class: the
+ * handlers that no designer page needs carry their own `@BPMAdminOnly()`.
+ *
+ * Every write that changes the organization stays in `OrganizationMutations`,
+ * which is `@BPMAdminOnly()` as a whole class.
+ */
 @Resolver()
-@BPMAdminOnly()
+@BPMDesignerOnly()
 export class OrganizationQueries {
   constructor(private readonly organizationService: OrganizationService) {}
 
   @Query(() => OrgUnitEntity)
+  @BPMAdminOnly()
   async orgUnit(
     @Args('id', { type: () => String }) id: string,
   ): Promise<OrgUnitEntity> {
@@ -29,6 +43,7 @@ export class OrganizationQueries {
     description:
       'What deleteOrgUnit would have to deal with: live child units (always blocking), and open memberships and ORG_UNIT manager rules (blocking unless a successor unit is given).',
   })
+  @BPMAdminOnly()
   async orgUnitRetirementImpact(
     @Args('id', { type: () => String }) id: string,
   ): Promise<OrgUnitRetirementImpactObject> {
@@ -190,6 +205,7 @@ export class OrganizationQueries {
   }
 
   @Query(() => ResolvedManagerObject)
+  @BPMAdminOnly()
   async resolvedManager(
     @Args('memberId', { type: () => String }) memberId: string,
   ): Promise<ResolvedManagerObject> {
