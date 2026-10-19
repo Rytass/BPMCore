@@ -74,6 +74,10 @@ export function parseWorkflowDefinitionJson(
   return parsedValue as WorkflowDefinition;
 }
 
+// The designer rewrites the structural lines (gateway edges, reachability,
+// cycles, start/end count, NOTIFY outgoing edges) into Chinese by exact text —
+// `readWorkflowLintMessage` in `@rytass/bpm-core-client/template`. Rewording
+// one here leaves it in English on screen until that table is updated too.
 export function lintWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinitionLintResult {
