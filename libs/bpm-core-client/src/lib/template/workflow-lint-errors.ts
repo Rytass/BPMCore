@@ -23,7 +23,7 @@ export function readWorkflowLintMessage(
   message: string,
   definition: WorkflowDefinition | null | undefined,
 ): string {
-  const translations = new Map(readWorkflowLintTranslations(definition));
+  const translations = readWorkflowLintTranslationMap(definition);
 
   // Split on the backend's own separator and swap whole lines only, so a line
   // that merely contains a known one — a CEL error quoting it, say — is left
@@ -34,16 +34,39 @@ export function readWorkflowLintMessage(
     .join('; ');
 }
 
+/**
+ * This runs inside the callers' error handlers, after they have cleared the
+ * previous error, so it must never throw: a draft saved by the AI toolset or
+ * the API is not linted on save and may be malformed. A definition it cannot
+ * read yields no translations, which leaves the backend message as written
+ * instead of replacing it with nothing.
+ */
+function readWorkflowLintTranslationMap(
+  definition: WorkflowDefinition | null | undefined,
+): ReadonlyMap<string, string> {
+  try {
+    return new Map(readWorkflowLintTranslations(definition));
+  } catch {
+    return new Map();
+  }
+}
+
 function readWorkflowLintTranslations(
   definition: WorkflowDefinition | null | undefined,
 ): readonly (readonly [string, string])[] {
   const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
   const edges = Array.isArray(definition?.edges) ? definition.edges : [];
   const nodeTranslations = nodes.flatMap(
-    (node): readonly (readonly [string, string])[] => {
+    (node, index): readonly (readonly [string, string])[] => {
       const name = readNodeName(node);
 
       return [
+        [
+          // The shape lint names the node by array index, the one thing the
+          // canvas never shows, and the label it would use is the blank one.
+          `workflow.nodes[${index}].data.label must be a non-empty string`,
+          `有一個「${readNodeTypeLabel(node)}」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。`,
+        ],
         [
           `workflow.nodes.${node.id} exclusive split requires at least two outgoing edges`,
           `條件分流「${name}」往下至少要有兩條連線，且其中一條要開啟「其他情況走這條」。`,
@@ -58,7 +81,7 @@ function readWorkflowLintTranslations(
         ],
         [
           `workflow.nodes.${node.id} is not reachable from start`,
-          `節點「${name}」沒有從「開始」接過來的連線，流程走不到這一關。請從前一個節點拉一條連線到它。`,
+          `從「開始」走不到節點「${name}」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。`,
         ],
         [
           `workflow.nodes.${node.id} does not have a path to an endEvent`,
@@ -105,7 +128,13 @@ function readWorkflowLintTranslations(
  * type, never the id: the id is what the designer cannot see.
  */
 function readNodeName(node: WorkflowNode): string {
-  const label = node.data.label?.trim();
+  const label = node.data?.label;
 
-  return label ? label : WORKFLOW_NODE_TYPE_LABELS[node.type];
+  return typeof label === 'string' && label.trim()
+    ? label.trim()
+    : readNodeTypeLabel(node);
+}
+
+function readNodeTypeLabel(node: WorkflowNode): string {
+  return WORKFLOW_NODE_TYPE_LABELS[node.type] ?? '未知類型';
 }

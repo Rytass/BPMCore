@@ -138,7 +138,7 @@ describe('readWorkflowLintMessage', (): void => {
       ),
     ).toBe(
       [
-        '節點「主管簽核」沒有從「開始」接過來的連線，流程走不到這一關。請從前一個節點拉一條連線到它。',
+        '從「開始」走不到節點「主管簽核」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
         '節點「主管簽核」往下接不到「結束」，流程走到這裡會卡住。請從它拉一條連線到下一個節點或「結束」。',
         '節點「主管簽核」所在的連線繞成了迴圈，流程會一直繞回來。請移除造成迴圈的那條連線。',
         '流程必須有一個「開始」節點，而且只能有一個。',
@@ -147,15 +147,33 @@ describe('readWorkflowLintMessage', (): void => {
     );
   });
 
-  it('falls back to the node type, never the id, when the label is blank', (): void => {
-    expect(
-      readWorkflowLintMessage(
-        'workflow.nodes.exclusiveGateway_2 must include a default outgoing edge',
-        definition,
-      ),
-    ).toBe(
-      '條件分流「條件分流」的輸出連線中，要有一條開啟「其他情況走這條」，其他條件都不符合時流程才有路可走。',
+  it('names a node with a blank label by its type, not its array index', (): void => {
+    // The designer lets the 顯示名稱 field be cleared and only the publish lint
+    // rejects it, by index — `nodes[2]` is the blank exclusive split above.
+    const message = readWorkflowLintMessage(
+      'workflow.nodes[2].data.label must be a non-empty string',
+      definition,
     );
+
+    expect(message).toBe(
+      '有一個「條件分流」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。',
+    );
+    expect(message).not.toContain('nodes[2]');
+  });
+
+  it('keeps the backend message when the definition cannot be read', (): void => {
+    // Drafts are not linted on save, so a malformed one can reach publish;
+    // the translation must fall back rather than throw inside the caller's
+    // error handler and leave no error on screen.
+    const malformed = {
+      edges: [],
+      meta: { schemaVersion: 1 },
+      nodes: [null],
+    } as unknown as WorkflowDefinition;
+    const backend =
+      'workflow.nodes[0].id must be a non-empty string; workflow.nodes[0].data.label must be a non-empty string';
+
+    expect(readWorkflowLintMessage(backend, malformed)).toBe(backend);
   });
 
   it('leaves lines it does not know exactly as the backend wrote them', (): void => {
