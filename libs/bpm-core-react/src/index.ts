@@ -11,6 +11,7 @@
 
 export * from './lib/auth-provider';
 export * from './lib/format-date-time';
+export * from './lib/language-provider';
 export * from './lib/notification-drawer-provider';
 export * from './lib/notification-unread-provider';
 export * from './lib/providers';

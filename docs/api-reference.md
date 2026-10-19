@@ -1494,7 +1494,11 @@ React UI library. Four export families: root barrel (foundation + host integrati
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`) is not yet released |
+| `BPMLanguage` | type | `'en' \| 'zh-TW'` — language BPM views write their messages in. Not yet released |
+| `BPMLanguageProvider` | Component | `{ language, children }`; hosts pass the user's choice as state to switch it. Not yet released |
+| `useBPMLanguage()` | hook | Active `BPMLanguage`; `'zh-TW'` when no provider. Not yet released |
+| `BPM_LANGUAGES` / `DEFAULT_BPM_LANGUAGE` | const | Supported languages / `'zh-TW'`. Not yet released |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
@@ -1545,7 +1549,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary |
+| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (not yet released) |
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 
