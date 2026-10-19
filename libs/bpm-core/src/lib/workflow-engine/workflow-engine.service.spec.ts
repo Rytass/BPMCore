@@ -11,6 +11,7 @@ import {
   ReturnBehavior,
   ServiceAction,
   WorkflowDefinition,
+  WorkflowEdgeConditionOperator,
 } from '@rytass/bpm-core-shared/workflow';
 import {
   BadRequestException,
@@ -7415,6 +7416,139 @@ describe('WorkflowEngineService', () => {
     ]);
   });
 
+  describe('a multiple-selection condition saved with single-value CEL', (): void => {
+    // Definitions saved before the designer compiled multiple-selection fields
+    // with list semantics: the CEL compares the whole list to one option, so it
+    // is never true for `["urgent"]`. The structured fields saved beside it are
+    // what the edge means.
+    const legacyWorkflow = (
+      operator: WorkflowEdgeConditionOperator,
+      condition: string,
+    ): WorkflowDefinition =>
+      createExclusiveGatewayWorkflow({
+        highCondition: condition,
+        structuredCondition: {
+          conditionFieldKey: 'tags',
+          conditionOperator: operator,
+          ...(operator === 'IS_FILLED' ? {} : { conditionValue: 'urgent' }),
+        },
+      });
+    const processWith = async (
+      workflow: WorkflowDefinition,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<string | undefined> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: workflow,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      return fixture.savedTasks[0]?.nodeId;
+    };
+
+    it.each([
+      ['EQUALS', 'form.tags == "urgent"', ['urgent', 'vip'], 'task_high'],
+      ['EQUALS', 'form.tags == "urgent"', ['vip'], 'task_default'],
+      ['NOT_EQUALS', 'form.tags != "urgent"', ['urgent'], 'task_default'],
+      ['NOT_EQUALS', 'form.tags != "urgent"', ['vip'], 'task_high'],
+      ['IS_FILLED', 'form.tags != null && form.tags != ""', [], 'task_default'],
+      [
+        'IS_FILLED',
+        'form.tags != null && form.tags != ""',
+        ['vip'],
+        'task_high',
+      ],
+    ] as const)(
+      'routes %s (%s) on %j to %s',
+      async (operator, condition, tags, expectedNodeId): Promise<void> => {
+        await expect(
+          processWith(legacyWorkflow(operator, condition), { tags }),
+        ).resolves.toBe(expectedNodeId);
+      },
+    );
+
+    // cel-js does not treat an array built in the jest VM realm as a list, so
+    // the legacy CEL does not reproduce its production answer here. These pin
+    // the precedence instead: a CEL that answers the opposite way must lose to
+    // the structured fields whenever the value is a list.
+    it.each([
+      ['false', ['urgent'], 'task_high'],
+      ['true', ['vip'], 'task_default'],
+    ] as const)(
+      'ignores a CEL of %s for a list value %j and routes to %s',
+      async (condition, tags, expectedNodeId): Promise<void> => {
+        await expect(
+          processWith(legacyWorkflow('EQUALS', condition), { tags }),
+        ).resolves.toBe(expectedNodeId);
+      },
+    );
+
+    it('reports the dry run match from the structured condition', (): void => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = fixture.service.dryRunApprovalWorkflow({
+        formDataJson: '{"tags":["urgent"]}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(
+          legacyWorkflow('EQUALS', 'false'),
+        ),
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            edgeMatched: true,
+            nodeId: 'task_high',
+          }),
+        ]),
+      );
+    });
+
+    it('still evaluates the CEL when the value is not a list', async (): Promise<void> => {
+      // The CEL and the structured fields disagree here, so the route shows
+      // which one ran: only the CEL matches "urgent".
+      await expect(
+        processWith(
+          createExclusiveGatewayWorkflow({
+            highCondition: 'form.tags == "urgent"',
+            structuredCondition: {
+              conditionFieldKey: 'tags',
+              conditionOperator: 'EQUALS',
+              conditionValue: 'vip',
+            },
+          }),
+          { tags: 'urgent' },
+        ),
+      ).resolves.toBe('task_high');
+    });
+
+    it('still evaluates a CEL edge with no structured fields', async (): Promise<void> => {
+      // With no structured fields the structured evaluator answers false, so
+      // reaching task_high means the CEL ran. (List operators such as `in` are
+      // not usable here: cel-js does not recognise an array built in the jest
+      // VM realm as a list.)
+      await expect(
+        processWith(
+          createExclusiveGatewayWorkflow({
+            highCondition: 'form.tags != null',
+            includeStructuredCondition: false,
+          }),
+          { tags: ['urgent'] },
+        ),
+      ).resolves.toBe('task_high');
+    });
+  });
+
   it('reports dry run edge labels, default routing, and entry condition results', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -14742,9 +14876,19 @@ function createSetFormFieldServiceTaskWorkflow({
 function createExclusiveGatewayWorkflow({
   highCondition = 'form.amount > 1000',
   includeStructuredCondition = true,
+  structuredCondition = {
+    conditionFieldKey: 'amount',
+    conditionOperator: 'GREATER_THAN',
+    conditionValue: '1000',
+  },
 }: {
   readonly highCondition?: string;
   readonly includeStructuredCondition?: boolean;
+  readonly structuredCondition?: Readonly<{
+    conditionFieldKey: string;
+    conditionOperator: WorkflowEdgeConditionOperator;
+    conditionValue?: string;
+  }>;
 } = {}): WorkflowDefinition {
   return {
     edges: [
@@ -14758,13 +14902,7 @@ function createExclusiveGatewayWorkflow({
       {
         data: {
           condition: highCondition,
-          ...(includeStructuredCondition
-            ? {
-                conditionFieldKey: 'amount',
-                conditionOperator: 'GREATER_THAN' as const,
-                conditionValue: '1000',
-              }
-            : {}),
+          ...(includeStructuredCondition ? structuredCondition : {}),
           label: '金額大於 1000',
         },
         id: 'edge_gateway_high',
