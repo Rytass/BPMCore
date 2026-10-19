@@ -38,6 +38,72 @@ describe('readDryRunSampleFormData', () => {
     expect(readDryRunSampleFormData(moneySchema)).toEqual({ total: 1000 });
   });
 
+  it('samples every option field in the shape a real submission stores', () => {
+    const options = [
+      { label: '甲', value: 'A' },
+      { label: '乙', value: 'B' },
+    ];
+    const optionSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'single',
+          label: '單選',
+          options,
+          required: true,
+          type: 'select',
+        },
+        {
+          fieldKey: 'multi',
+          label: '多選',
+          mode: 'multiple',
+          options,
+          required: true,
+          type: 'select',
+        },
+        {
+          fieldKey: 'multiAuto',
+          label: '多選自動完成',
+          mode: 'multiple',
+          options,
+          required: true,
+          type: 'autocomplete',
+        },
+        {
+          fieldKey: 'checks',
+          label: '核取',
+          options,
+          required: true,
+          type: 'checkbox',
+        },
+        {
+          fieldKey: 'radio',
+          label: '單選鈕',
+          options,
+          required: true,
+          type: 'radio',
+        },
+        {
+          dataSource: { bindings: [], key: 'employees', version: 1 },
+          fieldKey: 'remoteMulti',
+          label: '外部多選',
+          mode: 'multiple',
+          required: true,
+          type: 'select',
+        },
+      ],
+      schemaVersion: 1,
+    };
+
+    expect(readDryRunSampleFormData(optionSchema)).toEqual({
+      checks: ['A'],
+      multi: ['A'],
+      multiAuto: ['A'],
+      radio: 'A',
+      remoteMulti: [],
+      single: 'A',
+    });
+  });
+
   it('is empty without a bound form', () => {
     expect(readDryRunSampleFormData(null)).toEqual({});
   });
