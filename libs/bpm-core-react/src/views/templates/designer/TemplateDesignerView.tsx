@@ -154,6 +154,7 @@ import {
   publishApprovalTemplateVersion,
   PublishedFormVersionOption,
   readTemplateDesigner,
+  readWorkflowLintMessage,
   resolveMemberOptions,
   listWorkflowWebhookEndpoints,
   searchMemberOptions,
@@ -1528,7 +1529,7 @@ export function TemplateDesignerView({
         await refreshDesigner();
       }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, workflowDefinition));
       throw requestError;
     } finally {
       setSaving(false);
@@ -5677,17 +5678,26 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
     : [];
 }
 
-function readErrorMessage(error: unknown): string {
+function readErrorMessage(
+  error: unknown,
+  submittedDefinition?: WorkflowDefinition,
+): string {
   // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
   // readable copy and leave every other message untouched.
   if (!(error instanceof Error)) {
     return '發生未知錯誤';
   }
 
+  // Structural publish-lint lines name nodes by id; the definition that was
+  // just submitted lets them name the node the way the canvas does.
+  const message = submittedDefinition
+    ? readWorkflowLintMessage(error.message, submittedDefinition)
+    : error.message;
+
   // The backend publish lint speaks in paths and codes; say what failed
   // before it, since the designer's own check only runs once the catalog
   // has loaded.
-  return error.message.includes('WORKFLOW_WEBHOOK_')
-    ? `Webhook 設定未通過發布檢查：${error.message}`
-    : readFormSchemaLintMessage(error.message);
+  return message.includes('WORKFLOW_WEBHOOK_')
+    ? `Webhook 設定未通過發布檢查：${message}`
+    : readFormSchemaLintMessage(message);
 }

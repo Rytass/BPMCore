@@ -27,6 +27,17 @@ describe('readDryRunSampleFormData', () => {
     });
   });
 
+  it('samples a money field as a number so amount conditions can compare it', () => {
+    const moneySchema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'total', label: '申請金額', required: true, type: 'money' },
+      ],
+      schemaVersion: 1,
+    };
+
+    expect(readDryRunSampleFormData(moneySchema)).toEqual({ total: 1000 });
+  });
+
   it('is empty without a bound form', () => {
     expect(readDryRunSampleFormData(null)).toEqual({});
   });

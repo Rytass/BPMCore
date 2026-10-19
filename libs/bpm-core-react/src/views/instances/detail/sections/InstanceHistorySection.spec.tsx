@@ -55,6 +55,8 @@ jest.mock('@mezzanine-ui/react', () => {
 });
 
 const ERROR_COLOR = 'var(--mzn-color-text-error)';
+const COMMENT_FONT_SIZE = 'var(--mzn-typography-h3-font-size)';
+const COMMENT_LINE_HEIGHT = 'var(--mzn-typography-h3-line-height)';
 
 function createDecisionActivityLog(
   id: string,
@@ -189,5 +191,25 @@ describe('InstanceHistorySection comment rendering', () => {
     );
 
     expect(approvalNote?.style.color).toBe('');
+  });
+
+  it('sets a comment one size above the metadata line', () => {
+    root = renderHistory(container, [
+      createDecisionActivityLog('a3', 'APPROVED', '核准，請依核定條件執行'),
+      createDecisionActivityLog('r3', 'REJECTED', '資料不足，請補件'),
+    ]);
+
+    // Wusong reported comments as too small to notice once they moved to their
+    // own line; the larger size is what sets them apart from the caption-sized
+    // metadata run above them, for approvals and rejections alike.
+    for (const text of [
+      '同意說明：核准，請依核定條件執行',
+      '拒絕原因：資料不足，請補件',
+    ]) {
+      const comment = findDeepestByExactText(container, text);
+
+      expect(comment?.style.fontSize).toBe(COMMENT_FONT_SIZE);
+      expect(comment?.style.lineHeight).toBe(COMMENT_LINE_HEIGHT);
+    }
   });
 });
