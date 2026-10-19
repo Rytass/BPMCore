@@ -190,6 +190,53 @@ describe('applyWorkflowCommand', () => {
     expect(updatedEdge?.data.condition).toBe('form.amount > 1000');
     expect(updatedEdge?.data.isDefault).toBe(false);
   });
+
+  it('compiles a multiple-selection condition to list semantics and labels it 包含', () => {
+    const base = applyWorkflowCommand(
+      {
+        ...initialState(),
+        formSchema: {
+          fields: [
+            {
+              fieldKey: 'tags',
+              label: '標籤',
+              options: [
+                { label: '急件', value: 'urgent' },
+                { label: '一般', value: 'normal' },
+              ],
+              required: false,
+              type: 'checkbox',
+            },
+          ],
+          schemaVersion: 1,
+        },
+      },
+      { nodeType: 'exclusiveGateway', type: 'addNode' },
+      deterministicEdgeIds(),
+    ).state;
+    const gatewayOutEdge = base.definition.edges.find((edge) =>
+      base.definition.nodes.some(
+        (node) => node.id === edge.source && node.type === 'exclusiveGateway',
+      ),
+    );
+
+    const result = applyWorkflowCommand(base, {
+      edgeId: gatewayOutEdge?.id ?? '',
+      fieldKey: 'tags',
+      operator: 'EQUALS',
+      type: 'setEdgeCondition',
+      value: 'urgent',
+    });
+    const updatedEdge = result.state.definition.edges.find(
+      (edge) => edge.id === gatewayOutEdge?.id,
+    );
+
+    expect(updatedEdge?.data.condition).toBe(
+      'form.tags != null && "urgent" in form.tags',
+    );
+    expect(updatedEdge?.data.conditionOperator).toBe('EQUALS');
+    expect(updatedEdge?.data.label).toBe('標籤 包含 急件');
+  });
 });
 
 describe('applyWorkflowMacroCommand', () => {
