@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-19): `libs/shared@0.17.3`, `libs/bpm-core-client@0.17.3`, `libs/bpm-core@0.17.3` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.3`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-20): `libs/shared@0.17.4`, `libs/bpm-core-client@0.17.4`, `libs/bpm-core@0.17.4` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.4`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.3` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.4` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -37,8 +37,8 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
 | Publish-lint errors in the designer name nodes and switch language (PR #94, #96): `readWorkflowLintMessage(message, definition, language?)`, `WORKFLOW_LINT_MESSAGES`, `BPMLanguage` / `BPMLanguageProvider` / `useBPMLanguage()`, `language` on `Providers` / `BPMNextProviders`; approval comments set at the h3 size | `v0.17.3` |
-| Multiple-selection conditions (PR #97): checkbox and multiple-mode select / autocomplete fields compile `EQUALS` / `NOT_EQUALS` to list membership and name them 包含 / 不包含 (`readConditionOperatorOptionsForField`, `isMultipleSelectionConditionField`, `readConditionOperatorLabel(operator, field?)`); dry-run sample data gives them arrays | Not yet released |
-| Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | Not yet released |
+| Multiple-selection conditions (PR #97): checkbox and multiple-mode select / autocomplete fields compile `EQUALS` / `NOT_EQUALS` to list membership and name them 包含 / 不包含 (`readConditionOperatorOptionsForField`, `isMultipleSelectionConditionField`, `readConditionOperatorLabel(operator, field?)`); dry-run sample data gives them arrays | `v0.17.4` |
+| Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | `v0.17.4` |
 
 ---
 
