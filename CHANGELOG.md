@@ -1,3 +1,22 @@
+## 0.17.4 (2026-10-19)
+
+### 🚀 Features
+
+- **form:** translate DataSource error copy per language ([787e7a3](https://github.com/Rytass/BPMCore/commit/787e7a3))
+
+### 🩹 Fixes
+
+- **client:** scope the language menu to messages and require its provider ([94f072b](https://github.com/Rytass/BPMCore/commit/94f072b))
+- **react:** sample multiple-selection fields as arrays in the dry run ([295c23a](https://github.com/Rytass/BPMCore/commit/295c23a))
+- **react:** name condition operators after the field in the template designer ([54d530a](https://github.com/Rytass/BPMCore/commit/54d530a))
+- **shared:** compile multiple-selection conditions with list semantics ([c9c7782](https://github.com/Rytass/BPMCore/commit/c9c7782))
+- **workflow-engine:** route list-valued conditions by their structured fields ([ab2f848](https://github.com/Rytass/BPMCore/commit/ab2f848))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.3 (2026-10-19)
 
 ### 🚀 Features
