@@ -28,6 +28,7 @@ import { TaskCandidateSequence0000000025000 } from './0000000025000-task-candida
 import { ApprovalInstanceBusinessKey0000000026000 } from './0000000026000-approval-instance-business-key';
 import { ApprovalInstanceSubmittedBy0000000027000 } from './0000000027000-approval-instance-submitted-by';
 import { NotificationUpdatedAt0000000028000 } from './0000000028000-notification-updated-at';
+import { ActivityLogSeq0000000029000 } from './0000000029000-activity-log-seq';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -59,6 +60,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   ApprovalInstanceBusinessKey0000000026000,
   ApprovalInstanceSubmittedBy0000000027000,
   NotificationUpdatedAt0000000028000,
+  ActivityLogSeq0000000029000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -90,3 +92,4 @@ export * from './0000000025000-task-candidate-sequence';
 export * from './0000000026000-approval-instance-business-key';
 export * from './0000000027000-approval-instance-submitted-by';
 export * from './0000000028000-notification-updated-at';
+export * from './0000000029000-activity-log-seq';

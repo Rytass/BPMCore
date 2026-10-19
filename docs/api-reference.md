@@ -36,6 +36,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
+| Activity log write order: `ActivityLogEntity.seq`, migration `ActivityLogSeq0000000029000` | Not yet released |
 
 ---
 
@@ -688,7 +689,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 28-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 30-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -1050,7 +1051,7 @@ Workflow execution engine — the heaviest module.
 
 | Category | Names |
 |---|---|
-| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the nullable `businessKey`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt` / `nodeLabel`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity`, `AdhocDirectiveEntity` |
+| Entities | `ApprovalInstanceEntity` (incl. `formDataOptionSnapshot` / `formDataOptionSnapshotJson` and the nullable `businessKey`), `TaskEntity` (incl. `isAdhoc` / `adhocType` / `adhocOriginTaskId` / `adhocDirectiveId` / `slaStartedAt` / `nodeLabel`), `TaskDecisionEntity`, `TaskCandidateEntity` (incl. `sequence`; status `WAITING` = not this candidate's turn yet in a `SEQUENTIAL` task, and `ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED` is logged when the turn passes), `WorkflowTokenEntity`, `ActivityLogEntity` (incl. `seq`), `AdhocDirectiveEntity` |
 | DTOs | `SubmitApprovalInstanceInput`, `DecideTaskInput`, `CancelApprovalInstanceInput`, `ResubmitApprovalInstanceInput`, `DryRunApprovalWorkflowInput`, `AdhocTargetInput`, `AdhocNotificationInput`, `ReassignTaskInput`, `ReassignMemberTasksInput` |
 | Objects | `ApprovalInstancePageInfoObject`, `WorkflowDryRunResultObject`, `WorkflowDryRunStepObject`, `WorkflowDashboardSummaryObject`, `TaskReassignmentResultObject` (fields `taskId`, `instanceId`, `nodeId`, `outcome`, `errorCode`, `message`; the engine's plain shape is the interface `TaskReassignmentResult`), `MemberOpenTaskObject` |
 | Engine | `WorkflowEngineService` (incl. `findApprovalInstanceByBusinessKey`, `requestAdhocCountersign` / `requestAdhocPreApproval` / `configureAdhocNotification` / `cancelAdhocDirective` / `listAdhocDirectives`, `reassignTask` / `reassignMemberTasks` / `listMemberOpenTasks`), `evaluateWorkflowEdgeCondition()`, `WorkflowConditionContext` |
@@ -1112,6 +1113,65 @@ labels each one with a **business key** instead of tucking it into `form_data`.
   without querying. There is deliberately
   no GraphQL query or `@rytass/bpm-core-client` wrapper: hosts call the service
   directly, like every other engine lookup that is not an end-user screen.
+
+### Activity log write order (`seq`)
+
+`activity_logs.created_at` defaults to `now()` — the transaction start time —
+so every row one transaction writes (a submit, an approval and the steps it
+advances) carries the same value, and `id` is a random uuid. Ordering by
+either leaves those rows in an undefined order: the instance history could show
+the next step's task before the decision that created it, or the start event
+after the first step.
+
+- **`ActivityLogEntity.seq`** — the write order. A `GENERATED ALWAYS` identity:
+  the database numbers every insert and refuses a hand-written value. `bigint`,
+  so it reads as a `string`. Not exposed through GraphQL.
+- **Sort by `seq` in your own SQL.** A host reading `activity_logs` directly
+  should order by `seq`, not `created_at, id`. It is insert order, not commit
+  order: a long transaction can make a smaller `seq` visible after a larger
+  one, so it is not a polling watermark across instances.
+
+**Deploy order.** `ActivityLogEntity` selects `seq` on every read and returns
+it from every insert, so run `ActivityLogSeq0000000029000` **before** deploying
+this version: without the column every activity log read and write fails, and
+every approval transaction with it.
+
+**The backfill and its limits.** Existing rows are numbered by `created_at`,
+then `cmin` (PostgreSQL's command id of the insert within its transaction),
+then `ctid` for the rows one multi-row INSERT wrote, then `id`. This recovers
+the real write order only for rows that were never updated — an update
+replaces `cmin` — and BPM never updates this table. Rows restored with
+`pg_dump`, rewritten by `pg_repack` or copied by logical replication share one
+`cmin`, and the order falls back to `ctid`, which is usually but not always the
+write order; so does a multi-row INSERT whose rows landed on different pages.
+Rows of two transactions on the same instance are ordered by transaction
+start, which can differ from write order when one waited for the other.
+New rows are exact. Step 1 takes an `ACCESS EXCLUSIVE` lock on
+`activity_logs`; set `lock_timeout` if long transactions may be holding it.
+Run the migration in a transaction (`each` or `all`): in mode `none`, a row the
+old version writes between the backfill and `SET NOT NULL` is `NULL` and fails
+that step, and because the column is added without `IF NOT EXISTS`, a rerun
+stops at step 1 until `seq` is dropped again.
+
+**Hosts that generate their own migrations.** `migration:generate` produces
+only `ADD "seq" bigint GENERATED ALWAYS AS IDENTITY`: PostgreSQL then numbers
+existing rows in physical scan order, without the backfill, and without the
+unique index. Hand-write it following `ActivityLogSeq0000000029000` statement
+for statement. TypeORM's schema diff (0.3.x and 1.x) compares only whether a
+column is generated, not `ALWAYS` versus `BY DEFAULT`, so a copy that gets
+that wrong is not reported. The entity does not declare
+`IDX_activity_logs_instance_seq`, so a later `migration:generate` proposes
+dropping it, as it already does for the other migration-only indexes on this
+table; declare it on the host side (for example with
+`@Index('IDX_activity_logs_instance_seq', { synchronize: false })`) or remove
+that statement from the generated file.
+
+**Logical replication subscribers.** Add `seq` on the subscriber as a plain
+nullable `bigint` — no identity, no backfill — **before** the publisher runs
+this migration (a missing column stops the apply worker); the publisher's
+backfill `UPDATE`s replicate the values. When a subscriber is promoted, run
+steps 3 to 5 of the migration there (`SET NOT NULL`, the identity `DO` block,
+the unique index).
 
 ## `@rytass/bpm-core-nestjs-module/workflow-webhook`
 
@@ -1427,7 +1487,7 @@ window as the backstop.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 28-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 30-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
@@ -1477,6 +1537,7 @@ window as the backstop.
 27. `ApprovalInstanceBusinessKey0000000026000` (adds nullable `approval_instances.business_key` and the partial unique index `approval_instances_business_key_key` on `(template_id, business_key) WHERE business_key IS NOT NULL`; existing rows stay `NULL`, and the index ignores `state`. `down()` drops the index, then the column)
 28. `ApprovalInstanceSubmittedBy0000000027000` (adds nullable `approval_instances.submitted_by_member_id` plus `IDX_approval_instances_submitted_by_created_desc` on `(submitted_by_member_id, created_at DESC)` so the `SENT` list's `initiator OR submitter` match stays indexed; existing rows stay `NULL`, which the engine reads as "the initiator submitted it". `down()` drops the index, then the column)
 29. `NotificationUpdatedAt0000000028000` — since `v0.17.2`. Adds `notifications.updated_at` (`timestamptz NOT NULL`, default `date_trunc('milliseconds', clock_timestamp())`), backfilled with each row's latest recorded timestamp (`GREATEST` of created / read / resolved / archived / sent / delivered / last-attempt, truncated to milliseconds); the `BEFORE UPDATE` trigger `TRG_notifications_updated_at` (function `bpm_notifications_touch_updated_at`) that advances it only when a column changed; and `IDX_notifications_recipient_updated_at` on `(recipient_member_id, updated_at)`. The backfill rewrites every notification row once. `down()` drops the index, trigger, function, then the column
+30. `ActivityLogSeq0000000029000` — not yet released. Adds `activity_logs.seq` (`bigint NOT NULL GENERATED ALWAYS AS IDENTITY`), backfilled in write order (`created_at`, then the insert's `cmin`, then `ctid`, then `id`), and the unique index `IDX_activity_logs_instance_seq` on `(instance_id, seq)`. The column is added without `IF NOT EXISTS`, so a database where `seq` already exists fails instead of keeping values numbered without the backfill; drop the column to rerun. The identity and its start value (`COALESCE(MAX(seq), 0) + 1`) are set in one `DO` statement. The backfill rewrites every activity log row once. `down()` drops the index, then the column
 
 ---
 

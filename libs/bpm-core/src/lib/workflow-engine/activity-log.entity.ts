@@ -41,6 +41,21 @@ export class ActivityLogEntity {
   @Field()
   createdAt!: Date;
 
+  /**
+   * Write order, assigned by the database (migration `ActivityLogSeq0000000029000`).
+   * `created_at` is the transaction start time and `id` is random, so neither
+   * orders the rows one transaction writes; sort by this. `bigint`, so the
+   * driver returns a string. Not in GraphQL: readers return rows sorted by it.
+   */
+  @Column({
+    generated: 'identity',
+    generatedIdentity: 'ALWAYS',
+    name: 'seq',
+    type: 'bigint',
+    update: false,
+  })
+  seq!: string;
+
   @Field(() => String)
   get payloadJson(): string {
     return JSON.stringify(this.payload);
