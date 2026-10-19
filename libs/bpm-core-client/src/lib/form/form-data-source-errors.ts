@@ -1,3 +1,9 @@
+import {
+  DEFAULT_WORKFLOW_LINT_LANGUAGE,
+  WORKFLOW_LINT_LANGUAGES,
+  type WorkflowLintLanguage,
+} from '../template/workflow-lint-errors';
+
 /**
  * Stable error codes raised by the BPM form DataSource GraphQL surface.
  *
@@ -28,7 +34,7 @@ export const FORM_DATA_SOURCE_ERROR_CODES = [
 export type FormDataSourceErrorCode =
   (typeof FORM_DATA_SOURCE_ERROR_CODES)[number];
 
-const ERROR_MESSAGES: Readonly<Record<FormDataSourceErrorCode, string>> = {
+const ZH_ERROR_MESSAGES: Readonly<Record<FormDataSourceErrorCode, string>> = {
   FORM_DATA_SOURCE_FIELD_NOT_DYNAMIC: '此欄位不是動態選項欄位。',
   FORM_DATA_SOURCE_INVALID_BINDING:
     '選項查詢條件不正確，請重新確認表單內容。',
@@ -53,6 +59,50 @@ const ERROR_MESSAGES: Readonly<Record<FormDataSourceErrorCode, string>> = {
   FORM_DATA_SOURCE_VERSION_MISSING:
     '選項來源版本已不存在，請聯絡系統管理員。',
   FORM_DATA_SOURCE_WAITING_FOR_DEPENDENCIES: '請先填寫相依欄位。',
+};
+
+const EN_ERROR_MESSAGES: Readonly<Record<FormDataSourceErrorCode, string>> = {
+  FORM_DATA_SOURCE_FIELD_NOT_DYNAMIC:
+    'This field does not use dynamic options.',
+  FORM_DATA_SOURCE_INVALID_BINDING:
+    'The option query is not valid. Check the form content and try again.',
+  FORM_DATA_SOURCE_INVALID_DESCRIPTOR:
+    'The option source is not set up correctly. Contact your system administrator.',
+  FORM_DATA_SOURCE_INVALID_PROVIDER_RESULT:
+    'The option source returned invalid data. Contact your system administrator.',
+  FORM_DATA_SOURCE_MISSING:
+    'The option source no longer exists. Contact your system administrator.',
+  FORM_DATA_SOURCE_PARAMETER_LIMIT_EXCEEDED:
+    'The option query is too large. Shorten the form content.',
+  FORM_DATA_SOURCE_PROVIDER_FAILURE:
+    'The option source is not responding. Try again later.',
+  FORM_DATA_SOURCE_RESULT_LIMIT_EXCEEDED:
+    'There are more options than allowed. Narrow the search.',
+  FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN:
+    'You do not have permission to look up options for this field.',
+  FORM_DATA_SOURCE_SEARCH_NOT_SUPPORTED:
+    'This option source does not support search.',
+  FORM_DATA_SOURCE_SEARCH_TOO_SHORT: 'Type more characters to search.',
+  FORM_DATA_SOURCE_TIMEOUT:
+    'The option source took too long to respond. Try again later.',
+  FORM_DATA_SOURCE_UNSUPPORTED_CONTROL:
+    'This option source does not support this field type.',
+  FORM_DATA_SOURCE_VALUE_NOT_RESOLVED:
+    'A selected option is no longer valid. Select again.',
+  FORM_DATA_SOURCE_VERSION_MISSING:
+    'The option source version no longer exists. Contact your system administrator.',
+  FORM_DATA_SOURCE_WAITING_FOR_DEPENDENCIES:
+    'Fill in the fields this one depends on first.',
+};
+
+const ERROR_MESSAGES: Readonly<
+  Record<
+    WorkflowLintLanguage,
+    Readonly<Record<FormDataSourceErrorCode, string>>
+  >
+> = {
+  en: EN_ERROR_MESSAGES,
+  'zh-TW': ZH_ERROR_MESSAGES,
 };
 
 /**
@@ -95,7 +145,20 @@ const LINT_MESSAGE_PATTERN = /(?:^|; )(?:schema\.|descriptor\.)/u;
  * know yet — a newer core against an older client. Without it the raw code
  * would reach the screen.
  */
-const UNKNOWN_CODE_MESSAGE = '選項來源發生問題，請稍後再試或聯絡系統管理員。';
+const UNKNOWN_CODE_MESSAGES: Readonly<Record<WorkflowLintLanguage, string>> = {
+  en: 'Something went wrong with the option source. Try again later or contact your system administrator.',
+  'zh-TW': '選項來源發生問題，請稍後再試或聯絡系統管理員。',
+};
+
+/**
+ * A plain JavaScript host can pass any string; fall back to the default
+ * language rather than answer `undefined`.
+ */
+function readLanguage(language: WorkflowLintLanguage): WorkflowLintLanguage {
+  return WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? language
+    : DEFAULT_WORKFLOW_LINT_LANGUAGE;
+}
 
 /**
  * Extracts the DataSource error code carried by a rejected request, whether it
@@ -120,19 +183,26 @@ export function readFormDataSourceErrorCode(
 }
 
 /**
- * Maps a rejected request to display copy. Returns `null` only when the failure
- * is not a DataSource error at all, so callers can fall back to their own
- * message; an unrecognised `FORM_DATA_SOURCE_*` code still yields readable copy
- * rather than leaking the code itself.
+ * Maps a rejected request to display copy in `language` (Traditional Chinese
+ * by default). Returns `null` only when the failure is not a DataSource error
+ * at all, so callers can fall back to their own message; an unrecognised
+ * `FORM_DATA_SOURCE_*` code still yields readable copy rather than leaking the
+ * code itself.
  */
-export function readFormDataSourceErrorMessage(error: unknown): string | null {
+export function readFormDataSourceErrorMessage(
+  error: unknown,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string | null {
   const code = readFormDataSourceErrorCode(error);
+  const resolvedLanguage = readLanguage(language);
 
   if (code) {
-    return ERROR_MESSAGES[code];
+    return ERROR_MESSAGES[resolvedLanguage][code];
   }
 
-  return readsAsFormDataSourceCode(error) ? UNKNOWN_CODE_MESSAGE : null;
+  return readsAsFormDataSourceCode(error)
+    ? UNKNOWN_CODE_MESSAGES[resolvedLanguage]
+    : null;
 }
 
 /**
@@ -152,18 +222,23 @@ function readsAsFormDataSourceCode(error: unknown): boolean {
 
 /**
  * Rewrites a publish-lint line such as
- * `schema.fields[1].dataSource FORM_DATA_SOURCE_MISSING` into readable copy
- * while keeping the field path that tells the designer where to look. Lines
- * without a DataSource code are returned unchanged.
+ * `schema.fields[1].dataSource FORM_DATA_SOURCE_MISSING` into readable copy in
+ * `language` (Traditional Chinese by default) while keeping the field path that
+ * tells the designer where to look. Lines without a DataSource code are
+ * returned unchanged.
  */
-export function readFormSchemaLintMessage(error: string): string {
+export function readFormSchemaLintMessage(
+  error: string,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string {
+  const resolvedLanguage = readLanguage(language);
   // A publish failure joins several lint lines, so map every code-bearing
   // occurrence and leave all prose — including author-chosen names that look like
   // codes — exactly as the backend wrote it.
   const mapped = error.replace(
     LINT_LINE_CODE_PATTERN,
     (_match, separator: string, path: string, code: string): string =>
-      `${separator}${path} ${readCodeMessage(code)}`,
+      `${separator}${path} ${readCodeMessage(code, resolvedLanguage)}`,
   );
 
   if (LINT_MESSAGE_PATTERN.test(error)) {
@@ -172,11 +247,11 @@ export function readFormSchemaLintMessage(error: string): string {
 
   // Not lint output: the message is a bare code or wraps one (for example
   // `GraphQL error: FORM_DATA_SOURCE_TIMEOUT`), so map it as a whole.
-  return readFormDataSourceErrorMessage(error) ?? error;
+  return readFormDataSourceErrorMessage(error, resolvedLanguage) ?? error;
 }
 
-function readCodeMessage(code: string): string {
+function readCodeMessage(code: string, language: WorkflowLintLanguage): string {
   return (FORM_DATA_SOURCE_ERROR_CODES as readonly string[]).includes(code)
-    ? ERROR_MESSAGES[code as FormDataSourceErrorCode]
-    : UNKNOWN_CODE_MESSAGE;
+    ? ERROR_MESSAGES[language][code as FormDataSourceErrorCode]
+    : UNKNOWN_CODE_MESSAGES[language];
 }

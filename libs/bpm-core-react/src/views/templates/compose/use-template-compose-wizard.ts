@@ -6,16 +6,12 @@ import type {
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
-import {
-  useBPMLanguage,
-  type BPMLanguage,
-} from '../../../lib/language-provider';
-import { readFormSchemaLintMessage } from '@rytass/bpm-core-client/form';
+import { useBPMLanguage } from '../../../lib/language-provider';
 import {
   ComposeApprovalTemplateWithFormResult,
   composeApprovalTemplateWithForm,
-  readWorkflowLintMessage,
 } from '@rytass/bpm-core-client/template';
+import { readTemplateErrorMessage } from '../template-error-message';
 
 export type ComposeWizardStep = 0 | 1 | 2;
 
@@ -162,7 +158,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
         return result;
       } catch (requestError: unknown) {
         setPublishError(
-          readErrorMessage(requestError, submittedDefinition, language),
+          readTemplateErrorMessage(requestError, language, submittedDefinition),
         );
         setPublishPhase('error');
 
@@ -219,23 +215,3 @@ const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
     },
   ],
 };
-
-const UNKNOWN_ERROR_MESSAGES: Readonly<Record<BPMLanguage, string>> = {
-  en: 'An unknown error occurred',
-  'zh-TW': '發生未知錯誤',
-};
-
-function readErrorMessage(
-  error: unknown,
-  submittedDefinition: WorkflowDefinition,
-  language: BPMLanguage,
-): string {
-  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes and
-  // structural lines that name nodes by id; map both to readable copy and
-  // leave every other message untouched.
-  return error instanceof Error
-    ? readFormSchemaLintMessage(
-        readWorkflowLintMessage(error.message, submittedDefinition, language),
-      )
-    : UNKNOWN_ERROR_MESSAGES[language];
-}

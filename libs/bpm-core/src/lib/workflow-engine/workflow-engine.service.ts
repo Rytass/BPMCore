@@ -3058,7 +3058,7 @@ export class WorkflowEngineService {
   ): boolean {
     const expression = edge.data.condition?.trim();
 
-    if (expression) {
+    if (expression && !isListValuedStructuredCondition(edge, input.formData)) {
       return this.conditionService.evaluateBoolean(
         expression,
         buildDryRunExpressionContext(input, lastDecision),
@@ -4357,7 +4357,10 @@ export class WorkflowEngineService {
   ): Promise<boolean> {
     const expression = edge.data.condition?.trim();
 
-    if (expression) {
+    if (
+      expression &&
+      !isListValuedStructuredCondition(edge, instance.formData)
+    ) {
       return this.conditionService.evaluateBoolean(
         expression,
         {
@@ -8244,6 +8247,31 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
   }
 
   return null;
+}
+
+/**
+ * A designer-built condition on a multiple-selection field (checkbox, or a
+ * select / autocomplete in `multiple` mode), whose submitted value is a list.
+ * Definitions saved before the designer compiled such fields with list
+ * semantics carry a single-value CEL (`form.tags == "A"`), which is false for
+ * `["A"]` — `!=` is always true and `!= ""` counts `[]` as filled — so those
+ * edges never routed as designed. The structured fields the designer stores
+ * beside the CEL are evaluated instead: `evaluateWorkflowEdgeCondition`
+ * already reads a list as contains / does not contain and an empty list as
+ * empty, the meaning the current designer compiles too. A hand-written CEL
+ * carries no structured fields and is never overridden.
+ */
+function isListValuedStructuredCondition(
+  edge: WorkflowEdge,
+  formData: Readonly<Record<string, unknown>>,
+): boolean {
+  const fieldKey = edge.data.conditionFieldKey;
+
+  return Boolean(
+    fieldKey &&
+    edge.data.conditionOperator &&
+    Array.isArray(formData[fieldKey]),
+  );
 }
 
 function edgeHasCondition(edge: WorkflowEdge): boolean {
