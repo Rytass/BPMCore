@@ -114,7 +114,8 @@ import {
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
   readApproverResolverIssue,
-  readConditionOperatorIds,
+  readConditionOperator,
+  readConditionOperatorOptionsForField,
   readDesignTimeApproverCount,
   readExcludeInitiatorIssue,
   readNotifyServiceTaskIssue,
@@ -215,10 +216,6 @@ type FormVersionSelectOption = Readonly<{
 type ConditionFieldOption = Readonly<{
   fieldType: FormFieldDefinition['type'];
   id: string;
-  name: string;
-}>;
-type ConditionOperatorOption = Readonly<{
-  id: WorkflowEdgeConditionOperator;
   name: string;
 }>;
 type ConditionValueOption = Readonly<{
@@ -613,16 +610,6 @@ const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOp
 const DEFAULT_EXCLUDE_INITIATOR_CONFIG: ExcludeInitiatorConfig = {
   whenEmpty: 'INITIATOR_MANAGER',
 };
-const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
-  { id: 'EQUALS', name: '等於' },
-  { id: 'NOT_EQUALS', name: '不等於' },
-  { id: 'GREATER_THAN', name: '大於' },
-  { id: 'GREATER_THAN_OR_EQUALS', name: '大於等於' },
-  { id: 'LESS_THAN', name: '小於' },
-  { id: 'LESS_THAN_OR_EQUALS', name: '小於等於' },
-  { id: 'IS_FILLED', name: '已填寫' },
-  { id: 'IS_EMPTY', name: '未填寫' },
-];
 const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperator[] =
   [
     'EQUALS',
@@ -3717,7 +3704,7 @@ export function TemplateDesignerView({
       selectedFormVersionOption?.schema ?? null,
       edge.data.conditionFieldKey ?? null,
     );
-    const conditionOperatorOptions = readConditionOperatorOptions(
+    const conditionOperatorOptions = readConditionOperatorOptionsForField(
       selectedConditionField,
     );
     const conditionValueOptions = readConditionValueOptions(
@@ -5572,28 +5559,6 @@ function readConditionField(
 ): FormFieldDefinition | null {
   return fieldKey
     ? (schema?.fields.find((field) => field.fieldKey === fieldKey) ?? null)
-    : null;
-}
-
-function readConditionOperatorOptions(
-  field: FormFieldDefinition | null,
-): readonly ConditionOperatorOption[] {
-  if (!field) {
-    return [];
-  }
-
-  const operatorIds = readConditionOperatorIds(field);
-
-  return CONDITION_OPERATOR_OPTIONS.filter((option) =>
-    operatorIds.includes(option.id),
-  );
-}
-
-function readConditionOperator(
-  value: string | null,
-): WorkflowEdgeConditionOperator | null {
-  return CONDITION_OPERATOR_OPTIONS.some((option) => option.id === value)
-    ? (value as WorkflowEdgeConditionOperator)
     : null;
 }
 
