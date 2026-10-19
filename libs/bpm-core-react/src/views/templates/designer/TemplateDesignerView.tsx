@@ -25,6 +25,10 @@ import { WorkflowChatDrawer } from './workflow-chat-drawer';
 import { FormBuilderView } from '../../forms/builder/FormBuilderView';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import {
+  useBPMLanguage,
+  type BPMLanguage,
+} from '../../../lib/language-provider';
+import {
   Background,
   ControlButton,
   Controls,
@@ -154,6 +158,7 @@ import {
   publishApprovalTemplateVersion,
   PublishedFormVersionOption,
   readTemplateDesigner,
+  readWorkflowLintMessage,
   resolveMemberOptions,
   listWorkflowWebhookEndpoints,
   searchMemberOptions,
@@ -769,6 +774,7 @@ export function TemplateDesignerView({
 }: TemplateDesignerViewProps): ReactElement {
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
+  const language = useBPMLanguage();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
@@ -1272,7 +1278,7 @@ export function TemplateDesignerView({
       setPositions(organizationDashboard.positions);
       setMemberships(organizationDashboard.memberships);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, language));
     } finally {
       setLoading(false);
     }
@@ -1348,7 +1354,7 @@ export function TemplateDesignerView({
       setFormDraft(null);
       setFormDraftDirty(false);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, language));
     } finally {
       setLoading(false);
     }
@@ -1367,7 +1373,7 @@ export function TemplateDesignerView({
         ),
       );
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, language));
     } finally {
       setFormVersionLoading(false);
     }
@@ -1399,7 +1405,7 @@ export function TemplateDesignerView({
       // A superseded request must not paint the error banner either. The
       // newest request is still in flight and will report its own outcome.
       if (searchSequence === memberSearchSequenceRef.current) {
-        setError(readErrorMessage(requestError));
+        setError(readErrorMessage(requestError, language));
       }
     } finally {
       // Same for the spinner: clearing it from a superseded request drops the
@@ -1528,7 +1534,7 @@ export function TemplateDesignerView({
         await refreshDesigner();
       }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, language, workflowDefinition));
       throw requestError;
     } finally {
       setSaving(false);
@@ -1586,7 +1592,7 @@ export function TemplateDesignerView({
 
       setDryRunResult(result);
     } catch (requestError: unknown) {
-      setDryRunError(readErrorMessage(requestError));
+      setDryRunError(readErrorMessage(requestError, language));
     } finally {
       setDryRunRunning(false);
     }
@@ -1628,7 +1634,7 @@ export function TemplateDesignerView({
         uiSchema: draftVersion?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA,
       });
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      setError(readErrorMessage(requestError, language));
     } finally {
       setFormDraftLoading(false);
     }
@@ -5677,17 +5683,37 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
     : [];
 }
 
-function readErrorMessage(error: unknown): string {
+const UNKNOWN_ERROR_MESSAGES: Readonly<Record<BPMLanguage, string>> = {
+  en: 'An unknown error occurred',
+  'zh-TW': '發生未知錯誤',
+};
+
+const WEBHOOK_LINT_PREFIXES: Readonly<Record<BPMLanguage, string>> = {
+  en: 'Webhook settings failed the publish check: ',
+  'zh-TW': 'Webhook 設定未通過發布檢查：',
+};
+
+function readErrorMessage(
+  error: unknown,
+  language: BPMLanguage,
+  submittedDefinition?: WorkflowDefinition,
+): string {
   // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
   // readable copy and leave every other message untouched.
   if (!(error instanceof Error)) {
-    return '發生未知錯誤';
+    return UNKNOWN_ERROR_MESSAGES[language];
   }
+
+  // Structural publish-lint lines name nodes by id; the definition that was
+  // just submitted lets them name the node the way the canvas does.
+  const message = submittedDefinition
+    ? readWorkflowLintMessage(error.message, submittedDefinition, language)
+    : error.message;
 
   // The backend publish lint speaks in paths and codes; say what failed
   // before it, since the designer's own check only runs once the catalog
   // has loaded.
-  return error.message.includes('WORKFLOW_WEBHOOK_')
-    ? `Webhook 設定未通過發布檢查：${error.message}`
-    : readFormSchemaLintMessage(error.message);
+  return message.includes('WORKFLOW_WEBHOOK_')
+    ? `${WEBHOOK_LINT_PREFIXES[language]}${message}`
+    : readFormSchemaLintMessage(message);
 }

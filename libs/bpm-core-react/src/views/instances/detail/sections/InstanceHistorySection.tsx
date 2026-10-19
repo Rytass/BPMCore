@@ -48,6 +48,9 @@ const HISTORY_MEMBER_NAME_STYLE: CSSProperties = {
 // An approval comment is the one part of a timeline entry a person wrote, so
 // it gets its own line and a readable size instead of being appended to the
 // metadata run.
+// It is set one step above body text — the h3 size and line height, at body
+// weight — so it reads as the content of the entry rather than as more
+// metadata, without competing with the section heading, which is h3 itself.
 // The border is written as longhands so the danger tone can override only its
 // colour; mixing `borderLeft` with a `borderLeftColor` override in one style
 // object makes the result depend on key order and warns in React dev mode.
@@ -55,6 +58,8 @@ const HISTORY_COMMENT_STYLE: CSSProperties = {
   borderLeftColor: 'var(--mzn-color-border)',
   borderLeftStyle: 'solid',
   borderLeftWidth: 2,
+  fontSize: 'var(--mzn-typography-h3-font-size)',
+  lineHeight: 'var(--mzn-typography-h3-line-height)',
   marginTop: 4,
   paddingLeft: 8,
   whiteSpace: 'pre-wrap',

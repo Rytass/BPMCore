@@ -6,10 +6,15 @@ import type {
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  useBPMLanguage,
+  type BPMLanguage,
+} from '../../../lib/language-provider';
 import { readFormSchemaLintMessage } from '@rytass/bpm-core-client/form';
 import {
   ComposeApprovalTemplateWithFormResult,
   composeApprovalTemplateWithForm,
+  readWorkflowLintMessage,
 } from '@rytass/bpm-core-client/template';
 
 export type ComposeWizardStep = 0 | 1 | 2;
@@ -66,6 +71,7 @@ export interface TemplateComposeWizard {
  * mutation.
  */
 export function useTemplateComposeWizard(): TemplateComposeWizard {
+  const language = useBPMLanguage();
   const [currentStep, setCurrentStep] = useState<ComposeWizardStep>(0);
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState<string | null>(null);
@@ -128,6 +134,9 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
       setPublishPhase('submitting');
       setPublishError(null);
 
+      const submittedDefinition =
+        workflowDefinition ?? EMPTY_WORKFLOW_DEFINITION;
+
       try {
         const result = await composeApprovalTemplateWithForm({
           category: null,
@@ -145,14 +154,16 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
           templateId: null,
           templateName: name,
           uiSchema: formUiSchema,
-          workflowDefinition: workflowDefinition ?? EMPTY_WORKFLOW_DEFINITION,
+          workflowDefinition: submittedDefinition,
         });
 
         setPublishPhase('success');
 
         return result;
       } catch (requestError: unknown) {
-        setPublishError(readErrorMessage(requestError));
+        setPublishError(
+          readErrorMessage(requestError, submittedDefinition, language),
+        );
         setPublishPhase('error');
 
         return null;
@@ -162,6 +173,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
       formSchema,
       formUiSchema,
       initiatorPolicyCel,
+      language,
       name,
       workflowDefinition,
     ]);
@@ -208,10 +220,22 @@ const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
   ],
 };
 
-function readErrorMessage(error: unknown): string {
-  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
-  // readable copy and leave every other message untouched.
+const UNKNOWN_ERROR_MESSAGES: Readonly<Record<BPMLanguage, string>> = {
+  en: 'An unknown error occurred',
+  'zh-TW': '發生未知錯誤',
+};
+
+function readErrorMessage(
+  error: unknown,
+  submittedDefinition: WorkflowDefinition,
+  language: BPMLanguage,
+): string {
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes and
+  // structural lines that name nodes by id; map both to readable copy and
+  // leave every other message untouched.
   return error instanceof Error
-    ? readFormSchemaLintMessage(error.message)
-    : '發生未知錯誤';
+    ? readFormSchemaLintMessage(
+        readWorkflowLintMessage(error.message, submittedDefinition, language),
+      )
+    : UNKNOWN_ERROR_MESSAGES[language];
 }

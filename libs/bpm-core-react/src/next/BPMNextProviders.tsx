@@ -18,6 +18,7 @@
 import { useMemo, type ReactElement, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import type { CalendarLocale } from '@mezzanine-ui/react/moment';
+import type { BPMLanguage } from '../lib/language-provider';
 import { Providers as BPMProviders } from '../lib/providers';
 import {
   RouterAdapterProvider,
@@ -32,6 +33,11 @@ export interface BPMNextProvidersProps {
    * `<Providers>`. Defaults to `CalendarLocale.ZH_TW`.
    */
   readonly locale?: CalendarLocale;
+  /**
+   * Language BPM views write their messages in. Forwarded to the inner
+   * `<Providers>`. Defaults to `'zh-TW'`.
+   */
+  readonly language?: BPMLanguage;
   /**
    * Routes that must remain accessible without a BPM session — visiting
    * these does not redirect to `loginPath` even when `member` is null.
@@ -77,6 +83,7 @@ export interface BPMNextProvidersProps {
 export function BPMNextProviders({
   children,
   locale,
+  language,
   publicPaths,
   loginPath,
 }: BPMNextProvidersProps): ReactElement {
@@ -98,6 +105,7 @@ export function BPMNextProviders({
     <RouterAdapterProvider value={adapter}>
       <BPMProviders
         locale={locale}
+        language={language}
         publicPaths={publicPaths}
         loginPath={loginPath}
       >

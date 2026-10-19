@@ -27,7 +27,10 @@ export function readDryRunFormMemberPlaceholder(fieldKey: string): string {
 }
 
 function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
-  if (field.type === 'number') {
+  // `money` is numeric too: edge conditions compare it with a number literal
+  // (`readConditionExpressionValue`), so a text sample fails CEL with
+  // "lessOrEqualThan operation cannot be applied to (string, uint)".
+  if (field.type === 'number' || field.type === 'money') {
     return 1000;
   }
 

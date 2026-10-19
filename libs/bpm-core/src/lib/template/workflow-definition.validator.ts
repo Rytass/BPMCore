@@ -19,6 +19,7 @@ import {
   isOrgManagerChainDecisionPolicyInvalid,
   readNotifyWebhookStructureIssues,
   readNotifyWebhookTargets,
+  WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { parseIsoDurationParts } from '../common/iso-duration';
 
@@ -74,6 +75,11 @@ export function parseWorkflowDefinitionJson(
   return parsedValue as WorkflowDefinition;
 }
 
+// The structural lines (blank node label in lintNodeShape, gateway edges,
+// reachability, cycles, start/end count, NOTIFY outgoing edges) come from
+// `WORKFLOW_LINT_MESSAGES`, which the designer also matches to translate them
+// (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`). Write a
+// new structural line there too, not inline here.
 export function lintWorkflowDefinition(
   definition: WorkflowDefinition,
 ): WorkflowDefinitionLintResult {
@@ -91,10 +97,8 @@ export function lintWorkflowDefinition(
   const topologyErrors = [
     ...(startNodes.length === 1
       ? []
-      : ['workflow must include exactly one startEvent node']),
-    ...(endNodes.length >= 1
-      ? []
-      : ['workflow must include at least one endEvent node']),
+      : [WORKFLOW_LINT_MESSAGES.startEventCount()]),
+    ...(endNodes.length >= 1 ? [] : [WORKFLOW_LINT_MESSAGES.endEventMissing()]),
     ...lintEdges(edges, nodeIds),
     ...lintUserTaskNodes(nodes),
     ...lintServiceTaskNodes(nodes),
@@ -173,7 +177,7 @@ function lintNodeShape(node: WorkflowNode, index: number): readonly string[] {
       : [`${path}.type must be a non-empty string`]),
     ...(typeof node.data?.label === 'string' && node.data.label.trim()
       ? []
-      : [`${path}.data.label must be a non-empty string`]),
+      : [WORKFLOW_LINT_MESSAGES.blankNodeLabel(index)]),
     ...(!node.data?.triggerMode ||
     node.data.triggerMode === 'AND' ||
     node.data.triggerMode === 'OR'
@@ -592,10 +596,7 @@ function lintAsyncNotifyOutgoingEdges(
 
   return edges
     .filter((edge) => asyncNotifyNodeIds.has(edge.source))
-    .map(
-      (edge) =>
-        `workflow.edges.${edge.id}.source cannot be a NOTIFY serviceTask`,
-    );
+    .map((edge) => WORKFLOW_LINT_MESSAGES.notifyOutgoingEdge(edge.id));
 }
 
 function lintExclusiveGateways(
@@ -613,12 +614,10 @@ function lintExclusiveGateways(
       return [
         ...(outgoingEdges.length >= 2
           ? []
-          : [
-              `workflow.nodes.${node.id} exclusive split requires at least two outgoing edges`,
-            ]),
+          : [WORKFLOW_LINT_MESSAGES.exclusiveSplitOutgoingEdges(node.id)]),
         ...(outgoingEdges.some((edge) => edge.data.isDefault)
           ? []
-          : [`workflow.nodes.${node.id} must include a default outgoing edge`]),
+          : [WORKFLOW_LINT_MESSAGES.exclusiveSplitDefaultEdge(node.id)]),
       ];
     });
 }
@@ -637,9 +636,7 @@ function lintParallelGateways(
 
       return incomingEdges.length >= 2
         ? []
-        : [
-            `workflow.nodes.${node.id} parallel join requires at least two incoming edges`,
-          ];
+        : [WORKFLOW_LINT_MESSAGES.parallelJoinIncomingEdges(node.id)];
     });
 }
 
@@ -651,7 +648,7 @@ function lintReachability(
   const reachableNodeIds = readReachableNodeIds(edges, startNodeId);
   const unreachableErrors = nodes
     .filter((node) => !reachableNodeIds.has(node.id))
-    .map((node) => `workflow.nodes.${node.id} is not reachable from start`);
+    .map((node) => WORKFLOW_LINT_MESSAGES.unreachableNode(node.id));
   const noEndPathErrors = nodes
     .filter(
       (node) =>
@@ -659,9 +656,7 @@ function lintReachability(
         !isAsyncNotifyServiceTask(node) &&
         !hasPathToEnd(node.id, nodes, edges, new Set<string>()),
     )
-    .map(
-      (node) => `workflow.nodes.${node.id} does not have a path to an endEvent`,
-    );
+    .map((node) => WORKFLOW_LINT_MESSAGES.noPathToEnd(node.id));
 
   return [...unreachableErrors, ...noEndPathErrors];
 }
@@ -731,8 +726,8 @@ function lintCycles(
 ): readonly string[] {
   const cyclicNodeIds = readCyclicNodeIds(edges, startNodeId, [], new Set());
 
-  return [...cyclicNodeIds].map(
-    (nodeId) => `workflow contains a cycle involving node ${nodeId}`,
+  return [...cyclicNodeIds].map((nodeId) =>
+    WORKFLOW_LINT_MESSAGES.cycle(nodeId),
   );
 }
 

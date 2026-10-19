@@ -1,3 +1,24 @@
+## 0.17.3 (2026-10-19)
+
+### 🚀 Features
+
+- **react:** add a BPM message language provider ([355b15c](https://github.com/Rytass/BPMCore/commit/355b15c))
+- **template:** translate publish lint lines per language ([60fa7bc](https://github.com/Rytass/BPMCore/commit/60fa7bc))
+- **react:** enlarge approval comments in the instance history ([b3bb37c](https://github.com/Rytass/BPMCore/commit/b3bb37c))
+- **react:** show structural publish failures in Chinese with node names ([ba90fbd](https://github.com/Rytass/BPMCore/commit/ba90fbd))
+- **client:** translate structural publish-lint lines into designer copy ([490339c](https://github.com/Rytass/BPMCore/commit/490339c))
+
+### 🩹 Fixes
+
+- **template:** address review of the lint translation ([26d7a54](https://github.com/Rytass/BPMCore/commit/26d7a54))
+- **react:** sample money fields as numbers in the designer dry run ([35dbd9a](https://github.com/Rytass/BPMCore/commit/35dbd9a))
+- **client:** cover blank node labels and never throw while translating lint ([0a8b3af](https://github.com/Rytass/BPMCore/commit/0a8b3af))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.2 (2026-10-18)
 
 ### 🚀 Features
