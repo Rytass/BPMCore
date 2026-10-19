@@ -86,7 +86,7 @@ describe('multiple-selection condition expressions (string shape)', () => {
     );
   });
 
-  it('quotes a non-identifier key and an option value safely', () => {
+  it('emits bracket access for a non-identifier key and a JSON-quoted option value (string shape only; cel-js 0.8.2 does not unescape \\" so this value never matches at run time, same as single selection)', () => {
     expect(
       readConditionExpression(
         { ...CHECKBOX, fieldKey: 'a-b' },
