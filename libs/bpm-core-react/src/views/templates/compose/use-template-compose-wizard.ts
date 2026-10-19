@@ -10,6 +10,7 @@ import { readFormSchemaLintMessage } from '@rytass/bpm-core-client/form';
 import {
   ComposeApprovalTemplateWithFormResult,
   composeApprovalTemplateWithForm,
+  readWorkflowLintMessage,
 } from '@rytass/bpm-core-client/template';
 
 export type ComposeWizardStep = 0 | 1 | 2;
@@ -128,6 +129,9 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
       setPublishPhase('submitting');
       setPublishError(null);
 
+      const submittedDefinition =
+        workflowDefinition ?? EMPTY_WORKFLOW_DEFINITION;
+
       try {
         const result = await composeApprovalTemplateWithForm({
           category: null,
@@ -145,14 +149,14 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
           templateId: null,
           templateName: name,
           uiSchema: formUiSchema,
-          workflowDefinition: workflowDefinition ?? EMPTY_WORKFLOW_DEFINITION,
+          workflowDefinition: submittedDefinition,
         });
 
         setPublishPhase('success');
 
         return result;
       } catch (requestError: unknown) {
-        setPublishError(readErrorMessage(requestError));
+        setPublishError(readErrorMessage(requestError, submittedDefinition));
         setPublishPhase('error');
 
         return null;
@@ -208,10 +212,16 @@ const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
   ],
 };
 
-function readErrorMessage(error: unknown): string {
-  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
-  // readable copy and leave every other message untouched.
+function readErrorMessage(
+  error: unknown,
+  submittedDefinition: WorkflowDefinition,
+): string {
+  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes and
+  // structural lines that name nodes by id; map both to readable copy and
+  // leave every other message untouched.
   return error instanceof Error
-    ? readFormSchemaLintMessage(error.message)
+    ? readFormSchemaLintMessage(
+        readWorkflowLintMessage(error.message, submittedDefinition),
+      )
     : '發生未知錯誤';
 }
