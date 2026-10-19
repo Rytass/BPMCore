@@ -37,6 +37,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
 | Publish-lint errors in the designer name nodes and switch language (PR #94, #96): `readWorkflowLintMessage(message, definition, language?)`, `WORKFLOW_LINT_MESSAGES`, `BPMLanguage` / `BPMLanguageProvider` / `useBPMLanguage()`, `language` on `Providers` / `BPMNextProviders`; approval comments set at the h3 size | `v0.17.3` |
+| Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | Not yet released |
 
 ---
 
@@ -535,8 +536,8 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `FORM_DATA_SOURCE_ERROR_CODES` | const | Stable DataSource error codes returned by the GraphQL surface |
 | `FormDataSourceErrorCode` | type | Union of the stable DataSource error codes |
 | `readFormDataSourceErrorCode()` | function | Extract the DataSource code from a rejected request, else `null` |
-| `readFormDataSourceErrorMessage()` | function | Map a rejected request to display copy, else `null` |
-| `readFormSchemaLintMessage()` | function | Replace the code inside a publish-lint line, keeping the field path |
+| `readFormDataSourceErrorMessage(error, language?)` | function | Map a rejected request to display copy in `language` (`'zh-TW'` default, or `'en'`; a `WorkflowLintLanguage`), else `null` |
+| `readFormSchemaLintMessage(error, language?)` | function | Replace the code inside a publish-lint line with copy in `language` (`'zh-TW'` default, or `'en'`), keeping the field path |
 
 ### Form DataSource builder helpers
 
