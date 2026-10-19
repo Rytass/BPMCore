@@ -77,6 +77,21 @@ export const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
   { id: 'IS_EMPTY', name: '未填寫' },
 ];
 
+/**
+ * Operator names that differ on a multiple-selection field. Its stored value is
+ * a list, so `EQUALS` / `NOT_EQUALS` mean "the list contains / does not contain
+ * the option" (see `readConditionExpression`). Only the displayed name changes;
+ * the operator ids are persisted in workflow definitions and stay as they are.
+ * `IS_FILLED` / `IS_EMPTY` keep their names: "any option picked or none" reads
+ * the same as for every other field.
+ */
+const MULTIPLE_SELECTION_OPERATOR_NAMES: Readonly<
+  Partial<Record<WorkflowEdgeConditionOperator, string>>
+> = {
+  EQUALS: '包含',
+  NOT_EQUALS: '不包含',
+};
+
 // ── SLA option catalogs & duration helpers ─────────────────────────────────
 
 /**
@@ -1842,7 +1857,7 @@ export function readConditionLabel(
     return undefined;
   }
 
-  const operatorLabel = readConditionOperatorLabel(operator);
+  const operatorLabel = readConditionOperatorLabel(operator, field);
 
   if (!shouldConditionOperatorUseValue(operator)) {
     return `${field.label} ${operatorLabel}`;
@@ -1860,10 +1875,44 @@ export function readConditionLabel(
 
 export function readConditionOperatorLabel(
   operator: WorkflowEdgeConditionOperator,
+  field?: FormFieldDefinition | null,
 ): string {
   return (
+    (field && isMultipleSelectionConditionField(field)
+      ? MULTIPLE_SELECTION_OPERATOR_NAMES[operator]
+      : undefined) ??
     CONDITION_OPERATOR_OPTIONS.find((option) => option.id === operator)?.name ??
     operator
+  );
+}
+
+/**
+ * The operators offered for `field`, named for what they mean on that field's
+ * value shape (a multiple-selection field says "包含", not "等於").
+ */
+export function readConditionOperatorOptionsForField(
+  field: FormFieldDefinition | null,
+): readonly ConditionOperatorOption[] {
+  if (!field) {
+    return [];
+  }
+
+  return readConditionOperatorIds(field).map((id) => ({
+    id,
+    name: readConditionOperatorLabel(id, field),
+  }));
+}
+
+/**
+ * A select / autocomplete in `multiple` mode, or a checkbox group. Its stored
+ * value is a list of option values rather than one value.
+ */
+export function isMultipleSelectionConditionField(
+  field: FormFieldDefinition,
+): boolean {
+  return (
+    isFormOptionFieldDefinition(field) &&
+    readFormFieldSelectionMode(field) === 'multiple'
   );
 }
 
@@ -1931,6 +1980,15 @@ export function readConditionExpression(
     return undefined;
   }
 
+  if (isMultipleSelectionConditionField(field)) {
+    return readMultipleSelectionConditionExpression(
+      fieldReference,
+      field,
+      operator,
+      value,
+    );
+  }
+
   if (operator === 'IS_FILLED') {
     return `${fieldReference} != null && ${fieldReference} != ""`;
   }
@@ -1946,6 +2004,44 @@ export function readConditionExpression(
   return `${fieldReference} ${readConditionExpressionOperator(
     operator,
   )} ${readConditionExpressionValue(field, value)}`;
+}
+
+/**
+ * A multiple-selection value is a list, so "equals" cannot be a `==` against
+ * one option: `form.x == "A"` is false for `["A"]`, and `!=` is true. The
+ * operators keep their ids and get list meanings instead: `EQUALS` is
+ * "contains", `NOT_EQUALS` is "does not contain", `IS_FILLED` is "at least one
+ * picked", `IS_EMPTY` is "none picked". Ordering operators are not offered
+ * (see `readConditionOperatorIds`), so they compile to nothing.
+ *
+ * Null-safety follows cel-js: `&&` short-circuits on `null`, but `||` does not
+ * (`size(null)` and `"A" in null` throw even behind `x == null ||`). So every
+ * expression is a guarded `&&`, or negates one, or compares to `[]`.
+ */
+function readMultipleSelectionConditionExpression(
+  fieldReference: string,
+  field: FormFieldDefinition,
+  operator: WorkflowEdgeConditionOperator,
+  value: string | undefined,
+): string | undefined {
+  if (operator === 'IS_FILLED') {
+    return `${fieldReference} != null && ${fieldReference} != []`;
+  }
+
+  if (operator === 'IS_EMPTY') {
+    return `${fieldReference} == null || ${fieldReference} == []`;
+  }
+
+  if (!value || (operator !== 'EQUALS' && operator !== 'NOT_EQUALS')) {
+    return undefined;
+  }
+
+  const contains = `${fieldReference} != null && ${readConditionExpressionValue(
+    field,
+    value,
+  )} in ${fieldReference}`;
+
+  return operator === 'EQUALS' ? contains : `!(${contains})`;
 }
 
 export function readFormFieldReference(fieldKey: string): string {
