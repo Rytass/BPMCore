@@ -352,6 +352,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `ConditionOperatorOption` / `ConditionValueOption` | interface | Condition UI option shapes |
 | `WORKFLOW_INPUT_HANDLE_ID` / `WORKFLOW_OUTPUT_HANDLE_ID` | const | ReactFlow handle ids |
 | `WORKFLOW_NODE_TYPE_LABELS` | const | zh-TW node type labels |
+| `WORKFLOW_LINT_MESSAGES` | const | Builders for the structural publish-lint lines (`blankNodeLabel`, `cycle`, `endEventMissing`, `exclusiveSplitDefaultEdge`, `exclusiveSplitOutgoingEdges`, `noPathToEnd`, `notifyOutgoingEdge`, `parallelJoinIncomingEdges`, `startEventCount`, `unreachableNode`). The backend lint writes these lines with them and `readWorkflowLintMessage` matches them, so the two cannot drift; the English wording is unchanged. Not yet released |
 | `CONDITION_OPERATOR_OPTIONS` / `CONDITION_OPERATORS_REQUIRING_VALUE` | const | Condition operator catalog |
 | `SlaDurationUnit` / `SlaDurationParts` / `SlaOption` | type/interface | Single-unit SLA duration authoring shapes |
 | `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
