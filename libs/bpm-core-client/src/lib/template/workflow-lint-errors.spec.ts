@@ -237,9 +237,9 @@ describe('readWorkflowLintMessage', (): void => {
       ),
     ).toBe(
       [
-        'One outgoing connection of the condition split "金額判斷" must have "Otherwise take this path" turned on, so the flow has somewhere to go when no condition matches.',
-        'A "Condition split" node has no display name. Select it, fill in "Display name", then publish again.',
-        'The flow needs at least one "End" node.',
+        'One outgoing connection of the condition split "金額判斷" must have "Otherwise take this path" (其他情況走這條) turned on, so the flow has somewhere to go when no condition matches.',
+        'A "Condition split (條件分流)" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.',
+        'The flow needs at least one "End" (結束) node.',
         'The notify node "通知財務" cannot have outgoing connections (it only sends a notice; the flow does not continue from it). Delete the connection leaving it.',
       ].join('; '),
     );
@@ -304,5 +304,51 @@ describe('readWorkflowLintMessage', (): void => {
     ).toBe(
       '從「開始」走不到節點「未知類型」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
     );
+  });
+
+  it('names the first node when two share an id', (): void => {
+    const duplicated = {
+      ...definition,
+      nodes: [
+        ...definition.nodes,
+        {
+          data: { label: '重複的知會' },
+          id: 'serviceTask_1',
+          position: { x: 0, y: 0 },
+          type: 'serviceTask',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      readWorkflowLintMessage(
+        [
+          'workflow.edges.edge-notify.source cannot be a NOTIFY serviceTask',
+          'workflow.nodes.serviceTask_1 is not reachable from start',
+        ].join('; '),
+        duplicated,
+      ),
+    ).toBe(
+      [
+        '知會節點「通知財務」不能往下接連線（知會只負責通知，流程不會從它繼續）。請刪除從它拉出的連線。',
+        '從「開始」走不到節點「通知財務」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+      ].join('; '),
+    );
+  });
+
+  it('keeps the backend message when reading the definition throws', (): void => {
+    const throwing = {
+      ...definition,
+      nodes: [
+        {
+          get id(): string {
+            throw new Error('unreadable draft');
+          },
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+    const backend = 'workflow must include at least one endEvent node';
+
+    expect(readWorkflowLintMessage(backend, throwing)).toBe(backend);
   });
 });

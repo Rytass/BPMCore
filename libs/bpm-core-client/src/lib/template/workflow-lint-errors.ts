@@ -3,7 +3,10 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
-import { WORKFLOW_LINT_MESSAGES } from '@rytass/bpm-core-shared/workflow-graph';
+import {
+  WORKFLOW_LINT_MESSAGES,
+  WORKFLOW_NODE_TYPE_LABELS,
+} from '@rytass/bpm-core-shared/workflow-graph';
 
 /** Languages `readWorkflowLintMessage` can rewrite the publish lint into. */
 export type WorkflowLintLanguage = 'en' | 'zh-TW';
@@ -30,40 +33,44 @@ interface WorkflowLintCopy {
   readonly unreachableNode: (name: string) => string;
 }
 
-// A Map, not an object literal: the lint only checks that a node type is a
-// non-empty string, so a draft can carry `constructor` or `toString`, which an
-// object lookup would answer with a prototype function.
+// Node types are looked up in a Map, not an object literal: the lint only
+// checks that a node type is a non-empty string, so a draft can carry
+// `constructor` or `toString`, which an object lookup would answer with a
+// prototype function.
+//
+// The designer's own labels are Chinese whatever the language, so the English
+// copy names each field and node type with its on-screen label beside it.
 const WORKFLOW_LINT_COPY: Readonly<
   Record<WorkflowLintLanguage, WorkflowLintCopy>
 > = {
   en: {
     blankNodeLabel: (typeLabel) =>
-      `A "${typeLabel}" node has no display name. Select it, fill in "Display name", then publish again.`,
+      `A "${typeLabel}" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.`,
     cycle: (name) =>
       `The connections around "${name}" form a loop, so the flow would keep coming back. Remove the connection that closes the loop.`,
-    endEventMissing: 'The flow needs at least one "End" node.',
+    endEventMissing: 'The flow needs at least one "End" (結束) node.',
     exclusiveSplitDefaultEdge: (name) =>
-      `One outgoing connection of the condition split "${name}" must have "Otherwise take this path" turned on, so the flow has somewhere to go when no condition matches.`,
+      `One outgoing connection of the condition split "${name}" must have "Otherwise take this path" (其他情況走這條) turned on, so the flow has somewhere to go when no condition matches.`,
     exclusiveSplitOutgoingEdges: (name) =>
-      `The condition split "${name}" needs at least two outgoing connections, one of them with "Otherwise take this path" turned on.`,
+      `The condition split "${name}" needs at least two outgoing connections, one of them with "Otherwise take this path" (其他情況走這條) turned on.`,
     noPathToEnd: (name) =>
-      `"${name}" has no path to "End", so the flow would get stuck there. Connect it to the next node or to "End".`,
+      `"${name}" has no path to "End" (結束), so the flow would get stuck there. Connect it to the next node or to "End".`,
     nodeTypeLabels: new Map([
-      ['endEvent', 'End'],
-      ['exclusiveGateway', 'Condition split'],
-      ['parallelGateway', 'Parallel'],
-      ['serviceTask', 'System'],
-      ['startEvent', 'Start'],
-      ['userTask', 'Approval'],
+      ['endEvent', 'End (結束)'],
+      ['exclusiveGateway', 'Condition split (條件分流)'],
+      ['parallelGateway', 'Parallel (並行處理)'],
+      ['serviceTask', 'System (系統)'],
+      ['startEvent', 'Start (開始)'],
+      ['userTask', 'Approval (簽核)'],
     ]),
     notifyOutgoingEdge: (name) =>
       `The notify node "${name}" cannot have outgoing connections (it only sends a notice; the flow does not continue from it). Delete the connection leaving it.`,
     parallelJoinIncomingEdges: (name) =>
       `The parallel join "${name}" needs at least two incoming connections.`,
-    startEventCount: 'The flow needs exactly one "Start" node.',
+    startEventCount: 'The flow needs exactly one "Start" (開始) node.',
     unknownNodeType: 'Unknown type',
     unreachableNode: (name) =>
-      `"${name}" cannot be reached from "Start", so the flow never gets there. Make sure a chain of connections leads to it from "Start".`,
+      `"${name}" cannot be reached from "Start" (開始), so the flow never gets there. Make sure a chain of connections leads to it from "Start".`,
   },
   'zh-TW': {
     blankNodeLabel: (typeLabel) =>
@@ -77,14 +84,9 @@ const WORKFLOW_LINT_COPY: Readonly<
       `條件分流「${name}」往下至少要有兩條連線，且其中一條要開啟「其他情況走這條」。`,
     noPathToEnd: (name) =>
       `節點「${name}」往下接不到「結束」，流程走到這裡會卡住。請從它拉一條連線到下一個節點或「結束」。`,
-    nodeTypeLabels: new Map([
-      ['endEvent', '結束'],
-      ['exclusiveGateway', '條件分流'],
-      ['parallelGateway', '並行處理'],
-      ['serviceTask', '系統'],
-      ['startEvent', '開始'],
-      ['userTask', '簽核'],
-    ]),
+    // The canvas's own labels, so the copy names a node type the way the
+    // designer and the AI toolset do.
+    nodeTypeLabels: new Map(Object.entries(WORKFLOW_NODE_TYPE_LABELS)),
     notifyOutgoingEdge: (name) =>
       `知會節點「${name}」不能往下接連線（知會只負責通知，流程不會從它繼續）。請刪除從它拉出的連線。`,
     parallelJoinIncomingEdges: (name) =>
@@ -123,23 +125,44 @@ export function readWorkflowLintMessage(
   const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
     ? WORKFLOW_LINT_COPY[language]
     : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
-  const translations = new Map(readWorkflowLintTranslations(definition, copy));
 
-  // Split on the backend's own separator and swap whole lines only, so a line
-  // that merely contains a known one — a CEL error quoting it, say — is left
-  // as written.
-  return message
-    .split('; ')
-    .map((segment): string => translations.get(segment) ?? segment)
-    .join('; ');
+  // Unreadable entries are skipped one by one below; this is the last resort
+  // for a draft that throws on read (a getter or a Proxy), which shows the
+  // backend message rather than nothing.
+  try {
+    const translations = readFirstWins(
+      readWorkflowLintTranslations(definition, copy),
+    );
+
+    // Split on the backend's own separator and swap whole lines only, so a
+    // line that merely contains a known one — a CEL error quoting it, say — is
+    // left as written.
+    return message
+      .split('; ')
+      .map((segment): string => translations.get(segment) ?? segment)
+      .join('; ');
+  } catch {
+    return message;
+  }
+}
+
+/**
+ * A Map keyed by the first entry for each key. Duplicate node ids are a lint
+ * error of their own, and the line then names the first node with that id.
+ */
+function readFirstWins<K, V>(
+  entries: readonly (readonly [K, V])[],
+): ReadonlyMap<K, V> {
+  return new Map([...entries].reverse());
 }
 
 type Translation = readonly [string, string];
 
 /**
  * This runs inside the callers' error handlers, after they have cleared the
- * previous error, so it must never throw: a draft saved by the AI toolset or
- * the API is not linted on save and may be malformed. A node or edge it cannot
+ * previous error, so it should not throw (`readWorkflowLintMessage` still
+ * catches anything that does): a draft saved by the AI toolset or the API is
+ * not linted on save and may be malformed. A node or edge it cannot
  * read is skipped on its own, which leaves that line as the backend wrote it
  * while every readable one is still translated.
  */
@@ -159,7 +182,7 @@ function readWorkflowLintTranslations(
     (node, index): readonly (readonly [WorkflowNode, number])[] =>
       isReadableNode(node) ? [[node, index]] : [],
   );
-  const nodesById = new Map(
+  const nodesById = readFirstWins(
     indexedNodes.map(([node]): readonly [string, WorkflowNode] => [
       node.id,
       node,
@@ -169,20 +192,20 @@ function readWorkflowLintTranslations(
     ([node, index]): readonly Translation[] =>
       readNodeTranslations(node, index, copy),
   );
-  const edgeTranslations = edges.flatMap((edge): readonly Translation[] => {
-    const source = isReadableEdge(edge)
-      ? nodesById.get(edge.source)
-      : undefined;
+  const edgeTranslations = edges
+    .filter(isReadableEdge)
+    .flatMap((edge): readonly Translation[] => {
+      const source = nodesById.get(edge.source);
 
-    return isReadableEdge(edge) && source
-      ? [
-          [
-            WORKFLOW_LINT_MESSAGES.notifyOutgoingEdge(edge.id),
-            copy.notifyOutgoingEdge(readNodeName(source, copy)),
-          ],
-        ]
-      : [];
-  });
+      return source
+        ? [
+            [
+              WORKFLOW_LINT_MESSAGES.notifyOutgoingEdge(edge.id),
+              copy.notifyOutgoingEdge(readNodeName(source, copy)),
+            ],
+          ]
+        : [];
+    });
 
   return [
     [WORKFLOW_LINT_MESSAGES.startEventCount(), copy.startEventCount],

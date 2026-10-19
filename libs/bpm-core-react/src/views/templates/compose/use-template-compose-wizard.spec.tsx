@@ -81,7 +81,9 @@ describe('useTemplateComposeWizard publish errors', (): void => {
   it('follows the language the host switches to', async (): Promise<void> => {
     render('en');
 
-    expect(await publish()).toBe('The flow needs at least one "End" node.');
+    expect(await publish()).toBe(
+      'The flow needs at least one "End" (結束) node.',
+    );
 
     render('zh-TW');
 
