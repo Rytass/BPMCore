@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-18): `libs/shared@0.17.2`, `libs/bpm-core-client@0.17.2`, `libs/bpm-core@0.17.2` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.2`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-19): `libs/shared@0.17.3`, `libs/bpm-core-client@0.17.3`, `libs/bpm-core@0.17.3` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.3`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.2` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.3` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -36,6 +36,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | The first migration also checks `pg_trgm`, with the same SQL-to-run error as `uuid-ossp` / `ltree` | `v0.17.0` |
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
+| Publish-lint errors in the designer name nodes and switch language (PR #94, #96): `readWorkflowLintMessage(message, definition, language?)`, `WORKFLOW_LINT_MESSAGES`, `BPMLanguage` / `BPMLanguageProvider` / `useBPMLanguage()`, `language` on `Providers` / `BPMNextProviders`; approval comments set at the h3 size | `v0.17.3` |
 
 ---
 
@@ -318,7 +319,7 @@ Form-schema definitions.
 | `StartEventNode` / `EndEventNode` / `UserTaskNode` / `ServiceTaskNode` / `ExclusiveGatewayNode` / `ParallelGatewayNode` | type | Concrete node variants |
 | `UserTaskNodeData` | interface | userTask-specific data |
 | `ApproverResolver` | type | DIRECT / POSITION / ORG_UNIT_MEMBER / ORG_UNIT_POSITION / ORG_MANAGER / ORG_UNIT_MANAGER / DYNAMIC_FORM / EXPRESSION / ORG_MANAGER_CHAIN (`{ type, minPositionLevel, fallback? }` — every manager up the initiator's chain, ending at the first whose position level reaches `minPositionLevel`; on such a node a delegate or a manual transfer target must hold at least the position level of the member they replace — a delegation that falls short is not applied and is recorded in the `skippedDelegations` payload field of `TASK_CREATED` / `TASK_CANDIDATE_ACTIVATED`, a transfer is rejected with `ForbiddenException`; SLA escalation is exempt) |
-| `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` is not yet released. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
+| `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` was released in `v0.17.0`. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
 | `readUnsupportedApproverFallbackType(fallback)` | function | The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
 | `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
@@ -352,6 +353,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `ConditionOperatorOption` / `ConditionValueOption` | interface | Condition UI option shapes |
 | `WORKFLOW_INPUT_HANDLE_ID` / `WORKFLOW_OUTPUT_HANDLE_ID` | const | ReactFlow handle ids |
 | `WORKFLOW_NODE_TYPE_LABELS` | const | zh-TW node type labels |
+| `WORKFLOW_LINT_MESSAGES` | const | Builders for the structural publish-lint lines (`blankNodeLabel`, `cycle`, `endEventMissing`, `exclusiveSplitDefaultEdge`, `exclusiveSplitOutgoingEdges`, `noPathToEnd`, `notifyOutgoingEdge`, `parallelJoinIncomingEdges`, `startEventCount`, `unreachableNode`). The backend lint writes these lines with them and `readWorkflowLintMessage` matches them, so the two cannot drift; the English wording is unchanged. |
 | `CONDITION_OPERATOR_OPTIONS` / `CONDITION_OPERATORS_REQUIRING_VALUE` | const | Condition operator catalog |
 | `SlaDurationUnit` / `SlaDurationParts` / `SlaOption` | type/interface | Single-unit SLA duration authoring shapes |
 | `SLA_DURATION_UNIT_OPTIONS` / `SLA_CALENDAR_MODE_OPTIONS` / `SLA_TIMEOUT_ACTION_OPTIONS` | const | zh-TW SLA select catalogs |
@@ -592,7 +594,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
 | Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
-| Publish lint copy | `readWorkflowLintMessage(message, definition)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges) into Chinese, naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition` and a definition it cannot read pass the message through unchanged. Not yet released |
+| Publish lint copy | `readWorkflowLintMessage(message, definition, language?)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges) into `language` (`'zh-TW'` by default, or `'en'`), naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition`, and nodes or edges it cannot read pass through unchanged, and an unsupported `language` falls back to `'zh-TW'`. `WorkflowLintLanguage` (`'en' \| 'zh-TW'`), `WORKFLOW_LINT_LANGUAGES`, `DEFAULT_WORKFLOW_LINT_LANGUAGE`. |
 | Webhook catalog | `listWorkflowWebhookEndpoints({ includeDeprecated? })` (designer-only; no URL, header or secret), `WorkflowWebhookEndpointRecord` (P6 adds `disabled`), `WorkflowWebhookParameterRecord`, `WorkflowWebhookEndpointSource` |
 | Webhook endpoint administration (P6) | `readWorkflowWebhookEndpointManagement()`, `listWorkflowWebhookManagedEndpoints()`, `listWorkflowWebhookEndpointAudits(endpointId)`, `createWorkflowWebhookEndpoint(input)`, `updateWorkflowWebhookEndpoint(input)`, `setWorkflowWebhookEndpointActive(id, active)`, `rotateWorkflowWebhookEndpointSecret(id, signingSecret)`, `testWorkflowWebhookEndpoint(id)`; records `WorkflowWebhookEndpointManagementRecord`, `WorkflowWebhookManagedEndpointRecord` (header names and `hasSigningSecret` only), `WorkflowWebhookEndpointAuditRecord`, `WorkflowWebhookEndpointAuditAction`, `WorkflowWebhookEndpointTestResultRecord`; inputs `CreateWorkflowWebhookEndpointInput`, `UpdateWorkflowWebhookEndpointInput`, `WorkflowWebhookEndpointHeaderInput`, `WorkflowWebhookEndpointParameterInput` (administrator-only) |
 
@@ -786,7 +788,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 > GraphQL mutation and as `deletePosition(id)` in
 > `@rytass/bpm-core-client/organization`.
 >
-> `OrganizationService.deleteOrgUnit(id, { transferToOrgUnitId? })` (successor retirement is not yet released; see Release status) retires a
+> `OrganizationService.deleteOrgUnit(id, { transferToOrgUnitId? })` (successor retirement was released in `v0.17.0`) retires a
 > unit with a soft delete. It always refuses while live child units remain. It
 > also refuses while the unit has **open** memberships or open
 > `ORG_UNIT`-scoped manager rules — open meaning `effectiveTo` is empty or
@@ -1437,8 +1439,8 @@ window as the backstop.
 1. `EnablePostgresExtensions0000000000001` — when `uuid-ossp` / `ltree` / `pg_trgm` are
    missing and the migration role has no CREATE privilege on the database, it
    fails with the SQL to run and who must run it, instead of a bare `42501`.
-   `down()` is a no-op: the extensions may predate BPM. The `pg_trgm` check is
-   not yet released; `WorkflowQueryIndexes0000000013000` still creates `pg_trgm`
+   `down()` is a no-op: the extensions may predate BPM. The `pg_trgm` check was
+   released in `v0.17.0`; `WorkflowQueryIndexes0000000013000` still creates `pg_trgm`
    itself for databases migrated before it.
 2. `IdentityOrganizationFoundation0000000001000`
 3. `FormBuilderFoundation0000000002000`
@@ -1493,7 +1495,11 @@ React UI library. Four export families: root barrel (foundation + host integrati
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`; since `v0.17.3`) |
+| `BPMLanguage` | type | `'en' \| 'zh-TW'` — language BPM views write their messages in. |
+| `BPMLanguageProvider` | Component | `{ language, children }`; hosts pass the user's choice as state to switch it. |
+| `useBPMLanguage()` | hook | Active `BPMLanguage`; `'zh-TW'` when no provider. |
+| `BPM_LANGUAGES` / `DEFAULT_BPM_LANGUAGE` | const | Supported languages / `'zh-TW'`. |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
@@ -1544,7 +1550,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary |
+| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (since `v0.17.3`) |
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 

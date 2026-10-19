@@ -61,6 +61,39 @@ export const WORKFLOW_NODE_TYPE_LABELS: Readonly<
   userTask: '簽核',
 };
 
+/**
+ * The structural lines of the backend publish lint (`lintWorkflowDefinition`
+ * in `@rytass/bpm-core-nestjs-module`). The backend writes them from here and
+ * the client (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`)
+ * matches them from here, so rewording a line cannot leave the designer's
+ * translation silently matching the old text.
+ *
+ * The wording itself is a contract: hosts may match these lines, so change one
+ * only as a breaking change.
+ */
+export const WORKFLOW_LINT_MESSAGES = Object.freeze({
+  blankNodeLabel: (index: number): string =>
+    `workflow.nodes[${index}].data.label must be a non-empty string`,
+  cycle: (nodeId: string): string =>
+    `workflow contains a cycle involving node ${nodeId}`,
+  endEventMissing: (): string =>
+    'workflow must include at least one endEvent node',
+  exclusiveSplitDefaultEdge: (nodeId: string): string =>
+    `workflow.nodes.${nodeId} must include a default outgoing edge`,
+  exclusiveSplitOutgoingEdges: (nodeId: string): string =>
+    `workflow.nodes.${nodeId} exclusive split requires at least two outgoing edges`,
+  noPathToEnd: (nodeId: string): string =>
+    `workflow.nodes.${nodeId} does not have a path to an endEvent`,
+  notifyOutgoingEdge: (edgeId: string): string =>
+    `workflow.edges.${edgeId}.source cannot be a NOTIFY serviceTask`,
+  parallelJoinIncomingEdges: (nodeId: string): string =>
+    `workflow.nodes.${nodeId} parallel join requires at least two incoming edges`,
+  startEventCount: (): string =>
+    'workflow must include exactly one startEvent node',
+  unreachableNode: (nodeId: string): string =>
+    `workflow.nodes.${nodeId} is not reachable from start`,
+});
+
 export interface ConditionOperatorOption {
   readonly id: WorkflowEdgeConditionOperator;
   readonly name: string;
