@@ -515,12 +515,13 @@ clear admin / designer guards; otherwise BPM resolvers reject with
 `BPMAuthenticatedGuard`. The host does not need to add `@BPMAuthenticated()`
 on top of them.
 
-A designer who is not an administrator can open the template designer, the
-compose wizard and the form builder: the organization reads those pages load
-(`orgUnits`, `positions`, `memberships`, `managerResolutions`,
-`organizationSummary` and their `*Count` companions) are `@BPMDesignerOnly()`.
-Everything that changes the organization, a membership, a manager rule, a
-delegation or a webhook endpoint stays administrator-only.
+A designer who is not an administrator can open the template designer and the
+compose wizard: the organization reads those pages load (`orgUnits`,
+`positions`, `memberships`, `managerResolutions`, `organizationSummary` and
+their `*Count` companions) are `@BPMDesignerOnly()`. Everything that changes
+the organization, a membership or a manager rule, every task reassignment
+(`reassignTask`, `reassignMemberTasks`) and every webhook endpoint management
+operation stays administrator-only.
 
 ### Mapping from a host RBAC system (e.g. Casbin)
 

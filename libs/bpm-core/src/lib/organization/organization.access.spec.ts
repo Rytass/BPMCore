@@ -8,7 +8,6 @@ import {
   BPMResolverAccessLevel,
   listBPMResolverHandlers,
 } from '../bpm-auth';
-import { FormMutations } from '../form/form.mutations';
 import { FormQueries } from '../form/form.queries';
 import { FormDataSourceQueries } from '../form-data-source/form-data-source.queries';
 import { IdentityQueries } from '../identity/identity.queries';
@@ -170,10 +169,12 @@ const op = (
 });
 
 /**
- * Every GraphQL operation the template designer, the compose wizard and the
- * form builder send while loading and while saving, publishing and
- * dry-running. The organization rows are the ones that used to be admin-only
- * and locked a designer who is not an administrator out of all three pages.
+ * The GraphQL operations the template designer and the compose wizard send
+ * while loading and while saving, publishing and dry-running, including those
+ * of the form builder the compose wizard embeds. The organization rows are the
+ * ones that used to be admin-only and locked a designer who is not an
+ * administrator out of both pages. Form-definition writes (`FormMutations`)
+ * are not here: no page of this library calls them.
  */
 const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
   // `readOrganizationDashboard` (AdminOrganizationDashboard), sent by the designer.
@@ -190,6 +191,7 @@ const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
   op(TemplateQueries, 'approvalTemplate', 'authenticated'),
   op(TemplateQueries, 'approvalTemplateVersions', 'authenticated'),
   op(TemplateQueries, 'approvalTemplateCategories', 'authenticated'),
+  op(TemplateQueries, 'approvalTemplateCategoryCount', 'authenticated'),
   op(FormQueries, 'formDefinitions', 'authenticated'),
   op(FormQueries, 'formDefinition', 'authenticated'),
   op(FormQueries, 'formDefinitionVersions', 'authenticated'),
@@ -202,6 +204,8 @@ const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
   op(FormDataSourceQueries, 'formDataSources', 'designer'),
   op(FormDataSourceQueries, 'previewFormFieldOptions', 'designer'),
   op(FormDataSourceQueries, 'previewResolveFormFieldOptions', 'designer'),
+  op(FormDataSourceQueries, 'formFieldOptions', 'authenticated'),
+  op(FormDataSourceQueries, 'resolveFormFieldOptions', 'authenticated'),
   // Dry run.
   op(WorkflowEngineMutations, 'dryRunApprovalWorkflow', 'authenticated'),
   // Writes a designer makes.
@@ -209,8 +213,6 @@ const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
   op(TemplateMutations, 'forkApprovalTemplate', 'designer'),
   op(TemplateMutations, 'publishApprovalTemplateVersion', 'designer'),
   op(ComposeTemplateMutations, 'composeApprovalTemplateWithForm', 'designer'),
-  op(FormMutations, 'updateFormDefinitionDraft', 'designer'),
-  op(FormMutations, 'publishFormDefinitionContent', 'designer'),
 ];
 
 describe('organization read access for template designers', () => {

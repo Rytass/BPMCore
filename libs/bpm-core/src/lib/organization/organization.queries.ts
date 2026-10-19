@@ -16,8 +16,8 @@ import { ResolvedManagerObject } from './resolved-manager.object';
 /**
  * Read-only organization queries.
  *
- * The class is `@BPMDesignerOnly()` because the template designer, the compose
- * wizard and the form builder load the organization (units, positions,
+ * The class is `@BPMDesignerOnly()` because the template designer and the
+ * compose wizard (which embeds it) load the organization (units, positions,
  * memberships) to fill their approver pickers, and a designer is not
  * necessarily an administrator. Nest runs class-level and method-level guards
  * together, so a method can only be made *stricter* than the class: the
