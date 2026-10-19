@@ -161,6 +161,32 @@ describe('readWorkflowLintMessage', (): void => {
     expect(message).not.toContain('nodes[2]');
   });
 
+  it('names a node without data by its type instead of throwing', (): void => {
+    const withoutData = {
+      ...definition,
+      nodes: [
+        ...definition.nodes,
+        { id: 'userTask_2', position: { x: 0, y: 0 }, type: 'userTask' },
+        { data: {}, id: 'odd_1', position: { x: 0, y: 0 }, type: 'oddType' },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(
+      readWorkflowLintMessage(
+        [
+          'workflow.nodes.userTask_2 is not reachable from start',
+          'workflow.nodes.odd_1 is not reachable from start',
+        ].join('; '),
+        withoutData,
+      ),
+    ).toBe(
+      [
+        '從「開始」走不到節點「簽核」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+        '從「開始」走不到節點「未知類型」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。',
+      ].join('; '),
+    );
+  });
+
   it('keeps the backend message when the definition cannot be read', (): void => {
     // Drafts are not linted on save, so a malformed one can reach publish;
     // the translation must fall back rather than throw inside the caller's
