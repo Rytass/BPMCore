@@ -65,6 +65,13 @@ export const readNodeFieldPermissions = (
   }, []);
 };
 
+/**
+ * The top-level form field a field path addresses: `items.price` and
+ * `items[0]` both address `items`. Only top-level fields carry permissions.
+ */
+export const readTopLevelFieldKey = (fieldPath: string): string =>
+  fieldPath.split('.')[0].split('[')[0];
+
 export const readNodeEditableFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>

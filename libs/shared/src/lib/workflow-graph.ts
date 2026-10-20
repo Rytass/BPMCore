@@ -82,12 +82,36 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `workflow.nodes.${nodeId} must include a default outgoing edge`,
   exclusiveSplitOutgoingEdges: (nodeId: string): string =>
     `workflow.nodes.${nodeId} exclusive split requires at least two outgoing edges`,
+  fieldPermissionAutoApprove: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields`,
+  fieldPermissionDuplicate: (nodeId: string, fieldPath: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions lists a field more than once: ${fieldPath}`,
+  fieldPermissionEditableInvisible: (
+    nodeId: string,
+    fieldPath: string,
+  ): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions cannot make a field editable while it is not visible: ${fieldPath}`,
+  fieldPermissionGroupPolicy: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node`,
+  fieldPermissionNestedPath: (nodeId: string, fieldPath: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions must name a top-level form field, not a nested path: ${fieldPath}`,
+  fieldPermissionRequiredNotEditable: (
+    nodeId: string,
+    fieldPath: string,
+  ): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions can only require a field that is editable: ${fieldPath}`,
+  fieldPermissionSkipNode: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields`,
+  fieldPermissionsInvalid: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions is invalid`,
   noPathToEnd: (nodeId: string): string =>
     `workflow.nodes.${nodeId} does not have a path to an endEvent`,
   notifyOutgoingEdge: (edgeId: string): string =>
     `workflow.edges.${edgeId}.source cannot be a NOTIFY serviceTask`,
   parallelJoinIncomingEdges: (nodeId: string): string =>
     `workflow.nodes.${nodeId} parallel join requires at least two incoming edges`,
+  setFormFieldApproverFilled: (nodeId: string, fieldKey: string): string =>
+    `workflow.nodes.${nodeId}.action.fieldPath cannot write a field an approver fills in: ${fieldKey}`,
   startEventCount: (): string =>
     'workflow must include exactly one startEvent node',
   unreachableNode: (nodeId: string): string =>

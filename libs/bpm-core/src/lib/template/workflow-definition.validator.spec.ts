@@ -1148,3 +1148,292 @@ function createUserTaskWorkflow({
     ],
   };
 }
+
+describe('workflow definition validator: field permissions', (): void => {
+  const TASK = 'task_fill';
+
+  function workflowWithFieldPermissions(
+    taskData: Readonly<Record<string, unknown>>,
+    serviceActions: readonly unknown[] = [],
+  ): WorkflowDefinition {
+    const serviceNodes = serviceActions.map((action, index) => ({
+      data: { action, label: `系統 ${index}` },
+      id: `service_${index}`,
+      position: { x: 400, y: 160 },
+      type: 'serviceTask',
+    }));
+    const chain = [TASK, ...serviceNodes.map((node) => node.id), 'end'];
+
+    return {
+      edges: [
+        { data: {}, id: 'edge_start', source: 'start', target: TASK },
+        ...chain.slice(0, -1).map((source, index) => ({
+          data: {},
+          id: `edge_${source}`,
+          source,
+          target: chain[index + 1],
+        })),
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: {
+              baseFromInitiator: true,
+              levelsUp: 1,
+              type: 'ORG_MANAGER',
+            },
+            decisionPolicy: { type: 'SINGLE' },
+            label: '財務補填',
+            returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+            ...taskData,
+          },
+          id: TASK,
+          position: { x: 300, y: 160 },
+          type: 'userTask',
+        },
+        ...serviceNodes,
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+  }
+
+  const lintErrors = (
+    taskData: Readonly<Record<string, unknown>>,
+    serviceActions: readonly unknown[] = [],
+  ): readonly string[] =>
+    lintWorkflowDefinition(workflowWithFieldPermissions(taskData, serviceActions))
+      .errors;
+
+  const FILL = { editable: true, fieldPath: 'amount', visible: true };
+
+  it('accepts well-formed permissions and a node without any', (): void => {
+    expect(lintErrors({})).toEqual([]);
+    expect(lintErrors({ fieldPermissions: [] })).toEqual([]);
+    expect(
+      lintErrors({
+        fieldPermissions: [
+          { ...FILL, required: true },
+          { editable: false, fieldPath: 'note', visible: false },
+          { editable: false, fieldPath: 'items', visible: true },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  describe('fieldPermissions is invalid', (): void => {
+    const invalid = `workflow.nodes.${TASK}.fieldPermissions is invalid`;
+
+    it.each([
+      ['not an array', 'amount'],
+      ['an array holding null', [FILL, null]],
+      [
+        'an entry with an empty fieldPath',
+        [{ editable: false, fieldPath: '', visible: true }],
+      ],
+      [
+        'an entry whose editable is not a boolean',
+        [{ editable: 'yes', fieldPath: 'amount', visible: true }],
+      ],
+      [
+        'an entry whose visible is not a boolean',
+        [{ editable: false, fieldPath: 'amount', visible: 'yes' }],
+      ],
+      [
+        'an entry whose required is neither a boolean nor absent',
+        [{ ...FILL, required: 'yes' }],
+      ],
+      ['an entry that is not an object', ['amount']],
+    ])('reports %s as a lint line and does not throw', (_name, value): void => {
+      expect(lintErrors({ fieldPermissions: value })).toEqual([invalid]);
+    });
+
+    it('skips the node’s other field permission rules once it is invalid', (): void => {
+      expect(
+        lintErrors({
+          decisionPolicy: { type: 'PARALLEL_ALL' },
+          fieldPermissions: [
+            null,
+            { editable: true, fieldPath: 'items.price', visible: false },
+            { editable: true, fieldPath: 'items.price', visible: false },
+          ],
+          sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' },
+        }),
+      ).toEqual([invalid]);
+    });
+  });
+
+  it('refuses a field listed more than once, reading the raw list', (): void => {
+    // `readNodeFieldPermissions` keeps the first entry per fieldPath, so a
+    // duplicate check built on it would never see the second one.
+    expect(
+      lintErrors({
+        fieldPermissions: [
+          FILL,
+          { editable: false, fieldPath: 'note', visible: true },
+          { editable: false, fieldPath: 'amount', visible: true },
+          { editable: true, fieldPath: 'amount', visible: true },
+        ],
+      }),
+    ).toEqual([
+      `workflow.nodes.${TASK}.fieldPermissions lists a field more than once: amount`,
+    ]);
+  });
+
+  it.each(['items.price', 'items[0]', 'items[0].price'])(
+    'refuses the nested path %s',
+    (fieldPath): void => {
+      expect(
+        lintErrors({
+          fieldPermissions: [{ editable: false, fieldPath, visible: true }],
+        }),
+      ).toEqual([
+        `workflow.nodes.${TASK}.fieldPermissions must name a top-level form field, not a nested path: ${fieldPath}`,
+      ]);
+    },
+  );
+
+  it('refuses an editable field that is hidden', (): void => {
+    expect(
+      lintErrors({
+        fieldPermissions: [{ ...FILL, visible: false }],
+      }),
+    ).toEqual([
+      `workflow.nodes.${TASK}.fieldPermissions cannot make a field editable while it is not visible: amount`,
+    ]);
+  });
+
+  it('refuses a required field that is not editable', (): void => {
+    expect(
+      lintErrors({
+        fieldPermissions: [
+          { editable: false, fieldPath: 'amount', required: true, visible: true },
+        ],
+      }),
+    ).toEqual([
+      `workflow.nodes.${TASK}.fieldPermissions can only require a field that is editable: amount`,
+    ]);
+  });
+
+  describe('editable fields on a node', (): void => {
+    const editable = { fieldPermissions: [FILL] };
+    const readOnly = {
+      fieldPermissions: [{ editable: false, fieldPath: 'amount', visible: true }],
+    };
+
+    it.each<[string, DecisionPolicy]>([
+      ['PARALLEL_ALL', { type: 'PARALLEL_ALL' }],
+      [
+        'QUORUM',
+        { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+      ],
+    ])('refuses them on a %s node', (_name, decisionPolicy): void => {
+      expect(lintErrors({ ...editable, decisionPolicy })).toEqual([
+        `workflow.nodes.${TASK}.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node`,
+      ]);
+      expect(lintErrors({ ...readOnly, decisionPolicy })).toEqual([]);
+    });
+
+    it.each<DecisionPolicy>([
+      { type: 'SINGLE' },
+      { type: 'SEQUENTIAL' },
+      { type: 'PARALLEL_ANY' },
+    ])('accepts them on a %j node', (decisionPolicy): void => {
+      expect(lintErrors({ ...editable, decisionPolicy })).toEqual([]);
+    });
+
+    it('refuses AUTO_APPROVE on timeout', (): void => {
+      const sla = { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' };
+
+      expect(lintErrors({ ...editable, sla })).toEqual([
+        `workflow.nodes.${TASK}.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields`,
+      ]);
+      expect(lintErrors({ ...readOnly, sla })).toEqual([]);
+      expect(
+        lintErrors({
+          ...editable,
+          sla: { duration: 'PT1H', onTimeout: 'REMIND' },
+        }),
+      ).toEqual([]);
+    });
+
+    it('refuses SKIP_NODE when no approver remains', (): void => {
+      const excludeInitiator = { whenEmpty: 'SKIP_NODE' };
+
+      expect(lintErrors({ ...editable, excludeInitiator })).toEqual([
+        `workflow.nodes.${TASK}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields`,
+      ]);
+      expect(lintErrors({ ...readOnly, excludeInitiator })).toEqual([]);
+      expect(
+        lintErrors({
+          ...editable,
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  describe('a system node writing an approver-filled field', (): void => {
+    const setField = (fieldPath: string): unknown => ({
+      fieldPath,
+      type: 'SET_FORM_FIELD',
+      value: '"x"',
+    });
+    const line = (fieldKey: string): string =>
+      `workflow.nodes.service_0.action.fieldPath cannot write a field an approver fills in: ${fieldKey}`;
+
+    it.each([
+      ['amount', 'amount'],
+      ['items.price', 'items'],
+      ['items[0].price', 'items'],
+    ])('refuses writing %s', (fieldPath, fieldKey): void => {
+      expect(
+        lintErrors(
+          {
+            fieldPermissions: [
+              FILL,
+              { editable: true, fieldPath: 'items', visible: true },
+            ],
+          },
+          [setField(fieldPath)],
+        ),
+      ).toEqual([line(fieldKey)]);
+    });
+
+    it('accepts writing a field no approver fills in', (): void => {
+      expect(
+        lintErrors(
+          {
+            fieldPermissions: [
+              FILL,
+              { editable: false, fieldPath: 'note', visible: true },
+            ],
+          },
+          [setField('note'), setField('title')],
+        ),
+      ).toEqual([]);
+    });
+
+    it('does not flag other service actions', (): void => {
+      expect(
+        lintErrors({ fieldPermissions: [FILL] }, [
+          { type: 'WEBHOOK', url: 'https://example.com/amount' },
+        ]),
+      ).toEqual([]);
+    });
+  });
+});

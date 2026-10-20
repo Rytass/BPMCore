@@ -78,6 +78,36 @@ describe('workflow lint message wording', (): void => {
     expect(WORKFLOW_LINT_MESSAGES.exclusiveSplitOutgoingEdges('n1')).toBe(
       'workflow.nodes.n1 exclusive split requires at least two outgoing edges',
     );
+    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionAutoApprove('n1')).toBe(
+      'workflow.nodes.n1.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionDuplicate('n1', 'amount')).toBe(
+      'workflow.nodes.n1.fieldPermissions lists a field more than once: amount',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.fieldPermissionEditableInvisible('n1', 'amount'),
+    ).toBe(
+      'workflow.nodes.n1.fieldPermissions cannot make a field editable while it is not visible: amount',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionGroupPolicy('n1')).toBe(
+      'workflow.nodes.n1.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.fieldPermissionNestedPath('n1', 'items.price'),
+    ).toBe(
+      'workflow.nodes.n1.fieldPermissions must name a top-level form field, not a nested path: items.price',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.fieldPermissionRequiredNotEditable('n1', 'amount'),
+    ).toBe(
+      'workflow.nodes.n1.fieldPermissions can only require a field that is editable: amount',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionSkipNode('n1')).toBe(
+      'workflow.nodes.n1.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid('n1')).toBe(
+      'workflow.nodes.n1.fieldPermissions is invalid',
+    );
     expect(WORKFLOW_LINT_MESSAGES.noPathToEnd('n1')).toBe(
       'workflow.nodes.n1 does not have a path to an endEvent',
     );
@@ -86,6 +116,11 @@ describe('workflow lint message wording', (): void => {
     );
     expect(WORKFLOW_LINT_MESSAGES.parallelJoinIncomingEdges('n1')).toBe(
       'workflow.nodes.n1 parallel join requires at least two incoming edges',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.setFormFieldApproverFilled('n1', 'amount'),
+    ).toBe(
+      'workflow.nodes.n1.action.fieldPath cannot write a field an approver fills in: amount',
     );
     expect(WORKFLOW_LINT_MESSAGES.startEventCount()).toBe(
       'workflow must include exactly one startEvent node',

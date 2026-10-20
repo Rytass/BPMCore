@@ -5,10 +5,17 @@ import {
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
+  UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
+import {
+  readApproverFilledFieldKeys,
+  readNodeEditableFieldKeys,
+  readNodeFieldPermissions,
+  readTopLevelFieldKey,
+} from '@rytass/bpm-core-shared';
 import {
   isDecisionPolicyUnsatisfiable,
   isNotifyRecipientsEmpty,
@@ -102,6 +109,7 @@ export function lintWorkflowDefinition(
     ...lintEdges(edges, nodeIds),
     ...lintUserTaskNodes(nodes),
     ...lintServiceTaskNodes(nodes),
+    ...lintApproverFilledFieldWrites(definition),
     ...lintAsyncNotifyOutgoingEdges(nodes, edges),
     ...lintExclusiveGateways(nodes, edges),
     ...lintParallelGateways(nodes, edges),
@@ -222,7 +230,7 @@ function lintEdges(
 
 function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
   return nodes
-    .filter((node) => node.type === 'userTask')
+    .filter((node): node is UserTaskNode => node.type === 'userTask')
     .flatMap((node) => {
       const data = node.data;
 
@@ -272,7 +280,134 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
             ]),
         ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
+        ...lintFieldPermissions(node),
       ];
+    });
+}
+
+function isPlainRecord(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFieldPermissionEntryValid(entry: unknown): boolean {
+  return (
+    isPlainRecord(entry) &&
+    typeof entry['fieldPath'] === 'string' &&
+    entry['fieldPath'].trim() !== '' &&
+    typeof entry['visible'] === 'boolean' &&
+    typeof entry['editable'] === 'boolean' &&
+    (entry['required'] === undefined || typeof entry['required'] === 'boolean')
+  );
+}
+
+/**
+ * The shape and duplicate checks read the raw `fieldPermissions`:
+ * `readNodeFieldPermissions` tolerates a bad draft by skipping malformed
+ * entries and keeping the first entry per `fieldPath`, which is exactly what
+ * these two checks have to see. Once the shape is reported, the node's other
+ * field permission rules are skipped, since they would read a list the engine
+ * is not going to honour anyway.
+ */
+function lintFieldPermissions(node: UserTaskNode): readonly string[] {
+  const nodeId = node.id;
+  const raw: unknown = node.data.fieldPermissions;
+
+  if (raw === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(raw) || !raw.every(isFieldPermissionEntryValid)) {
+    return [WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid(nodeId)];
+  }
+
+  const fieldPaths: readonly string[] = raw.map(
+    (entry: Readonly<Record<string, string>>) => entry['fieldPath'],
+  );
+  const hasEditableField = readNodeEditableFieldKeys(node).size > 0;
+
+  return [
+    ...fieldPaths
+      .filter((fieldPath, index) => fieldPaths.indexOf(fieldPath) !== index)
+      .filter(
+        (fieldPath, index, repeated) => repeated.indexOf(fieldPath) === index,
+      )
+      .map((fieldPath) =>
+        WORKFLOW_LINT_MESSAGES.fieldPermissionDuplicate(nodeId, fieldPath),
+      ),
+    ...readNodeFieldPermissions(node).flatMap((permission) => [
+      ...(permission.fieldPath.includes('.') ||
+      permission.fieldPath.includes('[')
+        ? [
+            WORKFLOW_LINT_MESSAGES.fieldPermissionNestedPath(
+              nodeId,
+              permission.fieldPath,
+            ),
+          ]
+        : []),
+      ...(permission.editable && !permission.visible
+        ? [
+            WORKFLOW_LINT_MESSAGES.fieldPermissionEditableInvisible(
+              nodeId,
+              permission.fieldPath,
+            ),
+          ]
+        : []),
+      ...(permission.required && !permission.editable
+        ? [
+            WORKFLOW_LINT_MESSAGES.fieldPermissionRequiredNotEditable(
+              nodeId,
+              permission.fieldPath,
+            ),
+          ]
+        : []),
+    ]),
+    ...(hasEditableField &&
+    (node.data.decisionPolicy?.type === 'PARALLEL_ALL' ||
+      node.data.decisionPolicy?.type === 'QUORUM')
+      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionGroupPolicy(nodeId)]
+      : []),
+    ...(hasEditableField && node.data.sla?.onTimeout === 'AUTO_APPROVE'
+      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionAutoApprove(nodeId)]
+      : []),
+    ...(hasEditableField &&
+    node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
+      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionSkipNode(nodeId)]
+      : []),
+  ];
+}
+
+/**
+ * A field an approver fills in is empty until then, and the approver's value
+ * is the one the case keeps. A system node writing it would either be
+ * overwritten or overwrite the approver, so the two are kept apart.
+ */
+function lintApproverFilledFieldWrites(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  const approverFilled = readApproverFilledFieldKeys(definition);
+
+  return definition.nodes
+    .filter((node) => node.type === 'serviceTask')
+    .flatMap((node) => {
+      const action: unknown = node.data.action;
+      const fieldPath = isPlainRecord(action) ? action['fieldPath'] : undefined;
+      const fieldKey =
+        isPlainRecord(action) &&
+        action['type'] === 'SET_FORM_FIELD' &&
+        typeof fieldPath === 'string'
+          ? readTopLevelFieldKey(fieldPath)
+          : undefined;
+
+      return fieldKey !== undefined && approverFilled.has(fieldKey)
+        ? [
+            WORKFLOW_LINT_MESSAGES.setFormFieldApproverFilled(
+              node.id,
+              fieldKey,
+            ),
+          ]
+        : [];
     });
 }
 

@@ -6,6 +6,7 @@ import {
   readNodeEditableFieldKeys,
   readNodeRequiredFieldKeys,
   readRevealedFieldKeys,
+  readTopLevelFieldKey,
   resolveFieldAccess,
 } from './field-permissions';
 import type {
@@ -223,4 +224,16 @@ describe('form data key helpers', () => {
   ])('isFormDataValueEmpty(%p) is %p', (value, expected) =>
     expect(isFormDataValueEmpty(value)).toBe(expected),
   );
+});
+
+describe('readTopLevelFieldKey', () => {
+  it.each([
+    ['amount', 'amount'],
+    ['items.price', 'items'],
+    ['items[0]', 'items'],
+    ['items[0].price', 'items'],
+    ['', ''],
+  ])('reads %j as %j', (fieldPath, expected) => {
+    expect(readTopLevelFieldKey(fieldPath)).toBe(expected);
+  });
 });
