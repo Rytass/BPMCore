@@ -11,8 +11,8 @@ overrides:
   '@babel/core': ^7.29.6
   '@babel/plugin-transform-modules-systemjs': ^7.29.4
   '@xhmikosr/decompress': ^11.1.3
-  '@mezzanine-ui/core': 1.2.1
-  '@mezzanine-ui/react': 1.5.1
+  '@mezzanine-ui/core': 1.2.3
+  '@mezzanine-ui/react': 1.7.0
   '@nestjs/apollo': ^14.0.3
   '@nestjs/common': ^12.1.3
   '@nestjs/core': ^12.1.3
@@ -95,14 +95,14 @@ importers:
         specifier: 18.0.1
         version: 18.0.1(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@mezzanine-ui/core':
-        specifier: 1.2.1
-        version: 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
+        specifier: 1.2.3
+        version: 1.2.3(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
       '@mezzanine-ui/icons':
         specifier: 1.0.2
         version: 1.0.2
       '@mezzanine-ui/react':
-        specifier: 1.5.1
-        version: 1.5.1(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: 1.7.0
+        version: 1.7.0(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@mezzanine-ui/system':
         specifier: 1.0.2
         version: 1.0.2
@@ -474,14 +474,14 @@ importers:
         specifier: '>=18.0.0'
         version: 18.0.1(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@mezzanine-ui/core':
-        specifier: 1.2.1
-        version: 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
+        specifier: 1.2.3
+        version: 1.2.3(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
       '@mezzanine-ui/icons':
         specifier: '>=1.0.0'
         version: 1.0.2
       '@mezzanine-ui/react':
-        specifier: 1.5.1
-        version: 1.5.1(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: 1.7.0
+        version: 1.7.0(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@rytass/bpm-core-client':
         specifier: ^0.17.5
         version: link:../bpm-core-client
@@ -2199,8 +2199,8 @@ packages:
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
 
-  '@mezzanine-ui/core@1.2.1':
-    resolution: {integrity: sha512-V1/1/av2lSqpp1MsS/bsOkPxdqmcDMguEHkREjsTtjUC+xaj42bIlu//u7yqTZg85qu9ZvBUTqAZdCDJ7fKxgA==}
+  '@mezzanine-ui/core@1.2.3':
+    resolution: {integrity: sha512-bATwGhYDv9dZ5tllGwdZqiAKFznGjsIYY8pCYkvbsA6UOlFCujGP9U01bgF0K17SgDRu4mbM+WbY9GP5SZ1plA==}
     peerDependencies:
       '@js-temporal/polyfill': '>=0.5'
       dayjs: '>=1'
@@ -2220,8 +2220,8 @@ packages:
   '@mezzanine-ui/icons@1.0.2':
     resolution: {integrity: sha512-LaoW1PRlyFXBQl//VdE0rKBtP50aoeqXmk2mOWrbMiDqDE/uY7IqTH3vCK1dFQ24nOZo1gpGnq7MeRMOZxW1rg==}
 
-  '@mezzanine-ui/react@1.5.1':
-    resolution: {integrity: sha512-PRPpdjWpUvxlKFpa+9uUauMAKifYX619TeGYIJmry4RYkVjPPcyCudxQQhfpn/VByFQ13vhjbl9Ken0jfFvLjg==}
+  '@mezzanine-ui/react@1.7.0':
+    resolution: {integrity: sha512-6kT2kSyz5OpJ4jLxylX5a4YozwMtR5sTLmKTDQRKnMgAlA44NBh75xRbIBsRYICjd+xzp02JckaSLrngLlh0eA==}
     peerDependencies:
       lodash: '>=4'
       react: '>=18'
@@ -11853,7 +11853,7 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.4': {}
 
-  '@mezzanine-ui/core@1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)':
+  '@mezzanine-ui/core@1.2.3(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)':
     dependencies:
       '@floating-ui/dom': 1.8.0
       '@mezzanine-ui/icons': 1.0.2
@@ -11867,12 +11867,12 @@ snapshots:
 
   '@mezzanine-ui/icons@1.0.2': {}
 
-  '@mezzanine-ui/react@1.5.1(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@mezzanine-ui/react@1.7.0(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@floating-ui/dom': 1.8.0
       '@floating-ui/react-dom': 2.1.9(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@hello-pangea/dnd': 18.0.1(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@mezzanine-ui/core': 1.2.1(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
+      '@mezzanine-ui/core': 1.2.3(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
       '@mezzanine-ui/icons': 1.0.2
       '@mezzanine-ui/system': 1.0.2
       '@tanstack/react-virtual': 3.14.18(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
