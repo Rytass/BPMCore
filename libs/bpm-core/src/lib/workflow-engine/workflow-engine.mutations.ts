@@ -138,6 +138,7 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.resubmitApprovalInstance(
       {
         ...input,
+        // After the spread so a client cannot switch it off (see submit).
         endUserSubmission: true,
         initiatorMemberId: currentMemberId,
       },

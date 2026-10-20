@@ -8,6 +8,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  FieldPermission,
   ReturnBehavior,
   ServiceAction,
   WorkflowDefinition,
@@ -983,6 +984,55 @@ describe('WorkflowEngineService', () => {
         amount: 11,
         financeItems: [{ seq: 2, taxAmount: 7 }],
       });
+    });
+
+    it('does not hold an end-user submission to a required non-table approver-filled field', async (): Promise<void> => {
+      const workflow = createFieldPermissionWorkflow({
+        financeFieldPermissions: [
+          {
+            editable: true,
+            fieldPath: 'financeItems',
+            required: true,
+            visible: true,
+          },
+          {
+            editable: true,
+            fieldPath: 'invoiceNote',
+            required: true,
+            visible: true,
+          },
+        ],
+      });
+      const baseSchema = createFinanceTableFormSchema();
+      const formSchema: FormDefinitionSchema = {
+        ...baseSchema,
+        fields: [
+          ...baseSchema.fields,
+          { fieldKey: 'invoiceNote', label: '發票備註', required: true, type: 'text' },
+        ],
+      };
+
+      await expect(
+        submit('{"amount":10,"invoiceNote":"typed by the applicant"}', {
+          endUserSubmission: true,
+          formSchema,
+          workflow,
+        }),
+      ).resolves.toMatchObject({ id: 'instance-1', formData: { amount: 10 } });
+      // A field nobody approver-fills is still required.
+      await expect(
+        submit('{"amount":10}', {
+          endUserSubmission: true,
+          formSchema: {
+            ...formSchema,
+            fields: [
+              ...baseSchema.fields,
+              { fieldKey: 'reason', label: '事由', required: true, type: 'text' },
+            ],
+          },
+          workflow,
+        }),
+      ).rejects.toThrow('Form data is missing required fields: 事由');
     });
 
     it('keeps submit and resubmit unchanged on a workflow without fieldPermissions', async (): Promise<void> => {
@@ -14264,10 +14314,20 @@ function createFinanceTableFormSchema(): FormDefinitionSchema {
 function createFieldPermissionWorkflow({
   financeApprovers = ['member-finance'],
   financeDecisionPolicy = { type: 'SINGLE' },
+  financeFieldPermissions = [
+    {
+      editable: true,
+      fieldPath: 'financeItems',
+      required: true,
+      visible: true,
+    },
+    { editable: true, fieldPath: 'invoiceKind', visible: true },
+  ],
   lastNode,
 }: {
   readonly financeApprovers?: readonly string[];
   readonly financeDecisionPolicy?: DecisionPolicy;
+  readonly financeFieldPermissions?: readonly FieldPermission[];
   readonly lastNode?: 'task_finance';
 } = {}): WorkflowDefinition {
   const createUserTask = (
@@ -14320,15 +14380,7 @@ function createFieldPermissionWorkflow({
       createUserTask('task_manager', '主管簽核', 'member-manager', 200),
       createUserTask('task_finance', '財務簽核', financeApprovers, 320, {
         decisionPolicy: financeDecisionPolicy,
-        fieldPermissions: [
-          {
-            editable: true,
-            fieldPath: 'financeItems',
-            required: true,
-            visible: true,
-          },
-          { editable: true, fieldPath: 'invoiceKind', visible: true },
-        ],
+        fieldPermissions: financeFieldPermissions,
       }),
       ...(lastNode === 'task_finance'
         ? []
