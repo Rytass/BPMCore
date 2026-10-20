@@ -549,6 +549,117 @@ describe('NotificationService', () => {
     );
   });
 
+  describe('task notification requiresForm flag', () => {
+    const editableFieldPermissions = [
+      { editable: true, fieldPath: 'invoiceNo', required: false, visible: true },
+    ];
+
+    const createdPayload = async ({
+      fieldPermissions,
+      isAdhoc,
+      transferred,
+    }: {
+      readonly fieldPermissions?: UserTaskNode['data']['fieldPermissions'];
+      readonly isAdhoc: boolean;
+      readonly transferred?: boolean;
+    }): Promise<Readonly<Record<string, unknown>>> => {
+      const savedNotifications: NotificationEntity[] = [];
+      const service = new NotificationService(
+        {
+          create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+            Object.assign(new NotificationEntity(), entity),
+          save: (
+            entityOrEntities: NotificationEntity | NotificationEntity[],
+          ): Promise<NotificationEntity | NotificationEntity[]> => {
+            savedNotifications.push(
+              ...(Array.isArray(entityOrEntities)
+                ? entityOrEntities
+                : [entityOrEntities]),
+            );
+
+            return Promise.resolve(entityOrEntities);
+          },
+        } as unknown as Repository<NotificationEntity>,
+        {
+          findOne: (): Promise<NotificationPreferenceEntity | null> =>
+            Promise.resolve(null),
+        } as unknown as Repository<NotificationPreferenceEntity>,
+        createRepository<TaskEntity>(),
+        createRepository<TaskCandidateEntity>(),
+        createRepository<ApprovalInstanceEntity>(),
+        createRepository<ActivityLogEntity>(),
+        createDeliveryService(),
+        createModuleRef(),
+      );
+      const instance = createApprovalInstance();
+      const sourceNode = instance.workflowSnapshot.nodes.find(
+        (node): node is UserTaskNode => node.type === 'userTask',
+      );
+
+      if (!sourceNode) {
+        throw new Error('Notification test fixture must contain a user task');
+      }
+
+      const node: UserTaskNode = {
+        ...sourceNode,
+        data: { ...sourceNode.data, fieldPermissions },
+      };
+
+      await service.createTaskAssignedNotification({
+        instance,
+        manager: undefined as unknown as EntityManager,
+        node,
+        task: Object.assign(new TaskEntity(), {
+          assigneeMemberId: 'member-a',
+          id: 'task-requires-form',
+          instanceId: instance.id,
+          isAdhoc,
+          nodeId: node.id,
+          originalAssigneeMemberId: 'member-a',
+        }),
+        transferred,
+      });
+
+      expect(savedNotifications.length).toBeGreaterThan(0);
+
+      return savedNotifications[0].payload as Readonly<Record<string, unknown>>;
+    };
+
+    it('flags a task on a node with editable fields as requiring the form', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: editableFieldPermissions,
+        isAdhoc: false,
+      });
+
+      expect(payload['requiresForm']).toBe(true);
+    });
+
+    it('flags the transferred notification too', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: editableFieldPermissions,
+        isAdhoc: false,
+        transferred: true,
+      });
+
+      expect(payload['requiresForm']).toBe(true);
+    });
+
+    it('does not flag an ad-hoc task', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: editableFieldPermissions,
+        isAdhoc: true,
+      });
+
+      expect(payload['requiresForm']).toBe(false);
+    });
+
+    it('does not flag a node without fieldPermissions', async (): Promise<void> => {
+      const payload = await createdPayload({ isAdhoc: false });
+
+      expect(payload['requiresForm']).toBe(false);
+    });
+  });
+
   describe('instance completed notification', () => {
     function createCompletionHarness(
       resolveMember: (memberId: string) => Promise<{ readonly name: string }>,

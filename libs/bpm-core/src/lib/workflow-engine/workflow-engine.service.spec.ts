@@ -1316,6 +1316,30 @@ describe('WorkflowEngineService', () => {
       ]);
     });
 
+    it('passes the filling node to the notification a transfer creates', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, {
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        transferToMemberId: 'member-delegate',
+      });
+
+      const [[{ node, task, transferred }]] = jest.mocked(
+        fixture.notificationService.createTaskAssignedNotification,
+      ).mock.calls;
+
+      expect(transferred).toBe(true);
+      expect(task.isAdhoc).toBe(false);
+      expect(node.data.fieldPermissions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            editable: true,
+            fieldPath: 'financeItems',
+          }),
+        ]),
+      );
+    });
+
     it('records only the changed keys on TASK_DECIDED', async (): Promise<void> => {
       const fixture = createDecideFixture({
         formData: { ...STORED_FORM_DATA, invoiceKind: 'B2C' },
