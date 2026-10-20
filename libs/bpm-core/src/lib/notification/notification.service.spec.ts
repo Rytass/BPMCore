@@ -658,6 +658,18 @@ describe('NotificationService', () => {
 
       expect(payload['requiresForm']).toBe(false);
     });
+
+    it('does not flag a node whose permissions are all read-only', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: [
+          { editable: false, fieldPath: 'invoiceNo', visible: true },
+          { editable: false, fieldPath: 'note', visible: false },
+        ],
+        isAdhoc: false,
+      });
+
+      expect(payload['requiresForm']).toBe(false);
+    });
   });
 
   describe('instance completed notification', () => {

@@ -1773,6 +1773,11 @@ describe('TemplateService', () => {
           'workflow.nodes.notify_bad.action.recipients is required',
         ],
         [
+          'NOTIFY recipients that are null',
+          withExtra([notifyWith(null)], toNotify),
+          'workflow.nodes.notify_bad.action.recipients is required',
+        ],
+        [
           'a conditionFieldKey that is not a string',
           withExtra(
             [],

@@ -4,6 +4,7 @@ import {
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeEditableFieldKeys,
+  readNodeFieldPermissions,
   readNodeRequiredFieldKeys,
   readRevealedFieldKeys,
   readTopLevelFieldKey,
@@ -129,6 +130,34 @@ describe('field permission readers', () => {
         }),
       ),
     ]).toEqual(['x']));
+
+  it('lets the first entry for a fieldPath win over a later editable one', () => {
+    const node = nodeWith({
+      fieldPermissions: [
+        { editable: false, fieldPath: 'x', visible: true },
+        { editable: true, fieldPath: 'x', visible: true },
+      ],
+    });
+
+    expect(readNodeEditableFieldKeys(node).size).toBe(0);
+    expect(readNodeFieldPermissions(node)).toHaveLength(1);
+  });
+
+  it('reads an entry without visible as visible', () =>
+    expect(
+      readNodeFieldPermissions(
+        nodeWith({ fieldPermissions: [{ editable: false, fieldPath: 'x' }] }),
+      ).map((permission) => permission.visible),
+    ).toEqual([true]));
+
+  it('does not read a string editable as editable', () =>
+    expect(
+      readNodeEditableFieldKeys(
+        nodeWith({
+          fieldPermissions: [{ editable: 'true', fieldPath: 'x', visible: true }],
+        }),
+      ).size,
+    ).toBe(0));
 
   it('ignores node ids that are not user tasks when revealing', () =>
     expect(readRevealedFieldKeys(def, ['start', 'missing']).size).toBe(0));
