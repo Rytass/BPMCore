@@ -636,11 +636,13 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
     expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
   });
 
-  it('does not throw on drafts whose permissions or nodes cannot be read', (): void => {
-    const lines = [
-      'formData.amount is filled in by an approver, so the form cannot set hidden on it',
+  it('translates the lines it can read and leaves the rest raw when other nodes are malformed', (): void => {
+    const rawLines = [
       'workflow.nodes.userTask_a.fieldPermissions must name a field of the bound form: amount',
-    ].join('; ');
+      'workflow.nodes.userTask_c.fieldPermissions is invalid',
+    ];
+    const translatable =
+      'formData.amount is filled in by an approver, so the form cannot set hidden on it';
     const badDraft = {
       edges: [],
       meta: { schemaVersion: 1 },
@@ -658,10 +660,33 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
           position: { x: 0, y: 0 },
           type: 'userTask',
         },
+        {
+          data: {
+            fieldPermissions: [
+              { editable: true, fieldPath: 'amount', visible: true },
+            ],
+            label: '可讀節點',
+          },
+          id: 'userTask_ok',
+          position: { x: 0, y: 0 },
+          type: 'userTask',
+        },
       ],
     } as unknown as WorkflowDefinition;
 
-    expect(readWorkflowLintMessage(lines, badDraft)).toBe(lines);
+    // A guard that is missing makes the whole translation throw, and the
+    // catch-all in `readWorkflowLintMessage` then returns every line raw, so
+    // only a line that does get translated proves nothing threw.
+    expect(
+      readWorkflowLintMessage(
+        [translatable, ...rawLines].join('; '),
+        badDraft,
+      ),
+    ).toBe(
+      ['欄位「amount」由簽核人補填，表單不能設定「只存不顯示」。', ...rawLines].join(
+        '; ',
+      ),
+    );
   });
 });
 

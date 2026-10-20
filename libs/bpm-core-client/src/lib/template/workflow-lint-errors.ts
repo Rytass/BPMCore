@@ -378,7 +378,7 @@ function readWorkflowLintTranslations(
     ...nodeTranslations,
     ...edgeTranslations,
     ...readApproverFilledFieldTranslations(
-      indexedNodes.map(([node]) => node),
+      indexedNodes.map(([node]): WorkflowNode => node),
       copy,
     ),
     ...readApproverFilledReadEarlyTranslations(

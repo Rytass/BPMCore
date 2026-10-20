@@ -24,7 +24,10 @@ import {
 } from './template.enums';
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
-import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
   NotifyWebhookTarget,
@@ -874,8 +877,11 @@ describe('TemplateService', () => {
       rule: Readonly<Record<string, unknown>>,
     ): FormDefinitionSchema => ({
       ...fillSchema,
-      fields: fillSchema.fields.map((field) =>
-        field.fieldKey === fieldKey ? ({ ...field, ...rule } as typeof field) : field,
+      fields: fillSchema.fields.map(
+        (field): FormFieldDefinition =>
+          field.fieldKey === fieldKey
+            ? ({ ...field, ...rule } as FormFieldDefinition)
+            : field,
       ),
     });
 
@@ -2343,11 +2349,13 @@ const VALID_WORKFLOW_DEFINITION = {
 function createFieldPermissionWorkflow(
   permissionsPerNode: readonly (readonly Readonly<Record<string, unknown>>[])[],
 ): WorkflowDefinition {
-  const nodeIds = permissionsPerNode.map((_permissions, index) => `task_${index + 1}`);
+  const nodeIds = permissionsPerNode.map(
+    (_permissions, index): string => `task_${index + 1}`,
+  );
   const chain = ['start', ...nodeIds, 'end'];
 
   return {
-    edges: chain.slice(1).map((target, index) => ({
+    edges: chain.slice(1).map((target, index): Record<string, unknown> => ({
       data: {},
       id: `edge_${index}`,
       source: chain[index],
@@ -2362,7 +2370,7 @@ function createFieldPermissionWorkflow(
         position: { x: 80, y: 160 },
         type: 'startEvent',
       },
-      ...permissionsPerNode.map((fieldPermissions, index) => ({
+      ...permissionsPerNode.map((fieldPermissions, index): Record<string, unknown> => ({
         data: {
           allowAddSigner: false,
           allowReject: true,

@@ -1497,34 +1497,38 @@ function lintApproverFilledFormFields(
   schema: FormDefinitionSchema | null,
 ): readonly string[] {
   const fieldsByKey = new Map(
-    (schema?.fields ?? []).map((field) => [field.fieldKey, field] as const),
+    (schema?.fields ?? []).map(
+      (field): readonly [string, FormFieldDefinition] => [field.fieldKey, field],
+    ),
   );
   const userTasks = definition.nodes.filter(
     (node): node is UserTaskNode => node.type === 'userTask',
   );
-  const unknownFieldErrors = userTasks.flatMap((node) =>
+  const unknownFieldErrors = userTasks.flatMap((node): readonly string[] =>
     readNodeFieldPermissions(node)
       .filter(
-        ({ fieldPath }) =>
+        ({ fieldPath }): boolean =>
           readTopLevelFieldKey(fieldPath) === fieldPath &&
           !fieldsByKey.has(fieldPath),
       )
-      .map(({ fieldPath }) =>
+      .map(({ fieldPath }): string =>
         WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField(node.id, fieldPath),
       ),
   );
-  const requiredBooleanErrors = userTasks.flatMap((node) =>
+  const requiredBooleanErrors = userTasks.flatMap((node): readonly string[] =>
     readNodeFieldPermissions(node)
       .filter(
-        ({ editable, fieldPath, required }) =>
-          editable && required && fieldsByKey.get(fieldPath)?.type === 'boolean',
+        ({ editable, fieldPath, required }): boolean =>
+          editable &&
+          required === true &&
+          fieldsByKey.get(fieldPath)?.type === 'boolean',
       )
-      .map(({ fieldPath }) =>
+      .map(({ fieldPath }): string =>
         WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldPath),
       ),
   );
   const fieldErrors = [...readApproverFilledFieldKeys(definition)].flatMap(
-    (fieldKey) => {
+    (fieldKey): readonly string[] => {
       const field = fieldsByKey.get(fieldKey);
 
       return field === undefined
@@ -1540,11 +1544,11 @@ function readApproverFilledFieldFormErrors(
   field: FormFieldDefinition,
 ): readonly string[] {
   const { fieldKey } = field;
-  const ruleErrors = APPROVER_FILLED_FORM_RULES.filter((rule) =>
+  const ruleErrors = APPROVER_FILLED_FORM_RULES.filter((rule): boolean =>
     rule === 'required' || rule === 'hidden'
       ? field[rule] === true
       : field[rule] !== undefined,
-  ).map((rule) =>
+  ).map((rule): string =>
     WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
   );
 
