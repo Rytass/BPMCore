@@ -10,6 +10,7 @@ import { OrganizationMutations } from '../organization/organization.mutations';
 import { OrganizationQueries } from '../organization/organization.queries';
 import {
   applyBPMResolverMetadata,
+  BPMResolverAccessLevel,
   BPMResolverHandlerDescriptor,
   listBPMResolverHandlers,
 } from './bpm-resolver-metadata';
@@ -75,8 +76,17 @@ describe('BPM resolver metadata', () => {
   });
 
   it('stamps host metadata onto the prototype method a guard receives', (): void => {
+    // The lookup table the README shows a host.
+    const hostPermissions: Readonly<
+      Record<BPMResolverAccessLevel, readonly string[]>
+    > = {
+      admin: ['bpm:admin'],
+      authenticated: ['bpm:use'],
+      designer: ['bpm:design'],
+    };
+
     applyBPMResolverMetadata(({ access }) => ({
-      [HOST_PERMISSION_KEY]: access === 'admin' ? ['bpm:admin'] : ['bpm:use'],
+      [HOST_PERMISSION_KEY]: hostPermissions[access],
     }));
 
     // `context.getHandler()` hands a guard exactly this function, so this is
@@ -87,14 +97,14 @@ describe('BPM resolver metadata', () => {
         OrganizationQueries.prototype.orgUnit,
       ),
     ).toEqual(['bpm:admin']);
-    // `orgUnits` is a designer-level read, which this factory maps to
-    // everything that is not `admin`.
+    // A designer-level read gets the host's designer permission, so a
+    // designer who is not an administrator passes the host guard as well.
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,
         OrganizationDirectoryQueries.prototype.orgUnits,
       ),
-    ).toEqual(['bpm:use']);
+    ).toEqual(['bpm:design']);
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,

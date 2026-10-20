@@ -47,9 +47,17 @@ export interface BPMResolverHandlerDescriptor {
  *
  * @example
  * ```ts
+ * const HOST_PERMISSIONS: Readonly<Record<BPMResolverAccessLevel, readonly string[]>> = {
+ *   admin: ['bpm:admin'],
+ *   authenticated: ['bpm:use'],
+ *   // Map designer to its own permission: folding it into `bpm:admin` locks a
+ *   // designer who is not an administrator out of the template designer.
+ *   designer: ['bpm:design'],
+ * };
+ *
  * const resolverMetadataFactory: BPMResolverMetadataFactory = ({ access }) => ({
  *   // the key `@CheckPermission` writes, and the value its guard expects
- *   PERMISSION_METADATA_KEY: access === 'authenticated' ? ['bpm:use'] : ['bpm:admin'],
+ *   [PERMISSION_METADATA_KEY]: HOST_PERMISSIONS[access],
  * });
  * ```
  */
