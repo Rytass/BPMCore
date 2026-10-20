@@ -2,6 +2,7 @@ import {
   ApproverResolver,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
+  FieldPermission,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -291,7 +292,9 @@ function isPlainRecord(
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isFieldPermissionEntryValid(entry: unknown): boolean {
+function isFieldPermissionEntryValid(
+  entry: unknown,
+): entry is FieldPermission {
   return (
     isPlainRecord(entry) &&
     typeof entry['fieldPath'] === 'string' &&
@@ -318,13 +321,15 @@ function lintFieldPermissions(node: UserTaskNode): readonly string[] {
     return [];
   }
 
-  if (!Array.isArray(raw) || !raw.every(isFieldPermissionEntryValid)) {
+  const entries: readonly unknown[] | undefined = Array.isArray(raw)
+    ? raw
+    : undefined;
+
+  if (entries === undefined || !entries.every(isFieldPermissionEntryValid)) {
     return [WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid(nodeId)];
   }
 
-  const fieldPaths: readonly string[] = raw.map(
-    (entry: Readonly<Record<string, string>>) => entry['fieldPath'],
-  );
+  const fieldPaths = entries.map((entry) => entry.fieldPath);
   const hasEditableField = readNodeEditableFieldKeys(node).size > 0;
 
   return [

@@ -1240,10 +1240,15 @@ describe('workflow definition validator: field permissions', (): void => {
 
     it.each([
       ['not an array', 'amount'],
+      ['null', null],
       ['an array holding null', [FILL, null]],
       [
         'an entry with an empty fieldPath',
         [{ editable: false, fieldPath: '', visible: true }],
+      ],
+      [
+        'an entry whose fieldPath is only whitespace',
+        [{ editable: false, fieldPath: '  ', visible: true }],
       ],
       [
         'an entry whose editable is not a boolean',
