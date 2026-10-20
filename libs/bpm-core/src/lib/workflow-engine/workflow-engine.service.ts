@@ -3,6 +3,7 @@ import {
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
+  readNodeEditableFieldKeys,
 } from '@rytass/bpm-core-shared';
 import {
   FORM_TABLE_MAX_ROWS,
@@ -106,6 +107,10 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import {
+  computeFormDataFingerprint,
+  computeStableValueFingerprint,
+} from './form-data-fingerprint';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -907,6 +912,21 @@ export class WorkflowEngineService {
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
         );
+        const taskBeforeLock = await taskRepository.findOne({
+          where: { id: input.taskId },
+        });
+
+        if (!taskBeforeLock) {
+          throw new NotFoundException(`Task ${input.taskId} was not found`);
+        }
+
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          taskBeforeLock.instanceId,
+        ]);
+
+        // Read again now that the lock is ours: a decision that held it first
+        // may have completed this task since the read above, and everything
+        // below must judge the task as it is now, not as it was.
         const task = await taskRepository.findOne({
           where: { id: input.taskId },
         });
@@ -914,10 +934,6 @@ export class WorkflowEngineService {
         if (!task) {
           throw new NotFoundException(`Task ${input.taskId} was not found`);
         }
-
-        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          task.instanceId,
-        ]);
 
         if (
           task.status !== TaskStatusEnum.PENDING &&
@@ -964,6 +980,23 @@ export class WorkflowEngineService {
             'Transfer target must be a different member',
           );
         }
+
+        // "Sent" means not null and not undefined, so '{}' counts.
+        const sentFormDataJson = input.formDataJson ?? null;
+
+        if (
+          sentFormDataJson !== null &&
+          input.action !== TaskDecisionActionEnum.APPROVED
+        ) {
+          throw new BadRequestException(
+            'formDataJson can only be sent with an APPROVED decision',
+          );
+        }
+
+        const filledFormData =
+          sentFormDataJson === null
+            ? null
+            : parseJsonObject(sentFormDataJson, 'formDataJson');
 
         const instance = await instanceRepository.findOne({
           where: { id: task.instanceId },
@@ -1109,6 +1142,67 @@ export class WorkflowEngineService {
             `Return decision comment is required by workflow node ${task.nodeId}`,
           );
         }
+
+        if (filledFormData !== null && task.isAdhoc) {
+          throw new ForbiddenException(
+            `Ad-hoc task ${task.id} cannot fill in form fields`,
+          );
+        }
+
+        if (filledFormData !== null) {
+          const editableFieldKeys = readNodeEditableFieldKeys(taskNode);
+          const refusedFieldKeys = Object.keys(filledFormData).filter(
+            (fieldKey) => !editableFieldKeys.has(fieldKey),
+          );
+
+          if (refusedFieldKeys.length > 0) {
+            throw new ForbiddenException(
+              `Workflow node ${task.nodeId} does not let approvers fill in: ${refusedFieldKeys.join(', ')}`,
+            );
+          }
+        }
+
+        const expectedFormDataFingerprint =
+          input.expectedFormDataFingerprint ?? null;
+
+        if (
+          expectedFormDataFingerprint !== null &&
+          expectedFormDataFingerprint !==
+            computeFormDataFingerprint(instance.formData)
+        ) {
+          throw new ConflictException(
+            `Approval instance ${instance.id} form data changed; refresh and retry`,
+          );
+        }
+
+        // Only keys whose value really changes are written and reported. A key
+        // the form data does not have yet counts as changed even when the new
+        // value is null.
+        const changedFieldKeys = Object.keys(filledFormData ?? {})
+          .filter(
+            (fieldKey) =>
+              !Object.prototype.hasOwnProperty.call(
+                instance.formData,
+                fieldKey,
+              ) ||
+              computeStableValueFingerprint(filledFormData?.[fieldKey]) !==
+                computeStableValueFingerprint(instance.formData[fieldKey]),
+          )
+          .sort();
+
+        if (filledFormData !== null && changedFieldKeys.length > 0) {
+          // Merged into the shared `instance` before it is signed and before
+          // the token moves on: the signature must cover the filled values, a
+          // gateway after this node must route on them, and an end node saves
+          // this same object, which would write the old values back.
+          const savedInstance = await instanceRepository.save({
+            ...instance,
+            formData: { ...instance.formData, ...filledFormData },
+          });
+
+          Object.assign(instance, savedInstance);
+        }
+
         const decidedAt = new Date();
         const claimedTask = await taskRepository.save({
           ...task,
@@ -1242,6 +1336,9 @@ export class WorkflowEngineService {
               decisionId: decision.id,
               signatureId: signature.id,
               signedPayloadHash: signature.signedPayloadHash,
+              // Keys only: this payload is forwarded to hosts, and the values
+              // can be tax IDs or amounts.
+              ...(changedFieldKeys.length > 0 ? { changedFieldKeys } : {}),
             },
             taskId: completedTask.id,
           }),

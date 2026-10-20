@@ -9,6 +9,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { computeFormDataFingerprint } from './form-data-fingerprint';
 import { ApprovalInstanceStateEnum } from './workflow-engine.enums';
 
 /**
@@ -113,6 +114,17 @@ export class ApprovalInstanceEntity {
   @Field(() => String)
   get formDataJson(): string {
     return JSON.stringify(this.formData);
+  }
+
+  /**
+   * Fingerprint of the stored `formData`, for a decision to hand back as
+   * `expectedFormDataFingerprint`. Like the other `*Json` getters it reads the
+   * entity's own properties, so it is only reliable on a query that returns
+   * entity instances; the `approvalInstance` query is the guaranteed way in.
+   */
+  @Field(() => String)
+  get formDataFingerprint(): string {
+    return computeFormDataFingerprint(this.formData);
   }
 
   @Field(() => String)

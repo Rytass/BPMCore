@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Args, ID, Mutation, Resolver } from '@nestjs/graphql';
 import {
   BPMAdminOnly,
@@ -71,6 +72,20 @@ export class WorkflowEngineMutations {
     @Args('input') input: DecideTaskInput,
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<TaskDecisionEntity> {
+    // "Sent" means not null and not undefined, so '{}' counts. A host calling
+    // the service may leave the fingerprint out; a screen may not, or it would
+    // overwrite whatever changed since it loaded the case.
+    if (
+      input.formDataJson !== undefined &&
+      input.formDataJson !== null &&
+      (input.expectedFormDataFingerprint === undefined ||
+        input.expectedFormDataFingerprint === null)
+    ) {
+      throw new BadRequestException(
+        'expectedFormDataFingerprint is required when formDataJson is set',
+      );
+    }
+
     return this.workflowEngineService.decideTask({
       ...input,
       decidedByMemberId: currentMemberId,

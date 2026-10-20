@@ -213,10 +213,9 @@ export interface SlaConfig {
 export type SlaCalendarMode = 'CALENDAR' | 'BUSINESS_DAY';
 
 /**
- * Reserved, NOT enforced: neither the engine nor any screen reads
- * `UserTaskNodeData.fieldPermissions`, so setting it changes nothing. To keep
- * a field off the screens, use the field-level `hidden` flag (form.ts) — that
- * is a display option, not a permission boundary either.
+ * An `editable` field can be filled in only by the approver of a non-ad-hoc
+ * task at this node, when approving; the server enforces it. `visible: false`
+ * only hides the field on screen, it is not a permission boundary.
  */
 export interface FieldPermission {
   readonly editable: boolean;
