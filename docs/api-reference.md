@@ -48,6 +48,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Node-level field permissions, publish lint against the bound form: publishing a template version also refuses `fieldPermissions` that clash with the form it is bound to. A `fieldPath` that is not a top-level field of the form (a nested path is left to the nested-path line); an approver-filled (`editable`) field that the form gives `required`, `requiredWhen`, `visibleWhen`, `readonlyWhen`, `hidden` or `defaultValue` (set means `required` / `hidden` is `true` and the others are not `undefined`; `hidden` and `visibleWhen` would leave the approver nothing to fill in while the engine still blocks approval on the empty field), reported once per field and rule however many nodes make it editable; an approver-filled data-source or `file_upload` field, or a table with a data-source column; and `required` on a boolean field. Six new `WORKFLOW_LINT_MESSAGES` lines (`fieldPermissionUnknownField`, `approverFilledFieldFormRule`, `approverFilledFieldDataSource`, `approverFilledFieldFileUpload`, `approverFilledTableDataSourceColumn`, `approverFilledRequiredBoolean`) with zh-TW / en copy in `readWorkflowLintMessage`, and the `APPROVER_FILLED_FORM_RULES` / `ApproverFilledFormRule` constant. A template whose form carries none of these combinations publishes as before | Not yet released |
 | Node-level field permissions, publish lint for early reads: publishing a template version also refuses a condition that reads an approver-filled (`editable`) field before any approver can have filled it in, since the field is then absent and the case gets stuck or routes on nothing. Checked from the graph alone, per field: the nodes that fill it in and have no `entryCondition` are the guards (one that has an `entryCondition` can be skipped, so it guards nothing); an edge `condition` or `conditionFieldKey` is refused when its source node can be reached from the start without passing a guard, and a node expression (`entryCondition`, an `EXPRESSION` approver resolver, a `WEBHOOK` payload, a `SET_FORM_FIELD` value, a `NOTIFY` `EXPRESSION` recipient list) when its node can, or is the filling node itself. An edge that trips both its `condition` and its `conditionFieldKey` reports once. `initiatorPolicyCel` is not read. Deliberately conservative: a read after a parallel join is refused when only some branches pass through a guard, and `has(form.x)` is not treated as a guard; move the read after the filling node. One new `WORKFLOW_LINT_MESSAGES` line (`approverFilledFieldReadEarly`) with zh-TW / en copy in `readWorkflowLintMessage`. A template that reads approver-filled fields only after they are filled in publishes as before | Not yet released |
 | Node-level field permissions, client and launch/resubmit forms: the client `decideTask` takes an optional `fill: { formData, expectedFormDataFingerprint } \| null`; `ApprovalInstanceRecord.formDataFingerprint` is read with `readApprovalInstance`; `LaunchContext.templateVersion.workflowDefinition` carries the current version's workflow definition. BPM's own launch page and the resubmit edit state no longer render, validate or send approver-filled fields (the server drops them anyway; a `minRows` on one used to block the applicant). Known PR1 limit: an applicant in the resubmit edit state does not see already-revealed approver-filled values; the read-only view is unchanged | Not yet released |
+| Node-level field permissions — engine, publish lint, launch/resubmit forms (PR1); the six rows above are its parts. Nodes without `fieldPermissions` behave as before; the one change that reaches every node is that `decideTask` re-reads the task after taking the instance lock. The refusals a host can meet are listed under [Decide-task errors](#decide-task-errors-approver-filled-fields) | Not yet released |
 
 ---
 
@@ -219,7 +220,7 @@ shared  ◄─── client  ◄─── react
 
 # 📦 `@rytass/bpm-core-shared`
 
-Pure type contracts. No runtime code.
+Type contracts plus pure runtime helpers (no I/O, no framework). The root and the subpath modules export runtime values as well as types: the field-permission helpers, the `WORKFLOW_LINT_MESSAGES` builders and the graph, command and toolset functions listed below.
 
 ## `@rytass/bpm-core-shared` (root)
 
@@ -696,7 +697,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 
 ### Notification
 
-Task notification payloads (`TASK_ASSIGNED`, `TASK_TRANSFERRED`) carry `requiresForm: boolean` next to `allowReject`: `!task.isAdhoc` and the node has at least one `editable` field permission, computed once where the payload is built, so every assignment path (first assignment, sequential activation, transfer, administrator reassignment) reports it. Hosts reading `payloadJson` should treat `true` as "the recipient must open the case to fill in fields" and not offer a one-tap approve.
+Task notification payloads (`TASK_ASSIGNED`, `TASK_TRANSFERRED`) carry `requiresForm: boolean` next to `allowReject`: `!task.isAdhoc` and the node has at least one `editable` field permission, computed once where the payload is built, so every path that creates one reports it: first assignment, sequential activation, transfer, administrator reassignment, the task an ad-hoc directive opens (always `false`: it is ad-hoc) and the origin task reopened after an ad-hoc pre-approval is rejected (a normal task, so it follows its node like the others). The key is absent on notifications created before this release; treat absent as `false`. Hosts reading `payloadJson` should treat `true` as "the recipient must open the case to fill in fields" and not offer a one-tap approve.
 
 `listNotifications({ ... })` (accepts `includeArchived`, `beforeId` keyset paging and `changedSince`; records carry `NotificationRecord.updatedAt`), `readUnreadNotificationCount(memberId)`, `readNotificationSummary()` (`NotificationSummaryRecord` — `{ unreadCount, latestUpdatedAt }`), `markNotificationRead({ ... })`, `markNotificationsRead({ ids })` (resolves to the ids that changed), `markAllNotificationsRead({ ... })`, `archiveNotifications({ ids })`, `unarchiveNotifications({ ids })`, `readNotificationPreference(memberId)`, `updateNotificationPreference({ ... })`.
 
@@ -1117,6 +1118,41 @@ runtime value reaches both, because the service resolves it from the global
 `BPM_ROOT_OPTIONS`.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
+
+### Decide-task errors (approver-filled fields)
+
+What `WorkflowEngineService.decideTask` (and the `decideTask` GraphQL mutation) refuses when a node lets its approver fill in fields (`fieldPermissions`, `editable`). A host that approves server-to-server meets these and has to translate them. The messages are a stable contract. Behaviour and the workflow around them: `docs/08-frontend-schema.md` §8.
+
+**Refusals added by field permissions** (in the order the engine checks them). Several can apply to one request: **do not rely on which one comes first**, nor on where they sit among the engine's older refusals (task not found, instance not running, transfer-target checks, …).
+
+| Situation | Exception | Message |
+|---|---|---|
+| The task is no longer pending, including a decision that lost the race for the instance lock (every node, with or without `fieldPermissions`) | `ConflictException` | `Task <taskId> is not pending` |
+| GraphQL mutation only: `formDataJson` sent without `expectedFormDataFingerprint` (`'{}'` counts as sent; the service call may leave the fingerprint out) | `BadRequestException` | `expectedFormDataFingerprint is required when formDataJson is set` |
+| `formDataJson` sent with an action other than `APPROVED` | `BadRequestException` | `formDataJson can only be sent with an APPROVED decision` |
+| `formDataJson` is not valid JSON | `BadRequestException` | the message of the `JSON.parse` error (runtime-dependent) |
+| `formDataJson` is valid JSON but not an object (an array, string, number or `null`) | `BadRequestException` | `formDataJson must be a JSON object` |
+| `formDataJson` sent for an ad-hoc task | `ForbiddenException` | `Ad-hoc task <taskId> cannot fill in form fields` |
+| A key is not an `editable` field of the task's node (the keys are listed in the order of the JSON object) | `ForbiddenException` | `Workflow node <nodeId> does not let approvers fill in: <key>, <key>` |
+| `expectedFormDataFingerprint` differs from the fingerprint of the current `formData` | `ConflictException` | `Approval instance <instanceId> form data changed; refresh and retry` |
+
+A `REJECTED` decision without a comment gets the existing `Reject decision comment is required` (`BadRequestException`) first, even when it also sends `formDataJson`.
+
+**Validation of the filled fields.** An `APPROVED` decision on a non-ad-hoc task at a node with at least one `editable` field is always validated against the case's form snapshot, whether or not it sent `formDataJson` and for every candidate of a `SEQUENTIAL` task. All of these are `BadRequestException`. The checks run in this order and a failing group stops the later ones; the messages of one group are joined with `; `. They are the messages submit uses.
+
+| Check | Message |
+|---|---|
+| A non-table field the node marks `required` is empty | `Form data is missing required fields: <label or fieldKey>, …` |
+| A member field holds the wrong shape | `formData.<fieldKey> must be a member id` (single) / `formData.<fieldKey> must be an array of member ids` (multiple) |
+| A table is not an array | `formData.<fieldKey> must be an array of rows` |
+| A row is not an object | `formData.<fieldKey>[<i>] must be an object` |
+| A row has a key that is not a column | `formData.<fieldKey>[<i>].<columnKey> is not a table column` |
+| A cell value is not valid | `formData.<fieldKey>[<i>].<columnKey> is not a valid cell value` |
+| A required column is empty | `formData.<fieldKey>[<i>].<columnKey> is required` |
+| Too few rows (`<n>` is `minRows`, or `max(minRows, 1)` when the node marks the table `required`; a table with no value always reads `max(minRows, 1)`) | `formData.<fieldKey> must include at least <n> row(s)` |
+| Too many rows | `formData.<fieldKey> must include at most <n> row(s)` |
+
+"Empty" means `undefined`, `null`, a string that is blank after trimming, or an empty array; `false` and `0` are values.
 
 ### Business key (host document ↔ instance)
 

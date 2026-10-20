@@ -271,7 +271,7 @@
 
 - [x] 臨時加簽（`PRE_APPROVAL`）／臨時會簽（`COUNTERSIGN`）：`requestAdhocPreApproval`、`requestAdhocCountersign`，另有 `cancelAdhocDirective`，以及知會類 directive（`STAGE_NOTIFY`、`COMPLETION_NOTIFY`）
 - [ ] 減簽 / 跳簽 API（未實作）
-- [ ] 表單欄位節點級權限（依 fieldPermissions 過濾；型別已保留但**不生效**，見 docs/08 §2；欄位層級的「只存不顯示」另以 `hidden` 提供）
+- [x] 表單欄位節點級權限（`fieldPermissions`：server 強制補填、發布檢查、發起／重送不渲染補填欄位，見 docs/08 §8；案件詳情的補填輸入與設計器面板尚未提供；欄位層級的「只存不顯示」另以 `hidden` 提供）
 - [ ] ABAC 發起權限細化（initiator policy 完整支援）
 - [ ] 角色 / 組織代碼目錄查詢 API，並將開始節點發起權限 AutoComplete 改為 server-controlled async
 
