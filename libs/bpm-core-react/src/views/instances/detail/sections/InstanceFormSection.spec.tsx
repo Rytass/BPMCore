@@ -109,7 +109,6 @@ jest.mock('@mezzanine-ui/react', () => {
   };
 });
 
-
 const FORM_FIELD_SELECTOR = (fieldKey: string): string =>
   `[data-mock-form-field="${fieldKey}"]`;
 
@@ -208,14 +207,20 @@ describe('InstanceFormSection approver-filled fields', () => {
   it('hides approver-filled fields while resubmitting', async (): Promise<void> => {
     await render(true);
 
-    expect(container.querySelector(FORM_FIELD_SELECTOR('reason'))).not.toBeNull();
-    expect(container.querySelector(FORM_FIELD_SELECTOR('financeNote'))).toBeNull();
+    expect(
+      container.querySelector(FORM_FIELD_SELECTOR('reason')),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(FORM_FIELD_SELECTOR('financeNote')),
+    ).toBeNull();
   });
 
   it('keeps the read-only view unchanged', async (): Promise<void> => {
     await render(false);
 
-    expect(container.querySelector(FORM_FIELD_SELECTOR('reason'))).not.toBeNull();
+    expect(
+      container.querySelector(FORM_FIELD_SELECTOR('reason')),
+    ).not.toBeNull();
     expect(
       container.querySelector(FORM_FIELD_SELECTOR('financeNote')),
     ).not.toBeNull();

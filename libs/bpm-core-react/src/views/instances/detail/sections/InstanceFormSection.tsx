@@ -98,8 +98,7 @@ export function InstanceFormSection({
           載入中...
         </Typography>
       ) : null}
-      {instance?.formDefinitionSnapshot.schema &&
-      instance.formDefinitionSnapshot.uiSchema ? (
+      {displayedSchema && instance?.formDefinitionSnapshot.uiSchema ? (
         <>
           <FormRenderer
             dataSourceContext={
@@ -125,7 +124,7 @@ export function InstanceFormSection({
             }
             optionSnapshots={instance.formDataOptionSnapshot}
             readonly={!canResubmitInstance}
-            schema={displayedSchema ?? instance.formDefinitionSnapshot.schema}
+            schema={displayedSchema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}
             value={
               canResubmitInstance ? resubmitFormData : instance.formData

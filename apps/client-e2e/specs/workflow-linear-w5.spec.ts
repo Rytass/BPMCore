@@ -366,6 +366,11 @@ async function mockWorkflowGraphQl(
 
     if (query.includes('query LaunchFormVersion')) {
       await fulfillGraphQl(route, {
+        approvalTemplateVersion: {
+          workflowDefinitionJson: JSON.stringify(
+            readWorkflowDefinition(managerReturnBehavior),
+          ),
+        },
         formDefinitionVersion: {
           id: FORM_VERSION_ID,
           schemaJson: JSON.stringify(readFormSchema()),
@@ -588,76 +593,84 @@ function readInstance({
     templateId: TEMPLATE_ID,
     templateVersionId: TEMPLATE_VERSION_ID,
     title: 'E2E 請假流程',
-    workflowSnapshotJson: JSON.stringify({
-      edges: [
-        {
-          data: {},
-          id: 'edge-start-task',
-          source: 'start',
-          target: 'task_manager',
-          type: 'smoothstep',
+    workflowSnapshotJson: JSON.stringify(
+      readWorkflowDefinition(managerReturnBehavior),
+    ),
+  };
+}
+
+function readWorkflowDefinition(
+  managerReturnBehavior: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge-start-task',
+        source: 'start',
+        target: 'task_manager',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge-task-followup',
+        source: 'task_manager',
+        target: 'task_followup',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge-followup-end',
+        source: 'task_followup',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 0 },
+        type: 'startEvent',
+      },
+      {
+        data: { label: '完成' },
+        id: 'end',
+        position: { x: 480, y: 0 },
+        type: 'endEvent',
+      },
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: false,
+          approverResolver: { memberIds: ['member-002'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '複核簽核',
+          returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
+          triggerMode: 'AND',
         },
-        {
-          data: {},
-          id: 'edge-task-followup',
-          source: 'task_manager',
-          target: 'task_followup',
-          type: 'smoothstep',
+        id: 'task_followup',
+        position: { x: 360, y: 0 },
+        type: 'userTask',
+      },
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: false,
+          approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '主管簽核',
+          returnBehavior: managerReturnBehavior,
+          triggerMode: 'AND',
         },
-        {
-          data: {},
-          id: 'edge-followup-end',
-          source: 'task_followup',
-          target: 'end',
-          type: 'smoothstep',
-        },
-      ],
-      meta: { schemaVersion: 1 },
-      nodes: [
-        {
-          data: { label: '開始' },
-          id: 'start',
-          position: { x: 0, y: 0 },
-          type: 'startEvent',
-        },
-        {
-          data: { label: '完成' },
-          id: 'end',
-          position: { x: 480, y: 0 },
-          type: 'endEvent',
-        },
-        {
-          data: {
-            allowAddSigner: false,
-            allowReject: true,
-            allowTransfer: false,
-            approverResolver: { memberIds: ['member-002'], type: 'DIRECT' },
-            decisionPolicy: { type: 'SINGLE' },
-            label: '複核簽核',
-            returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
-            triggerMode: 'AND',
-          },
-          id: 'task_followup',
-          position: { x: 360, y: 0 },
-          type: 'userTask',
-        },
-        {
-          data: {
-            allowAddSigner: false,
-            allowReject: true,
-            allowTransfer: false,
-            approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
-            decisionPolicy: { type: 'SINGLE' },
-            label: '主管簽核',
-            returnBehavior: managerReturnBehavior,
-            triggerMode: 'AND',
-          },
-          id: 'task_manager',
-          position: { x: 240, y: 0 },
-          type: 'userTask',
-        },
-      ],
-    }),
+        id: 'task_manager',
+        position: { x: 240, y: 0 },
+        type: 'userTask',
+      },
+    ],
   };
 }
 
