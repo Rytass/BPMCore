@@ -1212,7 +1212,7 @@ export class NotificationService {
     submitterMemberId: string,
   ): Promise<string> {
     const started = await manager.getRepository(ActivityLogEntity).findOne({
-      order: { createdAt: 'ASC' },
+      order: { seq: 'ASC' },
       where: {
         eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
         instanceId,

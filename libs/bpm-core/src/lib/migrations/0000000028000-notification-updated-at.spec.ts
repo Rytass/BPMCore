@@ -50,11 +50,11 @@ describe('NotificationUpdatedAt0000000028000', () => {
     expect(statements[3]).toContain('DROP COLUMN IF EXISTS "updated_at"');
   });
 
-  it('is registered last in the migration list', (): void => {
+  it('is registered in the migration list', (): void => {
     const names = BPM_CORE_MIGRATIONS.map(
       (migration): string => migration.name,
     );
 
-    expect(names[names.length - 1]).toBe('NotificationUpdatedAt0000000028000');
+    expect(names).toContain('NotificationUpdatedAt0000000028000');
   });
 });

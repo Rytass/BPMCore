@@ -557,6 +557,7 @@ describe('NotificationService', () => {
       readonly complete: (
         overrides: Partial<ApprovalInstanceEntity>,
       ) => Promise<readonly NotificationEntity[]>;
+      readonly findStarted: jest.Mock<Promise<ActivityLogEntity | null>, []>;
       readonly saved: NotificationEntity[];
       readonly service: NotificationService;
     } {
@@ -573,17 +574,17 @@ describe('NotificationService', () => {
           return Promise.resolve(entities);
         },
       };
-      const activityLogRepository = {
-        findOne: (): Promise<ActivityLogEntity | null> =>
-          Promise.resolve(
-            startedPayload
-              ? Object.assign(new ActivityLogEntity(), {
-                  eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
-                  payload: startedPayload,
-                })
-              : null,
-          ),
-      };
+      const findStarted = jest.fn((): Promise<ActivityLogEntity | null> =>
+        Promise.resolve(
+          startedPayload
+            ? Object.assign(new ActivityLogEntity(), {
+                eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
+                payload: startedPayload,
+              })
+            : null,
+        ),
+      );
+      const activityLogRepository = { findOne: findStarted };
       const manager = {
         getRepository: (entity: unknown): unknown =>
           entity === ActivityLogEntity
@@ -623,10 +624,27 @@ describe('NotificationService', () => {
             }),
             manager,
           }),
+        findStarted,
         saved,
         service,
       };
     }
+
+    it('reads the submit record by write order (seq), not by created_at', async (): Promise<void> => {
+      const harness = createCompletionHarness(jest.fn(), {
+        submittedByName: '王助理',
+      });
+
+      await harness.complete({ submittedByMemberId: 'member-assistant' });
+
+      expect(harness.findStarted).toHaveBeenCalledWith({
+        order: { seq: 'ASC' },
+        where: {
+          eventType: ActivityLogEventTypeEnum.INSTANCE_STARTED,
+          instanceId: expect.any(String),
+        },
+      });
+    });
 
     it('tells the applicant who filed the document for them, by the name recorded at submit', async (): Promise<void> => {
       const resolveMember = jest.fn();
