@@ -8,11 +8,25 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  readApproverFilledFieldKeys,
+  readNodeFieldPermissions,
+  readTopLevelFieldKey,
+} from '@rytass/bpm-core-shared';
+import {
   FormDefinitionSchema,
   FormFieldDefinition,
+  isFormDataSourceFieldDefinition,
   isMemberFieldDefinition,
+  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  UserTaskNode,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow';
+import {
+  APPROVER_FILLED_FORM_RULES,
+  WORKFLOW_LINT_MESSAGES,
+} from '@rytass/bpm-core-shared/workflow-graph';
 import {
   EntityManager,
   FindOptionsWhere,
@@ -984,6 +998,10 @@ export class TemplateService {
       version.workflowDefinition,
       formVersion.schema,
     );
+    const approverFilledFieldErrors = lintApproverFilledFormFields(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
     const webhookErrors = await this.lintWorkflowWebhooks(
       version.workflowDefinition,
       formVersion.schema,
@@ -993,6 +1011,7 @@ export class TemplateService {
       ...conditionErrors,
       ...tableReferenceErrors,
       ...memberReferenceErrors,
+      ...approverFilledFieldErrors,
       ...webhookErrors,
     ];
 
@@ -1437,6 +1456,103 @@ function lintWorkflowMemberReferences(
             `${label} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
           ];
     });
+}
+
+/**
+ * The form-side half of `fieldPermissions`: what the permissions can only be
+ * checked against once the bound form version is known.
+ *
+ * - Every `fieldPath` must be a field of the form. A nested path is left to
+ *   `lintWorkflowDefinition`, which already refuses it as nested; reporting it
+ *   here as "unknown" as well would say the same thing twice.
+ * - A field an approver fills in must not carry a rule of the form's own. The
+ *   engine blocks approval while a node-required editable field is empty, so
+ *   a form that hides the field (`hidden`, `visibleWhen`) leaves the approver
+ *   nothing to fill in and the case stuck for good; the other rules fight the
+ *   value the approver types (`required` / `requiredWhen` would block the
+ *   applicant, `readonlyWhen` the approver, `defaultValue` seeds a value that
+ *   was meant to start empty). Each field and rule is reported once, however
+ *   many nodes make the field editable.
+ * - It cannot be a data-source or file upload field, and a table it fills in
+ *   cannot have a data-source column: the approval does not re-resolve option
+ *   snapshots or accept uploads. A table column can never be a file upload
+ *   (`TABLE_COLUMN_FIELD_TYPES`), so only data-source columns are checked.
+ * - `required` cannot be put on a boolean field: `false` is a real answer, and
+ *   the "is it filled in" check would refuse it.
+ *
+ * A rule counts as set when `required` / `hidden` is `true` and for the others
+ * when the value is not `undefined`, so `required: false` and `hidden: false`
+ * (what the form editor writes for "off") are not rules.
+ */
+function lintApproverFilledFormFields(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const fieldsByKey = new Map(
+    (schema?.fields ?? []).map((field) => [field.fieldKey, field] as const),
+  );
+  const userTasks = definition.nodes.filter(
+    (node): node is UserTaskNode => node.type === 'userTask',
+  );
+  const unknownFieldErrors = userTasks.flatMap((node) =>
+    readNodeFieldPermissions(node)
+      .filter(
+        ({ fieldPath }) =>
+          readTopLevelFieldKey(fieldPath) === fieldPath &&
+          !fieldsByKey.has(fieldPath),
+      )
+      .map(({ fieldPath }) =>
+        WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField(node.id, fieldPath),
+      ),
+  );
+  const requiredBooleanErrors = userTasks.flatMap((node) =>
+    readNodeFieldPermissions(node)
+      .filter(
+        ({ editable, fieldPath, required }) =>
+          editable && required && fieldsByKey.get(fieldPath)?.type === 'boolean',
+      )
+      .map(({ fieldPath }) =>
+        WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldPath),
+      ),
+  );
+  const fieldErrors = [...readApproverFilledFieldKeys(definition)].flatMap(
+    (fieldKey) => {
+      const field = fieldsByKey.get(fieldKey);
+
+      return field === undefined
+        ? []
+        : readApproverFilledFieldFormErrors(field);
+    },
+  );
+
+  return [...unknownFieldErrors, ...fieldErrors, ...requiredBooleanErrors];
+}
+
+function readApproverFilledFieldFormErrors(
+  field: FormFieldDefinition,
+): readonly string[] {
+  const { fieldKey } = field;
+  const ruleErrors = APPROVER_FILLED_FORM_RULES.filter((rule) =>
+    rule === 'required' || rule === 'hidden'
+      ? field[rule] === true
+      : field[rule] !== undefined,
+  ).map((rule) =>
+    WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
+  );
+
+  return [
+    ...ruleErrors,
+    ...(isFormDataSourceFieldDefinition(field)
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey)]
+      : []),
+    ...(field.type === 'file_upload'
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey)]
+      : []),
+    ...(isTableFieldDefinition(field) &&
+    field.columns.some(isFormDataSourceFieldDefinition)
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey)]
+      : []),
+  ];
 }
 
 function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {

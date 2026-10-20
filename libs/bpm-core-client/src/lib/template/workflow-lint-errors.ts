@@ -1,4 +1,5 @@
 import {
+  readNodeEditableFieldKeys,
   readNodeFieldPermissions,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
@@ -8,6 +9,8 @@ import type {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  APPROVER_FILLED_FORM_RULES,
+  ApproverFilledFormRule,
   WORKFLOW_LINT_MESSAGES,
   WORKFLOW_NODE_TYPE_LABELS,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -23,6 +26,20 @@ export const WORKFLOW_LINT_LANGUAGES: readonly WorkflowLintLanguage[] = [
 ];
 
 interface WorkflowLintCopy {
+  readonly approverFilledFieldDataSource: (fieldKey: string) => string;
+  readonly approverFilledFieldFileUpload: (fieldKey: string) => string;
+  readonly approverFilledFieldFormRule: (
+    fieldKey: string,
+    ruleLabel: string,
+  ) => string;
+  readonly approverFilledFormRuleLabels: Readonly<
+    Record<ApproverFilledFormRule, string>
+  >;
+  readonly approverFilledRequiredBoolean: (
+    name: string,
+    fieldPath: string,
+  ) => string;
+  readonly approverFilledTableDataSourceColumn: (fieldKey: string) => string;
   readonly blankNodeLabel: (typeLabel: string) => string;
   readonly cycle: (name: string) => string;
   readonly endEventMissing: string;
@@ -48,6 +65,10 @@ interface WorkflowLintCopy {
   ) => string;
   readonly fieldPermissionSkipNode: (name: string) => string;
   readonly fieldPermissionsInvalid: (name: string) => string;
+  readonly fieldPermissionUnknownField: (
+    name: string,
+    fieldPath: string,
+  ) => string;
   readonly noPathToEnd: (name: string) => string;
   readonly nodeTypeLabels: ReadonlyMap<string, string>;
   readonly notifyOutgoingEdge: (name: string) => string;
@@ -72,6 +93,24 @@ const WORKFLOW_LINT_COPY: Readonly<
   Record<WorkflowLintLanguage, WorkflowLintCopy>
 > = {
   en: {
+    approverFilledFieldDataSource: (fieldKey): string =>
+      `The field "${fieldKey}" is filled in by an approver, so it cannot use an option source (選項來源).`,
+    approverFilledFieldFileUpload: (fieldKey): string =>
+      `The field "${fieldKey}" is filled in by an approver, so it cannot be an attachment (附件) field.`,
+    approverFilledFieldFormRule: (fieldKey, ruleLabel): string =>
+      `The field "${fieldKey}" is filled in by an approver, so the form cannot set ${ruleLabel} on it.`,
+    approverFilledFormRuleLabels: {
+      defaultValue: '"Default value" (預設值)',
+      hidden: '"Store only, not shown" (只存不顯示)',
+      readonlyWhen: '"Read-only when" (條件唯讀)',
+      required: '"Required" (必填)',
+      requiredWhen: '"Required when" (條件必填)',
+      visibleWhen: '"Visible when" (條件顯示)',
+    },
+    approverFilledRequiredBoolean: (name, fieldPath): string =>
+      `The approval node "${name}" marks the switch field (開關) "${fieldPath}" as required. A switch left off is still an answer, so it cannot be required.`,
+    approverFilledTableDataSourceColumn: (fieldKey): string =>
+      `The table "${fieldKey}" is filled in by an approver, so it cannot have a column that uses an option source (選項來源).`,
     blankNodeLabel: (typeLabel): string =>
       `A "${typeLabel}" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.`,
     cycle: (name): string =>
@@ -97,6 +136,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `The approval node "${name}" has fillable fields, so what "Initiator cannot self-approve" (申請人不能自簽) does when nobody is left to sign cannot be "Skip this step" (跳過此關); otherwise the case would be approved with nobody filling them in.`,
     fieldPermissionsInvalid: (name): string =>
       `The field permissions of the approval node "${name}" are malformed. Open the node in the designer and set them again.`,
+    fieldPermissionUnknownField: (name, fieldPath): string =>
+      `The field permissions of the approval node "${name}" name the field "${fieldPath}", which the bound form does not have.`,
     noPathToEnd: (name): string =>
       `"${name}" has no path to "End" (結束), so the flow would get stuck there. Connect it to the next node or to "End".`,
     nodeTypeLabels: new Map([
@@ -119,6 +160,24 @@ const WORKFLOW_LINT_COPY: Readonly<
       `"${name}" cannot be reached from "Start" (開始), so the flow never gets there. Make sure a chain of connections leads to it from "Start".`,
   },
   'zh-TW': {
+    approverFilledFieldDataSource: (fieldKey): string =>
+      `欄位「${fieldKey}」由簽核人補填，不能使用「選項來源」。`,
+    approverFilledFieldFileUpload: (fieldKey): string =>
+      `欄位「${fieldKey}」由簽核人補填，不能是「附件」欄位。`,
+    approverFilledFieldFormRule: (fieldKey, ruleLabel): string =>
+      `欄位「${fieldKey}」由簽核人補填，表單不能設定${ruleLabel}。`,
+    approverFilledFormRuleLabels: {
+      defaultValue: '「預設值」',
+      hidden: '「只存不顯示」',
+      readonlyWhen: '「條件唯讀」',
+      required: '「必填」',
+      requiredWhen: '「條件必填」',
+      visibleWhen: '「條件顯示」',
+    },
+    approverFilledRequiredBoolean: (name, fieldPath): string =>
+      `簽核節點「${name}」把開關欄位「${fieldPath}」設成必填；開關關著也是答案，不能要求必填。`,
+    approverFilledTableDataSourceColumn: (fieldKey): string =>
+      `表格「${fieldKey}」由簽核人補填，表格裡不能有使用「選項來源」的欄位。`,
     blankNodeLabel: (typeLabel): string =>
       `有一個「${typeLabel}」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。`,
     cycle: (name): string =>
@@ -144,6 +203,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `簽核節點「${name}」有可填欄位，「申請人不能自簽」的無人可簽處理不能選「跳過此關」，否則這張單沒有人補填就核准了。`,
     fieldPermissionsInvalid: (name): string =>
       `簽核節點「${name}」的欄位權限設定格式不正確，請在設計器重新設定。`,
+    fieldPermissionUnknownField: (name, fieldPath): string =>
+      `簽核節點「${name}」的欄位權限指定了表單裡沒有的欄位「${fieldPath}」。`,
     noPathToEnd: (name): string =>
       `節點「${name}」往下接不到「結束」，流程走到這裡會卡住。請從它拉一條連線到下一個節點或「結束」。`,
     // The canvas's own labels, so the copy names a node type the way the
@@ -276,7 +337,51 @@ function readWorkflowLintTranslations(
     [WORKFLOW_LINT_MESSAGES.endEventMissing(), copy.endEventMissing],
     ...nodeTranslations,
     ...edgeTranslations,
+    ...readApproverFilledFieldTranslations(
+      indexedNodes.map(([node]) => node),
+      copy,
+    ),
   ];
+}
+
+/**
+ * The approver-filled field lines name a field, not a node, and the fields are
+ * the ones some approval node makes editable. A node whose data or permissions
+ * cannot be read adds none, which leaves its lines as the backend wrote them.
+ */
+function readApproverFilledFieldTranslations(
+  nodes: readonly WorkflowNode[],
+  copy: WorkflowLintCopy,
+): readonly Translation[] {
+  const fieldKeys = new Set(
+    nodes.flatMap((node): readonly string[] =>
+      node.type === 'userTask' && isRecord(node.data)
+        ? [...readNodeEditableFieldKeys(node)]
+        : [],
+    ),
+  );
+
+  return [...fieldKeys].flatMap((fieldKey): readonly Translation[] => [
+    ...APPROVER_FILLED_FORM_RULES.map((rule): Translation => [
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
+      copy.approverFilledFieldFormRule(
+        fieldKey,
+        copy.approverFilledFormRuleLabels[rule],
+      ),
+    ]),
+    [
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey),
+      copy.approverFilledFieldDataSource(fieldKey),
+    ],
+    [
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey),
+      copy.approverFilledFieldFileUpload(fieldKey),
+    ],
+    [
+      WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey),
+      copy.approverFilledTableDataSourceColumn(fieldKey),
+    ],
+  ]);
 }
 
 function readNodeTranslations(
@@ -378,6 +483,20 @@ function readFieldPermissionTranslations(
               fieldPath,
             ),
             copy.fieldPermissionRequiredNotEditable(name, fieldPath),
+          ],
+          [
+            WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField(
+              node.id,
+              fieldPath,
+            ),
+            copy.fieldPermissionUnknownField(name, fieldPath),
+          ],
+          [
+            WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(
+              node.id,
+              fieldPath,
+            ),
+            copy.approverFilledRequiredBoolean(name, fieldPath),
           ],
         ],
       ),

@@ -62,6 +62,24 @@ export const WORKFLOW_NODE_TYPE_LABELS: Readonly<
 };
 
 /**
+ * The form-level rules a field cannot carry once an approver fills it in: the
+ * submit validation would otherwise block approval on a value the approver
+ * cannot see, or overwrite the one they typed. The publish lint reports one
+ * line per field and rule, and `readWorkflowLintMessage` rebuilds the same
+ * lines from this list.
+ */
+export const APPROVER_FILLED_FORM_RULES = [
+  'required',
+  'requiredWhen',
+  'visibleWhen',
+  'readonlyWhen',
+  'hidden',
+  'defaultValue',
+] as const;
+
+export type ApproverFilledFormRule = (typeof APPROVER_FILLED_FORM_RULES)[number];
+
+/**
  * The structural lines of the backend publish lint (`lintWorkflowDefinition`
  * in `@rytass/bpm-core-nestjs-module`). The backend writes them from here and
  * the client (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`)
@@ -72,6 +90,16 @@ export const WORKFLOW_NODE_TYPE_LABELS: Readonly<
  * only as a breaking change.
  */
 export const WORKFLOW_LINT_MESSAGES = Object.freeze({
+  approverFilledFieldDataSource: (fieldKey: string): string =>
+    `formData.${fieldKey} is filled in by an approver, so it cannot be a data-source field`,
+  approverFilledFieldFileUpload: (fieldKey: string): string =>
+    `formData.${fieldKey} is filled in by an approver, so it cannot be a file upload field`,
+  approverFilledFieldFormRule: (fieldKey: string, rule: string): string =>
+    `formData.${fieldKey} is filled in by an approver, so the form cannot set ${rule} on it`,
+  approverFilledRequiredBoolean: (nodeId: string, fieldPath: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions cannot require the boolean field: ${fieldPath}`,
+  approverFilledTableDataSourceColumn: (fieldKey: string): string =>
+    `formData.${fieldKey} is filled in by an approver, so its table cannot have a data-source column`,
   blankNodeLabel: (index: number): string =>
     `workflow.nodes[${index}].data.label must be a non-empty string`,
   cycle: (nodeId: string): string =>
@@ -104,6 +132,8 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `workflow.nodes.${nodeId}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields`,
   fieldPermissionsInvalid: (nodeId: string): string =>
     `workflow.nodes.${nodeId}.fieldPermissions is invalid`,
+  fieldPermissionUnknownField: (nodeId: string, fieldPath: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions must name a field of the bound form: ${fieldPath}`,
   noPathToEnd: (nodeId: string): string =>
     `workflow.nodes.${nodeId} does not have a path to an endEvent`,
   notifyOutgoingEdge: (edgeId: string): string =>

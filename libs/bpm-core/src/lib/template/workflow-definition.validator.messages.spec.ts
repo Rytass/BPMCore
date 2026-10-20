@@ -1,5 +1,8 @@
 import { lintWorkflowDefinition } from './workflow-definition.validator';
-import { WORKFLOW_LINT_MESSAGES } from '@rytass/bpm-core-shared/workflow-graph';
+import {
+  APPROVER_FILLED_FORM_RULES,
+  WORKFLOW_LINT_MESSAGES,
+} from '@rytass/bpm-core-shared/workflow-graph';
 import {
   WorkflowDefinition,
   WorkflowNode,
@@ -62,6 +65,17 @@ function createWorkflow(
 }
 
 describe('workflow lint message wording', (): void => {
+  it('names the form rules an approver-filled field cannot carry', (): void => {
+    expect(APPROVER_FILLED_FORM_RULES).toEqual([
+      'required',
+      'requiredWhen',
+      'visibleWhen',
+      'readonlyWhen',
+      'hidden',
+      'defaultValue',
+    ]);
+  });
+
   it('builds every structural line with its published wording', (): void => {
     expect(WORKFLOW_LINT_MESSAGES.blankNodeLabel(2)).toBe(
       'workflow.nodes[2].data.label must be a non-empty string',
@@ -107,6 +121,32 @@ describe('workflow lint message wording', (): void => {
     );
     expect(WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid('n1')).toBe(
       'workflow.nodes.n1.fieldPermissions is invalid',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField('n1', 'amount'),
+    ).toBe(
+      'workflow.nodes.n1.fieldPermissions must name a field of the bound form: amount',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule('amount', 'hidden'),
+    ).toBe(
+      'formData.amount is filled in by an approver, so the form cannot set hidden on it',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource('amount')).toBe(
+      'formData.amount is filled in by an approver, so it cannot be a data-source field',
+    );
+    expect(WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload('amount')).toBe(
+      'formData.amount is filled in by an approver, so it cannot be a file upload field',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn('items'),
+    ).toBe(
+      'formData.items is filled in by an approver, so its table cannot have a data-source column',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean('n1', 'taxFree'),
+    ).toBe(
+      'workflow.nodes.n1.fieldPermissions cannot require the boolean field: taxFree',
     );
     expect(WORKFLOW_LINT_MESSAGES.noPathToEnd('n1')).toBe(
       'workflow.nodes.n1 does not have a path to an endEvent',

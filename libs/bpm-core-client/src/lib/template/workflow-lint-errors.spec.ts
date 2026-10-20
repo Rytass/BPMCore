@@ -516,3 +516,151 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
     );
   });
 });
+
+describe('readWorkflowLintMessage: approver-filled fields', (): void => {
+  const fillDefinition = {
+    edges: [],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: {
+          fieldPermissions: [
+            { editable: true, fieldPath: 'invoiceKind', visible: true },
+            { editable: true, fieldPath: 'items', visible: true },
+            { editable: true, fieldPath: 'ghost', visible: true },
+            {
+              editable: true,
+              fieldPath: 'taxFree',
+              required: true,
+              visible: true,
+            },
+          ],
+          label: '財務補填',
+        },
+        id: 'userTask_fill',
+        position: { x: 0, y: 0 },
+        type: 'userTask',
+      },
+      {
+        data: {
+          fieldPermissions: [
+            { editable: true, fieldPath: 'invoiceKind', visible: true },
+          ],
+          label: '會計補填',
+        },
+        id: 'userTask_again',
+        position: { x: 0, y: 0 },
+        type: 'userTask',
+      },
+    ],
+  } as unknown as WorkflowDefinition;
+
+  // [backend line, zh-TW, en]
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      'workflow.nodes.userTask_fill.fieldPermissions must name a field of the bound form: ghost',
+      '簽核節點「財務補填」的欄位權限指定了表單裡沒有的欄位「ghost」。',
+      'The field permissions of the approval node "財務補填" name the field "ghost", which the bound form does not have.',
+    ],
+    [
+      'workflow.nodes.userTask_fill.fieldPermissions cannot require the boolean field: taxFree',
+      '簽核節點「財務補填」把開關欄位「taxFree」設成必填；開關關著也是答案，不能要求必填。',
+      'The approval node "財務補填" marks the switch field (開關) "taxFree" as required. A switch left off is still an answer, so it cannot be required.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set required on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「必填」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Required" (必填) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set requiredWhen on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「條件必填」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Required when" (條件必填) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set visibleWhen on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「條件顯示」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Visible when" (條件顯示) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set readonlyWhen on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「條件唯讀」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Read-only when" (條件唯讀) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set hidden on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「只存不顯示」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Store only, not shown" (只存不顯示) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so the form cannot set defaultValue on it',
+      '欄位「invoiceKind」由簽核人補填，表單不能設定「預設值」。',
+      'The field "invoiceKind" is filled in by an approver, so the form cannot set "Default value" (預設值) on it.',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so it cannot be a data-source field',
+      '欄位「invoiceKind」由簽核人補填，不能使用「選項來源」。',
+      'The field "invoiceKind" is filled in by an approver, so it cannot use an option source (選項來源).',
+    ],
+    [
+      'formData.invoiceKind is filled in by an approver, so it cannot be a file upload field',
+      '欄位「invoiceKind」由簽核人補填，不能是「附件」欄位。',
+      'The field "invoiceKind" is filled in by an approver, so it cannot be an attachment (附件) field.',
+    ],
+    [
+      'formData.items is filled in by an approver, so its table cannot have a data-source column',
+      '表格「items」由簽核人補填，表格裡不能有使用「選項來源」的欄位。',
+      'The table "items" is filled in by an approver, so it cannot have a column that uses an option source (選項來源).',
+    ],
+  ];
+
+  it.each(cases)('writes %s in Chinese', (backend, zhTw): void => {
+    expect(readWorkflowLintMessage(backend, fillDefinition)).toBe(zhTw);
+  });
+
+  it.each(cases)('writes %s in English', (backend, _zhTw, en): void => {
+    expect(readWorkflowLintMessage(backend, fillDefinition, 'en')).toBe(en);
+  });
+
+  it('keeps a field line whose field no approver fills in', (): void => {
+    const foreign =
+      'formData.other is filled in by an approver, so the form cannot set hidden on it';
+
+    expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
+  });
+
+  it('keeps a line that names a node outside the definition', (): void => {
+    const foreign =
+      'workflow.nodes.userTask_9.fieldPermissions cannot require the boolean field: taxFree';
+
+    expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
+  });
+
+  it('does not throw on drafts whose permissions or nodes cannot be read', (): void => {
+    const lines = [
+      'formData.amount is filled in by an approver, so the form cannot set hidden on it',
+      'workflow.nodes.userTask_a.fieldPermissions must name a field of the bound form: amount',
+    ].join('; ');
+    const badDraft = {
+      edges: [],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        { id: 'userTask_c', position: { x: 0, y: 0 }, type: 'userTask' },
+        {
+          data: { fieldPermissions: 'amount', label: '非陣列' },
+          id: 'userTask_a',
+          position: { x: 0, y: 0 },
+          type: 'userTask',
+        },
+        {
+          data: { fieldPermissions: [null, 7], label: '壞項目' },
+          id: 'userTask_b',
+          position: { x: 0, y: 0 },
+          type: 'userTask',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(readWorkflowLintMessage(lines, badDraft)).toBe(lines);
+  });
+});

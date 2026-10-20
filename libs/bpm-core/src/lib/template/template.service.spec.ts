@@ -813,6 +813,327 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('approver-filled fields against the bound form', (): void => {
+    const dataSource = { bindings: [], key: 'invoice_kinds', version: 1 };
+    const fillSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'invoiceKind',
+          label: '發票種類',
+          options: [{ label: '二聯', value: 'B2C' }],
+          required: false,
+          type: 'select',
+        },
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        { fieldKey: 'taxFree', label: '免稅', required: false, type: 'boolean' },
+        {
+          dataSource,
+          fieldKey: 'taxCode',
+          label: '稅碼',
+          required: false,
+          type: 'select',
+        },
+        {
+          fieldKey: 'attachment',
+          label: '附件',
+          required: false,
+          type: 'file_upload',
+        },
+        {
+          columns: [
+            { fieldKey: 'name', label: '品項', required: false, type: 'text' },
+          ],
+          fieldKey: 'lines',
+          label: '明細',
+          required: false,
+          type: 'table',
+        },
+        {
+          columns: [
+            { fieldKey: 'name', label: '品項', required: false, type: 'text' },
+            {
+              dataSource,
+              fieldKey: 'kind',
+              label: '種類',
+              required: false,
+              type: 'select',
+            },
+          ],
+          fieldKey: 'sourcedLines',
+          label: '來源明細',
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+
+    const withFieldRule = (
+      fieldKey: string,
+      rule: Readonly<Record<string, unknown>>,
+    ): FormDefinitionSchema => ({
+      ...fillSchema,
+      fields: fillSchema.fields.map((field) =>
+        field.fieldKey === fieldKey ? ({ ...field, ...rule } as typeof field) : field,
+      ),
+    });
+
+    const editable = (
+      fieldPath: string,
+      extra: Readonly<Record<string, unknown>> = {},
+    ): Readonly<Record<string, unknown>> => ({
+      editable: true,
+      fieldPath,
+      visible: true,
+      ...extra,
+    });
+
+    const publishError = async (
+      service: TemplateService,
+    ): Promise<string> => {
+      try {
+        await service.publishApprovalTemplateVersion('template-version-1');
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+
+      return '';
+    };
+
+    const rulePublishLine = (fieldKey: string, rule: string): string =>
+      `formData.${fieldKey} is filled in by an approver, so the form cannot set ${rule} on it`;
+
+    it('publishes when every approver-filled field is a plain field with no form rules', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [
+            editable('invoiceKind'),
+            editable('amount', { required: true }),
+            editable('lines'),
+            { editable: false, fieldPath: 'note', visible: true },
+          ],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it.each([
+      ['required', { required: true }],
+      ['requiredWhen', { requiredWhen: 'form.amount > 10' }],
+      ['visibleWhen', { visibleWhen: 'form.amount > 10' }],
+      ['readonlyWhen', { readonlyWhen: 'form.amount > 10' }],
+      ['hidden', { hidden: true }],
+      ['defaultValue', { defaultValue: 'B2C' }],
+    ])(
+      'rejects an approver-filled field that the form gives %s',
+      async (rule, formRule): Promise<void> => {
+        const service = createTableConditionPublishService({
+          schema: withFieldRule('invoiceKind', formRule),
+          workflowDefinition: createFieldPermissionWorkflow([
+            [editable('invoiceKind')],
+          ]),
+        });
+
+        await expect(publishError(service)).resolves.toBe(
+          rulePublishLine('invoiceKind', rule),
+        );
+      },
+    );
+
+    it('rejects a hidden approver-filled field, which the approver could never see to fill in', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: withFieldRule('invoiceKind', { hidden: true }),
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('invoiceKind', { required: true })],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(rulePublishLine('invoiceKind', 'hidden'));
+    });
+
+    it('rejects an approver-filled field that the form can hide with visibleWhen', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: withFieldRule('invoiceKind', {
+          visibleWhen: 'form.amount > 1000',
+        }),
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('invoiceKind', { required: true })],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).rejects.toThrow(rulePublishLine('invoiceKind', 'visibleWhen'));
+    });
+
+    it.each([
+      ['required: false', { required: false }],
+      ['hidden: false', { hidden: false }],
+    ])(
+      'does not count %s as a rule the form sets',
+      async (_name, formRule): Promise<void> => {
+        const service = createTableConditionPublishService({
+          schema: withFieldRule('invoiceKind', formRule),
+          workflowDefinition: createFieldPermissionWorkflow([
+            [editable('invoiceKind')],
+          ]),
+        });
+
+        await expect(
+          service.publishApprovalTemplateVersion('template-version-1'),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      },
+    );
+
+    it('leaves form rules alone on a field no approver fills in', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: withFieldRule('invoiceKind', { hidden: true, required: false }),
+        workflowDefinition: createFieldPermissionWorkflow([
+          [{ editable: false, fieldPath: 'invoiceKind', visible: true }],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('reports one line per field and rule even when two nodes make it editable', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: withFieldRule('invoiceKind', {
+          hidden: true,
+          visibleWhen: 'form.amount > 10',
+        }),
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('invoiceKind')],
+          [editable('invoiceKind')],
+        ]),
+      });
+      const message = await publishError(service);
+
+      expect(message.split('; ').sort()).toEqual([
+        rulePublishLine('invoiceKind', 'hidden'),
+        rulePublishLine('invoiceKind', 'visibleWhen'),
+      ]);
+    });
+
+    it('rejects an approver-filled data-source field', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('taxCode')],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'formData.taxCode is filled in by an approver, so it cannot be a data-source field',
+      );
+    });
+
+    it('rejects an approver-filled file upload field', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('attachment')],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'formData.attachment is filled in by an approver, so it cannot be a file upload field',
+      );
+    });
+
+    it('rejects an approver-filled table that has a data-source column', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('sourcedLines')],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
+      );
+    });
+
+    it('leaves data-source fields and columns alone while no approver fills them in', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('invoiceKind')],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('rejects a field permission that names no field of the bound form', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [
+            editable('missing'),
+            { editable: false, fieldPath: 'alsoMissing', visible: true },
+          ],
+        ]),
+      });
+      const lines = (await publishError(service)).split('; ');
+
+      expect(lines.sort()).toEqual([
+        'workflow.nodes.task_1.fieldPermissions must name a field of the bound form: alsoMissing',
+        'workflow.nodes.task_1.fieldPermissions must name a field of the bound form: missing',
+      ]);
+    });
+
+    it('does not call a nested path an unknown field, since it is already refused as nested', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('lines.name')],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'workflow.nodes.task_1.fieldPermissions must name a top-level form field, not a nested path: lines.name',
+      );
+    });
+
+    it('rejects requiring a boolean field the approver fills in', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('taxFree', { required: true })],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'workflow.nodes.task_1.fieldPermissions cannot require the boolean field: taxFree',
+      );
+    });
+
+    it('allows an optional boolean field the approver fills in', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldPermissionWorkflow([
+          [editable('taxFree')],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+  });
+
   it('rejects publishing a webhook whose endpoint is not registered', async (): Promise<void> => {
     const service = createWebhookPublishService(
       new WorkflowWebhookService(
@@ -1462,6 +1783,61 @@ const VALID_WORKFLOW_DEFINITION = {
     },
   ],
 };
+
+/**
+ * start → task_1 → … → end, one approval node per list of field permissions
+ * (node ids `task_1`, `task_2`, …), each otherwise like the manager task.
+ */
+function createFieldPermissionWorkflow(
+  permissionsPerNode: readonly (readonly Readonly<Record<string, unknown>>[])[],
+): WorkflowDefinition {
+  const nodeIds = permissionsPerNode.map((_permissions, index) => `task_${index + 1}`);
+  const chain = ['start', ...nodeIds, 'end'];
+
+  return {
+    edges: chain.slice(1).map((target, index) => ({
+      data: {},
+      id: `edge_${index}`,
+      source: chain[index],
+      target,
+      type: 'smoothstep',
+    })),
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      ...permissionsPerNode.map((fieldPermissions, index) => ({
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: true,
+          approverResolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+          decisionPolicy: { type: 'SINGLE' },
+          fieldPermissions,
+          label: `補填 ${index + 1}`,
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+        },
+        id: nodeIds[index],
+        position: { x: 300 + index * 200, y: 160 },
+        type: 'userTask',
+      })),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520 + permissionsPerNode.length * 200, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  } as unknown as WorkflowDefinition;
+}
 
 const TABLE_FORM_SCHEMA = {
   fields: [
