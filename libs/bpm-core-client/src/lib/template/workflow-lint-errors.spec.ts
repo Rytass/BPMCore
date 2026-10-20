@@ -664,3 +664,207 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
     expect(readWorkflowLintMessage(lines, badDraft)).toBe(lines);
   });
 });
+
+describe('readWorkflowLintMessage: reads before an approver fills a field in', (): void => {
+  const readDefinition = {
+    edges: [
+      {
+        data: { condition: 'form.invoiceKind == "B2B"' },
+        id: 'edge_manager_fill',
+        source: 'userTask_manager',
+        target: 'userTask_fill',
+      },
+      {
+        data: {
+          conditionFieldKey: 'invoiceKind',
+          conditionOperator: 'EQUALS',
+          conditionValue: 'B2B',
+        },
+        id: 'edge_hook_fill',
+        source: 'serviceTask_hook',
+        target: 'userTask_fill',
+      },
+      {
+        data: { condition: 'form.invoiceKind == "B2B"' },
+        id: 'edge_ghost_source',
+        source: 'serviceTask_ghost',
+        target: 'userTask_fill',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 0, y: 0 },
+        type: 'startEvent',
+      },
+      {
+        data: { label: '主管簽核' },
+        id: 'userTask_manager',
+        position: { x: 0, y: 0 },
+        type: 'userTask',
+      },
+      {
+        data: {
+          approverResolver: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
+          entryCondition: 'form.invoiceKind == "B2B"',
+          fieldPermissions: [
+            { editable: true, fieldPath: 'invoiceKind', visible: true },
+          ],
+          label: '財務補填',
+        },
+        id: 'userTask_fill',
+        position: { x: 0, y: 0 },
+        type: 'userTask',
+      },
+      {
+        data: {
+          action: { payload: 'form.invoiceKind', type: 'WEBHOOK', url: 'u' },
+          entryCondition: 'form.invoiceKind == "B2B"',
+          label: '呼叫外部系統',
+        },
+        id: 'serviceTask_hook',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      },
+      {
+        data: {
+          action: {
+            fieldPath: 'amount',
+            type: 'SET_FORM_FIELD',
+            value: 'form.invoiceKind',
+          },
+          label: '寫入欄位',
+        },
+        id: 'serviceTask_set',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      },
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
+            type: 'NOTIFY',
+          },
+          label: '通知會計',
+        },
+        id: 'serviceTask_notify',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      },
+    ],
+  } as unknown as WorkflowDefinition;
+
+  const early = (label: string): string =>
+    `${label} reads formData.invoiceKind before an approver fills it in`;
+
+  // [backend line, zh-TW, en]
+  const cases: readonly (readonly [string, string, string])[] = [
+    [
+      early('workflow.edges.edge_manager_fill.data.condition'),
+      '從「主管簽核」出發的連線條件在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The condition on the connection leaving "主管簽核" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.edges.edge_hook_fill.data.conditionFieldKey'),
+      '從「呼叫外部系統」出發的連線條件在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The condition on the connection leaving "呼叫外部系統" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.userTask_fill.data.entryCondition'),
+      '節點「財務補填」的進入條件在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The entry condition (進入條件) of the node "財務補填" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.serviceTask_hook.data.entryCondition'),
+      '節點「呼叫外部系統」的進入條件在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The entry condition (進入條件) of the node "呼叫外部系統" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.userTask_fill.data.approverResolver.expression'),
+      '節點「財務補填」的簽核人運算式在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The approver expression (簽核人運算式) of the approval node "財務補填" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.serviceTask_hook.data.action.payload'),
+      '系統節點「呼叫外部系統」的運算式在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The expression of the system node "呼叫外部系統" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.serviceTask_set.data.action.value'),
+      '系統節點「寫入欄位」的運算式在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The expression of the system node "寫入欄位" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.serviceTask_notify.data.entryCondition'),
+      '節點「通知會計」的進入條件在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The entry condition (進入條件) of the node "通知會計" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+    [
+      early('workflow.nodes.serviceTask_notify.data.action.recipients.expression'),
+      '知會節點「通知會計」的通知對象運算式在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
+      'The recipients expression of the notify node "通知會計" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
+    ],
+  ];
+
+  it.each(cases)('writes %s in Chinese', (backend, zhTw): void => {
+    expect(readWorkflowLintMessage(backend, readDefinition)).toBe(zhTw);
+  });
+
+  it.each(cases)('writes %s in English', (backend, _zhTw, en): void => {
+    expect(readWorkflowLintMessage(backend, readDefinition, 'en')).toBe(en);
+  });
+
+  it('keeps a line for a field no approver fills in', (): void => {
+    const foreign =
+      'workflow.edges.edge_manager_fill.data.condition reads formData.amount before an approver fills it in';
+
+    expect(readWorkflowLintMessage(foreign, readDefinition)).toBe(foreign);
+  });
+
+  it('keeps a line whose edge leaves a node outside the definition', (): void => {
+    const foreign = early('workflow.edges.edge_ghost_source.data.condition');
+
+    expect(readWorkflowLintMessage(foreign, readDefinition)).toBe(foreign);
+  });
+
+  it('keeps a line that names an edge or node outside the definition', (): void => {
+    const foreign = [
+      early('workflow.edges.edge_9.data.condition'),
+      early('workflow.nodes.userTask_9.data.entryCondition'),
+    ].join('; ');
+
+    expect(readWorkflowLintMessage(foreign, readDefinition)).toBe(foreign);
+  });
+
+  it('does not throw on drafts whose nodes or edges cannot be read', (): void => {
+    const line = early('workflow.nodes.serviceTask_a.data.action.payload');
+    const badDraft = {
+      edges: [null, 7, { id: 'edge_x' }],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: {
+            fieldPermissions: [
+              { editable: true, fieldPath: 'invoiceKind', visible: true },
+            ],
+          },
+          id: 'userTask_a',
+          position: { x: 0, y: 0 },
+          type: 'userTask',
+        },
+        { id: 'serviceTask_a', position: { x: 0, y: 0 }, type: 'serviceTask' },
+        {
+          data: { action: 'NOTIFY' },
+          id: 'serviceTask_b',
+          position: { x: 0, y: 0 },
+          type: 'serviceTask',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+
+    expect(readWorkflowLintMessage(line, badDraft)).toBe(line);
+  });
+});

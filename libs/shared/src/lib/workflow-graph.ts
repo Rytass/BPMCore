@@ -96,6 +96,8 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `formData.${fieldKey} is filled in by an approver, so it cannot be a file upload field`,
   approverFilledFieldFormRule: (fieldKey: string, rule: string): string =>
     `formData.${fieldKey} is filled in by an approver, so the form cannot set ${rule} on it`,
+  approverFilledFieldReadEarly: (label: string, fieldKey: string): string =>
+    `${label} reads formData.${fieldKey} before an approver fills it in`,
   approverFilledRequiredBoolean: (nodeId: string, fieldPath: string): string =>
     `workflow.nodes.${nodeId}.fieldPermissions cannot require the boolean field: ${fieldPath}`,
   approverFilledTableDataSourceColumn: (fieldKey: string): string =>

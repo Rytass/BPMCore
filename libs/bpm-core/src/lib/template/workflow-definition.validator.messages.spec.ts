@@ -148,6 +148,14 @@ describe('workflow lint message wording', (): void => {
     ).toBe(
       'workflow.nodes.n1.fieldPermissions cannot require the boolean field: taxFree',
     );
+    expect(
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
+        'workflow.edges.e1.data.condition',
+        'amount',
+      ),
+    ).toBe(
+      'workflow.edges.e1.data.condition reads formData.amount before an approver fills it in',
+    );
     expect(WORKFLOW_LINT_MESSAGES.noPathToEnd('n1')).toBe(
       'workflow.nodes.n1 does not have a path to an endEvent',
     );

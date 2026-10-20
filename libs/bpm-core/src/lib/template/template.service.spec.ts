@@ -1134,6 +1134,558 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('conditions that read an approver-filled field too early', (): void => {
+    const readEarlySchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'invoiceKind',
+          label: '發票種類',
+          options: [{ label: '二聯', value: 'B2C' }],
+          required: false,
+          type: 'select',
+        },
+        {
+          fieldKey: 'invoiceKindNote',
+          label: '發票種類備註',
+          required: false,
+          type: 'text',
+        },
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+      ],
+      schemaVersion: 1,
+    };
+
+    type Json = Readonly<Record<string, unknown>>;
+
+    const node = (id: string, type: string, data: Json = {}): Json => ({
+      data: { label: id, ...data },
+      id,
+      position: { x: 0, y: 0 },
+      type,
+    });
+    const startNode = node('start', 'startEvent');
+    const endNode = (id = 'end'): Json =>
+      node(id, 'endEvent', { endState: 'APPROVED' });
+    const taskNode = (id: string, data: Json = {}): Json =>
+      node(id, 'userTask', {
+        allowAddSigner: false,
+        allowReject: true,
+        allowTransfer: true,
+        approverResolver: {
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        decisionPolicy: { type: 'SINGLE' },
+        returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+        ...data,
+      });
+    // The approver fills in `invoiceKind` here.
+    const fillerNode = (id: string, data: Json = {}): Json =>
+      taskNode(id, {
+        fieldPermissions: [
+          { editable: true, fieldPath: 'invoiceKind', visible: true },
+        ],
+        ...data,
+      });
+    const gatewayNode = (id: string, direction: 'join' | 'split'): Json =>
+      node(id, 'exclusiveGateway', { direction });
+    const parallelNode = (id: string, direction: 'join' | 'split'): Json =>
+      node(id, 'parallelGateway', { direction });
+    const edge = (
+      id: string,
+      source: string,
+      target: string,
+      data: Json = {},
+    ): Json => ({ data, id, source, target, type: 'smoothstep' });
+    const workflow = (
+      nodes: readonly Json[],
+      edges: readonly Json[],
+    ): WorkflowDefinition =>
+      ({
+        edges,
+        meta: { schemaVersion: 1 },
+        nodes,
+      }) as unknown as WorkflowDefinition;
+    const publishService = (
+      workflowDefinition: WorkflowDefinition,
+      initiatorPolicyCel: string | null = null,
+    ): TemplateService =>
+      createTableConditionPublishService({
+        initiatorPolicyCel,
+        schema: readEarlySchema,
+        workflowDefinition,
+      });
+    const publishError = async (
+      service: TemplateService,
+    ): Promise<string> => {
+      try {
+        await service.publishApprovalTemplateVersion('template-version-1');
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+
+      return '';
+    };
+    const readEarlyLine = (label: string, fieldKey = 'invoiceKind'): string =>
+      `${label} reads formData.${fieldKey} before an approver fills it in`;
+    const B2B = 'form.invoiceKind == "B2B"';
+
+    /** start → manager → finance (fills `invoiceKind`) → end. */
+    const linear = (edgeData: {
+      readonly afterFinance?: Json;
+      readonly beforeFinance?: Json;
+      readonly financeData?: Json;
+    }): WorkflowDefinition =>
+      workflow(
+        [
+          startNode,
+          taskNode('task_manager'),
+          fillerNode('task_finance', edgeData.financeData),
+          endNode(),
+        ],
+        [
+          edge('edge_start_manager', 'start', 'task_manager'),
+          edge(
+            'edge_manager_finance',
+            'task_manager',
+            'task_finance',
+            edgeData.beforeFinance,
+          ),
+          edge(
+            'edge_finance_end',
+            'task_finance',
+            'end',
+            edgeData.afterFinance,
+          ),
+        ],
+      );
+
+    it('refuses an edge condition read before the approver fills the field in', async (): Promise<void> => {
+      const service = publishService(linear({ beforeFinance: { condition: B2B } }));
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
+      );
+    });
+
+    it('accepts the same condition on an edge that leaves the filling node', async (): Promise<void> => {
+      const service = publishService(linear({ afterFinance: { condition: B2B } }));
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('refuses the bracket spelling formData["invoiceKind"] read early', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          beforeFinance: { condition: 'formData["invoiceKind"] == "B2B"' },
+        }),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
+      );
+    });
+
+    it('refuses a structured condition on the field placed before the filling node', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          beforeFinance: {
+            conditionFieldKey: 'invoiceKind',
+            conditionOperator: 'EQUALS',
+            conditionValue: 'B2B',
+          },
+        }),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine(
+          'workflow.edges.edge_manager_finance.data.conditionFieldKey',
+        ),
+      );
+    });
+
+    it('accepts a structured condition on the field after the filling node', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          afterFinance: {
+            conditionFieldKey: 'invoiceKind',
+            conditionOperator: 'EQUALS',
+            conditionValue: 'B2B',
+          },
+        }),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('reports one line when the CEL and the structured condition of an edge both read the field', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          beforeFinance: {
+            condition: B2B,
+            conditionFieldKey: 'invoiceKind',
+            conditionOperator: 'EQUALS',
+            conditionValue: 'B2B',
+          },
+        }),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
+      );
+    });
+
+    it('refuses the filling node entry condition when it reads its own field', async (): Promise<void> => {
+      const service = publishService(
+        linear({ financeData: { entryCondition: B2B } }),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.nodes.task_finance.data.entryCondition'),
+      );
+    });
+
+    it('refuses an EXPRESSION approver resolver of the filling node that reads its own field', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          financeData: {
+            approverResolver: {
+              expression: 'form.invoiceKind',
+              type: 'EXPRESSION',
+            },
+          },
+        }),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine(
+          'workflow.nodes.task_finance.data.approverResolver.expression',
+        ),
+      );
+    });
+
+    it('accepts an EXPRESSION approver resolver on the node after the filling node', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            fillerNode('task_finance'),
+            taskNode('task_after', {
+              approverResolver: {
+                expression: 'form.invoiceKind',
+                type: 'EXPRESSION',
+              },
+            }),
+            endNode(),
+          ],
+          [
+            edge('edge_start_finance', 'start', 'task_finance'),
+            edge('edge_finance_after', 'task_finance', 'task_after'),
+            edge('edge_after_end', 'task_after', 'end'),
+          ],
+        ),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('refuses a WEBHOOK payload and a SET_FORM_FIELD value read before the field is filled in', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            node('service_hook', 'serviceTask', {
+              action: {
+                payload: 'form.invoiceKind',
+                type: 'WEBHOOK',
+                url: 'https://example.com/hook',
+              },
+            }),
+            node('service_set', 'serviceTask', {
+              action: {
+                fieldPath: 'amount',
+                type: 'SET_FORM_FIELD',
+                value: 'size(form.invoiceKind)',
+              },
+            }),
+            fillerNode('task_finance'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_hook', 'start', 'service_hook'),
+            edge('edge_hook_set', 'service_hook', 'service_set'),
+            edge('edge_set_finance', 'service_set', 'task_finance'),
+            edge('edge_finance_end', 'task_finance', 'end'),
+          ],
+        ),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        [
+          readEarlyLine('workflow.nodes.service_hook.data.action.payload'),
+          readEarlyLine('workflow.nodes.service_set.data.action.value'),
+        ].join('; '),
+      );
+    });
+
+    it('refuses a NOTIFY recipients expression read before the field is filled in', async (): Promise<void> => {
+      const notify = node('notify_early', 'serviceTask', {
+        action: {
+          channels: ['IN_APP'],
+          recipients: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
+          type: 'NOTIFY',
+        },
+      });
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            taskNode('task_manager'),
+            notify,
+            fillerNode('task_finance'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_manager', 'start', 'task_manager'),
+            edge('edge_manager_notify', 'task_manager', 'notify_early'),
+            edge('edge_manager_finance', 'task_manager', 'task_finance'),
+            edge('edge_finance_end', 'task_finance', 'end'),
+          ],
+        ),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine(
+          'workflow.nodes.notify_early.data.action.recipients.expression',
+        ),
+      );
+    });
+
+    it('accepts the same NOTIFY recipients expression once the field has been filled in', async (): Promise<void> => {
+      const notify = node('notify_late', 'serviceTask', {
+        action: {
+          channels: ['IN_APP'],
+          recipients: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
+          type: 'NOTIFY',
+        },
+      });
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            fillerNode('task_finance'),
+            notify,
+            taskNode('task_after'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_finance', 'start', 'task_finance'),
+            edge('edge_finance_notify', 'task_finance', 'notify_late'),
+            edge('edge_finance_after', 'task_finance', 'task_after'),
+            edge('edge_after_end', 'task_after', 'end'),
+          ],
+        ),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    /** start → manager → finance → gateway → end / end_other. */
+    const gatewayAfterFinance = (
+      financeData: Json,
+      gatewayCondition: string,
+    ): WorkflowDefinition =>
+      workflow(
+        [
+          startNode,
+          taskNode('task_manager'),
+          fillerNode('task_finance', financeData),
+          gatewayNode('gateway_kind', 'split'),
+          endNode(),
+          endNode('end_other'),
+        ],
+        [
+          edge('edge_start_manager', 'start', 'task_manager'),
+          edge('edge_manager_finance', 'task_manager', 'task_finance'),
+          edge('edge_finance_gateway', 'task_finance', 'gateway_kind'),
+          edge('edge_gateway_end', 'gateway_kind', 'end', {
+            condition: gatewayCondition,
+          }),
+          edge('edge_gateway_other', 'gateway_kind', 'end_other', {
+            isDefault: true,
+          }),
+        ],
+      );
+
+    it('refuses a gateway that reads the field when the filling node can be skipped by its entry condition', async (): Promise<void> => {
+      const service = publishService(
+        gatewayAfterFinance({ entryCondition: 'form.amount > 1000' }, B2B),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_gateway_end.data.condition'),
+      );
+    });
+
+    it('accepts the same gateway when the filling node always runs', async (): Promise<void> => {
+      const service = publishService(gatewayAfterFinance({}, B2B));
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('accepts a read after a second, unconditional node that fills the same field in', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            fillerNode('task_first', { entryCondition: 'form.amount > 1000' }),
+            fillerNode('task_second'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_first', 'start', 'task_first'),
+            edge('edge_first_second', 'task_first', 'task_second'),
+            edge('edge_second_end', 'task_second', 'end', { condition: B2B }),
+          ],
+        ),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('still refuses a read between a skippable filling node and the unconditional one', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            fillerNode('task_first', { entryCondition: 'form.amount > 1000' }),
+            fillerNode('task_second'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_first', 'start', 'task_first'),
+            edge('edge_first_second', 'task_first', 'task_second', {
+              condition: B2B,
+            }),
+            edge('edge_second_end', 'task_second', 'end'),
+          ],
+        ),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_first_second.data.condition'),
+      );
+    });
+
+    it('conservatively refuses a read after a parallel join when only one branch goes through the filling node', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            parallelNode('split', 'split'),
+            fillerNode('task_finance'),
+            taskNode('task_other'),
+            parallelNode('join', 'join'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_split', 'start', 'split'),
+            edge('edge_split_finance', 'split', 'task_finance'),
+            edge('edge_split_other', 'split', 'task_other'),
+            edge('edge_finance_join', 'task_finance', 'join'),
+            edge('edge_other_join', 'task_other', 'join'),
+            edge('edge_join_end', 'join', 'end', { condition: B2B }),
+          ],
+        ),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.edges.edge_join_end.data.condition'),
+      );
+    });
+
+    it('does not hang on a workflow with a cycle, and still reports the cycle and the early read', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            taskNode('task_manager'),
+            taskNode('task_back'),
+            fillerNode('task_finance'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_manager', 'start', 'task_manager'),
+            edge('edge_manager_back', 'task_manager', 'task_back'),
+            edge('edge_back_manager', 'task_back', 'task_manager'),
+            edge('edge_manager_finance', 'task_manager', 'task_finance', {
+              condition: B2B,
+            }),
+            edge('edge_finance_end', 'task_finance', 'end'),
+          ],
+        ),
+      );
+      const lines = (await publishError(service)).split('; ');
+
+      expect(lines).toEqual(
+        expect.arrayContaining([
+          readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
+        ]),
+      );
+      expect(
+        lines.some((line) => line.startsWith('workflow contains a cycle')),
+      ).toBe(true);
+    });
+
+    it('does not mistake a field with the same prefix for the approver-filled one', async (): Promise<void> => {
+      const service = publishService(
+        linear({
+          beforeFinance: {
+            condition: 'form.invoiceKindNote == "x"',
+            conditionFieldKey: 'invoiceKindNote',
+            conditionOperator: 'EQUALS',
+            conditionValue: 'x',
+          },
+        }),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('leaves a field that no approver fills in alone', async (): Promise<void> => {
+      const service = publishService(
+        linear({ beforeFinance: { condition: 'form.amount > 1000' } }),
+      );
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('does not read the initiator policy as a workflow condition', async (): Promise<void> => {
+      const service = publishService(linear({}), 'form.invoiceKind == "B2B"');
+
+      await expect(publishError(service)).resolves.not.toContain(
+        'before an approver fills it in',
+      );
+    });
+  });
+
   it('rejects publishing a webhook whose endpoint is not registered', async (): Promise<void> => {
     const service = createWebhookPublishService(
       new WorkflowWebhookService(

@@ -32,6 +32,10 @@ interface WorkflowLintCopy {
     fieldKey: string,
     ruleLabel: string,
   ) => string;
+  readonly approverFilledFieldReadEarly: (
+    location: string,
+    fieldKey: string,
+  ) => string;
   readonly approverFilledFormRuleLabels: Readonly<
     Record<ApproverFilledFormRule, string>
   >;
@@ -73,6 +77,7 @@ interface WorkflowLintCopy {
   readonly nodeTypeLabels: ReadonlyMap<string, string>;
   readonly notifyOutgoingEdge: (name: string) => string;
   readonly parallelJoinIncomingEdges: (name: string) => string;
+  readonly readEarlyLocations: ReadEarlyLocationCopy;
   readonly setFormFieldApproverFilled: (
     name: string,
     fieldKey: string,
@@ -80,6 +85,17 @@ interface WorkflowLintCopy {
   readonly startEventCount: string;
   readonly unknownNodeType: string;
   readonly unreachableNode: (name: string) => string;
+}
+
+// Where a condition that reads an approver-filled field too early sits, named
+// the way the canvas names it. Each takes the display name of the node the
+// condition belongs to (for an edge, the node it leaves).
+interface ReadEarlyLocationCopy {
+  readonly approverExpression: (name: string) => string;
+  readonly edge: (name: string) => string;
+  readonly entryCondition: (name: string) => string;
+  readonly notifyRecipients: (name: string) => string;
+  readonly systemExpression: (name: string) => string;
 }
 
 // Node types are looked up in a Map, not an object literal: the lint only
@@ -99,6 +115,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `The field "${fieldKey}" is filled in by an approver, so it cannot be an attachment (附件) field.`,
     approverFilledFieldFormRule: (fieldKey, ruleLabel): string =>
       `The field "${fieldKey}" is filled in by an approver, so the form cannot set ${ruleLabel} on it.`,
+    approverFilledFieldReadEarly: (location, fieldKey): string =>
+      `${location} reads the field "${fieldKey}" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.`,
     approverFilledFormRuleLabels: {
       defaultValue: '"Default value" (預設值)',
       hidden: '"Store only, not shown" (只存不顯示)',
@@ -152,6 +170,18 @@ const WORKFLOW_LINT_COPY: Readonly<
       `The notify node "${name}" cannot have outgoing connections (it only sends a notice; the flow does not continue from it). Delete the connection leaving it.`,
     parallelJoinIncomingEdges: (name): string =>
       `The parallel join "${name}" needs at least two incoming connections.`,
+    readEarlyLocations: {
+      approverExpression: (name): string =>
+        `The approver expression (簽核人運算式) of the approval node "${name}"`,
+      edge: (name): string =>
+        `The condition on the connection leaving "${name}"`,
+      entryCondition: (name): string =>
+        `The entry condition (進入條件) of the node "${name}"`,
+      notifyRecipients: (name): string =>
+        `The recipients expression of the notify node "${name}"`,
+      systemExpression: (name): string =>
+        `The expression of the system node "${name}"`,
+    },
     setFormFieldApproverFilled: (name, fieldKey): string =>
       `The system node "${name}" cannot write the field "${fieldKey}", which an approver fills in.`,
     startEventCount: 'The flow needs exactly one "Start" (開始) node.',
@@ -166,6 +196,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `欄位「${fieldKey}」由簽核人補填，不能是「附件」欄位。`,
     approverFilledFieldFormRule: (fieldKey, ruleLabel): string =>
       `欄位「${fieldKey}」由簽核人補填，表單不能設定${ruleLabel}。`,
+    approverFilledFieldReadEarly: (location, fieldKey): string =>
+      `${location}在簽核人補填「${fieldKey}」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。`,
     approverFilledFormRuleLabels: {
       defaultValue: '「預設值」',
       hidden: '「只存不顯示」',
@@ -214,6 +246,13 @@ const WORKFLOW_LINT_COPY: Readonly<
       `知會節點「${name}」不能往下接連線（知會只負責通知，流程不會從它繼續）。請刪除從它拉出的連線。`,
     parallelJoinIncomingEdges: (name): string =>
       `並行處理「${name}」至少要有兩條連線匯入。`,
+    readEarlyLocations: {
+      approverExpression: (name): string => `節點「${name}」的簽核人運算式`,
+      edge: (name): string => `從「${name}」出發的連線條件`,
+      entryCondition: (name): string => `節點「${name}」的進入條件`,
+      notifyRecipients: (name): string => `知會節點「${name}」的通知對象運算式`,
+      systemExpression: (name): string => `系統節點「${name}」的運算式`,
+    },
     setFormFieldApproverFilled: (name, fieldKey): string =>
       `系統節點「${name}」不能寫入由簽核人補填的欄位「${fieldKey}」。`,
     startEventCount: '流程必須有一個「開始」節點，而且只能有一個。',
@@ -317,9 +356,9 @@ function readWorkflowLintTranslations(
     ([node, index]): readonly Translation[] =>
       readNodeTranslations(node, index, copy),
   );
-  const edgeTranslations = edges
-    .filter(isReadableEdge)
-    .flatMap((edge): readonly Translation[] => {
+  const readableEdges = edges.filter(isReadableEdge);
+  const edgeTranslations = readableEdges.flatMap(
+    (edge): readonly Translation[] => {
       const source = nodesById.get(edge.source);
 
       return source
@@ -330,7 +369,8 @@ function readWorkflowLintTranslations(
             ],
           ]
         : [];
-    });
+    },
+  );
 
   return [
     [WORKFLOW_LINT_MESSAGES.startEventCount(), copy.startEventCount],
@@ -339,6 +379,12 @@ function readWorkflowLintTranslations(
     ...edgeTranslations,
     ...readApproverFilledFieldTranslations(
       indexedNodes.map(([node]) => node),
+      copy,
+    ),
+    ...readApproverFilledReadEarlyTranslations(
+      indexedNodes.map(([node]) => node),
+      readableEdges,
+      nodesById,
       copy,
     ),
   ];
@@ -353,15 +399,7 @@ function readApproverFilledFieldTranslations(
   nodes: readonly WorkflowNode[],
   copy: WorkflowLintCopy,
 ): readonly Translation[] {
-  const fieldKeys = new Set(
-    nodes.flatMap((node): readonly string[] =>
-      node.type === 'userTask' && isRecord(node.data)
-        ? [...readNodeEditableFieldKeys(node)]
-        : [],
-    ),
-  );
-
-  return [...fieldKeys].flatMap((fieldKey): readonly Translation[] => [
+  return [...readEditableFieldKeys(nodes)].flatMap((fieldKey): readonly Translation[] => [
     ...APPROVER_FILLED_FORM_RULES.map((rule): Translation => [
       WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
       copy.approverFilledFieldFormRule(
@@ -382,6 +420,137 @@ function readApproverFilledFieldTranslations(
       copy.approverFilledTableDataSourceColumn(fieldKey),
     ],
   ]);
+}
+
+function readEditableFieldKeys(
+  nodes: readonly WorkflowNode[],
+): ReadonlySet<string> {
+  return new Set(
+    nodes.flatMap((node): readonly string[] =>
+      node.type === 'userTask' && isRecord(node.data)
+        ? [...readNodeEditableFieldKeys(node)]
+        : [],
+    ),
+  );
+}
+
+/**
+ * The "read before an approver fills it in" lines name a condition by where it
+ * sits: an edge by the node it leaves, an expression by its node. Each is
+ * built for every approver-filled field and only the ones the backend wrote
+ * are ever matched. A node or edge that cannot be read adds none.
+ */
+function readApproverFilledReadEarlyTranslations(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+  nodesById: ReadonlyMap<string, WorkflowNode>,
+  copy: WorkflowLintCopy,
+): readonly Translation[] {
+  return [...readEditableFieldKeys(nodes)].flatMap(
+    (fieldKey): readonly Translation[] => [
+      ...nodes.flatMap(
+        (node): readonly Translation[] =>
+          readNodeReadEarlyLocations(node, copy).map(
+            ([label, location]): Translation => [
+              WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
+                label,
+                fieldKey,
+              ),
+              copy.approverFilledFieldReadEarly(location, fieldKey),
+            ],
+          ),
+      ),
+      ...edges.flatMap((edge): readonly Translation[] => {
+        const source = nodesById.get(edge.source);
+
+        return source
+          ? [
+              `workflow.edges.${edge.id}.data.condition`,
+              `workflow.edges.${edge.id}.data.conditionFieldKey`,
+            ].map(
+              (label): Translation => [
+                WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
+                  label,
+                  fieldKey,
+                ),
+                copy.approverFilledFieldReadEarly(
+                  copy.readEarlyLocations.edge(readNodeName(source, copy)),
+                  fieldKey,
+                ),
+              ],
+            )
+          : [];
+      }),
+    ],
+  );
+}
+
+// [label the backend wrote, where it sits] for each expression a node can hold
+// that is evaluated when the node is reached. The labels are the ones
+// `readNodeConditionExpressions` and the NOTIFY recipients read produce.
+function readNodeReadEarlyLocations(
+  node: WorkflowNode,
+  copy: WorkflowLintCopy,
+): readonly (readonly [string, string])[] {
+  const data: unknown = node.data;
+
+  if (!isRecord(data)) {
+    return [];
+  }
+
+  const name = readNodeName(node, copy);
+  const locations = copy.readEarlyLocations;
+  const prefix = `workflow.nodes.${node.id}.data`;
+  const entry: readonly (readonly [string, string])[] = [
+    [`${prefix}.entryCondition`, locations.entryCondition(name)],
+  ];
+
+  if (node.type === 'userTask') {
+    const resolver = data['approverResolver'];
+
+    return [
+      ...entry,
+      ...(isRecord(resolver) && resolver['type'] === 'EXPRESSION'
+        ? ([
+            [
+              `${prefix}.approverResolver.expression`,
+              locations.approverExpression(name),
+            ],
+          ] as const)
+        : []),
+    ];
+  }
+
+  if (node.type !== 'serviceTask') {
+    return [];
+  }
+
+  const action = data['action'];
+  const actionType = isRecord(action) ? action['type'] : undefined;
+
+  if (actionType === 'WEBHOOK') {
+    return [
+      ...entry,
+      [`${prefix}.action.payload`, locations.systemExpression(name)],
+    ];
+  }
+
+  if (actionType === 'SET_FORM_FIELD') {
+    return [
+      ...entry,
+      [`${prefix}.action.value`, locations.systemExpression(name)],
+    ];
+  }
+
+  return actionType === 'NOTIFY'
+    ? [
+        ...entry,
+        [
+          `${prefix}.action.recipients.expression`,
+          locations.notifyRecipients(name),
+        ],
+      ]
+    : entry;
 }
 
 function readNodeTranslations(
