@@ -80,9 +80,9 @@ overrides:
   'multer': '^2.3.0'
   # Kept to one copy so the eslint config's older next does not become the
   # version bpm-core-react's peer resolves against. A `~` range, not `^`,
-  # because the root declaration pins the 16.3 minor on purpose; `^` here
-  # would override that and pull an unverified 16.4. Patches still flow.
-  'next': '~16.3.6'
+  # because the root declaration pins the 16.4 minor on purpose; `^` here
+  # would override that and pull an unverified 16.5. Patches still flow.
+  'next': '~16.4.2'
   'nodemailer': '^10.1.0'
   # The one deliberate exact pin, and it mirrors react-pdf's own: react-pdf
   # depends on `pdfjs-dist` exactly (6.3.289 for react-pdf 11), while
