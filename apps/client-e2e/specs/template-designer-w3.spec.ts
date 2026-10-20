@@ -1450,7 +1450,10 @@ async function mockTemplateGraphQl(
       return;
     }
 
-    if (query.includes('query AdminOrganizationDashboard')) {
+    if (
+      query.includes('query AdminOrganizationDashboard') ||
+      query.includes('query OrganizationDirectory')
+    ) {
       await fulfillGraphQl(route, readOrganizationDashboardData());
       return;
     }

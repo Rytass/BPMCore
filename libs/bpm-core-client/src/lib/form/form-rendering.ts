@@ -187,14 +187,11 @@ function readFirstInvalidFieldKey(
   const errorKeys = Object.keys(errors);
 
   return (
-    fields
-      .flatMap((field) =>
-        errorKeys.filter(
-          (key) =>
-            key === field.fieldKey || key.startsWith(`${field.fieldKey}[`),
-        ),
-      )
-      .at(0) ?? null
+    fields.flatMap((field) =>
+      errorKeys.filter(
+        (key) => key === field.fieldKey || key.startsWith(`${field.fieldKey}[`),
+      ),
+    )[0] ?? null
   );
 }
 
@@ -259,7 +256,9 @@ export function createFormTableRow(
   return columns.reduce<FormTableRowValue>((row, column) => {
     const value = readInitialFormTableCellValue(column);
 
-    return typeof value === 'undefined' ? row : { ...row, [column.fieldKey]: value };
+    return typeof value === 'undefined'
+      ? row
+      : { ...row, [column.fieldKey]: value };
   }, {});
 }
 
