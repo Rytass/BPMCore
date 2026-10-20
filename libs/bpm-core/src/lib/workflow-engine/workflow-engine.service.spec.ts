@@ -10503,6 +10503,81 @@ describe('WorkflowEngineService', () => {
     ).toBe(false);
   });
 
+  it('reopens the origin task as a normal task, so a filling node still asks its approver for the form', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.COMPLETED,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          createdByMemberId: 'member-requester',
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+        fieldPermissions: [
+          {
+            editable: true,
+            fieldPath: 'financeItems',
+            required: true,
+            visible: true,
+          },
+        ],
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    const reopened = readTaskAssignedTo(fixture, 'member-finance');
+    const notified = jest
+      .mocked(fixture.notificationService.createTaskAssignedNotification)
+      .mock.calls.map(([input]) => input)
+      .filter((input) => input.task.id === reopened.id);
+
+    // The notification service turns this into `requiresForm` (non-ad-hoc task
+    // on a node with an editable field), so the reopened task has to reach it
+    // as a normal task.
+    expect(notified).toHaveLength(1);
+    expect(notified[0].task.isAdhoc).not.toBe(true);
+    expect(notified[0].node.data.fieldPermissions).toEqual([
+      expect.objectContaining({ editable: true, fieldPath: 'financeItems' }),
+    ]);
+  });
+
   it('returns a rejected pre-approval to whoever holds the origin task after a transfer', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [
