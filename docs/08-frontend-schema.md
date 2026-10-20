@@ -602,13 +602,13 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 1. 取 advisory lock 後重讀 task。
 2. `formDataJson` 只能搭配 `APPROVED`、只能來自非加簽任務，每個鍵必須是**本節點 `editable`** 的欄位。
 3. 帶了指紋而與目前 `formData` 不同 ⇒ `ConflictException`（防並行分支或 `SET_FORM_FIELD` 在畫面打開後改過值）。
-4. 合併進 `instance.formData`，**先儲存、同步回 `instance`，才簽章與往下推進**：簽章涵蓋補填值、
-   後面的閘道讀得到補填值、補填那關就是最後一關時結案也不會把舊值寫回。
-5. 非加簽任務、`APPROVED`、本節點有任何 `editable` 欄位 ⇒ **一律驗證**，不論這次有沒有帶
+4. 非加簽任務、`APPROVED`、本節點有任何 `editable` 欄位 ⇒ **一律驗證**（對合併後的資料），不論這次有沒有帶
    `formDataJson`（host 預填了表格、財務什麼都沒改直接核准，也要被擋）：表格列形狀、欄必填、`minRows`、
    成員值形狀，加上本節點標 `required` 的欄位不得為空。「空」＝`undefined`／`null`／trim 後為空字串／
    空陣列（與送出同語意；`false`、`0` 不算空）。引擎沒有一般欄位的型別檢查（`minimum`／`maxLength`
    是前端提示），這裡也沒有新增。
+5. 驗證通過、且有鍵真的變了，才把合併結果**先儲存、同步回 `instance`，再簽章與往下推進**：簽章涵蓋補填值、
+   後面的閘道讀得到補填值、補填那關就是最後一關時結案也不會把舊值寫回。
 6. `TASK_DECIDED` 的 payload 加 `changedFieldKeys`（排序過的鍵名，**不含值**，沒變更就不加）。不放值：
    host 可能把 `TASK_DECIDED` 原樣推給第三方。沒有新增 `ActivityLogEventType`。
 
@@ -620,8 +620,8 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 #### 錯誤表一：`decideTask` 新增的拒絕
 
-訊息是穩定契約（host 的 server-to-server 核准會遇到，需要轉譯）。依檢查順序列出；一個請求同時踩到
-好幾條時，**不要依賴先回哪一條**。
+訊息是穩定契約（host 的 server-to-server 核准會遇到，需要轉譯）。一個請求同時踩到好幾條時，
+**不要依賴先回哪一條**（含它們與引擎既有拒絕之間的先後，以及只在 GraphQL mutation 層檢查的那一條）。
 
 | 情境 | 例外 | 訊息 |
 | --- | --- | --- |
@@ -705,6 +705,13 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 - 成員委派的 `scopeConditionCel` 不在範本內，這個檢查管不到：引用補填欄位屬已知限制。
 - 已知限制：判斷是正則比對，不認得 raw／跳脫字串當鍵（`form[r"x"]`、`form["\x78"]`）與可選選取
   （`form.?x`）；字串字面值剛好寫成 `form.x`、或 `a. form.x` 會被當成讀取（只會更嚴，不會漏擋已認得的寫法）。
+- 已知限制：NOTIFY 的 webhook 參數綁定若用 `from.kind === 'FIELD'` 指向補填欄位，而該 NOTIFY 節點在補填節點
+  之前就被走到，參數解析為沒有值；參數宣告為必填時，這筆 delivery 會被記成 `FAILED`
+  （`workflow-webhook-enqueue.ts` 的 `resolveParameters`）。早讀檢查不看 webhook 綁定。這類參數只綁在
+  補填節點**之後**的 NOTIFY 節點。
+- 已知限制：重送時，BPM 的重送編輯狀態驗證申請人欄位用的資料不含已存的補填值，server 驗證的卻是疊回補填值
+  之後的資料。申請人欄位的 `requiredWhen`／`visibleWhen` 若引用補填欄位，可能在 client 過關、被 server 拒絕。
+  表單層規則的發布檢查只管設在補填欄位自己身上的規則，管不到這個方向。申請人欄位的規則不要依賴補填欄位。
 
 ### 8.7 給 host 的注意
 
