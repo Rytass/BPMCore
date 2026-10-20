@@ -1066,6 +1066,7 @@ describe('WorkflowEngineService', () => {
     const createDecideFixture = (
       options: {
         readonly formData?: Readonly<Record<string, unknown>>;
+        readonly formSchema?: FormDefinitionSchema;
         readonly task?: Partial<TaskEntity>;
         readonly token?: Partial<WorkflowTokenEntity>;
         readonly workflow?: WorkflowDefinition;
@@ -1086,7 +1087,9 @@ describe('WorkflowEngineService', () => {
         }),
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
         processFormData: options.formData ?? STORED_FORM_DATA,
-        processFormDefinitionSnapshot: { schema: createFinanceTableFormSchema() },
+        processFormDefinitionSnapshot: {
+          schema: options.formSchema ?? createFinanceTableFormSchema(),
+        },
         processWorkflowSnapshot:
           options.workflow ?? createFieldPermissionWorkflow(),
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
@@ -1449,6 +1452,257 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance?.state).toBe(
         ApprovalInstanceStateEnum.APPROVED,
       );
+    });
+
+    describe('field permissions: node validation', () => {
+      const FILLED_ROW = [{ seq: 1, taxAmount: 5 }] as const;
+      const financeItemsPermission: FieldPermission = {
+        editable: true,
+        fieldPath: 'financeItems',
+        required: true,
+        visible: true,
+      };
+      const requiredInvoiceKindPermission: FieldPermission = {
+        editable: true,
+        fieldPath: 'invoiceKind',
+        required: true,
+        visible: true,
+      };
+      const requiredInvoiceKindWorkflow = (): WorkflowDefinition =>
+        createFieldPermissionWorkflow({
+          financeFieldPermissions: [
+            financeItemsPermission,
+            requiredInvoiceKindPermission,
+          ],
+        });
+      const reviewerFormSchema = (): FormDefinitionSchema => {
+        const base = createFinanceTableFormSchema();
+
+        return {
+          ...base,
+          fields: [
+            ...base.fields,
+            {
+              fieldKey: 'reviewer',
+              label: '覆核人',
+              required: false,
+              type: 'member',
+            },
+          ],
+        };
+      };
+      const reviewerWorkflow = (): WorkflowDefinition =>
+        createFieldPermissionWorkflow({
+          financeFieldPermissions: [
+            financeItemsPermission,
+            requiredInvoiceKindPermission,
+            { editable: true, fieldPath: 'reviewer', visible: true },
+          ],
+        });
+      const sequentialFixture = (
+        formData: Readonly<Record<string, unknown>>,
+      ): ServiceFixture =>
+        createSequentialDecisionFixture({
+          fieldPermissions: [financeItemsPermission],
+          processFormData: formData,
+          processFormDefinitionSnapshot: {
+            schema: createFinanceTableFormSchema(),
+          },
+        });
+      const decideSequentially = (
+        fixture: ServiceFixture,
+        input: Partial<DecideTaskInput> = {},
+      ): Promise<TaskDecisionEntity> =>
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-a',
+          taskId: 'task-seq',
+          ...input,
+        });
+
+      it('refuses an approval that leaves a required approver-filled field empty', async (): Promise<void> => {
+        const fixture = createDecideFixture({ formData: { amount: 10 } });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('refuses an approval on a host-prefilled table whose required cells are empty', async (): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.financeItems[0].taxAmount is required',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('treats a whitespace-only required text as empty', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: {
+            amount: 10,
+            financeItems: FILLED_ROW,
+            invoiceKind: '  ',
+          },
+          workflow: requiredInvoiceKindWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('validates the merged form data, not just what the approver sent', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          workflow: requiredInvoiceKindWorkflow(),
+        });
+
+        // The sent key is valid on its own; the required key left out is not.
+        await expectRejection(
+          decide(fixture, {
+            formDataJson: '{"financeItems":[{"seq":2,"taxAmount":7}]}',
+          }),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('accepts the approval once the filling node completes the table', async (): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        const decision = await decide(fixture, { formDataJson: FILLED_ITEMS });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance?.formData.financeItems).toEqual(
+          FILLED_ROW,
+        );
+      });
+
+      it('accepts an approval that sends nothing when everything is already filled', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
+
+      it('reports a missing required field before a malformed member and a short table', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, reviewer: { id: 'member-1' } },
+          formSchema: reviewerFormSchema(),
+          workflow: reviewerWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+      });
+
+      it('reports a malformed member before a short table', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: {
+            amount: 10,
+            invoiceKind: 'B2B',
+            reviewer: { id: 'member-1' },
+          },
+          formSchema: reviewerFormSchema(),
+          workflow: reviewerWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.reviewer must be a member id',
+        );
+      });
+
+      it('does not hold an ad-hoc task on the filling node to required fields', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10 },
+          task: {
+            adhocOriginTaskId: 'task-0',
+            adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+            isAdhoc: true,
+          },
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('validates every SEQUENTIAL candidate, starting with the first', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 });
+
+        await expectRejection(
+          decideSequentially(fixture),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lets a SEQUENTIAL candidate approve after filling in the table', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 });
+
+        const decision = await decideSequentially(fixture, {
+          formDataJson: FILLED_ITEMS,
+        });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance?.formData.financeItems).toEqual(
+          FILLED_ROW,
+        );
+      });
+
+      it('skips node validation on RETURNED and REJECTED', async (): Promise<void> => {
+        const returned = sequentialFixture({ amount: 10 });
+        const rejected = sequentialFixture({ amount: 10 });
+
+        await decideSequentially(returned, {
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: '請補件',
+        });
+        await decideSequentially(rejected, {
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: '不同意',
+        });
+
+        expect(returned.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.RETURNED,
+        );
+        expect(rejected.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.REJECTED,
+        );
+      });
+
+      it('leaves approvals on nodes without fieldPermissions unvalidated as before', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10 },
+          workflow: createFieldPermissionWorkflow({
+            financeFieldPermissions: [],
+          }),
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
     });
   });
 
@@ -15365,6 +15619,7 @@ function createLinearUserTaskWorkflow({
   },
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
+  fieldPermissions,
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -15377,6 +15632,7 @@ function createLinearUserTaskWorkflow({
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldPermissions?: readonly FieldPermission[];
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -15415,6 +15671,7 @@ function createLinearUserTaskWorkflow({
           label: '財務簽核',
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
+          ...(fieldPermissions ? { fieldPermissions } : {}),
           ...(slaDuration
             ? {
                 sla: {
@@ -16017,7 +16274,10 @@ function createSequentialDecisionFixture({
   approverResolver,
   candidateOverrides = {},
   excludeInitiator,
+  fieldPermissions,
   processAdhocDirectives,
+  processFormData,
+  processFormDefinitionSnapshot,
   submittedByMemberId,
   processMemberships,
   processPositions,
@@ -16029,7 +16289,10 @@ function createSequentialDecisionFixture({
     Record<string, Partial<TaskCandidateEntity>>
   >;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldPermissions?: readonly FieldPermission[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processFormData?: Readonly<Record<string, unknown>>;
+  readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly submittedByMemberId?: string | null;
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processPositions?: readonly PositionEntity[];
@@ -16057,6 +16320,8 @@ function createSequentialDecisionFixture({
     }),
     formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
     processAdhocDirectives,
+    processFormData,
+    processFormDefinitionSnapshot,
     processMemberships,
     processPositions,
     processTaskCandidates: memberIds.map((memberId, index) =>
@@ -16079,6 +16344,7 @@ function createSequentialDecisionFixture({
       approverResolver,
       decisionPolicy: { type: 'SEQUENTIAL' },
       excludeInitiator,
+      fieldPermissions,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
       slaDuration: 'PT2H',
     }),

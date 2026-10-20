@@ -1,9 +1,11 @@
 import { isUUID } from 'class-validator';
 import {
+  isFormDataValueEmpty,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeEditableFieldKeys,
+  readNodeRequiredFieldKeys,
 } from '@rytass/bpm-core-shared';
 import {
   FORM_TABLE_MAX_ROWS,
@@ -1193,6 +1195,24 @@ export class WorkflowEngineService {
                 )
                 .sort();
 
+        const mergedFormData = { ...instance.formData, ...filledFormData };
+
+        // Every approval at a node that lets its approver fill in fields is
+        // held to those fields, whether or not this request sent any: the host
+        // may have pre-filled a table the approver then leaves as is.
+        if (input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc) {
+          const nodeEditableFieldKeys = readNodeEditableFieldKeys(taskNode);
+
+          if (nodeEditableFieldKeys.size > 0) {
+            validateFilledFormFields(
+              readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+              mergedFormData,
+              nodeEditableFieldKeys,
+              readNodeRequiredFieldKeys(taskNode),
+            );
+          }
+        }
+
         if (filledFormData !== null && changedFieldKeys.length > 0) {
           // Merged into the shared `instance` before it is signed and before
           // the token moves on: the signature must cover the filled values, a
@@ -1200,7 +1220,7 @@ export class WorkflowEngineService {
           // this same object, which would write the old values back.
           const savedInstance = await instanceRepository.save({
             ...instance,
-            formData: { ...instance.formData, ...filledFormData },
+            formData: mergedFormData,
           });
 
           Object.assign(instance, savedInstance);
@@ -9390,6 +9410,101 @@ function validateSubmittedFormData(
       !isSubmittedFieldValuePresent(formData[field.fieldKey]),
   );
 
+  throwFirstFormDataFieldError({
+    missingFields,
+    // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
+    // is visible, so a hidden field still holding a value must be well-formed
+    // too. Whether a hidden field is *required* stays a visibility question
+    // above.
+    readMemberErrors: () =>
+      readSubmittedMemberValueErrors(
+        schema.fields.filter(
+          (field) =>
+            visibleFields.includes(field) ||
+            isSubmittedFieldValuePresent(formData[field.fieldKey]),
+        ),
+        formData,
+      ),
+    readTableErrors: () => [
+      ...visibleFields
+        .filter(isTableFieldDefinition)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            formData[field.fieldKey],
+            isSubmittedFormFieldRequired(field, schema.fields, formData),
+            deferredFieldKeys.has(field.fieldKey),
+          ),
+        ),
+      // A hidden table is not "visible", but its stored value still has to be
+      // a well-formed table under the row cap: only the required / minimum
+      // checks are skipped, since nobody can fill the table in.
+      ...schema.fields
+        .filter(isTableFieldDefinition)
+        .filter((field) => field.hidden === true)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            formData[field.fieldKey],
+            false,
+            true,
+          ),
+        ),
+    ],
+  });
+}
+
+/**
+ * What an approval at a node has to leave behind: every field the node lets the
+ * approver fill in is well-formed (a table is an array of well-formed rows with
+ * its required columns and minimum rows, a member value is a member id) and
+ * every one the node marks `required` is present. The messages are the submit
+ * ones: a host tells the two entry points apart by which call it made.
+ */
+function validateFilledFormFields(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+  fieldKeys: ReadonlySet<string>,
+  requiredFieldKeys: ReadonlySet<string>,
+): void {
+  const fields = schema.fields.filter((field) => fieldKeys.has(field.fieldKey));
+
+  throwFirstFormDataFieldError({
+    // Tables answer by row count, so like submit they stay out of this list.
+    missingFields: fields.filter(
+      (field) =>
+        !isTableFieldDefinition(field) &&
+        requiredFieldKeys.has(field.fieldKey) &&
+        isFormDataValueEmpty(readRowCellValue(formData, field.fieldKey)),
+    ),
+    readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
+    readTableErrors: () =>
+      fields
+        .filter(isTableFieldDefinition)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            readRowCellValue(formData, field.fieldKey),
+            requiredFieldKeys.has(field.fieldKey),
+          ),
+        ),
+  });
+}
+
+/**
+ * The shared tail of submit and approver-fill validation: a missing required
+ * field wins over a malformed member value, which wins over a table problem,
+ * and the later checks are only evaluated when the earlier ones pass.
+ */
+function throwFirstFormDataFieldError({
+  missingFields,
+  readMemberErrors,
+  readTableErrors,
+}: {
+  readonly missingFields: readonly FormFieldDefinition[];
+  readonly readMemberErrors: () => readonly string[];
+  readonly readTableErrors: () => readonly string[];
+}): void {
   if (missingFields.length > 0) {
     throw new BadRequestException(
       `Form data is missing required fields: ${missingFields
@@ -9398,48 +9513,13 @@ function validateSubmittedFormData(
     );
   }
 
-  // A `DYNAMIC_FORM` resolver reads a member value whether or not its field is
-  // visible, so a hidden field still holding a value must be well-formed too.
-  // Whether a hidden field is *required* stays a visibility question above.
-  const memberErrors = readSubmittedMemberValueErrors(
-    schema.fields.filter(
-      (field) =>
-        visibleFields.includes(field) ||
-        isSubmittedFieldValuePresent(formData[field.fieldKey]),
-    ),
-    formData,
-  );
+  const memberErrors = readMemberErrors();
 
   if (memberErrors.length > 0) {
     throw new BadRequestException(memberErrors.join('; '));
   }
 
-  const tableErrors = [
-    ...visibleFields
-      .filter(isTableFieldDefinition)
-      .flatMap((field) =>
-        validateSubmittedTableValue(
-          field,
-          formData[field.fieldKey],
-          isSubmittedFormFieldRequired(field, schema.fields, formData),
-          deferredFieldKeys.has(field.fieldKey),
-        ),
-      ),
-    // A hidden table is not "visible", but its stored value still has to be a
-    // well-formed table under the row cap: only the required / minimum checks
-    // are skipped, since nobody can fill the table in.
-    ...schema.fields
-      .filter(isTableFieldDefinition)
-      .filter((field) => field.hidden === true)
-      .flatMap((field) =>
-        validateSubmittedTableValue(
-          field,
-          formData[field.fieldKey],
-          false,
-          true,
-        ),
-      ),
-  ];
+  const tableErrors = readTableErrors();
 
   if (tableErrors.length > 0) {
     throw new BadRequestException(tableErrors.join('; '));
@@ -9829,19 +9909,7 @@ function parseFormConditionLiteral(value: string): string {
 }
 
 function isSubmittedFieldValuePresent(value: unknown): boolean {
-  if (typeof value === 'undefined' || value === null) {
-    return false;
-  }
-
-  if (typeof value === 'string') {
-    return value.trim().length > 0;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-
-  return true;
+  return !isFormDataValueEmpty(value);
 }
 
 function isNumberFormField(
