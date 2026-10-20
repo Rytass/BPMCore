@@ -1683,6 +1683,174 @@ describe('TemplateService', () => {
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
+    it('refuses a NOTIFY node whose entry condition reads the field before the filling node', async (): Promise<void> => {
+      const service = publishService(
+        workflow(
+          [
+            startNode,
+            node('notify_gated', 'serviceTask', {
+              action: {
+                channels: ['IN_APP'],
+                recipients: { memberIds: ['member-1'], type: 'DIRECT' },
+                type: 'NOTIFY',
+              },
+              entryCondition: B2B,
+            }),
+            taskNode('task_manager'),
+            fillerNode('task_finance'),
+            endNode(),
+          ],
+          [
+            edge('edge_start_notify', 'start', 'notify_gated'),
+            edge('edge_start_manager', 'start', 'task_manager'),
+            edge('edge_manager_finance', 'task_manager', 'task_finance'),
+            edge('edge_finance_end', 'task_finance', 'end'),
+          ],
+        ),
+      );
+
+      await expect(publishError(service)).resolves.toBe(
+        readEarlyLine('workflow.nodes.notify_gated.data.entryCondition'),
+      );
+    });
+
+    describe('on a draft whose shape is malformed', (): void => {
+      // A draft saved through the API or the AI toolset is not shape-checked,
+      // and every lint runs in the same publish pass: the read-early lint must
+      // leave the other lines to be reported, not throw.
+      const publishFailure = async (
+        service: TemplateService,
+      ): Promise<unknown> => {
+        try {
+          await service.publishApprovalTemplateVersion('template-version-1');
+        } catch (error) {
+          return error;
+        }
+
+        return undefined;
+      };
+
+      // start → manager → finance (fills `invoiceKind`) → end, with `extra`
+      // nodes and edges (start → extra) added.
+      const withExtra = (
+        extraNodes: readonly Json[],
+        extraEdges: readonly Json[],
+      ): WorkflowDefinition =>
+        workflow(
+          [
+            startNode,
+            taskNode('task_manager'),
+            fillerNode('task_finance'),
+            endNode(),
+            ...extraNodes,
+          ],
+          [
+            edge('edge_start_manager', 'start', 'task_manager'),
+            edge('edge_manager_finance', 'task_manager', 'task_finance'),
+            edge('edge_finance_end', 'task_finance', 'end'),
+            ...extraEdges,
+          ],
+        );
+      const notifyWith = (recipients: unknown): Json =>
+        node('notify_bad', 'serviceTask', {
+          action: {
+            channels: ['IN_APP'],
+            ...(recipients === undefined ? {} : { recipients }),
+            type: 'NOTIFY',
+          },
+        });
+      const toNotify = [edge('edge_manager_notify', 'task_manager', 'notify_bad')];
+
+      it.each([
+        [
+          'a NOTIFY node without recipients',
+          withExtra([notifyWith(undefined)], toNotify),
+          'workflow.nodes.notify_bad.action.recipients is required',
+        ],
+        [
+          'NOTIFY recipients that are not an object',
+          withExtra([notifyWith('everyone')], toNotify),
+          'workflow.nodes.notify_bad.action.recipients is required',
+        ],
+        [
+          'a conditionFieldKey that is not a string',
+          withExtra(
+            [],
+            [
+              edge('edge_manager_end', 'task_manager', 'end', {
+                conditionFieldKey: 42,
+                conditionOperator: 'EQUALS',
+                conditionValue: 'B2B',
+              }),
+            ],
+          ),
+          undefined,
+        ],
+        [
+          'a filling node whose approver resolver has no type',
+          workflow(
+            [
+              startNode,
+              fillerNode('task_finance', { approverResolver: {} }),
+              endNode(),
+            ],
+            [
+              edge('edge_start_finance', 'start', 'task_finance'),
+              edge('edge_finance_end', 'task_finance', 'end'),
+            ],
+          ),
+          undefined,
+        ],
+      ])(
+        'answers with the lint lines instead of throwing on %s',
+        async (_name, definition, expectedLine): Promise<void> => {
+          const failure = await publishFailure(publishService(definition));
+
+          // Only the shapes the earlier lints already survive are listed: a
+          // serviceTask without an action, an EXPRESSION recipients list
+          // without a string expression, a non-string CEL condition and an
+          // edge without data all throw inside the structural lint or the CEL
+          // lint, before this lint runs.
+          expect(failure).not.toBeInstanceOf(TypeError);
+
+          if (expectedLine !== undefined) {
+            expect(failure).toBeInstanceOf(BadRequestException);
+            expect(
+              (failure as BadRequestException).message.split('; '),
+            ).toContain(expectedLine);
+          }
+        },
+      );
+
+      it('still reports an early read next to the line for a NOTIFY node without recipients', async (): Promise<void> => {
+        const definition = workflow(
+          [
+            startNode,
+            taskNode('task_manager'),
+            fillerNode('task_finance'),
+            endNode(),
+            notifyWith(undefined),
+          ],
+          [
+            edge('edge_start_manager', 'start', 'task_manager'),
+            edge('edge_manager_finance', 'task_manager', 'task_finance', {
+              condition: B2B,
+            }),
+            edge('edge_finance_end', 'task_finance', 'end'),
+            ...toNotify,
+          ],
+        );
+        const lines = (await publishError(publishService(definition))).split(
+          '; ',
+        );
+
+        expect(lines.sort()).toEqual([
+          readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
+          'workflow.nodes.notify_bad.action.recipients is required',
+        ]);
+      });
+    });
+
     it('does not read the initiator policy as a workflow condition', async (): Promise<void> => {
       const service = publishService(linear({}), 'form.invoiceKind == "B2B"');
 

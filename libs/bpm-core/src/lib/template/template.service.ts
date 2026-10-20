@@ -21,6 +21,8 @@ import {
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
+  ApproverResolver,
+  ServiceAction,
   UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
@@ -1678,22 +1680,26 @@ function readReachableNodeIds(
   startNodeIds: readonly string[],
   edges: readonly WorkflowEdge[],
   blockedNodeIds: ReadonlySet<string>,
-  visited: ReadonlySet<string> = new Set<string>(),
 ): ReadonlySet<string> {
-  const fresh = [...new Set(startNodeIds)].filter(
-    (nodeId) => !visited.has(nodeId) && !blockedNodeIds.has(nodeId),
-  );
+  const walk = (
+    frontier: readonly string[],
+    visited: ReadonlySet<string>,
+  ): ReadonlySet<string> => {
+    const fresh = [...new Set(frontier)].filter(
+      (nodeId) => !visited.has(nodeId) && !blockedNodeIds.has(nodeId),
+    );
 
-  return fresh.length
-    ? readReachableNodeIds(
-        edges
-          .filter((edge) => fresh.includes(edge.source))
-          .map((edge) => edge.target),
-        edges,
-        blockedNodeIds,
-        new Set([...visited, ...fresh]),
-      )
-    : visited;
+    return fresh.length
+      ? walk(
+          edges
+            .filter((edge) => fresh.includes(edge.source))
+            .map((edge) => edge.target),
+          new Set([...visited, ...fresh]),
+        )
+      : visited;
+  };
+
+  return walk(startNodeIds, new Set<string>());
 }
 
 // The label of the one line an edge earns for `fieldKey`: the CEL condition
@@ -1702,7 +1708,10 @@ function readEdgeFieldReadLabels(
   edge: WorkflowEdge,
   fieldKey: string,
 ): readonly string[] {
-  const { condition, conditionFieldKey } = edge.data;
+  // A draft's edge may carry no `data` at all.
+  const data: WorkflowEdge['data'] | undefined = edge.data;
+  const condition: unknown = data?.condition;
+  const conditionFieldKey: unknown = data?.conditionFieldKey;
 
   if (typeof condition === 'string' && referencesFormField(condition, fieldKey)) {
     return [`workflow.edges.${edge.id}.data.condition`];
@@ -1721,13 +1730,18 @@ function readEdgeFieldReadLabels(
 function readNotifyRecipientsExpressions(
   node: WorkflowNode,
 ): readonly ExpressionSource[] {
-  if (node.type !== 'serviceTask' || node.data.action.type !== 'NOTIFY') {
+  // A draft is not shape-checked: the node may have no `action`, and a NOTIFY
+  // action may have no `recipients` (the structural lint reports that line).
+  const action: ServiceAction | undefined =
+    node.type === 'serviceTask' ? node.data?.action : undefined;
+
+  if (action?.type !== 'NOTIFY') {
     return [];
   }
 
-  const { recipients } = node.data.action;
+  const recipients: ApproverResolver | undefined = action.recipients;
 
-  return recipients.type === 'EXPRESSION'
+  return recipients?.type === 'EXPRESSION'
     ? [
         {
           expression: recipients.expression,
