@@ -1155,8 +1155,14 @@ write order; so does a multi-row INSERT whose rows landed on different pages.
 Rows of two transactions on the same instance are ordered by transaction
 start, which can differ from write order when one waited for the other.
 New rows are exact. Step 1 takes an `ACCESS EXCLUSIVE` lock on
-`activity_logs`; set `lock_timeout` if long transactions may be holding it.
-Run the migration in a transaction (`each` or `all`): in mode `none`, a row the
+`activity_logs`, and in a transaction that lock is held until commit — through
+the backfill, which rewrites every row, `SET NOT NULL`, which scans the table,
+and the unique index build. For that whole time nothing can read or write
+`activity_logs`, and every submit, decision and instance history read touches
+it, so they queue behind the migration or time out. Plan the run as downtime
+proportional to the table size, in a maintenance window, and set `lock_timeout`
+so step 1 gives up rather than queueing behind long transactions that already
+hold the table. Run the migration in a transaction (`each` or `all`): in mode `none`, a row the
 old version writes between the backfill and `SET NOT NULL` is `NULL` and fails
 that step, and because the column is added without `IF NOT EXISTS`, a rerun
 stops at step 1 until `seq` is dropped again.

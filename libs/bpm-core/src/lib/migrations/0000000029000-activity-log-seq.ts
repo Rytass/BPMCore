@@ -22,7 +22,12 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * differ from write order when one waited for the other's lock. New rows are
  * exact.
  *
- * Adding the column takes an ACCESS EXCLUSIVE lock on `activity_logs`. Run it
+ * Adding the column takes an ACCESS EXCLUSIVE lock on `activity_logs`, and in
+ * a transaction that lock is held until commit: through the backfill (which
+ * rewrites every row), `SET NOT NULL` (which scans the table) and the unique
+ * index build. Nothing can read or write `activity_logs` for that whole time,
+ * and every submit, decision and history read touches it, so plan the run as
+ * downtime that grows with the table, in a maintenance window. Run it
  * inside a transaction (the default) and before serving the new version: in
  * transaction mode `none`, a row written by the old version between the
  * backfill and `SET NOT NULL` is NULL and fails that step, and a rerun then
