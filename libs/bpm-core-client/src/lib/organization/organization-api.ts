@@ -80,6 +80,16 @@ export interface ResolvedManagerRecord {
   readonly memberId: string;
 }
 
+/**
+ * Every organization unit, position and membership: what the template
+ * designer needs to fill its approver pickers.
+ */
+export interface OrganizationDirectoryRecord {
+  readonly memberships: readonly MembershipRecord[];
+  readonly orgUnits: readonly OrgUnitRecord[];
+  readonly positions: readonly PositionRecord[];
+}
+
 interface OrganizationDashboardQueryData {
   readonly filteredManagerResolutions: readonly ManagerResolutionRecord[];
   readonly filteredMemberships: readonly MembershipRecord[];
@@ -359,6 +369,48 @@ export async function readOrganizationDashboard({
       positionPageSize,
       positionSearchText,
     },
+  );
+}
+
+/**
+ * Reads every organization unit, position and membership. Unlike
+ * `readOrganizationDashboard`, it sends only the three reads open to a
+ * template designer, so it works for a designer who is not an administrator.
+ */
+export async function readOrganizationDirectory(): Promise<OrganizationDirectoryRecord> {
+  return requestGraphQl<OrganizationDirectoryRecord>(
+    `query OrganizationDirectory {
+      orgUnits(all: true) {
+        code
+        createdAt
+        deletedAt
+        id
+        name
+        parentId
+        path
+        type
+        updatedAt
+      }
+      positions {
+        code
+        createdAt
+        id
+        level
+        name
+        updatedAt
+      }
+      memberships {
+        createdAt
+        effectiveFrom
+        effectiveTo
+        id
+        isPrimary
+        memberId
+        orgUnitId
+        positionId
+        updatedAt
+      }
+    }`,
   );
 }
 

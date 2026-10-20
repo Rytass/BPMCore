@@ -1,7 +1,6 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
-import { BPMAdminOnly, BPMDesignerOnly } from '../bpm-auth';
+import { BPMAdminOnly } from '../bpm-auth';
 import { ManagerResolutionEntity } from './manager-resolution.entity';
-import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
 import {
   ManagerResolutionScopeTypeEnum,
@@ -10,29 +9,23 @@ import {
 import { OrgUnitRetirementImpactObject } from './org-unit-retirement-impact.object';
 import { OrganizationSummaryObject } from './organization-summary.object';
 import { OrganizationService } from './organization.service';
-import { PositionEntity } from './position.entity';
 import { ResolvedManagerObject } from './resolved-manager.object';
 
 /**
- * Read-only organization queries.
+ * Read-only organization queries for the organization admin pages.
  *
- * The class is `@BPMDesignerOnly()` because the template designer and the
- * compose wizard (which embeds it) load the organization (units, positions,
- * memberships) to fill their approver pickers, and a designer is not
- * necessarily an administrator. Nest runs class-level and method-level guards
- * together, so a method can only be made *stricter* than the class: the
- * handlers that no designer page needs carry their own `@BPMAdminOnly()`.
- *
- * Every write that changes the organization stays in `OrganizationMutations`,
- * which is `@BPMAdminOnly()` as a whole class.
+ * Administrator-only as a whole class, so a query added here is closed to
+ * designers unless it is moved on purpose. The three reads the template
+ * designer needs live in `OrganizationDirectoryQueries` instead: Nest runs
+ * class-level and method-level guards together, so a method here cannot be
+ * opened wider than this class.
  */
 @Resolver()
-@BPMDesignerOnly()
+@BPMAdminOnly()
 export class OrganizationQueries {
   constructor(private readonly organizationService: OrganizationService) {}
 
   @Query(() => OrgUnitEntity)
-  @BPMAdminOnly()
   async orgUnit(
     @Args('id', { type: () => String }) id: string,
   ): Promise<OrgUnitEntity> {
@@ -43,35 +36,10 @@ export class OrganizationQueries {
     description:
       'What deleteOrgUnit would have to deal with: live child units (always blocking), and open memberships and ORG_UNIT manager rules (blocking unless a successor unit is given).',
   })
-  @BPMAdminOnly()
   async orgUnitRetirementImpact(
     @Args('id', { type: () => String }) id: string,
   ): Promise<OrgUnitRetirementImpactObject> {
     return this.organizationService.readOrgUnitRetirementImpact(id);
-  }
-
-  @Query(() => [OrgUnitEntity])
-  async orgUnits(
-    @Args('all', { nullable: true, type: () => Boolean })
-    all?: boolean | null,
-    @Args('page', { nullable: true, type: () => Int }) page?: number | null,
-    @Args('pageSize', { nullable: true, type: () => Int })
-    pageSize?: number | null,
-    @Args('parentId', { nullable: true, type: () => String })
-    parentId?: string | null,
-    @Args('searchText', { nullable: true, type: () => String })
-    searchText?: string | null,
-    @Args('type', { nullable: true, type: () => OrgUnitTypeEnum })
-    type?: OrgUnitTypeEnum | null,
-  ): Promise<readonly OrgUnitEntity[]> {
-    return this.organizationService.listOrgUnits({
-      all,
-      page,
-      pageSize,
-      parentId,
-      searchText,
-      type,
-    });
   }
 
   @Query(() => Int)
@@ -90,51 +58,12 @@ export class OrganizationQueries {
     });
   }
 
-  @Query(() => [PositionEntity])
-  async positions(
-    @Args('page', { nullable: true, type: () => Int }) page?: number | null,
-    @Args('pageSize', { nullable: true, type: () => Int })
-    pageSize?: number | null,
-    @Args('searchText', { nullable: true, type: () => String })
-    searchText?: string | null,
-  ): Promise<readonly PositionEntity[]> {
-    return this.organizationService.listPositions({
-      page,
-      pageSize,
-      searchText,
-    });
-  }
-
   @Query(() => Int)
   async positionCount(
     @Args('searchText', { nullable: true, type: () => String })
     searchText?: string | null,
   ): Promise<number> {
     return this.organizationService.countPositions({ searchText });
-  }
-
-  @Query(() => [MembershipEntity])
-  async memberships(
-    @Args('page', { nullable: true, type: () => Int }) page?: number | null,
-    @Args('pageSize', { nullable: true, type: () => Int })
-    pageSize?: number | null,
-    @Args('memberId', { nullable: true, type: () => String })
-    memberId?: string,
-    @Args('orgUnitId', { nullable: true, type: () => String })
-    orgUnitId?: string,
-    @Args('positionId', { nullable: true, type: () => String })
-    positionId?: string,
-    @Args('activeOnly', { nullable: true, type: () => Boolean })
-    activeOnly?: boolean | null,
-  ): Promise<readonly MembershipEntity[]> {
-    return this.organizationService.listMemberships({
-      activeOnly: activeOnly ?? false,
-      memberId,
-      orgUnitId,
-      page,
-      pageSize,
-      positionId,
-    });
   }
 
   @Query(() => Int)
@@ -205,7 +134,6 @@ export class OrganizationQueries {
   }
 
   @Query(() => ResolvedManagerObject)
-  @BPMAdminOnly()
   async resolvedManager(
     @Args('memberId', { type: () => String }) memberId: string,
   ): Promise<ResolvedManagerObject> {

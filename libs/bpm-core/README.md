@@ -516,9 +516,11 @@ clear admin / designer guards; otherwise BPM resolvers reject with
 on top of them.
 
 A designer who is not an administrator can open the template designer and the
-compose wizard: the organization reads those pages load (`orgUnits`,
-`positions`, `memberships`, `managerResolutions`, `organizationSummary` and
-their `*Count` companions) are `@BPMDesignerOnly()`. Everything that changes
+compose wizard: the three organization reads those pages load (`orgUnits`,
+`positions`, `memberships`) sit in the `@BPMDesignerOnly()` resolver
+`OrganizationDirectoryQueries`. Every other organization read (manager rules,
+the summary, the `*Count` queries, `orgUnit`, `resolvedManager`) stays in the
+administrator-only `OrganizationQueries`. Everything that changes
 the organization, a membership or a manager rule, every task reassignment
 (`reassignTask`, `reassignMemberTasks`) and every webhook endpoint management
 operation stays administrator-only.

@@ -142,7 +142,7 @@ import {
   OrgUnitRecord,
   MembershipRecord,
   PositionRecord,
-  readOrganizationDashboard,
+  readOrganizationDirectory,
 } from '@rytass/bpm-core-client/organization';
 import {
   ApprovalTemplateVersionRecord,
@@ -1253,11 +1253,11 @@ export function TemplateDesignerView({
     setError(null);
 
     try {
-      const organizationDashboard = await readOrganizationDashboard();
+      const organizationDirectory = await readOrganizationDirectory();
 
-      setOrgUnits(organizationDashboard.orgUnits);
-      setPositions(organizationDashboard.positions);
-      setMemberships(organizationDashboard.memberships);
+      setOrgUnits(organizationDirectory.orgUnits);
+      setPositions(organizationDirectory.positions);
+      setMemberships(organizationDirectory.memberships);
     } catch (requestError: unknown) {
       setError(readTemplateErrorMessage(requestError, language));
     } finally {
@@ -1280,9 +1280,9 @@ export function TemplateDesignerView({
     setPolicyNotice(null);
 
     try {
-      const [nextRecord, organizationDashboard] = await Promise.all([
+      const [nextRecord, organizationDirectory] = await Promise.all([
         readTemplateDesigner(templateId as string),
-        readOrganizationDashboard(),
+        readOrganizationDirectory(),
       ]);
       const nextDraft =
         nextRecord.versions.find((version) => version.status === 'DRAFT') ??
@@ -1291,9 +1291,9 @@ export function TemplateDesignerView({
 
       setRecord(nextRecord);
       setDraft(nextDraft);
-      setOrgUnits(organizationDashboard.orgUnits);
-      setPositions(organizationDashboard.positions);
-      setMemberships(organizationDashboard.memberships);
+      setOrgUnits(organizationDirectory.orgUnits);
+      setPositions(organizationDirectory.positions);
+      setMemberships(organizationDirectory.memberships);
       setFormVersionOptions(
         readFormVersionSelectOptions(nextRecord.formVersions),
       );

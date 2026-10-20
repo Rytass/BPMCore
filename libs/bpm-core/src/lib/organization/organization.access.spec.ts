@@ -18,6 +18,7 @@ import { WorkflowEngineMutations } from '../workflow-engine/workflow-engine.muta
 import { WorkflowWebhookDeliveryResolver } from '../workflow-webhook/workflow-webhook-delivery.resolver';
 import { WorkflowWebhookEndpointAdminResolver } from '../workflow-webhook/workflow-webhook-endpoint-admin.resolver';
 import { WorkflowWebhookQueries } from '../workflow-webhook/workflow-webhook.queries';
+import { OrganizationDirectoryQueries } from './organization-directory.queries';
 import { OrganizationMutations } from './organization.mutations';
 import { OrganizationQueries } from './organization.queries';
 
@@ -85,21 +86,22 @@ function createContext(authContext: BPMAuthContext): ExecutionContext {
     getArgs: <T extends readonly unknown[] = readonly unknown[]>(): T =>
       args as unknown as T,
     getClass: <T = unknown>(): Type<T> => Object as unknown as Type<T>,
-    getHandler: () => Object,
-    getType: () => 'graphql' as never,
-    switchToHttp: () => ({
+    getHandler: (): ReturnType<ExecutionContext['getHandler']> => Object,
+    getType: <TContext extends string = string>(): TContext =>
+      'graphql' as TContext,
+    switchToHttp: (): ReturnType<ExecutionContext['switchToHttp']> => ({
       getNext: readUndefined,
       getRequest: readUndefined,
       getResponse: readUndefined,
     }),
-    switchToRpc: () => ({
+    switchToRpc: (): ReturnType<ExecutionContext['switchToRpc']> => ({
       getContext: readUndefined,
       getData: readUndefined,
     }),
-    switchToWs: () => ({
+    switchToWs: (): ReturnType<ExecutionContext['switchToWs']> => ({
       getClient: readUndefined,
       getData: readUndefined,
-      getPattern: () => '',
+      getPattern: (): string => '',
     }),
   };
 }
@@ -173,20 +175,16 @@ const op = (
  * while loading and while saving, publishing and dry-running, including those
  * of the form builder the compose wizard embeds. The organization rows are the
  * ones that used to be admin-only and locked a designer who is not an
- * administrator out of both pages. Form-definition writes (`FormMutations`)
- * are not here: no page of this library calls them.
+ * administrator out of both pages; the designer reads them through
+ * `readOrganizationDirectory`, which sends nothing else from the organization.
+ * Form-definition writes (`FormMutations`) are not here: no page of this
+ * library calls them.
  */
 const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
-  // `readOrganizationDashboard` (AdminOrganizationDashboard), sent by the designer.
-  op(OrganizationQueries, 'orgUnits', 'designer'),
-  op(OrganizationQueries, 'orgUnitCount', 'designer'),
-  op(OrganizationQueries, 'positions', 'designer'),
-  op(OrganizationQueries, 'positionCount', 'designer'),
-  op(OrganizationQueries, 'memberships', 'designer'),
-  op(OrganizationQueries, 'membershipCount', 'designer'),
-  op(OrganizationQueries, 'managerResolutions', 'designer'),
-  op(OrganizationQueries, 'managerResolutionCount', 'designer'),
-  op(OrganizationQueries, 'organizationSummary', 'designer'),
+  // `readOrganizationDirectory` (OrganizationDirectory), sent by the designer.
+  op(OrganizationDirectoryQueries, 'orgUnits', 'designer'),
+  op(OrganizationDirectoryQueries, 'positions', 'designer'),
+  op(OrganizationDirectoryQueries, 'memberships', 'designer'),
   // Template and form reads.
   op(TemplateQueries, 'approvalTemplate', 'authenticated'),
   op(TemplateQueries, 'approvalTemplateVersions', 'authenticated'),
@@ -237,38 +235,36 @@ describe('organization read access for template designers', () => {
     },
   );
 
-  it('lets a designer through every organization read the dashboard query sends and still stops a signed-in user', (): void => {
-    const dashboardFields = [
-      'orgUnits',
-      'orgUnitCount',
-      'positions',
-      'positionCount',
+  it('opens exactly the three directory reads to designers', (): void => {
+    expect([...methodsOf('OrganizationDirectoryQueries')].sort()).toEqual([
       'memberships',
-      'membershipCount',
-      'managerResolutions',
-      'managerResolutionCount',
-      'organizationSummary',
-    ];
-
-    for (const field of dashboardFields) {
-      expect([field, canCall(OrganizationQueries, field, 'designer')]).toEqual([
-        field,
-        true,
-      ]);
-      expect([field, canCall(OrganizationQueries, field, 'user')]).toEqual([
-        field,
-        false,
-      ]);
-    }
+      'orgUnits',
+      'positions',
+    ]);
   });
 
-  it('keeps the organization reads no designer page sends administrator-only', (): void => {
-    for (const method of [
-      'orgUnit',
-      'orgUnitRetirementImpact',
-      'resolvedManager',
-    ]) {
-      expect(readRegisteredAccess('OrganizationQueries', method)).toBe('admin');
+  it('keeps every other organization read administrator-only', (): void => {
+    const reads = methodsOf('OrganizationQueries');
+
+    // Manager rules, the counts, the summary, a single unit, retirement
+    // impact and resolved managers. A listing that matched nothing would make
+    // the loop below vacuous.
+    expect(reads).toEqual(
+      expect.arrayContaining([
+        'managerResolutions',
+        'managerResolutionCount',
+        'membershipCount',
+        'organizationSummary',
+        'orgUnit',
+        'resolvedManager',
+      ]),
+    );
+
+    for (const method of reads) {
+      expect([
+        method,
+        readRegisteredAccess('OrganizationQueries', method),
+      ]).toEqual([method, 'admin']);
       expect([
         method,
         canCall(OrganizationQueries, method, 'designer'),
