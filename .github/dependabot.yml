@@ -47,6 +47,28 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: next
         update-types: [version-update:semver-major]
+      # The type floor of the oldest Node the libs support (`engines` says
+      # >=20). A newer major types APIs Node 20 lacks and drops globals the
+      # libs leaned on — @types/node 26 removed `Array.prototype.at` from
+      # bpm-core-client's es2021 build (#100). Raise it with `engines`.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+      # Blocked upstream, so every PR for these would sit red:
+      # eslint 10 — eslint-plugin-import / -react / -jsx-a11y accept eslint
+      # ^9 at most; TypeScript 7 — typescript-eslint needs <6.1 and ts-jest
+      # <7; graphql 17 — @apollo/server still requires ^16.11.
+      - dependency-name: eslint
+        update-types: [version-update:semver-major]
+      - dependency-name: '@eslint/js'
+        update-types: [version-update:semver-major]
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      - dependency-name: graphql
+        update-types: [version-update:semver-major]
+      # Pinned exactly to the version react-pdf depends on (see the
+      # pdfjs-dist override in pnpm-workspace.yaml); it moves with react-pdf,
+      # never on its own.
+      - dependency-name: pdfjs-dist
 
   - package-ecosystem: github-actions
     directory: /
