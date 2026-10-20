@@ -1,10 +1,11 @@
 'use client';
 
-import { CSSProperties, ReactElement } from 'react';
+import { CSSProperties, ReactElement, useMemo } from 'react';
 import { Button, Typography } from '@mezzanine-ui/react';
 import { RefreshCcwIcon } from '@mezzanine-ui/icons';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
+import { readApplicantFormSchema } from '../../approver-filled-form';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
 import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
 
@@ -71,6 +72,20 @@ export function InstanceFormSection({
   resubmitFormData,
   resubmitFormErrors,
 }: InstanceFormSectionProps): ReactElement {
+  const schemaSnapshot = instance?.formDefinitionSnapshot.schema;
+  const workflowSnapshot = instance?.workflowSnapshot;
+  // Approver-filled fields are not the applicant's to edit (the server drops
+  // them on resubmit), so the edit state leaves them out. The read-only view
+  // keeps the full schema; PR2's field access decides what each viewer sees.
+  // Memoised so the renderer is not handed a new schema on every render.
+  const displayedSchema = useMemo(
+    () =>
+      canResubmitInstance && schemaSnapshot && workflowSnapshot
+        ? readApplicantFormSchema(schemaSnapshot, workflowSnapshot)
+        : schemaSnapshot,
+    [canResubmitInstance, schemaSnapshot, workflowSnapshot],
+  );
+
   return (
     <div style={SECTION_BODY_STYLE}>
       {error ? (
@@ -110,7 +125,7 @@ export function InstanceFormSection({
             }
             optionSnapshots={instance.formDataOptionSnapshot}
             readonly={!canResubmitInstance}
-            schema={instance.formDefinitionSnapshot.schema}
+            schema={displayedSchema ?? instance.formDefinitionSnapshot.schema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}
             value={
               canResubmitInstance ? resubmitFormData : instance.formData

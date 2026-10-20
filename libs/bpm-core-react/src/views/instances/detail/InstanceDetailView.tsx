@@ -103,6 +103,10 @@ import { InstanceWebhookDeliveriesSection } from './sections/InstanceWebhookDeli
 import { isPresentText, readNodeDisplayLabel } from './sections/shared';
 import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
+  readApplicantFormSchema,
+  readApplicantSubmission,
+} from '../approver-filled-form';
+import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
@@ -637,21 +641,26 @@ export function InstanceDetailView({
     // What the renderer shows, not just what has been touched: a table seeds
     // its `minRows` rows and a field can carry a `defaultValue`, and neither is
     // in this state until the filler edits something.
-    const resubmittedValues = instance.formDefinitionSnapshot.schema
-      ? buildFormRendererValues(
-          instance.formDefinitionSnapshot.schema.fields,
-          resubmitFormData,
+    // Approver-filled fields are not the applicant's to edit, so neither the
+    // rendering nor the validation nor the payload carries them.
+    const applicantSchema = instance.formDefinitionSnapshot.schema
+      ? readApplicantFormSchema(
+          instance.formDefinitionSnapshot.schema,
+          instance.workflowSnapshot,
         )
-      : resubmitFormData;
+      : null;
+    const resubmittedValues = readApplicantSubmission(
+      applicantSchema
+        ? buildFormRendererValues(applicantSchema.fields, resubmitFormData)
+        : resubmitFormData,
+      instance.workflowSnapshot,
+    );
 
     // The DataSource gate only speaks for fields that still hold a value, so a
     // cleared required field has to be caught here rather than by the backend.
-    if (
-      instance.formDefinitionSnapshot.schema &&
-      instance.formDefinitionSnapshot.uiSchema
-    ) {
+    if (applicantSchema && instance.formDefinitionSnapshot.uiSchema) {
       const validation = validateFormRendererValues({
-        schema: instance.formDefinitionSnapshot.schema,
+        schema: applicantSchema,
         uiSchema: instance.formDefinitionSnapshot.uiSchema,
         values: resubmittedValues,
       });

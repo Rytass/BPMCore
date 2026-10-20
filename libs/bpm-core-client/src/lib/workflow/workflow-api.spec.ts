@@ -1,5 +1,6 @@
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  decideTask,
   listApprovalHistoryTasks,
   listApprovalInstances,
   listApprovalInstancesPage,
@@ -12,6 +13,7 @@ import {
   readFormDataCaseTitle,
   retryWorkflowWebhookDelivery,
   listWorkflowWebhookDeliveries,
+  readLaunchContext,
 } from './workflow-api';
 
 interface CapturedRequest {
@@ -157,6 +159,188 @@ describe('@rytass/bpm-core-client/workflow', () => {
         expect(result.workflowTokens).toEqual([]);
       } finally {
         harness.restore();
+      }
+    });
+  });
+
+  describe('form data fingerprint', () => {
+    it('reads the form data fingerprint with an instance', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalInstance: {
+          formDataFingerprint: 'fingerprint-1',
+          formDataJson: '{}',
+          formDefinitionSnapshotJson: '{}',
+          id: 'instance-1',
+          workflowSnapshotJson: '{}',
+        },
+        activityLogs: [],
+        tasks: [],
+        workflowTokens: [],
+      });
+      try {
+        const result = await readApprovalInstance('instance-1');
+        const request = harness.capture();
+
+        expect(request.query).toContain('formDataFingerprint');
+        expect(result.instance.formDataFingerprint).toBe('fingerprint-1');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('decideTask fill', () => {
+    const decision = {
+      action: 'APPROVED',
+      comment: null,
+      decidedAt: '2026-05-26T00:00:00.000Z',
+      decidedByMemberId: 'member-001',
+      id: 'decision-1',
+      returnToNodeId: null,
+      signatureId: 'signature-1',
+      taskId: 'task-1',
+      transferToMemberId: null,
+    };
+    const base = {
+      action: 'APPROVED' as const,
+      comment: null,
+      decidedByMemberId: 'member-001',
+      taskId: 'task-1',
+    };
+
+    it('sends filled form data and the fingerprint with a decision', async (): Promise<void> => {
+      const harness = installFetchMock({ decideTask: decision });
+      try {
+        await decideTask({
+          ...base,
+          fill: {
+            expectedFormDataFingerprint: 'fingerprint-1',
+            formData: { amount: 10, note: 'ok' },
+          },
+        });
+
+        const input = harness.capture().variables?.['input'] as Record<
+          string,
+          unknown
+        >;
+
+        expect(input['formDataJson']).toBe('{"amount":10,"note":"ok"}');
+        expect(input['expectedFormDataFingerprint']).toBe('fingerprint-1');
+        expect(input['taskId']).toBe('task-1');
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it.each([
+      ['no fill is given', undefined],
+      ['fill is null', null],
+      [
+        'fill.formData is empty',
+        { expectedFormDataFingerprint: 'fingerprint-1', formData: {} },
+      ],
+    ])(
+      'omits formDataJson and the fingerprint when %s',
+      async (_label, fill): Promise<void> => {
+        const harness = installFetchMock({ decideTask: decision });
+        try {
+          await decideTask({ ...base, fill });
+
+          const input = harness.capture().variables?.['input'] as Record<
+            string,
+            unknown
+          >;
+
+          expect(Object.keys(input)).not.toContain('formDataJson');
+          expect(Object.keys(input)).not.toContain(
+            'expectedFormDataFingerprint',
+          );
+          expect(input['taskId']).toBe('task-1');
+        } finally {
+          harness.restore();
+        }
+      },
+    );
+  });
+
+  describe('readLaunchContext', () => {
+    it('reads the current version workflow definition into the launch context', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const queries: { query: string; variables?: Record<string, unknown> }[] =
+        [];
+      const definition = {
+        edges: [],
+        nodes: [{ id: 'start', type: 'start' }],
+      };
+
+      (global as { fetch: typeof fetch }).fetch = jest.fn(
+        async (_url: RequestInfo | URL, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as {
+            query: string;
+            variables?: Record<string, unknown>;
+          };
+
+          queries.push(body);
+
+          const data = body.query.includes('query LaunchTemplate(')
+            ? {
+                approvalTemplate: {
+                  currentVersionId: 'tv-1',
+                  id: 'template-1',
+                  name: 'Template',
+                },
+                approvalTemplateVersions: [
+                  {
+                    formDefinitionVersionId: 'fv-1',
+                    id: 'tv-1',
+                    status: 'PUBLISHED',
+                    version: 3,
+                  },
+                ],
+                launchableApprovalTemplates: [
+                  {
+                    currentVersionId: 'tv-1',
+                    id: 'template-1',
+                    name: 'Template',
+                    updatedAt: '2026-05-26T00:00:00.000Z',
+                  },
+                ],
+              }
+            : {
+                approvalTemplateVersion: {
+                  workflowDefinitionJson: JSON.stringify(definition),
+                },
+                formDefinitionVersion: {
+                  id: 'fv-1',
+                  schemaJson: '{"fields":[]}',
+                  uiSchemaJson: '{}',
+                  version: 2,
+                },
+              };
+
+          return new Response(JSON.stringify({ data }), {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          });
+        },
+      ) as unknown as typeof fetch;
+
+      try {
+        const context = await readLaunchContext('template-1');
+        const formQuery = queries.find((request) =>
+          request.query.includes('query LaunchFormVersion('),
+        );
+
+        expect(formQuery?.query).toContain('approvalTemplateVersion(id:');
+        expect(formQuery?.query).toContain('workflowDefinitionJson');
+        expect(formQuery?.variables).toEqual({
+          formVersionId: 'fv-1',
+          templateVersionId: 'tv-1',
+        });
+        expect(context.templateVersion.id).toBe('tv-1');
+        expect(context.templateVersion.workflowDefinition).toEqual(definition);
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
       }
     });
   });
