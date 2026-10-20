@@ -1110,6 +1110,22 @@ describe('WorkflowEngineService', () => {
         (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
       )?.payload;
 
+    // `rejects.toThrow(new XException(msg))` compares the message only, and the
+    // exception class is part of what a host sees, so both are pinned here.
+    const expectRejection = async (
+      promise: Promise<unknown>,
+      exceptionClass: new (message: string) => Error,
+      message: string,
+    ): Promise<void> => {
+      const error = await promise.then(
+        (): unknown => undefined,
+        (rejection: unknown): unknown => rejection,
+      );
+
+      expect(error).toBeInstanceOf(exceptionClass);
+      expect((error as Error).message).toBe(message);
+    };
+
     const readTaskCreatedNodeIds = (
       fixture: ServiceFixture,
     ): readonly string[] =>
@@ -1184,14 +1200,12 @@ describe('WorkflowEngineService', () => {
     it('refuses a key the node does not make editable and leaves form data alone', async (): Promise<void> => {
       const fixture = createDecideFixture();
 
-      await expect(
+      await expectRejection(
         decide(fixture, {
           formDataJson: '{"financeItems":[],"amount":1,"missing":2}',
         }),
-      ).rejects.toThrow(
-        new ForbiddenException(
-          'Workflow node task_finance does not let approvers fill in: amount, missing',
-        ),
+        ForbiddenException,
+        'Workflow node task_finance does not let approvers fill in: amount, missing',
       );
       expect(fixture.savedInstance).toBeNull();
     });
@@ -1201,16 +1215,14 @@ describe('WorkflowEngineService', () => {
       async (action): Promise<void> => {
         const fixture = createDecideFixture();
 
-        await expect(
+        await expectRejection(
           decide(fixture, {
             action,
             comment: 'no',
             formDataJson: FILLED_ITEMS,
           }),
-        ).rejects.toThrow(
-          new BadRequestException(
-            'formDataJson can only be sent with an APPROVED decision',
-          ),
+          BadRequestException,
+          'formDataJson can only be sent with an APPROVED decision',
         );
         expect(fixture.savedInstance).toBeNull();
       },
@@ -1219,16 +1231,14 @@ describe('WorkflowEngineService', () => {
     it('treats an empty object as sent', async (): Promise<void> => {
       const fixture = createDecideFixture();
 
-      await expect(
+      await expectRejection(
         decide(fixture, {
           action: TaskDecisionActionEnum.REJECTED,
           comment: 'no',
           formDataJson: '{}',
         }),
-      ).rejects.toThrow(
-        new BadRequestException(
-          'formDataJson can only be sent with an APPROVED decision',
-        ),
+        BadRequestException,
+        'formDataJson can only be sent with an APPROVED decision',
       );
     });
 
@@ -1253,10 +1263,10 @@ describe('WorkflowEngineService', () => {
         },
       });
 
-      await expect(
+      await expectRejection(
         decide(fixture, { formDataJson: FILLED_ITEMS }),
-      ).rejects.toThrow(
-        new ForbiddenException('Ad-hoc task task-1 cannot fill in form fields'),
+        ForbiddenException,
+        'Ad-hoc task task-1 cannot fill in form fields',
       );
       expect(fixture.savedInstance).toBeNull();
     });
@@ -1264,7 +1274,7 @@ describe('WorkflowEngineService', () => {
     it('refuses a stale fingerprint with a conflict', async (): Promise<void> => {
       const fixture = createDecideFixture();
 
-      await expect(
+      await expectRejection(
         decide(fixture, {
           expectedFormDataFingerprint: computeFormDataFingerprint({
             amount: 11,
@@ -1272,10 +1282,8 @@ describe('WorkflowEngineService', () => {
           }),
           formDataJson: FILLED_ITEMS,
         }),
-      ).rejects.toThrow(
-        new ConflictException(
-          'Approval instance instance-1 form data changed; refresh and retry',
-        ),
+        ConflictException,
+        'Approval instance instance-1 form data changed; refresh and retry',
       );
       expect(fixture.savedInstance).toBeNull();
     });
@@ -1352,6 +1360,9 @@ describe('WorkflowEngineService', () => {
 
       expect(payload).toBeDefined();
       expect(payload).not.toHaveProperty('changedFieldKeys');
+      // Nothing changed, so the fill path wrote nothing: an instance row is
+      // saved by this decision only if the fill path did it.
+      expect(fixture.savedInstance).toBeNull();
     });
 
     it('re-reads the task after taking the lock', async (): Promise<void> => {
@@ -1374,9 +1385,27 @@ describe('WorkflowEngineService', () => {
           }),
         );
 
-      await expect(decide(fixture)).rejects.toThrow(
-        new ConflictException('Task task-1 is not pending'),
+      await expectRejection(
+        decide(fixture),
+        ConflictException,
+        'Task task-1 is not pending',
       );
+
+      // Both reads exist, and the second one came after the lock: a re-read
+      // done before the lock would still see a decision that was in flight.
+      const lockCall = fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+        sql.includes('pg_advisory_xact_lock'),
+      );
+      const [firstRead, secondRead] =
+        fixture.transactionalTaskFindOne.mock.invocationCallOrder;
+
+      expect(lockCall).toBeGreaterThanOrEqual(0);
+      expect(fixture.transactionalTaskFindOne).toHaveBeenCalledTimes(2);
+
+      const lockOrder = fixture.managerQuery.mock.invocationCallOrder[lockCall];
+
+      expect(firstRead).toBeLessThan(lockOrder);
+      expect(secondRead).toBeGreaterThan(lockOrder);
     });
 
     it('records no TASK_CREATED for a filling node skipped by its entry condition', async (): Promise<void> => {

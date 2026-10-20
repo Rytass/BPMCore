@@ -1178,17 +1178,20 @@ export class WorkflowEngineService {
         // Only keys whose value really changes are written and reported. A key
         // the form data does not have yet counts as changed even when the new
         // value is null.
-        const changedFieldKeys = Object.keys(filledFormData ?? {})
-          .filter(
-            (fieldKey) =>
-              !Object.prototype.hasOwnProperty.call(
-                instance.formData,
-                fieldKey,
-              ) ||
-              computeStableValueFingerprint(filledFormData?.[fieldKey]) !==
-                computeStableValueFingerprint(instance.formData[fieldKey]),
-          )
-          .sort();
+        const changedFieldKeys =
+          filledFormData === null
+            ? []
+            : Object.keys(filledFormData)
+                .filter(
+                  (fieldKey) =>
+                    !Object.prototype.hasOwnProperty.call(
+                      instance.formData,
+                      fieldKey,
+                    ) ||
+                    computeStableValueFingerprint(filledFormData[fieldKey]) !==
+                      computeStableValueFingerprint(instance.formData[fieldKey]),
+                )
+                .sort();
 
         if (filledFormData !== null && changedFieldKeys.length > 0) {
           // Merged into the shared `instance` before it is signed and before

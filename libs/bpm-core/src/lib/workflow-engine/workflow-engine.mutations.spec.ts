@@ -172,6 +172,19 @@ describe('WorkflowEngineMutations decideTask', () => {
       } as unknown as WorkflowEngineService),
     };
   };
+  // The exception class is part of the host contract; `toThrow(new X(msg))`
+  // would compare the message only.
+  const expectRejection = async (promise: Promise<unknown>): Promise<void> => {
+    const error = await promise.then(
+      (): unknown => undefined,
+      (rejection: unknown): unknown => rejection,
+    );
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as Error).message).toBe(
+      'expectedFormDataFingerprint is required when formDataJson is set',
+    );
+  };
   const input = (extra: Partial<DecideTaskInput>): DecideTaskInput =>
     ({
       action: TaskDecisionActionEnum.APPROVED,
@@ -183,17 +196,13 @@ describe('WorkflowEngineMutations decideTask', () => {
   it('requires a fingerprint with formDataJson on the GraphQL path', async (): Promise<void> => {
     const { decideTask, mutations } = createMutations();
 
-    await expect(
+    await expectRejection(
       mutations.decideTask(
         input({ formDataJson: '{"financeItems":[]}' }),
         'member-current',
       ),
-    ).rejects.toThrow(
-      new BadRequestException(
-        'expectedFormDataFingerprint is required when formDataJson is set',
-      ),
     );
-    await expect(
+    await expectRejection(
       mutations.decideTask(
         input({
           expectedFormDataFingerprint: null,
@@ -201,19 +210,15 @@ describe('WorkflowEngineMutations decideTask', () => {
         }),
         'member-current',
       ),
-    ).rejects.toThrow(BadRequestException);
+    );
     expect(decideTask).not.toHaveBeenCalled();
   });
 
   it('requires a fingerprint even for an empty object', async (): Promise<void> => {
     const { decideTask, mutations } = createMutations();
 
-    await expect(
+    await expectRejection(
       mutations.decideTask(input({ formDataJson: '{}' }), 'member-current'),
-    ).rejects.toThrow(
-      new BadRequestException(
-        'expectedFormDataFingerprint is required when formDataJson is set',
-      ),
     );
     expect(decideTask).not.toHaveBeenCalled();
   });
