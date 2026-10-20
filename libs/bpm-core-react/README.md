@@ -43,7 +43,7 @@ pnpm add @rytass/bpm-core-react @rytass/bpm-core-client @rytass/bpm-core-shared 
 
 Required peers: `react` / `react-dom` 18+, `@mezzanine-ui/react`, `@mezzanine-ui/core`
 and `@mezzanine-ui/icons` `>=1.0.0` (this workspace develops against Mezzanine
-1.5.1, pinned in the root `package.json`), plus `@rytass/bpm-core-client` and
+1.7.0, pinned in the root `package.json`), plus `@rytass/bpm-core-client` and
 `@rytass/bpm-core-shared` at the same version. Every other peer is declared
 optional in `package.json` → `peerDependenciesMeta` and is needed only by the
 feature that imports it:
