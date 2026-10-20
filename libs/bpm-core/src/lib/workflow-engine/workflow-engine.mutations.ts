@@ -43,6 +43,9 @@ export class WorkflowEngineMutations {
         ...input,
         // A business key is the host's to set; an end user never claims one.
         businessKey: null,
+        // Set after the spread so a client cannot switch it off: it makes the
+        // service keep approver-filled fields out of the submission.
+        endUserSubmission: true,
         initiatorMemberId: currentMemberId,
         initiatorMetadataSnapshotJson: null,
         // Never read from the input: the person pressing submit is whoever is
@@ -135,6 +138,7 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.resubmitApprovalInstance(
       {
         ...input,
+        endUserSubmission: true,
         initiatorMemberId: currentMemberId,
       },
       authContext,

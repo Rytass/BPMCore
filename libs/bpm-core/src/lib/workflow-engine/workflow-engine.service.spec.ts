@@ -818,6 +818,192 @@ describe('WorkflowEngineService', () => {
     expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
   });
 
+  describe('field permissions: submit and resubmit', () => {
+    const submit = (
+      formDataJson: string,
+      options: {
+        readonly endUserSubmission?: boolean;
+        readonly formSchema?: FormDefinitionSchema;
+        readonly workflow?: WorkflowDefinition;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: options.formSchema ?? createFinanceTableFormSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        templateWorkflowDefinition:
+          options.workflow ?? createFieldPermissionWorkflow(),
+      }).service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+        ...(options.endUserSubmission === undefined
+          ? {}
+          : { endUserSubmission: options.endUserSubmission }),
+      });
+
+    const resubmit = async (
+      formDataJson: string,
+      options: {
+        readonly endUserSubmission?: boolean;
+        readonly processFormData: Readonly<Record<string, unknown>>;
+        readonly withResolver?: boolean;
+        readonly workflow?: WorkflowDefinition;
+      },
+    ): Promise<{
+      readonly fixture: ServiceFixture;
+      readonly resolver?: BPMFormDataSourceValueResolver;
+    }> => {
+      const formSchema = createFinanceTableFormSchema();
+      const resolver = options.withResolver
+        ? createValueResolver({})
+        : undefined;
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formDataSourceValueResolver: resolver,
+        formSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: options.processFormData,
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processWorkflowSnapshot:
+          options.workflow ?? createFieldPermissionWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+        ...(options.endUserSubmission === undefined
+          ? {}
+          : { endUserSubmission: options.endUserSubmission }),
+      });
+
+      return { fixture, resolver };
+    };
+
+    it('drops approver-filled keys from an end-user submission', async (): Promise<void> => {
+      const instance = await submit(
+        '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}',
+        { endUserSubmission: true },
+      );
+
+      expect(instance.formData).toEqual({ amount: 10 });
+    });
+
+    it('does not hold an end-user submission to the approver-filled table minRows', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10}', { endUserSubmission: true }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('keeps a host prefill and only shape-checks it', async (): Promise<void> => {
+      const instance = await submit(
+        '{"amount":10,"financeItems":[{"seq":1}]}',
+      );
+
+      expect(instance.formData).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1 }],
+      });
+    });
+
+    it('accepts a host prefill with fewer rows than minRows', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10,"financeItems":[]}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('still rejects a malformed approver-filled table on a host prefill', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10,"financeItems":"oops"}'),
+      ).rejects.toThrow('formData.financeItems must be an array of rows');
+    });
+
+    it('restores stored approver-filled values on an end-user resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":10,"financeItems":[{"seq":1,"taxAmount":999}]}',
+        {
+          endUserSubmission: true,
+          processFormData: {
+            amount: 10,
+            financeItems: [{ seq: 1, taxAmount: 5 }],
+          },
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1, taxAmount: 5 }],
+      });
+    });
+
+    it('drops an approver-filled key the stored data never had on an end-user resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":11,"financeItems":[],"invoiceKind":""}',
+        { endUserSubmission: true, processFormData: { amount: 10 } },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 11 });
+    });
+
+    it('lets a resolver host resubmit when the stored data lacks the minRows table', async (): Promise<void> => {
+      const { fixture, resolver } = await resubmit(
+        '{"amount":11,"financeItems":[]}',
+        {
+          endUserSubmission: true,
+          processFormData: { amount: 10 },
+          withResolver: true,
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 11 });
+      expect(resolver?.resolveFormDataOptionSnapshots).toHaveBeenCalledWith(
+        expect.objectContaining({ formData: { amount: 11 } }),
+      );
+    });
+
+    it('takes the host value on a service-level resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":11,"financeItems":[{"seq":2,"taxAmount":7}]}',
+        {
+          processFormData: {
+            amount: 10,
+            financeItems: [{ seq: 1, taxAmount: 5 }],
+          },
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({
+        amount: 11,
+        financeItems: [{ seq: 2, taxAmount: 7 }],
+      });
+    });
+
+    it('keeps submit and resubmit unchanged on a workflow without fieldPermissions', async (): Promise<void> => {
+      const workflow = createLinearUserTaskWorkflow();
+      const formDataJson = '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}';
+      const expected = { amount: 10, financeItems: [{ seq: 1, taxAmount: 5 }] };
+      const submitted = await submit(formDataJson, {
+        endUserSubmission: true,
+        workflow,
+      });
+      const { fixture } = await resubmit(formDataJson, {
+        endUserSubmission: true,
+        processFormData: { amount: 1, financeItems: [{ seq: 9, taxAmount: 9 }] },
+        workflow,
+      });
+
+      expect(submitted.formData).toEqual(expected);
+      expect(fixture.savedInstance?.formData).toEqual(expected);
+    });
+  });
+
   describe('hidden table field', () => {
     const submit = (
       hiddenSchema: FormDefinitionSchema,
@@ -12868,6 +13054,7 @@ function createServiceFixture({
   submittedByMemberId,
   templateIsActive = true,
   templateVersionStatus,
+  templateWorkflowDefinition,
   transactionalInstanceUpdatedAt,
   webhookDeliveryService,
 }: {
@@ -12908,6 +13095,8 @@ function createServiceFixture({
   readonly submittedByMemberId?: string | null;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
+  // The published template version's workflow; defaults to start -> end.
+  readonly templateWorkflowDefinition?: WorkflowDefinition;
   readonly transactionalInstanceUpdatedAt?: Date;
   readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
 }): ServiceFixture {
@@ -12941,7 +13130,10 @@ function createServiceFixture({
   ];
   let taskCandidateSequence = 0;
   const template = createTemplate(currentVersionId, templateIsActive);
-  const templateVersion = createTemplateVersion(templateVersionStatus);
+  const templateVersion = createTemplateVersion(
+    templateVersionStatus,
+    templateWorkflowDefinition,
+  );
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
     Promise<readonly ApprovalInstanceEntity[]>,
@@ -13891,6 +14083,7 @@ function createTemplate(
 
 function createTemplateVersion(
   status: ApprovalTemplateVersionStatusEnum,
+  workflowDefinition: WorkflowDefinition = createStartEndWorkflow(),
 ): ApprovalTemplateVersionEntity {
   return {
     archivedAt: null,
@@ -13908,33 +14101,37 @@ function createTemplateVersion(
     templateId: 'template-1',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
     version: 1,
-    workflowDefinition: {
-      edges: [
-        {
-          data: {},
-          id: 'edge_start_end',
-          source: 'start',
-          target: 'end',
-          type: 'smoothstep',
-        },
-      ],
-      meta: { schemaVersion: 1 },
-      nodes: [
-        {
-          data: { label: '開始' },
-          id: 'start',
-          position: { x: 80, y: 160 },
-          type: 'startEvent',
-        },
-        {
-          data: { endState: 'APPROVED', label: '完成' },
-          id: 'end',
-          position: { x: 520, y: 160 },
-          type: 'endEvent',
-        },
-      ],
-    },
+    workflowDefinition,
     workflowDefinitionJson: '',
+  };
+}
+
+function createStartEndWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_end',
+        source: 'start',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
+      },
+    ],
   };
 }
 
@@ -14023,6 +14220,126 @@ function createRequiredReasonFormSchema(): FormDefinitionSchema {
       },
     ],
     schemaVersion: 1,
+  };
+}
+
+function createFinanceTableFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      { fieldKey: 'amount', label: '金額', required: true, type: 'number' },
+      {
+        fieldKey: 'invoiceKind',
+        label: '發票類型',
+        mode: 'single',
+        options: [
+          { label: 'B2B', value: 'B2B' },
+          { label: 'B2C', value: 'B2C' },
+        ],
+        required: false,
+        type: 'select',
+      },
+      {
+        columns: [
+          { fieldKey: 'seq', label: '序號', required: false, type: 'number' },
+          {
+            fieldKey: 'taxAmount',
+            label: '稅額',
+            required: true,
+            type: 'number',
+          },
+        ],
+        fieldKey: 'financeItems',
+        label: '財務明細',
+        minRows: 1,
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+// start -> task_manager -> task_finance (fills financeItems and invoiceKind)
+// -> task_head -> end. `lastNode: 'task_finance'` ends the line at the filler.
+function createFieldPermissionWorkflow({
+  financeApprovers = ['member-finance'],
+  financeDecisionPolicy = { type: 'SINGLE' },
+  lastNode,
+}: {
+  readonly financeApprovers?: readonly string[];
+  readonly financeDecisionPolicy?: DecisionPolicy;
+  readonly lastNode?: 'task_finance';
+} = {}): WorkflowDefinition {
+  const createUserTask = (
+    id: string,
+    label: string,
+    memberId: string | readonly string[],
+    x: number,
+    extra: Readonly<Record<string, unknown>> = {},
+  ): WorkflowDefinition['nodes'][number] => ({
+    data: {
+      allowAddSigner: false,
+      allowReject: true,
+      allowTransfer: true,
+      approverResolver: {
+        memberIds: typeof memberId === 'string' ? [memberId] : [...memberId],
+        type: 'DIRECT',
+      },
+      decisionPolicy: { type: 'SINGLE' },
+      label,
+      returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
+      ...extra,
+    },
+    id,
+    position: { x, y: 160 },
+    type: 'userTask',
+  });
+  const taskIds = [
+    'task_manager',
+    'task_finance',
+    ...(lastNode === 'task_finance' ? [] : ['task_head']),
+  ];
+  const chain = ['start', ...taskIds, 'end'];
+
+  return {
+    edges: chain.slice(1).map((target, index) => ({
+      data: {},
+      id: `edge_${chain[index]}_${target}`,
+      source: chain[index],
+      target,
+      type: 'smoothstep',
+    })),
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      createUserTask('task_manager', '主管簽核', 'member-manager', 200),
+      createUserTask('task_finance', '財務簽核', financeApprovers, 320, {
+        decisionPolicy: financeDecisionPolicy,
+        fieldPermissions: [
+          {
+            editable: true,
+            fieldPath: 'financeItems',
+            required: true,
+            visible: true,
+          },
+          { editable: true, fieldPath: 'invoiceKind', visible: true },
+        ],
+      }),
+      ...(lastNode === 'task_finance'
+        ? []
+        : [createUserTask('task_head', '部門主管簽核', 'member-head', 440)]),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 560, y: 160 },
+        type: 'endEvent',
+      },
+    ],
   };
 }
 

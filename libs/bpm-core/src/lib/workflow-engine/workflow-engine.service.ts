@@ -1,5 +1,10 @@
 import { isUUID } from 'class-validator';
 import {
+  omitFormDataKeys,
+  overlayStoredFormDataKeys,
+  readApproverFilledFieldKeys,
+} from '@rytass/bpm-core-shared';
+import {
   FORM_TABLE_MAX_ROWS,
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshots,
@@ -154,10 +159,19 @@ type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
    * the initiator submitted the document themselves.
    */
   readonly submittedByMemberId?: string | null;
+  /**
+   * Set only by the GraphQL mutation, never by the DTO, so an end user cannot
+   * bring it along. The service then keeps the fields an approver fills in
+   * out of the submission; a host calling the service directly leaves it
+   * unset and may prefill them.
+   */
+  readonly endUserSubmission?: boolean;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
   readonly initiatorMemberId: string;
+  /** See `SubmitApprovalInstanceCommand.endUserSubmission`. */
+  readonly endUserSubmission?: boolean;
 };
 
 const MAX_PROCESSING_STEPS = 500;
@@ -545,7 +559,10 @@ export class WorkflowEngineService {
       );
     }
 
-    const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const submittedFormData = parseJsonObject(
+      input.formDataJson,
+      'formDataJson',
+    );
     const businessKey = normalizeBusinessKey(input.businessKey);
     const submittedByMemberId =
       input.submittedByMemberId ?? input.initiatorMemberId;
@@ -567,7 +584,23 @@ export class WorkflowEngineService {
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
-    validateSubmittedFormData(formDefinitionVersion.schema, formData);
+    // The fields an approver fills in belong to the approval, not the
+    // application: an end user's value for one is dropped (it would otherwise
+    // be an unreviewed value the approver has to overwrite), while a host
+    // calling the service directly may prefill them. They are only shape
+    // checked here; required and row minimums wait for the node that fills
+    // them. Read off the version the instance is bound to, not the template's
+    // latest, so a publish in between cannot change what is stripped.
+    const deferredFieldKeys = readApproverFilledFieldKeys(
+      templateVersion.workflowDefinition,
+    );
+    const formData =
+      input.endUserSubmission === true
+        ? omitFormDataKeys(submittedFormData, deferredFieldKeys)
+        : submittedFormData;
+    validateSubmittedFormData(formDefinitionVersion.schema, formData, {
+      deferredFieldKeys,
+    });
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
@@ -759,7 +792,7 @@ export class WorkflowEngineService {
 
   private async prepareResubmitFormDataOptions(
     input: ResubmitApprovalInstanceCommand,
-    formData: Readonly<Record<string, unknown>>,
+    submittedFormData: Readonly<Record<string, unknown>>,
     authContext: BPMAuthContext,
   ): Promise<ResubmitFormDataOptionsPreparation> {
     const instance = await this.approvalInstanceRepository.findOne({
@@ -793,7 +826,20 @@ export class WorkflowEngineService {
     const schema = readFormDefinitionSnapshotSchema(
       instance.formDefinitionSnapshot,
     );
-    validateSubmittedFormData(schema, formData);
+    const deferredFieldKeys = readApproverFilledFieldKeys(
+      instance.workflowSnapshot,
+    );
+    // Same overlay as inside the lock, so the options resolved here are for
+    // the form data that is actually saved.
+    const formData =
+      input.endUserSubmission === true
+        ? overlayStoredFormDataKeys(
+            submittedFormData,
+            instance.formData,
+            deferredFieldKeys,
+          )
+        : submittedFormData;
+    validateSubmittedFormData(schema, formData, { deferredFieldKeys });
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext,
@@ -1494,11 +1540,14 @@ export class WorkflowEngineService {
     input: ResubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
-    const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const submittedFormData = parseJsonObject(
+      input.formDataJson,
+      'formDataJson',
+    );
     const preparation = this.formDataSourceValueResolver
       ? await this.prepareResubmitFormDataOptions(
           input,
-          formData,
+          submittedFormData,
           authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
         )
       : null;
@@ -1552,7 +1601,23 @@ export class WorkflowEngineService {
         const resubmitSchema = readFormDefinitionSnapshotSchema(
           instance.formDefinitionSnapshot,
         );
-        validateSubmittedFormData(resubmitSchema, formData);
+        const deferredFieldKeys = readApproverFilledFieldKeys(
+          instance.workflowSnapshot,
+        );
+        // An end user gets back the value an approver already filled in, and
+        // loses a key the stored data never had: the renderer seeds `false`,
+        // `[]` and empty rows for every field, none of which an approver wrote.
+        const formData =
+          input.endUserSubmission === true
+            ? overlayStoredFormDataKeys(
+                submittedFormData,
+                instance.formData,
+                deferredFieldKeys,
+              )
+            : submittedFormData;
+        validateSubmittedFormData(resubmitSchema, formData, {
+          deferredFieldKeys,
+        });
 
         if (!preparation) {
           assertNoUnresolvableDynamicValues(resubmitSchema, formData);
@@ -9199,10 +9264,18 @@ function readCandidateStatusForClosedTask(
   return TaskCandidateStatusEnum.CANCELLED;
 }
 
+/**
+ * `deferredFieldKeys` are fields an approver fills in later: they are checked
+ * for shape (a table is an array of well-formed rows, a member value is a
+ * member id) but never for being present, so an empty one cannot block a
+ * submission that has nobody to fill it yet.
+ */
 function validateSubmittedFormData(
   schema: FormDefinitionSchema,
   formData: Readonly<Record<string, unknown>>,
+  options: { readonly deferredFieldKeys?: ReadonlySet<string> } = {},
 ): void {
+  const deferredFieldKeys = options.deferredFieldKeys ?? new Set<string>();
   const visibleFields = schema.fields.filter((field) =>
     isSubmittedFormFieldVisible(field, schema.fields, formData),
   );
@@ -9212,6 +9285,7 @@ function validateSubmittedFormData(
   const missingFields = visibleFields.filter(
     (field) =>
       !isTableFieldDefinition(field) &&
+      !deferredFieldKeys.has(field.fieldKey) &&
       isSubmittedFormFieldRequired(field, schema.fields, formData) &&
       !isSubmittedFieldValuePresent(formData[field.fieldKey]),
   );
@@ -9248,6 +9322,7 @@ function validateSubmittedFormData(
           field,
           formData[field.fieldKey],
           isSubmittedFormFieldRequired(field, schema.fields, formData),
+          deferredFieldKeys.has(field.fieldKey),
         ),
       ),
     // A hidden table is not "visible", but its stored value still has to be a

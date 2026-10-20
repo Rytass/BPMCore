@@ -1,5 +1,6 @@
 import { BPMAuthContext, listBPMResolverHandlers } from '../bpm-auth';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 // Loaded for its decorators, which register the query's access level.
@@ -97,6 +98,56 @@ describe('WorkflowEngineMutations', () => {
       expect.objectContaining({
         initiatorMemberId: 'member-current',
         submittedByMemberId: 'member-current',
+      }),
+      authContext,
+    );
+  });
+
+  it('marks GraphQL submissions as end-user submissions', async (): Promise<void> => {
+    const { mutations, submitApprovalInstance } = createMutations();
+
+    await mutations.submitApprovalInstance(
+      {
+        // Not on the input type: a client must not be able to switch it off.
+        endUserSubmission: false,
+        formDataJson: '{}',
+        initiatorMemberId: null,
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      } as SubmitApprovalInstanceInput,
+      'member-current',
+      authContext,
+    );
+
+    expect(submitApprovalInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ endUserSubmission: true }),
+      authContext,
+    );
+  });
+
+  it('marks GraphQL resubmissions as end-user submissions', async (): Promise<void> => {
+    const resubmitApprovalInstance = jest.fn(() => Promise.resolve({}));
+    const mutations = new WorkflowEngineMutations({
+      resubmitApprovalInstance,
+    } as unknown as WorkflowEngineService);
+
+    await mutations.resubmitApprovalInstance(
+      {
+        endUserSubmission: false,
+        formDataJson: '{}',
+        initiatorMemberId: 'member-someone-else',
+        instanceId: 'instance-1',
+        title: null,
+      } as ResubmitApprovalInstanceInput,
+      'member-current',
+      authContext,
+    );
+
+    expect(resubmitApprovalInstance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endUserSubmission: true,
+        initiatorMemberId: 'member-current',
       }),
       authContext,
     );
