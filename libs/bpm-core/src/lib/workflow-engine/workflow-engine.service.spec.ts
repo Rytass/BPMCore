@@ -1501,8 +1501,10 @@ describe('WorkflowEngineService', () => {
         });
       const sequentialFixture = (
         formData: Readonly<Record<string, unknown>>,
+        activeIndex = 0,
       ): ServiceFixture =>
         createSequentialDecisionFixture({
+          activeIndex,
           fieldPermissions: [financeItemsPermission],
           processFormData: formData,
           processFormDefinitionSnapshot: {
@@ -1657,6 +1659,17 @@ describe('WorkflowEngineService', () => {
         expect(fixture.savedInstance).toBeNull();
       });
 
+      it('validates a later SEQUENTIAL candidate too', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 }, 1);
+
+        await expectRejection(
+          decideSequentially(fixture, { decidedByMemberId: 'member-b' }),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
       it('lets a SEQUENTIAL candidate approve after filling in the table', async (): Promise<void> => {
         const fixture = sequentialFixture({ amount: 10 });
 
@@ -1689,6 +1702,19 @@ describe('WorkflowEngineService', () => {
         expect(rejected.savedInstance?.state).toBe(
           ApprovalInstanceStateEnum.REJECTED,
         );
+      });
+
+      it('never reads the form schema for a node without editable fields', async (): Promise<void> => {
+        // A snapshot with no schema makes the schema read throw, so only the
+        // guard on the node's editable fields keeps this approval working.
+        const fixture = createSequentialDecisionFixture({
+          processFormData: { amount: 10 },
+          processFormDefinitionSnapshot: {},
+        });
+
+        const decision = await decideSequentially(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
       });
 
       it('leaves approvals on nodes without fieldPermissions unvalidated as before', async (): Promise<void> => {

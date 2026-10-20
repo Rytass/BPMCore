@@ -9469,6 +9469,8 @@ function validateFilledFormFields(
 ): void {
   const fields = schema.fields.filter((field) => fieldKeys.has(field.fieldKey));
 
+  // `readRowCellValue` is used below as an own-property reader for top-level
+  // form keys: a key like `constructor` must not read off the prototype chain.
   throwFirstFormDataFieldError({
     // Tables answer by row count, so like submit they stay out of this list.
     missingFields: fields.filter(
