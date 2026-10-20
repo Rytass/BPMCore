@@ -7,6 +7,7 @@ export * from './membership.entity';
 export * from './org-unit.entity';
 export * from './org-unit-retirement-impact.object';
 export * from './org-unit-tree-commit-result.object';
+export * from './organization-directory.queries';
 export * from './organization-summary.object';
 export * from './organization.enums';
 export * from './organization-time-zone';

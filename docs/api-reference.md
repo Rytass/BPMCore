@@ -40,6 +40,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Multiple-selection conditions (PR #97): checkbox and multiple-mode select / autocomplete fields compile `EQUALS` / `NOT_EQUALS` to list membership and name them 包含 / 不包含 (`readConditionOperatorOptionsForField`, `isMultipleSelectionConditionField`, `readConditionOperatorLabel(operator, field?)`); dry-run sample data gives them arrays | `v0.17.4` |
 | Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | `v0.17.4` |
 | Activity log write order: `ActivityLogEntity.seq`, activity logs read in write order (`listActivityLogs` / GraphQL `activityLogs` and two engine lookups), migration `ActivityLogSeq0000000029000` | Not yet released |
+| Organization reads open to designers: the three reads the template designer and compose wizard load (`orgUnits`, `positions`, `memberships`) move to the new `@BPMDesignerOnly()` resolver `OrganizationDirectoryQueries`, and the designer loads them through the new `readOrganizationDirectory()` instead of `readOrganizationDashboard()`; `OrganizationQueries` stays `@BPMAdminOnly()` as a whole class, so manager rules, the counts and the summary stay administrator-only, as does every organization write. Visible to a host: `resolverMetadataFactory` now receives `resolverName: 'OrganizationDirectoryQueries'` and `access: 'designer'` (was `'OrganizationQueries'` / `'admin'`) for those three handlers, so a host that maps levels as in the README example gets `bpm:design` instead of `bpm:admin` on them | Not yet released |
 
 ---
 
@@ -485,8 +486,8 @@ Process-wide overrides read by every request. `configureBPMClient()` replaces th
 | Category | Names |
 |---|---|
 | Types | `OrgUnitType`, `ManagerResolutionScopeType` |
-| Records | `OrgUnitRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `ResolvedManagerRecord` |
-| Queries | `readOrganizationDashboard()`, `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()`, `readOrgUnitRetirementImpact(id)` |
+| Records | `OrgUnitRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `OrganizationDirectoryRecord`, `ResolvedManagerRecord` |
+| Queries | `readOrganizationDashboard()` (admin pages), `readOrganizationDirectory()` (every unit, position and membership; the designer's read, open to designers), `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()`, `readOrgUnitRetirementImpact(id)` |
 | OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit(id, { transferToOrgUnitId? })`, `commitOrgUnitTreeDraft()` |
 | Position Mutations | `createPosition()`, `updatePosition()`, `deletePosition(id)` |
 | Membership Mutations | `createMembership()`, `updateMembership()`, `deleteMembership()` |
@@ -752,7 +753,9 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Service | `OrganizationService`, `DeleteOrgUnitOptions` |
 | Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
-| GraphQL | `OrganizationQueries`, `OrganizationMutations` |
+| GraphQL | `OrganizationDirectoryQueries`, `OrganizationQueries`, `OrganizationMutations` |
+
+`OrganizationDirectoryQueries` is `@BPMDesignerOnly()` and holds only `orgUnits`, `positions` and `memberships`: the template designer and the compose wizard (which embeds it) load them through `readOrganizationDirectory()` to fill their approver pickers, and a designer is not necessarily an administrator. `OrganizationQueries` (manager rules, the counts, the summary, `orgUnit`, `orgUnitRetirementImpact`, `resolvedManager`) and `OrganizationMutations` stay `@BPMAdminOnly()` as whole classes, so a read added to `OrganizationQueries` is closed to designers by default. Nest runs class and method guards together, so a method can only be made stricter than its class, never looser; a read is opened to designers by moving it to `OrganizationDirectoryQueries`.
 
 > GraphQL-nullable fields on these inputs are **optional** in TypeScript
 > (`parentId?: string | null`). Exactly five of them are genuinely three-state

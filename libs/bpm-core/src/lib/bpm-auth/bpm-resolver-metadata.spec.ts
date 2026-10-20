@@ -5,10 +5,12 @@ import { Query, Resolver } from '@nestjs/graphql';
 import '../../index';
 import { BPMAdminOnly } from './bpm-auth.authorization';
 import { IdentityQueries } from '../identity/identity.queries';
+import { OrganizationDirectoryQueries } from '../organization/organization-directory.queries';
 import { OrganizationMutations } from '../organization/organization.mutations';
 import { OrganizationQueries } from '../organization/organization.queries';
 import {
   applyBPMResolverMetadata,
+  BPMResolverAccessLevel,
   BPMResolverHandlerDescriptor,
   listBPMResolverHandlers,
 } from './bpm-resolver-metadata';
@@ -47,7 +49,16 @@ describe('BPM resolver metadata', () => {
           handler.methodName === methodName,
       );
 
-    expect(find('OrganizationQueries', 'orgUnits')?.access).toBe('admin');
+    // The three organization reads the designer pages load sit in their own
+    // `@BPMDesignerOnly()` class...
+    expect(find('OrganizationDirectoryQueries', 'orgUnits')?.access).toBe(
+      'designer',
+    );
+    // ...and every other organization read stays administrator-only.
+    expect(find('OrganizationQueries', 'orgUnit')?.access).toBe('admin');
+    expect(find('OrganizationQueries', 'managerResolutions')?.access).toBe(
+      'admin',
+    );
     expect(find('OrganizationMutations', 'deletePosition')?.access).toBe(
       'admin',
     );
@@ -65,8 +76,17 @@ describe('BPM resolver metadata', () => {
   });
 
   it('stamps host metadata onto the prototype method a guard receives', (): void => {
+    // The lookup table the README shows a host.
+    const hostPermissions: Readonly<
+      Record<BPMResolverAccessLevel, readonly string[]>
+    > = {
+      admin: ['bpm:admin'],
+      authenticated: ['bpm:use'],
+      designer: ['bpm:design'],
+    };
+
     applyBPMResolverMetadata(({ access }) => ({
-      [HOST_PERMISSION_KEY]: access === 'admin' ? ['bpm:admin'] : ['bpm:use'],
+      [HOST_PERMISSION_KEY]: hostPermissions[access],
     }));
 
     // `context.getHandler()` hands a guard exactly this function, so this is
@@ -74,9 +94,17 @@ describe('BPM resolver metadata', () => {
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,
-        OrganizationQueries.prototype.orgUnits,
+        OrganizationQueries.prototype.orgUnit,
       ),
     ).toEqual(['bpm:admin']);
+    // A designer-level read gets the host's designer permission, so a
+    // designer who is not an administrator passes the host guard as well.
+    expect(
+      Reflect.getMetadata(
+        HOST_PERMISSION_KEY,
+        OrganizationDirectoryQueries.prototype.orgUnits,
+      ),
+    ).toEqual(['bpm:design']);
     expect(
       Reflect.getMetadata(
         HOST_PERMISSION_KEY,
@@ -84,7 +112,10 @@ describe('BPM resolver metadata', () => {
       ),
     ).toEqual(['bpm:admin']);
     expect(
-      Reflect.getMetadata(HOST_PERMISSION_KEY, IdentityQueries.prototype.member),
+      Reflect.getMetadata(
+        HOST_PERMISSION_KEY,
+        IdentityQueries.prototype.member,
+      ),
     ).toEqual(['bpm:use']);
   });
 
@@ -96,12 +127,15 @@ describe('BPM resolver metadata', () => {
     );
 
     expect(
-      Reflect.getMetadata(untouchedKey, OrganizationQueries.prototype.orgUnits),
+      Reflect.getMetadata(
+        untouchedKey,
+        OrganizationDirectoryQueries.prototype.orgUnits,
+      ),
     ).toBe('stamped');
     expect(
       Reflect.getMetadata(
         untouchedKey,
-        OrganizationQueries.prototype.positions,
+        OrganizationDirectoryQueries.prototype.positions,
       ),
     ).toBeUndefined();
   });

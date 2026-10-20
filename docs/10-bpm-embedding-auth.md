@@ -143,6 +143,8 @@ class HostResolver {
 
 `@BPMAdminOnly()` / `@BPMDesignerOnly()` 自動串接 `BPMAuthenticatedGuard`，宿主自己的 admin / template designer resolver 可以直接掛上，不必再額外加 `@BPMAuthenticated()`。
 
+只有 `BPM_DESIGNER`（不是 `BPM_ADMIN`）的使用者也能開簽核範本設計器與建立模板（compose）頁：這些頁面只載入三個組織「讀取」查詢（`orgUnits`、`positions`、`memberships`），它們放在 `@BPMDesignerOnly()` 的 `OrganizationDirectoryQueries`。其他組織讀取（主管規則 `managerResolutions`、`organizationSummary`、各 `*Count`、`orgUnit`、`resolvedManager` 等）仍在只限 admin 的 `OrganizationQueries`。所有會修改組織、成員、主管規則的操作、改派（`reassignTask`、`reassignMemberTasks`）以及 webhook 端點管理仍然只限 admin。
+
 ## Member Resolver Contract
 
 BPM 延續外部 resolver pattern，只儲存 `member_id`，不擁有 user table：

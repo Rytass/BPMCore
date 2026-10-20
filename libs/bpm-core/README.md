@@ -515,6 +515,16 @@ clear admin / designer guards; otherwise BPM resolvers reject with
 `BPMAuthenticatedGuard`. The host does not need to add `@BPMAuthenticated()`
 on top of them.
 
+A designer who is not an administrator can open the template designer and the
+compose wizard: the three organization reads those pages load (`orgUnits`,
+`positions`, `memberships`) sit in the `@BPMDesignerOnly()` resolver
+`OrganizationDirectoryQueries`. Every other organization read (manager rules,
+the summary, the `*Count` queries, `orgUnit`, `resolvedManager`) stays in the
+administrator-only `OrganizationQueries`. Everything that changes
+the organization, a membership or a manager rule, every task reassignment
+(`reassignTask`, `reassignMemberTasks`) and every webhook endpoint management
+operation stays administrator-only.
+
 ### Mapping from a host RBAC system (e.g. Casbin)
 
 BPM does not call the host's RBAC engine — it reads exact-string `roles`
