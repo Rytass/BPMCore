@@ -348,7 +348,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'set_edge_condition',
     description:
-      '設定條件分流輸出連線的條件（依綁定表單欄位）。fieldKey 為表單欄位、operator 為比較運算子、value 為比較值；系統會自動編譯為 CEL 條件並產生標籤。需先綁定表單。',
+      '設定條件分流輸出連線的條件（依綁定表單欄位）。fieldKey 為表單欄位、operator 為比較運算子、value 為比較值；系統會自動編譯為 CEL 條件並產生標籤。多選欄位（核取方塊，或多選模式的下拉）的值是清單，EQUALS 代表「包含」該選項、NOT_EQUALS 代表「不包含」；IS_FILLED／IS_EMPTY 代表有／沒有勾選任何選項。需先綁定表單。',
     inputSchema: objectSchema(
       {
         edgeId: { type: 'string' },

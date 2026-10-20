@@ -142,10 +142,12 @@ export function HostLayout({ children }: HostLayoutProps): ReactElement {
         options={[
           { id: 'notification-settings', name: '通知設定' },
           // Written in the language it switches to, so a reader of that
-          // language can find it.
+          // language can find it. It names messages, not the interface: the
+          // BPM language covers publish-check and error messages, while the
+          // pages and their labels stay in Traditional Chinese.
           language === 'en'
-            ? { id: 'language:zh-TW', name: '切換為繁體中文' }
-            : { id: 'language:en', name: 'Switch to English' },
+            ? { id: 'language:zh-TW', name: '訊息改用繁體中文' }
+            : { id: 'language:en', name: 'Show messages in English' },
         ]}
         onSelect={(option): void => {
           if (option.id === 'notification-settings') {

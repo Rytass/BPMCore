@@ -1,7 +1,9 @@
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
+  isFormOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
+  readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
 
 export function readDryRunSampleFormData(
@@ -46,12 +48,23 @@ function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
     return field.multiple ? [placeholder] : placeholder;
   }
 
-  if (isFormStaticOptionFieldDefinition(field)) {
-    return field.type === 'checkbox'
-      ? field.options[0]
-        ? [field.options[0].value]
-        : []
-      : (field.options[0]?.value ?? '');
+  // The sample must have the shape a real submission stores: an array for any
+  // multiple-selection field (checkbox, or select／autocomplete with
+  // `mode: 'multiple'`, static or data-source options alike), a single value
+  // otherwise. A string where an array belongs lets `form.x == "a"` pass the
+  // dry run while the real case, holding `["a"]`, never matches.
+  if (isFormOptionFieldDefinition(field)) {
+    const firstOption = isFormStaticOptionFieldDefinition(field)
+      ? field.options[0]?.value
+      : undefined;
+
+    if (readFormFieldSelectionMode(field) === 'multiple') {
+      return firstOption === undefined ? [] : [firstOption];
+    }
+
+    if (isFormStaticOptionFieldDefinition(field)) {
+      return firstOption ?? '';
+    }
   }
 
   if (field.type === 'date') {

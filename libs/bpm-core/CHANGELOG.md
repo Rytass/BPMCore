@@ -1,3 +1,17 @@
+## 0.17.4 (2026-10-19)
+
+### 🚀 Features
+
+- **form:** translate DataSource error copy per language ([787e7a3](https://github.com/Rytass/BPMCore/commit/787e7a3))
+
+### 🩹 Fixes
+
+- **workflow-engine:** route list-valued conditions by their structured fields ([ab2f848](https://github.com/Rytass/BPMCore/commit/ab2f848))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.3 (2026-10-19)
 
 ### 🚀 Features

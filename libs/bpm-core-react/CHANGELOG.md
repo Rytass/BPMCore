@@ -1,3 +1,19 @@
+## 0.17.4 (2026-10-19)
+
+### 🚀 Features
+
+- **form:** translate DataSource error copy per language ([787e7a3](https://github.com/Rytass/BPMCore/commit/787e7a3))
+
+### 🩹 Fixes
+
+- **react:** name condition operators after the field in the template designer ([54d530a](https://github.com/Rytass/BPMCore/commit/54d530a))
+- **react:** sample multiple-selection fields as arrays in the dry run ([295c23a](https://github.com/Rytass/BPMCore/commit/295c23a))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.3 (2026-10-19)
 
 ### 🚀 Features

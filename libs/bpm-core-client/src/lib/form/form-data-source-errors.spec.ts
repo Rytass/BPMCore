@@ -145,4 +145,49 @@ describe('form data source errors', (): void => {
       ),
     ).toBe('選項來源回傳的資料不正確，請聯絡系統管理員。');
   });
+
+  describe('in English', (): void => {
+    it('maps a code, an unknown code, and a lint line', (): void => {
+      expect(
+        readFormDataSourceErrorMessage(
+          new Error('GraphQL error: FORM_DATA_SOURCE_TIMEOUT'),
+          'en',
+        ),
+      ).toBe('The option source took too long to respond. Try again later.');
+      expect(
+        readFormDataSourceErrorMessage(
+          new Error('FORM_DATA_SOURCE_SOMETHING_NEW'),
+          'en',
+        ),
+      ).toBe(
+        'Something went wrong with the option source. Try again later or contact your system administrator.',
+      );
+      expect(
+        readFormSchemaLintMessage(
+          'schema.fields[1].dataSource FORM_DATA_SOURCE_MISSING; schema.fields[2].dataSource.bindings unknown parameter: plant',
+          'en',
+        ),
+      ).toBe(
+        'schema.fields[1].dataSource The option source no longer exists. Contact your system administrator.; schema.fields[2].dataSource.bindings unknown parameter: plant',
+      );
+    });
+
+    it('leaves an unrelated failure for the caller', (): void => {
+      expect(
+        readFormDataSourceErrorMessage(
+          new Error('Network request failed'),
+          'en',
+        ),
+      ).toBe(null);
+    });
+
+    it('falls back to Traditional Chinese for a language it does not know', (): void => {
+      expect(
+        readFormSchemaLintMessage(
+          'FORM_DATA_SOURCE_MISSING',
+          'fr' as unknown as 'en',
+        ),
+      ).toBe('選項來源已不存在，請聯絡系統管理員。');
+    });
+  });
 });
