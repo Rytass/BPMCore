@@ -23,10 +23,11 @@ interface HostLanguageContextValue {
   readonly setLanguage: (language: BPMLanguage) => void;
 }
 
-const HostLanguageContext = createContext<HostLanguageContextValue>({
-  language: DEFAULT_BPM_LANGUAGE,
-  setLanguage: (): void => undefined,
-});
+// No default value: outside the provider a language switch would do nothing
+// and say nothing, so `useHostLanguage` refuses instead.
+const HostLanguageContext = createContext<HostLanguageContextValue | null>(
+  null,
+);
 
 function readStoredLanguage(): BPMLanguage | null {
   try {
@@ -87,5 +88,13 @@ export function HostLanguageProvider({
 }
 
 export function useHostLanguage(): HostLanguageContextValue {
-  return useContext(HostLanguageContext);
+  const value = useContext(HostLanguageContext);
+
+  if (!value) {
+    throw new Error(
+      'useHostLanguage must be used inside <HostLanguageProvider>',
+    );
+  }
+
+  return value;
 }

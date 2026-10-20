@@ -24,10 +24,7 @@ import { useWorkflowDesignerController } from './use-workflow-designer-controlle
 import { WorkflowChatDrawer } from './workflow-chat-drawer';
 import { FormBuilderView } from '../../forms/builder/FormBuilderView';
 import { useBPMRoutes } from '../../../lib/routes-config';
-import {
-  useBPMLanguage,
-  type BPMLanguage,
-} from '../../../lib/language-provider';
+import { useBPMLanguage } from '../../../lib/language-provider';
 import {
   Background,
   ControlButton,
@@ -118,17 +115,16 @@ import {
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
   readApproverResolverIssue,
-  readConditionOperatorIds,
+  readConditionOperator,
+  readConditionOperatorOptionsForField,
   readDesignTimeApproverCount,
   readExcludeInitiatorIssue,
   readNotifyServiceTaskIssue,
   readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import {
-  readFormBuilder,
-  readFormSchemaLintMessage,
-} from '@rytass/bpm-core-client/form';
+import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import { readTemplateErrorMessage } from '../template-error-message';
 import {
   OrgUnitOption,
   OrgUnitPicker,
@@ -158,7 +154,6 @@ import {
   publishApprovalTemplateVersion,
   PublishedFormVersionOption,
   readTemplateDesigner,
-  readWorkflowLintMessage,
   resolveMemberOptions,
   listWorkflowWebhookEndpoints,
   searchMemberOptions,
@@ -219,10 +214,6 @@ type FormVersionSelectOption = Readonly<{
 type ConditionFieldOption = Readonly<{
   fieldType: FormFieldDefinition['type'];
   id: string;
-  name: string;
-}>;
-type ConditionOperatorOption = Readonly<{
-  id: WorkflowEdgeConditionOperator;
   name: string;
 }>;
 type ConditionValueOption = Readonly<{
@@ -617,16 +608,6 @@ const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOp
 const DEFAULT_EXCLUDE_INITIATOR_CONFIG: ExcludeInitiatorConfig = {
   whenEmpty: 'INITIATOR_MANAGER',
 };
-const CONDITION_OPERATOR_OPTIONS: readonly ConditionOperatorOption[] = [
-  { id: 'EQUALS', name: '等於' },
-  { id: 'NOT_EQUALS', name: '不等於' },
-  { id: 'GREATER_THAN', name: '大於' },
-  { id: 'GREATER_THAN_OR_EQUALS', name: '大於等於' },
-  { id: 'LESS_THAN', name: '小於' },
-  { id: 'LESS_THAN_OR_EQUALS', name: '小於等於' },
-  { id: 'IS_FILLED', name: '已填寫' },
-  { id: 'IS_EMPTY', name: '未填寫' },
-];
 const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperator[] =
   [
     'EQUALS',
@@ -1278,7 +1259,7 @@ export function TemplateDesignerView({
       setPositions(organizationDashboard.positions);
       setMemberships(organizationDashboard.memberships);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError, language));
+      setError(readTemplateErrorMessage(requestError, language));
     } finally {
       setLoading(false);
     }
@@ -1354,7 +1335,7 @@ export function TemplateDesignerView({
       setFormDraft(null);
       setFormDraftDirty(false);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError, language));
+      setError(readTemplateErrorMessage(requestError, language));
     } finally {
       setLoading(false);
     }
@@ -1373,7 +1354,7 @@ export function TemplateDesignerView({
         ),
       );
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError, language));
+      setError(readTemplateErrorMessage(requestError, language));
     } finally {
       setFormVersionLoading(false);
     }
@@ -1405,7 +1386,7 @@ export function TemplateDesignerView({
       // A superseded request must not paint the error banner either. The
       // newest request is still in flight and will report its own outcome.
       if (searchSequence === memberSearchSequenceRef.current) {
-        setError(readErrorMessage(requestError, language));
+        setError(readTemplateErrorMessage(requestError, language));
       }
     } finally {
       // Same for the spinner: clearing it from a superseded request drops the
@@ -1534,7 +1515,9 @@ export function TemplateDesignerView({
         await refreshDesigner();
       }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError, language, workflowDefinition));
+      setError(
+        readTemplateErrorMessage(requestError, language, workflowDefinition),
+      );
       throw requestError;
     } finally {
       setSaving(false);
@@ -1592,7 +1575,7 @@ export function TemplateDesignerView({
 
       setDryRunResult(result);
     } catch (requestError: unknown) {
-      setDryRunError(readErrorMessage(requestError, language));
+      setDryRunError(readTemplateErrorMessage(requestError, language));
     } finally {
       setDryRunRunning(false);
     }
@@ -1634,7 +1617,7 @@ export function TemplateDesignerView({
         uiSchema: draftVersion?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA,
       });
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError, language));
+      setError(readTemplateErrorMessage(requestError, language));
     } finally {
       setFormDraftLoading(false);
     }
@@ -3722,7 +3705,7 @@ export function TemplateDesignerView({
       selectedFormVersionOption?.schema ?? null,
       edge.data.conditionFieldKey ?? null,
     );
-    const conditionOperatorOptions = readConditionOperatorOptions(
+    const conditionOperatorOptions = readConditionOperatorOptionsForField(
       selectedConditionField,
     );
     const conditionValueOptions = readConditionValueOptions(
@@ -5580,28 +5563,6 @@ function readConditionField(
     : null;
 }
 
-function readConditionOperatorOptions(
-  field: FormFieldDefinition | null,
-): readonly ConditionOperatorOption[] {
-  if (!field) {
-    return [];
-  }
-
-  const operatorIds = readConditionOperatorIds(field);
-
-  return CONDITION_OPERATOR_OPTIONS.filter((option) =>
-    operatorIds.includes(option.id),
-  );
-}
-
-function readConditionOperator(
-  value: string | null,
-): WorkflowEdgeConditionOperator | null {
-  return CONDITION_OPERATOR_OPTIONS.some((option) => option.id === value)
-    ? (value as WorkflowEdgeConditionOperator)
-    : null;
-}
-
 function readConditionValueOptions(
   field: FormFieldDefinition | null,
 ): readonly ConditionValueOption[] {
@@ -5681,39 +5642,4 @@ function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {
   return action.type === 'NOTIFY' && action.recipients.type === 'DIRECT'
     ? action.recipients.memberIds
     : [];
-}
-
-const UNKNOWN_ERROR_MESSAGES: Readonly<Record<BPMLanguage, string>> = {
-  en: 'An unknown error occurred',
-  'zh-TW': '發生未知錯誤',
-};
-
-const WEBHOOK_LINT_PREFIXES: Readonly<Record<BPMLanguage, string>> = {
-  en: 'Webhook settings failed the publish check: ',
-  'zh-TW': 'Webhook 設定未通過發布檢查：',
-};
-
-function readErrorMessage(
-  error: unknown,
-  language: BPMLanguage,
-  submittedDefinition?: WorkflowDefinition,
-): string {
-  // Publish failures can carry stable `FORM_DATA_SOURCE_*` codes; map them to
-  // readable copy and leave every other message untouched.
-  if (!(error instanceof Error)) {
-    return UNKNOWN_ERROR_MESSAGES[language];
-  }
-
-  // Structural publish-lint lines name nodes by id; the definition that was
-  // just submitted lets them name the node the way the canvas does.
-  const message = submittedDefinition
-    ? readWorkflowLintMessage(error.message, submittedDefinition, language)
-    : error.message;
-
-  // The backend publish lint speaks in paths and codes; say what failed
-  // before it, since the designer's own check only runs once the catalog
-  // has loaded.
-  return message.includes('WORKFLOW_WEBHOOK_')
-    ? `${WEBHOOK_LINT_PREFIXES[language]}${message}`
-    : readFormSchemaLintMessage(message);
 }

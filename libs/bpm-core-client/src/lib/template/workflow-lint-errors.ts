@@ -44,16 +44,16 @@ const WORKFLOW_LINT_COPY: Readonly<
   Record<WorkflowLintLanguage, WorkflowLintCopy>
 > = {
   en: {
-    blankNodeLabel: (typeLabel) =>
+    blankNodeLabel: (typeLabel): string =>
       `A "${typeLabel}" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.`,
-    cycle: (name) =>
+    cycle: (name): string =>
       `The connections around "${name}" form a loop, so the flow would keep coming back. Remove the connection that closes the loop.`,
     endEventMissing: 'The flow needs at least one "End" (結束) node.',
-    exclusiveSplitDefaultEdge: (name) =>
+    exclusiveSplitDefaultEdge: (name): string =>
       `One outgoing connection of the condition split "${name}" must have "Otherwise take this path" (其他情況走這條) turned on, so the flow has somewhere to go when no condition matches.`,
-    exclusiveSplitOutgoingEdges: (name) =>
+    exclusiveSplitOutgoingEdges: (name): string =>
       `The condition split "${name}" needs at least two outgoing connections, one of them with "Otherwise take this path" (其他情況走這條) turned on.`,
-    noPathToEnd: (name) =>
+    noPathToEnd: (name): string =>
       `"${name}" has no path to "End" (結束), so the flow would get stuck there. Connect it to the next node or to "End".`,
     nodeTypeLabels: new Map([
       ['endEvent', 'End (結束)'],
@@ -63,37 +63,37 @@ const WORKFLOW_LINT_COPY: Readonly<
       ['startEvent', 'Start (開始)'],
       ['userTask', 'Approval (簽核)'],
     ]),
-    notifyOutgoingEdge: (name) =>
+    notifyOutgoingEdge: (name): string =>
       `The notify node "${name}" cannot have outgoing connections (it only sends a notice; the flow does not continue from it). Delete the connection leaving it.`,
-    parallelJoinIncomingEdges: (name) =>
+    parallelJoinIncomingEdges: (name): string =>
       `The parallel join "${name}" needs at least two incoming connections.`,
     startEventCount: 'The flow needs exactly one "Start" (開始) node.',
     unknownNodeType: 'Unknown type',
-    unreachableNode: (name) =>
+    unreachableNode: (name): string =>
       `"${name}" cannot be reached from "Start" (開始), so the flow never gets there. Make sure a chain of connections leads to it from "Start".`,
   },
   'zh-TW': {
-    blankNodeLabel: (typeLabel) =>
+    blankNodeLabel: (typeLabel): string =>
       `有一個「${typeLabel}」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。`,
-    cycle: (name) =>
+    cycle: (name): string =>
       `節點「${name}」所在的連線繞成了迴圈，流程會一直繞回來。請移除造成迴圈的那條連線。`,
     endEventMissing: '流程至少要有一個「結束」節點。',
-    exclusiveSplitDefaultEdge: (name) =>
+    exclusiveSplitDefaultEdge: (name): string =>
       `條件分流「${name}」的輸出連線中，要有一條開啟「其他情況走這條」，其他條件都不符合時流程才有路可走。`,
-    exclusiveSplitOutgoingEdges: (name) =>
+    exclusiveSplitOutgoingEdges: (name): string =>
       `條件分流「${name}」往下至少要有兩條連線，且其中一條要開啟「其他情況走這條」。`,
-    noPathToEnd: (name) =>
+    noPathToEnd: (name): string =>
       `節點「${name}」往下接不到「結束」，流程走到這裡會卡住。請從它拉一條連線到下一個節點或「結束」。`,
     // The canvas's own labels, so the copy names a node type the way the
     // designer and the AI toolset do.
     nodeTypeLabels: new Map(Object.entries(WORKFLOW_NODE_TYPE_LABELS)),
-    notifyOutgoingEdge: (name) =>
+    notifyOutgoingEdge: (name): string =>
       `知會節點「${name}」不能往下接連線（知會只負責通知，流程不會從它繼續）。請刪除從它拉出的連線。`,
-    parallelJoinIncomingEdges: (name) =>
+    parallelJoinIncomingEdges: (name): string =>
       `並行處理「${name}」至少要有兩條連線匯入。`,
     startEventCount: '流程必須有一個「開始」節點，而且只能有一個。',
     unknownNodeType: '未知類型',
-    unreachableNode: (name) =>
+    unreachableNode: (name): string =>
       `從「開始」走不到節點「${name}」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。`,
   },
 };

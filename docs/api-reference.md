@@ -2,13 +2,13 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-19): `libs/shared@0.17.3`, `libs/bpm-core-client@0.17.3`, `libs/bpm-core@0.17.3` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.3`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-20): `libs/shared@0.17.4`, `libs/bpm-core-client@0.17.4`, `libs/bpm-core@0.17.4` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.4`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
 ### Release status
 
-The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.3` and ship with the next `nx release`.
+The "First released in" column is the earliest `v*` tag that contains the change (`git tag --contains <commit>`). "Not yet released" rows are on `main` after `v0.17.4` and ship with the next `nx release`.
 
 | Change set | First released in |
 | ---------- | ----------------- |
@@ -37,6 +37,8 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | `@rytass/bpm-core-react` declarations resolve under `moduleResolution: node16 / nodenext`: relative imports are fully specified, and every `exports` entry carries per-condition types (`import` → `.d.ts`, `require` → `.d.cts`) | `v0.17.1` |
 | Notification sync for hosts (Shuttle request): `id` tie-breaker and `beforeId` keyset paging on `listNotifications`, `NotificationEntity.updatedAt` + `changedSince`, `readNotificationSummary` / `notificationSummary`, `markNotificationsRead`, migration `NotificationUpdatedAt0000000028000` | `v0.17.2` |
 | Publish-lint errors in the designer name nodes and switch language (PR #94, #96): `readWorkflowLintMessage(message, definition, language?)`, `WORKFLOW_LINT_MESSAGES`, `BPMLanguage` / `BPMLanguageProvider` / `useBPMLanguage()`, `language` on `Providers` / `BPMNextProviders`; approval comments set at the h3 size | `v0.17.3` |
+| Multiple-selection conditions (PR #97): checkbox and multiple-mode select / autocomplete fields compile `EQUALS` / `NOT_EQUALS` to list membership and name them 包含 / 不包含 (`readConditionOperatorOptionsForField`, `isMultipleSelectionConditionField`, `readConditionOperatorLabel(operator, field?)`); dry-run sample data gives them arrays | `v0.17.4` |
+| Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | `v0.17.4` |
 | Activity log write order: `ActivityLogEntity.seq`, activity logs read in write order (`listActivityLogs` / GraphQL `activityLogs` and two engine lookups), migration `ActivityLogSeq0000000029000` | Not yet released |
 
 ---
@@ -388,6 +390,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `NotifyWebhookEndpointContract` (optional `deprecated` / `disabled`) / `NotifyWebhookCatalogIssue` / `NotifyWebhookCatalogIssueCode` | type/interface | The descriptor subset the catalog lint reads, and a catalog/form publish problem as a code (`ENDPOINT_MISSING`, `ENDPOINT_DEPRECATED`, `ENDPOINT_DISABLED`, `PARAMETER_REQUIRED`, `PARAMETER_UNKNOWN`, `FIELD_MISSING`, `FIELD_INCOMPATIBLE`, `CONSTANT_REQUIRED_NULL`, `CONSTANT_INCOMPATIBLE`, `CONTEXT_INCOMPATIBLE`) |
 | `readNotifyWebhookTargetCatalogIssues` / `readNotifyWebhookCatalogIssueMessage` | function | Checks one well-formed target against its endpoint and the form — the rules behind the backend publish lint and the template designer's publish check — and the designer's zh-TW wording of an issue |
 | `readConditionField` / `readConditionOperator` / `readConditionOperatorIds` / `readConditionValueOptions` / `readNextConditionOperator` / `readNextConditionValue` / `shouldConditionOperatorUseValue` / `readConditionLabel` / `readConditionOperatorLabel` / `readConditionValueLabel` / `readFormFieldOption` / `readConditionExpression` / `readFormFieldReference` / `readConditionExpressionOperator` / `readConditionExpressionValue` | function | Condition compilation (UI state → CEL) |
+| `readConditionOperatorOptionsForField` / `isMultipleSelectionConditionField` | function | Operators offered for a field, named for its value shape (a multiple-selection field — checkbox, or select / autocomplete in `multiple` mode — names `EQUALS` / `NOT_EQUALS` 包含 / 不包含 and compiles them to list membership); `readConditionOperatorLabel(operator, field?)` takes the field for the same naming |
 
 ## `@rytass/bpm-core-shared/workflow-command`
 
@@ -536,8 +539,8 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `FORM_DATA_SOURCE_ERROR_CODES` | const | Stable DataSource error codes returned by the GraphQL surface |
 | `FormDataSourceErrorCode` | type | Union of the stable DataSource error codes |
 | `readFormDataSourceErrorCode()` | function | Extract the DataSource code from a rejected request, else `null` |
-| `readFormDataSourceErrorMessage()` | function | Map a rejected request to display copy, else `null` |
-| `readFormSchemaLintMessage()` | function | Replace the code inside a publish-lint line, keeping the field path |
+| `readFormDataSourceErrorMessage(error, language?)` | function | Map a rejected request to display copy in `language` (`'zh-TW'` default, or `'en'`; a `WorkflowLintLanguage`), else `null` |
+| `readFormSchemaLintMessage(error, language?)` | function | Replace the code inside a publish-lint line with copy in `language` (`'zh-TW'` default, or `'en'`), keeping the field path |
 
 ### Form DataSource builder helpers
 

@@ -1,3 +1,18 @@
+## 0.17.4 (2026-10-19)
+
+### 🚀 Features
+
+- **form:** translate DataSource error copy per language ([787e7a3](https://github.com/Rytass/BPMCore/commit/787e7a3))
+
+### 🩹 Fixes
+
+- **shared:** compile multiple-selection conditions with list semantics ([c9c7782](https://github.com/Rytass/BPMCore/commit/c9c7782))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.3 (2026-10-19)
 
 ### 🚀 Features
