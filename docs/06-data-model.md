@@ -451,10 +451,12 @@ actor_member_id             text (nullable)  -- null = 系統事件（如 SLA �
 node_id                     text (nullable)
 task_id                     uuid (nullable)
 payload                     jsonb         -- 事件特定資料
-created_at                  timestamptz
+created_at                  timestamptz   -- 交易開始時間：同一交易寫的多列相同，不能拿來排序
+seq                         bigint        -- 寫入順序（GENERATED ALWAYS AS IDENTITY，0029）；讀取一律依此排序
 
 INDEX (instance_id, created_at)                      -- idx_activity_logs_instance_created
 INDEX (actor_member_id, created_at)                  -- idx_activity_logs_actor_created
+UNIQUE (instance_id, seq)                            -- IDX_activity_logs_instance_seq
 ```
 
 ---
@@ -733,3 +735,5 @@ ORDER BY t.sla_due_at NULLS LAST, t.created_at;
 | 0025 | `task_candidates.sequence`、`tasks.sla_started_at`（SEQUENTIAL）               |
 | 0026 | `approval_instances.business_key`                                              |
 | 0027 | `approval_instances.submitted_by_member_id`                                    |
+| 0028 | `notifications.updated_at`（trigger 推進，供 `changedSince` 同步）             |
+| 0029 | `activity_logs.seq`（寫入順序，identity；舊資料依寫入順序回填）                |
