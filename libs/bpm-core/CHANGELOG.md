@@ -1,3 +1,20 @@
+## 0.17.5 (2026-10-20)
+
+### 🚀 Features
+
+- **workflow-engine:** record the write order of activity logs ([d3a946a](https://github.com/Rytass/BPMCore/commit/d3a946a))
+
+### 🩹 Fixes
+
+- **organization:** open only the designer's three organization reads ([28b5146](https://github.com/Rytass/BPMCore/commit/28b5146))
+- **organization:** let template designers read the organization ([4f76202](https://github.com/Rytass/BPMCore/commit/4f76202))
+- **workflow-engine:** read activity logs in write order ([4b9865f](https://github.com/Rytass/BPMCore/commit/4b9865f))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.4 (2026-10-19)
 
 ### 🚀 Features
