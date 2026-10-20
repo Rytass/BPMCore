@@ -221,6 +221,8 @@ export type SlaCalendarMode = 'CALENDAR' | 'BUSINESS_DAY';
 export interface FieldPermission {
   readonly editable: boolean;
   readonly fieldPath: string;
+  /** Only meaningful when `editable` is true. */
+  readonly required?: boolean;
   readonly visible: boolean;
 }
 

@@ -41,6 +41,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Review follow-ups to PR #96 / #97: `readFormDataSourceErrorMessage` / `readFormSchemaLintMessage` take an optional `language`; the engine routes a multiple-selection condition saved with single-value CEL by its structured fields | `v0.17.4` |
 | Activity log write order: `ActivityLogEntity.seq`, activity logs read in write order (`listActivityLogs` / GraphQL `activityLogs` and two engine lookups), migration `ActivityLogSeq0000000029000` | `v0.17.5` |
 | Organization reads open to designers: the three reads the template designer and compose wizard load (`orgUnits`, `positions`, `memberships`) move to the new `@BPMDesignerOnly()` resolver `OrganizationDirectoryQueries`, and the designer loads them through the new `readOrganizationDirectory()` instead of `readOrganizationDashboard()`; `OrganizationQueries` stays `@BPMAdminOnly()` as a whole class, so manager rules, the counts and the summary stay administrator-only, as does every organization write. Visible to a host: `resolverMetadataFactory` now receives `resolverName: 'OrganizationDirectoryQueries'` and `access: 'designer'` (was `'OrganizationQueries'` / `'admin'`) for those three handlers, so a host that maps levels as in the README example gets `bpm:design` instead of `bpm:admin` on them | `v0.17.5` |
+| Node-level field permissions, step 1 (shared contract): `FieldPermission.required`, `FieldAccess` and the `readNodeFieldPermissions` / `resolveFieldAccess` / `overlayStoredFormDataKeys` helper family, root export only. A node without `fieldPermissions` behaves as before | Not yet released |
 
 ---
 
@@ -216,7 +217,7 @@ Pure type contracts. No runtime code.
 
 ## `@rytass/bpm-core-shared` (root)
 
-Re-exports the seven subpath modules listed below, plus the identity and organization contract types in the table that follows. There are no `identity` or `organization` subpaths: neither appears in the `exports` map, so `@rytass/bpm-core-shared/identity` and `@rytass/bpm-core-shared/organization` do not resolve.
+Re-exports the seven subpath modules listed below, plus the identity and organization contract types and the field-permission helpers in the tables that follow. There are no `identity`, `organization` or `field-permissions` subpaths: none appears in the `exports` map, so `@rytass/bpm-core-shared/identity`, `@rytass/bpm-core-shared/organization` and `@rytass/bpm-core-shared/field-permissions` do not resolve.
 
 | Name | Kind | Purpose |
 |---|---|---|
@@ -228,6 +229,23 @@ Re-exports the seven subpath modules listed below, plus the identity and organiz
 | `Position` | interface | Position |
 | `Membership` | interface | member × orgUnit × position relation |
 | `ManagerResolution` | interface | "Who is whose manager" rule |
+
+### Field permissions (root only)
+
+Helpers over `UserTaskNodeData.fieldPermissions`. They live in `libs/shared/src/lib/field-permissions.ts` and are exported from the package root only. Only top-level `fieldKey`s are addressed; a table field is permitted as a whole.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FieldAccess` | interface | `{ editable, visible }` — what a viewer may do with one field |
+| `readNodeFieldPermissions(node)` | function | The node's `fieldPermissions`, tolerant of a bad draft: a non-array reads as `[]`, entries that are not objects or lack a non-empty `fieldPath` string are skipped, the first entry per `fieldPath` wins, and `required` / `visible` are normalised to booleans |
+| `readNodeEditableFieldKeys(node)` | function | `fieldPath`s the node's approver may edit (`editable === true`) |
+| `readNodeRequiredFieldKeys(node)` | function | `fieldPath`s that are editable **and** `required === true` |
+| `readApproverFilledFieldKeys(definition)` | function | Union of the editable keys of every user task — the fields filled in by approvers rather than the applicant |
+| `readRevealedFieldKeys(definition, nodeIdsWithNonAdhocTask)` | function | Union of the editable keys of the user tasks among the given node ids (nodes that already produced a non-ad-hoc task); ids that are missing or not a user task are skipped |
+| `resolveFieldAccess({ definition, fieldKeys, isAdhocTask, nodeId, revealedFieldKeys })` | function | `Record<fieldKey, FieldAccess>` for `fieldKeys`. First match wins: (1) the non-ad-hoc task's node lists the field → as configured; (2) an ad-hoc task's node lists it → configured visibility, never editable; (3) an approver-filled field → read-only, visible once revealed and hidden before; (4) anything else → visible, read-only |
+| `omitFormDataKeys(formData, keys)` | function | Copy of `formData` without `keys` |
+| `overlayStoredFormDataKeys(submitted, stored, keys)` | function | `submitted` with each of `keys` replaced by the stored value when `stored` has it as an own property, and left out when it does not |
+| `isFormDataValueEmpty(value)` | function | `true` for `undefined`, `null`, a blank string and an empty array; `false` for `false`, `0`, `NaN` and objects |
 
 ## `@rytass/bpm-core-shared/condition`
 
@@ -332,7 +350,7 @@ Form-schema definitions.
 | `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them), and neither is the member who submitted on their behalf (`submittedByMemberId`, same rule; an `ORG_MANAGER_CHAIN` walk climbs past him instead of stopping at him). `{ whenEmpty }`; absent keeps the previous behaviour |
 | `ExcludeInitiatorWhenEmpty` | type | What happens when no approver is left after the initiator is removed: `FAIL` / `INITIATOR_MANAGER` / `SKIP_NODE` |
 | `SlaCalendarMode` | type | `'CALENDAR' \| 'BUSINESS_DAY'` |
-| `FieldPermission` | interface | Per-node read/write permission — reserved, **not enforced** (the engine and screens never read `fieldPermissions`) |
+| `FieldPermission` | interface | Per-node read/write permission — reserved, **not enforced** (the engine and screens never read `fieldPermissions`). `required?` only matters when `editable` is true |
 | `NotificationOverride` | interface | Node-level notification overrides |
 | `NotificationChannel` | type | `'IN_APP' \| 'EMAIL' \| 'WEBHOOK'` |
 | `ServiceAction` | type | Action runnable by a serviceTask; `NOTIFY` may carry optional `webhooks` (ADR 18) |
