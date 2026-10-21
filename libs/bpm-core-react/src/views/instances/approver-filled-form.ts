@@ -135,22 +135,22 @@ export function readFillLabelMarkers(
 }
 
 /**
- * What approving sends as `fill.formData`: every key `node` lets its
- * approver fill, read from the values the page renders, and nothing else (the
- * server refuses any other key). A key left undefined drops out of the JSON,
- * so the server keeps whatever it already stores for it.
+ * What approving sends as `fill.formData`: the keys of `values` that `node`
+ * lets its approver fill, and nothing else (the server refuses any other key).
+ * `values` is what the approver changed, not the rendered form — a renderer
+ * default the approver never touched (a table's empty rows, a boolean's
+ * `false`) is not theirs to sign, and would otherwise show up as filled in.
  */
 export function readFillPayload(
   values: WorkflowFormData,
   node: UserTaskNode,
 ): Readonly<Record<string, unknown>> {
   return Object.fromEntries(
-    [...readNodeFillableFieldKeys(node)].map((fieldKey) => [
-      fieldKey,
-      Object.prototype.hasOwnProperty.call(values, fieldKey)
-        ? values[fieldKey]
-        : undefined,
-    ]),
+    [...readNodeFillableFieldKeys(node)]
+      .filter((fieldKey) =>
+        Object.prototype.hasOwnProperty.call(values, fieldKey),
+      )
+      .map((fieldKey) => [fieldKey, values[fieldKey]]),
   );
 }
 
@@ -296,7 +296,11 @@ export function readFillSummary(
   const fillableKeys = readNodeFillableFieldKeys(node);
 
   return schema.fields
-    .filter((field) => fillableKeys.has(field.fieldKey))
+    .filter(
+      (field) =>
+        fillableKeys.has(field.fieldKey) &&
+        Object.prototype.hasOwnProperty.call(values, field.fieldKey),
+    )
     .map((field) => ({
       fieldKey: field.fieldKey,
       label: field.label || field.fieldKey,

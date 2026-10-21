@@ -312,6 +312,22 @@ test.describe('approver-filled fields (real backend)', () => {
       ),
     ).toHaveCount(0);
     await expect(fieldInput(admin, '發票號碼')).toHaveValue('CONFLICT-1');
+
+    // The table was never touched, so approving neither sends nor records it.
+    await admin.getByRole('button', { exact: true, name: '同意' }).click();
+    const dialog = admin.getByRole('dialog');
+
+    await expect(dialog.getByText('費用明細')).toHaveCount(0);
+    await dialog.getByRole('button', { name: '送出同意' }).click();
+    await expect
+      .poll(
+        async () =>
+          (await readInstanceFormData(admin, instanceId))['invoiceNo'],
+      )
+      .toBe('CONFLICT-1');
+    expect(await readInstanceFormData(admin, instanceId)).not.toHaveProperty(
+      'costItems',
+    );
   });
 
   test('the inbox flags the task and the notification opens the case', async (): Promise<void> => {

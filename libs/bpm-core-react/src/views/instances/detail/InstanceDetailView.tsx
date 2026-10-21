@@ -505,11 +505,11 @@ export function InstanceDetailView({
       fillNode && fillValues && schemaSnapshot && instance
         ? {
             expectedFormDataFingerprint: instance.formDataFingerprint ?? '',
-            formData: readFillPayload(fillValues, fillNode),
-            summary: readFillSummary(schemaSnapshot, fillNode, fillValues),
+            formData: readFillPayload(fillDraft, fillNode),
+            summary: readFillSummary(schemaSnapshot, fillNode, fillDraft),
           }
         : null,
-    [fillNode, fillValues, instance, schemaSnapshot],
+    [fillDraft, fillNode, fillValues, instance, schemaSnapshot],
   );
 
   function handleFillChange(values: WorkflowFormData): void {
@@ -518,14 +518,15 @@ export function InstanceDetailView({
     }
 
     const fillableKeys = readNodeFillableFieldKeys(fillNode);
-
-    setFillDraft(
-      Object.fromEntries(
-        Object.entries(values).filter(([fieldKey]) =>
-          fillableKeys.has(fieldKey),
-        ),
-      ),
+    // Only what the approver changed joins the draft: the renderer hands back
+    // the whole form, defaults included, on every edit.
+    const changed = Object.entries(values).filter(
+      ([fieldKey, value]) =>
+        fillableKeys.has(fieldKey) &&
+        JSON.stringify(value) !== JSON.stringify(fillValues?.[fieldKey]),
     );
+
+    setFillDraft((draft) => ({ ...draft, ...Object.fromEntries(changed) }));
     setFillErrors({});
   }
 

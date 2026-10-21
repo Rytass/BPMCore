@@ -233,14 +233,11 @@ describe('approver-filled form helpers', () => {
       });
     });
 
-    it('sends every fillable key and nothing else', () => {
+    it('sends the fillable keys the approver changed and nothing else', () => {
       expect(
         readFillPayload({ note: 'n', title: 'T' }, fillNode),
-      ).toEqual({ financeItems: undefined, note: 'n' });
-      expect(Object.keys(readFillPayload({}, fillNode)).sort()).toEqual([
-        'financeItems',
-        'note',
-      ]);
+      ).toEqual({ note: 'n' });
+      expect(readFillPayload({}, fillNode)).toEqual({});
     });
 
     it('recognises the conflict message as the client throws it', () => {
@@ -331,6 +328,12 @@ describe('approver-filled form helpers', () => {
       ).toEqual([
         { fieldKey: 'financeItems', label: '財務明細', text: '2 列，金額合計 1,500' },
         { fieldKey: 'note', label: '備註', text: '未填寫' },
+      ]);
+    });
+
+    it('leaves out fields the approver did not touch', () => {
+      expect(readFillSummary(SCHEMA, fillNode, { note: 'n' })).toEqual([
+        { fieldKey: 'note', label: '備註', text: 'n' },
       ]);
     });
   });
