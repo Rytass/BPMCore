@@ -578,8 +578,9 @@ export const InstanceTasksSection = forwardRef<
       return;
     }
 
+    // The comment is cleared on close and on success, not here, so one typed
+    // before a fill conflict survives the reload and the second approve.
     setError(null);
-    setApproveComment('');
     setApproveModalOpen(true);
   }
 

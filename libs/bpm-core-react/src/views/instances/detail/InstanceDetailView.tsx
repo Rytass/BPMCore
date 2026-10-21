@@ -43,10 +43,14 @@ import {
   ShareIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
-import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
+import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import {
   readNodeFillableFieldKeys,
   readTopLevelFieldKey,
+  type ResolvedFieldAccess,
 } from '@rytass/bpm-core-shared';
 import {
   UserTaskNode,
@@ -101,6 +105,7 @@ import { InstanceFormSection } from './sections/InstanceFormSection';
 import { InstanceAttachmentsSection } from './sections/InstanceAttachmentsSection';
 import {
   InstanceTasksSection,
+  type InstanceTasksSectionFill,
   type InstanceTasksSectionHandle,
 } from './sections/InstanceTasksSection';
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
@@ -114,6 +119,7 @@ import {
   readApplicantSubmission,
   readFillDisplaySchema,
   readFillLabelMarkers,
+  readFillChanges,
   readFillPayload,
   readFillServerErrors,
   readFillSummary,
@@ -463,7 +469,7 @@ export function InstanceDetailView({
 
   const schemaSnapshot = instance?.formDefinitionSnapshot.schema ?? null;
   const fillSchema = useMemo(
-    () =>
+    (): FormDefinitionSchema | null =>
       fillNode && schemaSnapshot
         ? readFillDisplaySchema(schemaSnapshot, fillNode)
         : null,
@@ -481,8 +487,21 @@ export function InstanceDetailView({
         : null,
     [fillDraft, fillSchema, instance],
   );
+  const fillChanges = useMemo(
+    (): WorkflowFormData =>
+      fillNode && fillSchema && fillValues && instance
+        ? readFillChanges({
+            draft: fillDraft,
+            node: fillNode,
+            schema: fillSchema,
+            stored: instance.formData,
+            values: fillValues,
+          })
+        : {},
+    [fillDraft, fillNode, fillSchema, fillValues, instance],
+  );
   const viewerFieldAccess = useMemo(
-    () =>
+    (): Readonly<Record<string, ResolvedFieldAccess>> | undefined =>
       instance
         ? readViewerFieldAccess({
             activityLogs,
@@ -494,22 +513,22 @@ export function InstanceDetailView({
     [activityLogs, currentTask, instance, tasks],
   );
   const fillLabelMarkers = useMemo(
-    () =>
+    (): Readonly<Record<string, string>> | undefined =>
       instance
         ? readFillLabelMarkers(instance.workflowSnapshot, fillNode)
         : undefined,
     [fillNode, instance],
   );
   const tasksSectionFill = useMemo(
-    () =>
+    (): InstanceTasksSectionFill | null =>
       fillNode && fillValues && schemaSnapshot && instance
         ? {
             expectedFormDataFingerprint: instance.formDataFingerprint ?? '',
-            formData: readFillPayload(fillDraft, fillNode),
-            summary: readFillSummary(schemaSnapshot, fillNode, fillDraft),
+            formData: readFillPayload(fillChanges, fillNode),
+            summary: readFillSummary(schemaSnapshot, fillNode, fillChanges),
           }
         : null,
-    [fillDraft, fillNode, fillValues, instance, schemaSnapshot],
+    [fillChanges, fillNode, fillValues, instance, schemaSnapshot],
   );
 
   function handleFillChange(values: WorkflowFormData): void {

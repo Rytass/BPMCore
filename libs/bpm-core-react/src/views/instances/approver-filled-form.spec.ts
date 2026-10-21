@@ -10,6 +10,7 @@ import {
   readApplicantSubmission,
   readFillDisplaySchema,
   readFillLabelMarkers,
+  readFillChanges,
   readFillPayload,
   readFillServerErrors,
   readFillSummary,
@@ -231,6 +232,56 @@ describe('approver-filled form helpers', () => {
         note: '財務補填',
         title: '總務補填',
       });
+    });
+
+    // Two fill nodes on mutually exclusive branches may fill the same field;
+    // whichever node comes first, the viewer's field still reads 本關補填.
+    it('keeps 本關補填 on a field an earlier node also fills', () => {
+      const earlier = {
+        ...fillNode,
+        data: {
+          ...fillNode.data,
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'note', fill: 'OPTIONAL' },
+          ],
+          label: '總務',
+        },
+        id: 'admin',
+      } as UserTaskNode;
+      const definition: WorkflowDefinition = {
+        ...buildDefinition([]),
+        nodes: [earlier, fillNode],
+      };
+
+      expect(readFillLabelMarkers(definition, fillNode)).toMatchObject({
+        note: '本關補填',
+      });
+      expect(readFillLabelMarkers(definition, null)).toMatchObject({
+        note: '總務補填',
+      });
+    });
+
+    it('adds a seeded fill table the case does not store yet', () => {
+      const seeded = [{ name: '' }];
+
+      expect(
+        readFillChanges({
+          draft: { note: 'n' },
+          node: fillNode,
+          schema: SCHEMA,
+          stored: {},
+          values: { financeItems: seeded, note: 'n' },
+        }),
+      ).toEqual({ financeItems: seeded, note: 'n' });
+      expect(
+        readFillChanges({
+          draft: {},
+          node: fillNode,
+          schema: SCHEMA,
+          stored: { financeItems: [{ name: 'a' }] },
+          values: { financeItems: [{ name: 'a' }] },
+        }),
+      ).toEqual({});
     });
 
     it('sends the fillable keys the approver changed and nothing else', () => {

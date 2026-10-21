@@ -154,6 +154,47 @@ export function readFillPayload(
   );
 }
 
+/**
+ * What the approver's fill amounts to: the fields they changed (`draft`), plus
+ * each fill table the page seeds with `minRows` rows that the case does not
+ * store yet. The page shows those rows and validates them, so they are sent
+ * too — left out, the server would refuse the approval for missing rows the
+ * approver can see on screen.
+ */
+export function readFillChanges({
+  draft,
+  node,
+  schema,
+  stored,
+  values,
+}: {
+  readonly draft: WorkflowFormData;
+  readonly node: UserTaskNode;
+  readonly schema: FormDefinitionSchema;
+  readonly stored: WorkflowFormData;
+  readonly values: WorkflowFormData;
+}): WorkflowFormData {
+  const fillableKeys = readNodeFillableFieldKeys(node);
+  const seededTables = schema.fields.filter((field) => {
+    const seeded = values[field.fieldKey];
+
+    return (
+      isTableFieldDefinition(field) &&
+      fillableKeys.has(field.fieldKey) &&
+      !Object.prototype.hasOwnProperty.call(stored, field.fieldKey) &&
+      Array.isArray(seeded) &&
+      seeded.length > 0
+    );
+  });
+
+  return {
+    ...Object.fromEntries(
+      seededTables.map((field) => [field.fieldKey, values[field.fieldKey]]),
+    ),
+    ...draft,
+  };
+}
+
 /** The server message of a fill against form data someone else changed. */
 export function isFillConflictMessage(message: string): boolean {
   return message.includes('form data changed; refresh and retry');
