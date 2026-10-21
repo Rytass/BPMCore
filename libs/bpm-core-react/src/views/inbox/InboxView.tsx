@@ -2,6 +2,7 @@
 
 import { type Key, ReactElement, useEffect, useMemo, useState } from 'react';
 import {
+  Badge,
   Button,
   PageHeader,
   Section,
@@ -93,6 +94,16 @@ export function InboxView(): ReactElement {
         dataIndex: 'statusLabel',
         key: 'statusLabel',
         title: '狀態',
+        width: 120,
+      },
+      {
+        key: 'fill',
+        // Approving one of these needs the case page, where the fill is entered.
+        render: (record: InboxTaskRow): ReactElement | null =>
+          record.hasFillableFields ? (
+            <Badge size="sub" text="需補填" variant="dot-warning" />
+          ) : null,
+        title: '補填',
         width: 120,
       },
       {
