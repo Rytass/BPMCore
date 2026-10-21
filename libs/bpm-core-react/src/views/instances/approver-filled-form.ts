@@ -63,16 +63,15 @@ export function readFillValidationSchema(
   node: UserTaskNode,
 ): FormDefinitionSchema {
   const fillableKeys = readNodeFillableFieldKeys(node);
-  const requiredKeys = readNodeRequiredFieldKeys(node);
+  const displaySchema = readFillDisplaySchema(schema, node);
 
+  // Derived from the display schema so the check and the asterisk read the
+  // same rule.
   return {
-    ...schema,
-    fields: schema.fields
-      .filter((field) => fillableKeys.has(field.fieldKey))
-      .map((field) => ({
-        ...field,
-        required: requiredKeys.has(field.fieldKey),
-      })),
+    ...displaySchema,
+    fields: displaySchema.fields.filter((field) =>
+      fillableKeys.has(field.fieldKey),
+    ),
   };
 }
 
