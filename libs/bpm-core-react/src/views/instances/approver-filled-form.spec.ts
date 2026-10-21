@@ -289,6 +289,9 @@ describe('approver-filled form helpers', () => {
         readFillPayload({ note: 'n', title: 'T' }, fillNode),
       ).toEqual({ note: 'n' });
       expect(readFillPayload({}, fillNode)).toEqual({});
+      expect(readFillPayload({ note: undefined }, fillNode)).toEqual({
+        note: null,
+      });
     });
 
     it('recognises the conflict message as the client throws it', () => {
@@ -380,6 +383,24 @@ describe('approver-filled form helpers', () => {
         { fieldKey: 'financeItems', label: '財務明細', text: '2 列，金額合計 1,500' },
         { fieldKey: 'note', label: '備註', text: '未填寫' },
       ]);
+    });
+
+    it('names the members of a member field it knows', () => {
+      const schema: FormDefinitionSchema = {
+        fields: [
+          { fieldKey: 'note', label: '經辦', required: false, type: 'member' },
+        ],
+        schemaVersion: 1,
+      } as FormDefinitionSchema;
+
+      expect(
+        readFillSummary(
+          schema,
+          fillNode,
+          { note: 'member-102' },
+          new Map([['member-102', '吳採購專員']]),
+        ),
+      ).toEqual([{ fieldKey: 'note', label: '經辦', text: '吳採購專員' }]);
     });
 
     it('leaves out fields the approver did not touch', () => {

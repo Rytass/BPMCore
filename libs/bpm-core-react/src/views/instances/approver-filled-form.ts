@@ -92,7 +92,12 @@ export function readFillDisplaySchema(
     ...schema,
     fields: schema.fields.map((field) =>
       fillableKeys.has(field.fieldKey)
-        ? { ...field, required: requiredKeys.has(field.fieldKey) }
+        ? {
+            ...field,
+            required: requiredKeys.has(field.fieldKey),
+            // The node alone decides; the server ignores the form's rule.
+            requiredWhen: undefined,
+          }
         : field,
     ),
   };
@@ -150,7 +155,9 @@ export function readFillPayload(
       .filter((fieldKey) =>
         Object.prototype.hasOwnProperty.call(values, fieldKey),
       )
-      .map((fieldKey) => [fieldKey, values[fieldKey]]),
+      // A cleared field reads `undefined`, which JSON drops, and the server
+      // would keep the old value; `null` clears it.
+      .map((fieldKey) => [fieldKey, values[fieldKey] ?? null]),
   );
 }
 
@@ -278,6 +285,7 @@ export interface FillSummaryItem {
 function readFillValueText(
   field: FormFieldDefinition,
   value: FormFieldValue | undefined,
+  memberNames: ReadonlyMap<string, string>,
 ): string {
   if (isTableFieldDefinition(field)) {
     const rows = readFormTableRows(value);
@@ -316,7 +324,9 @@ function readFillValueText(
   const items = Array.isArray(value) ? value : [value];
   const optionLabels = isFormStaticOptionFieldDefinition(field)
     ? new Map(field.options.map((option) => [option.value, option.label]))
-    : new Map<string, string>();
+    : field.type === 'member'
+      ? memberNames
+      : new Map<string, string>();
 
   return items
     .map((item) =>
@@ -327,12 +337,14 @@ function readFillValueText(
 
 /**
  * One line per field `node` lets its approver fill, in form order, for the
- * approve dialog: what will be sent along with the approval.
+ * approve dialog: what will be sent along with the approval. A member field
+ * names each member found in `memberNames` and shows the id otherwise.
  */
 export function readFillSummary(
   schema: FormDefinitionSchema,
   node: UserTaskNode,
   values: WorkflowFormData,
+  memberNames: ReadonlyMap<string, string> = new Map(),
 ): readonly FillSummaryItem[] {
   const fillableKeys = readNodeFillableFieldKeys(node);
 
@@ -345,6 +357,6 @@ export function readFillSummary(
     .map((field) => ({
       fieldKey: field.fieldKey,
       label: field.label || field.fieldKey,
-      text: readFillValueText(field, values[field.fieldKey]),
+      text: readFillValueText(field, values[field.fieldKey], memberNames),
     }));
 }

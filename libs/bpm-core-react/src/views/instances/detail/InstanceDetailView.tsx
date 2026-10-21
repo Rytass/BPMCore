@@ -111,7 +111,11 @@ import {
 import { InstanceSignaturesSection } from './sections/InstanceSignaturesSection';
 import { InstanceHistorySection } from './sections/InstanceHistorySection';
 import { InstanceWebhookDeliveriesSection } from './sections/InstanceWebhookDeliveriesSection';
-import { isPresentText, readNodeDisplayLabel } from './sections/shared';
+import {
+  isPresentText,
+  readMemberDisplayText,
+  readNodeDisplayLabel,
+} from './sections/shared';
 import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
   isFillConflictMessage,
@@ -519,16 +523,38 @@ export function InstanceDetailView({
         : undefined,
     [fillNode, instance],
   );
+  const memberProfilesById = useMemo(
+    (): ReadonlyMap<string, MemberProfileRecord> =>
+      new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
+    [memberProfiles],
+  );
   const tasksSectionFill = useMemo(
     (): InstanceTasksSectionFill | null =>
-      fillNode && fillValues && schemaSnapshot && instance
+      fillNode && fillValues && schemaSnapshot && instance?.formDataFingerprint
         ? {
-            expectedFormDataFingerprint: instance.formDataFingerprint ?? '',
+            expectedFormDataFingerprint: instance.formDataFingerprint,
             formData: readFillPayload(fillChanges, fillNode),
-            summary: readFillSummary(schemaSnapshot, fillNode, fillChanges),
+            summary: readFillSummary(
+              schemaSnapshot,
+              fillNode,
+              fillChanges,
+              new Map(
+                [...memberProfilesById.keys()].map((memberId) => [
+                  memberId,
+                  readMemberDisplayText(memberId, memberProfilesById),
+                ]),
+              ),
+            ),
           }
         : null,
-    [fillChanges, fillNode, fillValues, instance, schemaSnapshot],
+    [
+      fillChanges,
+      fillNode,
+      fillValues,
+      instance,
+      memberProfilesById,
+      schemaSnapshot,
+    ],
   );
 
   function handleFillChange(values: WorkflowFormData): void {
@@ -552,6 +578,14 @@ export function InstanceDetailView({
   // Checked before the approve dialog opens, against the same rules the
   // server applies, so the approver fixes fields instead of reading an error.
   function handleApproveClick(): void {
+    // Without the fingerprint the server would read any fill as a conflict,
+    // and reloading could not fix it.
+    if (fillNode && !instance?.formDataFingerprint) {
+      Message.error('無法確認表單版本，請重新整理頁面後再同意。');
+
+      return;
+    }
+
     if (
       fillNode &&
       fillValues &&
@@ -613,11 +647,6 @@ export function InstanceDetailView({
     setFillConflict(false);
   }
 
-  const memberProfilesById = useMemo(
-    (): ReadonlyMap<string, MemberProfileRecord> =>
-      new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
-    [memberProfiles],
-  );
   const taskDecisionsByTaskId = useMemo(
     (): ReadonlyMap<string, TaskDecisionRecord> =>
       readLatestTaskDecisionsByTaskId(taskDecisions),
