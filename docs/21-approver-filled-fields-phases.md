@@ -17,7 +17,7 @@
 | Phase | 交付 | 分支／PR | 相依 | 狀態 |
 | --- | --- | --- | --- | --- |
 | P0 | PR1 收尾：`fieldPermissions` → `fieldAccess`、申請人規則檢查、lint label 集中 | #109（推到作者 fork 分支） | — | IMPLEMENTED |
-| P1 | FormRenderer 逐欄位顯示／可編輯、檢視者欄位權限計算 | PR2（疊在 #109 之上） | P0 | PLANNED |
+| P1 | FormRenderer 逐欄位顯示／可編輯、檢視者欄位權限計算 | PR2（疊在 #109 之上） | P0 | IMPLEMENTED |
 | P2 | 案件詳情補填流程：輸入、驗證、同意、衝突、任務與歷程 | PR2 | P1 | PLANNED |
 | P3 | 設計器：欄位與關卡總覽矩陣、`setFieldAccessMatrix` command、節點面板摘要、舊鍵提示 | PR3（疊在 #109 之上） | P0 | PLANNED |
 | P4 | E2E golden path、demo seed、文件、發布 | PR2／PR3 合併後 | P2、P3 | PLANNED |
@@ -57,6 +57,10 @@ P1–P2 與 P3 互不相依，可以並行。
   commit 依 scope 拆分。
 
 ## P1 — 逐欄位顯示與可編輯（PR2 前半）
+
+- **狀態**：IMPLEMENTED（2026-10-21）。`FormRenderer` 的 `fieldAccess` 以自有屬性讀取（欄位鍵 `constructor` 不會讀到原型鏈）；
+  `readActingTask`（`detail/sections/shared.ts`）取代兩處各自挑選任務的程式；`readFillValidationSchema` 放在
+  `views/instances/approver-filled-form.ts`。檢視者計算尚未接到案件詳情畫面，由 P2 接上。
 
 **Scope**
 

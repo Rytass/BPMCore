@@ -344,6 +344,24 @@ export function canMemberActOnTask(
   );
 }
 
+/**
+ * The task the member may act on now. A member who holds both an ad-hoc task
+ * and the node's own task gets the node's own one: only it may fill in the
+ * node's fields. Among the same kind, the first in `tasks` order wins.
+ */
+export function readActingTask(
+  tasks: readonly TaskRecord[],
+  memberId: string | null,
+): TaskRecord | null {
+  const actionable = tasks.filter(
+    (task) =>
+      canMemberActOnTask(task, memberId) &&
+      (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
+  );
+
+  return actionable.find((task) => !task.isAdhoc) ?? actionable[0] ?? null;
+}
+
 export function readReturnTargetOptions(
   workflow: WorkflowDefinition,
   node: WorkflowNode,

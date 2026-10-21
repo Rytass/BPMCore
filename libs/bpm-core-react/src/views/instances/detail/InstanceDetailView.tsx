@@ -83,7 +83,7 @@ import { useAuth } from '../../../lib/auth-provider';
 import { isBPMAdminMember } from '../../../lib/use-bpm-member';
 import { PDFPreview } from '../../../components/pdf-preview';
 import {
-  canMemberActOnTask,
+  readActingTask,
   readErrorMessage,
   readInstanceStateLabel,
   readLatestTaskDecisionsByTaskId,
@@ -375,11 +375,7 @@ export function InstanceDetailView({
   // deciding/hasCurrentTask, but we need these synchronously for rendering).
   const currentTask = useMemo(
     (): TaskRecord | null =>
-      tasks.find(
-        (task) =>
-          canMemberActOnTask(task, currentMemberId) &&
-          (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
-      ) ?? null,
+      readActingTask(tasks, currentMemberId),
     [currentMemberId, tasks],
   );
   const currentTaskNode = useMemo(

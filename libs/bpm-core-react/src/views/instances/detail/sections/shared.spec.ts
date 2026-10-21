@@ -10,6 +10,7 @@ import {
   isUserMeaningfulActivity,
   readActivityDetailParts,
   readActivityEventLabel,
+  readActingTask,
   readActivityStepRecords,
   readAdhocTargetDraft,
   readMemberDisplayText,
@@ -340,6 +341,43 @@ describe('canMemberActOnTask', () => {
       true,
     );
     expect(canMemberActOnTask(task({}), null)).toBe(false);
+  });
+});
+
+describe('readActingTask', () => {
+  function task(overrides: Partial<TaskRecord>): TaskRecord {
+    return {
+      assigneeMemberId: 'alice',
+      candidateMemberIds: ['alice'],
+      isAdhoc: false,
+      status: 'PENDING',
+      ...overrides,
+    } as TaskRecord;
+  }
+
+  it("prefers the node's own task over an ad-hoc one", () => {
+    const adhoc = task({ id: 'adhoc', isAdhoc: true });
+    const own = task({ id: 'own' });
+
+    expect(readActingTask([adhoc, own], 'alice')?.id).toBe('own');
+  });
+
+  it('falls back to an ad-hoc task when that is all the member holds', () => {
+    expect(
+      readActingTask([task({ id: 'adhoc', isAdhoc: true })], 'alice')?.id,
+    ).toBe('adhoc');
+  });
+
+  it('skips tasks that are closed or not the member\'s to act on', () => {
+    const tasks = [
+      task({ id: 'done', status: 'COMPLETED' }),
+      task({ assigneeMemberId: 'bob', candidateMemberIds: ['bob'], id: 'bob' }),
+      task({ id: 'adhoc', isAdhoc: true, status: 'IN_PROGRESS' }),
+    ];
+
+    expect(readActingTask(tasks, 'alice')?.id).toBe('adhoc');
+    expect(readActingTask(tasks, 'carol')).toBeNull();
+    expect(readActingTask(tasks, null)).toBeNull();
   });
 });
 

@@ -1,8 +1,13 @@
-import type { WorkflowDefinition } from '@rytass/bpm-core-shared';
+import type {
+  UserTaskNode,
+  WorkflowDefinition,
+} from '@rytass/bpm-core-shared';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import { validateFormRendererValues } from '@rytass/bpm-core-client/form';
 import {
   readApplicantFormSchema,
   readApplicantSubmission,
+  readFillValidationSchema,
 } from './approver-filled-form';
 
 const SCHEMA: FormDefinitionSchema = {
@@ -103,6 +108,65 @@ describe('approver-filled form helpers', () => {
       expect(readApplicantSubmission(values, buildDefinition([]))).toEqual(
         values,
       );
+    });
+  });
+
+  describe('readFillValidationSchema', () => {
+    const node = {
+      ...buildDefinition([]).nodes[0],
+      data: {
+        ...buildDefinition([]).nodes[0].data,
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'note', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
+          { display: 'SHOW', fieldKey: 'title', fill: 'NONE' },
+        ],
+      },
+    } as UserTaskNode;
+    const uiSchema = { layout: [], schemaVersion: 1 };
+
+    it("keeps only the node's fillable fields, required as the node says", () => {
+      const result = readFillValidationSchema(SCHEMA, node);
+
+      expect(
+        result.fields.map((field) => [field.fieldKey, field.required]),
+      ).toEqual([
+        ['financeItems', false],
+        ['note', true],
+      ]);
+    });
+
+    // Mirrors the server's fill check: a REQUIRED blank field fails, an
+    // OPTIONAL table still answers to its own minRows, and a field the node
+    // does not let them fill is never checked.
+    it('validates a fill the way the server does', () => {
+      const schema = readFillValidationSchema(SCHEMA, node);
+
+      expect(
+        validateFormRendererValues({
+          schema,
+          uiSchema,
+          values: { financeItems: [], note: '  ', title: '' },
+        }).errors,
+      ).toEqual({
+        financeItems: '財務明細至少需要 1 列。',
+        note: '備註為必填欄位。',
+      });
+      expect(
+        validateFormRendererValues({
+          schema,
+          uiSchema,
+          values: { financeItems: [{ name: 'x' }], note: 'ok' },
+        }).valid,
+      ).toBe(true);
+    });
+
+    it('does not mutate its input', () => {
+      const input = JSON.parse(JSON.stringify(SCHEMA)) as FormDefinitionSchema;
+
+      readFillValidationSchema(input, node);
+
+      expect(input).toEqual(SCHEMA);
     });
   });
 });

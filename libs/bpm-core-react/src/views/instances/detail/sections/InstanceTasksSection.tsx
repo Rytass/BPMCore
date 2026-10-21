@@ -40,7 +40,7 @@ import { BPMFormField } from '../../../../components/bpm-form-field';
 import {
   MemberOption,
   TaskRow,
-  canMemberActOnTask,
+  readActingTask,
   readErrorMessage,
   readMemberDisplayText,
   readMemberOption,
@@ -254,11 +254,7 @@ export const InstanceTasksSection = forwardRef<
 
   const currentTask = useMemo(
     (): TaskRecord | null =>
-      tasks.find(
-        (task) =>
-          canMemberActOnTask(task, currentMemberId) &&
-          (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
-      ) ?? null,
+      readActingTask(tasks, currentMemberId),
     [currentMemberId, tasks],
   );
 

@@ -1,6 +1,9 @@
 import {
   omitFormDataKeys,
   readApproverFilledFieldKeys,
+  readNodeFillableFieldKeys,
+  readNodeRequiredFieldKeys,
+  type UserTaskNode,
   type WorkflowDefinition,
 } from '@rytass/bpm-core-shared';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
@@ -38,4 +41,29 @@ export function readApplicantSubmission(
     values,
     readApproverFilledFieldKeys(definition),
   ) as WorkflowFormData;
+}
+
+/**
+ * The form an approver's fill is validated against: only the fields `node`
+ * lets them fill in, each required exactly when the node says `REQUIRED`. A
+ * required table needs at least one row, the rule `validateFormRendererValues`
+ * already applies, so the result agrees with the server's fill check. Never
+ * mutates its input.
+ */
+export function readFillValidationSchema(
+  schema: FormDefinitionSchema,
+  node: UserTaskNode,
+): FormDefinitionSchema {
+  const fillableKeys = readNodeFillableFieldKeys(node);
+  const requiredKeys = readNodeRequiredFieldKeys(node);
+
+  return {
+    ...schema,
+    fields: schema.fields
+      .filter((field) => fillableKeys.has(field.fieldKey))
+      .map((field) => ({
+        ...field,
+        required: requiredKeys.has(field.fieldKey),
+      })),
+  };
 }

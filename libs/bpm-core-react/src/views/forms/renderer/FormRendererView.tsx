@@ -62,6 +62,7 @@ import {
   readSelectOption,
   readVisibleFormRendererFields,
 } from '@rytass/bpm-core-client/form';
+import type { ResolvedFieldAccess } from '@rytass/bpm-core-shared';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
   FormDataSourceFieldState,
@@ -77,6 +78,15 @@ export interface FormRendererProps {
   readonly dataSourceInitialValues?: FormRendererValues;
   readonly emptyText?: string;
   readonly errors?: Readonly<Record<string, string>>;
+  /**
+   * Per top-level field, what this viewer may see and edit (ADR 20 §3.3,
+   * `resolveFieldAccess`). A field with `visible: false` is not rendered; one
+   * with `editable: true` stays editable inside a `readonly` form, and one
+   * with `editable: false` is read-only in an editable form. The form's own
+   * rules (`hidden`, `visibleWhen`, `readonlyWhen`) still apply. A field the
+   * map leaves out follows `readonly`; leaving the prop out changes nothing.
+   */
+  readonly fieldAccess?: Readonly<Record<string, ResolvedFieldAccess>>;
   readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
   readonly onDataSourceStateChange?: (
@@ -142,6 +152,7 @@ export function FormRenderer({
   dataSourceInitialValues,
   emptyText = '尚未建立欄位。',
   errors = {},
+  fieldAccess,
   maxWidth,
   onChange,
   onDataSourceStateChange,
@@ -164,8 +175,11 @@ export function FormRenderer({
   const valuesRef = useRef<FormRendererValues>(values);
   const visibleFields = useMemo(
     (): readonly FormFieldDefinition[] =>
-      readVisibleFormRendererFields(schema, uiSchema, values),
-    [schema, uiSchema, values],
+      readVisibleFormRendererFields(schema, uiSchema, values).filter(
+        (field) =>
+          readOwnFieldAccess(fieldAccess, field.fieldKey)?.visible !== false,
+      ),
+    [fieldAccess, schema, uiSchema, values],
   );
 
   useEffect((): void => {
@@ -232,7 +246,10 @@ export function FormRenderer({
           onDataSourceStateChange={onDataSourceStateChange}
           onUploadAttachment={onUploadAttachment}
           optionSnapshots={optionSnapshots}
-          readonly={readonly}
+          readonly={readFieldAccessReadonly(
+            readOwnFieldAccess(fieldAccess, field.fieldKey),
+            readonly,
+          )}
           schema={schema}
           style={{
             ...FORM_RENDERER_FIELD_STYLE,
@@ -250,6 +267,24 @@ export function FormRenderer({
       ))}
     </div>
   );
+}
+
+/** Own-property read: a field key like `constructor` must not hit the prototype. */
+function readOwnFieldAccess(
+  fieldAccess: Readonly<Record<string, ResolvedFieldAccess>> | undefined,
+  fieldKey: string,
+): ResolvedFieldAccess | undefined {
+  return fieldAccess !== undefined &&
+    Object.prototype.hasOwnProperty.call(fieldAccess, fieldKey)
+    ? fieldAccess[fieldKey]
+    : undefined;
+}
+
+function readFieldAccessReadonly(
+  access: ResolvedFieldAccess | undefined,
+  formReadonly: boolean,
+): boolean {
+  return access === undefined ? formReadonly : !access.editable;
 }
 
 function FormRendererField({
