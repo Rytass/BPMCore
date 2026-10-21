@@ -57,6 +57,9 @@ Thumbs.db
 # Next.js
 .next
 out
+# Rewritten by `next dev` / `next build` / `next typegen` with different paths;
+# the client typecheck target regenerates it.
+apps/client/next-env.d.ts
 *.tsbuildinfo
 
 # Package tarballs produced by publint / npm pack
