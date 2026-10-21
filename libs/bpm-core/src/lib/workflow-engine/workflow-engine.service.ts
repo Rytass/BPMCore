@@ -3943,32 +3943,44 @@ export class WorkflowEngineService {
         new Map<string, readonly string[]>(),
       );
 
-    const nodeLabels = await this.readTaskNodeLabels(tasks);
+    const nodeSummaries = await this.readTaskNodeSummaries(tasks);
 
-    return tasks.map((task) =>
-      Object.assign(new TaskEntity(), task, {
+    return tasks.map((task) => {
+      const nodeSummary = nodeSummaries.get(
+        readNodeLabelKey(task.instanceId, task.nodeId),
+      );
+
+      return Object.assign(new TaskEntity(), task, {
         candidateMemberIds: candidatesByTaskId.get(task.id) ?? [],
-        nodeLabel:
-          nodeLabels.get(readNodeLabelKey(task.instanceId, task.nodeId)) ??
-          null,
+        hasFillableFields:
+          !task.isAdhoc && (nodeSummary?.hasFillableFields ?? false),
+        nodeLabel: nodeSummary?.label ?? null,
         openCandidateMemberIds: openCandidatesByTaskId.get(task.id) ?? [],
-      }),
-    );
+      });
+    });
   }
 
   /**
-   * The display names of the nodes a page of tasks sits on, keyed by
+   * The display names of the nodes a page of tasks sits on, and whether each
+   * is a user task that lets its approver fill in fields, keyed by
    * {@link readNodeLabelKey}. One query for the whole page, and Postgres picks
    * the labels out of the snapshots: a workflow snapshot is a whole workflow
    * definition, and every inbox, history and instance task list runs this, so
    * shipping the snapshots to the app just to read one string each would cost
    * page size × snapshot size on every refresh. A missing instance or node, a
    * snapshot without a `nodes` array, and a blank or non-string label all
-   * leave the task without a label, as `readWorkflowNodeLabel` does.
+   * leave the task without a label, as `readWorkflowNodeLabel` does. Only the
+   * node's `fieldAccess` leaves the database for the fill flag, which
+   * `readNodeFillableFieldKeys` then reads as tolerantly as the engine does.
    */
-  private async readTaskNodeLabels(
+  private async readTaskNodeSummaries(
     tasks: readonly TaskEntity[],
-  ): Promise<ReadonlyMap<string, string>> {
+  ): Promise<
+    ReadonlyMap<
+      string,
+      { readonly hasFillableFields: boolean; readonly label: string | null }
+    >
+  > {
     // The table as the entity reads it, so a configured `schema` is honoured
     // here exactly as it is by every repository read of the instance.
     const { metadata } = this.approvalInstanceRepository;
@@ -3979,13 +3991,17 @@ export class WorkflowEngineService {
       .join('.');
     const rows = await this.approvalInstanceRepository.query<
       readonly {
+        readonly fieldAccess: unknown;
         readonly instanceId: string;
         readonly label: string | null;
         readonly nodeId: string;
+        readonly nodeType: string | null;
       }[]
     >(
       `SELECT instance.id AS "instanceId",
               node->>'id' AS "nodeId",
+              node->>'type' AS "nodeType",
+              node->'data'->'fieldAccess' AS "fieldAccess",
               CASE WHEN jsonb_typeof(node->'data'->'label') = 'string'
                    THEN node->'data'->>'label' END AS "label"
          FROM ${instanceTable} AS instance
@@ -4003,11 +4019,20 @@ export class WorkflowEngineService {
     );
 
     return new Map(
-      rows.flatMap((row) =>
-        typeof row.label === 'string' && row.label.trim()
-          ? [[readNodeLabelKey(row.instanceId, row.nodeId), row.label]]
-          : [],
-      ),
+      rows.map((row) => [
+        readNodeLabelKey(row.instanceId, row.nodeId),
+        {
+          hasFillableFields:
+            row.nodeType === 'userTask' &&
+            readNodeFillableFieldKeys({
+              data: { fieldAccess: row.fieldAccess },
+            } as UserTaskNode).size > 0,
+          label:
+            typeof row.label === 'string' && row.label.trim()
+              ? row.label
+              : null,
+        },
+      ]),
     );
   }
 
@@ -4880,6 +4905,7 @@ export class WorkflowEngineService {
     task.openCandidateMemberIds = openCandidates.map(
       (candidate) => candidate.memberId,
     );
+    task.hasFillableFields = readNodeFillableFieldKeys(node).size > 0;
 
     await tokenRepository.save({
       ...token,

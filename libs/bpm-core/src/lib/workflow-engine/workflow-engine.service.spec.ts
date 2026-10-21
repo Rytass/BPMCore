@@ -13754,6 +13754,64 @@ describe('WorkflowEngineService task node labels', () => {
     expect(fixture.rootInstanceNodeLabelQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('flags the non-ad-hoc tasks whose node lets the approver fill in fields', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+    const fillNode = createUserTaskNode('fill', '財務補填', 'member-finance', 0, 0);
+
+    fixture.rootInstanceFind.mockResolvedValue([
+      createApprovalInstance({
+        id: 'instance-1',
+        workflowSnapshot: createLinearUserTaskWorkflow(),
+      }),
+      createApprovalInstance({
+        id: 'instance-3',
+        workflowSnapshot: {
+          edges: [],
+          meta: { schemaVersion: 1 },
+          nodes: [
+            {
+              ...fillNode,
+              data: {
+                ...fillNode.data,
+                fieldAccess: [
+                  { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },
+                ],
+              },
+            } as typeof fillNode,
+          ],
+        },
+      }),
+    ]);
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-plain', instanceId: 'instance-1' }),
+      createTask({ id: 'task-fill', instanceId: 'instance-3', nodeId: 'fill' }),
+      createTask({
+        adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        id: 'task-adhoc',
+        instanceId: 'instance-3',
+        isAdhoc: true,
+        nodeId: 'fill',
+      }),
+      createTask({ id: 'task-gone', instanceId: 'instance-3', nodeId: 'gone' }),
+    ]);
+
+    const tasks = await fixture.service.listInboxTasks('member-finance');
+
+    expect(
+      Object.fromEntries(
+        tasks.map((task) => [task.id, task.hasFillableFields]),
+      ),
+    ).toEqual({
+      'task-adhoc': false,
+      'task-fill': true,
+      'task-gone': false,
+      'task-plain': false,
+    });
+    expect(tasks.find((task) => task.id === 'task-fill')?.nodeLabel).toBe(
+      '財務補填',
+    );
+  });
+
   it('labels the tasks of an instance', async (): Promise<void> => {
     const fixture = createLabelFixture();
 
@@ -14029,10 +14087,13 @@ function createServiceFixture({
           (instance.workflowSnapshot?.nodes ?? [])
             .filter((node) => nodeIds.includes(node.id))
             .map((node) => ({
+              fieldAccess:
+                node.type === 'userTask' ? (node.data.fieldAccess ?? null) : null,
               instanceId: instance.id,
               label:
                 typeof node.data.label === 'string' ? node.data.label : null,
               nodeId: node.id,
+              nodeType: node.type,
             })),
         ),
   );
@@ -14041,8 +14102,9 @@ function createServiceFixture({
     find: rootInstanceFind,
     findOne: rootInstanceFindOne,
     metadata: { schema: 'bpm', tableName: 'approval_instances' },
-    // Stands in for the jsonb node-label query (`readTaskNodeLabels`): the
-    // label of each requested node, read from the instances `find` knows.
+    // Stands in for the jsonb node query (`readTaskNodeSummaries`): the label,
+    // type and fieldAccess of each requested node, read from the instances
+    // `find` knows.
     query: rootInstanceNodeLabelQuery,
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});

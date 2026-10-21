@@ -155,6 +155,14 @@ export interface TaskRecord {
   readonly createdAt: string;
   readonly decisionPolicySnapshotJson: string;
   readonly delegationChainJson: string;
+  /**
+   * A non-ad-hoc task whose node lets its approver fill in form fields (ADR
+   * 20): acting on it needs the instance page, not a one-click approval. The
+   * bundled queries always select it, so upgrade client and server together
+   * (same release); optional only for hosts running their own queries — read
+   * a missing value as `false`.
+   */
+  readonly hasFillableFields?: boolean;
   readonly id: string;
   readonly instanceId: string;
   readonly isAdhoc: boolean;
@@ -980,6 +988,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
         createdAt
         decisionPolicySnapshotJson
         delegationChainJson
+        hasFillableFields
         id
         instanceId
         isAdhoc
@@ -1038,6 +1047,7 @@ export async function listInboxTasks(
         createdAt
         decisionPolicySnapshotJson
         delegationChainJson
+        hasFillableFields
         id
         instanceId
         isAdhoc
@@ -1073,6 +1083,7 @@ export async function listApprovalHistoryTasks(
         createdAt
         decisionPolicySnapshotJson
         delegationChainJson
+        hasFillableFields
         id
         instanceId
         isAdhoc
@@ -1137,6 +1148,7 @@ function normalizeTaskRecords(
     adhocOriginTaskId: task.adhocOriginTaskId ?? null,
     adhocType: task.adhocType ?? null,
     assignmentType: task.assignmentType ?? 'DIRECT_MEMBER',
+    hasFillableFields: task.hasFillableFields ?? false,
     candidateMemberIds: task.candidateMemberIds ?? [],
     decisionPolicySnapshotJson:
       task.decisionPolicySnapshotJson ?? JSON.stringify({ type: 'SINGLE' }),
@@ -2116,6 +2128,7 @@ const ADHOC_TASK_FIELDS = `
   createdAt
   decisionPolicySnapshotJson
   delegationChainJson
+  hasFillableFields
   id
   instanceId
   isAdhoc

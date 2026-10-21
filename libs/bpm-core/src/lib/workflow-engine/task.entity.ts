@@ -116,6 +116,16 @@ export class TaskEntity {
   @Field(() => String, { nullable: true })
   nodeLabel: string | null = null;
 
+  /**
+   * Whether acting on this task means filling in form fields: a non-ad-hoc
+   * task on a user task whose `fieldAccess` lets its approver fill at least
+   * one field (ADR 20), read from the instance's `workflow_snapshot` like
+   * `nodeLabel`. Lists use it to send the approver to the instance instead of
+   * offering a one-click approval the server would refuse.
+   */
+  @Field(() => Boolean)
+  hasFillableFields = false;
+
   @Field(() => [String])
   candidateMemberIds: readonly string[] = [];
 
