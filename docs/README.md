@@ -25,6 +25,8 @@
 | 17  | [表格欄位開發 Phase](./17-form-table-field-phases.md)                    | 表格欄位 P0–P4 分階段交付與 gate                   |
 | 18  | [知會節點 Webhook ADR](./18-notify-webhook-adr.md)                       | 宿主註冊 endpoint、參數綁定、outbox 投遞與重試     |
 | 19  | [知會節點 Webhook 開發 Phase](./19-notify-webhook-phases.md)             | P0–P6 分階段交付、gate 與 E2E matrix               |
+| 20  | [簽核人補填欄位 ADR](./20-approver-filled-fields-adr.md)                 | 簽核節點補填欄位的模型、V1 限制與命名遷移          |
+| 21  | [簽核人補填欄位開發 Phase](./21-approver-filled-fields-phases.md)        | P0–P4 分階段交付、gate 與 E2E matrix               |
 | ★   | [Public API Reference](./api-reference.md)                               | 4 個 lib 套件所有 export 的完整清冊（必維護）      |
 
 ## Stack
