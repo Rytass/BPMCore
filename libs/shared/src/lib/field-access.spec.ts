@@ -3,15 +3,15 @@ import {
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
-  readNodeEditableFieldKeys,
-  readNodeFieldPermissions,
+  readNodeFieldAccess,
+  readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
   readRevealedFieldKeys,
   readTopLevelFieldKey,
   resolveFieldAccess,
-} from './field-permissions';
+} from './field-access';
 import type {
-  FieldPermission,
+  FieldAccessEntry,
   UserTaskNode,
   WorkflowDefinition,
   WorkflowNode,
@@ -26,7 +26,7 @@ const FORM_FIELD_KEYS: readonly string[] = [
 
 const buildUserTask = (
   id: string,
-  fieldPermissions?: readonly FieldPermission[],
+  fieldAccess?: readonly FieldAccessEntry[],
 ): UserTaskNode => ({
   data: {
     allowAddSigner: false,
@@ -36,7 +36,7 @@ const buildUserTask = (
     decisionPolicy: { type: 'SINGLE' },
     label: id,
     returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
-    ...(fieldPermissions === undefined ? {} : { fieldPermissions }),
+    ...(fieldAccess === undefined ? {} : { fieldAccess }),
   },
   id,
   position: { x: 0, y: 0 },
@@ -63,16 +63,11 @@ const def: WorkflowDefinition = {
     startNode,
     buildUserTask('task_manager'),
     buildUserTask('task_finance', [
-      {
-        editable: true,
-        fieldPath: 'financeItems',
-        required: true,
-        visible: true,
-      },
-      { editable: false, fieldPath: 'note', visible: false },
+      { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+      { display: 'HIDE', fieldKey: 'note', fill: 'NONE' },
     ]),
     buildUserTask('task_head', [
-      { editable: true, fieldPath: 'headRemark', visible: true },
+      { display: 'SHOW', fieldKey: 'headRemark', fill: 'OPTIONAL' },
     ]),
   ],
 };
@@ -89,23 +84,23 @@ const access = (
     ...overrides,
   });
 
-describe('field permission readers', () => {
+describe('field access readers', () => {
   it('collects approver-filled keys across every user task', () =>
     expect([...readApproverFilledFieldKeys(def)].sort()).toEqual([
       'financeItems',
       'headRemark',
     ]));
 
-  it('reads editable and required keys of one node', () => {
+  it('reads fillable and required keys of one node', () => {
     const finance = def.nodes.find(
       (node): node is UserTaskNode => node.id === 'task_finance',
     ) as UserTaskNode;
 
-    expect([...readNodeEditableFieldKeys(finance)]).toEqual(['financeItems']);
+    expect([...readNodeFillableFieldKeys(finance)]).toEqual(['financeItems']);
     expect([...readNodeRequiredFieldKeys(finance)]).toEqual(['financeItems']);
   });
 
-  it('does not treat editable without required as required', () => {
+  it('does not treat an optional fill as required', () => {
     const head = def.nodes.find(
       (node): node is UserTaskNode => node.id === 'task_head',
     ) as UserTaskNode;
@@ -113,51 +108,75 @@ describe('field permission readers', () => {
     expect([...readNodeRequiredFieldKeys(head)]).toEqual([]);
   });
 
-  it('tolerates a malformed fieldPermissions entry', () =>
+  it('tolerates a malformed fieldAccess value', () =>
     expect(
-      readNodeEditableFieldKeys(nodeWith({ fieldPermissions: 'oops' })).size,
+      readNodeFillableFieldKeys(nodeWith({ fieldAccess: 'oops' })).size,
     ).toBe(0));
 
-  it('skips entries without a fieldPath string', () =>
+  it('skips entries without a fieldKey string', () =>
     expect([
-      ...readNodeEditableFieldKeys(
+      ...readNodeFillableFieldKeys(
         nodeWith({
-          fieldPermissions: [
+          fieldAccess: [
             null,
-            { editable: true },
-            { editable: true, fieldPath: 'x', visible: true },
+            { fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: '', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'x', fill: 'OPTIONAL' },
           ],
         }),
       ),
     ]).toEqual(['x']));
 
-  it('lets the first entry for a fieldPath win over a later editable one', () => {
+  it('lets the first entry for a fieldKey win over a later fillable one', () => {
     const node = nodeWith({
-      fieldPermissions: [
-        { editable: false, fieldPath: 'x', visible: true },
-        { editable: true, fieldPath: 'x', visible: true },
+      fieldAccess: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'NONE' },
+        { display: 'SHOW', fieldKey: 'x', fill: 'REQUIRED' },
       ],
     });
 
-    expect(readNodeEditableFieldKeys(node).size).toBe(0);
-    expect(readNodeFieldPermissions(node)).toHaveLength(1);
+    expect(readNodeFillableFieldKeys(node).size).toBe(0);
+    expect(readNodeFieldAccess(node)).toHaveLength(1);
   });
 
-  it('reads an entry without visible as visible', () =>
-    expect(
-      readNodeFieldPermissions(
-        nodeWith({ fieldPermissions: [{ editable: false, fieldPath: 'x' }] }),
-      ).map((permission) => permission.visible),
-    ).toEqual([true]));
+  it.each([undefined, 'YES', 'optional', true])(
+    'reads the unknown fill %p as NONE',
+    (fill) =>
+      expect(
+        readNodeFieldAccess(
+          nodeWith({ fieldAccess: [{ display: 'SHOW', fieldKey: 'x', fill }] }),
+        ).map((entry) => entry.fill),
+      ).toEqual(['NONE']),
+  );
 
-  it('does not read a string editable as editable', () =>
+  it.each([undefined, 'hide', false])(
+    'reads the unknown display %p as SHOW',
+    (display) =>
+      expect(
+        readNodeFieldAccess(
+          nodeWith({ fieldAccess: [{ display, fieldKey: 'x', fill: 'NONE' }] }),
+        ).map((entry) => entry.display),
+      ).toEqual(['SHOW']),
+  );
+
+  it('never reads the legacy fieldPermissions key', () => {
+    const node = nodeWith({
+      fieldPermissions: [
+        { editable: true, fieldPath: 'x', required: true, visible: false },
+      ],
+    });
+
+    expect(readNodeFieldAccess(node)).toEqual([]);
+    expect(readNodeFillableFieldKeys(node).size).toBe(0);
+    expect(readNodeRequiredFieldKeys(node).size).toBe(0);
     expect(
-      readNodeEditableFieldKeys(
-        nodeWith({
-          fieldPermissions: [{ editable: 'true', fieldPath: 'x', visible: true }],
-        }),
-      ).size,
-    ).toBe(0));
+      readApproverFilledFieldKeys({
+        edges: [],
+        meta: { schemaVersion: 1 },
+        nodes: [startNode, node],
+      }).size,
+    ).toBe(0);
+  });
 
   it('ignores node ids that are not user tasks when revealing', () =>
     expect(readRevealedFieldKeys(def, ['start', 'missing']).size).toBe(0));
@@ -195,7 +214,7 @@ describe('resolveFieldAccess', () => {
       access({ isAdhocTask: true, nodeId: 'task_finance' })['note'],
     ).toEqual({ editable: false, visible: false }));
 
-  it('honours visible:false listed on the node', () =>
+  it('honours display HIDE listed on the node', () =>
     expect(access({ nodeId: 'task_finance' })['note']).toEqual({
       editable: false,
       visible: false,

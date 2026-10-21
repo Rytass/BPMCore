@@ -9,8 +9,8 @@ import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   readApproverFilledFieldKeys,
-  readNodeEditableFieldKeys,
-  readNodeFieldPermissions,
+  readNodeFieldAccess,
+  readNodeFillableFieldKeys,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
 import {
@@ -29,7 +29,9 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  APPLICANT_FIELD_CONDITION_RULES,
   APPROVER_FILLED_FORM_RULES,
+  WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import {
@@ -1469,14 +1471,13 @@ function lintWorkflowMemberReferences(
 }
 
 /**
- * The form-side half of `fieldPermissions`: what the permissions can only be
- * checked against once the bound form version is known.
+ * The form-side half of `fieldAccess`: what the entries can only be checked
+ * against once the bound form version is known.
  *
- * - Every `fieldPath` must be a field of the form. A nested path is left to
- *   `lintWorkflowDefinition`, which already refuses it as nested; reporting it
- *   here as "unknown" as well would say the same thing twice.
+ * - Every `fieldKey` must be a top-level field of the form; a nested path such
+ *   as `items.price` names no field and is reported as unknown.
  * - A field an approver fills in must not carry a rule of the form's own. The
- *   engine blocks approval while a node-required editable field is empty, so
+ *   engine blocks approval while a node-required fillable field is empty, so
  *   a form that hides the field (`hidden`, `visibleWhen`) leaves the approver
  *   nothing to fill in and the case stuck for good; the other rules fight the
  *   value the approver types (`required` / `requiredWhen` would block the
@@ -1487,8 +1488,12 @@ function lintWorkflowMemberReferences(
  *   cannot have a data-source column: the approval does not re-resolve option
  *   snapshots or accept uploads. A table column can never be a file upload
  *   (`TABLE_COLUMN_FIELD_TYPES`), so only data-source columns are checked.
- * - `required` cannot be put on a boolean field: `false` is a real answer, and
- *   the "is it filled in" check would refuse it.
+ * - `fill: 'REQUIRED'` cannot be put on a boolean field: `false` is a real
+ *   answer, and the "is it filled in" check would refuse it.
+ * - An applicant's field cannot carry a `requiredWhen` / `visibleWhen` /
+ *   `readonlyWhen` that reads an approver-filled field: the rule is evaluated
+ *   against the submitted form, where that field is still empty, and the
+ *   evaluation silently compares against nothing.
  *
  * A rule counts as set when `required` / `hidden` is `true` and for the others
  * when the value is not `undefined`, so `required: false` and `hidden: false`
@@ -1507,29 +1512,45 @@ function lintApproverFilledFormFields(
     (node): node is UserTaskNode => node.type === 'userTask',
   );
   const unknownFieldErrors = userTasks.flatMap((node): readonly string[] =>
-    readNodeFieldPermissions(node)
-      .filter(
-        ({ fieldPath }): boolean =>
-          readTopLevelFieldKey(fieldPath) === fieldPath &&
-          !fieldsByKey.has(fieldPath),
-      )
-      .map(({ fieldPath }): string =>
-        WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField(node.id, fieldPath),
+    readNodeFieldAccess(node)
+      .filter(({ fieldKey }): boolean => !fieldsByKey.has(fieldKey))
+      .map(({ fieldKey }): string =>
+        WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(node.id, fieldKey),
       ),
   );
   const requiredBooleanErrors = userTasks.flatMap((node): readonly string[] =>
-    readNodeFieldPermissions(node)
+    readNodeFieldAccess(node)
       .filter(
-        ({ editable, fieldPath, required }): boolean =>
-          editable &&
-          required === true &&
-          fieldsByKey.get(fieldPath)?.type === 'boolean',
+        ({ fieldKey, fill }): boolean =>
+          fill === 'REQUIRED' && fieldsByKey.get(fieldKey)?.type === 'boolean',
       )
-      .map(({ fieldPath }): string =>
-        WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldPath),
+      .map(({ fieldKey }): string =>
+        WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldKey),
       ),
   );
-  const fieldErrors = [...readApproverFilledFieldKeys(definition)].flatMap(
+  const approverFilled = readApproverFilledFieldKeys(definition);
+  const applicantRuleErrors = (schema?.fields ?? [])
+    .filter((field): boolean => !approverFilled.has(field.fieldKey))
+    .flatMap((field): readonly string[] =>
+      APPLICANT_FIELD_CONDITION_RULES.flatMap((rule): readonly string[] => {
+        const expression: unknown = field[rule];
+
+        return typeof expression === 'string'
+          ? [...approverFilled]
+              .filter((fieldKey): boolean =>
+                referencesFormField(expression, fieldKey),
+              )
+              .map((fieldKey): string =>
+                WORKFLOW_LINT_MESSAGES.applicantRuleReadsApproverFilled(
+                  field.fieldKey,
+                  rule,
+                  fieldKey,
+                ),
+              )
+          : [];
+      }),
+    );
+  const fieldErrors = [...approverFilled].flatMap(
     (fieldKey): readonly string[] => {
       const field = fieldsByKey.get(fieldKey);
 
@@ -1539,7 +1560,12 @@ function lintApproverFilledFormFields(
     },
   );
 
-  return [...unknownFieldErrors, ...fieldErrors, ...requiredBooleanErrors];
+  return [
+    ...unknownFieldErrors,
+    ...fieldErrors,
+    ...requiredBooleanErrors,
+    ...applicantRuleErrors,
+  ];
 }
 
 function readApproverFilledFieldFormErrors(
@@ -1625,7 +1651,7 @@ function lintApproverFilledFieldReads(
 
   return fieldKeys.flatMap((fieldKey) => {
     const fillingNodes = userTasks.filter((node) =>
-      readNodeEditableFieldKeys(node).has(fieldKey),
+      readNodeFillableFieldKeys(node).has(fieldKey),
     );
     const fillingNodeIds = new Set(fillingNodes.map((node) => node.id));
     const guardNodeIds = new Set(
@@ -1714,12 +1740,12 @@ function readEdgeFieldReadLabels(
   const conditionFieldKey: unknown = data?.conditionFieldKey;
 
   if (typeof condition === 'string' && referencesFormField(condition, fieldKey)) {
-    return [`workflow.edges.${edge.id}.data.condition`];
+    return [WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id)];
   }
 
   return typeof conditionFieldKey === 'string' &&
     readTopLevelFieldKey(conditionFieldKey) === fieldKey
-    ? [`workflow.edges.${edge.id}.data.conditionFieldKey`]
+    ? [WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey(edge.id)]
     : [];
 }
 
@@ -1745,7 +1771,7 @@ function readNotifyRecipientsExpressions(
     ? [
         {
           expression: recipients.expression,
-          label: `workflow.nodes.${node.id}.data.action.recipients.expression`,
+          label: WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression(node.id),
         },
       ]
     : [];
@@ -1767,7 +1793,7 @@ function readEdgeConditionExpressions(
 }[] {
   return definition.edges.map((edge) => ({
     expression: edge.data.condition,
-    label: `workflow.edges.${edge.id}.data.condition`,
+    label: WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id),
   }));
 }
 
@@ -1799,13 +1825,13 @@ function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
     return [
       {
         expression: node.data.entryCondition,
-        label: `workflow.nodes.${node.id}.data.entryCondition`,
+        label: WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition(node.id),
       },
       ...(node.data.approverResolver.type === 'EXPRESSION'
         ? [
             {
               expression: node.data.approverResolver.expression,
-              label: `workflow.nodes.${node.id}.data.approverResolver.expression`,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(node.id),
             },
           ]
         : []),
@@ -1816,13 +1842,13 @@ function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
     return [
       {
         expression: node.data.entryCondition,
-        label: `workflow.nodes.${node.id}.data.entryCondition`,
+        label: WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition(node.id),
       },
       ...(node.data.action.type === 'WEBHOOK'
         ? [
             {
               expression: node.data.action.payload,
-              label: `workflow.nodes.${node.id}.data.action.payload`,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeActionPayload(node.id),
             },
           ]
         : []),
@@ -1830,7 +1856,7 @@ function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
         ? [
             {
               expression: node.data.action.value,
-              label: `workflow.nodes.${node.id}.data.action.value`,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeActionValue(node.id),
             },
           ]
         : []),

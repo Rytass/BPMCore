@@ -2,7 +2,7 @@ import {
   ApproverResolver,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
-  FieldPermission,
+  FieldAccessEntry,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -13,8 +13,8 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import {
   readApproverFilledFieldKeys,
-  readNodeEditableFieldKeys,
-  readNodeFieldPermissions,
+  readNodeFieldAccess,
+  readNodeFillableFieldKeys,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
 import {
@@ -111,6 +111,7 @@ export function lintWorkflowDefinition(
     ...lintUserTaskNodes(nodes),
     ...lintServiceTaskNodes(nodes),
     ...lintApproverFilledFieldWrites(definition),
+    ...lintApproverFilledFillNodesOnPath(definition),
     ...lintAsyncNotifyOutgoingEdges(nodes, edges),
     ...lintExclusiveGateways(nodes, edges),
     ...lintParallelGateways(nodes, edges),
@@ -281,7 +282,8 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
             ]),
         ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
-        ...lintFieldPermissions(node),
+        ...lintLegacyFieldPermissions(node),
+        ...lintFieldAccess(node),
       ];
     });
 }
@@ -292,30 +294,47 @@ function isPlainRecord(
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isFieldPermissionEntryValid(
-  entry: unknown,
-): entry is FieldPermission {
+const FIELD_ACCESS_DISPLAYS: readonly unknown[] = ['SHOW', 'HIDE'];
+
+const FIELD_ACCESS_FILLS: readonly unknown[] = ['NONE', 'OPTIONAL', 'REQUIRED'];
+
+function isFieldAccessEntryValid(entry: unknown): entry is FieldAccessEntry {
   return (
     isPlainRecord(entry) &&
-    typeof entry['fieldPath'] === 'string' &&
-    entry['fieldPath'].trim() !== '' &&
-    typeof entry['visible'] === 'boolean' &&
-    typeof entry['editable'] === 'boolean' &&
-    (entry['required'] === undefined || typeof entry['required'] === 'boolean')
+    typeof entry['fieldKey'] === 'string' &&
+    entry['fieldKey'].trim() !== '' &&
+    FIELD_ACCESS_DISPLAYS.includes(entry['display']) &&
+    FIELD_ACCESS_FILLS.includes(entry['fill'])
   );
 }
 
 /**
- * The shape and duplicate checks read the raw `fieldPermissions`:
- * `readNodeFieldPermissions` tolerates a bad draft by skipping malformed
- * entries and keeping the first entry per `fieldPath`, which is exactly what
- * these two checks have to see. Once the shape is reported, the node's other
- * field permission rules are skipped, since they would read a list the engine
- * is not going to honour anyway.
+ * `fieldPermissions` was reserved and never enforced, so whatever a draft
+ * holds there means nothing. Rather than read it as `fieldAccess` (which would
+ * suddenly enforce a shape nobody tested) or drop it silently, a draft that
+ * still carries the key cannot be published until it is removed. Published
+ * versions and case snapshots are left alone: nothing reads the key.
  */
-function lintFieldPermissions(node: UserTaskNode): readonly string[] {
+function lintLegacyFieldPermissions(node: UserTaskNode): readonly string[] {
+  const legacy: unknown = node.data.fieldPermissions;
+
+  return legacy === undefined
+    ? []
+    : [WORKFLOW_LINT_MESSAGES.legacyFieldPermissions(node.id)];
+}
+
+/**
+ * The shape and duplicate checks read the raw `fieldAccess`:
+ * `readNodeFieldAccess` tolerates a bad draft by skipping malformed entries
+ * and keeping the first entry per `fieldKey`, which is exactly what these two
+ * checks have to see. Once the shape is reported, the node's other field
+ * access rules are skipped, since they would read a list the engine is not
+ * going to honour anyway. Whether each `fieldKey` names a top-level field of
+ * the form is checked at publish, where the form is known.
+ */
+function lintFieldAccess(node: UserTaskNode): readonly string[] {
   const nodeId = node.id;
-  const raw: unknown = node.data.fieldPermissions;
+  const raw: unknown = node.data.fieldAccess;
 
   if (raw === undefined) {
     return [];
@@ -325,62 +344,124 @@ function lintFieldPermissions(node: UserTaskNode): readonly string[] {
     ? raw
     : undefined;
 
-  if (entries === undefined || !entries.every(isFieldPermissionEntryValid)) {
-    return [WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid(nodeId)];
+  if (entries === undefined || !entries.every(isFieldAccessEntryValid)) {
+    return [WORKFLOW_LINT_MESSAGES.fieldAccessInvalid(nodeId)];
   }
 
-  const fieldPaths = entries.map((entry) => entry.fieldPath);
-  const hasEditableField = readNodeEditableFieldKeys(node).size > 0;
+  const fieldKeys = entries.map((entry) => entry.fieldKey);
+  const hasFillableField = readNodeFillableFieldKeys(node).size > 0;
 
   return [
-    ...fieldPaths
-      .filter((fieldPath, index) => fieldPaths.indexOf(fieldPath) !== index)
+    ...fieldKeys
+      .filter((fieldKey, index) => fieldKeys.indexOf(fieldKey) !== index)
       .filter(
-        (fieldPath, index, repeated) => repeated.indexOf(fieldPath) === index,
+        (fieldKey, index, repeated) => repeated.indexOf(fieldKey) === index,
       )
-      .map((fieldPath) =>
-        WORKFLOW_LINT_MESSAGES.fieldPermissionDuplicate(nodeId, fieldPath),
+      .map((fieldKey) =>
+        WORKFLOW_LINT_MESSAGES.fieldAccessDuplicate(nodeId, fieldKey),
       ),
-    ...readNodeFieldPermissions(node).flatMap((permission) => [
-      ...(permission.fieldPath.includes('.') ||
-      permission.fieldPath.includes('[')
-        ? [
-            WORKFLOW_LINT_MESSAGES.fieldPermissionNestedPath(
-              nodeId,
-              permission.fieldPath,
-            ),
-          ]
-        : []),
-      ...(permission.editable && !permission.visible
-        ? [
-            WORKFLOW_LINT_MESSAGES.fieldPermissionEditableInvisible(
-              nodeId,
-              permission.fieldPath,
-            ),
-          ]
-        : []),
-      ...(permission.required && !permission.editable
-        ? [
-            WORKFLOW_LINT_MESSAGES.fieldPermissionRequiredNotEditable(
-              nodeId,
-              permission.fieldPath,
-            ),
-          ]
-        : []),
-    ]),
-    ...(hasEditableField &&
+    ...readNodeFieldAccess(node)
+      .filter((entry) => entry.fill !== 'NONE' && entry.display === 'HIDE')
+      .map((entry) =>
+        WORKFLOW_LINT_MESSAGES.fieldAccessFillHidden(nodeId, entry.fieldKey),
+      ),
+    ...(hasFillableField &&
     (node.data.decisionPolicy?.type === 'PARALLEL_ALL' ||
       node.data.decisionPolicy?.type === 'QUORUM')
-      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionGroupPolicy(nodeId)]
+      ? [WORKFLOW_LINT_MESSAGES.fieldAccessGroupPolicy(nodeId)]
       : []),
-    ...(hasEditableField && node.data.sla?.onTimeout === 'AUTO_APPROVE'
-      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionAutoApprove(nodeId)]
+    ...(hasFillableField && node.data.sla?.onTimeout === 'AUTO_APPROVE'
+      ? [WORKFLOW_LINT_MESSAGES.fieldAccessAutoApprove(nodeId)]
       : []),
-    ...(hasEditableField &&
-    node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
-      ? [WORKFLOW_LINT_MESSAGES.fieldPermissionSkipNode(nodeId)]
+    ...(hasFillableField && node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
+      ? [WORKFLOW_LINT_MESSAGES.fieldAccessSkipNode(nodeId)]
       : []),
   ];
+}
+
+/**
+ * One field, one filler per run: when two nodes that fill the same field in
+ * can both run in one case, the later one overwrites the earlier and the
+ * signed value no longer tells who answered. They can when one reaches the
+ * other, or when a parallel split sends one branch to each: a node reachable
+ * from one outgoing edge of the split but not from another, and the other way
+ * round. Fill nodes on mutually exclusive branches (one per region, say)
+ * never both run and stay allowed, and so do two nodes that both lie after
+ * the join, which every branch reaches alike. Reported once per field and
+ * pair, in node order; the graph may hold a cycle, which the visited set of
+ * `readReachableNodeIds` copes with.
+ */
+function lintApproverFilledFillNodesOnPath(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  const userTasks = definition.nodes.filter(
+    (node): node is UserTaskNode => node.type === 'userTask',
+  );
+  const reachableCache = new Map<string, ReadonlySet<string>>();
+  const readReachable = (nodeId: string): ReadonlySet<string> => {
+    const cached = reachableCache.get(nodeId);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const reachable = readReachableNodeIds(definition.edges, nodeId);
+
+    reachableCache.set(nodeId, reachable);
+
+    return reachable;
+  };
+  const parallelBranches = definition.nodes
+    .filter((node) => node.type === 'parallelGateway')
+    .map((node) =>
+      definition.edges
+        .filter((edge) => edge.source === node.id)
+        .map((edge) => readReachable(edge.target)),
+    )
+    .filter((branches) => branches.length >= 2);
+  const isOnOwnBranch = (
+    branches: readonly ReadonlySet<string>[],
+    nodeId: string,
+    otherNodeId: string,
+  ): boolean =>
+    branches.some(
+      (branch, index) =>
+        branch.has(nodeId) &&
+        !branch.has(otherNodeId) &&
+        branches.some(
+          (other, otherIndex) =>
+            otherIndex !== index && other.has(otherNodeId) && !other.has(nodeId),
+        ),
+    );
+  const canBothRun = (nodeId: string, otherNodeId: string): boolean =>
+    readReachable(nodeId).has(otherNodeId) ||
+    readReachable(otherNodeId).has(nodeId) ||
+    parallelBranches.some((branches) =>
+      isOnOwnBranch(branches, nodeId, otherNodeId),
+    );
+
+  return [...readApproverFilledFieldKeys(definition)].flatMap((fieldKey) => {
+    const fillNodeIds = [
+      ...new Set(
+        userTasks
+          .filter((node) => readNodeFillableFieldKeys(node).has(fieldKey))
+          .map((node) => node.id),
+      ),
+    ];
+
+    return fillNodeIds.flatMap((nodeId, index) =>
+      fillNodeIds
+        .slice(index + 1)
+        .filter((otherNodeId) => canBothRun(nodeId, otherNodeId))
+        .map((otherNodeId) =>
+          WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
+            fieldKey,
+            nodeId,
+            otherNodeId,
+          ),
+        ),
+    );
+  });
 }
 
 /**

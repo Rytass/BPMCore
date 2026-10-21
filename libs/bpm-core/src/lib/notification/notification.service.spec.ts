@@ -549,17 +549,19 @@ describe('NotificationService', () => {
     );
   });
 
-  describe('task notification requiresForm flag', () => {
-    const editableFieldPermissions = [
-      { editable: true, fieldPath: 'invoiceNo', required: false, visible: true },
+  describe('task notification hasFillableFields flag', () => {
+    const fillableFieldAccess: UserTaskNode['data']['fieldAccess'] = [
+      { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },
     ];
 
     const createdPayload = async ({
+      fieldAccess,
       fieldPermissions,
       isAdhoc,
       transferred,
     }: {
-      readonly fieldPermissions?: UserTaskNode['data']['fieldPermissions'];
+      readonly fieldAccess?: UserTaskNode['data']['fieldAccess'];
+      readonly fieldPermissions?: unknown;
       readonly isAdhoc: boolean;
       readonly transferred?: boolean;
     }): Promise<Readonly<Record<string, unknown>>> => {
@@ -602,7 +604,11 @@ describe('NotificationService', () => {
 
       const node: UserTaskNode = {
         ...sourceNode,
-        data: { ...sourceNode.data, fieldPermissions },
+        data: {
+          ...sourceNode.data,
+          fieldAccess,
+          ...(fieldPermissions === undefined ? {} : { fieldPermissions }),
+        } as UserTaskNode['data'],
       };
 
       await service.createTaskAssignedNotification({
@@ -611,7 +617,7 @@ describe('NotificationService', () => {
         node,
         task: Object.assign(new TaskEntity(), {
           assigneeMemberId: 'member-a',
-          id: 'task-requires-form',
+          id: 'task-fillable-fields',
           instanceId: instance.id,
           isAdhoc,
           nodeId: node.id,
@@ -625,50 +631,61 @@ describe('NotificationService', () => {
       return savedNotifications[0].payload as Readonly<Record<string, unknown>>;
     };
 
-    it('flags a task on a node with editable fields as requiring the form', async (): Promise<void> => {
+    it('flags a task on a node with fillable fields', async (): Promise<void> => {
       const payload = await createdPayload({
-        fieldPermissions: editableFieldPermissions,
+        fieldAccess: fillableFieldAccess,
         isAdhoc: false,
       });
 
-      expect(payload['requiresForm']).toBe(true);
+      expect(payload['hasFillableFields']).toBe(true);
     });
 
     it('flags the transferred notification too', async (): Promise<void> => {
       const payload = await createdPayload({
-        fieldPermissions: editableFieldPermissions,
+        fieldAccess: fillableFieldAccess,
         isAdhoc: false,
         transferred: true,
       });
 
-      expect(payload['requiresForm']).toBe(true);
+      expect(payload['hasFillableFields']).toBe(true);
     });
 
     it('does not flag an ad-hoc task', async (): Promise<void> => {
       const payload = await createdPayload({
-        fieldPermissions: editableFieldPermissions,
+        fieldAccess: fillableFieldAccess,
         isAdhoc: true,
       });
 
-      expect(payload['requiresForm']).toBe(false);
+      expect(payload['hasFillableFields']).toBe(false);
     });
 
-    it('does not flag a node without fieldPermissions', async (): Promise<void> => {
+    it('does not flag a node without fieldAccess', async (): Promise<void> => {
       const payload = await createdPayload({ isAdhoc: false });
 
-      expect(payload['requiresForm']).toBe(false);
+      expect(payload['hasFillableFields']).toBe(false);
     });
 
-    it('does not flag a node whose permissions are all read-only', async (): Promise<void> => {
+    it('does not flag a node whose fields are all display-only', async (): Promise<void> => {
       const payload = await createdPayload({
-        fieldPermissions: [
-          { editable: false, fieldPath: 'invoiceNo', visible: true },
-          { editable: false, fieldPath: 'note', visible: false },
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'NONE' },
+          { display: 'HIDE', fieldKey: 'note', fill: 'NONE' },
         ],
         isAdhoc: false,
       });
 
-      expect(payload['requiresForm']).toBe(false);
+      expect(payload['hasFillableFields']).toBe(false);
+    });
+
+    it('ignores the legacy fieldPermissions key', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: [
+          { editable: true, fieldPath: 'invoiceNo', visible: true },
+        ],
+        isAdhoc: false,
+      });
+
+      expect(payload['hasFillableFields']).toBe(false);
     });
   });
 

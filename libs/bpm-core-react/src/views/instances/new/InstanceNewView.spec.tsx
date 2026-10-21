@@ -467,11 +467,10 @@ function createWorkflowDefinition(
           allowTransfer: false,
           approverResolver: { memberIds: ['m-1'], type: 'DIRECT' },
           decisionPolicy: { type: 'SINGLE' },
-          fieldPermissions: approverFilledFieldKeys.map((fieldPath) => ({
-            editable: true,
-            fieldPath,
-            required: false,
-            visible: true,
+          fieldAccess: approverFilledFieldKeys.map((fieldKey) => ({
+            display: 'SHOW' as const,
+            fieldKey,
+            fill: 'OPTIONAL' as const,
           })),
           label: 'finance',
           returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },

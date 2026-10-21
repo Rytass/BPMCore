@@ -1,5 +1,9 @@
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import {
+  WORKFLOW_EXPRESSION_LABELS,
+  WORKFLOW_LINT_MESSAGES,
+} from '@rytass/bpm-core-shared/workflow-graph';
+import {
   readWorkflowLintMessage,
   type WorkflowLintLanguage,
 } from './workflow-lint-errors';
@@ -353,16 +357,16 @@ describe('readWorkflowLintMessage', (): void => {
   });
 });
 
-describe('readWorkflowLintMessage: field permissions', (): void => {
+describe('readWorkflowLintMessage: field access', (): void => {
   const fieldDefinition = {
     edges: [],
     meta: { schemaVersion: 1 },
     nodes: [
       {
         data: {
-          fieldPermissions: [
-            { editable: true, fieldPath: 'amount', visible: true },
-            { editable: true, fieldPath: 'items.price', visible: false },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+            { display: 'HIDE', fieldKey: 'note', fill: 'REQUIRED' },
           ],
           label: '財務補填',
         },
@@ -389,44 +393,39 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
   // [backend line, zh-TW, en]
   const cases: readonly (readonly [string, string, string])[] = [
     [
-      'workflow.nodes.userTask_fill.fieldPermissions is invalid',
-      '簽核節點「財務補填」的欄位權限設定格式不正確，請在設計器重新設定。',
-      'The field permissions of the approval node "財務補填" are malformed. Open the node in the designer and set them again.',
+      'workflow.nodes.userTask_fill.fieldPermissions is no longer supported: remove it and use fieldAccess instead',
+      '簽核節點「財務補填」還帶著從未生效的舊設定「fieldPermissions」。請先移除（設計器支援前請透過 API 移除），再重新設定欄位。',
+      'The approval node "財務補填" still carries the old "fieldPermissions" setting, which never took effect. Remove it from the node (through the API until the designer can) and set the fields again.',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions lists a field more than once: amount',
-      '簽核節點「財務補填」的欄位權限重複設定了欄位「amount」。',
-      'The approval node "財務補填" lists the field "amount" more than once in its field permissions. Keep one entry per field.',
+      'workflow.nodes.userTask_fill.fieldAccess is invalid',
+      '簽核節點「財務補填」的欄位設定格式不正確，請在設計器重新設定。',
+      'The field settings of the approval node "財務補填" are malformed. Open the node in the designer and set them again.',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions must name a top-level form field, not a nested path: items.price',
-      '簽核節點「財務補填」的欄位權限只能設定表單第一層欄位（表格整張一起設定），「items.price」不是。',
-      'The field permissions of the approval node "財務補填" can only name a top-level form field (a table is set as a whole); "items.price" is not one.',
+      'workflow.nodes.userTask_fill.fieldAccess lists a field more than once: amount',
+      '簽核節點「財務補填」重複設定了欄位「amount」。',
+      'The approval node "財務補填" sets the field "amount" more than once. Keep one setting per field.',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions cannot make a field editable while it is not visible: items.price',
-      '簽核節點「財務補填」把欄位「items.price」設成可填卻又隱藏，請改成可填並顯示。',
-      'The approval node "財務補填" makes the field "items.price" fillable but hidden. Make it fillable and visible, or turn fillable off.',
+      'workflow.nodes.userTask_fill.fieldAccess cannot let a field be filled in while it is hidden: note',
+      '簽核節點「財務補填」把欄位「note」設成補填卻又隱藏，請改成顯示，或取消這一關的補填。',
+      'The approval node "財務補填" has the field "note" filled in but hidden. Show it, or stop filling it in at this node.',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions can only require a field that is editable: amount',
-      '簽核節點「財務補填」把欄位「amount」設成必填，但它不是可填欄位。',
-      'The approval node "財務補填" marks the field "amount" as required, but it is not a fillable field.',
+      'workflow.nodes.userTask_fill.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node',
+      '簽核節點「財務補填」是會簽（全部同意／過半數），不能設定補填欄位，否則多人同時填寫會互相覆蓋。',
+      'The approval node "財務補填" is a joint approval (everyone / a quorum must approve), so it cannot have fields to fill in; several people filling in at once would overwrite each other.',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node',
-      '簽核節點「財務補填」是會簽（全部同意／過半數），不能設定可填欄位，否則多人同時填寫會互相覆蓋。',
-      'The approval node "財務補填" is a joint approval (everyone / a quorum must approve), so it cannot have fillable fields; several people filling in at once would overwrite each other.',
+      'workflow.nodes.userTask_fill.sla.onTimeout cannot be AUTO_APPROVE on a node with fillable fields',
+      '簽核節點「財務補填」有補填欄位，逾時處理不能選「自動核准」，自動核准不會補填。',
+      'The approval node "財務補填" has fields to fill in, so its timeout action cannot be "Auto approve" (自動核准); auto approval would not fill them in.',
     ],
     [
-      'workflow.nodes.userTask_fill.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields',
-      '簽核節點「財務補填」有可填欄位，逾時處理不能選「自動核准」，自動核准不會補填。',
-      'The approval node "財務補填" has fillable fields, so its timeout action cannot be "Auto approve" (自動核准); auto approval would not fill them in.',
-    ],
-    [
-      'workflow.nodes.userTask_fill.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields',
-      '簽核節點「財務補填」有可填欄位，「申請人不能自簽」的無人可簽處理不能選「跳過此關」，否則這張單沒有人補填就核准了。',
-      'The approval node "財務補填" has fillable fields, so what "Initiator cannot self-approve" (申請人不能自簽) does when nobody is left to sign cannot be "Skip this step" (跳過此關); otherwise the case would be approved with nobody filling them in.',
+      'workflow.nodes.userTask_fill.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields',
+      '簽核節點「財務補填」有補填欄位，「申請人不能自簽」的無人可簽處理不能選「跳過此關」，否則這張單沒有人補填就核准了。',
+      'The approval node "財務補填" has fields to fill in, so what "Initiator cannot self-approve" (申請人不能自簽) does when nobody is left to sign cannot be "Skip this step" (跳過此關); otherwise the case would be approved with nobody filling them in.',
     ],
     [
       'workflow.nodes.serviceTask_set.action.fieldPath cannot write a field an approver fills in: items',
@@ -446,18 +445,25 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
     expect(readWorkflowLintMessage(backend, fieldDefinition, 'en')).toBe(en);
   });
 
-  it('keeps a field permission line whose node is not in the definition', (): void => {
+  it('keeps a field access line whose node is not in the definition', (): void => {
     const foreign =
-      'workflow.nodes.userTask_9.fieldPermissions lists a field more than once: amount';
+      'workflow.nodes.userTask_9.fieldAccess lists a field more than once: amount';
 
     expect(readWorkflowLintMessage(foreign, fieldDefinition)).toBe(foreign);
   });
 
-  it('does not throw on drafts with malformed field permissions or actions', (): void => {
+  it('keeps a hidden-fill line for a field the node does not list', (): void => {
+    const foreign =
+      'workflow.nodes.userTask_fill.fieldAccess cannot let a field be filled in while it is hidden: other';
+
+    expect(readWorkflowLintMessage(foreign, fieldDefinition)).toBe(foreign);
+  });
+
+  it('does not throw on drafts with malformed field access or actions', (): void => {
     const lines = [
-      'workflow.nodes.userTask_a.fieldPermissions is invalid',
-      'workflow.nodes.userTask_b.fieldPermissions is invalid',
-      'workflow.nodes.userTask_d.fieldPermissions lists a field more than once: amount',
+      'workflow.nodes.userTask_a.fieldAccess is invalid',
+      'workflow.nodes.userTask_b.fieldAccess is invalid',
+      'workflow.nodes.userTask_d.fieldAccess lists a field more than once: amount',
       'workflow.nodes.serviceTask_a.action.fieldPath cannot write a field an approver fills in: amount',
     ].join('; ');
     const badDraft = {
@@ -465,13 +471,13 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
       meta: { schemaVersion: 1 },
       nodes: [
         {
-          data: { fieldPermissions: 'amount', label: '非陣列' },
+          data: { fieldAccess: 'amount', label: '非陣列' },
           id: 'userTask_a',
           position: { x: 0, y: 0 },
           type: 'userTask',
         },
         {
-          data: { fieldPermissions: [null, 7, { fieldPath: 3 }], label: '壞項目' },
+          data: { fieldAccess: [null, 7, { fieldKey: 3 }], label: '壞項目' },
           id: 'userTask_b',
           position: { x: 0, y: 0 },
           type: 'userTask',
@@ -479,9 +485,9 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
         { id: 'userTask_c', position: { x: 0, y: 0 }, type: 'userTask' },
         {
           data: {
-            fieldPermissions: [
-              { editable: true, fieldPath: 'amount', visible: true },
-              { editable: true, fieldPath: 'amount', visible: true },
+            fieldAccess: [
+              { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+              { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
             ],
             label: '重複',
           },
@@ -507,9 +513,9 @@ describe('readWorkflowLintMessage: field permissions', (): void => {
 
     expect(readWorkflowLintMessage(lines, badDraft)).toBe(
       [
-        '簽核節點「非陣列」的欄位權限設定格式不正確，請在設計器重新設定。',
-        '簽核節點「壞項目」的欄位權限設定格式不正確，請在設計器重新設定。',
-        '簽核節點「重複」的欄位權限重複設定了欄位「amount」。',
+        '簽核節點「非陣列」的欄位設定格式不正確，請在設計器重新設定。',
+        '簽核節點「壞項目」的欄位設定格式不正確，請在設計器重新設定。',
+        '簽核節點「重複」重複設定了欄位「amount」。',
         // A node without a readable SET_FORM_FIELD action has nothing to name.
         'workflow.nodes.serviceTask_a.action.fieldPath cannot write a field an approver fills in: amount',
       ].join('; '),
@@ -524,16 +530,11 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
     nodes: [
       {
         data: {
-          fieldPermissions: [
-            { editable: true, fieldPath: 'invoiceKind', visible: true },
-            { editable: true, fieldPath: 'items', visible: true },
-            { editable: true, fieldPath: 'ghost', visible: true },
-            {
-              editable: true,
-              fieldPath: 'taxFree',
-              required: true,
-              visible: true,
-            },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'items', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'ghost', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'taxFree', fill: 'REQUIRED' },
           ],
           label: '財務補填',
         },
@@ -543,8 +544,8 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
       },
       {
         data: {
-          fieldPermissions: [
-            { editable: true, fieldPath: 'invoiceKind', visible: true },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
           ],
           label: '會計補填',
         },
@@ -558,14 +559,34 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
   // [backend line, zh-TW, en]
   const cases: readonly (readonly [string, string, string])[] = [
     [
-      'workflow.nodes.userTask_fill.fieldPermissions must name a field of the bound form: ghost',
-      '簽核節點「財務補填」的欄位權限指定了表單裡沒有的欄位「ghost」。',
-      'The field permissions of the approval node "財務補填" name the field "ghost", which the bound form does not have.',
+      'workflow.nodes.userTask_fill.fieldAccess must name a field of the bound form: ghost',
+      '簽核節點「財務補填」的欄位設定指定了表單第一層沒有的欄位「ghost」（表格整張一起設定）。',
+      'The field settings of the approval node "財務補填" name the field "ghost", which is not a top-level field of the bound form (a table is set as a whole).',
     ],
     [
-      'workflow.nodes.userTask_fill.fieldPermissions cannot require the boolean field: taxFree',
-      '簽核節點「財務補填」把開關欄位「taxFree」設成必填；開關關著也是答案，不能要求必填。',
-      'The approval node "財務補填" marks the switch field (開關) "taxFree" as required. A switch left off is still an answer, so it cannot be required.',
+      'workflow.nodes.userTask_fill.fieldAccess cannot require the boolean field: taxFree',
+      '簽核節點「財務補填」把開關欄位「taxFree」設成補填（必填）；開關關著也是答案，不能要求必填。',
+      'The approval node "財務補填" marks the switch field (開關) "taxFree" as required to fill in. A switch left off is still an answer, so it cannot be required.',
+    ],
+    [
+      'formData.invoiceKind is filled in by both workflow.nodes.userTask_fill and workflow.nodes.userTask_again, which lie on the same path',
+      '欄位「invoiceKind」在「財務補填」與「會計補填」都設為補填，兩關在同一張單都會執行，後填的會覆寫先填的。同一條路徑只能保留一個補填關卡。',
+      'The field "invoiceKind" is filled in at both "財務補填" and "會計補填", which can both run in one case, so the later approver would overwrite the earlier one. Keep one fill-in node per path.',
+    ],
+    [
+      'formData.purpose.visibleWhen reads formData.invoiceKind, which an approver fills in after the applicant submits',
+      '欄位「purpose」的「條件顯示」讀取了「invoiceKind」，但它由簽核人在送出後才補填，申請時永遠是空的。請改用申請人填寫的欄位。',
+      'The "Visible when" (條件顯示) rule of the field "purpose" reads "invoiceKind", which an approver fills in after the applicant submits, so the rule would always see it empty.',
+    ],
+    [
+      'formData.amount.requiredWhen reads formData.taxFree, which an approver fills in after the applicant submits',
+      '欄位「amount」的「條件必填」讀取了「taxFree」，但它由簽核人在送出後才補填，申請時永遠是空的。請改用申請人填寫的欄位。',
+      'The "Required when" (條件必填) rule of the field "amount" reads "taxFree", which an approver fills in after the applicant submits, so the rule would always see it empty.',
+    ],
+    [
+      'formData.amount.readonlyWhen reads formData.items, which an approver fills in after the applicant submits',
+      '欄位「amount」的「條件唯讀」讀取了「items」，但它由簽核人在送出後才補填，申請時永遠是空的。請改用申請人填寫的欄位。',
+      'The "Read-only when" (條件唯讀) rule of the field "amount" reads "items", which an approver fills in after the applicant submits, so the rule would always see it empty.',
     ],
     [
       'formData.invoiceKind is filled in by an approver, so the form cannot set required on it',
@@ -631,15 +652,35 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
 
   it('keeps a line that names a node outside the definition', (): void => {
     const foreign =
-      'workflow.nodes.userTask_9.fieldPermissions cannot require the boolean field: taxFree';
+      'workflow.nodes.userTask_9.fieldAccess cannot require the boolean field: taxFree';
 
+    expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
+  });
+
+  it('keeps a same-path line whose nodes are named out of node order', (): void => {
+    const foreign =
+      'formData.invoiceKind is filled in by both workflow.nodes.userTask_again and workflow.nodes.userTask_fill, which lie on the same path';
+
+    expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
+  });
+
+  it.each([
+    // The read field is not filled in by any approver.
+    'formData.purpose.visibleWhen reads formData.amount, which an approver fills in after the applicant submits',
+    // Not a form rule the applicant check reports.
+    'formData.purpose.defaultValue reads formData.invoiceKind, which an approver fills in after the applicant submits',
+    // The applicant's field is not a field key.
+    'formData.bad key.visibleWhen reads formData.invoiceKind, which an approver fills in after the applicant submits',
+    // Same wording with something appended: whole lines only.
+    'formData.purpose.visibleWhen reads formData.invoiceKind, which an approver fills in after the applicant submits (again)',
+  ])('keeps the applicant-rule look-alike %s', (foreign): void => {
     expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
   });
 
   it('translates the lines it can read and leaves the rest raw when other nodes are malformed', (): void => {
     const rawLines = [
-      'workflow.nodes.userTask_a.fieldPermissions must name a field of the bound form: amount',
-      'workflow.nodes.userTask_c.fieldPermissions is invalid',
+      'workflow.nodes.userTask_a.fieldAccess must name a field of the bound form: amount',
+      'workflow.nodes.userTask_c.fieldAccess is invalid',
     ];
     const translatable =
       'formData.amount is filled in by an approver, so the form cannot set hidden on it';
@@ -649,21 +690,21 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
       nodes: [
         { id: 'userTask_c', position: { x: 0, y: 0 }, type: 'userTask' },
         {
-          data: { fieldPermissions: 'amount', label: '非陣列' },
+          data: { fieldAccess: 'amount', label: '非陣列' },
           id: 'userTask_a',
           position: { x: 0, y: 0 },
           type: 'userTask',
         },
         {
-          data: { fieldPermissions: [null, 7], label: '壞項目' },
+          data: { fieldAccess: [null, 7], label: '壞項目' },
           id: 'userTask_b',
           position: { x: 0, y: 0 },
           type: 'userTask',
         },
         {
           data: {
-            fieldPermissions: [
-              { editable: true, fieldPath: 'amount', visible: true },
+            fieldAccess: [
+              { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
             ],
             label: '可讀節點',
           },
@@ -734,8 +775,8 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
         data: {
           approverResolver: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
           entryCondition: 'form.invoiceKind == "B2B"',
-          fieldPermissions: [
-            { editable: true, fieldPath: 'invoiceKind', visible: true },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
           ],
           label: '財務補填',
         },
@@ -842,6 +883,30 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
     expect(readWorkflowLintMessage(backend, readDefinition, 'en')).toBe(en);
   });
 
+  it('matches the labels the backend builds from WORKFLOW_EXPRESSION_LABELS', (): void => {
+    const lines = [
+      WORKFLOW_EXPRESSION_LABELS.edgeCondition('edge_manager_fill'),
+      WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey('edge_hook_fill'),
+      WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition('userTask_fill'),
+      WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression('userTask_fill'),
+      WORKFLOW_EXPRESSION_LABELS.nodeActionPayload('serviceTask_hook'),
+      WORKFLOW_EXPRESSION_LABELS.nodeActionValue('serviceTask_set'),
+      WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression(
+        'serviceTask_notify',
+      ),
+    ].map((label) =>
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(label, 'invoiceKind'),
+    );
+
+    // Every one is rewritten: none is left as the backend wrote it.
+    expect(
+      readWorkflowLintMessage(lines.join('; '), readDefinition).split('; '),
+    ).toEqual(lines.map((line) => readWorkflowLintMessage(line, readDefinition)));
+    lines.forEach((line): void => {
+      expect(readWorkflowLintMessage(line, readDefinition)).not.toBe(line);
+    });
+  });
+
   it('keeps a line for a field no approver fills in', (): void => {
     const foreign =
       'workflow.edges.edge_manager_fill.data.condition reads formData.amount before an approver fills it in';
@@ -872,8 +937,8 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
       nodes: [
         {
           data: {
-            fieldPermissions: [
-              { editable: true, fieldPath: 'invoiceKind', visible: true },
+            fieldAccess: [
+              { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
             ],
           },
           id: 'userTask_a',

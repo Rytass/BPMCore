@@ -4,7 +4,7 @@ import {
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
-  readNodeEditableFieldKeys,
+  readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
 } from '@rytass/bpm-core-shared';
 import {
@@ -1152,9 +1152,9 @@ export class WorkflowEngineService {
         }
 
         if (filledFormData !== null) {
-          const editableFieldKeys = readNodeEditableFieldKeys(taskNode);
+          const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
           const refusedFieldKeys = Object.keys(filledFormData).filter(
-            (fieldKey) => !editableFieldKeys.has(fieldKey),
+            (fieldKey) => !fillableFieldKeys.has(fieldKey),
           );
 
           if (refusedFieldKeys.length > 0) {
@@ -1201,13 +1201,13 @@ export class WorkflowEngineService {
         // held to those fields, whether or not this request sent any: the host
         // may have pre-filled a table the approver then leaves as is.
         if (input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc) {
-          const nodeEditableFieldKeys = readNodeEditableFieldKeys(taskNode);
+          const nodeFillableFieldKeys = readNodeFillableFieldKeys(taskNode);
 
-          if (nodeEditableFieldKeys.size > 0) {
+          if (nodeFillableFieldKeys.size > 0) {
             validateFilledFormFields(
               readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
               mergedFormData,
-              nodeEditableFieldKeys,
+              nodeFillableFieldKeys,
               readNodeRequiredFieldKeys(taskNode),
             );
           }

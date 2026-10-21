@@ -86,6 +86,8 @@ interface UserTaskNodeData extends BaseNodeData {
   readonly description?: string;
   readonly entryCondition?: string;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldAccess?: readonly FieldAccessEntry[];
+  /** @deprecated 從未生效；草稿仍帶這個鍵時無法發布（見 §8.6）。 */
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
   readonly returnBehavior: ReturnBehavior;
@@ -97,14 +99,13 @@ interface ExcludeInitiatorConfig {
   readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
 }
 
-interface FieldPermission {
+interface FieldAccessEntry {
   /** 表單頂層 fieldKey；表格整張一起設定，不收 `items.price`、`items[0]`。 */
-  readonly fieldPath: string;
-  readonly visible: boolean;
-  /** 本關簽核人核准時可以補填。 */
-  readonly editable: boolean;
-  /** 僅 `editable` 時有意義：本關核准前必須有值。 */
-  readonly required?: boolean;
+  readonly fieldKey: string;
+  /** 本關畫面是否顯示；`HIDE` 只是顯示選項，不是權限邊界。 */
+  readonly display: 'SHOW' | 'HIDE';
+  /** 本關簽核人核准時能否補填；`REQUIRED` 表示核准前必須有值。 */
+  readonly fill: 'NONE' | 'OPTIONAL' | 'REQUIRED';
 }
 ```
 
@@ -136,13 +137,13 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
 `excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
 `set_user_task_exclude_initiator`），以及
-`description`、`entryCondition`、`fieldPermissions`、`notification` 仍未提供
+`description`、`entryCondition`、`fieldAccess`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
-> `fieldPermissions` 由 server 強制執行：標 `editable` 的欄位，只有該節點非加簽任務的
-> 簽核人能在核准時補填；`visible: false` 只是顯示選項，不是權限邊界。規則、發布檢查與
-> host 注意事項見 [§8](#8-節點層級欄位權限fieldpermissions)。designer 目前沒有編輯
-> `fieldPermissions` 的面板，只能直接改 workflow JSON；BPM 內建的案件詳情也還沒有補填輸入，
+> `fieldAccess` 由 server 強制執行：`fill` 不是 `NONE` 的欄位，只有該節點非加簽任務的
+> 簽核人能在核准時補填；`display: 'HIDE'` 只是顯示選項，不是權限邊界。規則、發布檢查與
+> host 注意事項見 [§8](#8-節點層級欄位存取fieldaccess)。designer 目前沒有編輯
+> `fieldAccess` 的面板，只能直接改 workflow JSON；BPM 內建的案件詳情也還沒有補填輸入，
 > 要在畫面上補填的 host 自行呼叫 `decideTask` 的 `formDataJson`。要讓某個欄位不出現在
 > 畫面上，用表單欄位的 `hidden`（見 §7）。
 
@@ -423,8 +424,9 @@ apps/client/src/app/templates/[id]/designer
 
 - cycle detector（`lintCycles`）：從 Start 可達的環會被拒絕（退回不是流程上的環，不在此檢查範圍）。
 - XOR 至少兩條出邊（`lintExclusiveGateways`）：split 型 exclusive gateway 需至少兩條 outgoing edge，且需有 default。
-- 欄位權限（`fieldPermissions`）：形狀、重複、補填節點的決策策略／SLA／`excludeInitiator` 限制、
-  `SET_FORM_FIELD` 不得寫補填欄位，以及發布範本版本時對照綁定表單與「補填之前不得讀補填欄位」的檢查，
+- 欄位存取（`fieldAccess`）：舊鍵 `fieldPermissions`、形狀、重複、補填卻隱藏、補填節點的決策策略／SLA／
+  `excludeInitiator` 限制、同一路徑只能有一個補填節點、`SET_FORM_FIELD` 不得寫補填欄位，以及發布範本版本時
+  對照綁定表單、申請人欄位規則不得讀補填欄位、「補填之前不得讀補填欄位」的檢查，
   見 [§8.6](#86-發布檢查)。
 
 目前仍未實作：resolver id 存在性查詢（發布驗證不查 member／position 是否存在），以及 frontend 即時後端 lint endpoint
@@ -501,9 +503,9 @@ apps/client/src/app/templates/[id]/designer
 
 ---
 
-## 8. 節點層級欄位權限（`fieldPermissions`）
+## 8. 節點層級欄位存取（`fieldAccess`）
 
-未設定 `fieldPermissions` 的節點行為不變。唯一對所有節點都生效的差異是 `decideTask`：取得 advisory
+未設定 `fieldAccess` 的節點行為不變。唯一對所有節點都生效的差異是 `decideTask`：取得 advisory
 lock 之後會重讀 task，輸給鎖的那一筆核准現在回 `Task <id> is not pending`（過去用鎖前讀到的舊狀態判斷）。
 
 這一節描述 server 與 shared helper 已有的行為；案件詳情的補填輸入、`FormRenderer` 的
@@ -511,20 +513,21 @@ lock 之後會重讀 task，輸給鎖的那一筆核准現在回 `Task <id> is n
 
 ### 8.1 名詞與設定
 
-`fieldPermissions` 是 userTask 節點上的清單，每筆 `{ fieldPath, visible, editable, required? }`
-（型別見 §2）。
+`fieldAccess` 是 userTask 節點上的清單，每筆 `{ fieldKey, display, fill }`（型別見 §2）。
+`display` 為 `SHOW`／`HIDE`；`fill` 為 `NONE`（不補填）、`OPTIONAL`（補填、可留空）、`REQUIRED`（補填、核准前必須有值）。
 
-- **補填欄位**：在任一 userTask 節點被設為 `editable: true` 的欄位，由流程定義靜態算出
+- **補填欄位**：在任一 userTask 節點被設為 `fill` 不是 `NONE` 的欄位，由流程定義靜態算出
   （`readApproverFilledFieldKeys`）。
-- **補填節點**：把某個補填欄位設為 `editable: true` 的那些節點。
+- **補填節點**：把某個補填欄位設為 `fill` 不是 `NONE` 的那些節點。同一個欄位在同一條路徑上只能有一個
+  補填節點（互斥分支各自一個可以，見 §8.6）。
 - **已揭露**：案件在某補填欄位的任一補填節點**建立過非加簽任務**。任務一建立就揭露：財務還在填的時候，
   申請人回頭看已經看得到那塊（唯讀、可能是空的）。
-- `fieldPath` 只收頂層 `fieldKey`。表格整張一起設定：整張表可填時，填的人可以改任何欄、增刪列
+- `fieldKey` 只收頂層欄位。表格整張一起設定：整張表補填時，填的人可以改任何欄、增刪列
   （表格欄級權限不在 V1）。
-- **設為可填＝申請人不能填**：終端使用者的送出與重送一律丟棄補填欄位的值（見 §8.4）。
+- **設為補填＝申請人不能填**：終端使用者的送出與重送一律丟棄補填欄位的值（見 §8.4）。
   只有簽核人在核准時能寫。
 
-典型設定：差旅費申請單，區域財務那一關補填 `financeItems`（可填、必填）：
+典型設定：差旅費申請單，區域財務那一關補填 `financeItems`（必填）：
 
 ```json
 {
@@ -532,30 +535,31 @@ lock 之後會重讀 task，輸給鎖的那一筆核准現在回 `Task <id> is n
   "type": "userTask",
   "data": {
     "label": "區域財務",
-    "fieldPermissions": [
-      { "fieldPath": "financeItems", "visible": true, "editable": true, "required": true }
+    "fieldAccess": [
+      { "fieldKey": "financeItems", "display": "SHOW", "fill": "REQUIRED" }
     ]
   }
 }
 ```
 
-只要在填寫那一關設「可填」：之前的關還沒揭露、不顯示該欄位；之後的關與申請人回頭看，都是唯讀顯示。
+只要在填寫那一關設「補填」：之前的關還沒揭露、不顯示該欄位；之後的關與申請人回頭看，都是唯讀顯示。
 
-### 8.2 顯示與可填：由 shared helper 算
+### 8.2 顯示與可補填：由 shared helper 算
 
 `resolveFieldAccess({ definition, fieldKeys, nodeId, isAdhocTask, revealedFieldKeys })` 對每個欄位回
-`{ visible, editable }`，依序判斷，前者勝：
+`ResolvedFieldAccess`（`{ visible, editable }`），依序判斷，前者勝：
 
-1. 檢視者在某節點有可處理的**非加簽**任務，且該節點設定有列這個欄位 ⇒ 照該筆的 `visible`／`editable`。
-2. 檢視者的任務是加簽任務，且該節點設定有列這個欄位 ⇒ 只取 `visible`，`editable` 一律 `false`。
+1. 檢視者在某節點有可處理的**非加簽**任務，且該節點設定有列這個欄位 ⇒ `visible` 為 `display === 'SHOW'`，
+   `editable` 為 `fill !== 'NONE'`。
+2. 檢視者的任務是加簽任務，且該節點設定有列這個欄位 ⇒ 只取 `display`，`editable` 一律 `false`。
 3. 補填欄位、未被第 1／2 點命中：**已揭露 ⇒ 顯示唯讀；未揭露 ⇒ 不顯示**。
-4. 一般欄位、未被命中：顯示唯讀（與沒有 `fieldPermissions` 時相同）。
+4. 一般欄位、未被命中：顯示唯讀（與沒有 `fieldAccess` 時相同）。
 
 - 不看「值是否為空」：host 預填、boolean `false`、預設值都不會讓欄位提早出現。
 - 退回後重走（RESTART／FROM_RETURN_POINT）：已揭露狀態不回收，補填值保留並唯讀可見。
   退回重走之後，補填節點之前的關會看到第一輪填的值（唯讀）。
 - 申請人、歷程、管理員、已結案案件等「任何一關之外」的檢視，`nodeId` 傳 `null`，只套第 3、4 點。
-- 這是**顯示**規則。`visible: false` 與表單欄位的 `hidden` 一樣不是權限邊界：查詢結果仍含值。
+- 這是**顯示**規則。`display: 'HIDE'` 與表單欄位的 `hidden` 一樣不是權限邊界：查詢結果仍含值。
 - 目前 BPM 內建的案件詳情仍以完整 schema 唯讀顯示所有欄位，尚未套用第 3 點。
 
 ### 8.3 已揭露怎麼判斷
@@ -600,11 +604,11 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 引擎行為：
 
 1. 取 advisory lock 後重讀 task。
-2. `formDataJson` 只能搭配 `APPROVED`、只能來自非加簽任務，每個鍵必須是**本節點 `editable`** 的欄位。
+2. `formDataJson` 只能搭配 `APPROVED`、只能來自非加簽任務，每個鍵必須是**本節點可補填**（`fill` 不是 `NONE`）的欄位。
 3. 帶了指紋而與目前 `formData` 不同 ⇒ `ConflictException`（防並行分支或 `SET_FORM_FIELD` 在畫面打開後改過值）。
-4. 非加簽任務、`APPROVED`、本節點有任何 `editable` 欄位 ⇒ **一律驗證**（對合併後的資料），不論這次有沒有帶
+4. 非加簽任務、`APPROVED`、本節點有任何可補填欄位 ⇒ **一律驗證**（對合併後的資料），不論這次有沒有帶
    `formDataJson`（host 預填了表格、財務什麼都沒改直接核准，也要被擋）：表格列形狀、欄必填、`minRows`、
-   成員值形狀，加上本節點標 `required` 的欄位不得為空。「空」＝`undefined`／`null`／trim 後為空字串／
+   成員值形狀，加上本節點 `fill: 'REQUIRED'` 的欄位不得為空。「空」＝`undefined`／`null`／trim 後為空字串／
    空陣列（與送出同語意；`false`、`0` 不算空）。引擎沒有一般欄位的型別檢查（`minimum`／`maxLength`
    是前端提示），這裡也沒有新增。
 5. 驗證通過、且有鍵真的變了，才把合併結果**先儲存、同步回 `instance`，再簽章與往下推進**：簽章涵蓋補填值、
@@ -615,7 +619,7 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 `SEQUENTIAL` 節點每位候選人核准都驗，所以**第一位就必須填**。轉簽、代理、管理員改派的接手者照同一份
 節點設定。SLA `ESCALATE`→`TRANSFERRED` 不動表單。
 
-通知：`TASK_ASSIGNED`／`TASK_TRANSFERRED` 的 payload 帶 `requiresForm`（非加簽任務、節點有 `editable`
+通知：`TASK_ASSIGNED`／`TASK_TRANSFERRED` 的 payload 帶 `hasFillableFields`（非加簽任務、節點有可補填
 欄位時為 `true`），讓 host 在推播時改成「開啟案件」而不是一鍵同意。舊通知沒有這個鍵，請當作 `false`。
 
 #### 錯誤表一：`decideTask` 新增的拒絕
@@ -631,7 +635,7 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 | `formDataJson` 不是合法 JSON | `BadRequestException` | `JSON.parse` 的錯誤訊息（依 runtime 而定） |
 | `formDataJson` 是合法 JSON 但不是物件（陣列、字串、數字、`null`） | `BadRequestException` | `formDataJson must be a JSON object` |
 | 加簽任務帶 `formDataJson` | `ForbiddenException` | `Ad-hoc task <taskId> cannot fill in form fields` |
-| 有鍵不是本節點 `editable` 的欄位（鍵名依 JSON 物件順序列出） | `ForbiddenException` | `Workflow node <nodeId> does not let approvers fill in: <key>, <key>` |
+| 有鍵不是本節點可補填的欄位（鍵名依 JSON 物件順序列出） | `ForbiddenException` | `Workflow node <nodeId> does not let approvers fill in: <key>, <key>` |
 | `expectedFormDataFingerprint` 與目前 `formData` 的指紋不同 | `ConflictException` | `Approval instance <instanceId> form data changed; refresh and retry` |
 
 `REJECTED` 且沒有填意見的請求，即使同時帶了 `formDataJson`，先收到既有的
@@ -644,17 +648,17 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 | 檢查 | 訊息 |
 | --- | --- |
-| 本節點標 `required` 的非表格補填欄位為空 | `Form data is missing required fields: <label or fieldKey>, …` |
+| 本節點 `fill: 'REQUIRED'` 的非表格補填欄位為空 | `Form data is missing required fields: <label or fieldKey>, …` |
 | 成員欄位的值形狀不對 | `formData.<fieldKey> must be a member id`（單選）／`formData.<fieldKey> must be an array of member ids`（多選） |
 | 表格不是列的陣列 | `formData.<fieldKey> must be an array of rows` |
 | 列不是物件 | `formData.<fieldKey>[<i>] must be an object` |
 | 列裡有不存在的欄 | `formData.<fieldKey>[<i>].<columnKey> is not a table column` |
 | 儲存格值不合法 | `formData.<fieldKey>[<i>].<columnKey> is not a valid cell value` |
 | 欄必填而儲存格為空 | `formData.<fieldKey>[<i>].<columnKey> is required` |
-| 列數不足（`<n>` 為 `minRows`；節點把該表標 `required` 時取 `max(minRows, 1)`；表格沒有值時一律取 `max(minRows, 1)`） | `formData.<fieldKey> must include at least <n> row(s)` |
+| 列數不足（`<n>` 為 `minRows`；節點把該表設為 `fill: 'REQUIRED'` 時取 `max(minRows, 1)`；表格沒有值時一律取 `max(minRows, 1)`） | `formData.<fieldKey> must include at least <n> row(s)` |
 | 列數超過 `maxRows` | `formData.<fieldKey> must include at most <n> row(s)` |
 
-表格本身標 `required` 時，缺值或空陣列走「列數不足」這一列，不走第一列。
+表格本身設為 `fill: 'REQUIRED'` 時，缺值或空陣列走「列數不足」這一列，不走第一列。
 
 ### 8.6 發布檢查
 
@@ -663,25 +667,31 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 **只看流程定義**（`lintWorkflowDefinition`）
 
-- `fieldPermissions` 不是陣列，或有一筆不是物件、`fieldPath` 為空、`visible`／`editable` 不是 boolean、
-  `required` 不是 boolean 也不是缺省：只回報形狀那一行，該節點的其他欄位權限規則先略過。
-- `fieldPath` 重複；含 `.` 或 `[`（只收頂層）。
-- `editable: true` 而 `visible: false`。
-- `required: true` 而 `editable` 不為 `true`。
+- 節點仍帶舊鍵 `fieldPermissions`（任何值，含 `[]`）：`legacyFieldPermissions`。這個鍵從未生效，引擎不讀、
+  也不自動轉換；已發布版本與案件快照不受影響。designer 提供「移除舊設定」之前，請透過 API 移除後重新設定。
+- `fieldAccess` 不是陣列，或有一筆不是物件、`fieldKey` 為空、`display`／`fill` 不是列舉值：只回報形狀那一行，
+  該節點的其他欄位存取規則先略過。
+- `fieldKey` 重複。
+- `fill` 不是 `NONE` 而 `display: 'HIDE'`（`fieldAccessFillHidden`）。
 - 補填節點不能用多人決策（`PARALLEL_ALL`／`QUORUM`）。
 - 補填節點不能設 `sla.onTimeout: 'AUTO_APPROVE'`（自動核准每次都會被「一律驗證」擋下）。
 - 補填節點不能設 `excludeInitiator.whenEmpty: 'SKIP_NODE'`（該關被跳過就沒人補填，案件卻照樣核准；
   要用會指派到別人的選項）。
 - `SET_FORM_FIELD` 的 `fieldPath` 第一段是補填欄位。
+- 同一個補填欄位的兩個補填節點之間有可達路徑（`approverFilledMultipleFillNodesOnPath`）：後填的會覆寫先填的。
+  並行分流（parallelGateway）的兩條分支各自補填同一欄位也算（兩關都會執行）。互斥分支（例如北區、南區財務各走一條）
+  不受限，並行 join 之後再分成互斥分支也不受限。
 
 **對照綁定的表單**（發布範本版本時，`validatePublishableVersion`）
 
-- `fieldPath` 必須是表單頂層欄位（巢狀路徑已由上一組回報，不重複報）。
+- `fieldKey` 必須是表單頂層欄位；`items.price` 這類巢狀路徑以「表單沒有的欄位」擋下。
 - 補填欄位在表單層不得設 `required`（`true`）、`requiredWhen`、`visibleWhen`、`readonlyWhen`、
-  `hidden`（`true`）、`defaultValue`；每個欄位、每條規則只報一次，不論幾個節點讓它可填。
+  `hidden`（`true`）、`defaultValue`；每個欄位、每條規則只報一次，不論幾個節點讓它補填。
 - 補填欄位不得是選項來源（DataSource）欄位或 `file_upload`；補填欄位是表格時，表格內任何一欄也不得是
   DataSource 欄（decide 不重解選項快照、也不收附件）。
-- 節點 `required: true` 的補填欄位不得是 boolean（`false` 是有效答案，會被「為空」檢查擋下）。
+- 節點 `fill: 'REQUIRED'` 的補填欄位不得是 boolean（`false` 是有效答案，會被「為空」檢查擋下）。
+- 申請人欄位的 `requiredWhen`／`visibleWhen`／`readonlyWhen` 不得引用補填欄位
+  （`applicantRuleReadsApproverFilled`）：送出時補填欄位還是空的，規則只會拿空值比較。
 - DYNAMIC_FORM 的 `formPath` 指向補填欄位是 V1 不支援的組合：`formPath` 欄位必須是必填成員欄位，補填欄位
   又禁止必填，所以兩邊的檢查互相衝突，怎麼設都擋（有時兩行同時出現）。
 
@@ -709,9 +719,6 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
   之前就被走到，參數解析為沒有值；參數宣告為必填時，這筆 delivery 會被記成 `FAILED`
   （`workflow-webhook-enqueue.ts` 的 `resolveParameters`）。早讀檢查不看 webhook 綁定。這類參數只綁在
   補填節點**之後**的 NOTIFY 節點。
-- 已知限制：重送時，BPM 的重送編輯狀態驗證申請人欄位用的資料不含已存的補填值，server 驗證的卻是疊回補填值
-  之後的資料。申請人欄位的 `requiredWhen`／`visibleWhen` 若引用補填欄位，可能在 client 過關、被 server 拒絕。
-  表單層規則的發布檢查只管設在補填欄位自己身上的規則，管不到這個方向。申請人欄位的規則不要依賴補填欄位。
 
 ### 8.7 給 host 的注意
 
@@ -721,4 +728,4 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
    自己預填的欄位沒有被改。
 4. **核准後要抄回值：** 在 `APPROVED` 之後讀 `formData`；`TASK_DECIDED.changedFieldKeys` 只告訴你哪些鍵變了。
 5. **server-to-server 核准會遇到 §8.5 的新錯誤。** 需要轉譯；可用 `resolveFieldAccess` 判斷該節點要不要改成
-   「開啟案件」，或讀通知 payload 的 `requiresForm`。
+   「開啟案件」，或讀通知 payload 的 `hasFillableFields`。

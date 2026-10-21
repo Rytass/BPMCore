@@ -80,6 +80,43 @@ export const APPROVER_FILLED_FORM_RULES = [
 export type ApproverFilledFormRule = (typeof APPROVER_FILLED_FORM_RULES)[number];
 
 /**
+ * The form rules of an applicant's field that are evaluated against the form
+ * the applicant submits. An approver-filled field is still empty then, so a
+ * rule reading one is refused at publish (`applicantRuleReadsApproverFilled`).
+ */
+export const APPLICANT_FIELD_CONDITION_RULES = [
+  'requiredWhen',
+  'visibleWhen',
+  'readonlyWhen',
+] as const;
+
+export type ApplicantFieldConditionRule =
+  (typeof APPLICANT_FIELD_CONDITION_RULES)[number];
+
+/**
+ * Where an expression of a workflow definition sits, as the publish lint names
+ * it. The backend labels its lines with these and the client rebuilds the same
+ * labels to translate them, so both always agree. The strings also appear in
+ * the CEL lint lines, so they are a contract like `WORKFLOW_LINT_MESSAGES`.
+ */
+export const WORKFLOW_EXPRESSION_LABELS = Object.freeze({
+  edgeCondition: (edgeId: string): string =>
+    `workflow.edges.${edgeId}.data.condition`,
+  edgeConditionFieldKey: (edgeId: string): string =>
+    `workflow.edges.${edgeId}.data.conditionFieldKey`,
+  nodeActionPayload: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.data.action.payload`,
+  nodeActionRecipientsExpression: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.data.action.recipients.expression`,
+  nodeActionValue: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.data.action.value`,
+  nodeApproverResolverExpression: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.data.approverResolver.expression`,
+  nodeEntryCondition: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.data.entryCondition`,
+});
+
+/**
  * The structural lines of the backend publish lint (`lintWorkflowDefinition`
  * in `@rytass/bpm-core-nestjs-module`). The backend writes them from here and
  * the client (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`)
@@ -98,8 +135,20 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `formData.${fieldKey} is filled in by an approver, so the form cannot set ${rule} on it`,
   approverFilledFieldReadEarly: (label: string, fieldKey: string): string =>
     `${label} reads formData.${fieldKey} before an approver fills it in`,
-  approverFilledRequiredBoolean: (nodeId: string, fieldPath: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions cannot require the boolean field: ${fieldPath}`,
+  approverFilledMultipleFillNodesOnPath: (
+    fieldKey: string,
+    firstNodeId: string,
+    secondNodeId: string,
+  ): string =>
+    `formData.${fieldKey} is filled in by both workflow.nodes.${firstNodeId} and workflow.nodes.${secondNodeId}, which lie on the same path`,
+  approverFilledRequiredBoolean: (nodeId: string, fieldKey: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess cannot require the boolean field: ${fieldKey}`,
+  applicantRuleReadsApproverFilled: (
+    fieldKey: string,
+    rule: string,
+    approverFilledFieldKey: string,
+  ): string =>
+    `formData.${fieldKey}.${rule} reads formData.${approverFilledFieldKey}, which an approver fills in after the applicant submits`,
   approverFilledTableDataSourceColumn: (fieldKey: string): string =>
     `formData.${fieldKey} is filled in by an approver, so its table cannot have a data-source column`,
   blankNodeLabel: (index: number): string =>
@@ -112,30 +161,22 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `workflow.nodes.${nodeId} must include a default outgoing edge`,
   exclusiveSplitOutgoingEdges: (nodeId: string): string =>
     `workflow.nodes.${nodeId} exclusive split requires at least two outgoing edges`,
-  fieldPermissionAutoApprove: (nodeId: string): string =>
-    `workflow.nodes.${nodeId}.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields`,
-  fieldPermissionDuplicate: (nodeId: string, fieldPath: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions lists a field more than once: ${fieldPath}`,
-  fieldPermissionEditableInvisible: (
-    nodeId: string,
-    fieldPath: string,
-  ): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions cannot make a field editable while it is not visible: ${fieldPath}`,
-  fieldPermissionGroupPolicy: (nodeId: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node`,
-  fieldPermissionNestedPath: (nodeId: string, fieldPath: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions must name a top-level form field, not a nested path: ${fieldPath}`,
-  fieldPermissionRequiredNotEditable: (
-    nodeId: string,
-    fieldPath: string,
-  ): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions can only require a field that is editable: ${fieldPath}`,
-  fieldPermissionSkipNode: (nodeId: string): string =>
-    `workflow.nodes.${nodeId}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields`,
-  fieldPermissionsInvalid: (nodeId: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions is invalid`,
-  fieldPermissionUnknownField: (nodeId: string, fieldPath: string): string =>
-    `workflow.nodes.${nodeId}.fieldPermissions must name a field of the bound form: ${fieldPath}`,
+  fieldAccessAutoApprove: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.sla.onTimeout cannot be AUTO_APPROVE on a node with fillable fields`,
+  fieldAccessDuplicate: (nodeId: string, fieldKey: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess lists a field more than once: ${fieldKey}`,
+  fieldAccessFillHidden: (nodeId: string, fieldKey: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess cannot let a field be filled in while it is hidden: ${fieldKey}`,
+  fieldAccessGroupPolicy: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node`,
+  fieldAccessInvalid: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess is invalid`,
+  fieldAccessSkipNode: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields`,
+  fieldAccessUnknownField: (nodeId: string, fieldKey: string): string =>
+    `workflow.nodes.${nodeId}.fieldAccess must name a field of the bound form: ${fieldKey}`,
+  legacyFieldPermissions: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.fieldPermissions is no longer supported: remove it and use fieldAccess instead`,
   noPathToEnd: (nodeId: string): string =>
     `workflow.nodes.${nodeId} does not have a path to an endEvent`,
   notifyOutgoingEdge: (edgeId: string): string =>

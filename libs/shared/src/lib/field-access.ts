@@ -1,10 +1,11 @@
 import type {
-  FieldPermission,
+  FieldAccessEntry,
   UserTaskNode,
   WorkflowDefinition,
 } from './workflow';
 
-export interface FieldAccess {
+/** What a viewer may do with one top-level form field (`resolveFieldAccess`). */
+export interface ResolvedFieldAccess {
   readonly editable: boolean;
   readonly visible: boolean;
 }
@@ -28,66 +29,72 @@ const findUserTaskNode = (
   );
 
 /**
- * Reads `fieldPermissions` off a user task without trusting its shape: saved
- * drafts can hold anything, and no caller may throw because of one. A value
- * that is not an array reads as `[]`; an entry that is not an object or has no
- * non-empty `fieldPath` string is skipped; the first entry for a `fieldPath`
- * wins, so every reader agrees on which one counts.
+ * Reads `fieldAccess` off a user task without trusting its shape: saved drafts
+ * can hold anything, and no caller may throw because of one. A value that is
+ * not an array reads as `[]`; an entry that is not an object or has no
+ * non-empty `fieldKey` string is skipped; the first entry for a `fieldKey`
+ * wins, so every reader agrees on which one counts. An unknown `fill` reads as
+ * `NONE`, so a malformed entry never lets anyone write, and an unknown
+ * `display` reads as `SHOW`. The deprecated `fieldPermissions` is never read.
  */
-export const readNodeFieldPermissions = (
+export const readNodeFieldAccess = (
   node: UserTaskNode,
-): readonly FieldPermission[] => {
-  const raw: unknown = node.data.fieldPermissions;
+): readonly FieldAccessEntry[] => {
+  const raw: unknown = node.data.fieldAccess;
 
   if (!Array.isArray(raw)) {
     return [];
   }
 
-  return raw.reduce<readonly FieldPermission[]>((collected, entry: unknown) => {
-    if (
-      !isRecord(entry) ||
-      typeof entry['fieldPath'] !== 'string' ||
-      entry['fieldPath'] === '' ||
-      collected.some((existing) => existing.fieldPath === entry['fieldPath'])
-    ) {
-      return collected;
-    }
+  return raw.reduce<readonly FieldAccessEntry[]>(
+    (collected, entry: unknown) => {
+      if (
+        !isRecord(entry) ||
+        typeof entry['fieldKey'] !== 'string' ||
+        entry['fieldKey'] === '' ||
+        collected.some((existing) => existing.fieldKey === entry['fieldKey'])
+      ) {
+        return collected;
+      }
 
-    return [
-      ...collected,
-      {
-        editable: entry['editable'] === true,
-        fieldPath: entry['fieldPath'],
-        required: entry['required'] === true,
-        visible: entry['visible'] !== false,
-      },
-    ];
-  }, []);
+      const fill = entry['fill'];
+
+      return [
+        ...collected,
+        {
+          display: entry['display'] === 'HIDE' ? 'HIDE' : 'SHOW',
+          fieldKey: entry['fieldKey'],
+          fill: fill === 'OPTIONAL' || fill === 'REQUIRED' ? fill : 'NONE',
+        },
+      ];
+    },
+    [],
+  );
 };
 
 /**
  * The top-level form field a field path addresses: `items.price` and
- * `items[0]` both address `items`. Only top-level fields carry permissions.
+ * `items[0]` both address `items`.
  */
 export const readTopLevelFieldKey = (fieldPath: string): string =>
   fieldPath.split('.')[0].split('[')[0];
 
-export const readNodeEditableFieldKeys = (
+export const readNodeFillableFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>
   new Set(
-    readNodeFieldPermissions(node)
-      .filter((permission) => permission.editable)
-      .map((permission) => permission.fieldPath),
+    readNodeFieldAccess(node)
+      .filter((entry) => entry.fill !== 'NONE')
+      .map((entry) => entry.fieldKey),
   );
 
 export const readNodeRequiredFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>
   new Set(
-    readNodeFieldPermissions(node)
-      .filter((permission) => permission.editable && permission.required)
-      .map((permission) => permission.fieldPath),
+    readNodeFieldAccess(node)
+      .filter((entry) => entry.fill === 'REQUIRED')
+      .map((entry) => entry.fieldKey),
   );
 
 /** Every field some user task lets its approver fill in. */
@@ -97,7 +104,7 @@ export const readApproverFilledFieldKeys = (
   new Set(
     definition.nodes
       .filter(isUserTaskNode)
-      .flatMap((node) => [...readNodeEditableFieldKeys(node)]),
+      .flatMap((node) => [...readNodeFillableFieldKeys(node)]),
   );
 
 /**
@@ -113,7 +120,7 @@ export const readRevealedFieldKeys = (
     [...new Set(nodeIdsWithNonAdhocTask)].flatMap((nodeId) => {
       const node = findUserTaskNode(definition, nodeId);
 
-      return node === undefined ? [] : [...readNodeEditableFieldKeys(node)];
+      return node === undefined ? [] : [...readNodeFillableFieldKeys(node)];
     }),
   );
 
@@ -133,28 +140,28 @@ export const resolveFieldAccess = (input: {
   readonly isAdhocTask: boolean;
   readonly nodeId: string | null;
   readonly revealedFieldKeys: ReadonlySet<string>;
-}): Readonly<Record<string, FieldAccess>> => {
+}): Readonly<Record<string, ResolvedFieldAccess>> => {
   const node =
     input.nodeId === null
       ? undefined
       : findUserTaskNode(input.definition, input.nodeId);
   const listed = new Map(
-    (node === undefined ? [] : readNodeFieldPermissions(node)).map(
-      (permission) => [permission.fieldPath, permission] as const,
+    (node === undefined ? [] : readNodeFieldAccess(node)).map(
+      (entry) => [entry.fieldKey, entry] as const,
     ),
   );
   const approverFilled = readApproverFilledFieldKeys(input.definition);
 
   return Object.fromEntries(
-    input.fieldKeys.map((fieldKey): readonly [string, FieldAccess] => {
-      const permission = listed.get(fieldKey);
+    input.fieldKeys.map((fieldKey): readonly [string, ResolvedFieldAccess] => {
+      const entry = listed.get(fieldKey);
 
-      if (permission !== undefined) {
+      if (entry !== undefined) {
         return [
           fieldKey,
           {
-            editable: input.isAdhocTask ? false : permission.editable,
-            visible: permission.visible,
+            editable: !input.isAdhocTask && entry.fill !== 'NONE',
+            visible: entry.display === 'SHOW',
           },
         ];
       }

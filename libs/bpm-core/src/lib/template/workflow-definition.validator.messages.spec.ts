@@ -1,6 +1,8 @@
 import { lintWorkflowDefinition } from './workflow-definition.validator';
 import {
+  APPLICANT_FIELD_CONDITION_RULES,
   APPROVER_FILLED_FORM_RULES,
+  WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import {
@@ -76,6 +78,40 @@ describe('workflow lint message wording', (): void => {
     ]);
   });
 
+  it('names the applicant rules that cannot read an approver-filled field', (): void => {
+    expect(APPLICANT_FIELD_CONDITION_RULES).toEqual([
+      'requiredWhen',
+      'visibleWhen',
+      'readonlyWhen',
+    ]);
+  });
+
+  // The labels also appear in the CEL lint lines published before field
+  // access existed, so they must stay character for character.
+  it('builds every expression label with its published wording', (): void => {
+    expect(WORKFLOW_EXPRESSION_LABELS.edgeCondition('e1')).toBe(
+      'workflow.edges.e1.data.condition',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey('e1')).toBe(
+      'workflow.edges.e1.data.conditionFieldKey',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.nodeActionPayload('n1')).toBe(
+      'workflow.nodes.n1.data.action.payload',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression('n1')).toBe(
+      'workflow.nodes.n1.data.action.recipients.expression',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.nodeActionValue('n1')).toBe(
+      'workflow.nodes.n1.data.action.value',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression('n1')).toBe(
+      'workflow.nodes.n1.data.approverResolver.expression',
+    );
+    expect(WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition('n1')).toBe(
+      'workflow.nodes.n1.data.entryCondition',
+    );
+  });
+
   it('builds every structural line with its published wording', (): void => {
     expect(WORKFLOW_LINT_MESSAGES.blankNodeLabel(2)).toBe(
       'workflow.nodes[2].data.label must be a non-empty string',
@@ -92,40 +128,47 @@ describe('workflow lint message wording', (): void => {
     expect(WORKFLOW_LINT_MESSAGES.exclusiveSplitOutgoingEdges('n1')).toBe(
       'workflow.nodes.n1 exclusive split requires at least two outgoing edges',
     );
-    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionAutoApprove('n1')).toBe(
-      'workflow.nodes.n1.sla.onTimeout cannot be AUTO_APPROVE on a node with editable fields',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessAutoApprove('n1')).toBe(
+      'workflow.nodes.n1.sla.onTimeout cannot be AUTO_APPROVE on a node with fillable fields',
     );
-    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionDuplicate('n1', 'amount')).toBe(
-      'workflow.nodes.n1.fieldPermissions lists a field more than once: amount',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessDuplicate('n1', 'amount')).toBe(
+      'workflow.nodes.n1.fieldAccess lists a field more than once: amount',
     );
-    expect(
-      WORKFLOW_LINT_MESSAGES.fieldPermissionEditableInvisible('n1', 'amount'),
-    ).toBe(
-      'workflow.nodes.n1.fieldPermissions cannot make a field editable while it is not visible: amount',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessFillHidden('n1', 'amount')).toBe(
+      'workflow.nodes.n1.fieldAccess cannot let a field be filled in while it is hidden: amount',
     );
-    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionGroupPolicy('n1')).toBe(
-      'workflow.nodes.n1.fieldPermissions cannot make fields editable on a PARALLEL_ALL or QUORUM node',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessGroupPolicy('n1')).toBe(
+      'workflow.nodes.n1.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node',
     );
-    expect(
-      WORKFLOW_LINT_MESSAGES.fieldPermissionNestedPath('n1', 'items.price'),
-    ).toBe(
-      'workflow.nodes.n1.fieldPermissions must name a top-level form field, not a nested path: items.price',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessSkipNode('n1')).toBe(
+      'workflow.nodes.n1.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields',
     );
-    expect(
-      WORKFLOW_LINT_MESSAGES.fieldPermissionRequiredNotEditable('n1', 'amount'),
-    ).toBe(
-      'workflow.nodes.n1.fieldPermissions can only require a field that is editable: amount',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessInvalid('n1')).toBe(
+      'workflow.nodes.n1.fieldAccess is invalid',
     );
-    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionSkipNode('n1')).toBe(
-      'workflow.nodes.n1.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with editable fields',
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField('n1', 'amount')).toBe(
+      'workflow.nodes.n1.fieldAccess must name a field of the bound form: amount',
     );
-    expect(WORKFLOW_LINT_MESSAGES.fieldPermissionsInvalid('n1')).toBe(
-      'workflow.nodes.n1.fieldPermissions is invalid',
+    expect(WORKFLOW_LINT_MESSAGES.legacyFieldPermissions('n1')).toBe(
+      'workflow.nodes.n1.fieldPermissions is no longer supported: remove it and use fieldAccess instead',
     );
     expect(
-      WORKFLOW_LINT_MESSAGES.fieldPermissionUnknownField('n1', 'amount'),
+      WORKFLOW_LINT_MESSAGES.applicantRuleReadsApproverFilled(
+        'reason',
+        'visibleWhen',
+        'amount',
+      ),
     ).toBe(
-      'workflow.nodes.n1.fieldPermissions must name a field of the bound form: amount',
+      'formData.reason.visibleWhen reads formData.amount, which an approver fills in after the applicant submits',
+    );
+    expect(
+      WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
+        'amount',
+        'n1',
+        'n2',
+      ),
+    ).toBe(
+      'formData.amount is filled in by both workflow.nodes.n1 and workflow.nodes.n2, which lie on the same path',
     );
     expect(
       WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule('amount', 'hidden'),
@@ -146,7 +189,7 @@ describe('workflow lint message wording', (): void => {
     expect(
       WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean('n1', 'taxFree'),
     ).toBe(
-      'workflow.nodes.n1.fieldPermissions cannot require the boolean field: taxFree',
+      'workflow.nodes.n1.fieldAccess cannot require the boolean field: taxFree',
     );
     expect(
       WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(

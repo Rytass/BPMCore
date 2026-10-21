@@ -24,7 +24,7 @@ const SCHEMA: FormDefinitionSchema = {
 };
 
 const buildDefinition = (
-  editableFieldKeys: readonly string[],
+  fillableFieldKeys: readonly string[],
 ): WorkflowDefinition => ({
   edges: [],
   meta: { schemaVersion: 1 },
@@ -36,11 +36,10 @@ const buildDefinition = (
         allowTransfer: false,
         approverResolver: { memberIds: ['m-1'], type: 'DIRECT' },
         decisionPolicy: { type: 'SINGLE' },
-        fieldPermissions: editableFieldKeys.map((fieldPath) => ({
-          editable: true,
-          fieldPath,
-          required: false,
-          visible: true,
+        fieldAccess: fillableFieldKeys.map((fieldKey) => ({
+          display: 'SHOW' as const,
+          fieldKey,
+          fill: 'OPTIONAL' as const,
         })),
         label: 'finance',
         returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },

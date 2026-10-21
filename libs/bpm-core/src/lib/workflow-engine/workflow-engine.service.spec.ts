@@ -8,7 +8,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
-  FieldPermission,
+  FieldAccessEntry,
   ReturnBehavior,
   ServiceAction,
   WorkflowDefinition,
@@ -821,7 +821,7 @@ describe('WorkflowEngineService', () => {
     expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
   });
 
-  describe('field permissions: submit and resubmit', () => {
+  describe('field access: submit and resubmit', () => {
     const submit = (
       formDataJson: string,
       options: {
@@ -836,7 +836,7 @@ describe('WorkflowEngineService', () => {
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
         templateWorkflowDefinition:
-          options.workflow ?? createFieldPermissionWorkflow(),
+          options.workflow ?? createFieldAccessWorkflow(),
       }).service.submitApprovalInstance({
         formDataJson,
         initiatorMemberId: 'member-001',
@@ -873,7 +873,7 @@ describe('WorkflowEngineService', () => {
         processFormData: options.processFormData,
         processFormDefinitionSnapshot: { schema: formSchema },
         processWorkflowSnapshot:
-          options.workflow ?? createFieldPermissionWorkflow(),
+          options.workflow ?? createFieldAccessWorkflow(),
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
 
@@ -989,20 +989,10 @@ describe('WorkflowEngineService', () => {
     });
 
     it('does not hold an end-user submission to a required non-table approver-filled field', async (): Promise<void> => {
-      const workflow = createFieldPermissionWorkflow({
-        financeFieldPermissions: [
-          {
-            editable: true,
-            fieldPath: 'financeItems',
-            required: true,
-            visible: true,
-          },
-          {
-            editable: true,
-            fieldPath: 'invoiceNote',
-            required: true,
-            visible: true,
-          },
+      const workflow = createFieldAccessWorkflow({
+        financeFieldAccess: [
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'invoiceNote', fill: 'REQUIRED' },
         ],
       });
       const baseSchema = createFinanceTableFormSchema();
@@ -1037,8 +1027,26 @@ describe('WorkflowEngineService', () => {
       ).rejects.toThrow('Form data is missing required fields: 事由');
     });
 
-    it('keeps submit and resubmit unchanged on a workflow without fieldPermissions', async (): Promise<void> => {
+    it('keeps submit and resubmit unchanged on a workflow without fieldAccess', async (): Promise<void> => {
       const workflow = createLinearUserTaskWorkflow();
+      const formDataJson = '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}';
+      const expected = { amount: 10, financeItems: [{ seq: 1, taxAmount: 5 }] };
+      const submitted = await submit(formDataJson, {
+        endUserSubmission: true,
+        workflow,
+      });
+      const { fixture } = await resubmit(formDataJson, {
+        endUserSubmission: true,
+        processFormData: { amount: 1, financeItems: [{ seq: 9, taxAmount: 9 }] },
+        workflow,
+      });
+
+      expect(submitted.formData).toEqual(expected);
+      expect(fixture.savedInstance?.formData).toEqual(expected);
+    });
+
+    it('ignores the legacy fieldPermissions key on submit and resubmit', async (): Promise<void> => {
+      const workflow = createLegacyFieldPermissionsWorkflow();
       const formDataJson = '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}';
       const expected = { amount: 10, financeItems: [{ seq: 1, taxAmount: 5 }] };
       const submitted = await submit(formDataJson, {
@@ -1056,7 +1064,7 @@ describe('WorkflowEngineService', () => {
     });
   });
 
-  describe('field permissions: decide', () => {
+  describe('field access: decide', () => {
     const STORED_FORM_DATA = {
       amount: 10,
       financeItems: [{ seq: 1 }],
@@ -1091,7 +1099,7 @@ describe('WorkflowEngineService', () => {
           schema: options.formSchema ?? createFinanceTableFormSchema(),
         },
         processWorkflowSnapshot:
-          options.workflow ?? createFieldPermissionWorkflow(),
+          options.workflow ?? createFieldAccessWorkflow(),
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
 
@@ -1155,7 +1163,7 @@ describe('WorkflowEngineService', () => {
 
     it('keeps filled values when the filling node is the last one', async (): Promise<void> => {
       const fixture = createDecideFixture({
-        workflow: createFieldPermissionWorkflow({ lastNode: 'task_finance' }),
+        workflow: createFieldAccessWorkflow({ lastNode: 'task_finance' }),
       });
 
       await decide(fixture, { formDataJson: FILLED_ITEMS });
@@ -1171,11 +1179,11 @@ describe('WorkflowEngineService', () => {
     it('routes the next gateway on a value just filled in', async (): Promise<void> => {
       const b2b = createDecideFixture({
         formData: { amount: 10 },
-        workflow: createFieldPermissionGatewayWorkflow(),
+        workflow: createFieldAccessGatewayWorkflow(),
       });
       const b2c = createDecideFixture({
         formData: { amount: 10 },
-        workflow: createFieldPermissionGatewayWorkflow(),
+        workflow: createFieldAccessGatewayWorkflow(),
       });
 
       await decide(b2b, { formDataJson: '{"invoiceKind":"B2B"}' });
@@ -1200,7 +1208,7 @@ describe('WorkflowEngineService', () => {
       });
     });
 
-    it('refuses a key the node does not make editable and leaves form data alone', async (): Promise<void> => {
+    it('refuses a key the node does not let its approver fill in and leaves form data alone', async (): Promise<void> => {
       const fixture = createDecideFixture();
 
       await expectRejection(
@@ -1330,11 +1338,11 @@ describe('WorkflowEngineService', () => {
 
       expect(transferred).toBe(true);
       expect(task.isAdhoc).toBe(false);
-      expect(node.data.fieldPermissions).toEqual(
+      expect(node.data.fieldAccess).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            editable: true,
-            fieldPath: 'financeItems',
+            fieldKey: 'financeItems',
+            fill: 'REQUIRED',
           }),
         ]),
       );
@@ -1436,7 +1444,7 @@ describe('WorkflowEngineService', () => {
     });
 
     it('records no TASK_CREATED for a filling node skipped by its entry condition', async (): Promise<void> => {
-      const base = createFieldPermissionWorkflow();
+      const base = createFieldAccessWorkflow();
       const fixture = createDecideFixture({
         task: {
           assigneeMemberId: 'member-manager',
@@ -1467,7 +1475,7 @@ describe('WorkflowEngineService', () => {
     it('records no TASK_CREATED for a filling node on the gateway branch not taken', async (): Promise<void> => {
       const fixture = createDecideFixture({
         formData: { amount: 10 },
-        workflow: createFieldPermissionGatewayWorkflow(),
+        workflow: createFieldAccessGatewayWorkflow(),
       });
 
       await decide(fixture, { formDataJson: '{"invoiceKind":"B2C"}' });
@@ -1478,25 +1486,15 @@ describe('WorkflowEngineService', () => {
       );
     });
 
-    describe('field permissions: node validation', () => {
+    describe('field access: node validation', () => {
       const FILLED_ROW = [{ seq: 1, taxAmount: 5 }] as const;
-      const financeItemsPermission: FieldPermission = {
-        editable: true,
-        fieldPath: 'financeItems',
-        required: true,
-        visible: true,
-      };
-      const requiredInvoiceKindPermission: FieldPermission = {
-        editable: true,
-        fieldPath: 'invoiceKind',
-        required: true,
-        visible: true,
-      };
+      const financeItemsAccess: FieldAccessEntry = { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' };
+      const requiredInvoiceKindAccess: FieldAccessEntry = { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'REQUIRED' };
       const requiredInvoiceKindWorkflow = (): WorkflowDefinition =>
-        createFieldPermissionWorkflow({
-          financeFieldPermissions: [
-            financeItemsPermission,
-            requiredInvoiceKindPermission,
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            financeItemsAccess,
+            requiredInvoiceKindAccess,
           ],
         });
       const reviewerFormSchema = (): FormDefinitionSchema => {
@@ -1516,11 +1514,11 @@ describe('WorkflowEngineService', () => {
         };
       };
       const reviewerWorkflow = (): WorkflowDefinition =>
-        createFieldPermissionWorkflow({
-          financeFieldPermissions: [
-            financeItemsPermission,
-            requiredInvoiceKindPermission,
-            { editable: true, fieldPath: 'reviewer', visible: true },
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            financeItemsAccess,
+            requiredInvoiceKindAccess,
+            { display: 'SHOW', fieldKey: 'reviewer', fill: 'OPTIONAL' },
           ],
         });
       const sequentialFixture = (
@@ -1529,7 +1527,7 @@ describe('WorkflowEngineService', () => {
       ): ServiceFixture =>
         createSequentialDecisionFixture({
           activeIndex,
-          fieldPermissions: [financeItemsPermission],
+          fieldAccess: [financeItemsAccess],
           processFormData: formData,
           processFormDefinitionSnapshot: {
             schema: createFinanceTableFormSchema(),
@@ -1728,9 +1726,9 @@ describe('WorkflowEngineService', () => {
         );
       });
 
-      it('never reads the form schema for a node without editable fields', async (): Promise<void> => {
+      it('never reads the form schema for a node without fillable fields', async (): Promise<void> => {
         // A snapshot with no schema makes the schema read throw, so only the
-        // guard on the node's editable fields keeps this approval working.
+        // guard on the node's fillable fields keeps this approval working.
         const fixture = createSequentialDecisionFixture({
           processFormData: { amount: 10 },
           processFormDefinitionSnapshot: {},
@@ -1741,17 +1739,37 @@ describe('WorkflowEngineService', () => {
         expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
       });
 
-      it('leaves approvals on nodes without fieldPermissions unvalidated as before', async (): Promise<void> => {
+      it('leaves approvals on nodes without fieldAccess unvalidated as before', async (): Promise<void> => {
         const fixture = createDecideFixture({
           formData: { amount: 10 },
-          workflow: createFieldPermissionWorkflow({
-            financeFieldPermissions: [],
+          workflow: createFieldAccessWorkflow({
+            financeFieldAccess: [],
           }),
         });
 
         const decision = await decide(fixture);
 
         expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
+
+      it('treats a node with only the legacy fieldPermissions key as having no fillable fields', async (): Promise<void> => {
+        const unvalidated = createDecideFixture({
+          formData: { amount: 10 },
+          workflow: createLegacyFieldPermissionsWorkflow(),
+        });
+        const refused = createDecideFixture({
+          workflow: createLegacyFieldPermissionsWorkflow(),
+        });
+
+        const decision = await decide(unvalidated);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        await expectRejection(
+          decide(refused, { formDataJson: FILLED_ITEMS }),
+          ForbiddenException,
+          'Workflow node task_finance does not let approvers fill in: financeItems',
+        );
+        expect(refused.savedInstance).toBeNull();
       });
     });
   });
@@ -10543,13 +10561,8 @@ describe('WorkflowEngineService', () => {
       ],
       processWorkflowSnapshot: createLinearUserTaskWorkflow({
         allowAddSigner: true,
-        fieldPermissions: [
-          {
-            editable: true,
-            fieldPath: 'financeItems',
-            required: true,
-            visible: true,
-          },
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
         ],
       }),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
@@ -10568,13 +10581,16 @@ describe('WorkflowEngineService', () => {
       .mock.calls.map(([input]) => input)
       .filter((input) => input.task.id === reopened.id);
 
-    // The notification service turns this into `requiresForm` (non-ad-hoc task
-    // on a node with an editable field), so the reopened task has to reach it
+    // The notification service turns this into `hasFillableFields` (non-ad-hoc
+    // task on a node with a fillable field), so the reopened task has to reach it
     // as a normal task.
     expect(notified).toHaveLength(1);
     expect(notified[0].task.isAdhoc).not.toBe(true);
-    expect(notified[0].node.data.fieldPermissions).toEqual([
-      expect.objectContaining({ editable: true, fieldPath: 'financeItems' }),
+    expect(notified[0].node.data.fieldAccess).toEqual([
+      expect.objectContaining({
+            fieldKey: 'financeItems',
+            fill: 'REQUIRED',
+          }),
     ]);
   });
 
@@ -15121,23 +15137,18 @@ function createFinanceTableFormSchema(): FormDefinitionSchema {
 
 // start -> task_manager -> task_finance (fills financeItems and invoiceKind)
 // -> task_head -> end. `lastNode: 'task_finance'` ends the line at the filler.
-function createFieldPermissionWorkflow({
+function createFieldAccessWorkflow({
   financeApprovers = ['member-finance'],
   financeDecisionPolicy = { type: 'SINGLE' },
-  financeFieldPermissions = [
-    {
-      editable: true,
-      fieldPath: 'financeItems',
-      required: true,
-      visible: true,
-    },
-    { editable: true, fieldPath: 'invoiceKind', visible: true },
+  financeFieldAccess = [
+    { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+    { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
   ],
   lastNode,
 }: {
   readonly financeApprovers?: readonly string[];
   readonly financeDecisionPolicy?: DecisionPolicy;
-  readonly financeFieldPermissions?: readonly FieldPermission[];
+  readonly financeFieldAccess?: readonly FieldAccessEntry[];
   readonly lastNode?: 'task_finance';
 } = {}): WorkflowDefinition {
   const createUserTask = (
@@ -15190,7 +15201,7 @@ function createFieldPermissionWorkflow({
       createUserTask('task_manager', '主管簽核', 'member-manager', 200),
       createUserTask('task_finance', '財務簽核', financeApprovers, 320, {
         decisionPolicy: financeDecisionPolicy,
-        fieldPermissions: financeFieldPermissions,
+        fieldAccess: financeFieldAccess,
       }),
       ...(lastNode === 'task_finance'
         ? []
@@ -15205,13 +15216,38 @@ function createFieldPermissionWorkflow({
   };
 }
 
+// `createFieldAccessWorkflow` with no `fieldAccess` at the finance node, only
+// the deprecated `fieldPermissions` key making `financeItems` editable: what a
+// draft or snapshot written before the rename could hold. Nothing reads it.
+function createLegacyFieldPermissionsWorkflow(): WorkflowDefinition {
+  const base = createFieldAccessWorkflow({ financeFieldAccess: [] });
+
+  return {
+    ...base,
+    nodes: base.nodes.map((node) =>
+      node.id === 'task_finance' && node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              fieldAccess: undefined,
+              fieldPermissions: [
+                { editable: true, fieldPath: 'financeItems', visible: true },
+              ],
+            },
+          }
+        : node,
+    ),
+  };
+}
+
 // start -> task_manager -> task_finance (fills invoiceKind) -> gateway:
 // invoiceKind "B2B" -> task_b2b (fills financeItems) -> end, anything else ->
 // end.
-function createFieldPermissionGatewayWorkflow(): WorkflowDefinition {
-  const base = createFieldPermissionWorkflow({
-    financeFieldPermissions: [
-      { editable: true, fieldPath: 'invoiceKind', visible: true },
+function createFieldAccessGatewayWorkflow(): WorkflowDefinition {
+  const base = createFieldAccessWorkflow({
+    financeFieldAccess: [
+      { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
     ],
     lastNode: 'task_finance',
   });
@@ -15262,8 +15298,8 @@ function createFieldPermissionGatewayWorkflow(): WorkflowDefinition {
         data: {
           ...managerNode.data,
           approverResolver: { memberIds: ['member-b2b'], type: 'DIRECT' },
-          fieldPermissions: [
-            { editable: true, fieldPath: 'financeItems', visible: true },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
           ],
           label: 'B2B 簽核',
         },
@@ -15744,7 +15780,7 @@ function createLinearUserTaskWorkflow({
   },
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
-  fieldPermissions,
+  fieldAccess,
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -15757,7 +15793,7 @@ function createLinearUserTaskWorkflow({
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
-  readonly fieldPermissions?: readonly FieldPermission[];
+  readonly fieldAccess?: readonly FieldAccessEntry[];
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -15796,7 +15832,7 @@ function createLinearUserTaskWorkflow({
           label: '財務簽核',
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
-          ...(fieldPermissions ? { fieldPermissions } : {}),
+          ...(fieldAccess ? { fieldAccess } : {}),
           ...(slaDuration
             ? {
                 sla: {
@@ -16399,7 +16435,7 @@ function createSequentialDecisionFixture({
   approverResolver,
   candidateOverrides = {},
   excludeInitiator,
-  fieldPermissions,
+  fieldAccess,
   processAdhocDirectives,
   processFormData,
   processFormDefinitionSnapshot,
@@ -16414,7 +16450,7 @@ function createSequentialDecisionFixture({
     Record<string, Partial<TaskCandidateEntity>>
   >;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
-  readonly fieldPermissions?: readonly FieldPermission[];
+  readonly fieldAccess?: readonly FieldAccessEntry[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
@@ -16469,7 +16505,7 @@ function createSequentialDecisionFixture({
       approverResolver,
       decisionPolicy: { type: 'SEQUENTIAL' },
       excludeInitiator,
-      fieldPermissions,
+      fieldAccess,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
       slaDuration: 'PT2H',
     }),

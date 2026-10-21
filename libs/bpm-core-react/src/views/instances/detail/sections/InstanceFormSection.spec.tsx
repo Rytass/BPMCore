@@ -123,12 +123,11 @@ const WORKFLOW: WorkflowDefinition = {
         allowTransfer: false,
         approverResolver: { memberIds: ['m-1'], type: 'DIRECT' },
         decisionPolicy: { type: 'SINGLE' },
-        fieldPermissions: [
+        fieldAccess: [
           {
-            editable: true,
-            fieldPath: 'financeNote',
-            required: false,
-            visible: true,
+            display: 'SHOW',
+            fieldKey: 'financeNote',
+            fill: 'OPTIONAL',
           },
         ],
         label: 'finance',

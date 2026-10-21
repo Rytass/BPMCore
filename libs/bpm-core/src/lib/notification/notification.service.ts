@@ -1,4 +1,4 @@
-import { readNodeEditableFieldKeys } from '@rytass/bpm-core-shared';
+import { readNodeFillableFieldKeys } from '@rytass/bpm-core-shared';
 import {
   ServiceTaskNode,
   UserTaskNode,
@@ -611,13 +611,13 @@ export class NotificationService {
         payload: {
           assigneeMemberId: task.assigneeMemberId,
           allowReject: node.data.allowReject !== false,
+          hasFillableFields:
+            !task.isAdhoc && readNodeFillableFieldKeys(node).size > 0,
           instanceId: instance.id,
           instanceTitle: instance.title,
           nodeId: node.id,
           nodeLabel: node.data.label,
           originalAssigneeMemberId: task.originalAssigneeMemberId,
-          requiresForm:
-            !task.isAdhoc && readNodeEditableFieldKeys(node).size > 0,
           slaDueAt: task.slaDueAt?.toISOString() ?? null,
           taskId: task.id,
         },

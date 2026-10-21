@@ -16,7 +16,7 @@
 
 | Phase | 交付 | 分支／PR | 相依 | 狀態 |
 | --- | --- | --- | --- | --- |
-| P0 | PR1 收尾：`fieldPermissions` → `fieldAccess`、申請人規則檢查、lint label 集中 | #109（推到作者 fork 分支） | — | PLANNED |
+| P0 | PR1 收尾：`fieldPermissions` → `fieldAccess`、申請人規則檢查、lint label 集中 | #109（推到作者 fork 分支） | — | IMPLEMENTED |
 | P1 | FormRenderer 逐欄位顯示／可編輯、檢視者欄位權限計算 | PR2（疊在 #109 之上） | P0 | PLANNED |
 | P2 | 案件詳情補填流程：輸入、驗證、同意、衝突、任務與歷程 | PR2 | P1 | PLANNED |
 | P3 | 設計器：欄位與關卡總覽矩陣、`setFieldAccessMatrix` command、節點面板摘要、舊鍵提示 | PR3（疊在 #109 之上） | P0 | PLANNED |
