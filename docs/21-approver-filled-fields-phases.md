@@ -18,7 +18,7 @@
 | --- | --- | --- | --- | --- |
 | P0 | PR1 收尾：`fieldPermissions` → `fieldAccess`、申請人規則檢查、lint label 集中 | #109（推到作者 fork 分支） | — | IMPLEMENTED |
 | P1 | FormRenderer 逐欄位顯示／可編輯、檢視者欄位權限計算 | PR2（疊在 #109 之上） | P0 | IMPLEMENTED |
-| P2 | 案件詳情補填流程：輸入、驗證、同意、衝突、任務與歷程 | PR2 | P1 | PLANNED |
+| P2 | 案件詳情補填流程：輸入、驗證、同意、衝突、任務與歷程 | PR2 | P1 | IMPLEMENTED |
 | P3 | 設計器：欄位與關卡總覽矩陣、`setFieldAccessMatrix` command、節點面板摘要、舊鍵提示 | PR3（疊在 #109 之上） | P0 | PLANNED |
 | P4 | E2E golden path、demo seed、文件、發布 | PR2／PR3 合併後 | P2、P3 | PLANNED |
 
@@ -89,6 +89,15 @@ P1–P2 與 P3 互不相依，可以並行。
 ## P2 — 案件詳情補填流程（PR2 後半）
 
 對應設計稿 PR2-1～PR2-4。
+
+- **狀態**：IMPLEMENTED（2026-10-22）。與下方 Scope 的差異：
+  - 補填欄位 label 的標記改用 `FormField` 的 `labelOptionalMarker`（`FormRendererProps.fieldLabelMarkers`），不是 `Tag`：
+    Mezzanine `FormField.label` 只收字串，零覆寫放不進 `Tag`。
+  - `TaskEntity.hasFillableFields` 不用 DataLoader，而是併入既有讀 `nodeLabel` 的同一支批次 SQL
+    （`readTaskNodeSummaries`），一頁任務仍是一次查詢，快照不離開資料庫。
+  - 「一律帶 `fill`」：送出的是本關所有可補填鍵；全部為空時 client 依既有契約不送 `fill`，server 仍以已存資料檢查必填。
+  - 衝突與錯誤表二：送出失敗時由 `InstanceDetailView` 判斷（`isFillConflictMessage`／`readFillServerErrors`），
+    能對應到欄位就關 Modal 並標在欄位上，對不到的訊息照舊顯示在 Modal 內。
 
 **Scope**
 

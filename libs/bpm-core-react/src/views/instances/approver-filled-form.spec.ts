@@ -5,8 +5,14 @@ import type {
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { validateFormRendererValues } from '@rytass/bpm-core-client/form';
 import {
+  isFillConflictMessage,
   readApplicantFormSchema,
   readApplicantSubmission,
+  readFillDisplaySchema,
+  readFillLabelMarkers,
+  readFillPayload,
+  readFillServerErrors,
+  readFillSummary,
   readFillValidationSchema,
 } from './approver-filled-form';
 
@@ -167,6 +173,165 @@ describe('approver-filled form helpers', () => {
       readFillValidationSchema(input, node);
 
       expect(input).toEqual(SCHEMA);
+    });
+  });
+
+  describe('fill helpers', () => {
+    const fillNode = {
+      ...buildDefinition([]).nodes[0],
+      data: {
+        ...buildDefinition([]).nodes[0].data,
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'note', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
+        ],
+        label: '財務',
+      },
+    } as UserTaskNode;
+
+    it('marks only the node\'s fill fields required per the node', () => {
+      expect(
+        readFillDisplaySchema(SCHEMA, fillNode).fields.map((field) => [
+          field.fieldKey,
+          field.required,
+        ]),
+      ).toEqual([
+        ['title', true],
+        ['financeItems', false],
+        ['note', true],
+      ]);
+    });
+
+    it('labels the viewer\'s fields 本關補填 and others by their fill node', () => {
+      const definition: WorkflowDefinition = {
+        ...buildDefinition([]),
+        nodes: [
+          fillNode,
+          {
+            ...fillNode,
+            data: {
+              ...fillNode.data,
+              fieldAccess: [
+                { display: 'SHOW', fieldKey: 'title', fill: 'OPTIONAL' },
+              ],
+              label: '總務',
+            },
+            id: 'admin',
+          } as UserTaskNode,
+        ],
+      };
+
+      expect(readFillLabelMarkers(definition, fillNode)).toEqual({
+        financeItems: '本關補填',
+        note: '本關補填',
+        title: '總務補填',
+      });
+      expect(readFillLabelMarkers(definition, null)).toEqual({
+        financeItems: '財務補填',
+        note: '財務補填',
+        title: '總務補填',
+      });
+    });
+
+    it('sends every fillable key and nothing else', () => {
+      expect(
+        readFillPayload({ note: 'n', title: 'T' }, fillNode),
+      ).toEqual({ financeItems: undefined, note: 'n' });
+      expect(Object.keys(readFillPayload({}, fillNode)).sort()).toEqual([
+        'financeItems',
+        'note',
+      ]);
+    });
+
+    it('recognises the conflict message as the client throws it', () => {
+      expect(
+        isFillConflictMessage(
+          'Approval instance inst-1 form data changed; refresh and retry',
+        ),
+      ).toBe(true);
+      expect(isFillConflictMessage('Task t-1 is not pending')).toBe(false);
+    });
+
+    it('maps the server\'s fill errors onto renderer paths', () => {
+      expect(
+        readFillServerErrors(
+          'formData.financeItems[0].name is required; formData.financeItems must include at most 3 row(s)',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toEqual({
+        financeItems: '最多 3 列。',
+        'financeItems[0].name': '此欄為必填。',
+      });
+      expect(
+        readFillServerErrors(
+          'Form data is missing required fields: 備註',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toEqual({ note: '備註為必填欄位。' });
+    });
+
+    it('matches a missing label that holds a comma, and gives up on the unknown', () => {
+      const schema: FormDefinitionSchema = {
+        ...SCHEMA,
+        fields: SCHEMA.fields.map((field) =>
+          field.fieldKey === 'note' ? { ...field, label: '備註, 說明' } : field,
+        ),
+      };
+
+      expect(
+        readFillServerErrors(
+          'Form data is missing required fields: 備註, 說明',
+          schema,
+          fillNode,
+        ),
+      ).toEqual({ note: '備註, 說明為必填欄位。' });
+      expect(
+        readFillServerErrors('Task t-1 is not pending', SCHEMA, fillNode),
+      ).toBeNull();
+      expect(
+        readFillServerErrors(
+          'formData.note is required; something else',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toBeNull();
+    });
+
+    it('summarises each fill field for the approve dialog', () => {
+      const schema: FormDefinitionSchema = {
+        ...SCHEMA,
+        fields: SCHEMA.fields.map((field) =>
+          field.fieldKey === 'financeItems' && field.type === 'table'
+            ? {
+                ...field,
+                columns: [
+                  ...field.columns,
+                  {
+                    fieldKey: 'amount',
+                    label: '金額',
+                    required: false,
+                    type: 'money' as const,
+                  },
+                ],
+              }
+            : field,
+        ),
+      };
+
+      expect(
+        readFillSummary(schema, fillNode, {
+          financeItems: [
+            { amount: 1200, name: 'a' },
+            { amount: 300, name: 'b' },
+          ],
+          note: '',
+        }),
+      ).toEqual([
+        { fieldKey: 'financeItems', label: '財務明細', text: '2 列，金額合計 1,500' },
+        { fieldKey: 'note', label: '備註', text: '未填寫' },
+      ]);
     });
   });
 });

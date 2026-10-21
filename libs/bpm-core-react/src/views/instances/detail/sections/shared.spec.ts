@@ -98,6 +98,41 @@ describe('readActivityDetailParts', () => {
   });
 });
 
+describe('approver-filled fields in the timeline', () => {
+  const parts = (
+    payload: Readonly<Record<string, unknown>>,
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] =>
+    readActivityDetailParts(
+      createDecisionActivityLog(),
+      payload,
+      null,
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      {
+        fields: [
+          { fieldKey: 'invoiceNo', label: '發票號碼', required: false, type: 'text' },
+        ],
+        schemaVersion: 1,
+      },
+    );
+
+  it('names the filled fields by label and falls back to the key', () => {
+    expect(
+      parts({ action: 'APPROVED', changedFieldKeys: ['invoiceNo', 'gone'] }),
+    ).toContainEqual({ text: '補填 2 個欄位：發票號碼、gone', type: 'text' });
+  });
+
+  it('adds nothing when no field was filled', () => {
+    expect(
+      parts({ action: 'APPROVED', changedFieldKeys: [] }).filter(
+        (part) => part.type === 'text' && part.text.startsWith('補填'),
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('readAdhocTargetDraft', () => {
   it('sends every selected member, not just the first', () => {
     expect(

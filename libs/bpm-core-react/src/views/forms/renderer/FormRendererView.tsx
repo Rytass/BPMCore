@@ -87,6 +87,11 @@ export interface FormRendererProps {
    * map leaves out follows `readonly`; leaving the prop out changes nothing.
    */
   readonly fieldAccess?: Readonly<Record<string, ResolvedFieldAccess>>;
+  /**
+   * Short text shown after a field's label (Mezzanine `labelOptionalMarker`),
+   * per top-level field — e.g. 「本關補填」 on the fields an approver fills.
+   */
+  readonly fieldLabelMarkers?: Readonly<Record<string, string>>;
   readonly maxWidth?: CSSProperties['maxWidth'];
   readonly onChange?: (values: FormRendererValues) => void;
   readonly onDataSourceStateChange?: (
@@ -153,6 +158,7 @@ export function FormRenderer({
   emptyText = '尚未建立欄位。',
   errors = {},
   fieldAccess,
+  fieldLabelMarkers,
   maxWidth,
   onChange,
   onDataSourceStateChange,
@@ -242,6 +248,15 @@ export function FormRenderer({
           errors={errors}
           fields={schema.fields}
           key={field.fieldKey}
+          labelMarker={
+            fieldLabelMarkers !== undefined &&
+            Object.prototype.hasOwnProperty.call(
+              fieldLabelMarkers,
+              field.fieldKey,
+            )
+              ? fieldLabelMarkers[field.fieldKey]
+              : undefined
+          }
           onChange={updateValue}
           onDataSourceStateChange={onDataSourceStateChange}
           onUploadAttachment={onUploadAttachment}
@@ -294,6 +309,7 @@ function FormRendererField({
   errors,
   field,
   fields,
+  labelMarker,
   onChange,
   onDataSourceStateChange,
   onUploadAttachment,
@@ -316,6 +332,7 @@ function FormRendererField({
   readonly errors: Readonly<Record<string, string>>;
   readonly field: FormFieldDefinition;
   readonly fields: readonly FormFieldDefinition[];
+  readonly labelMarker?: string;
   readonly onChange: (
     fieldKey: string,
     value: FormFieldValue | undefined,
@@ -384,6 +401,7 @@ function FormRendererField({
     <div data-form-field-key={field.fieldKey} style={style}>
       <BPMFormField
         label={field.label}
+        {...(labelMarker ? { labelOptionalMarker: labelMarker } : {})}
         name={field.fieldKey}
         required={required}
       >

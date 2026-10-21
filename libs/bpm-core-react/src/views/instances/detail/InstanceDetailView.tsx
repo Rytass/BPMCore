@@ -25,6 +25,7 @@ import '@xyflow/react/dist/style.css';
 import * as dagre from 'dagre';
 import {
   Button,
+  Message,
   Modal,
   PageHeader,
   Section,
@@ -44,6 +45,11 @@ import {
 } from '@mezzanine-ui/icons';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
+  readNodeFillableFieldKeys,
+  readTopLevelFieldKey,
+} from '@rytass/bpm-core-shared';
+import {
+  UserTaskNode,
   WorkflowDefinition,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
@@ -103,13 +109,31 @@ import { InstanceWebhookDeliveriesSection } from './sections/InstanceWebhookDeli
 import { isPresentText, readNodeDisplayLabel } from './sections/shared';
 import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
+  isFillConflictMessage,
   readApplicantFormSchema,
   readApplicantSubmission,
+  readFillDisplaySchema,
+  readFillLabelMarkers,
+  readFillPayload,
+  readFillServerErrors,
+  readFillSummary,
+  readFillValidationSchema,
 } from '../approver-filled-form';
+import { readViewerFieldAccess } from '../viewer-field-access';
 import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
+
+/** Counts fields, not cells: a table with three bad cells is one field. */
+function readFillIncompleteMessage(
+  errors: Readonly<Record<string, string>>,
+): string {
+  const fieldCount = new Set(Object.keys(errors).map(readTopLevelFieldKey))
+    .size;
+
+  return `還有 ${fieldCount} 個補填欄位需要完成`;
+}
 
 // While a webhook delivery is queued or in flight the section re-reads the
 // list, so a retry is seen landing without a manual reload. Bounded: backoff
@@ -409,6 +433,166 @@ export function InstanceDetailView({
       instance.initiatorMemberId === currentMemberId &&
       instance.state === 'RETURNED',
   );
+  // The viewer's own task at a node that lets its approver fill in fields;
+  // an ad-hoc signer at that node only reads them (ADR 20 §3.3).
+  const fillNode = useMemo(
+    (): UserTaskNode | null =>
+      currentTask &&
+      !currentTask.isAdhoc &&
+      currentTaskNode?.type === 'userTask' &&
+      readNodeFillableFieldKeys(currentTaskNode).size > 0
+        ? currentTaskNode
+        : null,
+    [currentTask, currentTaskNode],
+  );
+  const fillTaskId = fillNode ? (currentTask?.id ?? null) : null;
+  const [fillDraft, setFillDraft] = useState<WorkflowFormData>({});
+  const [fillErrors, setFillErrors] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [fillConflict, setFillConflict] = useState(false);
+
+  // A draft belongs to one task: a new task (approved, transferred away)
+  // starts empty, while reloading after a conflict keeps the same task and
+  // so keeps what the approver typed.
+  useEffect((): void => {
+    setFillDraft({});
+    setFillErrors({});
+    setFillConflict(false);
+  }, [fillTaskId]);
+
+  const schemaSnapshot = instance?.formDefinitionSnapshot.schema ?? null;
+  const fillSchema = useMemo(
+    () =>
+      fillNode && schemaSnapshot
+        ? readFillDisplaySchema(schemaSnapshot, fillNode)
+        : null,
+    [fillNode, schemaSnapshot],
+  );
+  // Seeded the way the renderer seeds it (a table starts at minRows), so the
+  // page validates and sends exactly what it shows.
+  const fillValues = useMemo(
+    (): WorkflowFormData | null =>
+      fillSchema && instance
+        ? buildFormRendererValues(fillSchema.fields, {
+            ...instance.formData,
+            ...fillDraft,
+          })
+        : null,
+    [fillDraft, fillSchema, instance],
+  );
+  const viewerFieldAccess = useMemo(
+    () =>
+      instance
+        ? readViewerFieldAccess({
+            activityLogs,
+            actingTask: currentTask,
+            instance,
+            tasks,
+          })
+        : undefined,
+    [activityLogs, currentTask, instance, tasks],
+  );
+  const fillLabelMarkers = useMemo(
+    () =>
+      instance
+        ? readFillLabelMarkers(instance.workflowSnapshot, fillNode)
+        : undefined,
+    [fillNode, instance],
+  );
+  const tasksSectionFill = useMemo(
+    () =>
+      fillNode && fillValues && schemaSnapshot && instance
+        ? {
+            expectedFormDataFingerprint: instance.formDataFingerprint ?? '',
+            formData: readFillPayload(fillValues, fillNode),
+            summary: readFillSummary(schemaSnapshot, fillNode, fillValues),
+          }
+        : null,
+    [fillNode, fillValues, instance, schemaSnapshot],
+  );
+
+  function handleFillChange(values: WorkflowFormData): void {
+    if (!fillNode) {
+      return;
+    }
+
+    const fillableKeys = readNodeFillableFieldKeys(fillNode);
+
+    setFillDraft(
+      Object.fromEntries(
+        Object.entries(values).filter(([fieldKey]) =>
+          fillableKeys.has(fieldKey),
+        ),
+      ),
+    );
+    setFillErrors({});
+  }
+
+  // Checked before the approve dialog opens, against the same rules the
+  // server applies, so the approver fixes fields instead of reading an error.
+  function handleApproveClick(): void {
+    if (
+      fillNode &&
+      fillValues &&
+      schemaSnapshot &&
+      instance?.formDefinitionSnapshot.uiSchema
+    ) {
+      const validation = validateFormRendererValues({
+        schema: readFillValidationSchema(schemaSnapshot, fillNode),
+        uiSchema: instance.formDefinitionSnapshot.uiSchema,
+        values: fillValues,
+      });
+
+      if (!validation.valid) {
+        setFillErrors(validation.errors);
+
+        if (validation.firstInvalidFieldKey) {
+          focusFormRendererField(validation.firstInvalidFieldKey);
+        }
+
+        Message.warning(readFillIncompleteMessage(validation.errors));
+
+        return;
+      }
+    }
+
+    tasksSectionRef.current?.handleApprove();
+  }
+
+  function handleFillApproveError(message: string): boolean {
+    if (!fillNode || !schemaSnapshot) {
+      return false;
+    }
+
+    if (isFillConflictMessage(message)) {
+      setFillConflict(true);
+
+      return true;
+    }
+
+    const serverErrors = readFillServerErrors(
+      message,
+      schemaSnapshot,
+      fillNode,
+    );
+
+    if (!serverErrors) {
+      return false;
+    }
+
+    setFillErrors(serverErrors);
+    focusFormRendererField(Object.keys(serverErrors)[0] ?? '');
+    Message.warning(readFillIncompleteMessage(serverErrors));
+
+    return true;
+  }
+
+  async function handleReloadAfterConflict(): Promise<void> {
+    await refreshInstance();
+    setFillConflict(false);
+  }
+
   const memberProfilesById = useMemo(
     (): ReadonlyMap<string, MemberProfileRecord> =>
       new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
@@ -823,7 +1007,7 @@ export function InstanceDetailView({
                 icon={CheckedIcon}
                 iconType="leading"
                 key="task-approve"
-                onClick={(): void => tasksSectionRef.current?.handleApprove()}
+                onClick={handleApproveClick}
                 variant="base-primary"
               >
                 同意
@@ -840,9 +1024,27 @@ export function InstanceDetailView({
               canResubmitInstance={canResubmitInstance}
               deciding={deciding}
               error={error}
+              fieldAccess={viewerFieldAccess}
+              fieldLabelMarkers={fillLabelMarkers}
+              fill={
+                fillSchema && fillValues && fillNode
+                  ? {
+                      errors: fillErrors,
+                      fieldCount: readNodeFillableFieldKeys(fillNode).size,
+                      onChange: handleFillChange,
+                      schema: fillSchema,
+                      value: fillValues,
+                    }
+                  : null
+              }
               instance={instance}
               loading={loading}
               onDataSourceStateChange={handleResubmitDataSourceStateChange}
+              onReloadAfterConflict={
+                fillConflict
+                  ? (): void => void handleReloadAfterConflict()
+                  : null
+              }
               onResubmitFormChange={(values): void => {
                 setResubmitFormData(values);
                 setResubmitFormErrors({});
@@ -874,9 +1076,11 @@ export function InstanceDetailView({
             <InstanceTasksSection
               adhocDirectives={adhocDirectives}
               currentMemberId={currentMemberId}
+              fill={tasksSectionFill}
               instance={instance}
               memberProfilesById={memberProfilesById}
               onChanged={refreshInstance}
+              onFillApproveError={handleFillApproveError}
               ref={tasksSectionRef}
               tasks={tasks}
             />
@@ -908,6 +1112,7 @@ export function InstanceDetailView({
           <Section>
             <InstanceHistorySection
               activityLogs={activityLogs}
+              formSchema={schemaSnapshot}
               instanceState={instance?.state ?? 'RUNNING'}
               memberProfilesById={memberProfilesById}
               signatureVerification={signatureVerification}

@@ -1,5 +1,6 @@
 'use client';
 
+import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
   CSSProperties,
   Fragment,
@@ -240,6 +241,8 @@ export interface InstanceHistorySectionProps {
   readonly workflowTokens: readonly WorkflowTokenRecord[];
   /** The workflow definition snapshot, or null if not yet loaded. */
   readonly workflowSnapshot: WorkflowDefinition | null;
+  /** The instance's form schema, to name the fields an approval filled in. */
+  readonly formSchema?: FormDefinitionSchema | null;
   /** The current state of the instance. */
   readonly instanceState: ApprovalInstanceRecord['state'];
   /** Member profiles indexed by memberId. */
@@ -259,6 +262,7 @@ export interface InstanceHistorySectionProps {
  */
 export function InstanceHistorySection({
   activityLogs,
+  formSchema = null,
   instanceState,
   memberProfilesById,
   signatureVerification,
@@ -278,6 +282,7 @@ export function InstanceHistorySection({
     taskDecisionsByTaskId,
     signaturesById,
     signatureVerification,
+    formSchema,
   );
 
   const currentActivityStep = readCurrentActivityStep(activitySteps);

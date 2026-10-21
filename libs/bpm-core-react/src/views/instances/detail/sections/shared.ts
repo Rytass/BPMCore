@@ -3,6 +3,7 @@
  * InstanceDetailView section components.
  */
 
+import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
   ActivityLogRecord,
   ApprovalInstanceRecord,
@@ -28,6 +29,8 @@ export type TaskRow = Readonly<
   Record<string, unknown> &
     TaskRecord & {
       assigneeLabel: string;
+      /** Fields still to fill on this open task (0 when none or ad hoc). */
+      fillFieldCount: number;
       key: string;
       nodeLabel: string;
       statusLabel: string;
@@ -854,6 +857,7 @@ export function readActivityDetailParts(
   signaturesById: ReadonlyMap<string, SignatureRecord>,
   signatureVerification: SignatureVerificationRecord | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+  formSchema: FormDefinitionSchema | null = null,
 ): readonly ActivityStepDescriptionPart[] {
   if (activityLog.eventType !== 'TASK_DECIDED') {
     return [
@@ -910,6 +914,7 @@ export function readActivityDetailParts(
     action === 'TRANSFERRED'
       ? readCommentDescriptionPart('轉派說明', comment ?? '-')
       : null,
+    readTextDescriptionPart(readChangedFieldsText(payload, formSchema)),
     signature
       ? readTextDescriptionPart(
           signatureVerification?.valid
@@ -918,6 +923,38 @@ export function readActivityDetailParts(
         )
       : null,
   ].filter(isActivityDescriptionPart);
+}
+
+/**
+ * 「補填 N 個欄位：<label>、<label>」 for an approval that filled in fields
+ * (`TASK_DECIDED.payload.changedFieldKeys`); names only, never values.
+ */
+function readChangedFieldsText(
+  payload: Readonly<Record<string, unknown>>,
+  formSchema: FormDefinitionSchema | null,
+): string | null {
+  const changed = payload['changedFieldKeys'];
+
+  if (!Array.isArray(changed)) {
+    return null;
+  }
+
+  const fieldKeys = changed.filter(
+    (fieldKey): fieldKey is string =>
+      typeof fieldKey === 'string' && fieldKey !== '',
+  );
+
+  if (fieldKeys.length === 0) {
+    return null;
+  }
+
+  const labels = fieldKeys.map(
+    (fieldKey) =>
+      formSchema?.fields.find((field) => field.fieldKey === fieldKey)?.label ||
+      fieldKey,
+  );
+
+  return `補填 ${fieldKeys.length} 個欄位：${labels.join('、')}`;
 }
 
 export function isFutureTimelineNode(
@@ -1156,6 +1193,7 @@ export function readActivityStepRecords(
   taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
   signaturesById: ReadonlyMap<string, SignatureRecord>,
   signatureVerification: SignatureVerificationRecord | null,
+  formSchema: FormDefinitionSchema | null = null,
 ): ActivityStepRecord[] {
   const historySteps = activityLogs
     .filter(isUserMeaningfulActivity)
@@ -1185,6 +1223,7 @@ export function readActivityStepRecords(
           signaturesById,
           signatureVerification,
           memberProfilesById,
+          formSchema,
         ),
       ].filter(isActivityDescriptionPart);
 
