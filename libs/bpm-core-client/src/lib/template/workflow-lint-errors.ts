@@ -1,7 +1,7 @@
 import {
   readNodeFieldAccess,
   readNodeFillableFieldKeys,
-  readTopLevelFieldKey,
+  readFormFieldPathTopLevelKey,
 } from '@rytass/bpm-core-shared';
 import type {
   WorkflowDefinition,
@@ -793,7 +793,7 @@ function readFieldAccessTranslations(
     action['type'] === 'SET_FORM_FIELD' &&
     typeof action['fieldPath'] === 'string'
   ) {
-    const fieldKey = readTopLevelFieldKey(action['fieldPath']);
+    const fieldKey = readFormFieldPathTopLevelKey(action['fieldPath']);
 
     return [
       [

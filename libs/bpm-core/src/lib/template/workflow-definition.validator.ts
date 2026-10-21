@@ -15,7 +15,7 @@ import {
   readApproverFilledFieldKeys,
   readNodeFieldAccess,
   readNodeFillableFieldKeys,
-  readTopLevelFieldKey,
+  readFormFieldPathTopLevelKey,
 } from '@rytass/bpm-core-shared';
 import {
   isDecisionPolicyUnsatisfiable,
@@ -483,7 +483,7 @@ function lintApproverFilledFieldWrites(
         isPlainRecord(action) &&
         action['type'] === 'SET_FORM_FIELD' &&
         typeof fieldPath === 'string'
-          ? readTopLevelFieldKey(fieldPath)
+          ? readFormFieldPathTopLevelKey(fieldPath)
           : undefined;
 
       return fieldKey !== undefined && approverFilled.has(fieldKey)

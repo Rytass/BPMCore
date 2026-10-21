@@ -45,6 +45,9 @@ jest.mock('@mezzanine-ui/react', () => {
   };
 
   return {
+    Badge: (props: Readonly<Record<string, unknown>>): ReactElement => (
+      <span>{props.text as ReactNode}</span>
+    ),
     Button: Container,
     PageHeader: Container,
     Section: Container,
@@ -176,6 +179,22 @@ describe('InboxView node column', () => {
 
     expect(nodeCell('task-1')).toBe('部門主管簽核');
     expect(nodeCell('task-2')).toBe('band-1');
+  });
+
+  it('flags pending tasks whose node lets the approver fill in fields', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([
+      task({ hasFillableFields: true, id: 'task-1' }),
+      task({ hasFillableFields: false, id: 'task-2' }),
+    ]);
+
+    await renderInbox();
+
+    const fillCell = (taskId: string): string | undefined =>
+      container.querySelector(`[data-row="${taskId}"] [data-column="補填"]`)
+        ?.textContent ?? undefined;
+
+    expect(fillCell('task-1')).toBe('需補填');
+    expect(fillCell('task-2')).toBe('');
   });
 
   it('shows the node name in the history tab and falls back to the id', async (): Promise<void> => {

@@ -1,10 +1,14 @@
-import { act, type ReactElement, type ReactNode } from 'react';
+import { act, createRef, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  ApprovalInstanceRecord,
-  TaskRecord,
+import {
+  decideTask,
+  type ApprovalInstanceRecord,
+  type TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
-import { InstanceTasksSection } from './InstanceTasksSection';
+import {
+  InstanceTasksSection,
+  type InstanceTasksSectionHandle,
+} from './InstanceTasksSection';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -46,17 +50,43 @@ jest.mock('@mezzanine-ui/react', () => {
     );
   };
 
-  return new Proxy(
-    { Table },
-    {
-      get: (target, key): unknown =>
-        key === 'Table'
-          ? target.Table
-          : key === '__esModule'
-            ? true
-            : Container,
-    },
+  const Badge = (props: Readonly<Record<string, unknown>>): ReactElement => (
+    <span data-badge={String(props.variant)}>{String(props.text)}</span>
   );
+  const Description = (
+    props: Readonly<Record<string, unknown>>,
+  ): ReactElement => (
+    <div data-description={String(props.title)}>
+      {props.children as ReactNode}
+    </div>
+  );
+  // Renders only while open, with a button standing in for its confirm.
+  const Modal = (props: Readonly<Record<string, unknown>>): ReactElement | null =>
+    props.open === true ? (
+      <div data-modal={String(props.title)}>
+        {props.children as ReactNode}
+        <button
+          data-modal-confirm={String(props.title)}
+          onClick={props.onConfirm as () => void}
+          type="button"
+        />
+      </div>
+    ) : null;
+  const mocks: Readonly<Record<string, unknown>> = {
+    Badge,
+    Description,
+    Modal,
+    Table,
+  };
+
+  return new Proxy(mocks, {
+    get: (target, key): unknown =>
+      typeof key === 'string' && key in target
+        ? target[key]
+        : key === '__esModule'
+          ? true
+          : Container,
+  });
 });
 
 jest.mock('@rytass/bpm-core-client/workflow', () => ({
@@ -175,5 +205,173 @@ describe('InstanceTasksSection node column', () => {
     );
 
     expect(nodeCell('task-1')).toBe('band-0');
+  });
+});
+
+describe('InstanceTasksSection approver fill', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const fillInstance = {
+    id: 'instance-1',
+    workflowSnapshot: {
+      edges: [],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: {
+            allowReject: true,
+            fieldAccess: [
+              { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'REQUIRED' },
+              { display: 'SHOW', fieldKey: 'items', fill: 'OPTIONAL' },
+            ],
+            label: '財務',
+            returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
+          },
+          id: 'band-0',
+          position: { x: 0, y: 0 },
+          type: 'userTask',
+        },
+      ],
+    },
+  } as unknown as ApprovalInstanceRecord;
+  const fill = {
+    expectedFormDataFingerprint: 'fp-1',
+    formData: { invoiceNo: 'INV-9', items: undefined },
+    summary: [{ fieldKey: 'invoiceNo', label: '發票號碼', text: 'INV-9' }],
+  };
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    jest.mocked(decideTask).mockReset();
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+  });
+
+  async function render(
+    tasks: readonly TaskRecord[],
+    onFillApproveError: (message: string) => boolean = jest.fn(() => false),
+  ): Promise<React.RefObject<InstanceTasksSectionHandle | null>> {
+    const ref = createRef<InstanceTasksSectionHandle>();
+
+    await act(async (): Promise<void> => {
+      root.render(
+        <InstanceTasksSection
+          adhocDirectives={[]}
+          currentMemberId="member-001"
+          fill={fill}
+          instance={fillInstance}
+          memberProfilesById={new Map()}
+          onChanged={jest.fn()}
+          onFillApproveError={onFillApproveError}
+          ref={ref}
+          tasks={tasks}
+        />,
+      );
+    });
+
+    return ref;
+  }
+
+  async function approve(
+    ref: React.RefObject<InstanceTasksSectionHandle | null>,
+  ): Promise<void> {
+    await act(async (): Promise<void> => {
+      ref.current?.handleApprove();
+    });
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>('[data-modal-confirm="簽核意見"]')
+        ?.click();
+    });
+  }
+
+  const fillCell = (taskId: string): string | null =>
+    container.querySelector(`[data-row="${taskId}"] [data-column="補填"]`)
+      ?.textContent ?? null;
+
+  it('marks open tasks at a fill node, but not ad-hoc or closed ones', async (): Promise<void> => {
+    await render([
+      task({ id: 'task-1' }),
+      task({ id: 'task-2', isAdhoc: true, adhocType: 'COUNTERSIGN' }),
+      task({ id: 'task-3', status: 'COMPLETED' }),
+    ]);
+
+    expect(fillCell('task-1')).toBe('需補填 2 欄');
+    expect(fillCell('task-2')).toBe('');
+    expect(fillCell('task-3')).toBe('');
+  });
+
+  it('lists the fill in the approve dialog and sends it with the approval', async (): Promise<void> => {
+    jest.mocked(decideTask).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof decideTask>>,
+    );
+    const ref = await render([task({ id: 'task-1' })]);
+
+    await act(async (): Promise<void> => {
+      ref.current?.handleApprove();
+    });
+
+    expect(
+      container.querySelector('[data-description="發票號碼"]')?.textContent,
+    ).toBe('INV-9');
+
+    await approve(ref);
+
+    expect(decideTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'APPROVED',
+        fill: {
+          expectedFormDataFingerprint: 'fp-1',
+          formData: fill.formData,
+        },
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('never sends a fill from an ad-hoc task', async (): Promise<void> => {
+    jest.mocked(decideTask).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof decideTask>>,
+    );
+    const ref = await render([
+      task({ adhocType: 'COUNTERSIGN', id: 'task-1', isAdhoc: true }),
+    ]);
+
+    await approve(ref);
+
+    expect(decideTask).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'APPROVED', fill: null }),
+    );
+  });
+
+  it('closes the dialog when the container takes the error', async (): Promise<void> => {
+    const message =
+      'Approval instance instance-1 form data changed; refresh and retry';
+    const onFillApproveError = jest.fn(() => true);
+
+    jest.mocked(decideTask).mockRejectedValue(new Error(message));
+    const ref = await render([task({ id: 'task-1' })], onFillApproveError);
+
+    await approve(ref);
+
+    expect(onFillApproveError).toHaveBeenCalledWith(message);
+    expect(container.querySelector('[data-modal="簽核意見"]')).toBeNull();
+  });
+
+  it('keeps the dialog open with the message when the container does not', async (): Promise<void> => {
+    jest.mocked(decideTask).mockRejectedValue(new Error('Task task-1 is not pending'));
+    const ref = await render([task({ id: 'task-1' })]);
+
+    await approve(ref);
+
+    expect(
+      container.querySelector('[data-modal="簽核意見"]')?.textContent,
+    ).toContain('Task task-1 is not pending');
   });
 });

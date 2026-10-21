@@ -21,7 +21,7 @@ import {
 
 // Re-export shared helpers needed by the container
 export {
-  canMemberActOnTask,
+  readActingTask,
   readErrorMessage,
   readInstanceStateLabel,
   readNodeRuntimeState,

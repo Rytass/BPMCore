@@ -162,6 +162,7 @@ jest.mock('@mezzanine-ui/react', () => {
       <input
         data-mock-input=""
         onChange={props.onChange as never}
+        readOnly={props.readonly === true}
         value={String(props.value ?? '')}
       />
     );
@@ -736,6 +737,134 @@ describe('FormRenderer hidden fields', () => {
   });
 });
 
+describe('FormRenderer field access', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'reason', label: '事由', required: false, type: 'text' },
+      { fieldKey: 'invoiceNo', label: '發票號碼', required: false, type: 'text' },
+      {
+        fieldKey: 'constructor',
+        label: '原型鍵',
+        required: false,
+        type: 'text',
+      },
+      {
+        columns: [
+          { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+        ],
+        fieldKey: 'items',
+        label: '請購明細',
+        minRows: 1,
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+
+  function isReadOnly(container: HTMLElement, fieldKey: string): boolean {
+    const input = container.querySelector<HTMLInputElement>(
+      `[data-form-field-key="${fieldKey}"] [data-mock-input]`,
+    );
+
+    if (!input) {
+      throw new Error(`Field ${fieldKey} rendered no input.`);
+    }
+
+    return input.readOnly;
+  }
+
+  it('renders no field the viewer may not see', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      fieldAccess: {
+        invoiceNo: { editable: false, visible: false },
+        items: { editable: false, visible: false },
+      },
+      schema,
+    });
+
+    try {
+      expect(readFieldWrapper(harness.container, 'reason')).not.toBeNull();
+      expect(readFieldWrapper(harness.container, 'invoiceNo')).toBeNull();
+      expect(readFieldWrapper(harness.container, 'items')).toBeNull();
+      expect(harness.container.textContent).not.toContain('發票號碼');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('makes a field read-only in an editable form', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      fieldAccess: { invoiceNo: { editable: false, visible: true } },
+      schema,
+    });
+
+    try {
+      expect(isReadOnly(harness.container, 'invoiceNo')).toBe(true);
+      expect(isReadOnly(harness.container, 'reason')).toBe(false);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('keeps one field editable inside a readonly form', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      fieldAccess: { invoiceNo: { editable: true, visible: true } },
+      readonly: true,
+      schema,
+    });
+
+    try {
+      expect(isReadOnly(harness.container, 'invoiceNo')).toBe(false);
+      expect(isReadOnly(harness.container, 'reason')).toBe(true);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('lets table rows be added and removed only where the table is editable', async (): Promise<void> => {
+    const editable = await mountRenderer({
+      fieldAccess: { items: { editable: true, visible: true } },
+      readonly: true,
+      schema,
+    });
+
+    try {
+      expect(readAddRowButton(editable.container)).not.toBeNull();
+      expect(readTableAction(editable.container, '刪除此列', 0)).not.toBeNull();
+    } finally {
+      await unmountRenderer(editable);
+    }
+
+    const readOnly = await mountRenderer({
+      fieldAccess: { items: { editable: false, visible: true } },
+      schema,
+    });
+
+    try {
+      expect(readRowCount(readOnly.container)).toBe(1);
+      expect(readAddRowButton(readOnly.container)).toBeNull();
+      expect(readTableAction(readOnly.container, '刪除此列', 0)).toBeNull();
+    } finally {
+      await unmountRenderer(readOnly);
+    }
+  });
+
+  // An empty map is not "no prop": it must not read `constructor` off the
+  // prototype and treat the field as configured.
+  it('leaves a field the map does not list to the form', async (): Promise<void> => {
+    const harness = await mountRenderer({ fieldAccess: {}, schema });
+
+    try {
+      expect(readFieldWrapper(harness.container, 'constructor')).not.toBeNull();
+      expect(isReadOnly(harness.container, 'constructor')).toBe(false);
+      expect(readAddRowButton(harness.container)).not.toBeNull();
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
 describe('FormRenderer link display', () => {
   function createLinkSchema(
     overrides: Readonly<Record<string, unknown>> = {},
@@ -954,6 +1083,7 @@ interface RendererHarness {
 
 async function mountRenderer({
   errors,
+  fieldAccess,
   maxWidth,
   readonly,
   schema,
@@ -961,6 +1091,9 @@ async function mountRenderer({
   value,
 }: {
   readonly errors?: Readonly<Record<string, string>>;
+  readonly fieldAccess?: Readonly<
+    Record<string, { readonly editable: boolean; readonly visible: boolean }>
+  >;
   readonly maxWidth?: number;
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
@@ -976,6 +1109,7 @@ async function mountRenderer({
     root.render(
       <FormRenderer
         errors={errors ?? {}}
+        {...(fieldAccess ? { fieldAccess } : {})}
         {...(typeof maxWidth === 'number' ? { maxWidth } : {})}
         onChange={(nextValues): void => {
           latest = nextValues;

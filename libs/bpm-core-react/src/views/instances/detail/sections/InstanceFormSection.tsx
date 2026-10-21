@@ -1,9 +1,13 @@
 'use client';
 
 import { CSSProperties, ReactElement, useMemo } from 'react';
-import { Button, Typography } from '@mezzanine-ui/react';
+import { Button, InlineMessage, Typography } from '@mezzanine-ui/react';
 import { RefreshCcwIcon } from '@mezzanine-ui/icons';
-import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
+import type { ResolvedFieldAccess } from '@rytass/bpm-core-shared';
+import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 import { readApplicantFormSchema } from '../../approver-filled-form';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
@@ -20,7 +24,35 @@ const BUTTON_ROW_STYLE: CSSProperties = {
   gap: 8,
 };
 
+/** The fill state of the viewer's own task at a node that fills in fields. */
+export interface InstanceFormSectionFill {
+  /** Field errors from the page's check or the server's, keyed by path. */
+  readonly errors: Readonly<Record<string, string>>;
+  /** How many fields this node lets the viewer fill in. */
+  readonly fieldCount: number;
+  /** Called with the whole form value whenever a fill field changes. */
+  readonly onChange: (values: WorkflowFormData) => void;
+  /** The form as this approver sees it (fill fields required per node). */
+  readonly schema: FormDefinitionSchema;
+  /** The stored form data with the draft fill on top. */
+  readonly value: WorkflowFormData;
+}
+
 export interface InstanceFormSectionProps {
+  /**
+   * What the viewer may see and edit per field (`readViewerFieldAccess`).
+   * Ignored while the applicant edits a returned instance.
+   */
+  readonly fieldAccess?: Readonly<Record<string, ResolvedFieldAccess>>;
+  /** Marker after each approver-filled field's label (`readFillLabelMarkers`). */
+  readonly fieldLabelMarkers?: Readonly<Record<string, string>>;
+  /** Present when the viewer's task fills in fields; edits go through it. */
+  readonly fill?: InstanceFormSectionFill | null;
+  /**
+   * Present after approving failed because the form changed meanwhile; the
+   * draft fill is kept and re-applied after reloading.
+   */
+  readonly onReloadAfterConflict?: (() => void) | null;
   /** The loaded approval instance, or null while loading. */
   readonly instance: ApprovalInstanceRecord | null;
   /** Whether the instance is in a loading state. */
@@ -63,10 +95,14 @@ export function InstanceFormSection({
   canResubmitInstance,
   deciding,
   error,
+  fieldAccess,
+  fieldLabelMarkers,
+  fill = null,
   instance,
   loading,
   onDataSourceStateChange,
   onResubmitFormChange,
+  onReloadAfterConflict = null,
   onResubmitInstance,
   onUploadAttachment,
   resubmitFormData,
@@ -76,15 +112,16 @@ export function InstanceFormSection({
   const workflowSnapshot = instance?.workflowSnapshot;
   // Approver-filled fields are not the applicant's to edit (the server drops
   // them on resubmit), so the edit state leaves them out. The read-only view
-  // keeps the full schema; PR2's field access decides what each viewer sees.
+  // keeps the full schema and `fieldAccess` decides what each viewer sees.
   // Memoised so the renderer is not handed a new schema on every render.
   const displayedSchema = useMemo(
     () =>
       canResubmitInstance && schemaSnapshot && workflowSnapshot
         ? readApplicantFormSchema(schemaSnapshot, workflowSnapshot)
-        : schemaSnapshot,
-    [canResubmitInstance, schemaSnapshot, workflowSnapshot],
+        : (fill?.schema ?? schemaSnapshot),
+    [canResubmitInstance, fill?.schema, schemaSnapshot, workflowSnapshot],
   );
+  const filling = !canResubmitInstance && fill !== null;
 
   return (
     <div style={SECTION_BODY_STYLE}>
@@ -97,6 +134,31 @@ export function InstanceFormSection({
         <Typography color="text-neutral" variant="body">
           載入中...
         </Typography>
+      ) : null}
+      {onReloadAfterConflict ? (
+        <div style={SECTION_BODY_STYLE}>
+          <InlineMessage
+            content="表單在你填寫期間被更新了，你填的內容還在。請重新載入後確認再同意。"
+            severity="error"
+          />
+          <div style={BUTTON_ROW_STYLE}>
+            <Button
+              disabled={loading}
+              icon={RefreshCcwIcon}
+              iconType="leading"
+              onClick={onReloadAfterConflict}
+              variant="base-secondary"
+            >
+              重新載入
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {filling && fill.fieldCount > 0 ? (
+        <InlineMessage
+          content={`本關需要你補填 ${fill.fieldCount} 個欄位，按「同意」時會一起送出並納入簽章。`}
+          severity="info"
+        />
       ) : null}
       {displayedSchema && instance?.formDefinitionSnapshot.uiSchema ? (
         <>
@@ -114,8 +176,18 @@ export function InstanceFormSection({
                 : undefined
             }
             dataSourceInitialValues={instance.formData}
-            errors={resubmitFormErrors}
+            errors={filling ? fill.errors : resubmitFormErrors}
+            {...(!canResubmitInstance && fieldAccess ? { fieldAccess } : {})}
+            {...(!canResubmitInstance && fieldLabelMarkers
+              ? { fieldLabelMarkers }
+              : {})}
             onChange={(values): void => {
+              if (filling) {
+                fill.onChange(values);
+
+                return;
+              }
+
               onResubmitFormChange(values);
             }}
             onDataSourceStateChange={onDataSourceStateChange}
@@ -127,7 +199,11 @@ export function InstanceFormSection({
             schema={displayedSchema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}
             value={
-              canResubmitInstance ? resubmitFormData : instance.formData
+              canResubmitInstance
+                ? resubmitFormData
+                : filling
+                  ? fill.value
+                  : instance.formData
             }
           />
           {canResubmitInstance ? (

@@ -7,6 +7,7 @@ import {
   readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
   readRevealedFieldKeys,
+  readFormFieldPathTopLevelKey,
   readTopLevelFieldKey,
   resolveFieldAccess,
 } from './field-access';
@@ -283,5 +284,17 @@ describe('readTopLevelFieldKey', () => {
     ['', ''],
   ])('reads %j as %j', (fieldPath, expected) => {
     expect(readTopLevelFieldKey(fieldPath)).toBe(expected);
+  });
+});
+
+describe('readFormFieldPathTopLevelKey', () => {
+  it.each([
+    ['amount', 'amount'],
+    ['form.amount', 'amount'],
+    ['formData.items[0].price', 'items'],
+    [' form . items ', 'items'],
+    ['form', ''],
+  ])('reads %j as %j', (fieldPath, expected) => {
+    expect(readFormFieldPathTopLevelKey(fieldPath)).toBe(expected);
   });
 });

@@ -73,6 +73,9 @@ const TOGGLE_ARCHIVED_OPTION_ID = 'toggleArchived';
  * offered only while the server still reports the notification as `actionable`
  * (an unresolved task assignment) — once the task is decided / cancelled the
  * backend flips `actionable` to false, so a stale "同意" can never appear.
+ * A task that fills in form fields (`hasFillableFields`) cannot be approved
+ * from here — the fill has to be entered on the case page — so its "同意"
+ * becomes "開啟案件".
  * "查看案件" needs an `instanceId`; "標為已讀" only shows while unread.
  * Archiving is independent of read state, so the entry flips between
  * "封存" / "取消封存" for every notification.
@@ -81,15 +84,21 @@ function buildNotificationOptions(
   record: NotificationRecord,
 ): readonly DropdownOption[] {
   const canReject = readNotificationAllowReject(record) !== false;
+  const opensToFill =
+    record.actionable &&
+    Boolean(record.instanceId) &&
+    readNotificationHasFillableFields(record);
 
   return [
     ...(record.actionable
       ? ([
-          { id: 'approve', name: '同意' },
+          opensToFill
+            ? { id: 'view', name: '開啟案件' }
+            : { id: 'approve', name: '同意' },
           ...(canReject ? [{ id: 'reject', name: '拒絕' }] : []),
         ] satisfies DropdownOption[])
       : []),
-    ...(record.instanceId
+    ...(record.instanceId && !opensToFill
       ? ([{ id: 'view', name: '查看案件' }] satisfies DropdownOption[])
       : []),
     ...(record.status !== 'READ'
@@ -705,6 +714,22 @@ function readNotificationAllowReject(
     return record.allowReject;
   } catch {
     return record.allowReject;
+  }
+}
+
+/**
+ * `TASK_ASSIGNED` / `TASK_TRANSFERRED` payloads carry `hasFillableFields`;
+ * older notifications do not, which reads as `false`.
+ */
+function readNotificationHasFillableFields(
+  record: NotificationRecord,
+): boolean {
+  try {
+    const payload: unknown = JSON.parse(record.payloadJson);
+
+    return isRecord(payload) && payload.hasFillableFields === true;
+  } catch {
+    return false;
   }
 }
 

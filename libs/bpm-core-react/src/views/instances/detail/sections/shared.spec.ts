@@ -10,6 +10,7 @@ import {
   isUserMeaningfulActivity,
   readActivityDetailParts,
   readActivityEventLabel,
+  readActingTask,
   readActivityStepRecords,
   readAdhocTargetDraft,
   readMemberDisplayText,
@@ -94,6 +95,41 @@ describe('readActivityDetailParts', () => {
       tone: 'danger',
       type: 'comment',
     });
+  });
+});
+
+describe('approver-filled fields in the timeline', () => {
+  const parts = (
+    payload: Readonly<Record<string, unknown>>,
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] =>
+    readActivityDetailParts(
+      createDecisionActivityLog(),
+      payload,
+      null,
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      {
+        fields: [
+          { fieldKey: 'invoiceNo', label: '發票號碼', required: false, type: 'text' },
+        ],
+        schemaVersion: 1,
+      },
+    );
+
+  it('names the filled fields by label and falls back to the key', () => {
+    expect(
+      parts({ action: 'APPROVED', changedFieldKeys: ['invoiceNo', 'gone'] }),
+    ).toContainEqual({ text: '補填 2 個欄位：發票號碼、gone', type: 'text' });
+  });
+
+  it('adds nothing when no field was filled', () => {
+    expect(
+      parts({ action: 'APPROVED', changedFieldKeys: [] }).filter(
+        (part) => part.type === 'text' && part.text.startsWith('補填'),
+      ),
+    ).toHaveLength(0);
   });
 });
 
@@ -340,6 +376,43 @@ describe('canMemberActOnTask', () => {
       true,
     );
     expect(canMemberActOnTask(task({}), null)).toBe(false);
+  });
+});
+
+describe('readActingTask', () => {
+  function task(overrides: Partial<TaskRecord>): TaskRecord {
+    return {
+      assigneeMemberId: 'alice',
+      candidateMemberIds: ['alice'],
+      isAdhoc: false,
+      status: 'PENDING',
+      ...overrides,
+    } as TaskRecord;
+  }
+
+  it("prefers the node's own task over an ad-hoc one", () => {
+    const adhoc = task({ id: 'adhoc', isAdhoc: true });
+    const own = task({ id: 'own' });
+
+    expect(readActingTask([adhoc, own], 'alice')?.id).toBe('own');
+  });
+
+  it('falls back to an ad-hoc task when that is all the member holds', () => {
+    expect(
+      readActingTask([task({ id: 'adhoc', isAdhoc: true })], 'alice')?.id,
+    ).toBe('adhoc');
+  });
+
+  it('skips tasks that are closed or not the member\'s to act on', () => {
+    const tasks = [
+      task({ id: 'done', status: 'COMPLETED' }),
+      task({ assigneeMemberId: 'bob', candidateMemberIds: ['bob'], id: 'bob' }),
+      task({ id: 'adhoc', isAdhoc: true, status: 'IN_PROGRESS' }),
+    ];
+
+    expect(readActingTask(tasks, 'alice')?.id).toBe('adhoc');
+    expect(readActingTask(tasks, 'carol')).toBeNull();
+    expect(readActingTask(tasks, null)).toBeNull();
   });
 });
 

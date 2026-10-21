@@ -11,7 +11,10 @@ import {
 } from 'react';
 import {
   AutoComplete,
+  Badge,
   Button,
+  Description,
+  DescriptionContent,
   Input,
   Modal,
   Select,
@@ -20,6 +23,7 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import type { TableColumn } from '@mezzanine-ui/core/table';
+import { readNodeFillableFieldKeys } from '@rytass/bpm-core-shared';
 import {
   AdhocDirectiveRecord,
   AdhocPreApprovalRejectBehavior,
@@ -37,10 +41,11 @@ import {
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { readTaskNodeText } from '../../../../lib/task-node-label';
 import { BPMFormField } from '../../../../components/bpm-form-field';
+import type { FillSummaryItem } from '../../approver-filled-form';
 import {
   MemberOption,
   TaskRow,
-  canMemberActOnTask,
+  readActingTask,
   readErrorMessage,
   readMemberDisplayText,
   readMemberOption,
@@ -123,7 +128,28 @@ export interface InstanceTasksSectionHandle {
   handleApprove(): void;
 }
 
+/** What approving the viewer's fill task sends along with the decision. */
+export interface InstanceTasksSectionFill {
+  /** `ApprovalInstance.formDataFingerprint` the fill was made against. */
+  readonly expectedFormDataFingerprint: string;
+  /** Every key the node lets the approver fill (`readFillPayload`). */
+  readonly formData: Readonly<Record<string, unknown>>;
+  /** One line per fill field, listed in the approve dialog. */
+  readonly summary: readonly FillSummaryItem[];
+}
+
 export interface InstanceTasksSectionProps {
+  /**
+   * Present when the viewer's task fills in fields: approving sends it, and
+   * the approve dialog lists it. The container validates before opening.
+   */
+  readonly fill?: InstanceTasksSectionFill | null;
+  /**
+   * Gets the server's message when approving with `fill` fails. Returning
+   * `true` means the container showed it (a conflict or field errors), so the
+   * dialog closes instead of repeating it.
+   */
+  readonly onFillApproveError?: (message: string) => boolean;
   /** All tasks for this instance. */
   readonly tasks: readonly TaskRecord[];
   /** Ad-hoc directives recorded on this instance. */
@@ -194,9 +220,11 @@ export const InstanceTasksSection = forwardRef<
   {
     adhocDirectives,
     currentMemberId,
+    fill = null,
     instance,
     memberProfilesById,
     onChanged,
+    onFillApproveError,
     tasks,
   }: InstanceTasksSectionProps,
   ref,
@@ -254,11 +282,7 @@ export const InstanceTasksSection = forwardRef<
 
   const currentTask = useMemo(
     (): TaskRecord | null =>
-      tasks.find(
-        (task) =>
-          canMemberActOnTask(task, currentMemberId) &&
-          (task.status === 'PENDING' || task.status === 'IN_PROGRESS'),
-      ) ?? null,
+      readActingTask(tasks, currentMemberId),
     [currentMemberId, tasks],
   );
 
@@ -320,6 +344,10 @@ export const InstanceTasksSection = forwardRef<
       tasks.map((task) => ({
         ...task,
         assigneeLabel: readTaskAssigneeLabel(task, memberProfilesById),
+        fillFieldCount: readOpenTaskFillFieldCount(
+          task,
+          instance?.workflowSnapshot ?? null,
+        ),
         key: task.id,
         // This view holds the snapshot, so it resolves the name itself rather
         // than trusting the server-sent `task.nodeLabel`.
@@ -353,6 +381,19 @@ export const InstanceTasksSection = forwardRef<
         key: 'statusLabel',
         title: '狀態',
         width: 120,
+      },
+      {
+        key: 'fill',
+        render: (record: TaskRow): ReactElement | null =>
+          record.fillFieldCount > 0 ? (
+            <Badge
+              size="sub"
+              text={`需補填 ${record.fillFieldCount} 欄`}
+              variant="dot-warning"
+            />
+          ) : null,
+        title: '補填',
+        width: 140,
       },
       {
         key: 'createdAt',
@@ -474,11 +515,22 @@ export const InstanceTasksSection = forwardRef<
     setDeciding(true);
     setError(null);
 
+    // Only the node's own task approves with a fill; rejecting, returning
+    // and transferring never carry one (the server refuses them).
+    const decisionFill =
+      action === 'APPROVED' && fill !== null && !currentTask.isAdhoc
+        ? {
+            expectedFormDataFingerprint: fill.expectedFormDataFingerprint,
+            formData: fill.formData,
+          }
+        : null;
+
     try {
       await decideTask({
         action,
         comment,
         decidedByMemberId: currentMemberId,
+        fill: decisionFill,
         returnToNodeId,
         taskId: currentTask.id,
         transferToMemberId,
@@ -493,8 +545,19 @@ export const InstanceTasksSection = forwardRef<
       setReturnTargetNodeId(null);
       setRejectReasonError(null);
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
       setDeciding(false);
+
+      if (
+        decisionFill !== null &&
+        requestError instanceof Error &&
+        onFillApproveError?.(requestError.message) === true
+      ) {
+        setApproveModalOpen(false);
+
+        return false;
+      }
+
+      setError(readErrorMessage(requestError));
 
       return false;
     }
@@ -515,8 +578,9 @@ export const InstanceTasksSection = forwardRef<
       return;
     }
 
+    // The comment is cleared on close and on success, not here, so one typed
+    // before a fill conflict survives the reload and the second approve.
     setError(null);
-    setApproveComment('');
     setApproveModalOpen(true);
   }
 
@@ -872,6 +936,16 @@ export const InstanceTasksSection = forwardRef<
           <Typography color="text-error" role="alert" variant="body">
             {error}
           </Typography>
+        ) : null}
+        {fill !== null && fill.summary.length > 0 ? (
+          <div style={REJECT_REASON_FORM_STYLE}>
+            <Typography variant="body">將一併送出的補填欄位：</Typography>
+            {fill.summary.map((item) => (
+              <Description key={item.fieldKey} title={item.label}>
+                <DescriptionContent>{item.text}</DescriptionContent>
+              </Description>
+            ))}
+          </div>
         ) : null}
         <div style={REJECT_REASON_FORM_STYLE}>
           <BPMFormField label="簽核意見" name="approveComment">
@@ -1255,4 +1329,26 @@ function readAdhocDirectiveTargetLabel(
   }
 
   return directive.targetKind;
+}
+
+/**
+ * How many fields an open, non-ad-hoc task still has its approver fill in:
+ * the node's fillable fields while the task waits, 0 otherwise.
+ */
+function readOpenTaskFillFieldCount(
+  task: TaskRecord,
+  workflowSnapshot: ApprovalInstanceRecord['workflowSnapshot'] | null,
+): number {
+  if (
+    task.isAdhoc ||
+    (task.status !== 'PENDING' && task.status !== 'IN_PROGRESS')
+  ) {
+    return 0;
+  }
+
+  const node = workflowSnapshot?.nodes.find(
+    (candidate) => candidate.id === task.nodeId,
+  );
+
+  return node?.type === 'userTask' ? readNodeFillableFieldKeys(node).size : 0;
 }

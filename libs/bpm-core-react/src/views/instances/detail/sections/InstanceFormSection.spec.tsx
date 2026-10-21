@@ -32,6 +32,9 @@ jest.mock('@mezzanine-ui/react', () => {
   ): ReactElement {
     return (
       <div data-mock-form-field={String(props.name ?? '')}>
+        <span data-mock-label-marker="">
+          {String(props.labelOptionalMarker ?? '')}
+        </span>
         {props.children as ReactNode}
       </div>
     );
@@ -55,6 +58,7 @@ jest.mock('@mezzanine-ui/react', () => {
       <input
         data-mock-input=""
         onChange={props.onChange as never}
+        readOnly={props.readonly === true}
         value={String(props.value ?? '')}
       />
     );
@@ -93,6 +97,11 @@ jest.mock('@mezzanine-ui/react', () => {
     DatePicker: MockContainer,
     DateTimePicker: MockContainer,
     FormField: MockFormField,
+    InlineMessage: (props: Readonly<Record<string, unknown>>): ReactElement => (
+      <div data-mock-inline-message={String(props.severity)}>
+        {String(props.content)}
+      </div>
+    ),
     Input: MockInput,
     PageHeader: MockContainer,
     RadioGroup: MockContainer,
@@ -223,5 +232,126 @@ describe('InstanceFormSection approver-filled fields', () => {
     expect(
       container.querySelector(FORM_FIELD_SELECTOR('financeNote')),
     ).not.toBeNull();
+  });
+});
+
+describe('InstanceFormSection fill mode', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+  });
+
+  const schema = INSTANCE.formDefinitionSnapshot.schema;
+
+  async function render(
+    props: Partial<Parameters<typeof InstanceFormSection>[0]>,
+  ): Promise<void> {
+    await act(async (): Promise<void> => {
+      root.render(
+        <InstanceFormSection
+          canResubmitInstance={false}
+          deciding={false}
+          error={null}
+          instance={INSTANCE}
+          loading={false}
+          onDataSourceStateChange={jest.fn()}
+          onResubmitFormChange={jest.fn()}
+          onResubmitInstance={jest.fn()}
+          onUploadAttachment={jest.fn()}
+          resubmitFormData={{}}
+          resubmitFormErrors={{}}
+          {...props}
+        />,
+      );
+    });
+  }
+
+  const input = (fieldKey: string): HTMLInputElement | null =>
+    container.querySelector<HTMLInputElement>(
+      `${FORM_FIELD_SELECTOR(fieldKey)} [data-mock-input]`,
+    );
+
+  it('lets the approver edit only the fill fields, with a notice and markers', async (): Promise<void> => {
+    const onChange = jest.fn();
+
+    await render({
+      fieldAccess: {
+        financeNote: { editable: true, visible: true },
+        reason: { editable: false, visible: true },
+      },
+      fieldLabelMarkers: { financeNote: '本關補填' },
+      fill: {
+        errors: { financeNote: '財務備註為必填欄位。' },
+        fieldCount: 1,
+        onChange,
+        schema: schema ?? { fields: [], schemaVersion: 1 },
+        value: { financeNote: '草稿', reason: '出差' },
+      },
+    });
+
+    expect(
+      container.querySelector('[data-mock-inline-message="info"]')?.textContent,
+    ).toBe('本關需要你補填 1 個欄位，按「同意」時會一起送出並納入簽章。');
+    expect(input('reason')?.readOnly).toBe(true);
+    expect(input('financeNote')?.readOnly).toBe(false);
+    expect(input('financeNote')?.value).toBe('草稿');
+    expect(
+      container.querySelector(
+        `${FORM_FIELD_SELECTOR('financeNote')} [data-mock-label-marker]`,
+      )?.textContent,
+    ).toBe('本關補填');
+
+    act((): void => {
+      const target = input('financeNote');
+
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(target, '新值');
+      target?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ financeNote: '新值' }),
+    );
+  });
+
+  it('hides a field the viewer may not see yet', async (): Promise<void> => {
+    await render({
+      fieldAccess: {
+        financeNote: { editable: false, visible: false },
+        reason: { editable: false, visible: true },
+      },
+    });
+
+    expect(container.querySelector(FORM_FIELD_SELECTOR('financeNote'))).toBeNull();
+    expect(container.querySelector('[data-mock-inline-message]')).toBeNull();
+  });
+
+  it('offers a reload after a conflict', async (): Promise<void> => {
+    const onReload = jest.fn();
+
+    await render({ onReloadAfterConflict: onReload });
+
+    expect(
+      container.querySelector('[data-mock-inline-message="error"]')?.textContent,
+    ).toContain('表單在你填寫期間被更新了');
+
+    act((): void => {
+      container
+        .querySelector<HTMLButtonElement>('[data-mock-button="重新載入"]')
+        ?.click();
+    });
+
+    expect(onReload).toHaveBeenCalledTimes(1);
   });
 });
