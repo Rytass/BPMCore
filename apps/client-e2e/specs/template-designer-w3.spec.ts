@@ -43,6 +43,9 @@ interface MockTemplateGraphQlOptions {
   readonly memberSearchGate?: (searchText: string) => Promise<void>;
   readonly onDraftUpdate?: (input: UpdateTemplateDraftInput) => void;
   readonly onSelectedMembersRequest?: (memberIds: readonly string[]) => void;
+  // Answers `PublishApprovalTemplateVersion` with this GraphQL error, the way
+  // the publish lint refuses a draft.
+  readonly publishError?: string;
 }
 
 const TEMPLATE_ID = 'e2e-template';
@@ -146,6 +149,32 @@ test.describe('M1 W3 template designer', () => {
     await page.goto(`/templates/${TEMPLATE_ID}/versions`);
     await expect(page.getByText('PUBLISHED')).toBeVisible();
     await expect(page.getByText('E2E 表單 v1')).toBeVisible();
+  });
+
+  test('shows a refused publish on the page without an unhandled rejection', async ({
+    page,
+  }): Promise<void> => {
+    const pageErrors: string[] = [];
+
+    page.on('pageerror', (error): void => {
+      pageErrors.push(error.message);
+    });
+    await mockTemplateGraphQl(page, {
+      publishError: 'workflow must include at least one endEvent node',
+    });
+
+    await page.goto(`/templates/${TEMPLATE_ID}/designer`);
+    await page.getByRole('combobox', { name: '未設定' }).click();
+    await page.locator('[role="option"]').filter({ hasText: '所有人' }).click();
+    await page.getByRole('button', { name: '簽核節點' }).click();
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2);
+    await page.getByRole('button', { name: '保存並發布' }).click();
+
+    await expect(
+      page.getByText('流程至少要有一個「結束」節點。'),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: /發布/ })).toBeEnabled();
+    expect(pageErrors).toEqual([]);
   });
 
   test('edits condition edges from the side panel', async ({
@@ -1596,6 +1625,15 @@ async function mockTemplateGraphQl(
     }
 
     if (query.includes('mutation PublishApprovalTemplateVersion')) {
+      if (options.publishError) {
+        await route.fulfill({
+          contentType: 'application/json',
+          json: { data: null, errors: [{ message: options.publishError }] },
+          status: 200,
+        });
+        return;
+      }
+
       templateCurrentVersionId = TEMPLATE_VERSION_ID;
       templateStatus = 'PUBLISHED';
       templatePublishedAt = UPDATED_AT;

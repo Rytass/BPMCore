@@ -1515,10 +1515,11 @@ export function TemplateDesignerView({
         await refreshDesigner();
       }
     } catch (requestError: unknown) {
+      // Shown on the page; the buttons call this fire-and-forget, so a
+      // rethrow would only surface as an unhandled rejection.
       setError(
         readTemplateErrorMessage(requestError, language, workflowDefinition),
       );
-      throw requestError;
     } finally {
       setSaving(false);
     }
