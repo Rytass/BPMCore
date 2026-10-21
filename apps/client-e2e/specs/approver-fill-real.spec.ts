@@ -127,12 +127,13 @@ test.describe('approver-filled fields (real backend)', () => {
   let admin: Page;
   let requester: Page;
   let templateId = '';
+  let formVersionId = '';
 
   test.beforeAll(async ({ browser }): Promise<void> => {
     admin = await createAuthenticatedPage(browser, ADMIN);
     requester = await createAuthenticatedPage(browser, REQUESTER);
 
-    const formVersionId = await createPublishedForm(admin, runId);
+    formVersionId = await createPublishedForm(admin, runId);
 
     templateId = await createPublishedTemplate(admin, formVersionId, runId);
   });
@@ -330,6 +331,41 @@ test.describe('approver-filled fields (real backend)', () => {
     );
   });
 
+  test('refuses to publish a system node that writes form.<fill field>', async (): Promise<void> => {
+    // The engine strips a leading `form.` before writing, so the publish lint
+    // has to read the path the same way.
+    const writer = {
+      ...WORKFLOW,
+      edges: [
+        edge('start', 'manager'),
+        edge('manager', 'stamp'),
+        edge('stamp', 'finance'),
+        edge('finance', 'director'),
+        edge('director', 'end'),
+      ],
+      nodes: [
+        ...WORKFLOW.nodes,
+        {
+          data: {
+            action: {
+              fieldPath: 'form.invoiceNo',
+              type: 'SET_FORM_FIELD',
+              value: '"PRESET"',
+            },
+            label: '預填發票',
+          },
+          id: 'stamp',
+          position: { x: 390, y: 200 },
+          type: 'serviceTask',
+        },
+      ],
+    };
+
+    await expect(
+      createPublishedTemplate(admin, formVersionId, `${runId}-writer`, writer),
+    ).rejects.toThrow(/cannot write a field an approver fills in: invoiceNo/);
+  });
+
   test('the inbox flags the task and the notification opens the case', async (): Promise<void> => {
     test.setTimeout(120_000);
     const title = `E2E 補填通知 ${runId}`;
@@ -457,6 +493,7 @@ async function createPublishedTemplate(
   page: Page,
   formVersionId: string,
   runId: string,
+  workflow: Json = WORKFLOW,
 ): Promise<string> {
   const template = await gql<{
     readonly createApprovalTemplate: { readonly id: string };
@@ -498,7 +535,7 @@ async function createPublishedTemplate(
         notificationConfigJson: null,
         slaDefaultsJson: null,
         versionId: draft?.id,
-        workflowDefinitionJson: JSON.stringify(WORKFLOW),
+        workflowDefinitionJson: JSON.stringify(workflow),
       },
     },
   );
