@@ -4009,19 +4009,20 @@ export class WorkflowEngineService {
               CASE WHEN jsonb_typeof(instance.workflow_snapshot->'nodes') = 'array'
                    THEN instance.workflow_snapshot->'nodes'
                    ELSE '[]'::jsonb END
-            ) AS node
+            ) WITH ORDINALITY AS entry(node, position)
         WHERE instance.id = ANY($1::uuid[])
-          AND node->>'id' = ANY($2::text[])`,
+          AND node->>'id' = ANY($2::text[])
+        ORDER BY entry.position DESC`,
       [
         [...new Set(tasks.map((task) => task.instanceId))],
         [...new Set(tasks.map((task) => task.nodeId))],
       ],
     );
 
-    // Reversed so the first node with a given id wins, as `find` does
-    // everywhere else that reads a snapshot node by id.
+    // Rows come last node first, so the first node with a given id wins, as
+    // `find` does everywhere else that reads a snapshot node by id.
     return new Map(
-      [...rows].reverse().map((row) => [
+      rows.map((row) => [
         readNodeLabelKey(row.instanceId, row.nodeId),
         {
           hasFillableFields:
