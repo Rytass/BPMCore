@@ -1438,6 +1438,9 @@ describe('workflow definition validator: field access', (): void => {
       ['amount', 'amount'],
       ['items.price', 'items'],
       ['items[0].price', 'items'],
+      // The engine strips a leading form. / formData. before writing.
+      ['form.amount', 'amount'],
+      ['formData.items[0].price', 'items'],
     ])('refuses writing %s', (fieldPath, fieldKey): void => {
       expect(
         lintErrors(

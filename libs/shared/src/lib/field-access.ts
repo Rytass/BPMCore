@@ -79,6 +79,24 @@ export const readNodeFieldAccess = (
 export const readTopLevelFieldKey = (fieldPath: string): string =>
   fieldPath.split('.')[0].split('[')[0];
 
+/**
+ * The top-level form field a `SET_FORM_FIELD` `fieldPath` writes. The engine
+ * accepts an optional leading `form.` or `formData.` segment and trims each
+ * segment, so `form.amount` and ` amount ` both write `amount`.
+ */
+export const readFormFieldPathTopLevelKey = (fieldPath: string): string => {
+  const segments = fieldPath
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const fieldSegments =
+    segments[0] === 'form' || segments[0] === 'formData'
+      ? segments.slice(1)
+      : segments;
+
+  return readTopLevelFieldKey(fieldSegments.join('.'));
+};
+
 export const readNodeFillableFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>

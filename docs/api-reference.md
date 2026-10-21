@@ -247,6 +247,7 @@ Helpers over `UserTaskNodeData.fieldAccess`. They live in `libs/shared/src/lib/f
 | `ResolvedFieldAccess` | interface | `{ editable, visible }` — what a viewer may do with one field |
 | `readNodeFieldAccess(node)` | function | The node's `fieldAccess`, tolerant of a bad draft: a non-array reads as `[]`, entries that are not objects or lack a non-empty `fieldKey` string are skipped, the first entry per `fieldKey` wins, an unknown `fill` reads as `NONE` and an unknown `display` as `SHOW` |
 | `readTopLevelFieldKey(fieldPath)` | function | The top-level form field a path addresses: `items.price` and `items[0]` both read `items` |
+| `readFormFieldPathTopLevelKey(fieldPath)` | function | The top-level form field a `SET_FORM_FIELD` `fieldPath` writes, read the way the engine writes it: an optional leading `form.` / `formData.` segment is dropped and segments are trimmed, so `form.amount` reads `amount`. The publish lint uses it to refuse a system node writing an approver-filled field |
 | `readNodeFillableFieldKeys(node)` | function | `fieldKey`s the node's approver may fill in (`fill !== 'NONE'`) |
 | `readNodeRequiredFieldKeys(node)` | function | `fieldKey`s with `fill === 'REQUIRED'` |
 | `readApproverFilledFieldKeys(definition)` | function | Union of the fillable keys of every user task — the fields filled in by approvers rather than the applicant |
