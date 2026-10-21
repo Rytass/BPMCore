@@ -4018,8 +4018,10 @@ export class WorkflowEngineService {
       ],
     );
 
+    // Reversed so the first node with a given id wins, as `find` does
+    // everywhere else that reads a snapshot node by id.
     return new Map(
-      rows.map((row) => [
+      [...rows].reverse().map((row) => [
         readNodeLabelKey(row.instanceId, row.nodeId),
         {
           hasFillableFields:
