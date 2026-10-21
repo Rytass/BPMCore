@@ -301,7 +301,7 @@ sessions across a restart; the API host passes the BPM attachment values into
 
 Security fixes for transitive dependencies live in `pnpm-workspace.yaml`
 `overrides`. **Always write them as a `^` range, never as an exact version.**
-The one deliberate `~` is `next`, which keeps the 16.3 minor the root pins (see
+The one deliberate `~` is `next`, which keeps the 16.4 minor the root pins (see
 the comment beside it).
 
 An exact pin stops pnpm taking the next patch, so an override added to fix one

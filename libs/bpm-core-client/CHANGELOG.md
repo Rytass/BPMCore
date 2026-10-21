@@ -1,3 +1,13 @@
+## 0.17.6 (2026-10-20)
+
+### 🩹 Fixes
+
+- **form:** read the first field error without Array.prototype.at ([abc14a8](https://github.com/Rytass/BPMCore/commit/abc14a8))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.5 (2026-10-20)
 
 ### 🚀 Features

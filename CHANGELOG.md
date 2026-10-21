@@ -1,4 +1,20 @@
+## 0.17.6 (2026-10-20)
+
+### 🩹 Fixes
+
+- **form:** read the first field error without Array.prototype.at ([abc14a8](https://github.com/Rytass/BPMCore/commit/abc14a8))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.5 (2026-10-20)
+
+### ⚠️ Upgrade notes
+
+- **Migration `ActivityLogSeq0000000029000` locks `activity_logs` for its whole run.** It adds `activity_logs.seq` and backfills every existing row in one transaction, holding an ACCESS EXCLUSIVE lock from the `ADD COLUMN` through the backfill, `SET NOT NULL` and the unique index build. Nothing can read or write `activity_logs` meanwhile, and every submit, decision and history read touches it, so on a large table plan the run as downtime in a maintenance window. `lock_timeout` bounds only the wait to take the lock, not how long it is held.
+- Run it inside a transaction (the default) and before serving 0.17.5.
+- The backfill rewrites every row: leave free disk for roughly another copy of the table plus its WAL, and run `VACUUM (ANALYZE) activity_logs` afterwards.
 
 ### 🚀 Features
 

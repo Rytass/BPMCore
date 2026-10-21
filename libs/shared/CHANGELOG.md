@@ -1,3 +1,7 @@
+## 0.17.6 (2026-10-20)
+
+This was a version bump only for shared to align it with other projects, there were no code changes.
+
 ## 0.17.5 (2026-10-20)
 
 ### 🚀 Features
