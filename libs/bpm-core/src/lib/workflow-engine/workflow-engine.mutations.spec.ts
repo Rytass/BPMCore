@@ -1,6 +1,10 @@
+import { BadRequestException } from '@nestjs/common';
 import { BPMAuthContext, listBPMResolverHandlers } from '../bpm-auth';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { DecideTaskInput } from './dto/decide-task.input';
+import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
+import { TaskDecisionActionEnum } from './workflow-engine.enums';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 // Loaded for its decorators, which register the query's access level.
 import './workflow-engine.queries';
@@ -100,6 +104,151 @@ describe('WorkflowEngineMutations', () => {
       }),
       authContext,
     );
+  });
+
+  it('marks GraphQL submissions as end-user submissions', async (): Promise<void> => {
+    const { mutations, submitApprovalInstance } = createMutations();
+
+    await mutations.submitApprovalInstance(
+      {
+        // Not on the input type: a client must not be able to switch it off.
+        endUserSubmission: false,
+        formDataJson: '{}',
+        initiatorMemberId: null,
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      } as SubmitApprovalInstanceInput,
+      'member-current',
+      authContext,
+    );
+
+    expect(submitApprovalInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ endUserSubmission: true }),
+      authContext,
+    );
+  });
+
+  it('marks GraphQL resubmissions as end-user submissions', async (): Promise<void> => {
+    const resubmitApprovalInstance = jest.fn(() => Promise.resolve({}));
+    const mutations = new WorkflowEngineMutations({
+      resubmitApprovalInstance,
+    } as unknown as WorkflowEngineService);
+
+    await mutations.resubmitApprovalInstance(
+      {
+        endUserSubmission: false,
+        formDataJson: '{}',
+        initiatorMemberId: 'member-someone-else',
+        instanceId: 'instance-1',
+        title: null,
+      } as ResubmitApprovalInstanceInput,
+      'member-current',
+      authContext,
+    );
+
+    expect(resubmitApprovalInstance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endUserSubmission: true,
+        initiatorMemberId: 'member-current',
+      }),
+      authContext,
+    );
+  });
+});
+
+describe('WorkflowEngineMutations decideTask', () => {
+  const TASK_ID = '6f1c2a3e-4b5d-4e6f-8a9b-0c1d2e3f4a5b';
+  const createMutations = (): {
+    readonly decideTask: jest.Mock;
+    readonly mutations: WorkflowEngineMutations;
+  } => {
+    const decideTask = jest.fn(() => Promise.resolve({}));
+
+    return {
+      decideTask,
+      mutations: new WorkflowEngineMutations({
+        decideTask,
+      } as unknown as WorkflowEngineService),
+    };
+  };
+  // The exception class is part of the host contract; `toThrow(new X(msg))`
+  // would compare the message only.
+  const expectRejection = async (promise: Promise<unknown>): Promise<void> => {
+    const error = await promise.then(
+      (): unknown => undefined,
+      (rejection: unknown): unknown => rejection,
+    );
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as Error).message).toBe(
+      'expectedFormDataFingerprint is required when formDataJson is set',
+    );
+  };
+  const input = (extra: Partial<DecideTaskInput>): DecideTaskInput =>
+    ({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: 'member-forged',
+      taskId: TASK_ID,
+      ...extra,
+    }) as DecideTaskInput;
+
+  it('requires a fingerprint with formDataJson on the GraphQL path', async (): Promise<void> => {
+    const { decideTask, mutations } = createMutations();
+
+    await expectRejection(
+      mutations.decideTask(
+        input({ formDataJson: '{"financeItems":[]}' }),
+        'member-current',
+      ),
+    );
+    await expectRejection(
+      mutations.decideTask(
+        input({
+          expectedFormDataFingerprint: null,
+          formDataJson: '{"financeItems":[]}',
+        }),
+        'member-current',
+      ),
+    );
+    expect(decideTask).not.toHaveBeenCalled();
+  });
+
+  it('requires a fingerprint even for an empty object', async (): Promise<void> => {
+    const { decideTask, mutations } = createMutations();
+
+    await expectRejection(
+      mutations.decideTask(input({ formDataJson: '{}' }), 'member-current'),
+    );
+    expect(decideTask).not.toHaveBeenCalled();
+  });
+
+  it('passes formDataJson and the fingerprint on as the signed-in member', async (): Promise<void> => {
+    const { decideTask, mutations } = createMutations();
+
+    await mutations.decideTask(
+      input({
+        expectedFormDataFingerprint: 'fingerprint-1',
+        formDataJson: '{"financeItems":[]}',
+      }),
+      'member-current',
+    );
+
+    expect(decideTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decidedByMemberId: 'member-current',
+        expectedFormDataFingerprint: 'fingerprint-1',
+        formDataJson: '{"financeItems":[]}',
+      }),
+    );
+  });
+
+  it('does not ask for a fingerprint when no formDataJson is sent', async (): Promise<void> => {
+    const { decideTask, mutations } = createMutations();
+
+    await mutations.decideTask(input({}), 'member-current');
+
+    expect(decideTask).toHaveBeenCalledTimes(1);
   });
 });
 

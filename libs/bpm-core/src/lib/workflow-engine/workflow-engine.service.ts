@@ -1,5 +1,13 @@
 import { isUUID } from 'class-validator';
 import {
+  isFormDataValueEmpty,
+  omitFormDataKeys,
+  overlayStoredFormDataKeys,
+  readApproverFilledFieldKeys,
+  readNodeFillableFieldKeys,
+  readNodeRequiredFieldKeys,
+} from '@rytass/bpm-core-shared';
+import {
   FORM_TABLE_MAX_ROWS,
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshots,
@@ -101,6 +109,10 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import {
+  computeFormDataFingerprint,
+  computeStableValueFingerprint,
+} from './form-data-fingerprint';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -154,10 +166,19 @@ type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
    * the initiator submitted the document themselves.
    */
   readonly submittedByMemberId?: string | null;
+  /**
+   * Set only by the GraphQL mutation, never by the DTO, so an end user cannot
+   * bring it along. The service then keeps the fields an approver fills in
+   * out of the submission; a host calling the service directly leaves it
+   * unset and may prefill them.
+   */
+  readonly endUserSubmission?: boolean;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
   readonly initiatorMemberId: string;
+  /** See `SubmitApprovalInstanceCommand.endUserSubmission`. */
+  readonly endUserSubmission?: boolean;
 };
 
 const MAX_PROCESSING_STEPS = 500;
@@ -545,7 +566,10 @@ export class WorkflowEngineService {
       );
     }
 
-    const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const submittedFormData = parseJsonObject(
+      input.formDataJson,
+      'formDataJson',
+    );
     const businessKey = normalizeBusinessKey(input.businessKey);
     const submittedByMemberId =
       input.submittedByMemberId ?? input.initiatorMemberId;
@@ -567,7 +591,23 @@ export class WorkflowEngineService {
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
-    validateSubmittedFormData(formDefinitionVersion.schema, formData);
+    // The fields an approver fills in belong to the approval, not the
+    // application: an end user's value for one is dropped (it would otherwise
+    // be an unreviewed value the approver has to overwrite), while a host
+    // calling the service directly may prefill them. They are only shape
+    // checked here; required and row minimums wait for the node that fills
+    // them. Read off the version the instance is bound to, not the template's
+    // latest, so a publish in between cannot change what is stripped.
+    const deferredFieldKeys = readApproverFilledFieldKeys(
+      templateVersion.workflowDefinition,
+    );
+    const formData =
+      input.endUserSubmission === true
+        ? omitFormDataKeys(submittedFormData, deferredFieldKeys)
+        : submittedFormData;
+    validateSubmittedFormData(formDefinitionVersion.schema, formData, {
+      deferredFieldKeys,
+    });
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
@@ -759,7 +799,7 @@ export class WorkflowEngineService {
 
   private async prepareResubmitFormDataOptions(
     input: ResubmitApprovalInstanceCommand,
-    formData: Readonly<Record<string, unknown>>,
+    submittedFormData: Readonly<Record<string, unknown>>,
     authContext: BPMAuthContext,
   ): Promise<ResubmitFormDataOptionsPreparation> {
     const instance = await this.approvalInstanceRepository.findOne({
@@ -793,7 +833,20 @@ export class WorkflowEngineService {
     const schema = readFormDefinitionSnapshotSchema(
       instance.formDefinitionSnapshot,
     );
-    validateSubmittedFormData(schema, formData);
+    const deferredFieldKeys = readApproverFilledFieldKeys(
+      instance.workflowSnapshot,
+    );
+    // Same overlay as inside the lock, so the options resolved here are for
+    // the form data that is actually saved.
+    const formData =
+      input.endUserSubmission === true
+        ? overlayStoredFormDataKeys(
+            submittedFormData,
+            instance.formData,
+            deferredFieldKeys,
+          )
+        : submittedFormData;
+    validateSubmittedFormData(schema, formData, { deferredFieldKeys });
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext,
@@ -861,6 +914,21 @@ export class WorkflowEngineService {
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
         );
+        const taskBeforeLock = await taskRepository.findOne({
+          where: { id: input.taskId },
+        });
+
+        if (!taskBeforeLock) {
+          throw new NotFoundException(`Task ${input.taskId} was not found`);
+        }
+
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          taskBeforeLock.instanceId,
+        ]);
+
+        // Read again now that the lock is ours: a decision that held it first
+        // may have completed this task since the read above, and everything
+        // below must judge the task as it is now, not as it was.
         const task = await taskRepository.findOne({
           where: { id: input.taskId },
         });
@@ -868,10 +936,6 @@ export class WorkflowEngineService {
         if (!task) {
           throw new NotFoundException(`Task ${input.taskId} was not found`);
         }
-
-        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          task.instanceId,
-        ]);
 
         if (
           task.status !== TaskStatusEnum.PENDING &&
@@ -918,6 +982,23 @@ export class WorkflowEngineService {
             'Transfer target must be a different member',
           );
         }
+
+        // "Sent" means not null and not undefined, so '{}' counts.
+        const sentFormDataJson = input.formDataJson ?? null;
+
+        if (
+          sentFormDataJson !== null &&
+          input.action !== TaskDecisionActionEnum.APPROVED
+        ) {
+          throw new BadRequestException(
+            'formDataJson can only be sent with an APPROVED decision',
+          );
+        }
+
+        const filledFormData =
+          sentFormDataJson === null
+            ? null
+            : parseJsonObject(sentFormDataJson, 'formDataJson');
 
         const instance = await instanceRepository.findOne({
           where: { id: task.instanceId },
@@ -1063,6 +1144,88 @@ export class WorkflowEngineService {
             `Return decision comment is required by workflow node ${task.nodeId}`,
           );
         }
+
+        if (filledFormData !== null && task.isAdhoc) {
+          throw new ForbiddenException(
+            `Ad-hoc task ${task.id} cannot fill in form fields`,
+          );
+        }
+
+        if (filledFormData !== null) {
+          const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+          const refusedFieldKeys = Object.keys(filledFormData).filter(
+            (fieldKey) => !fillableFieldKeys.has(fieldKey),
+          );
+
+          if (refusedFieldKeys.length > 0) {
+            throw new ForbiddenException(
+              `Workflow node ${task.nodeId} does not let approvers fill in: ${refusedFieldKeys.join(', ')}`,
+            );
+          }
+        }
+
+        const expectedFormDataFingerprint =
+          input.expectedFormDataFingerprint ?? null;
+
+        if (
+          expectedFormDataFingerprint !== null &&
+          expectedFormDataFingerprint !==
+            computeFormDataFingerprint(instance.formData)
+        ) {
+          throw new ConflictException(
+            `Approval instance ${instance.id} form data changed; refresh and retry`,
+          );
+        }
+
+        // Only keys whose value really changes are written and reported. A key
+        // the form data does not have yet counts as changed even when the new
+        // value is null.
+        const changedFieldKeys =
+          filledFormData === null
+            ? []
+            : Object.keys(filledFormData)
+                .filter(
+                  (fieldKey) =>
+                    !Object.prototype.hasOwnProperty.call(
+                      instance.formData,
+                      fieldKey,
+                    ) ||
+                    computeStableValueFingerprint(filledFormData[fieldKey]) !==
+                      computeStableValueFingerprint(instance.formData[fieldKey]),
+                )
+                .sort();
+
+        const mergedFormData = { ...instance.formData, ...filledFormData };
+
+        // Every approval at a node that lets its approver fill in fields is
+        // held to those fields, whether or not this request sent any: the host
+        // may have pre-filled a table the approver then leaves as is.
+        if (input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc) {
+          const nodeFillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+
+          if (nodeFillableFieldKeys.size > 0) {
+            validateFilledFormFields(
+              readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+              mergedFormData,
+              nodeFillableFieldKeys,
+              readNodeRequiredFieldKeys(taskNode),
+            );
+          }
+        }
+
+        if (filledFormData !== null && changedFieldKeys.length > 0) {
+          // Merged into the shared `instance` before it is signed and before
+          // the token moves on: the signature must cover the filled values, a
+          // gateway after this node must route on them, and an end node saves
+          // this same object, which would write the old values back.
+          const savedInstance = await instanceRepository.save({
+            ...instance,
+            formData: mergedFormData,
+          });
+
+          Object.assign(instance, savedInstance);
+        }
+
         const decidedAt = new Date();
         const claimedTask = await taskRepository.save({
           ...task,
@@ -1196,6 +1359,9 @@ export class WorkflowEngineService {
               decisionId: decision.id,
               signatureId: signature.id,
               signedPayloadHash: signature.signedPayloadHash,
+              // Keys only: this payload is forwarded to hosts, and the values
+              // can be tax IDs or amounts.
+              ...(changedFieldKeys.length > 0 ? { changedFieldKeys } : {}),
             },
             taskId: completedTask.id,
           }),
@@ -1494,11 +1660,14 @@ export class WorkflowEngineService {
     input: ResubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
-    const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const submittedFormData = parseJsonObject(
+      input.formDataJson,
+      'formDataJson',
+    );
     const preparation = this.formDataSourceValueResolver
       ? await this.prepareResubmitFormDataOptions(
           input,
-          formData,
+          submittedFormData,
           authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
         )
       : null;
@@ -1552,7 +1721,23 @@ export class WorkflowEngineService {
         const resubmitSchema = readFormDefinitionSnapshotSchema(
           instance.formDefinitionSnapshot,
         );
-        validateSubmittedFormData(resubmitSchema, formData);
+        const deferredFieldKeys = readApproverFilledFieldKeys(
+          instance.workflowSnapshot,
+        );
+        // An end user gets back the value an approver already filled in, and
+        // loses a key the stored data never had: the renderer seeds `false`,
+        // `[]` and empty rows for every field, none of which an approver wrote.
+        const formData =
+          input.endUserSubmission === true
+            ? overlayStoredFormDataKeys(
+                submittedFormData,
+                instance.formData,
+                deferredFieldKeys,
+              )
+            : submittedFormData;
+        validateSubmittedFormData(resubmitSchema, formData, {
+          deferredFieldKeys,
+        });
 
         if (!preparation) {
           assertNoUnresolvableDynamicValues(resubmitSchema, formData);
@@ -9199,10 +9384,18 @@ function readCandidateStatusForClosedTask(
   return TaskCandidateStatusEnum.CANCELLED;
 }
 
+/**
+ * `deferredFieldKeys` are fields an approver fills in later: they are checked
+ * for shape (a table is an array of well-formed rows, a member value is a
+ * member id) but never for being present, so an empty one cannot block a
+ * submission that has nobody to fill it yet.
+ */
 function validateSubmittedFormData(
   schema: FormDefinitionSchema,
   formData: Readonly<Record<string, unknown>>,
+  options: { readonly deferredFieldKeys?: ReadonlySet<string> } = {},
 ): void {
+  const deferredFieldKeys = options.deferredFieldKeys ?? new Set<string>();
   const visibleFields = schema.fields.filter((field) =>
     isSubmittedFormFieldVisible(field, schema.fields, formData),
   );
@@ -9212,10 +9405,108 @@ function validateSubmittedFormData(
   const missingFields = visibleFields.filter(
     (field) =>
       !isTableFieldDefinition(field) &&
+      !deferredFieldKeys.has(field.fieldKey) &&
       isSubmittedFormFieldRequired(field, schema.fields, formData) &&
       !isSubmittedFieldValuePresent(formData[field.fieldKey]),
   );
 
+  throwFirstFormDataFieldError({
+    missingFields,
+    // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
+    // is visible, so a hidden field still holding a value must be well-formed
+    // too. Whether a hidden field is *required* stays a visibility question
+    // above.
+    readMemberErrors: () =>
+      readSubmittedMemberValueErrors(
+        schema.fields.filter(
+          (field) =>
+            visibleFields.includes(field) ||
+            isSubmittedFieldValuePresent(formData[field.fieldKey]),
+        ),
+        formData,
+      ),
+    readTableErrors: () => [
+      ...visibleFields
+        .filter(isTableFieldDefinition)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            formData[field.fieldKey],
+            isSubmittedFormFieldRequired(field, schema.fields, formData),
+            deferredFieldKeys.has(field.fieldKey),
+          ),
+        ),
+      // A hidden table is not "visible", but its stored value still has to be
+      // a well-formed table under the row cap: only the required / minimum
+      // checks are skipped, since nobody can fill the table in.
+      ...schema.fields
+        .filter(isTableFieldDefinition)
+        .filter((field) => field.hidden === true)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            formData[field.fieldKey],
+            false,
+            true,
+          ),
+        ),
+    ],
+  });
+}
+
+/**
+ * What an approval at a node has to leave behind: every field the node lets the
+ * approver fill in is well-formed (a table is an array of well-formed rows with
+ * its required columns and minimum rows, a member value is a member id) and
+ * every one the node marks `required` is present. The messages are the submit
+ * ones: a host tells the two entry points apart by which call it made.
+ */
+function validateFilledFormFields(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+  fieldKeys: ReadonlySet<string>,
+  requiredFieldKeys: ReadonlySet<string>,
+): void {
+  const fields = schema.fields.filter((field) => fieldKeys.has(field.fieldKey));
+
+  // `readRowCellValue` is used below as an own-property reader for top-level
+  // form keys: a key like `constructor` must not read off the prototype chain.
+  throwFirstFormDataFieldError({
+    // Tables answer by row count, so like submit they stay out of this list.
+    missingFields: fields.filter(
+      (field) =>
+        !isTableFieldDefinition(field) &&
+        requiredFieldKeys.has(field.fieldKey) &&
+        isFormDataValueEmpty(readRowCellValue(formData, field.fieldKey)),
+    ),
+    readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
+    readTableErrors: () =>
+      fields
+        .filter(isTableFieldDefinition)
+        .flatMap((field) =>
+          validateSubmittedTableValue(
+            field,
+            readRowCellValue(formData, field.fieldKey),
+            requiredFieldKeys.has(field.fieldKey),
+          ),
+        ),
+  });
+}
+
+/**
+ * The shared tail of submit and approver-fill validation: a missing required
+ * field wins over a malformed member value, which wins over a table problem,
+ * and the later checks are only evaluated when the earlier ones pass.
+ */
+function throwFirstFormDataFieldError({
+  missingFields,
+  readMemberErrors,
+  readTableErrors,
+}: {
+  readonly missingFields: readonly FormFieldDefinition[];
+  readonly readMemberErrors: () => readonly string[];
+  readonly readTableErrors: () => readonly string[];
+}): void {
   if (missingFields.length > 0) {
     throw new BadRequestException(
       `Form data is missing required fields: ${missingFields
@@ -9224,47 +9515,13 @@ function validateSubmittedFormData(
     );
   }
 
-  // A `DYNAMIC_FORM` resolver reads a member value whether or not its field is
-  // visible, so a hidden field still holding a value must be well-formed too.
-  // Whether a hidden field is *required* stays a visibility question above.
-  const memberErrors = readSubmittedMemberValueErrors(
-    schema.fields.filter(
-      (field) =>
-        visibleFields.includes(field) ||
-        isSubmittedFieldValuePresent(formData[field.fieldKey]),
-    ),
-    formData,
-  );
+  const memberErrors = readMemberErrors();
 
   if (memberErrors.length > 0) {
     throw new BadRequestException(memberErrors.join('; '));
   }
 
-  const tableErrors = [
-    ...visibleFields
-      .filter(isTableFieldDefinition)
-      .flatMap((field) =>
-        validateSubmittedTableValue(
-          field,
-          formData[field.fieldKey],
-          isSubmittedFormFieldRequired(field, schema.fields, formData),
-        ),
-      ),
-    // A hidden table is not "visible", but its stored value still has to be a
-    // well-formed table under the row cap: only the required / minimum checks
-    // are skipped, since nobody can fill the table in.
-    ...schema.fields
-      .filter(isTableFieldDefinition)
-      .filter((field) => field.hidden === true)
-      .flatMap((field) =>
-        validateSubmittedTableValue(
-          field,
-          formData[field.fieldKey],
-          false,
-          true,
-        ),
-      ),
-  ];
+  const tableErrors = readTableErrors();
 
   if (tableErrors.length > 0) {
     throw new BadRequestException(tableErrors.join('; '));
@@ -9654,19 +9911,7 @@ function parseFormConditionLiteral(value: string): string {
 }
 
 function isSubmittedFieldValuePresent(value: unknown): boolean {
-  if (typeof value === 'undefined' || value === null) {
-    return false;
-  }
-
-  if (typeof value === 'string') {
-    return value.trim().length > 0;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-
-  return true;
+  return !isFormDataValueEmpty(value);
 }
 
 function isNumberFormField(

@@ -59,6 +59,11 @@ export interface UserTaskNodeData extends BaseNodeData {
   readonly description?: string;
   readonly entryCondition?: string;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldAccess?: readonly FieldAccessEntry[];
+  /**
+   * @deprecated Never enforced and never read: use `fieldAccess`. A draft that
+   * still carries this key cannot be published (`legacyFieldPermissions`).
+   */
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
   readonly returnBehavior: ReturnBehavior;
@@ -212,11 +217,25 @@ export interface SlaConfig {
 
 export type SlaCalendarMode = 'CALENDAR' | 'BUSINESS_DAY';
 
+export type FieldAccessDisplay = 'SHOW' | 'HIDE';
+
+export type FieldAccessFill = 'NONE' | 'OPTIONAL' | 'REQUIRED';
+
 /**
- * Reserved, NOT enforced: neither the engine nor any screen reads
- * `UserTaskNodeData.fieldPermissions`, so setting it changes nothing. To keep
- * a field off the screens, use the field-level `hidden` flag (form.ts) — that
- * is a display option, not a permission boundary either.
+ * How one top-level form field behaves at a user task. A field with `fill`
+ * other than `NONE` can be filled in only by the approver of a non-ad-hoc task
+ * at this node, when approving; the server enforces it. `display: 'HIDE'` only
+ * hides the field on screen, it is not a permission boundary.
+ */
+export interface FieldAccessEntry {
+  readonly display: FieldAccessDisplay;
+  readonly fieldKey: string;
+  readonly fill: FieldAccessFill;
+}
+
+/**
+ * @deprecated Reserved and never enforced: neither the engine nor any screen
+ * reads `UserTaskNodeData.fieldPermissions`. Use `FieldAccessEntry`.
  */
 export interface FieldPermission {
   readonly editable: boolean;

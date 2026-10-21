@@ -8,6 +8,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  FieldAccessEntry,
   ReturnBehavior,
   ServiceAction,
   WorkflowDefinition,
@@ -62,6 +63,8 @@ import {
   AdhocTargetKindEnum,
 } from './adhoc.enums';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { DecideTaskInput } from './dto/decide-task.input';
+import { computeFormDataFingerprint } from './form-data-fingerprint';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
@@ -816,6 +819,959 @@ describe('WorkflowEngineService', () => {
     });
 
     expect(withValue.formDataJson).toBe('{"reason":"r","sourceDocId":"PO-1"}');
+  });
+
+  describe('field access: submit and resubmit', () => {
+    const submit = (
+      formDataJson: string,
+      options: {
+        readonly endUserSubmission?: boolean;
+        readonly formSchema?: FormDefinitionSchema;
+        readonly workflow?: WorkflowDefinition;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: options.formSchema ?? createFinanceTableFormSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        templateWorkflowDefinition:
+          options.workflow ?? createFieldAccessWorkflow(),
+      }).service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+        ...(options.endUserSubmission === undefined
+          ? {}
+          : { endUserSubmission: options.endUserSubmission }),
+      });
+
+    const resubmit = async (
+      formDataJson: string,
+      options: {
+        readonly endUserSubmission?: boolean;
+        readonly processFormData: Readonly<Record<string, unknown>>;
+        readonly withResolver?: boolean;
+        readonly workflow?: WorkflowDefinition;
+      },
+    ): Promise<{
+      readonly fixture: ServiceFixture;
+      readonly resolver?: BPMFormDataSourceValueResolver;
+    }> => {
+      const formSchema = createFinanceTableFormSchema();
+      const resolver = options.withResolver
+        ? createValueResolver({})
+        : undefined;
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formDataSourceValueResolver: resolver,
+        formSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: options.processFormData,
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processWorkflowSnapshot:
+          options.workflow ?? createFieldAccessWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+        ...(options.endUserSubmission === undefined
+          ? {}
+          : { endUserSubmission: options.endUserSubmission }),
+      });
+
+      return { fixture, resolver };
+    };
+
+    it('drops approver-filled keys from an end-user submission', async (): Promise<void> => {
+      const instance = await submit(
+        '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}',
+        { endUserSubmission: true },
+      );
+
+      expect(instance.formData).toEqual({ amount: 10 });
+    });
+
+    it('does not hold an end-user submission to the approver-filled table minRows', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10}', { endUserSubmission: true }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('keeps a host prefill and only shape-checks it', async (): Promise<void> => {
+      const instance = await submit(
+        '{"amount":10,"financeItems":[{"seq":1}]}',
+      );
+
+      expect(instance.formData).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1 }],
+      });
+    });
+
+    it('accepts a host prefill with fewer rows than minRows', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10,"financeItems":[]}'),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('still rejects a malformed approver-filled table on a host prefill', async (): Promise<void> => {
+      await expect(
+        submit('{"amount":10,"financeItems":"oops"}'),
+      ).rejects.toThrow('formData.financeItems must be an array of rows');
+    });
+
+    it('restores stored approver-filled values on an end-user resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":10,"financeItems":[{"seq":1,"taxAmount":999}]}',
+        {
+          endUserSubmission: true,
+          processFormData: {
+            amount: 10,
+            financeItems: [{ seq: 1, taxAmount: 5 }],
+          },
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1, taxAmount: 5 }],
+      });
+    });
+
+    it('drops an approver-filled key the stored data never had on an end-user resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":11,"financeItems":[],"invoiceKind":""}',
+        { endUserSubmission: true, processFormData: { amount: 10 } },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 11 });
+    });
+
+    it('lets a resolver host resubmit when the stored data lacks the minRows table', async (): Promise<void> => {
+      const { fixture, resolver } = await resubmit(
+        '{"amount":11,"financeItems":[]}',
+        {
+          endUserSubmission: true,
+          processFormData: { amount: 10 },
+          withResolver: true,
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 11 });
+      expect(resolver?.resolveFormDataOptionSnapshots).toHaveBeenCalledWith(
+        expect.objectContaining({ formData: { amount: 11 } }),
+      );
+    });
+
+    it('takes the host value on a service-level resubmit', async (): Promise<void> => {
+      const { fixture } = await resubmit(
+        '{"amount":11,"financeItems":[{"seq":2,"taxAmount":7}]}',
+        {
+          processFormData: {
+            amount: 10,
+            financeItems: [{ seq: 1, taxAmount: 5 }],
+          },
+        },
+      );
+
+      expect(fixture.savedInstance?.formData).toEqual({
+        amount: 11,
+        financeItems: [{ seq: 2, taxAmount: 7 }],
+      });
+    });
+
+    it('does not hold an end-user submission to a required non-table approver-filled field', async (): Promise<void> => {
+      const workflow = createFieldAccessWorkflow({
+        financeFieldAccess: [
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'invoiceNote', fill: 'REQUIRED' },
+        ],
+      });
+      const baseSchema = createFinanceTableFormSchema();
+      const formSchema: FormDefinitionSchema = {
+        ...baseSchema,
+        fields: [
+          ...baseSchema.fields,
+          { fieldKey: 'invoiceNote', label: '發票備註', required: true, type: 'text' },
+        ],
+      };
+
+      await expect(
+        submit('{"amount":10,"invoiceNote":"typed by the applicant"}', {
+          endUserSubmission: true,
+          formSchema,
+          workflow,
+        }),
+      ).resolves.toMatchObject({ id: 'instance-1', formData: { amount: 10 } });
+      // A field nobody approver-fills is still required.
+      await expect(
+        submit('{"amount":10}', {
+          endUserSubmission: true,
+          formSchema: {
+            ...formSchema,
+            fields: [
+              ...baseSchema.fields,
+              { fieldKey: 'reason', label: '事由', required: true, type: 'text' },
+            ],
+          },
+          workflow,
+        }),
+      ).rejects.toThrow('Form data is missing required fields: 事由');
+    });
+
+    it('keeps submit and resubmit unchanged on a workflow without fieldAccess', async (): Promise<void> => {
+      const workflow = createLinearUserTaskWorkflow();
+      const formDataJson = '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}';
+      const expected = { amount: 10, financeItems: [{ seq: 1, taxAmount: 5 }] };
+      const submitted = await submit(formDataJson, {
+        endUserSubmission: true,
+        workflow,
+      });
+      const { fixture } = await resubmit(formDataJson, {
+        endUserSubmission: true,
+        processFormData: { amount: 1, financeItems: [{ seq: 9, taxAmount: 9 }] },
+        workflow,
+      });
+
+      expect(submitted.formData).toEqual(expected);
+      expect(fixture.savedInstance?.formData).toEqual(expected);
+    });
+
+    it('ignores the legacy fieldPermissions key on submit and resubmit', async (): Promise<void> => {
+      const workflow = createLegacyFieldPermissionsWorkflow();
+      const formDataJson = '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5}]}';
+      const expected = { amount: 10, financeItems: [{ seq: 1, taxAmount: 5 }] };
+      const submitted = await submit(formDataJson, {
+        endUserSubmission: true,
+        workflow,
+      });
+      const { fixture } = await resubmit(formDataJson, {
+        endUserSubmission: true,
+        processFormData: { amount: 1, financeItems: [{ seq: 9, taxAmount: 9 }] },
+        workflow,
+      });
+
+      expect(submitted.formData).toEqual(expected);
+      expect(fixture.savedInstance?.formData).toEqual(expected);
+    });
+  });
+
+  describe('field access: decide', () => {
+    const STORED_FORM_DATA = {
+      amount: 10,
+      financeItems: [{ seq: 1 }],
+    } as const;
+    const FILLED_ITEMS = '{"financeItems":[{"seq":1,"taxAmount":5}]}';
+
+    const createDecideFixture = (
+      options: {
+        readonly formData?: Readonly<Record<string, unknown>>;
+        readonly formSchema?: FormDefinitionSchema;
+        readonly task?: Partial<TaskEntity>;
+        readonly token?: Partial<WorkflowTokenEntity>;
+        readonly workflow?: WorkflowDefinition;
+      } = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+          ...options.task,
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+          ...options.token,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: options.formData ?? STORED_FORM_DATA,
+        processFormDefinitionSnapshot: {
+          schema: options.formSchema ?? createFinanceTableFormSchema(),
+        },
+        processWorkflowSnapshot:
+          options.workflow ?? createFieldAccessWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const decide = (
+      fixture: ServiceFixture,
+      input: Partial<DecideTaskInput> = {},
+    ): Promise<TaskDecisionEntity> =>
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+        ...input,
+      });
+
+    const readDecidedPayload = (
+      fixture: ServiceFixture,
+    ): Readonly<Record<string, unknown>> | undefined =>
+      fixture.savedSingleActivityLogs.find(
+        (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+      )?.payload;
+
+    // `rejects.toThrow(new XException(msg))` compares the message only, and the
+    // exception class is part of what a host sees, so both are pinned here.
+    const expectRejection = async (
+      promise: Promise<unknown>,
+      exceptionClass: new (message: string) => Error,
+      message: string,
+    ): Promise<void> => {
+      const error = await promise.then(
+        (): unknown => undefined,
+        (rejection: unknown): unknown => rejection,
+      );
+
+      expect(error).toBeInstanceOf(exceptionClass);
+      expect((error as Error).message).toBe(message);
+    };
+
+    const readTaskCreatedNodeIds = (
+      fixture: ServiceFixture,
+    ): readonly string[] =>
+      fixture.savedSingleActivityLogs
+        .filter((log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED)
+        .map((log) => log.nodeId ?? '');
+
+    it('stores filled values when the filling node approves', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, {
+        expectedFormDataFingerprint:
+          computeFormDataFingerprint(STORED_FORM_DATA),
+        formDataJson:
+          '{"financeItems":[{"seq":1,"taxAmount":5}],"invoiceKind":"B2B"}',
+      });
+
+      expect(fixture.savedInstance?.formData).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1, taxAmount: 5 }],
+        invoiceKind: 'B2B',
+      });
+    });
+
+    it('keeps filled values when the filling node is the last one', async (): Promise<void> => {
+      const fixture = createDecideFixture({
+        workflow: createFieldAccessWorkflow({ lastNode: 'task_finance' }),
+      });
+
+      await decide(fixture, { formDataJson: FILLED_ITEMS });
+
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+      expect(fixture.savedInstance?.formData.financeItems).toEqual([
+        { seq: 1, taxAmount: 5 },
+      ]);
+    });
+
+    it('routes the next gateway on a value just filled in', async (): Promise<void> => {
+      const b2b = createDecideFixture({
+        formData: { amount: 10 },
+        workflow: createFieldAccessGatewayWorkflow(),
+      });
+      const b2c = createDecideFixture({
+        formData: { amount: 10 },
+        workflow: createFieldAccessGatewayWorkflow(),
+      });
+
+      await decide(b2b, { formDataJson: '{"invoiceKind":"B2B"}' });
+      await decide(b2c, { formDataJson: '{"invoiceKind":"B2C"}' });
+
+      expect(readTaskCreatedNodeIds(b2b)).toEqual(['task_b2b']);
+      expect(b2b.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+      expect(readTaskCreatedNodeIds(b2c)).toEqual([]);
+      expect(b2c.savedInstance?.state).toBe(ApprovalInstanceStateEnum.APPROVED);
+    });
+
+    it('signs the filled form data', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, { formDataJson: FILLED_ITEMS });
+
+      expect(fixture.signTaskDecisionFormDataSnapshots.at(-1)).toEqual({
+        amount: 10,
+        financeItems: [{ seq: 1, taxAmount: 5 }],
+      });
+    });
+
+    it('refuses a key the node does not let its approver fill in and leaves form data alone', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await expectRejection(
+        decide(fixture, {
+          formDataJson: '{"financeItems":[],"amount":1,"missing":2}',
+        }),
+        ForbiddenException,
+        'Workflow node task_finance does not let approvers fill in: amount, missing',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it.each([TaskDecisionActionEnum.RETURNED, TaskDecisionActionEnum.REJECTED])(
+      'refuses formDataJson on a %s decision',
+      async (action): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        await expectRejection(
+          decide(fixture, {
+            action,
+            comment: 'no',
+            formDataJson: FILLED_ITEMS,
+          }),
+          BadRequestException,
+          'formDataJson can only be sent with an APPROVED decision',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      },
+    );
+
+    it('treats an empty object as sent', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await expectRejection(
+        decide(fixture, {
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: 'no',
+          formDataJson: '{}',
+        }),
+        BadRequestException,
+        'formDataJson can only be sent with an APPROVED decision',
+      );
+    });
+
+    it.each(['not json', '[1]', '"text"'])(
+      'refuses formDataJson that is not a JSON object (%s)',
+      async (formDataJson): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        await expect(decide(fixture, { formDataJson })).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(fixture.savedInstance).toBeNull();
+      },
+    );
+
+    it('refuses formDataJson from an ad-hoc task on the filling node', async (): Promise<void> => {
+      const fixture = createDecideFixture({
+        task: {
+          adhocOriginTaskId: 'task-0',
+          adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+          isAdhoc: true,
+        },
+      });
+
+      await expectRejection(
+        decide(fixture, { formDataJson: FILLED_ITEMS }),
+        ForbiddenException,
+        'Ad-hoc task task-1 cannot fill in form fields',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('refuses a stale fingerprint with a conflict', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await expectRejection(
+        decide(fixture, {
+          expectedFormDataFingerprint: computeFormDataFingerprint({
+            amount: 11,
+            financeItems: [{ seq: 1 }],
+          }),
+          formDataJson: FILLED_ITEMS,
+        }),
+        ConflictException,
+        'Approval instance instance-1 form data changed; refresh and retry',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('lets the member a task was transferred to fill in', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, {
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        transferToMemberId: 'member-delegate',
+      });
+
+      const transferredTask = fixture.savedTasks.find(
+        (task) => task.assigneeMemberId === 'member-delegate',
+      );
+
+      expect(transferredTask).toBeDefined();
+
+      await decide(fixture, {
+        decidedByMemberId: 'member-delegate',
+        formDataJson: FILLED_ITEMS,
+        taskId: transferredTask?.id ?? '',
+      });
+
+      expect(fixture.savedInstance?.formData.financeItems).toEqual([
+        { seq: 1, taxAmount: 5 },
+      ]);
+    });
+
+    it('passes the filling node to the notification a transfer creates', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, {
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        transferToMemberId: 'member-delegate',
+      });
+
+      const [[{ node, task, transferred }]] = jest.mocked(
+        fixture.notificationService.createTaskAssignedNotification,
+      ).mock.calls;
+
+      expect(transferred).toBe(true);
+      expect(task.isAdhoc).toBe(false);
+      expect(node.data.fieldAccess).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fieldKey: 'financeItems',
+            fill: 'REQUIRED',
+          }),
+        ]),
+      );
+    });
+
+    it('records only the changed keys on TASK_DECIDED', async (): Promise<void> => {
+      const fixture = createDecideFixture({
+        formData: { ...STORED_FORM_DATA, invoiceKind: 'B2C' },
+      });
+
+      await decide(fixture, {
+        formDataJson:
+          '{"financeItems":[{"seq":1,"taxAmount":987654}],"invoiceKind":"B2C"}',
+      });
+
+      const payload = readDecidedPayload(fixture);
+
+      expect(payload?.changedFieldKeys).toEqual(['financeItems']);
+      expect(JSON.stringify(payload)).not.toContain('987654');
+    });
+
+    it('lists the changed keys in sorted order', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+
+      await decide(fixture, {
+        formDataJson:
+          '{"invoiceKind":"B2B","financeItems":[{"seq":1,"taxAmount":5}]}',
+      });
+
+      expect(readDecidedPayload(fixture)?.changedFieldKeys).toEqual([
+        'financeItems',
+        'invoiceKind',
+      ]);
+    });
+
+    it('omits changedFieldKeys when the sent values equal the stored ones', async (): Promise<void> => {
+      const fixture = createDecideFixture({
+        formData: {
+          ...STORED_FORM_DATA,
+          financeItems: [{ seq: 1, taxAmount: 5 }],
+        },
+      });
+
+      // Same value with its keys in another order: still the stored value.
+      await decide(fixture, {
+        formDataJson: '{"financeItems":[{"taxAmount":5,"seq":1}]}',
+      });
+
+      const payload = readDecidedPayload(fixture);
+
+      expect(payload).toBeDefined();
+      expect(payload).not.toHaveProperty('changedFieldKeys');
+      // Nothing changed, so the fill path wrote nothing: an instance row is
+      // saved by this decision only if the fill path did it.
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('re-reads the task after taking the lock', async (): Promise<void> => {
+      const fixture = createDecideFixture();
+      const pending = createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      });
+
+      // The first read finds it pending; by the time the lock is ours another
+      // decision has completed it.
+      fixture.transactionalTaskFindOne
+        .mockResolvedValueOnce(pending)
+        .mockResolvedValueOnce(
+          createTask({
+            nodeId: 'task_finance',
+            status: TaskStatusEnum.COMPLETED,
+            tokenId: 'token-1',
+          }),
+        );
+
+      await expectRejection(
+        decide(fixture),
+        ConflictException,
+        'Task task-1 is not pending',
+      );
+
+      // Both reads exist, and the second one came after the lock: a re-read
+      // done before the lock would still see a decision that was in flight.
+      const lockCall = fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+        sql.includes('pg_advisory_xact_lock'),
+      );
+      const [firstRead, secondRead] =
+        fixture.transactionalTaskFindOne.mock.invocationCallOrder;
+
+      expect(lockCall).toBeGreaterThanOrEqual(0);
+      expect(fixture.transactionalTaskFindOne).toHaveBeenCalledTimes(2);
+
+      const lockOrder = fixture.managerQuery.mock.invocationCallOrder[lockCall];
+
+      expect(firstRead).toBeLessThan(lockOrder);
+      expect(secondRead).toBeGreaterThan(lockOrder);
+    });
+
+    it('records no TASK_CREATED for a filling node skipped by its entry condition', async (): Promise<void> => {
+      const base = createFieldAccessWorkflow();
+      const fixture = createDecideFixture({
+        task: {
+          assigneeMemberId: 'member-manager',
+          nodeId: 'task_manager',
+          originalAssigneeMemberId: 'member-manager',
+        },
+        token: { currentNodeId: 'task_manager' },
+        workflow: {
+          ...base,
+          nodes: base.nodes.map((node) =>
+            node.id === 'task_finance' && node.type === 'userTask'
+              ? {
+                  ...node,
+                  data: { ...node.data, entryCondition: 'form.amount > 1000' },
+                }
+              : node,
+          ),
+        },
+      });
+
+      await decide(fixture, { decidedByMemberId: 'member-manager' });
+
+      // The next node after the skipped one did get its task, so the empty
+      // result for the filling node is not just "nothing ran".
+      expect(readTaskCreatedNodeIds(fixture)).toEqual(['task_head']);
+    });
+
+    it('records no TASK_CREATED for a filling node on the gateway branch not taken', async (): Promise<void> => {
+      const fixture = createDecideFixture({
+        formData: { amount: 10 },
+        workflow: createFieldAccessGatewayWorkflow(),
+      });
+
+      await decide(fixture, { formDataJson: '{"invoiceKind":"B2C"}' });
+
+      expect(readTaskCreatedNodeIds(fixture)).not.toContain('task_b2b');
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    describe('field access: node validation', () => {
+      const FILLED_ROW = [{ seq: 1, taxAmount: 5 }] as const;
+      const financeItemsAccess: FieldAccessEntry = { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' };
+      const requiredInvoiceKindAccess: FieldAccessEntry = { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'REQUIRED' };
+      const requiredInvoiceKindWorkflow = (): WorkflowDefinition =>
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            financeItemsAccess,
+            requiredInvoiceKindAccess,
+          ],
+        });
+      const reviewerFormSchema = (): FormDefinitionSchema => {
+        const base = createFinanceTableFormSchema();
+
+        return {
+          ...base,
+          fields: [
+            ...base.fields,
+            {
+              fieldKey: 'reviewer',
+              label: '覆核人',
+              required: false,
+              type: 'member',
+            },
+          ],
+        };
+      };
+      const reviewerWorkflow = (): WorkflowDefinition =>
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            financeItemsAccess,
+            requiredInvoiceKindAccess,
+            { display: 'SHOW', fieldKey: 'reviewer', fill: 'OPTIONAL' },
+          ],
+        });
+      const sequentialFixture = (
+        formData: Readonly<Record<string, unknown>>,
+        activeIndex = 0,
+      ): ServiceFixture =>
+        createSequentialDecisionFixture({
+          activeIndex,
+          fieldAccess: [financeItemsAccess],
+          processFormData: formData,
+          processFormDefinitionSnapshot: {
+            schema: createFinanceTableFormSchema(),
+          },
+        });
+      const decideSequentially = (
+        fixture: ServiceFixture,
+        input: Partial<DecideTaskInput> = {},
+      ): Promise<TaskDecisionEntity> =>
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-a',
+          taskId: 'task-seq',
+          ...input,
+        });
+
+      it('refuses an approval that leaves a required approver-filled field empty', async (): Promise<void> => {
+        const fixture = createDecideFixture({ formData: { amount: 10 } });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('refuses an approval on a host-prefilled table whose required cells are empty', async (): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.financeItems[0].taxAmount is required',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('treats a whitespace-only required text as empty', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: {
+            amount: 10,
+            financeItems: FILLED_ROW,
+            invoiceKind: '  ',
+          },
+          workflow: requiredInvoiceKindWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('validates the merged form data, not just what the approver sent', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          workflow: requiredInvoiceKindWorkflow(),
+        });
+
+        // The sent key is valid on its own; the required key left out is not.
+        await expectRejection(
+          decide(fixture, {
+            formDataJson: '{"financeItems":[{"seq":2,"taxAmount":7}]}',
+          }),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('accepts the approval once the filling node completes the table', async (): Promise<void> => {
+        const fixture = createDecideFixture();
+
+        const decision = await decide(fixture, { formDataJson: FILLED_ITEMS });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance?.formData.financeItems).toEqual(
+          FILLED_ROW,
+        );
+      });
+
+      it('accepts an approval that sends nothing when everything is already filled', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
+
+      it('reports a missing required field before a malformed member and a short table', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, reviewer: { id: 'member-1' } },
+          formSchema: reviewerFormSchema(),
+          workflow: reviewerWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'Form data is missing required fields: 發票類型',
+        );
+      });
+
+      it('reports a malformed member before a short table', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: {
+            amount: 10,
+            invoiceKind: 'B2B',
+            reviewer: { id: 'member-1' },
+          },
+          formSchema: reviewerFormSchema(),
+          workflow: reviewerWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          'formData.reviewer must be a member id',
+        );
+      });
+
+      it('does not hold an ad-hoc task on the filling node to required fields', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10 },
+          task: {
+            adhocOriginTaskId: 'task-0',
+            adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+            isAdhoc: true,
+          },
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('validates every SEQUENTIAL candidate, starting with the first', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 });
+
+        await expectRejection(
+          decideSequentially(fixture),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('validates a later SEQUENTIAL candidate too', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 }, 1);
+
+        await expectRejection(
+          decideSequentially(fixture, { decidedByMemberId: 'member-b' }),
+          BadRequestException,
+          'formData.financeItems must include at least 1 row(s)',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lets a SEQUENTIAL candidate approve after filling in the table', async (): Promise<void> => {
+        const fixture = sequentialFixture({ amount: 10 });
+
+        const decision = await decideSequentially(fixture, {
+          formDataJson: FILLED_ITEMS,
+        });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance?.formData.financeItems).toEqual(
+          FILLED_ROW,
+        );
+      });
+
+      it('skips node validation on RETURNED and REJECTED', async (): Promise<void> => {
+        const returned = sequentialFixture({ amount: 10 });
+        const rejected = sequentialFixture({ amount: 10 });
+
+        await decideSequentially(returned, {
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: '請補件',
+        });
+        await decideSequentially(rejected, {
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: '不同意',
+        });
+
+        expect(returned.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.RETURNED,
+        );
+        expect(rejected.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.REJECTED,
+        );
+      });
+
+      it('never reads the form schema for a node without fillable fields', async (): Promise<void> => {
+        // A snapshot with no schema makes the schema read throw, so only the
+        // guard on the node's fillable fields keeps this approval working.
+        const fixture = createSequentialDecisionFixture({
+          processFormData: { amount: 10 },
+          processFormDefinitionSnapshot: {},
+        });
+
+        const decision = await decideSequentially(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
+
+      it('leaves approvals on nodes without fieldAccess unvalidated as before', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10 },
+          workflow: createFieldAccessWorkflow({
+            financeFieldAccess: [],
+          }),
+        });
+
+        const decision = await decide(fixture);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      });
+
+      it('treats a node with only the legacy fieldPermissions key as having no fillable fields', async (): Promise<void> => {
+        const unvalidated = createDecideFixture({
+          formData: { amount: 10 },
+          workflow: createLegacyFieldPermissionsWorkflow(),
+        });
+        const refused = createDecideFixture({
+          workflow: createLegacyFieldPermissionsWorkflow(),
+        });
+
+        const decision = await decide(unvalidated);
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        await expectRejection(
+          decide(refused, { formDataJson: FILLED_ITEMS }),
+          ForbiddenException,
+          'Workflow node task_finance does not let approvers fill in: financeItems',
+        );
+        expect(refused.savedInstance).toBeNull();
+      });
+    });
   });
 
   describe('hidden table field', () => {
@@ -9565,6 +10521,79 @@ describe('WorkflowEngineService', () => {
     ).toBe(false);
   });
 
+  it('reopens the origin task as a normal task, so a filling node still asks its approver for the form', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          adhocDirectiveId: 'directive-seed-1',
+          adhocOriginTaskId: 'task-1',
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          assigneeMemberId: 'member-d',
+          id: 'task-90',
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          originalAssigneeMemberId: 'member-d',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        assigneeMemberId: 'member-finance',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.COMPLETED,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processAdhocDirectives: [
+        createAdhocDirective({
+          consumedAt: new Date('2026-05-04T09:00:00.000Z'),
+          createdByMemberId: 'member-requester',
+          id: 'directive-seed-1',
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        allowAddSigner: true,
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+        ],
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: '需要更多資訊',
+      decidedByMemberId: 'member-d',
+      taskId: 'task-90',
+    });
+
+    const reopened = readTaskAssignedTo(fixture, 'member-finance');
+    const notified = jest
+      .mocked(fixture.notificationService.createTaskAssignedNotification)
+      .mock.calls.map(([input]) => input)
+      .filter((input) => input.task.id === reopened.id);
+
+    // The notification service turns this into `hasFillableFields` (non-ad-hoc
+    // task on a node with a fillable field), so the reopened task has to reach it
+    // as a normal task.
+    expect(notified).toHaveLength(1);
+    expect(notified[0].task.isAdhoc).not.toBe(true);
+    expect(notified[0].node.data.fieldAccess).toEqual([
+      expect.objectContaining({
+            fieldKey: 'financeItems',
+            fill: 'REQUIRED',
+          }),
+    ]);
+  });
+
   it('returns a rejected pre-approval to whoever holds the origin task after a transfer', async (): Promise<void> => {
     const fixture = createServiceFixture({
       additionalProcessTasks: [
@@ -12790,6 +13819,14 @@ interface ServiceFixture {
   >;
   readonly savedDecision: TaskDecisionEntity | null;
   readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
+  // `formData` as `signTaskDecision` saw it, one entry per call: the signature
+  // covers whatever the instance held at that moment.
+  readonly signTaskDecisionFormDataSnapshots: readonly Readonly<
+    Record<string, unknown>
+  >[];
+  // The task `findOne` inside the decision transaction: `decideTask` reads the
+  // task before the lock and again after it.
+  readonly transactionalTaskFindOne: jest.Mock;
   readonly savedActivityLogs: readonly ActivityLogEntity[];
   readonly savedInstance: ApprovalInstanceEntity | null;
   readonly savedAdhocDirectives: readonly AdhocDirectiveEntity[];
@@ -12868,6 +13905,7 @@ function createServiceFixture({
   submittedByMemberId,
   templateIsActive = true,
   templateVersionStatus,
+  templateWorkflowDefinition,
   transactionalInstanceUpdatedAt,
   webhookDeliveryService,
 }: {
@@ -12908,6 +13946,8 @@ function createServiceFixture({
   readonly submittedByMemberId?: string | null;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
+  // The published template version's workflow; defaults to start -> end.
+  readonly templateWorkflowDefinition?: WorkflowDefinition;
   readonly transactionalInstanceUpdatedAt?: Date;
   readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
 }): ServiceFixture {
@@ -12941,7 +13981,10 @@ function createServiceFixture({
   ];
   let taskCandidateSequence = 0;
   const template = createTemplate(currentVersionId, templateIsActive);
-  const templateVersion = createTemplateVersion(templateVersionStatus);
+  const templateVersion = createTemplateVersion(
+    templateVersionStatus,
+    templateWorkflowDefinition,
+  );
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
     Promise<readonly ApprovalInstanceEntity[]>,
@@ -13154,14 +14197,32 @@ function createServiceFixture({
   const attachmentService = {
     bindFormDataAttachmentsToInstance: jest.fn(() => Promise.resolve()),
   };
+  let signTaskDecisionFormDataSnapshots: readonly Readonly<
+    Record<string, unknown>
+  >[] = [];
   const signatureService = {
-    signTaskDecision: jest.fn(() =>
-      Promise.resolve(
-        Object.assign(new SignatureEntity(), {
-          id: 'signature-1',
-          signedPayloadHash: 'signed-payload-hash-1',
-        }),
-      ),
+    signTaskDecision: jest.fn(
+      (
+        _manager: unknown,
+        input: {
+          readonly instance: {
+            readonly formData: Readonly<Record<string, unknown>>;
+          };
+        },
+      ) => {
+        // Cloned now: the instance object is shared and mutated afterwards.
+        signTaskDecisionFormDataSnapshots = [
+          ...signTaskDecisionFormDataSnapshots,
+          structuredClone(input.instance.formData),
+        ];
+
+        return Promise.resolve(
+          Object.assign(new SignatureEntity(), {
+            id: 'signature-1',
+            signedPayloadHash: 'signed-payload-hash-1',
+          }),
+        );
+      },
     ),
   };
   const templateFind = jest.fn<
@@ -13735,6 +14796,13 @@ function createServiceFixture({
     templateFind,
     templateFindOne,
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
+    get signTaskDecisionFormDataSnapshots(): readonly Readonly<
+      Record<string, unknown>
+    >[] {
+      return signTaskDecisionFormDataSnapshots;
+    },
+    transactionalTaskFindOne:
+      transactionalTaskRepository.findOne as unknown as jest.Mock,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
       return processAdhocDirectiveRows;
     },
@@ -13891,6 +14959,7 @@ function createTemplate(
 
 function createTemplateVersion(
   status: ApprovalTemplateVersionStatusEnum,
+  workflowDefinition: WorkflowDefinition = createStartEndWorkflow(),
 ): ApprovalTemplateVersionEntity {
   return {
     archivedAt: null,
@@ -13908,33 +14977,37 @@ function createTemplateVersion(
     templateId: 'template-1',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
     version: 1,
-    workflowDefinition: {
-      edges: [
-        {
-          data: {},
-          id: 'edge_start_end',
-          source: 'start',
-          target: 'end',
-          type: 'smoothstep',
-        },
-      ],
-      meta: { schemaVersion: 1 },
-      nodes: [
-        {
-          data: { label: '開始' },
-          id: 'start',
-          position: { x: 80, y: 160 },
-          type: 'startEvent',
-        },
-        {
-          data: { endState: 'APPROVED', label: '完成' },
-          id: 'end',
-          position: { x: 520, y: 160 },
-          type: 'endEvent',
-        },
-      ],
-    },
+    workflowDefinition,
     workflowDefinitionJson: '',
+  };
+}
+
+function createStartEndWorkflow(): WorkflowDefinition {
+  return {
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_end',
+        source: 'start',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 520, y: 160 },
+        type: 'endEvent',
+      },
+    ],
   };
 }
 
@@ -14023,6 +15096,217 @@ function createRequiredReasonFormSchema(): FormDefinitionSchema {
       },
     ],
     schemaVersion: 1,
+  };
+}
+
+function createFinanceTableFormSchema(): FormDefinitionSchema {
+  return {
+    fields: [
+      { fieldKey: 'amount', label: '金額', required: true, type: 'number' },
+      {
+        fieldKey: 'invoiceKind',
+        label: '發票類型',
+        mode: 'single',
+        options: [
+          { label: 'B2B', value: 'B2B' },
+          { label: 'B2C', value: 'B2C' },
+        ],
+        required: false,
+        type: 'select',
+      },
+      {
+        columns: [
+          { fieldKey: 'seq', label: '序號', required: false, type: 'number' },
+          {
+            fieldKey: 'taxAmount',
+            label: '稅額',
+            required: true,
+            type: 'number',
+          },
+        ],
+        fieldKey: 'financeItems',
+        label: '財務明細',
+        minRows: 1,
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+// start -> task_manager -> task_finance (fills financeItems and invoiceKind)
+// -> task_head -> end. `lastNode: 'task_finance'` ends the line at the filler.
+function createFieldAccessWorkflow({
+  financeApprovers = ['member-finance'],
+  financeDecisionPolicy = { type: 'SINGLE' },
+  financeFieldAccess = [
+    { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+    { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+  ],
+  lastNode,
+}: {
+  readonly financeApprovers?: readonly string[];
+  readonly financeDecisionPolicy?: DecisionPolicy;
+  readonly financeFieldAccess?: readonly FieldAccessEntry[];
+  readonly lastNode?: 'task_finance';
+} = {}): WorkflowDefinition {
+  const createUserTask = (
+    id: string,
+    label: string,
+    memberId: string | readonly string[],
+    x: number,
+    extra: Readonly<Record<string, unknown>> = {},
+  ): WorkflowDefinition['nodes'][number] => ({
+    data: {
+      allowAddSigner: false,
+      allowReject: true,
+      allowTransfer: true,
+      approverResolver: {
+        memberIds: typeof memberId === 'string' ? [memberId] : [...memberId],
+        type: 'DIRECT',
+      },
+      decisionPolicy: { type: 'SINGLE' },
+      label,
+      returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
+      ...extra,
+    },
+    id,
+    position: { x, y: 160 },
+    type: 'userTask',
+  });
+  const taskIds = [
+    'task_manager',
+    'task_finance',
+    ...(lastNode === 'task_finance' ? [] : ['task_head']),
+  ];
+  const chain = ['start', ...taskIds, 'end'];
+
+  return {
+    edges: chain.slice(1).map((target, index) => ({
+      data: {},
+      id: `edge_${chain[index]}_${target}`,
+      source: chain[index],
+      target,
+      type: 'smoothstep',
+    })),
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      createUserTask('task_manager', '主管簽核', 'member-manager', 200),
+      createUserTask('task_finance', '財務簽核', financeApprovers, 320, {
+        decisionPolicy: financeDecisionPolicy,
+        fieldAccess: financeFieldAccess,
+      }),
+      ...(lastNode === 'task_finance'
+        ? []
+        : [createUserTask('task_head', '部門主管簽核', 'member-head', 440)]),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 560, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  };
+}
+
+// `createFieldAccessWorkflow` with no `fieldAccess` at the finance node, only
+// the deprecated `fieldPermissions` key making `financeItems` editable: what a
+// draft or snapshot written before the rename could hold. Nothing reads it.
+function createLegacyFieldPermissionsWorkflow(): WorkflowDefinition {
+  const base = createFieldAccessWorkflow({ financeFieldAccess: [] });
+
+  return {
+    ...base,
+    nodes: base.nodes.map((node) =>
+      node.id === 'task_finance' && node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              fieldAccess: undefined,
+              fieldPermissions: [
+                { editable: true, fieldPath: 'financeItems', visible: true },
+              ],
+            },
+          }
+        : node,
+    ),
+  };
+}
+
+// start -> task_manager -> task_finance (fills invoiceKind) -> gateway:
+// invoiceKind "B2B" -> task_b2b (fills financeItems) -> end, anything else ->
+// end.
+function createFieldAccessGatewayWorkflow(): WorkflowDefinition {
+  const base = createFieldAccessWorkflow({
+    financeFieldAccess: [
+      { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+    ],
+    lastNode: 'task_finance',
+  });
+  const managerNode = base.nodes.find((node) => node.id === 'task_manager');
+
+  if (managerNode?.type !== 'userTask') {
+    throw new Error('task_manager fixture node was not found');
+  }
+
+  const edge = (
+    id: string,
+    source: string,
+    target: string,
+    data: WorkflowDefinition['edges'][number]['data'] = {},
+  ): WorkflowDefinition['edges'][number] => ({
+    data,
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  return {
+    ...base,
+    edges: [
+      ...base.edges.filter((candidate) => candidate.target !== 'end'),
+      edge('edge_finance_gateway', 'task_finance', 'gateway_kind'),
+      edge('edge_gateway_b2b', 'gateway_kind', 'task_b2b', {
+        condition: 'form.invoiceKind == "B2B"',
+        label: 'B2B',
+      }),
+      edge('edge_gateway_end', 'gateway_kind', 'end', {
+        isDefault: true,
+        label: '其他情況',
+      }),
+      edge('edge_b2b_end', 'task_b2b', 'end'),
+    ],
+    nodes: [
+      ...base.nodes,
+      {
+        data: { direction: 'split', label: '發票分流', triggerMode: 'AND' },
+        id: 'gateway_kind',
+        position: { x: 440, y: 160 },
+        type: 'exclusiveGateway',
+      },
+      {
+        ...managerNode,
+        data: {
+          ...managerNode.data,
+          approverResolver: { memberIds: ['member-b2b'], type: 'DIRECT' },
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
+          ],
+          label: 'B2B 簽核',
+        },
+        id: 'task_b2b',
+        position: { x: 560, y: 160 },
+      },
+    ],
   };
 }
 
@@ -14496,6 +15780,7 @@ function createLinearUserTaskWorkflow({
   },
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
+  fieldAccess,
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -14508,6 +15793,7 @@ function createLinearUserTaskWorkflow({
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldAccess?: readonly FieldAccessEntry[];
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -14546,6 +15832,7 @@ function createLinearUserTaskWorkflow({
           label: '財務簽核',
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
+          ...(fieldAccess ? { fieldAccess } : {}),
           ...(slaDuration
             ? {
                 sla: {
@@ -15148,7 +16435,10 @@ function createSequentialDecisionFixture({
   approverResolver,
   candidateOverrides = {},
   excludeInitiator,
+  fieldAccess,
   processAdhocDirectives,
+  processFormData,
+  processFormDefinitionSnapshot,
   submittedByMemberId,
   processMemberships,
   processPositions,
@@ -15160,7 +16450,10 @@ function createSequentialDecisionFixture({
     Record<string, Partial<TaskCandidateEntity>>
   >;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly fieldAccess?: readonly FieldAccessEntry[];
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
+  readonly processFormData?: Readonly<Record<string, unknown>>;
+  readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly submittedByMemberId?: string | null;
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processPositions?: readonly PositionEntity[];
@@ -15188,6 +16481,8 @@ function createSequentialDecisionFixture({
     }),
     formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
     processAdhocDirectives,
+    processFormData,
+    processFormDefinitionSnapshot,
     processMemberships,
     processPositions,
     processTaskCandidates: memberIds.map((memberId, index) =>
@@ -15210,6 +16505,7 @@ function createSequentialDecisionFixture({
       approverResolver,
       decisionPolicy: { type: 'SEQUENTIAL' },
       excludeInitiator,
+      fieldAccess,
       returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
       slaDuration: 'PT2H',
     }),

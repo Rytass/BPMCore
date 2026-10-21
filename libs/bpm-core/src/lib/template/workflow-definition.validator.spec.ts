@@ -2,6 +2,7 @@ import {
   EMPTY_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
 } from './workflow-definition.validator';
+import { WORKFLOW_LINT_MESSAGES } from '@rytass/bpm-core-shared/workflow-graph';
 import {
   ApproverResolver,
   DecisionPolicy,
@@ -1148,3 +1149,537 @@ function createUserTaskWorkflow({
     ],
   };
 }
+
+describe('workflow definition validator: field access', (): void => {
+  const TASK = 'task_fill';
+
+  function workflowWithFieldAccess(
+    taskData: Readonly<Record<string, unknown>>,
+    serviceActions: readonly unknown[] = [],
+  ): WorkflowDefinition {
+    const serviceNodes = serviceActions.map((action, index) => ({
+      data: { action, label: `系統 ${index}` },
+      id: `service_${index}`,
+      position: { x: 400, y: 160 },
+      type: 'serviceTask',
+    }));
+    const chain = [TASK, ...serviceNodes.map((node) => node.id), 'end'];
+
+    return {
+      edges: [
+        { data: {}, id: 'edge_start', source: 'start', target: TASK },
+        ...chain.slice(0, -1).map((source, index) => ({
+          data: {},
+          id: `edge_${source}`,
+          source,
+          target: chain[index + 1],
+        })),
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: {
+              baseFromInitiator: true,
+              levelsUp: 1,
+              type: 'ORG_MANAGER',
+            },
+            decisionPolicy: { type: 'SINGLE' },
+            label: '財務補填',
+            returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+            ...taskData,
+          },
+          id: TASK,
+          position: { x: 300, y: 160 },
+          type: 'userTask',
+        },
+        ...serviceNodes,
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 520, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    } as unknown as WorkflowDefinition;
+  }
+
+  const lintErrors = (
+    taskData: Readonly<Record<string, unknown>>,
+    serviceActions: readonly unknown[] = [],
+  ): readonly string[] =>
+    lintWorkflowDefinition(workflowWithFieldAccess(taskData, serviceActions))
+      .errors;
+
+  const FILL = { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' };
+
+  it('accepts well-formed entries and a node without any', (): void => {
+    expect(lintErrors({})).toEqual([]);
+    expect(lintErrors({ fieldAccess: [] })).toEqual([]);
+    expect(
+      lintErrors({
+        fieldAccess: [
+          { ...FILL, fill: 'REQUIRED' },
+          { display: 'HIDE', fieldKey: 'note', fill: 'NONE' },
+          { display: 'SHOW', fieldKey: 'items', fill: 'NONE' },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  describe('fieldAccess is invalid', (): void => {
+    const invalid = `workflow.nodes.${TASK}.fieldAccess is invalid`;
+
+    it.each([
+      ['not an array', 'amount'],
+      ['null', null],
+      ['an array holding null', [FILL, null]],
+      ['an entry with an empty fieldKey', [{ ...FILL, fieldKey: '' }]],
+      ['an entry whose fieldKey is only whitespace', [{ ...FILL, fieldKey: '  ' }]],
+      ['an entry whose fieldKey is not a string', [{ ...FILL, fieldKey: 3 }]],
+      ['an entry whose display is unknown', [{ ...FILL, display: 'VISIBLE' }]],
+      ['an entry without display', [{ fieldKey: 'amount', fill: 'NONE' }]],
+      ['an entry whose fill is unknown', [{ ...FILL, fill: 'YES' }]],
+      ['an entry without fill', [{ display: 'SHOW', fieldKey: 'amount' }]],
+      [
+        'an entry in the deprecated fieldPermissions shape',
+        [{ editable: true, fieldPath: 'amount', visible: true }],
+      ],
+      ['an entry that is not an object', ['amount']],
+    ])('reports %s as a lint line and does not throw', (_name, value): void => {
+      expect(lintErrors({ fieldAccess: value })).toEqual([invalid]);
+    });
+
+    it('skips the node’s other field access rules once it is invalid', (): void => {
+      expect(
+        lintErrors({
+          decisionPolicy: { type: 'PARALLEL_ALL' },
+          fieldAccess: [
+            null,
+            { display: 'HIDE', fieldKey: 'amount', fill: 'OPTIONAL' },
+            { display: 'HIDE', fieldKey: 'amount', fill: 'OPTIONAL' },
+          ],
+          sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' },
+        }),
+      ).toEqual([invalid]);
+    });
+  });
+
+  describe('the deprecated fieldPermissions key', (): void => {
+    const legacy = WORKFLOW_LINT_MESSAGES.legacyFieldPermissions(TASK);
+
+    it.each([
+      ['an empty list', []],
+      [
+        'a list of entries',
+        [{ editable: true, fieldPath: 'amount', visible: true }],
+      ],
+      ['a malformed value', 'amount'],
+      ['null', null],
+    ])('refuses a node that still carries %s', (_name, value): void => {
+      expect(lintErrors({ fieldPermissions: value })).toEqual([legacy]);
+    });
+
+    it('accepts a node without the key', (): void => {
+      expect(lintErrors({ fieldAccess: [FILL] })).toEqual([]);
+    });
+
+    it('still runs the node’s fieldAccess rules beside it', (): void => {
+      expect(
+        lintErrors({
+          fieldAccess: [{ ...FILL, display: 'HIDE' }],
+          fieldPermissions: [],
+        }),
+      ).toEqual([
+        legacy,
+        `workflow.nodes.${TASK}.fieldAccess cannot let a field be filled in while it is hidden: amount`,
+      ]);
+    });
+
+    it('never reads the old entries as fillable fields', (): void => {
+      // An editable old entry on a PARALLEL_ALL node would be refused if it
+      // counted; only the legacy line is reported.
+      expect(
+        lintErrors({
+          decisionPolicy: { type: 'PARALLEL_ALL' },
+          fieldPermissions: [
+            { editable: true, fieldPath: 'amount', visible: true },
+          ],
+        }),
+      ).toEqual([legacy]);
+    });
+  });
+
+  it('refuses a field listed more than once, reading the raw list', (): void => {
+    // `readNodeFieldAccess` keeps the first entry per fieldKey, so a
+    // duplicate check built on it would never see the second one.
+    expect(
+      lintErrors({
+        fieldAccess: [
+          FILL,
+          { display: 'SHOW', fieldKey: 'note', fill: 'NONE' },
+          { display: 'SHOW', fieldKey: 'amount', fill: 'NONE' },
+          { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+        ],
+      }),
+    ).toEqual([
+      `workflow.nodes.${TASK}.fieldAccess lists a field more than once: amount`,
+    ]);
+  });
+
+  it('leaves a nested key to the publish check against the form', (): void => {
+    // Only the form knows its top-level fields; `items.price` is reported as
+    // unknown there (template.service.spec).
+    expect(
+      lintErrors({
+        fieldAccess: [{ display: 'SHOW', fieldKey: 'items.price', fill: 'NONE' }],
+      }),
+    ).toEqual([]);
+  });
+
+  describe('a fillable field that is hidden', (): void => {
+    it.each(['OPTIONAL', 'REQUIRED'])('refuses fill %s with HIDE', (fill): void => {
+      expect(
+        lintErrors({ fieldAccess: [{ ...FILL, display: 'HIDE', fill }] }),
+      ).toEqual([
+        `workflow.nodes.${TASK}.fieldAccess cannot let a field be filled in while it is hidden: amount`,
+      ]);
+    });
+
+    it('accepts a hidden field nobody fills in and a shown fillable one', (): void => {
+      expect(
+        lintErrors({
+          fieldAccess: [
+            { display: 'HIDE', fieldKey: 'note', fill: 'NONE' },
+            { ...FILL, fill: 'REQUIRED' },
+          ],
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  describe('fillable fields on a node', (): void => {
+    const fillable = { fieldAccess: [FILL] };
+    const readOnly = {
+      fieldAccess: [{ display: 'SHOW', fieldKey: 'amount', fill: 'NONE' }],
+    };
+
+    it.each<[string, DecisionPolicy]>([
+      ['PARALLEL_ALL', { type: 'PARALLEL_ALL' }],
+      [
+        'QUORUM',
+        { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+      ],
+    ])('refuses them on a %s node', (_name, decisionPolicy): void => {
+      expect(lintErrors({ ...fillable, decisionPolicy })).toEqual([
+        `workflow.nodes.${TASK}.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node`,
+      ]);
+      expect(lintErrors({ ...readOnly, decisionPolicy })).toEqual([]);
+    });
+
+    it.each<DecisionPolicy>([
+      { type: 'SINGLE' },
+      { type: 'SEQUENTIAL' },
+      { type: 'PARALLEL_ANY' },
+    ])('accepts them on a %j node', (decisionPolicy): void => {
+      expect(lintErrors({ ...fillable, decisionPolicy })).toEqual([]);
+    });
+
+    it('refuses AUTO_APPROVE on timeout', (): void => {
+      const sla = { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' };
+
+      expect(lintErrors({ ...fillable, sla })).toEqual([
+        `workflow.nodes.${TASK}.sla.onTimeout cannot be AUTO_APPROVE on a node with fillable fields`,
+      ]);
+      expect(lintErrors({ ...readOnly, sla })).toEqual([]);
+      expect(
+        lintErrors({
+          ...fillable,
+          sla: { duration: 'PT1H', onTimeout: 'REMIND' },
+        }),
+      ).toEqual([]);
+    });
+
+    it('refuses SKIP_NODE when no approver remains', (): void => {
+      const excludeInitiator = { whenEmpty: 'SKIP_NODE' };
+
+      expect(lintErrors({ ...fillable, excludeInitiator })).toEqual([
+        `workflow.nodes.${TASK}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields`,
+      ]);
+      expect(lintErrors({ ...readOnly, excludeInitiator })).toEqual([]);
+      expect(
+        lintErrors({
+          ...fillable,
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  describe('a system node writing an approver-filled field', (): void => {
+    const setField = (fieldPath: string): unknown => ({
+      fieldPath,
+      type: 'SET_FORM_FIELD',
+      value: '"x"',
+    });
+    const line = (fieldKey: string): string =>
+      `workflow.nodes.service_0.action.fieldPath cannot write a field an approver fills in: ${fieldKey}`;
+
+    it.each([
+      ['amount', 'amount'],
+      ['items.price', 'items'],
+      ['items[0].price', 'items'],
+    ])('refuses writing %s', (fieldPath, fieldKey): void => {
+      expect(
+        lintErrors(
+          {
+            fieldAccess: [
+              FILL,
+              { display: 'SHOW', fieldKey: 'items', fill: 'OPTIONAL' },
+            ],
+          },
+          [setField(fieldPath)],
+        ),
+      ).toEqual([line(fieldKey)]);
+    });
+
+    it('accepts writing a field no approver fills in', (): void => {
+      expect(
+        lintErrors(
+          {
+            fieldAccess: [
+              FILL,
+              { display: 'SHOW', fieldKey: 'note', fill: 'NONE' },
+            ],
+          },
+          [setField('note'), setField('title')],
+        ),
+      ).toEqual([]);
+    });
+
+    it('does not flag other service actions', (): void => {
+      expect(
+        lintErrors({ fieldAccess: [FILL] }, [
+          { type: 'WEBHOOK', url: 'https://example.com/amount' },
+        ]),
+      ).toEqual([]);
+    });
+  });
+});
+
+describe('workflow definition validator: one fill node per path', (): void => {
+  const userTask = (
+    id: string,
+    fill: 'NONE' | 'OPTIONAL' | 'REQUIRED',
+  ): Readonly<Record<string, unknown>> => ({
+    data: {
+      allowAddSigner: false,
+      allowReject: true,
+      allowTransfer: true,
+      approverResolver: { memberIds: ['member_finance'], type: 'DIRECT' },
+      decisionPolicy: { type: 'SINGLE' },
+      fieldAccess: [{ display: 'SHOW', fieldKey: 'approvedTotal', fill }],
+      label: id,
+      returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+    },
+    id,
+    position: { x: 300, y: 160 },
+    type: 'userTask',
+  });
+  const node = (
+    id: string,
+    type: string,
+    data: Readonly<Record<string, unknown>> = {},
+  ): Readonly<Record<string, unknown>> => ({
+    data: { label: id, ...data },
+    id,
+    position: { x: 0, y: 0 },
+    type,
+  });
+  const edge = (
+    source: string,
+    target: string,
+    data: Readonly<Record<string, unknown>> = {},
+  ): Readonly<Record<string, unknown>> => ({
+    data,
+    id: `edge_${source}_${target}`,
+    source,
+    target,
+  });
+  const lintErrors = (
+    nodes: readonly unknown[],
+    edges: readonly unknown[],
+  ): readonly string[] =>
+    lintWorkflowDefinition({
+      edges,
+      meta: { schemaVersion: 1 },
+      nodes: [
+        node('start', 'startEvent'),
+        ...nodes,
+        node('end', 'endEvent', { endState: 'APPROVED' }),
+      ],
+    } as unknown as WorkflowDefinition).errors;
+  const line = (first: string, second: string): string =>
+    `formData.approvedTotal is filled in by both workflow.nodes.${first} and workflow.nodes.${second}, which lie on the same path`;
+
+  it('refuses two fill nodes one after the other, once per pair', (): void => {
+    expect(
+      lintErrors(
+        [userTask('regional', 'REQUIRED'), userTask('cfo', 'OPTIONAL')],
+        [edge('start', 'regional'), edge('regional', 'cfo'), edge('cfo', 'end')],
+      ),
+    ).toEqual([line('regional', 'cfo')]);
+  });
+
+  it('names the pair in node order when the later node is listed first', (): void => {
+    expect(
+      lintErrors(
+        [userTask('cfo', 'OPTIONAL'), userTask('regional', 'REQUIRED')],
+        [edge('start', 'regional'), edge('regional', 'cfo'), edge('cfo', 'end')],
+      ),
+    ).toEqual([line('cfo', 'regional')]);
+  });
+
+  it('accepts one fill node and a later node that only shows the field', (): void => {
+    expect(
+      lintErrors(
+        [userTask('regional', 'REQUIRED'), userTask('cfo', 'NONE')],
+        [edge('start', 'regional'), edge('regional', 'cfo'), edge('cfo', 'end')],
+      ),
+    ).toEqual([]);
+  });
+
+  it('accepts fill nodes on mutually exclusive branches', (): void => {
+    expect(
+      lintErrors(
+        [
+          node('split', 'exclusiveGateway', { direction: 'split' }),
+          userTask('north', 'REQUIRED'),
+          userTask('south', 'REQUIRED'),
+          node('merge', 'exclusiveGateway', { direction: 'join' }),
+        ],
+        [
+          edge('start', 'split'),
+          edge('split', 'north', { condition: 'form.region == "N"' }),
+          edge('split', 'south', { isDefault: true }),
+          edge('north', 'merge'),
+          edge('south', 'merge'),
+          edge('merge', 'end'),
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses a branch fill node followed by another after the merge', (): void => {
+    expect(
+      lintErrors(
+        [
+          node('split', 'exclusiveGateway', { direction: 'split' }),
+          userTask('north', 'REQUIRED'),
+          userTask('south', 'NONE'),
+          node('merge', 'exclusiveGateway', { direction: 'join' }),
+          userTask('cfo', 'OPTIONAL'),
+        ],
+        [
+          edge('start', 'split'),
+          edge('split', 'north', { condition: 'form.region == "N"' }),
+          edge('split', 'south', { isDefault: true }),
+          edge('north', 'merge'),
+          edge('south', 'merge'),
+          edge('merge', 'cfo'),
+          edge('cfo', 'end'),
+        ],
+      ),
+    ).toEqual([line('north', 'cfo')]);
+  });
+
+  // Both branches of a parallel split run, so the later approval would
+  // overwrite the earlier one even though neither node reaches the other.
+  it('refuses fill nodes on two parallel branches', (): void => {
+    expect(
+      lintErrors(
+        [
+          node('fork', 'parallelGateway', { direction: 'split' }),
+          userTask('north', 'REQUIRED'),
+          userTask('south', 'REQUIRED'),
+          node('join', 'parallelGateway', { direction: 'join' }),
+        ],
+        [
+          edge('start', 'fork'),
+          edge('fork', 'north'),
+          edge('fork', 'south'),
+          edge('north', 'join'),
+          edge('south', 'join'),
+          edge('join', 'end'),
+        ],
+      ),
+    ).toEqual([line('north', 'south')]);
+  });
+
+  it('refuses a parallel branch fill node beside a fill node on an exclusive branch of the other', (): void => {
+    expect(
+      lintErrors(
+        [
+          node('fork', 'parallelGateway', { direction: 'split' }),
+          userTask('north', 'REQUIRED'),
+          node('split', 'exclusiveGateway', { direction: 'split' }),
+          userTask('south', 'REQUIRED'),
+          userTask('east', 'NONE'),
+          node('merge', 'exclusiveGateway', { direction: 'join' }),
+          node('join', 'parallelGateway', { direction: 'join' }),
+        ],
+        [
+          edge('start', 'fork'),
+          edge('fork', 'north'),
+          edge('fork', 'split'),
+          edge('split', 'south', { condition: 'form.region == "S"' }),
+          edge('split', 'east', { isDefault: true }),
+          edge('south', 'merge'),
+          edge('east', 'merge'),
+          edge('merge', 'join'),
+          edge('north', 'join'),
+          edge('join', 'end'),
+        ],
+      ),
+    ).toEqual([line('north', 'south')]);
+  });
+
+  it('accepts fill nodes on exclusive branches after a parallel join', (): void => {
+    expect(
+      lintErrors(
+        [
+          node('fork', 'parallelGateway', { direction: 'split' }),
+          userTask('legal', 'NONE'),
+          userTask('hr', 'NONE'),
+          node('join', 'parallelGateway', { direction: 'join' }),
+          node('split', 'exclusiveGateway', { direction: 'split' }),
+          userTask('north', 'REQUIRED'),
+          userTask('south', 'REQUIRED'),
+          node('merge', 'exclusiveGateway', { direction: 'join' }),
+        ],
+        [
+          edge('start', 'fork'),
+          edge('fork', 'legal'),
+          edge('fork', 'hr'),
+          edge('legal', 'join'),
+          edge('hr', 'join'),
+          edge('join', 'split'),
+          edge('split', 'north', { condition: 'form.region == "N"' }),
+          edge('split', 'south', { isDefault: true }),
+          edge('north', 'merge'),
+          edge('south', 'merge'),
+          edge('merge', 'end'),
+        ],
+      ),
+    ).toEqual([]);
+  });
+});

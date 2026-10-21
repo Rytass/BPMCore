@@ -91,6 +91,13 @@ async function mockLaunchEntryGraphQl(page: Page): Promise<void> {
 
     if (payload.query.includes('query LaunchFormVersion')) {
       await fulfillGraphQl(route, {
+        approvalTemplateVersion: {
+          workflowDefinitionJson: JSON.stringify({
+            edges: [],
+            meta: { schemaVersion: 1 },
+            nodes: [],
+          }),
+        },
         formDefinitionVersion: {
           id: FORM_VERSION_ID,
           schemaJson: JSON.stringify({

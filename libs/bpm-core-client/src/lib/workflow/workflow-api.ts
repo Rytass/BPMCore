@@ -101,6 +101,14 @@ export interface AdhocDirectiveRecord {
 export interface ApprovalInstanceRecord {
   readonly completedAt: string | null;
   readonly formData: WorkflowFormData;
+  /**
+   * Fingerprint of the stored form data, to send back as
+   * `expectedFormDataFingerprint` with approver-filled data so the server can
+   * refuse a decision made against a stale form. Only `readApprovalInstance`
+   * selects it; list selections leave it `undefined`. Optional so hand-built
+   * records (fixtures, host-side mocks) keep compiling.
+   */
+  readonly formDataFingerprint?: string;
   readonly formDataJson: string;
   readonly formDataOptionSnapshot: FormDataSourceValueSnapshots;
   readonly formDataOptionSnapshotJson: string;
@@ -443,7 +451,14 @@ export interface LaunchContext {
     readonly version: number;
   };
   readonly template: ApprovalTemplateRecord;
-  readonly templateVersion: ApprovalTemplateVersionRecord;
+  /**
+   * The current version, with the workflow definition the launch page needs
+   * to tell which form fields an approver fills in (the applicant must not
+   * see or submit those).
+   */
+  readonly templateVersion: ApprovalTemplateVersionRecord & {
+    readonly workflowDefinition: WorkflowDefinition;
+  };
 }
 
 export interface LaunchableTemplateRecord {
@@ -651,6 +666,9 @@ interface LaunchTemplateVersionsQueryData {
 }
 
 interface LaunchFormVersionQueryData {
+  readonly approvalTemplateVersion: {
+    readonly workflowDefinitionJson: string;
+  };
   readonly formDefinitionVersion: {
     readonly id: string;
     readonly schemaJson: string;
@@ -834,15 +852,21 @@ export async function readLaunchContext(
   }
 
   const formData = await requestGraphQl<LaunchFormVersionQueryData>(
-    `query LaunchFormVersion($id: String!) {
-      formDefinitionVersion(id: $id) {
+    `query LaunchFormVersion($formVersionId: String!, $templateVersionId: String!) {
+      approvalTemplateVersion(id: $templateVersionId) {
+        workflowDefinitionJson
+      }
+      formDefinitionVersion(id: $formVersionId) {
         id
         schemaJson
         uiSchemaJson
         version
       }
     }`,
-    { id: templateVersion.formDefinitionVersionId },
+    {
+      formVersionId: templateVersion.formDefinitionVersionId,
+      templateVersionId: templateVersion.id,
+    },
   );
 
   return {
@@ -857,7 +881,12 @@ export async function readLaunchContext(
       version: formData.formDefinitionVersion.version,
     },
     template: templateData.approvalTemplate,
-    templateVersion,
+    templateVersion: {
+      ...templateVersion,
+      workflowDefinition: JSON.parse(
+        formData.approvalTemplateVersion.workflowDefinitionJson,
+      ) as WorkflowDefinition,
+    },
   };
 }
 
@@ -925,6 +954,7 @@ export async function readApprovalInstance(instanceId: string): Promise<{
     `query ApprovalInstance($id: String!) {
       approvalInstance(id: $id) {
         completedAt
+        formDataFingerprint
         formDataJson
         formDataOptionSnapshotJson
         formDefinitionSnapshotJson
@@ -1845,6 +1875,7 @@ export async function decideTask({
   action,
   comment,
   decidedByMemberId,
+  fill = null,
   returnToNodeId = null,
   taskId,
   transferToMemberId = null,
@@ -1852,6 +1883,16 @@ export async function decideTask({
   readonly action: TaskDecisionAction;
   readonly comment: string | null;
   readonly decidedByMemberId: string;
+  /**
+   * Approver-filled form data and the fingerprint it was filled against; the
+   * two travel together. Sent only when `formData` has at least one key, so
+   * an ordinary decision never carries them (and an older server that does
+   * not know the fields is unaffected).
+   */
+  readonly fill?: {
+    readonly expectedFormDataFingerprint: string;
+    readonly formData: Readonly<Record<string, unknown>>;
+  } | null;
   readonly returnToNodeId?: string | null;
   readonly taskId: string;
   readonly transferToMemberId?: string | null;
@@ -1875,6 +1916,12 @@ export async function decideTask({
         action,
         comment,
         decidedByMemberId,
+        ...(fill !== null && Object.keys(fill.formData).length > 0
+          ? {
+              expectedFormDataFingerprint: fill.expectedFormDataFingerprint,
+              formDataJson: JSON.stringify(fill.formData),
+            }
+          : {}),
         returnToNodeId,
         taskId,
         transferToMemberId,

@@ -549,6 +549,146 @@ describe('NotificationService', () => {
     );
   });
 
+  describe('task notification hasFillableFields flag', () => {
+    const fillableFieldAccess: UserTaskNode['data']['fieldAccess'] = [
+      { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },
+    ];
+
+    const createdPayload = async ({
+      fieldAccess,
+      fieldPermissions,
+      isAdhoc,
+      transferred,
+    }: {
+      readonly fieldAccess?: UserTaskNode['data']['fieldAccess'];
+      readonly fieldPermissions?: unknown;
+      readonly isAdhoc: boolean;
+      readonly transferred?: boolean;
+    }): Promise<Readonly<Record<string, unknown>>> => {
+      const savedNotifications: NotificationEntity[] = [];
+      const service = new NotificationService(
+        {
+          create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+            Object.assign(new NotificationEntity(), entity),
+          save: (
+            entityOrEntities: NotificationEntity | NotificationEntity[],
+          ): Promise<NotificationEntity | NotificationEntity[]> => {
+            savedNotifications.push(
+              ...(Array.isArray(entityOrEntities)
+                ? entityOrEntities
+                : [entityOrEntities]),
+            );
+
+            return Promise.resolve(entityOrEntities);
+          },
+        } as unknown as Repository<NotificationEntity>,
+        {
+          findOne: (): Promise<NotificationPreferenceEntity | null> =>
+            Promise.resolve(null),
+        } as unknown as Repository<NotificationPreferenceEntity>,
+        createRepository<TaskEntity>(),
+        createRepository<TaskCandidateEntity>(),
+        createRepository<ApprovalInstanceEntity>(),
+        createRepository<ActivityLogEntity>(),
+        createDeliveryService(),
+        createModuleRef(),
+      );
+      const instance = createApprovalInstance();
+      const sourceNode = instance.workflowSnapshot.nodes.find(
+        (node): node is UserTaskNode => node.type === 'userTask',
+      );
+
+      if (!sourceNode) {
+        throw new Error('Notification test fixture must contain a user task');
+      }
+
+      const node: UserTaskNode = {
+        ...sourceNode,
+        data: {
+          ...sourceNode.data,
+          fieldAccess,
+          ...(fieldPermissions === undefined ? {} : { fieldPermissions }),
+        } as UserTaskNode['data'],
+      };
+
+      await service.createTaskAssignedNotification({
+        instance,
+        manager: undefined as unknown as EntityManager,
+        node,
+        task: Object.assign(new TaskEntity(), {
+          assigneeMemberId: 'member-a',
+          id: 'task-fillable-fields',
+          instanceId: instance.id,
+          isAdhoc,
+          nodeId: node.id,
+          originalAssigneeMemberId: 'member-a',
+        }),
+        transferred,
+      });
+
+      expect(savedNotifications.length).toBeGreaterThan(0);
+
+      return savedNotifications[0].payload as Readonly<Record<string, unknown>>;
+    };
+
+    it('flags a task on a node with fillable fields', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldAccess: fillableFieldAccess,
+        isAdhoc: false,
+      });
+
+      expect(payload['hasFillableFields']).toBe(true);
+    });
+
+    it('flags the transferred notification too', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldAccess: fillableFieldAccess,
+        isAdhoc: false,
+        transferred: true,
+      });
+
+      expect(payload['hasFillableFields']).toBe(true);
+    });
+
+    it('does not flag an ad-hoc task', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldAccess: fillableFieldAccess,
+        isAdhoc: true,
+      });
+
+      expect(payload['hasFillableFields']).toBe(false);
+    });
+
+    it('does not flag a node without fieldAccess', async (): Promise<void> => {
+      const payload = await createdPayload({ isAdhoc: false });
+
+      expect(payload['hasFillableFields']).toBe(false);
+    });
+
+    it('does not flag a node whose fields are all display-only', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldAccess: [
+          { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'NONE' },
+          { display: 'HIDE', fieldKey: 'note', fill: 'NONE' },
+        ],
+        isAdhoc: false,
+      });
+
+      expect(payload['hasFillableFields']).toBe(false);
+    });
+
+    it('ignores the legacy fieldPermissions key', async (): Promise<void> => {
+      const payload = await createdPayload({
+        fieldPermissions: [
+          { editable: true, fieldPath: 'invoiceNo', visible: true },
+        ],
+        isAdhoc: false,
+      });
+
+      expect(payload['hasFillableFields']).toBe(false);
+    });
+  });
+
   describe('instance completed notification', () => {
     function createCompletionHarness(
       resolveMember: (memberId: string) => Promise<{ readonly name: string }>,

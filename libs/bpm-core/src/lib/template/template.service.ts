@@ -8,11 +8,32 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  readApproverFilledFieldKeys,
+  readNodeFieldAccess,
+  readNodeFillableFieldKeys,
+  readTopLevelFieldKey,
+} from '@rytass/bpm-core-shared';
+import {
   FormDefinitionSchema,
   FormFieldDefinition,
+  isFormDataSourceFieldDefinition,
   isMemberFieldDefinition,
+  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  ApproverResolver,
+  ServiceAction,
+  UserTaskNode,
+  WorkflowDefinition,
+  WorkflowEdge,
+  WorkflowNode,
+} from '@rytass/bpm-core-shared/workflow';
+import {
+  APPLICANT_FIELD_CONDITION_RULES,
+  APPROVER_FILLED_FORM_RULES,
+  WORKFLOW_EXPRESSION_LABELS,
+  WORKFLOW_LINT_MESSAGES,
+} from '@rytass/bpm-core-shared/workflow-graph';
 import {
   EntityManager,
   FindOptionsWhere,
@@ -25,6 +46,7 @@ import { ConditionService } from '../condition/condition.service';
 import {
   isTableInternalFieldKey,
   readTableFieldKeys,
+  referencesFormField,
   referencesTableInternals,
 } from '../form/form-table-reference';
 import { FormDefinitionEntity } from '../form/form-definition.entity';
@@ -984,6 +1006,13 @@ export class TemplateService {
       version.workflowDefinition,
       formVersion.schema,
     );
+    const approverFilledFieldErrors = lintApproverFilledFormFields(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
+    const approverFilledReadErrors = lintApproverFilledFieldReads(
+      version.workflowDefinition,
+    );
     const webhookErrors = await this.lintWorkflowWebhooks(
       version.workflowDefinition,
       formVersion.schema,
@@ -993,6 +1022,8 @@ export class TemplateService {
       ...conditionErrors,
       ...tableReferenceErrors,
       ...memberReferenceErrors,
+      ...approverFilledFieldErrors,
+      ...approverFilledReadErrors,
       ...webhookErrors,
     ];
 
@@ -1439,6 +1470,313 @@ function lintWorkflowMemberReferences(
     });
 }
 
+/**
+ * The form-side half of `fieldAccess`: what the entries can only be checked
+ * against once the bound form version is known.
+ *
+ * - Every `fieldKey` must be a top-level field of the form; a nested path such
+ *   as `items.price` names no field and is reported as unknown.
+ * - A field an approver fills in must not carry a rule of the form's own. The
+ *   engine blocks approval while a node-required fillable field is empty, so
+ *   a form that hides the field (`hidden`, `visibleWhen`) leaves the approver
+ *   nothing to fill in and the case stuck for good; the other rules fight the
+ *   value the approver types (`required` / `requiredWhen` would block the
+ *   applicant, `readonlyWhen` the approver, `defaultValue` seeds a value that
+ *   was meant to start empty). Each field and rule is reported once, however
+ *   many nodes make the field editable.
+ * - It cannot be a data-source or file upload field, and a table it fills in
+ *   cannot have a data-source column: the approval does not re-resolve option
+ *   snapshots or accept uploads. A table column can never be a file upload
+ *   (`TABLE_COLUMN_FIELD_TYPES`), so only data-source columns are checked.
+ * - `fill: 'REQUIRED'` cannot be put on a boolean field: `false` is a real
+ *   answer, and the "is it filled in" check would refuse it.
+ * - An applicant's field cannot carry a `requiredWhen` / `visibleWhen` /
+ *   `readonlyWhen` that reads an approver-filled field: the rule is evaluated
+ *   against the submitted form, where that field is still empty, and the
+ *   evaluation silently compares against nothing.
+ *
+ * A rule counts as set when `required` / `hidden` is `true` and for the others
+ * when the value is not `undefined`, so `required: false` and `hidden: false`
+ * (what the form editor writes for "off") are not rules.
+ */
+function lintApproverFilledFormFields(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const fieldsByKey = new Map(
+    (schema?.fields ?? []).map(
+      (field): readonly [string, FormFieldDefinition] => [field.fieldKey, field],
+    ),
+  );
+  const userTasks = definition.nodes.filter(
+    (node): node is UserTaskNode => node.type === 'userTask',
+  );
+  const unknownFieldErrors = userTasks.flatMap((node): readonly string[] =>
+    readNodeFieldAccess(node)
+      .filter(({ fieldKey }): boolean => !fieldsByKey.has(fieldKey))
+      .map(({ fieldKey }): string =>
+        WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(node.id, fieldKey),
+      ),
+  );
+  const requiredBooleanErrors = userTasks.flatMap((node): readonly string[] =>
+    readNodeFieldAccess(node)
+      .filter(
+        ({ fieldKey, fill }): boolean =>
+          fill === 'REQUIRED' && fieldsByKey.get(fieldKey)?.type === 'boolean',
+      )
+      .map(({ fieldKey }): string =>
+        WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldKey),
+      ),
+  );
+  const approverFilled = readApproverFilledFieldKeys(definition);
+  const applicantRuleErrors = (schema?.fields ?? [])
+    .filter((field): boolean => !approverFilled.has(field.fieldKey))
+    .flatMap((field): readonly string[] =>
+      APPLICANT_FIELD_CONDITION_RULES.flatMap((rule): readonly string[] => {
+        const expression: unknown = field[rule];
+
+        return typeof expression === 'string'
+          ? [...approverFilled]
+              .filter((fieldKey): boolean =>
+                referencesFormField(expression, fieldKey),
+              )
+              .map((fieldKey): string =>
+                WORKFLOW_LINT_MESSAGES.applicantRuleReadsApproverFilled(
+                  field.fieldKey,
+                  rule,
+                  fieldKey,
+                ),
+              )
+          : [];
+      }),
+    );
+  const fieldErrors = [...approverFilled].flatMap(
+    (fieldKey): readonly string[] => {
+      const field = fieldsByKey.get(fieldKey);
+
+      return field === undefined
+        ? []
+        : readApproverFilledFieldFormErrors(field);
+    },
+  );
+
+  return [
+    ...unknownFieldErrors,
+    ...fieldErrors,
+    ...requiredBooleanErrors,
+    ...applicantRuleErrors,
+  ];
+}
+
+function readApproverFilledFieldFormErrors(
+  field: FormFieldDefinition,
+): readonly string[] {
+  const { fieldKey } = field;
+  const ruleErrors = APPROVER_FILLED_FORM_RULES.filter((rule): boolean =>
+    rule === 'required' || rule === 'hidden'
+      ? field[rule] === true
+      : field[rule] !== undefined,
+  ).map((rule): string =>
+    WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
+  );
+
+  return [
+    ...ruleErrors,
+    ...(isFormDataSourceFieldDefinition(field)
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey)]
+      : []),
+    ...(field.type === 'file_upload'
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey)]
+      : []),
+    ...(isTableFieldDefinition(field) &&
+    field.columns.some(isFormDataSourceFieldDefinition)
+      ? [WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey)]
+      : []),
+  ];
+}
+
+/**
+ * A condition that reads a field an approver fills in, before that approver
+ * has filled it in, finds the field absent: the applicant's form is submitted
+ * without it. Evaluated while the previous approver's decision is being
+ * committed, that throws and the case can never leave the previous node; a
+ * structured condition compares against the absent value and routes on that.
+ * So it is refused at publish, from the graph alone (no CEL semantics, which
+ * the unit tests' cel-js shim cannot reproduce).
+ *
+ * Per approver-filled field X:
+ * - `G` is the nodes that fill X in and have no `entryCondition`. A filling
+ *   node with an `entryCondition` can be skipped and then nobody fills X in
+ *   (`skipNode` carries on regardless), so it guards nothing.
+ * - `R` is every node reachable from the start without entering a node of `G`:
+ *   the nodes X may still be empty at. `F` is the filling nodes right after a
+ *   node of `R`.
+ * - An edge condition or `conditionFieldKey` is evaluated while leaving its
+ *   source, so it is early when the source is in `R`. A node expression is
+ *   evaluated on arrival, before the task is created, so it is early when the
+ *   node is in `R` or `F` (the filling node's own `entryCondition` and
+ *   EXPRESSION resolver run before the fill-in).
+ *
+ * Deliberately conservative: the graph cannot tell "parallel, all branches
+ * run, AND join waits" from "exclusive, one branch runs", so a read after a
+ * join is refused when only some of the branches pass through a node of `G`.
+ * `has(form.x)` is not recognised as a guard either; the read belongs after
+ * the filling node. `initiatorPolicyCel` is not read here: its root
+ * identifiers cannot include `form`.
+ *
+ * The definition may hold a cycle (the cycle lint reports it in the same
+ * pass), which the visited set in `readReachableNodeIds` copes with.
+ */
+function lintApproverFilledFieldReads(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  const fieldKeys = [...readApproverFilledFieldKeys(definition)];
+
+  if (!fieldKeys.length) {
+    return [];
+  }
+
+  const userTasks = definition.nodes.filter(
+    (node): node is UserTaskNode => node.type === 'userTask',
+  );
+  const startNodeIds = definition.nodes
+    .filter((node) => node.type === 'startEvent')
+    .map((node) => node.id);
+  const nodeSources = definition.nodes.flatMap((node) =>
+    [
+      ...readNodeExpressions(node),
+      ...readNotifyRecipientsExpressions(node),
+    ].map((source) => ({ ...source, nodeId: node.id })),
+  );
+
+  return fieldKeys.flatMap((fieldKey) => {
+    const fillingNodes = userTasks.filter((node) =>
+      readNodeFillableFieldKeys(node).has(fieldKey),
+    );
+    const fillingNodeIds = new Set(fillingNodes.map((node) => node.id));
+    const guardNodeIds = new Set(
+      fillingNodes
+        .filter((node) => !hasEntryCondition(node))
+        .map((node) => node.id),
+    );
+    const earlyNodeIds = readReachableNodeIds(
+      startNodeIds,
+      definition.edges,
+      guardNodeIds,
+    );
+    const nodeIdsReadingEarly = new Set([
+      ...earlyNodeIds,
+      ...definition.edges
+        .filter(
+          (edge) =>
+            earlyNodeIds.has(edge.source) && fillingNodeIds.has(edge.target),
+        )
+        .map((edge) => edge.target),
+    ]);
+    const nodeLabels = nodeSources
+      .filter(
+        ({ expression, nodeId }) =>
+          nodeIdsReadingEarly.has(nodeId) &&
+          typeof expression === 'string' &&
+          referencesFormField(expression, fieldKey),
+      )
+      .map(({ label }) => label);
+    const edgeLabels = definition.edges
+      .filter((edge) => earlyNodeIds.has(edge.source))
+      .flatMap((edge) => readEdgeFieldReadLabels(edge, fieldKey));
+
+    return [...nodeLabels, ...edgeLabels].map((label) =>
+      WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(label, fieldKey),
+    );
+  });
+}
+
+function hasEntryCondition(node: UserTaskNode): boolean {
+  const entryCondition: unknown = node.data.entryCondition;
+
+  return typeof entryCondition === 'string' && entryCondition.trim() !== '';
+}
+
+/**
+ * The nodes reachable from `startNodeIds` along `edges` without entering one
+ * of `blockedNodeIds`. Walks the graph one frontier at a time and drops every
+ * node it has already seen, so a cycle ends the walk instead of feeding it.
+ */
+function readReachableNodeIds(
+  startNodeIds: readonly string[],
+  edges: readonly WorkflowEdge[],
+  blockedNodeIds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const walk = (
+    frontier: readonly string[],
+    visited: ReadonlySet<string>,
+  ): ReadonlySet<string> => {
+    const fresh = [...new Set(frontier)].filter(
+      (nodeId) => !visited.has(nodeId) && !blockedNodeIds.has(nodeId),
+    );
+
+    return fresh.length
+      ? walk(
+          edges
+            .filter((edge) => fresh.includes(edge.source))
+            .map((edge) => edge.target),
+          new Set([...visited, ...fresh]),
+        )
+      : visited;
+  };
+
+  return walk(startNodeIds, new Set<string>());
+}
+
+// The label of the one line an edge earns for `fieldKey`: the CEL condition
+// wins over the structured condition, so an edge carrying both reads once.
+function readEdgeFieldReadLabels(
+  edge: WorkflowEdge,
+  fieldKey: string,
+): readonly string[] {
+  // A draft's edge may carry no `data` at all.
+  const data: WorkflowEdge['data'] | undefined = edge.data;
+  const condition: unknown = data?.condition;
+  const conditionFieldKey: unknown = data?.conditionFieldKey;
+
+  if (typeof condition === 'string' && referencesFormField(condition, fieldKey)) {
+    return [WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id)];
+  }
+
+  return typeof conditionFieldKey === 'string' &&
+    readTopLevelFieldKey(conditionFieldKey) === fieldKey
+    ? [WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey(edge.id)]
+    : [];
+}
+
+// A NOTIFY node resolves an EXPRESSION recipient list the moment it is reached
+// (`resolveApproverResolver`), so it reads the form like any node expression.
+// Kept out of `readNodeConditionExpressions` so the CEL root-identifier lint
+// keeps covering exactly what it did.
+function readNotifyRecipientsExpressions(
+  node: WorkflowNode,
+): readonly ExpressionSource[] {
+  // A draft is not shape-checked: the node may have no `action`, and a NOTIFY
+  // action may have no `recipients` (the structural lint reports that line).
+  const action: ServiceAction | undefined =
+    node.type === 'serviceTask' ? node.data?.action : undefined;
+
+  if (action?.type !== 'NOTIFY') {
+    return [];
+  }
+
+  const recipients: ApproverResolver | undefined = action.recipients;
+
+  return recipients?.type === 'EXPRESSION'
+    ? [
+        {
+          expression: recipients.expression,
+          label: WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression(node.id),
+        },
+      ]
+    : [];
+}
+
 function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {
   return (
     field.required === true &&
@@ -1455,7 +1793,7 @@ function readEdgeConditionExpressions(
 }[] {
   return definition.edges.map((edge) => ({
     expression: edge.data.condition,
-    label: `workflow.edges.${edge.id}.data.condition`,
+    label: WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id),
   }));
 }
 
@@ -1478,55 +1816,59 @@ function readConditionExpressions(
 // payloads and SET_FORM_FIELD values.
 function readNodeConditionExpressions(
   definition: WorkflowDefinition,
-): readonly {
+): readonly ExpressionSource[] {
+  return definition.nodes.flatMap(readNodeExpressions);
+}
+
+function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
+  if (node.type === 'userTask') {
+    return [
+      {
+        expression: node.data.entryCondition,
+        label: WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition(node.id),
+      },
+      ...(node.data.approverResolver.type === 'EXPRESSION'
+        ? [
+            {
+              expression: node.data.approverResolver.expression,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(node.id),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  if (node.type === 'serviceTask') {
+    return [
+      {
+        expression: node.data.entryCondition,
+        label: WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition(node.id),
+      },
+      ...(node.data.action.type === 'WEBHOOK'
+        ? [
+            {
+              expression: node.data.action.payload,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeActionPayload(node.id),
+            },
+          ]
+        : []),
+      ...(node.data.action.type === 'SET_FORM_FIELD'
+        ? [
+            {
+              expression: node.data.action.value,
+              label: WORKFLOW_EXPRESSION_LABELS.nodeActionValue(node.id),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  return [];
+}
+
+interface ExpressionSource {
   readonly expression: string | null | undefined;
   readonly label: string;
-}[] {
-  return definition.nodes.flatMap((node) => {
-    if (node.type === 'userTask') {
-      return [
-        {
-          expression: node.data.entryCondition,
-          label: `workflow.nodes.${node.id}.data.entryCondition`,
-        },
-        ...(node.data.approverResolver.type === 'EXPRESSION'
-          ? [
-              {
-                expression: node.data.approverResolver.expression,
-                label: `workflow.nodes.${node.id}.data.approverResolver.expression`,
-              },
-            ]
-          : []),
-      ];
-    }
-
-    if (node.type === 'serviceTask') {
-      return [
-        {
-          expression: node.data.entryCondition,
-          label: `workflow.nodes.${node.id}.data.entryCondition`,
-        },
-        ...(node.data.action.type === 'WEBHOOK'
-          ? [
-              {
-                expression: node.data.action.payload,
-                label: `workflow.nodes.${node.id}.data.action.payload`,
-              },
-            ]
-          : []),
-        ...(node.data.action.type === 'SET_FORM_FIELD'
-          ? [
-              {
-                expression: node.data.action.value,
-                label: `workflow.nodes.${node.id}.data.action.value`,
-              },
-            ]
-          : []),
-      ];
-    }
-
-    return [];
-  });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

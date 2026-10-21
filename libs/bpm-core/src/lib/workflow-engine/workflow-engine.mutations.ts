@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Args, ID, Mutation, Resolver } from '@nestjs/graphql';
 import {
   BPMAdminOnly,
@@ -43,6 +44,9 @@ export class WorkflowEngineMutations {
         ...input,
         // A business key is the host's to set; an end user never claims one.
         businessKey: null,
+        // Set after the spread so a client cannot switch it off: it makes the
+        // service keep approver-filled fields out of the submission.
+        endUserSubmission: true,
         initiatorMemberId: currentMemberId,
         initiatorMetadataSnapshotJson: null,
         // Never read from the input: the person pressing submit is whoever is
@@ -68,6 +72,20 @@ export class WorkflowEngineMutations {
     @Args('input') input: DecideTaskInput,
     @BPMCurrentMemberId() currentMemberId: string,
   ): Promise<TaskDecisionEntity> {
+    // "Sent" means not null and not undefined, so '{}' counts. A host calling
+    // the service may leave the fingerprint out; a screen may not, or it would
+    // overwrite whatever changed since it loaded the case.
+    if (
+      input.formDataJson !== undefined &&
+      input.formDataJson !== null &&
+      (input.expectedFormDataFingerprint === undefined ||
+        input.expectedFormDataFingerprint === null)
+    ) {
+      throw new BadRequestException(
+        'expectedFormDataFingerprint is required when formDataJson is set',
+      );
+    }
+
     return this.workflowEngineService.decideTask({
       ...input,
       decidedByMemberId: currentMemberId,
@@ -135,6 +153,8 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.resubmitApprovalInstance(
       {
         ...input,
+        // After the spread so a client cannot switch it off (see submit).
+        endUserSubmission: true,
         initiatorMemberId: currentMemberId,
       },
       authContext,

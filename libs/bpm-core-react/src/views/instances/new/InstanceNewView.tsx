@@ -37,6 +37,10 @@ import {
   submitApprovalInstance,
   uploadAttachment,
 } from '@rytass/bpm-core-client/workflow';
+import {
+  readApplicantFormSchema,
+  readApplicantSubmission,
+} from '../approver-filled-form';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
 import { useRouterAdapter } from '../../../lib/router-adapter';
@@ -110,6 +114,19 @@ function NewApprovalInstanceContent({
       Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
     >
   >({});
+
+  // The form the applicant sees: approver-filled fields are not theirs to fill
+  // (the server drops them), so they are left out of everything below.
+  const applicantSchema = useMemo(
+    () =>
+      context
+        ? readApplicantFormSchema(
+            context.formVersion.schema,
+            context.templateVersion.workflowDefinition,
+          )
+        : null,
+    [context],
+  );
 
   const handleDataSourceStateChange = useCallback(
     (
@@ -228,7 +245,7 @@ function NewApprovalInstanceContent({
   }
 
   async function handleSubmit(): Promise<void> {
-    if (!context || !currentMemberId) {
+    if (!context || !applicantSchema || !currentMemberId) {
       return;
     }
 
@@ -252,12 +269,12 @@ function NewApprovalInstanceContent({
     // reaches this state until the filler edits something. Validating and
     // submitting the raw state would reject a table the user can plainly see
     // rows in — and submit a default the backend never receives.
-    const submittedValues = buildFormRendererValues(
-      context.formVersion.schema.fields,
-      formValues,
+    const submittedValues = readApplicantSubmission(
+      buildFormRendererValues(applicantSchema.fields, formValues),
+      context.templateVersion.workflowDefinition,
     );
     const validation = validateFormRendererValues({
-      schema: context.formVersion.schema,
+      schema: applicantSchema,
       uiSchema: context.formVersion.uiSchema,
       values: submittedValues,
     });
@@ -283,7 +300,7 @@ function NewApprovalInstanceContent({
         title: readFormDataCaseTitle({
           fallbackTitle: context.template.name,
           formData: submittedValues,
-          schema: context.formVersion.schema,
+          schema: applicantSchema,
           uiSchema: context.formVersion.uiSchema,
         }),
       });
@@ -352,7 +369,7 @@ function NewApprovalInstanceContent({
                 </Typography>
               ) : null}
 
-              {context ? (
+              {context && applicantSchema ? (
                 <FormRenderer
                   dataSourceContext={{
                     kind: 'runtime',
@@ -366,7 +383,7 @@ function NewApprovalInstanceContent({
                   }}
                   onDataSourceStateChange={handleDataSourceStateChange}
                   onUploadAttachment={handleUploadAttachment}
-                  schema={context.formVersion.schema}
+                  schema={applicantSchema}
                   singleColumn
                   uiSchema={context.formVersion.uiSchema}
                   value={formValues}

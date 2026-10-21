@@ -290,4 +290,4 @@ submitApprovalInstance mutation（GraphQL，不是 REST `POST /instances`）
 4. 用於驗證流程設計正確性
 
 Dry Run 已在 W7 完成，設計器會呼叫後端 `dryRunApprovalWorkflow` mutation 顯示
-模擬路徑與派發結果。後續仍可加強欄位權限、統計與更完整的 lint 診斷。
+模擬路徑與派發結果。Dry Run 尚未模擬節點補填欄位（`fieldAccess`）；後續仍可加強統計與更完整的 lint 診斷。

@@ -1,5 +1,6 @@
 import { act, type ReactElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
+import type { WorkflowDefinition } from '@rytass/bpm-core-shared';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
   readLaunchContext,
@@ -185,6 +186,7 @@ describe('InstanceNewView table launch', () => {
         },
       },
       template: { id: 'template-1', name: '請購單' },
+      templateVersion: { workflowDefinition: createWorkflowDefinition([]) },
     } as unknown as Awaited<ReturnType<typeof readLaunchContext>>);
     submitMock.mockResolvedValue('instance-1');
   });
@@ -220,6 +222,7 @@ describe('InstanceNewView table launch', () => {
         },
       },
       template: { id: 'template-1', name: '請購單' },
+      templateVersion: { workflowDefinition: createWorkflowDefinition([]) },
     } as unknown as Awaited<ReturnType<typeof readLaunchContext>>);
 
     const harness = await mountLaunchView();
@@ -251,6 +254,103 @@ describe('InstanceNewView table launch', () => {
           }),
         }),
       );
+    } finally {
+      await unmountLaunchView(harness);
+    }
+  });
+});
+
+/**
+ * A field some approver fills in is not the applicant's to fill: the server
+ * drops it on submit, so rendering it would swallow what they type, and a
+ * `minRows` on it would block a launch nobody can complete.
+ */
+describe('InstanceNewView approver-filled fields', () => {
+  const mockContext = (schema: FormDefinitionSchema): void => {
+    readLaunchContextMock.mockResolvedValue({
+      formVersion: {
+        schema,
+        uiSchema: {
+          layout: schema.fields.map((field) => ({
+            fieldKey: field.fieldKey,
+            width: 'FULL',
+          })),
+          schemaVersion: 1,
+        },
+      },
+      template: { id: 'template-1', name: '請購單' },
+      templateVersion: {
+        workflowDefinition: createWorkflowDefinition(['financeItems']),
+      },
+    } as unknown as Awaited<ReturnType<typeof readLaunchContext>>);
+  };
+  const withApplicantField: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'reason', label: '事由', required: false, type: 'text' },
+      ...createTableSchema().fields.map((field) => ({
+        ...field,
+        fieldKey: 'financeItems',
+        label: '財務明細',
+      })),
+    ],
+    schemaVersion: 1,
+  };
+
+  beforeEach((): void => {
+    submitMock.mockResolvedValue('instance-1');
+  });
+
+  afterEach((): void => {
+    jest.clearAllMocks();
+  });
+
+  it('does not render or submit approver-filled fields', async (): Promise<void> => {
+    mockContext(withApplicantField);
+
+    const harness = await mountLaunchView();
+
+    try {
+      expect(
+        harness.container.querySelector('[data-mock-form-field="reason"]'),
+      ).not.toBeNull();
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="financeItems"]',
+        ),
+      ).toBeNull();
+
+      await clickSubmit(harness.container);
+
+      expect(submitMock).toHaveBeenCalledTimes(1);
+
+      const submitted = submitMock.mock.calls[0]?.[0].formData ?? {};
+
+      expect(Object.keys(submitted)).not.toContain('financeItems');
+    } finally {
+      await unmountLaunchView(harness);
+    }
+  });
+
+  it('submits even when an approver-filled table declares minRows', async (): Promise<void> => {
+    mockContext({
+      fields: [
+        ...withApplicantField.fields.slice(0, 1),
+        ...withApplicantField.fields.slice(1).map((field) => ({
+          ...field,
+          required: true,
+        })),
+      ],
+      schemaVersion: 1,
+    });
+
+    const harness = await mountLaunchView();
+
+    try {
+      await clickSubmit(harness.container);
+
+      expect(harness.container.textContent).not.toContain('必填');
+      expect(harness.container.textContent).not.toContain('至少需要');
+      expect(submitMock).toHaveBeenCalledTimes(1);
     } finally {
       await unmountLaunchView(harness);
     }
@@ -351,4 +451,34 @@ function typeIntoCell(
     )?.set?.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+}
+
+function createWorkflowDefinition(
+  approverFilledFieldKeys: readonly string[],
+): WorkflowDefinition {
+  return {
+    edges: [],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: false,
+          approverResolver: { memberIds: ['m-1'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SINGLE' },
+          fieldAccess: approverFilledFieldKeys.map((fieldKey) => ({
+            display: 'SHOW' as const,
+            fieldKey,
+            fill: 'OPTIONAL' as const,
+          })),
+          label: 'finance',
+          returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+        },
+        id: 'finance',
+        position: { x: 0, y: 0 },
+        type: 'userTask',
+      },
+    ],
+  };
 }
