@@ -57,7 +57,10 @@ The staging ingress (`tools/deployment-staging.yml`, Traefik `IngressRoute`)
 routes `/graphql`, `/auth` and `/attachments` to the API container and all
 other paths to the client container. The GitHub Actions `Staging Server`
 workflow builds both images, runs migrations in the API init container, applies
-`tools/deployment-staging.yml`, and waits for the GKE rollout. The checked-in
+`tools/deployment-staging.yml`, and waits for the GKE rollout. Images are tagged
+with the release tag `nx release` put on the pushed commit (`v0.17.7`), or
+`sha-<short sha>` when it has none; the workflow never creates git tags, so it
+cannot take a version from the next release. The checked-in
 manifest declares Traefik routing; TLS termination is provided by the surrounding
 cluster/ingress configuration.
 
