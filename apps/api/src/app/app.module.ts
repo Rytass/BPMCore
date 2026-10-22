@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { VaultModule, VaultService } from '@rytass/secret-adapter-vault-nestjs';
 import { BPMRootModule } from '@rytass/bpm-core-nestjs-module';
+import type { BPMRootRuntimeOptions } from '@rytass/bpm-core-nestjs-module';
 import { buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
 import { BPM_BUSINESS_CALENDAR } from '@rytass/bpm-core-nestjs-module';
@@ -22,6 +23,13 @@ import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 import { ApiFormDataSourceRegistry } from './api-form-data-source';
 import { ApiDemoWebhookModule } from './api-demo-webhook.module';
+import {
+  readApiSetting,
+  readWebhookAllowedUrlPatterns,
+  readWebhookSecretEncryptionKey,
+  WEBHOOK_ALLOWED_URL_PATTERNS_KEY,
+  WEBHOOK_SECRET_ENCRYPTION_KEY_KEY,
+} from './api-webhook-settings';
 import {
   ApiDemoWebhookSigningSecret,
   createApiDemoWebhookRegistry,
@@ -75,13 +83,8 @@ import {
         sortSchema: true,
       }),
     }),
-    BPMRootModule.forRoot({
-      imports: [ApiAuthModule, ApiDemoWebhookModule],
-      attachmentPublicBaseUrl:
-        process.env.BPM_API_PUBLIC_URL ??
-        process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
-      attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
-      authContextFactory: buildApiBPMAuthContextFromExecutionContext,
+    BPMRootModule.forRootAsync({
+      imports: [ApiAuthModule, ApiDemoWebhookModule, VaultModule],
       businessCalendarProvider: {
         provide: BPM_BUSINESS_CALENDAR,
         useClass: ApiTaiwanBusinessCalendar,
@@ -90,16 +93,35 @@ import {
         provide: BPM_FORM_DATA_SOURCE_REGISTRY,
         useClass: ApiFormDataSourceRegistry,
       },
+      inject: [VaultService],
       memberResolverProvider: {
         provide: BPM_MEMBER_RESOLVER,
         useExisting: ApiMemberResolver,
       },
-      // Database-managed webhook endpoints (ADR 18 §3.13). Needs both an
-      // allowlist and an encryption key; outside production the demo ones
-      // below let the back office point endpoints at the local receiver.
-      workflowWebhookAllowedUrlPatterns: readWebhookAllowedUrlPatterns(),
-      workflowWebhookSecretEncryptionKey: readWebhookSecretEncryptionKey(),
-      workflowWebhookTargetSources: ['REGISTRY', 'DATABASE'],
+      useFactory: async (
+        vault: VaultService,
+      ): Promise<BPMRootRuntimeOptions> => {
+        const readSetting = (key: string): Promise<string | undefined> =>
+          readApiSetting((vaultKey) => vault.get(vaultKey), key);
+
+        return {
+          attachmentPublicBaseUrl:
+            process.env.BPM_API_PUBLIC_URL ??
+            process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
+          attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
+          authContextFactory: buildApiBPMAuthContextFromExecutionContext,
+          // Database-managed webhook endpoints (ADR 18 §3.13). Needs both an
+          // allowlist and an encryption key; outside production the demo ones
+          // below let the back office point endpoints at the local receiver.
+          workflowWebhookAllowedUrlPatterns: readWebhookAllowedUrlPatterns(
+            await readSetting(WEBHOOK_ALLOWED_URL_PATTERNS_KEY),
+          ),
+          workflowWebhookSecretEncryptionKey: readWebhookSecretEncryptionKey(
+            await readSetting(WEBHOOK_SECRET_ENCRYPTION_KEY_KEY),
+          ),
+          workflowWebhookTargetSources: ['REGISTRY', 'DATABASE'],
+        };
+      },
       // Demo endpoints for the NOTIFY webhook feature; empty in production.
       // A provider rather than a value, so the endpoints can read their
       // signing secret from Vault.
@@ -116,38 +138,6 @@ import {
   providers: [AppService, ApiSimulationSeedService],
 })
 export class AppModule {}
-
-/**
- * `BPM_WEBHOOK_ALLOWED_URL_PATTERNS` is a comma-separated list. Outside
- * production the local demo receiver is allowed by default, named by its
- * literal host (a wildcard host never matches localhost).
- */
-function readWebhookAllowedUrlPatterns(): readonly string[] {
-  const configured = (process.env.BPM_WEBHOOK_ALLOWED_URL_PATTERNS ?? '')
-    .split(',')
-    .map((pattern) => pattern.trim())
-    .filter(Boolean);
-
-  if (configured.length || process.env.NODE_ENV === 'production') {
-    return configured;
-  }
-
-  return [`http://localhost:${process.env.PORT ?? 17603}/demo/webhook-sink/*`];
-}
-
-/**
- * 32 bytes as hex or base64 from `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY`. Outside
- * production a fixed development key applies so the demo works out of the
- * box; production gets no default, which leaves database endpoints off.
- */
-function readWebhookSecretEncryptionKey(): string | undefined {
-  return (
-    process.env.BPM_WEBHOOK_SECRET_ENCRYPTION_KEY ||
-    (process.env.NODE_ENV === 'production'
-      ? undefined
-      : '6270d2d56465762d776562686f6f6b2d7365637265742d6b65792d3332627974')
-  );
-}
 
 /**
  * GraphQL answers a variable of the wrong shape with the value it got —
