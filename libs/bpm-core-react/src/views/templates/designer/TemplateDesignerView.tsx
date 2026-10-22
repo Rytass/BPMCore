@@ -14,7 +14,10 @@ import {
 } from 'react';
 import { formatMemberLabel } from '../../../lib/format-member-label';
 import { useRouterAdapter } from '../../../lib/router-adapter';
-import type { WorkflowDirectory } from '@rytass/bpm-core-shared';
+import {
+  readFieldAccessMatrix,
+  type WorkflowDirectory,
+} from '@rytass/bpm-core-shared';
 import {
   DECISION_POLICY_OPTIONS,
   readDecisionPolicyHint,
@@ -22,6 +25,9 @@ import {
 } from './decision-policy-options';
 import { useWorkflowDesignerController } from './use-workflow-designer-controller';
 import { WorkflowChatDrawer } from './workflow-chat-drawer';
+import { FieldAccessMatrixDrawer } from './field-access-matrix/FieldAccessMatrixDrawer';
+import { FieldAccessNodeSection } from './field-access-matrix/FieldAccessNodeSection';
+import { readFieldAccessNodeTag } from './field-access-matrix/field-access-copy';
 import { FormBuilderView } from '../../forms/builder/FormBuilderView';
 import { useBPMRoutes } from '../../../lib/routes-config';
 import { useBPMLanguage } from '../../../lib/language-provider';
@@ -59,6 +65,7 @@ import {
   Section,
   SectionGroup,
   Select,
+  Tag,
   Textarea,
   Toggle,
   Typography,
@@ -154,6 +161,7 @@ import {
   publishApprovalTemplateVersion,
   PublishedFormVersionOption,
   readTemplateDesigner,
+  readWorkflowLintMessage,
   resolveMemberOptions,
   listWorkflowWebhookEndpoints,
   searchMemberOptions,
@@ -193,6 +201,7 @@ import {
 type FlowNodeData = Readonly<{
   approverLines: readonly string[] | null;
   approverSummary: string | null;
+  fieldAccessTag: string | null;
   hasInput: boolean;
   hasOutput: boolean;
   initiatorPolicySummary: string | null;
@@ -471,6 +480,11 @@ const SELECTED_NODE_BOX_SHADOW =
 const FLOW_NODE_INITIAL_HEIGHT = 64;
 const FLOW_NODE_INITIAL_WIDTH = 160;
 const FLOW_NODE_ADDITIONAL_LINE_HEIGHT = 20;
+// The 補填 / 隱藏 tag under a user task's labels.
+const FLOW_NODE_FIELD_ACCESS_TAG_HEIGHT = 24;
+
+const FIELD_ACCESS_NO_FORM_REASON =
+  '先綁定表單版本，才能設定欄位在各關的顯示與補填。';
 const GATEWAY_NODE_INITIAL_HEIGHT = 64;
 const GATEWAY_NODE_INITIAL_WIDTH = 180;
 
@@ -954,6 +968,7 @@ export function TemplateDesignerView({
   orgUnitsRef.current = orgUnits;
   positionsRef.current = positions;
   const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
+  const [fieldAccessMatrixOpen, setFieldAccessMatrixOpen] = useState(false);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
   const [dryRunResult, setDryRunResult] =
@@ -1197,6 +1212,19 @@ export function TemplateDesignerView({
         : null,
     [webhookCatalog, webhookCatalogState, webhookFormSchema, workflowDefinition],
   );
+  // Publish-only as well: the field access matrix runs the publish lint's own
+  // rules (ADR 20 §4), and a draft that breaks them can still be saved.
+  const fieldAccessPublishIssue = useMemo((): string | null => {
+    const [issue] = readFieldAccessMatrix(
+      workflowDefinition,
+      webhookFormSchema,
+    ).issues;
+
+    return issue
+      ? readWorkflowLintMessage(issue.message, workflowDefinition, language)
+      : null;
+  }, [language, webhookFormSchema, workflowDefinition]);
+  const publishIssue = webhookPublishIssue ?? fieldAccessPublishIssue;
   const flowNodes = useMemo(
     (): FlowNode[] =>
       workflowDefinition.nodes.map((node) =>
@@ -1461,11 +1489,14 @@ export function TemplateDesignerView({
     try {
       const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
       const policyIssue = readInitiatorPolicyIssue(initiatorPolicyDraft);
-      const publishIssue = publish ? webhookPublishIssue : null;
+      const blockingPublishIssue = publish ? publishIssue : null;
 
-      if (validationIssue || policyIssue || publishIssue) {
+      if (validationIssue || policyIssue || blockingPublishIssue) {
         const issue =
-          validationIssue ?? policyIssue ?? publishIssue ?? '流程設定未完成';
+          validationIssue ??
+          policyIssue ??
+          blockingPublishIssue ??
+          '流程設定未完成';
 
         setError(issue);
         throw new Error(issue);
@@ -1972,7 +2003,7 @@ export function TemplateDesignerView({
                   (!draft && !hasUnsavedChanges && !formDraftDirty) ||
                   Boolean(workflowIssue) ||
                   Boolean(initiatorPolicyIssue) ||
-                  Boolean(webhookPublishIssue)
+                  Boolean(publishIssue)
                 }
                 icon={CheckedIcon}
                 iconType="leading"
@@ -2017,9 +2048,9 @@ export function TemplateDesignerView({
                   {initiatorPolicyIssue}
                 </Typography>
               ) : null}
-              {!workflowIssue && webhookPublishIssue ? (
+              {!workflowIssue && publishIssue ? (
                 <Typography color="text-error" variant="body">
-                  發布前需修正：{webhookPublishIssue}
+                  發布前需修正：{publishIssue}
                 </Typography>
               ) : null}
               {!embedded ? (
@@ -2198,6 +2229,26 @@ export function TemplateDesignerView({
                       ))}
                     </div>
                   </div>
+                  <div style={TOOL_GROUP_STYLE}>
+                    <Typography color="text-neutral" variant="caption">
+                      表單欄位
+                    </Typography>
+                    <div style={BUTTON_ROW_STYLE}>
+                      <Button
+                        disabled={webhookFormSchema === null}
+                        onClick={(): void => setFieldAccessMatrixOpen(true)}
+                        size="sub"
+                        title={
+                          webhookFormSchema === null
+                            ? FIELD_ACCESS_NO_FORM_REASON
+                            : undefined
+                        }
+                        variant="base-secondary"
+                      >
+                        欄位總覽
+                      </Button>
+                    </div>
+                  </div>
                   {selectedEdges.length > 1
                     ? renderSelectedEdgesPanel(selectedEdges)
                     : null}
@@ -2214,6 +2265,16 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {!embedded && showDryRun ? renderDryRunModal() : null}
+        <FieldAccessMatrixDrawer
+          definition={workflowDefinition}
+          formSchema={webhookFormSchema}
+          language={language}
+          onApply={(entries): string | null =>
+            controller.dispatch({ entries, type: 'setFieldAccessMatrix' }).error
+          }
+          onClose={(): void => setFieldAccessMatrixOpen(false)}
+          open={fieldAccessMatrixOpen}
+        />
         {showAiAssistant && aiAssistantAvailable ? (
           <WorkflowChatDrawer
             controller={controller}
@@ -3496,6 +3557,21 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
+        <FieldAccessNodeSection
+          definition={workflowDefinition}
+          language={language}
+          node={node}
+          onOpenMatrix={(): void => setFieldAccessMatrixOpen(true)}
+          onRemoveLegacy={(): void => {
+            controller.dispatch({
+              nodeId: node.id,
+              type: 'removeLegacyFieldPermissions',
+            });
+          }}
+          openDisabledReason={
+            webhookFormSchema === null ? FIELD_ACCESS_NO_FORM_REASON : null
+          }
+        />
       </>
     );
   }
@@ -3892,6 +3968,11 @@ function WorkflowNodeCard({
       >
         {secondaryLabel}
       </Typography>
+      {data.fieldAccessTag ? (
+        <span>
+          <Tag label={data.fieldAccessTag} readOnly size="minor" />
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -4027,6 +4108,8 @@ function readFlowNode(
         positions,
         formSchema,
       ),
+      fieldAccessTag:
+        node.type === 'userTask' ? readFieldAccessNodeTag(node) : null,
       hasInput: isWorkflowNodeInputConnectable(node),
       hasOutput: isWorkflowNodeOutputConnectable(node),
       initiatorPolicySummary:
@@ -4076,7 +4159,11 @@ function readWorkflowNodeDimensions(
   }
 
   return {
-    height: FLOW_NODE_INITIAL_HEIGHT,
+    height:
+      FLOW_NODE_INITIAL_HEIGHT +
+      (node.type === 'userTask' && readFieldAccessNodeTag(node) !== null
+        ? FLOW_NODE_FIELD_ACCESS_TAG_HEIGHT
+        : 0),
     width: FLOW_NODE_INITIAL_WIDTH,
   };
 }

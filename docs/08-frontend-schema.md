@@ -136,15 +136,17 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 
 目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
 `excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
-`set_user_task_exclude_initiator`），以及
-`description`、`entryCondition`、`fieldAccess`、`notification` 仍未提供
+`set_user_task_exclude_initiator`）與 `fieldAccess`（見下方說明），以及
+`description`、`entryCondition`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
 > `fieldAccess` 由 server 強制執行：`fill` 不是 `NONE` 的欄位，只有該節點非加簽任務的
 > 簽核人能在核准時補填；`display: 'HIDE'` 只是顯示選項，不是權限邊界。規則、發布檢查與
-> host 注意事項見 [§8](#8-節點層級欄位存取fieldaccess)。designer 目前沒有編輯
-> `fieldAccess` 的面板，只能直接改 workflow JSON；BPM 內建的案件詳情也還沒有補填輸入，
-> 要在畫面上補填的 host 自行呼叫 `decideTask` 的 `formDataJson`。要讓某個欄位不出現在
+> host 注意事項見 [§8](#8-節點層級欄位存取fieldaccess)。designer 以「欄位與關卡總覽」
+> 設定（側欄「欄位總覽」或節點面板「開啟欄位總覽」）：列為表單欄位、欄為依流程順序的簽核節點，
+> 套用時以 `setFieldAccessMatrix` 一次寫入所有節點（AI 工具 `set_field_access_matrix` 只改寫 `nodeIds` 列出的節點）；
+> 節點上殘留的舊鍵以 `removeLegacyFieldPermissions` 移除。總覽與發布檢查共用
+> `readFieldAccessMatrix` 的同一套規則，問題只擋發布、不擋儲存草稿。要讓某個欄位不出現在
 > 畫面上，用表單欄位的 `hidden`（見 §7）。
 
 `SEQUENTIAL`（designer 選項「依序簽核」）依候選簽核人的順序一次只開放一位：
@@ -508,8 +510,8 @@ apps/client/src/app/templates/[id]/designer
 未設定 `fieldAccess` 的節點行為不變。唯一對所有節點都生效的差異是 `decideTask`：取得 advisory
 lock 之後會重讀 task，輸給鎖的那一筆核准現在回 `Task <id> is not pending`（過去用鎖前讀到的舊狀態判斷）。
 
-這一節描述 server 與 shared helper 已有的行為；案件詳情的補填輸入、`FormRenderer` 的
-`fieldAccess` 與 designer 面板尚未提供（見 §2 結尾的說明）。
+這一節描述 server 與 shared helper 的行為。案件詳情的補填輸入與 `FormRenderer` 的
+`fieldAccess` 見 docs/21 P1／P2，designer 的設定介面見 §2 結尾的說明。
 
 ### 8.1 名詞與設定
 
