@@ -1122,3 +1122,95 @@ describe('set_service_action — NOTIFY webhooks', () => {
     });
   });
 });
+
+describe('field access tools', () => {
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const added = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!added.ok || added.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const nodeId = added.result.state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state: added.result.state };
+  }
+
+  it('exposes both as mutation tools', () =>
+    expect(
+      WORKFLOW_TOOLSET.filter(
+        (tool) =>
+          tool.name === 'set_field_access_matrix' ||
+          tool.name === 'remove_legacy_field_permissions',
+      ).map((tool) => tool.kind),
+    ).toEqual(['mutation', 'mutation']));
+
+  it('tells the assistant hiding is not a permission', () =>
+    expect(
+      WORKFLOW_TOOLSET.find((tool) => tool.name === 'set_field_access_matrix')
+        ?.description,
+    ).toContain('不是權限'));
+
+  it('writes the matrix and reads it back in the node summary', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_field_access_matrix',
+      {
+        entries: [
+          { display: 'SHOW', fieldKey: 'amount', fill: 'REQUIRED', nodeId },
+        ],
+        nodeIds: [nodeId],
+      },
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    expect(
+      result.snapshot.nodes.find((node) => node.id === nodeId)?.summary,
+    ).toContain('欄位設定=amount:SHOW/REQUIRED');
+  });
+
+  it('refuses an entry with an unknown fill', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_field_access_matrix',
+      {
+        entries: [{ display: 'SHOW', fieldKey: 'x', fill: 'ALWAYS', nodeId }],
+        nodeIds: [nodeId],
+      },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses a call without nodeIds instead of overwriting every node', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_field_access_matrix',
+      { entries: [{ display: 'HIDE', fieldKey: 'x', fill: 'NONE', nodeId }] },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(false);
+  });
+});

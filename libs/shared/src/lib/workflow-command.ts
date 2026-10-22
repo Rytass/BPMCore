@@ -1,8 +1,10 @@
 import { FormDefinitionSchema } from './form';
+import { isFieldAccessEntryValid } from './field-access-lint';
 import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  FieldAccessEntry,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaConfig,
@@ -124,6 +126,29 @@ export type WorkflowCommand =
       readonly description?: string;
     }
   | {
+      /**
+       * Writes the field access of every user task at once, the way the
+       * designer's field access matrix applies: each node gets the entries
+       * listed for it, in order, and a user task with none listed loses its
+       * `fieldAccess` key. Pass the whole matrix, not a change set —
+       * unless `nodeIds` is given: then only those user tasks are rewritten,
+       * every other node keeps what it has, and an entry for a node outside
+       * `nodeIds` is refused.
+       */
+      readonly type: 'setFieldAccessMatrix';
+      readonly entries: readonly FieldAccessMatrixEntry[];
+      readonly nodeIds?: readonly string[];
+    }
+  | {
+      /**
+       * Drops the deprecated `fieldPermissions` key from a user task. Nothing
+       * is converted into `fieldAccess`: the old key was never enforced, so
+       * what it held means nothing.
+       */
+      readonly type: 'removeLegacyFieldPermissions';
+      readonly nodeId: string;
+    }
+  | {
       readonly type: 'setServiceAction';
       readonly nodeId: string;
       readonly action: ServiceAction;
@@ -167,6 +192,11 @@ export type WorkflowCommand =
   | { readonly type: 'selectEdges'; readonly edgeIds: readonly string[] }
   // ── Layout ──
   | { readonly type: 'autoLayout' };
+
+/** One `fieldAccess` entry of `setFieldAccessMatrix`, with its node. */
+export interface FieldAccessMatrixEntry extends FieldAccessEntry {
+  readonly nodeId: string;
+}
 
 /** High-level intents that fold into a sequence of primitive commands. */
 export type WorkflowMacroCommand =
@@ -272,6 +302,18 @@ export function applyWorkflowCommand(
       return applySetUserTaskDecisionPolicy(state, command);
     case 'setUserTaskOptions':
       return applySetUserTaskOptions(state, command);
+    case 'setFieldAccessMatrix':
+      return applySetFieldAccessMatrix(state, command);
+    case 'removeLegacyFieldPermissions':
+      return mapNode(
+        state,
+        command.nodeId,
+        (node) =>
+          node.type === 'userTask'
+            ? { ...node, data: omitKey(node.data, 'fieldPermissions') }
+            : node,
+        'userTask',
+      );
     case 'setServiceAction':
       return applySetServiceAction(state, command);
     case 'setEndState':
@@ -699,6 +741,97 @@ function applySetUserTaskExcludeInitiator(
     },
     'userTask',
   );
+}
+
+function applySetFieldAccessMatrix(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setFieldAccessMatrix' }>,
+): WorkflowCommandResult {
+  const userTaskIds = new Set(
+    state.definition.nodes
+      .filter((node) => node.type === 'userTask')
+      .map((node) => node.id),
+  );
+  const notUserTask = command.entries.find(
+    (entry) => !userTaskIds.has(entry.nodeId),
+  );
+
+  if (notUserTask) {
+    return reject(state, `節點 ${notUserTask.nodeId} 不是簽核節點。`);
+  }
+
+  const scopeNodeIds =
+    command.nodeIds === undefined ? null : new Set(command.nodeIds);
+  const scopeNotUserTask = command.nodeIds?.find(
+    (nodeId) => !userTaskIds.has(nodeId),
+  );
+
+  if (scopeNotUserTask !== undefined) {
+    return reject(state, `節點 ${scopeNotUserTask} 不是簽核節點。`);
+  }
+
+  const outsideScope =
+    scopeNodeIds === null
+      ? undefined
+      : command.entries.find((entry) => !scopeNodeIds.has(entry.nodeId));
+
+  if (outsideScope) {
+    return reject(
+      state,
+      `節點 ${outsideScope.nodeId} 不在這次要改寫的 nodeIds 裡。`,
+    );
+  }
+
+  const malformed = command.entries.find(
+    (entry): boolean => !isFieldAccessEntryValid(entry),
+  );
+
+  if (malformed) {
+    return reject(
+      state,
+      `節點 ${malformed.nodeId} 的欄位設定格式不正確：${JSON.stringify(malformed)}`,
+    );
+  }
+
+  const keys = command.entries.map(
+    (entry) => `${entry.nodeId}\u0000${entry.fieldKey}`,
+  );
+  const duplicate = command.entries.find(
+    (_, index) => keys.indexOf(keys[index]) !== index,
+  );
+
+  if (duplicate) {
+    return reject(
+      state,
+      `節點 ${duplicate.nodeId} 的欄位 ${duplicate.fieldKey} 重複設定。`,
+    );
+  }
+
+  const definition = {
+    ...state.definition,
+    nodes: state.definition.nodes.map((node) => {
+      if (
+        node.type !== 'userTask' ||
+        (scopeNodeIds !== null && !scopeNodeIds.has(node.id))
+      ) {
+        return node;
+      }
+
+      const fieldAccess = command.entries
+        .filter((entry) => entry.nodeId === node.id)
+        .map(({ display, fieldKey, fill }): FieldAccessEntry => ({
+          display,
+          fieldKey,
+          fill,
+        }));
+
+      return fieldAccess.length
+        ? { ...node, data: { ...node.data, fieldAccess } }
+        : { ...node, data: omitKey(node.data, 'fieldAccess') };
+    }),
+  };
+
+  return finalize({ ...state, definition }, true, NO_EFFECTS);
 }
 
 function applySetUserTaskOptions(

@@ -702,3 +702,199 @@ describe('setServiceAction — NOTIFY webhooks', () => {
     });
   });
 });
+
+describe('field access commands', () => {
+  function stateWithTwoUserTasks(): WorkflowDesignerState {
+    const options = deterministicEdgeIds();
+    const first = applyWorkflowCommand(
+      initialState(),
+      { nodeType: 'userTask', type: 'addNode' },
+      options,
+    );
+
+    return applyWorkflowCommand(
+      first.state,
+      { nodeType: 'userTask', type: 'addNode' },
+      options,
+    ).state;
+  }
+
+  function readUserTasks(
+    state: WorkflowDesignerState,
+  ): readonly Extract<
+    WorkflowDefinition['nodes'][number],
+    { type: 'userTask' }
+  >[] {
+    return state.definition.nodes.filter(
+      (
+        node,
+      ): node is Extract<
+        WorkflowDefinition['nodes'][number],
+        { type: 'userTask' }
+      > => node.type === 'userTask',
+    );
+  }
+
+  it('writes several nodes at once and clears the nodes left out', () => {
+    const state = stateWithTwoUserTasks();
+    const [first, second] = readUserTasks(state);
+    const written = applyWorkflowCommand(state, {
+      entries: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'REQUIRED', nodeId: first.id },
+        { display: 'HIDE', fieldKey: 'y', fill: 'NONE', nodeId: second.id },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(written.error).toBeNull();
+    expect(
+      readUserTasks(written.state).map((node) => node.data.fieldAccess),
+    ).toEqual([
+      [{ display: 'SHOW', fieldKey: 'x', fill: 'REQUIRED' }],
+      [{ display: 'HIDE', fieldKey: 'y', fill: 'NONE' }],
+    ]);
+
+    const cleared = applyWorkflowCommand(written.state, {
+      entries: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'OPTIONAL', nodeId: first.id },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+    const [clearedFirst, clearedSecond] = readUserTasks(cleared.state);
+
+    expect(clearedFirst.data.fieldAccess).toEqual([
+      { display: 'SHOW', fieldKey: 'x', fill: 'OPTIONAL' },
+    ]);
+    expect('fieldAccess' in clearedSecond.data).toBe(false);
+  });
+
+  it('rewrites only the nodes named in nodeIds', () => {
+    const state = stateWithTwoUserTasks();
+    const [first, second] = readUserTasks(state);
+    const written = applyWorkflowCommand(state, {
+      entries: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'REQUIRED', nodeId: first.id },
+        { display: 'HIDE', fieldKey: 'y', fill: 'NONE', nodeId: second.id },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+    const scoped = applyWorkflowCommand(written.state, {
+      entries: [
+        { display: 'SHOW', fieldKey: 'z', fill: 'OPTIONAL', nodeId: first.id },
+      ],
+      nodeIds: [first.id],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(scoped.error).toBeNull();
+    expect(
+      readUserTasks(scoped.state).map((node) => node.data.fieldAccess),
+    ).toEqual([
+      [{ display: 'SHOW', fieldKey: 'z', fill: 'OPTIONAL' }],
+      [{ display: 'HIDE', fieldKey: 'y', fill: 'NONE' }],
+    ]);
+  });
+
+  it('refuses an entry outside nodeIds and a non user task in nodeIds', () => {
+    const state = stateWithTwoUserTasks();
+    const [first, second] = readUserTasks(state);
+    const outside = applyWorkflowCommand(state, {
+      entries: [
+        { display: 'HIDE', fieldKey: 'y', fill: 'NONE', nodeId: second.id },
+      ],
+      nodeIds: [first.id],
+      type: 'setFieldAccessMatrix',
+    });
+    const notUserTask = applyWorkflowCommand(state, {
+      entries: [],
+      nodeIds: ['start'],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(outside.changed).toBe(false);
+    expect(outside.error).toContain('nodeIds');
+    expect(notUserTask.changed).toBe(false);
+    expect(notUserTask.error).toContain('start');
+  });
+
+  it('leaves the other node types alone', () => {
+    const state = stateWithTwoUserTasks();
+    const result = applyWorkflowCommand(state, {
+      entries: [],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(
+      result.state.definition.nodes.filter((node) => node.type !== 'userTask'),
+    ).toEqual(
+      state.definition.nodes.filter((node) => node.type !== 'userTask'),
+    );
+  });
+
+  it('rejects an entry on a node that is not a user task', () => {
+    const result = applyWorkflowCommand(stateWithTwoUserTasks(), {
+      entries: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'NONE', nodeId: 'start' },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.error).toContain('start');
+  });
+
+  it('rejects one field listed twice for one node', () => {
+    const state = stateWithTwoUserTasks();
+    const [first] = readUserTasks(state);
+    const result = applyWorkflowCommand(state, {
+      entries: [
+        { display: 'SHOW', fieldKey: 'x', fill: 'NONE', nodeId: first.id },
+        { display: 'HIDE', fieldKey: 'x', fill: 'NONE', nodeId: first.id },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.error).toContain('重複');
+  });
+
+  it('removes the legacy key without converting it', () => {
+    const state = stateWithTwoUserTasks();
+    const [first] = readUserTasks(state);
+    const withLegacy: WorkflowDesignerState = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: state.definition.nodes.map((node) =>
+          node.id === first.id && node.type === 'userTask'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  fieldPermissions: [
+                    { editable: true, fieldPath: 'x', visible: true },
+                  ],
+                },
+              }
+            : node,
+        ),
+      },
+    };
+    const result = applyWorkflowCommand(withLegacy, {
+      nodeId: first.id,
+      type: 'removeLegacyFieldPermissions',
+    });
+    const [removed] = readUserTasks(result.state);
+
+    expect('fieldPermissions' in removed.data).toBe(false);
+    expect('fieldAccess' in removed.data).toBe(false);
+  });
+
+  it('refuses to remove the legacy key from a node that is not a user task', () =>
+    expect(
+      applyWorkflowCommand(initialState(), {
+        nodeId: 'start',
+        type: 'removeLegacyFieldPermissions',
+      }).changed,
+    ).toBe(false));
+});
