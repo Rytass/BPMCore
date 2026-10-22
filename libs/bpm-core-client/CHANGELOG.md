@@ -1,3 +1,14 @@
+## 0.17.8 (2026-10-22)
+
+### 🩹 Fixes
+
+- **bpm-core-react:** re-enable the instance header actions after a decision ([70e1a92](https://github.com/Rytass/BPMCore/commit/70e1a92))
+- **bpm-core-react:** open the field overview on every field when nothing is set ([f90188d](https://github.com/Rytass/BPMCore/commit/f90188d))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.17.7 (2026-10-22)
 
 ### 🚀 Features
