@@ -128,15 +128,14 @@ test.describe('field access overview in the designer (real backend)', () => {
       await expect(financeCard).toBeVisible();
       await expect(financeCard).not.toContainText('補填');
 
-      // The overview opens with every row collapsed: nothing is set yet.
+      // Nothing is set yet, so the overview opens on every field rather
+      // than collapsing them all away.
       await admin.getByRole('button', { name: '欄位總覽' }).click();
       await expect(admin.getByText('欄位與關卡總覽')).toBeVisible();
-      await expect(admin.getByText('已收起 4 個')).toBeVisible();
-      // Mezzanine's Toggle label is not a <label>, so the switch itself is
-      // what takes the click.
-      await admin
-        .getByRole('checkbox', { name: '只看有設定或有問題的欄位' })
-        .click();
+      await expect(
+        admin.getByRole('checkbox', { name: '只看有設定或有問題的欄位' }),
+      ).not.toBeChecked();
+      await expect(admin.getByText(/已收起/u)).toHaveCount(0);
 
       await chooseCell(admin, '發票號碼 在關卡 2的設定', '補填（必填）');
       await chooseCell(admin, '內部備註 在關卡 3的設定', '隱藏');
