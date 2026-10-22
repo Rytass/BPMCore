@@ -1263,15 +1263,10 @@ test.describe('M1 W3 template designer', () => {
     await page.getByRole('button', { name: '簽核節點' }).click();
 
     await page.getByRole('combobox', { name: '發起人主管' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '指定組織主管' })
-      .click();
+    // The side panel's 表單欄位 tools push this list below the fold.
+    await clickDropdownOption(page, '指定組織主管');
     await page.getByRole('combobox', { exact: true, name: '選擇組織' }).click();
-    await page
-      .locator('[role="option"]')
-      .filter({ hasText: '財務部 · FIN-TW' })
-      .click();
+    await clickDropdownOption(page, '財務部 · FIN-TW');
     await expect(page.getByText('組織主管：財務部 · FIN-TW')).toBeVisible();
     await page.getByRole('button', { name: '儲存草稿' }).click();
     await expect

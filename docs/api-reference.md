@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-21): `libs/shared@0.17.6`, `libs/bpm-core-client@0.17.6`, `libs/bpm-core@0.17.6` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.6`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-22): `libs/shared@0.17.6`, `libs/bpm-core-client@0.17.6`, `libs/bpm-core@0.17.6` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.6`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
@@ -49,6 +49,8 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Node-level field access, publish lint for early reads: publishing a template version also refuses a condition that reads an approver-filled field before any approver can have filled it in, since the field is then absent and the case gets stuck or routes on nothing. Checked from the graph alone, per field: the nodes that fill it in and have no `entryCondition` are the guards (one that has an `entryCondition` can be skipped, so it guards nothing); an edge `condition` or `conditionFieldKey` is refused when its source node can be reached from the start without passing a guard, and a node expression (`entryCondition`, an `EXPRESSION` approver resolver, a `WEBHOOK` payload, a `SET_FORM_FIELD` value, a `NOTIFY` `EXPRESSION` recipient list) when its node can, or is the filling node itself. An edge that trips both its `condition` and its `conditionFieldKey` reports once. `initiatorPolicyCel` is not read. Deliberately conservative: a read after a parallel join is refused when only some branches pass through a guard, and `has(form.x)` is not treated as a guard; move the read after the filling node. One new `WORKFLOW_LINT_MESSAGES` line (`approverFilledFieldReadEarly`) with zh-TW / en copy in `readWorkflowLintMessage`; its labels come from the new `WORKFLOW_EXPRESSION_LABELS`, which the backend lint and the client translation both use. A template that reads approver-filled fields only after they are filled in publishes as before | Not yet released |
 | Node-level field access, client and launch/resubmit forms: the client `decideTask` takes an optional `fill: { formData, expectedFormDataFingerprint } \| null`; `ApprovalInstanceRecord.formDataFingerprint` is read with `readApprovalInstance`; `LaunchContext.templateVersion.workflowDefinition` carries the current version's workflow definition. BPM's own launch page and the resubmit edit state no longer render, validate or send approver-filled fields (the server drops them anyway; a `minRows` on one used to block the applicant). Known PR1 limit: an applicant in the resubmit edit state does not see already-revealed approver-filled values; the read-only view is unchanged | Not yet released |
 | Node-level field access, approver fill UI (PR2): `TaskEntity.hasFillableFields` / `TaskRecord.hasFillableFields` (non-ad-hoc task whose node lets the approver fill in fields, read in the same batch query as `nodeLabel`). On the instance page the fill node's approver edits the node's fields in place (`FormRendererProps.fieldLabelMarkers`; `InstanceFormSectionProps` adds `fieldAccess`, `fieldLabelMarkers`, `fill`, `onReloadAfterConflict`; `InstanceTasksSectionProps` adds `fill`, `onFillApproveError`; `InstanceHistorySectionProps` adds `formSchema`); approving checks the fill first, lists it in the confirm dialog and sends it with `decideTask`; a fingerprint conflict keeps the draft and offers a reload; server field errors land on the fields. The tasks table and the inbox show 需補填, the history names the filled fields (`changedFieldKeys`), and the notification drawer offers 開啟案件 instead of 同意 for a task that fills in fields. A node without `fieldAccess` renders as before | Not yet released |
+| Node-level field access, shared lint rules (designer step 1): the field access publish rules move into `@rytass/bpm-core-shared` as structured issues (`FieldAccessIssue`, `readNodeFieldAccessIssues`, `readDefinitionFieldAccessIssues`, `readFormFieldAccessIssues`, `readFormFieldFillIssues`, `readUserTaskFillConflicts`, `readReachableWorkflowNodeIds`, `createWorkflowCoRunReader`, `referencesFormField`). The backend lint now reads them; its output is unchanged | Not yet released |
+| Node-level field access, designer (PR3): `readFieldAccessMatrix` and its types, the `setFieldAccessMatrix` / `removeLegacyFieldPermissions` commands (`FieldAccessMatrixEntry`) and the `set_field_access_matrix` / `remove_legacy_field_permissions` tools. The template designer gets the 欄位與關卡總覽 drawer, a 欄位顯示與補填 section on the user task panel and a 補填 / 隱藏 tag on the node card; field access issues block publishing, not saving. `WORKFLOW_CHAT_SYSTEM_PROMPT` gains a rule on field access | Not yet released |
 | Node-level field access — engine, publish lint, launch/resubmit forms (PR1); the seven field-access rows above are its parts. Nodes without `fieldAccess` behave as before; the one change that reaches every node is that `decideTask` re-reads the task after taking the instance lock. The refusals a host can meet are listed under [Decide-task errors](#decide-task-errors-approver-filled-fields) | Not yet released |
 
 ---
@@ -257,6 +259,40 @@ Helpers over `UserTaskNodeData.fieldAccess`. They live in `libs/shared/src/lib/f
 | `overlayStoredFormDataKeys(submitted, stored, keys)` | function | `submitted` with each of `keys` replaced by the stored value when `stored` has it as an own property, and left out when it does not |
 | `isFormDataValueEmpty(value)` | function | `true` for `undefined`, `null`, a blank string and an empty array; `false` for `false`, `0`, `NaN` and objects |
 
+### Field access lint (root only)
+
+The field access publish rules as structured issues, in `libs/shared/src/lib/field-access-lint.ts`, exported from the package root only. The backend publish lint maps each issue to its `message` (a `WORKFLOW_LINT_MESSAGES` line, so the lint output is unchanged), and the designer reads the same issues to place them on fields and nodes. The early-read rule (`approverFilledFieldReadEarly`) is not here: it needs every node's expression sources and stays in `TemplateService`.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FieldAccessIssue` / `FieldAccessIssueCode` | interface / type | `{ code, fieldKeys, message, nodeIds }`. `code` names the `WORKFLOW_LINT_MESSAGES` key the message comes from; `fieldKeys` lists the offending field first (`applicantRuleReadsApproverFilled` lists the applicant's field, then the approver-filled one); `nodeIds` is in definition order where there are two |
+| `UserTaskFillConflict` | type | `'autoApprove' \| 'groupPolicy' \| 'skipNode'` |
+| `readUserTaskFillConflicts(node)` | function | Why the node cannot let its approver fill fields in: `PARALLEL_ALL` / `QUORUM`, `sla.onTimeout: AUTO_APPROVE`, `excludeInitiator.whenEmpty: SKIP_NODE`. Read whether or not the node fills anything in |
+| `readNodeFieldAccessIssues(node)` | function | One user task's issues in lint order: the deprecated `fieldPermissions` key, an invalid `fieldAccess` (which stops there), duplicates, fill with `display: 'HIDE'`, then the fill conflicts when the node fills a field in |
+| `readDefinitionFieldAccessIssues(definition)` | function | A `SET_FORM_FIELD` serviceTask writing an approver-filled field, then two fill nodes of one field that can both run in one case |
+| `readFormFieldAccessIssues(definition, schema)` | function | The issues against the bound form: unknown `fieldKey`, a field the form will not let an approver fill in, `REQUIRED` on a boolean, an applicant's rule reading an approver-filled field. `schema: null` reads every `fieldKey` as unknown |
+| `readFormFieldFillIssues(field)` | function | Why one form field cannot be filled in by an approver (form rule, data source, file upload, table with a data-source column); empty when it can |
+| `readReachableWorkflowNodeIds(edges, startNodeIds, blockedNodeIds?)` | function | Nodes reachable from the start nodes without entering a blocked one, the start nodes included unless blocked; cycle-safe |
+| `createWorkflowCoRunReader(definition)` | function | `(nodeId, otherNodeId) => boolean`: whether both nodes can run in one case (one reaches the other, or a parallel split sends each down its own branch) |
+| `isFieldAccessEntryValid(entry)` | function | Whether a stored entry is one the publish lint accepts: a non-blank `fieldKey` and a known `display` / `fill`. Stricter than `readNodeFieldAccess` (the engine's reader), which lets a whitespace `fieldKey` through; `setFieldAccessMatrix` checks entries with this one |
+| `FIELD_ACCESS_DISPLAYS` / `FIELD_ACCESS_FILLS` | const | The accepted `display` / `fill` values, shared by the lint, the command and the assistant tool schema |
+| `referencesFormField(expression, fieldKey)` | function | Whether a CEL expression reads the top-level field (`form.x`, `formData.x`, `form["x"]`, deeper steps and `has(...)` included; `myform.x` and `form.xy` do not count). Moved from the backend, which now imports it |
+
+### Field access matrix (root only)
+
+The designer's 欄位與關卡總覽, in `libs/shared/src/lib/field-access-matrix.ts`, exported from the package root only. It reads the same `field-access-lint` rules as the publish lint, so the two cannot disagree (pinned by `field-access-matrix.parity.spec.ts` in bpm-core).
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `readFieldAccessMatrix(definition, schema)` | function | `{ columns, rows, issues }`: one column per user task in flow order (topological; a loop is entered at the node the flow leads into first), one row per top-level form field (none without a form), and every publish-blocking field access issue apart from the early-read rule, in lint order |
+| `FieldAccessMatrix` / `FieldAccessMatrixColumn` / `FieldAccessMatrixRow` / `FieldAccessMatrixCell` | interface | A column carries `stage` (1-based), `label`, `branchLabel` (the label of an edge from an exclusive gateway straight into the node), `fillConflicts` and its node-level `issues`. A row carries the `applicant` value, one cell per column, `fillNodeIds`, `fillBlockers`, its `issues` and `notices`. A cell carries `explicit` (the node's entry or `null`), `choice`, `effective`, `reason` and `disabledChoices` |
+| `FieldAccessEffective` | type | `'FILL' \| 'READ_ONLY' \| 'NOT_SHOWN' \| 'HIDDEN' \| 'FILL_OPTIONAL' \| 'FILL_REQUIRED'`. Without an entry, an approver-filled field reads `READ_ONLY` at a node that a fill node earlier in the column order reaches, `NOT_SHOWN` otherwise; an ordinary field reads `READ_ONLY` |
+| `FieldAccessCellReason` | type | `'EXPLICIT' \| 'APPLICANT_FIELD' \| 'FILLED_EARLIER' \| 'NOT_YET_FILLED'` |
+| `FieldAccessNotice` | interface | A non-blocking hint: `shownBeforeFilled` (a node explicitly shows an approver-filled field before anybody filled it in) |
+| `FieldAccessChoice` / `FIELD_ACCESS_CHOICES` | type / const | What a cell offers: `DEFAULT` (no entry), `SHOW`, `HIDE`, `FILL_OPTIONAL`, `FILL_REQUIRED` |
+| `readFieldAccessChoice(entry)` | function | The choice an entry (or `null`) stands for; a hidden fill reads as the fill it asks for |
+| `readFieldAccessEntryForChoice(fieldKey, choice)` | function | The entry a choice writes, `null` for `DEFAULT`; a fill is always `display: 'SHOW'` |
+
 ## `@rytass/bpm-core-shared/condition`
 
 Audit-condition evaluation context structures.
@@ -433,7 +469,8 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/…) |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/setFieldAccessMatrix/removeLegacyFieldPermissions/…). `setFieldAccessMatrix { entries, nodeIds? }` writes every user task at once — a user task with no entry listed loses its `fieldAccess` key — or, with `nodeIds`, only those user tasks, leaving the rest as they are; it rejects an entry on a node that is not a user task or outside `nodeIds`, a `nodeIds` entry that is not a user task, a malformed entry, or one field listed twice for a node. `removeLegacyFieldPermissions { nodeId }` drops the deprecated `fieldPermissions` key without converting it |
+| `FieldAccessMatrixEntry` | interface | `FieldAccessEntry` plus its `nodeId`, the shape of `setFieldAccessMatrix` entries |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
 | `WorkflowCommandEffects` | interface | Controller hints (`layout: boolean`) |
@@ -453,7 +490,7 @@ Provider-agnostic LLM toolset (JSON Schema) over the command layer, plus a read-
 | `JsonSchema` | type | `Readonly<Record<string, unknown>>` tool input contract |
 | `WorkflowToolKind` | type | `'mutation' \| 'macro' \| 'query'` |
 | `WorkflowTool` | interface | `{ name, description, inputSchema, kind }` |
-| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla`, `set_user_task_exclude_initiator` and `set_user_task_decision_policy`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
+| `WORKFLOW_TOOLSET` | const | The full tool catalog (mutations, macros, queries), incl. `set_user_task_return_require_comment`, `set_user_task_sla`, `set_user_task_exclude_initiator`, `set_user_task_decision_policy`, `set_field_access_matrix` (requires `nodeIds` and rewrites only those nodes, so a partial edit cannot clear the others; the user-task snapshot summary lists the node's 欄位設定 so the assistant can keep them) and `remove_legacy_field_permissions`. One mutation tool per designer-reachable command — the assistant's contract is parity with the property form |
 | `WORKFLOW_TOOL_BY_NAME` | const | `ReadonlyMap<string, WorkflowTool>` lookup |
 | `WorkflowNodeSnapshot` / `WorkflowEdgeSnapshot` / `WorkflowSnapshot` | interface | LLM-readable view of state |
 | `readWorkflowSnapshot` | function | State → snapshot |

@@ -1,6 +1,6 @@
 # 21 — 簽核人補填欄位開發 Phase
 
-- **狀態**：PLANNED（2026-10-21 規劃；ADR 20 Accepted）
+- **狀態**：IMPLEMENTING（2026-10-21 規劃；ADR 20 Accepted；P0–P3 已實作）
 - **規劃日期**：2026-10-21
 - **權威決策**：[20 — ADR：簽核人補填欄位](./20-approver-filled-fields-adr.md)
 - **介面設計稿**：<https://claude.ai/artifact/66grS2TYLEdEuumygeMatE>（PR2-1～PR2-4、PR3-1、PR3-3；PR3-2 已不採用）
@@ -19,7 +19,7 @@
 | P0 | PR1 收尾：`fieldPermissions` → `fieldAccess`、申請人規則檢查、lint label 集中 | #109（推到作者 fork 分支） | — | IMPLEMENTED |
 | P1 | FormRenderer 逐欄位顯示／可編輯、檢視者欄位權限計算 | PR2（疊在 #109 之上） | P0 | IMPLEMENTED |
 | P2 | 案件詳情補填流程：輸入、驗證、同意、衝突、任務與歷程 | PR2 | P1 | IMPLEMENTED |
-| P3 | 設計器：欄位與關卡總覽矩陣、`setFieldAccessMatrix` command、節點面板摘要、舊鍵提示 | PR3（疊在 #109 之上） | P0 | PLANNED |
+| P3 | 設計器：欄位與關卡總覽矩陣、`setFieldAccessMatrix` command、節點面板摘要、舊鍵提示 | PR3 | P0 | IMPLEMENTED |
 | P4 | E2E golden path、demo seed、文件、發布 | PR2／PR3 合併後 | P2、P3 | PLANNED |
 
 P1–P2 與 P3 互不相依，可以並行。
@@ -136,6 +136,33 @@ P1–P2 與 P3 互不相依，可以並行。
 - 真實介面驗證（`pnpm dev`，由使用者啟動）：以 demo seed 的差旅單跑完 PR2-1～PR2-4 四個畫面，截圖附在 PR。
 
 ## P3 — 設計器（PR3）
+
+- **狀態**：IMPLEMENTED（2026-10-22）。typecheck／lint／test／build 全綠（shared 305、bpm-core 1444、
+  bpm-core-client 201、bpm-core-react 366、api 33）；`field-access-designer-real.spec.ts` 對真實後端通過（總覽設定 →
+  套用 → 節點卡片 Tag → 發布 v2 的 `fieldAccess` 正確 → 連續兩關補填被標示、發布停用、儲存草稿仍可用）；
+  全套 client e2e 83 個在 `pnpm demo:reset` 後全數通過。另在瀏覽器實測抽屜版面與檢查欄說明。與下方 Scope 的差異：
+  - 規則先抽到 shared `field-access-lint.ts`（`readNodeFieldAccessIssues`、`readDefinitionFieldAccessIssues`、
+    `readFormFieldAccessIssues` 等，回傳帶 `code`／`fieldKeys`／`nodeIds` 的結構化 issue），後端 lint 與
+    `readFieldAccessMatrix` 都讀它；`field-access-matrix.parity.spec.ts` 釘住 `lintWorkflowDefinition` 與矩陣的
+    issue 完全相同。早讀檢查（`approverFilledFieldReadEarly`）要讀所有節點的運算式，仍只在後端發布時檢查，
+    所以總覽的「沒有問題」不代表一定能發布。
+  - 問題清單**只擋發布、不擋儲存草稿**，沒有放進 `readWorkflowDefinitionIssue`：那會連儲存一起擋，而且它拿不到
+    表單 schema。「儲存前就看得到」由總覽的檢查欄與節點面板達成；發布按鈕停用時，原因顯示在側欄
+    「發布前需修正：…」。
+  - `readFieldAccessMatrix` 的推導值回傳代碼（`FILL`／`READ_ONLY`／`NOT_SHOWN`／`HIDDEN`／`FILL_OPTIONAL`／
+    `FILL_REQUIRED`），中文由 react 對應；issue 文字一律經 `readWorkflowLintMessage` 換成設計器用語。
+  - 推導值在設計時以「關卡順序較早、且可達本節點的補填節點」判斷是否已揭露；並行分支上的補填視為尚未揭露。
+    欄位依拓撲順序排列；有迴圈時從流程實際進入迴圈的節點接下去（已排入的節點連得到、定義順序最前者），都沒有才取定義順序。「互斥分支」標頭取直接由 exclusiveGateway 連進來的連線名稱。
+  - Mezzanine 1.7.0 的 `Select` 沒有單一選項停用：不能選的補填選項從清單拿掉，舊草稿已選中的值仍保留並在檢查欄標示。
+  - 套用時保留表單已沒有的欄位設定（列在頂端，讓使用者知道），內容沒變就不 dispatch；開啟時才從目前的
+    definition 重建草稿。抽屜開著時流程被改（復原、AI 助理），套用只把抽屜裡改過的格子疊到目前的設定上，
+    其他格子不會被舊草稿蓋掉；節點已不是簽核節點的設定直接丟掉。`fieldKey` 為空白的舊設定在套用時清掉
+    （否則整批會被 command 拒絕）。套用被拒時抽屜不關、草稿保留，並顯示原因。
+  - Mezzanine 的 `InlineMessage` 只顯示單行（超出以省略號截斷），所以頂端與節點面板的 `InlineMessage` 只放短標題，
+    完整說明放在下方 `Typography caption`；長的衝突與無法歸列的問題改用 `Badge dot-warning`（與檢查欄一致，可換行）。
+  - 問題文字以套用前的草稿翻譯：草稿新產生的衝突會提到目前流程還沒有的補填節點，用已套用的流程翻不出來。
+  - AI 工具的節點摘要多了「欄位設定」，讓 `set_field_access_matrix` 能先讀回既有設定。工具必須帶 `nodeIds`，只改寫列出的
+    節點（command 的 `nodeIds` 為選填，抽屜不帶、整張覆寫），避免助理只想改一關卻清掉其他關的設定。
 
 對應設計稿 PR3-1（節點面板）與 PR3-3（欄位與關卡總覽）。PR3-2 的單節點抽屜不實作（ADR 20 §3.3：設定介面以欄位為主軸）。
 
