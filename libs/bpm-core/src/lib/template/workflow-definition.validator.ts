@@ -2,7 +2,6 @@ import {
   ApproverResolver,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
-  FieldAccessEntry,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -12,10 +11,9 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
-  readApproverFilledFieldKeys,
-  readNodeFieldAccess,
-  readNodeFillableFieldKeys,
-  readFormFieldPathTopLevelKey,
+  readDefinitionFieldAccessIssues,
+  readNodeFieldAccessIssues,
+  readReachableWorkflowNodeIds,
 } from '@rytass/bpm-core-shared';
 import {
   isDecisionPolicyUnsatisfiable,
@@ -110,8 +108,9 @@ export function lintWorkflowDefinition(
     ...lintEdges(edges, nodeIds),
     ...lintUserTaskNodes(nodes),
     ...lintServiceTaskNodes(nodes),
-    ...lintApproverFilledFieldWrites(definition),
-    ...lintApproverFilledFillNodesOnPath(definition),
+    ...readDefinitionFieldAccessIssues(definition).map(
+      (issue) => issue.message,
+    ),
     ...lintAsyncNotifyOutgoingEdges(nodes, edges),
     ...lintExclusiveGateways(nodes, edges),
     ...lintParallelGateways(nodes, edges),
@@ -282,218 +281,8 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
             ]),
         ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
-        ...lintLegacyFieldPermissions(node),
-        ...lintFieldAccess(node),
+        ...readNodeFieldAccessIssues(node).map((issue) => issue.message),
       ];
-    });
-}
-
-function isPlainRecord(
-  value: unknown,
-): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-const FIELD_ACCESS_DISPLAYS: readonly unknown[] = ['SHOW', 'HIDE'];
-
-const FIELD_ACCESS_FILLS: readonly unknown[] = ['NONE', 'OPTIONAL', 'REQUIRED'];
-
-function isFieldAccessEntryValid(entry: unknown): entry is FieldAccessEntry {
-  return (
-    isPlainRecord(entry) &&
-    typeof entry['fieldKey'] === 'string' &&
-    entry['fieldKey'].trim() !== '' &&
-    FIELD_ACCESS_DISPLAYS.includes(entry['display']) &&
-    FIELD_ACCESS_FILLS.includes(entry['fill'])
-  );
-}
-
-/**
- * `fieldPermissions` was reserved and never enforced, so whatever a draft
- * holds there means nothing. Rather than read it as `fieldAccess` (which would
- * suddenly enforce a shape nobody tested) or drop it silently, a draft that
- * still carries the key cannot be published until it is removed. Published
- * versions and case snapshots are left alone: nothing reads the key.
- */
-function lintLegacyFieldPermissions(node: UserTaskNode): readonly string[] {
-  const legacy: unknown = node.data.fieldPermissions;
-
-  return legacy === undefined
-    ? []
-    : [WORKFLOW_LINT_MESSAGES.legacyFieldPermissions(node.id)];
-}
-
-/**
- * The shape and duplicate checks read the raw `fieldAccess`:
- * `readNodeFieldAccess` tolerates a bad draft by skipping malformed entries
- * and keeping the first entry per `fieldKey`, which is exactly what these two
- * checks have to see. Once the shape is reported, the node's other field
- * access rules are skipped, since they would read a list the engine is not
- * going to honour anyway. Whether each `fieldKey` names a top-level field of
- * the form is checked at publish, where the form is known.
- */
-function lintFieldAccess(node: UserTaskNode): readonly string[] {
-  const nodeId = node.id;
-  const raw: unknown = node.data.fieldAccess;
-
-  if (raw === undefined) {
-    return [];
-  }
-
-  const entries: readonly unknown[] | undefined = Array.isArray(raw)
-    ? raw
-    : undefined;
-
-  if (entries === undefined || !entries.every(isFieldAccessEntryValid)) {
-    return [WORKFLOW_LINT_MESSAGES.fieldAccessInvalid(nodeId)];
-  }
-
-  const fieldKeys = entries.map((entry) => entry.fieldKey);
-  const hasFillableField = readNodeFillableFieldKeys(node).size > 0;
-
-  return [
-    ...fieldKeys
-      .filter((fieldKey, index) => fieldKeys.indexOf(fieldKey) !== index)
-      .filter(
-        (fieldKey, index, repeated) => repeated.indexOf(fieldKey) === index,
-      )
-      .map((fieldKey) =>
-        WORKFLOW_LINT_MESSAGES.fieldAccessDuplicate(nodeId, fieldKey),
-      ),
-    ...readNodeFieldAccess(node)
-      .filter((entry) => entry.fill !== 'NONE' && entry.display === 'HIDE')
-      .map((entry) =>
-        WORKFLOW_LINT_MESSAGES.fieldAccessFillHidden(nodeId, entry.fieldKey),
-      ),
-    ...(hasFillableField &&
-    (node.data.decisionPolicy?.type === 'PARALLEL_ALL' ||
-      node.data.decisionPolicy?.type === 'QUORUM')
-      ? [WORKFLOW_LINT_MESSAGES.fieldAccessGroupPolicy(nodeId)]
-      : []),
-    ...(hasFillableField && node.data.sla?.onTimeout === 'AUTO_APPROVE'
-      ? [WORKFLOW_LINT_MESSAGES.fieldAccessAutoApprove(nodeId)]
-      : []),
-    ...(hasFillableField && node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
-      ? [WORKFLOW_LINT_MESSAGES.fieldAccessSkipNode(nodeId)]
-      : []),
-  ];
-}
-
-/**
- * One field, one filler per run: when two nodes that fill the same field in
- * can both run in one case, the later one overwrites the earlier and the
- * signed value no longer tells who answered. They can when one reaches the
- * other, or when a parallel split sends one branch to each: a node reachable
- * from one outgoing edge of the split but not from another, and the other way
- * round. Fill nodes on mutually exclusive branches (one per region, say)
- * never both run and stay allowed, and so do two nodes that both lie after
- * the join, which every branch reaches alike. Reported once per field and
- * pair, in node order; the graph may hold a cycle, which the visited set of
- * `readReachableNodeIds` copes with.
- */
-function lintApproverFilledFillNodesOnPath(
-  definition: WorkflowDefinition,
-): readonly string[] {
-  const userTasks = definition.nodes.filter(
-    (node): node is UserTaskNode => node.type === 'userTask',
-  );
-  const reachableCache = new Map<string, ReadonlySet<string>>();
-  const readReachable = (nodeId: string): ReadonlySet<string> => {
-    const cached = reachableCache.get(nodeId);
-
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    const reachable = readReachableNodeIds(definition.edges, nodeId);
-
-    reachableCache.set(nodeId, reachable);
-
-    return reachable;
-  };
-  const parallelBranches = definition.nodes
-    .filter((node) => node.type === 'parallelGateway')
-    .map((node) =>
-      definition.edges
-        .filter((edge) => edge.source === node.id)
-        .map((edge) => readReachable(edge.target)),
-    )
-    .filter((branches) => branches.length >= 2);
-  const isOnOwnBranch = (
-    branches: readonly ReadonlySet<string>[],
-    nodeId: string,
-    otherNodeId: string,
-  ): boolean =>
-    branches.some(
-      (branch, index) =>
-        branch.has(nodeId) &&
-        !branch.has(otherNodeId) &&
-        branches.some(
-          (other, otherIndex) =>
-            otherIndex !== index && other.has(otherNodeId) && !other.has(nodeId),
-        ),
-    );
-  const canBothRun = (nodeId: string, otherNodeId: string): boolean =>
-    readReachable(nodeId).has(otherNodeId) ||
-    readReachable(otherNodeId).has(nodeId) ||
-    parallelBranches.some((branches) =>
-      isOnOwnBranch(branches, nodeId, otherNodeId),
-    );
-
-  return [...readApproverFilledFieldKeys(definition)].flatMap((fieldKey) => {
-    const fillNodeIds = [
-      ...new Set(
-        userTasks
-          .filter((node) => readNodeFillableFieldKeys(node).has(fieldKey))
-          .map((node) => node.id),
-      ),
-    ];
-
-    return fillNodeIds.flatMap((nodeId, index) =>
-      fillNodeIds
-        .slice(index + 1)
-        .filter((otherNodeId) => canBothRun(nodeId, otherNodeId))
-        .map((otherNodeId) =>
-          WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
-            fieldKey,
-            nodeId,
-            otherNodeId,
-          ),
-        ),
-    );
-  });
-}
-
-/**
- * A field an approver fills in is empty until then, and the approver's value
- * is the one the case keeps. A system node writing it would either be
- * overwritten or overwrite the approver, so the two are kept apart.
- */
-function lintApproverFilledFieldWrites(
-  definition: WorkflowDefinition,
-): readonly string[] {
-  const approverFilled = readApproverFilledFieldKeys(definition);
-
-  return definition.nodes
-    .filter((node) => node.type === 'serviceTask')
-    .flatMap((node) => {
-      const action: unknown = node.data.action;
-      const fieldPath = isPlainRecord(action) ? action['fieldPath'] : undefined;
-      const fieldKey =
-        isPlainRecord(action) &&
-        action['type'] === 'SET_FORM_FIELD' &&
-        typeof fieldPath === 'string'
-          ? readFormFieldPathTopLevelKey(fieldPath)
-          : undefined;
-
-      return fieldKey !== undefined && approverFilled.has(fieldKey)
-        ? [
-            WORKFLOW_LINT_MESSAGES.setFormFieldApproverFilled(
-              node.id,
-              fieldKey,
-            ),
-          ]
-        : [];
     });
 }
 
@@ -866,7 +655,7 @@ function lintReachability(
   edges: readonly WorkflowEdge[],
   startNodeId: string,
 ): readonly string[] {
-  const reachableNodeIds = readReachableNodeIds(edges, startNodeId);
+  const reachableNodeIds = readReachableWorkflowNodeIds(edges, [startNodeId]);
   const unreachableErrors = nodes
     .filter((node) => !reachableNodeIds.has(node.id))
     .map((node) => WORKFLOW_LINT_MESSAGES.unreachableNode(node.id));
@@ -884,38 +673,6 @@ function lintReachability(
 
 function isAsyncNotifyServiceTask(node: WorkflowNode): boolean {
   return node.type === 'serviceTask' && node.data.action.type === 'NOTIFY';
-}
-
-function readReachableNodeIds(
-  edges: readonly WorkflowEdge[],
-  startNodeId: string,
-): ReadonlySet<string> {
-  return visitReachableNodeIds(edges, [startNodeId], new Set([startNodeId]));
-}
-
-function visitReachableNodeIds(
-  edges: readonly WorkflowEdge[],
-  pendingNodeIds: readonly string[],
-  visitedNodeIds: ReadonlySet<string>,
-): ReadonlySet<string> {
-  const currentNodeId = pendingNodeIds[0];
-
-  if (!currentNodeId) {
-    return visitedNodeIds;
-  }
-
-  const remainingNodeIds = pendingNodeIds.slice(1);
-  const nextNodeIds = edges
-    .filter((edge) => edge.source === currentNodeId)
-    .map((edge) => edge.target)
-    .filter((nodeId) => !visitedNodeIds.has(nodeId));
-  const nextVisitedNodeIds = new Set([...visitedNodeIds, ...nextNodeIds]);
-
-  return visitReachableNodeIds(
-    edges,
-    [...remainingNodeIds, ...nextNodeIds],
-    nextVisitedNodeIds,
-  );
 }
 
 function hasPathToEnd(

@@ -49,32 +49,8 @@ export function referencesTableInternals(
   ].some((pattern) => pattern.test(expression));
 }
 
-/**
- * True when a CEL expression reads the top-level form field `fieldKey` —
- * `form.x`, `formData.x`, `form["x"]`, or any of those with `form . x` spacing
- * or a deeper step after it (`form.x.y`, `form.x[0]`). `has(form.x)` counts.
- *
- * The root has to be a bare `form` / `formData`: `myform.x` and `a.form.x` are
- * somebody else's `x`. The key has to end there: `form.xy` is another field.
- * `form` and `formData` are the two allowed root identifiers that carry the
- * form data (`WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS`). A string literal that
- * merely spells `form.x` counts too: a false hit only makes the publish lint
- * stricter.
- */
-export function referencesFormField(
-  expression: string,
-  fieldKey: string,
-): boolean {
-  const escapedKey = escapeRegExpLiteral(fieldKey);
-  // Not preceded by an identifier character or a dot, so `myform` and
-  // `a.form` do not pass for the root.
-  const root = '(?<![\\p{L}\\p{N}_.])(?:formData|form)\\s*';
-
-  return [
-    new RegExp(`${root}\\.\\s*${escapedKey}(?![\\p{L}\\p{N}_])`, 'u'),
-    new RegExp(`${root}\\[\\s*["']${escapedKey}["']\\s*\\]`, 'u'),
-  ].some((pattern) => pattern.test(expression));
-}
+// Lives in shared now: the designer's field access matrix reads it too.
+export { referencesFormField } from '@rytass/bpm-core-shared';
 
 /**
  * True when a structured condition's `conditionFieldKey` names a path inside a

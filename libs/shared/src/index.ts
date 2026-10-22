@@ -1,5 +1,6 @@
 export * from './lib/condition';
 export * from './lib/field-access';
+export * from './lib/field-access-lint';
 export * from './lib/form';
 export * from './lib/identity';
 export * from './lib/organization';

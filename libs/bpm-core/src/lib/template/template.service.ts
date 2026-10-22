@@ -9,16 +9,15 @@ import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   readApproverFilledFieldKeys,
-  readNodeFieldAccess,
+  readFormFieldAccessIssues,
   readNodeFillableFieldKeys,
+  readReachableWorkflowNodeIds,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
-  isFormDataSourceFieldDefinition,
   isMemberFieldDefinition,
-  isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -29,8 +28,6 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
-  APPLICANT_FIELD_CONDITION_RULES,
-  APPROVER_FILLED_FORM_RULES,
   WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -1006,10 +1003,10 @@ export class TemplateService {
       version.workflowDefinition,
       formVersion.schema,
     );
-    const approverFilledFieldErrors = lintApproverFilledFormFields(
+    const approverFilledFieldErrors = readFormFieldAccessIssues(
       version.workflowDefinition,
       formVersion.schema,
-    );
+    ).map((issue): string => issue.message);
     const approverFilledReadErrors = lintApproverFilledFieldReads(
       version.workflowDefinition,
     );
@@ -1471,131 +1468,6 @@ function lintWorkflowMemberReferences(
 }
 
 /**
- * The form-side half of `fieldAccess`: what the entries can only be checked
- * against once the bound form version is known.
- *
- * - Every `fieldKey` must be a top-level field of the form; a nested path such
- *   as `items.price` names no field and is reported as unknown.
- * - A field an approver fills in must not carry a rule of the form's own. The
- *   engine blocks approval while a node-required fillable field is empty, so
- *   a form that hides the field (`hidden`, `visibleWhen`) leaves the approver
- *   nothing to fill in and the case stuck for good; the other rules fight the
- *   value the approver types (`required` / `requiredWhen` would block the
- *   applicant, `readonlyWhen` the approver, `defaultValue` seeds a value that
- *   was meant to start empty). Each field and rule is reported once, however
- *   many nodes make the field editable.
- * - It cannot be a data-source or file upload field, and a table it fills in
- *   cannot have a data-source column: the approval does not re-resolve option
- *   snapshots or accept uploads. A table column can never be a file upload
- *   (`TABLE_COLUMN_FIELD_TYPES`), so only data-source columns are checked.
- * - `fill: 'REQUIRED'` cannot be put on a boolean field: `false` is a real
- *   answer, and the "is it filled in" check would refuse it.
- * - An applicant's field cannot carry a `requiredWhen` / `visibleWhen` /
- *   `readonlyWhen` that reads an approver-filled field: the rule is evaluated
- *   against the submitted form, where that field is still empty, and the
- *   evaluation silently compares against nothing.
- *
- * A rule counts as set when `required` / `hidden` is `true` and for the others
- * when the value is not `undefined`, so `required: false` and `hidden: false`
- * (what the form editor writes for "off") are not rules.
- */
-function lintApproverFilledFormFields(
-  definition: WorkflowDefinition,
-  schema: FormDefinitionSchema | null,
-): readonly string[] {
-  const fieldsByKey = new Map(
-    (schema?.fields ?? []).map(
-      (field): readonly [string, FormFieldDefinition] => [field.fieldKey, field],
-    ),
-  );
-  const userTasks = definition.nodes.filter(
-    (node): node is UserTaskNode => node.type === 'userTask',
-  );
-  const unknownFieldErrors = userTasks.flatMap((node): readonly string[] =>
-    readNodeFieldAccess(node)
-      .filter(({ fieldKey }): boolean => !fieldsByKey.has(fieldKey))
-      .map(({ fieldKey }): string =>
-        WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(node.id, fieldKey),
-      ),
-  );
-  const requiredBooleanErrors = userTasks.flatMap((node): readonly string[] =>
-    readNodeFieldAccess(node)
-      .filter(
-        ({ fieldKey, fill }): boolean =>
-          fill === 'REQUIRED' && fieldsByKey.get(fieldKey)?.type === 'boolean',
-      )
-      .map(({ fieldKey }): string =>
-        WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(node.id, fieldKey),
-      ),
-  );
-  const approverFilled = readApproverFilledFieldKeys(definition);
-  const applicantRuleErrors = (schema?.fields ?? [])
-    .filter((field): boolean => !approverFilled.has(field.fieldKey))
-    .flatMap((field): readonly string[] =>
-      APPLICANT_FIELD_CONDITION_RULES.flatMap((rule): readonly string[] => {
-        const expression: unknown = field[rule];
-
-        return typeof expression === 'string'
-          ? [...approverFilled]
-              .filter((fieldKey): boolean =>
-                referencesFormField(expression, fieldKey),
-              )
-              .map((fieldKey): string =>
-                WORKFLOW_LINT_MESSAGES.applicantRuleReadsApproverFilled(
-                  field.fieldKey,
-                  rule,
-                  fieldKey,
-                ),
-              )
-          : [];
-      }),
-    );
-  const fieldErrors = [...approverFilled].flatMap(
-    (fieldKey): readonly string[] => {
-      const field = fieldsByKey.get(fieldKey);
-
-      return field === undefined
-        ? []
-        : readApproverFilledFieldFormErrors(field);
-    },
-  );
-
-  return [
-    ...unknownFieldErrors,
-    ...fieldErrors,
-    ...requiredBooleanErrors,
-    ...applicantRuleErrors,
-  ];
-}
-
-function readApproverFilledFieldFormErrors(
-  field: FormFieldDefinition,
-): readonly string[] {
-  const { fieldKey } = field;
-  const ruleErrors = APPROVER_FILLED_FORM_RULES.filter((rule): boolean =>
-    rule === 'required' || rule === 'hidden'
-      ? field[rule] === true
-      : field[rule] !== undefined,
-  ).map((rule): string =>
-    WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
-  );
-
-  return [
-    ...ruleErrors,
-    ...(isFormDataSourceFieldDefinition(field)
-      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey)]
-      : []),
-    ...(field.type === 'file_upload'
-      ? [WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey)]
-      : []),
-    ...(isTableFieldDefinition(field) &&
-    field.columns.some(isFormDataSourceFieldDefinition)
-      ? [WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey)]
-      : []),
-  ];
-}
-
-/**
  * A condition that reads a field an approver fills in, before that approver
  * has filled it in, finds the field absent: the applicant's form is submitted
  * without it. Evaluated while the previous approver's decision is being
@@ -1625,7 +1497,7 @@ function readApproverFilledFieldFormErrors(
  * identifiers cannot include `form`.
  *
  * The definition may hold a cycle (the cycle lint reports it in the same
- * pass), which the visited set in `readReachableNodeIds` copes with.
+ * pass), which the visited set in `readReachableWorkflowNodeIds` copes with.
  */
 function lintApproverFilledFieldReads(
   definition: WorkflowDefinition,
@@ -1659,9 +1531,9 @@ function lintApproverFilledFieldReads(
         .filter((node) => !hasEntryCondition(node))
         .map((node) => node.id),
     );
-    const earlyNodeIds = readReachableNodeIds(
-      startNodeIds,
+    const earlyNodeIds = readReachableWorkflowNodeIds(
       definition.edges,
+      startNodeIds,
       guardNodeIds,
     );
     const nodeIdsReadingEarly = new Set([
@@ -1695,37 +1567,6 @@ function hasEntryCondition(node: UserTaskNode): boolean {
   const entryCondition: unknown = node.data.entryCondition;
 
   return typeof entryCondition === 'string' && entryCondition.trim() !== '';
-}
-
-/**
- * The nodes reachable from `startNodeIds` along `edges` without entering one
- * of `blockedNodeIds`. Walks the graph one frontier at a time and drops every
- * node it has already seen, so a cycle ends the walk instead of feeding it.
- */
-function readReachableNodeIds(
-  startNodeIds: readonly string[],
-  edges: readonly WorkflowEdge[],
-  blockedNodeIds: ReadonlySet<string>,
-): ReadonlySet<string> {
-  const walk = (
-    frontier: readonly string[],
-    visited: ReadonlySet<string>,
-  ): ReadonlySet<string> => {
-    const fresh = [...new Set(frontier)].filter(
-      (nodeId) => !visited.has(nodeId) && !blockedNodeIds.has(nodeId),
-    );
-
-    return fresh.length
-      ? walk(
-          edges
-            .filter((edge) => fresh.includes(edge.source))
-            .map((edge) => edge.target),
-          new Set([...visited, ...fresh]),
-        )
-      : visited;
-  };
-
-  return walk(startNodeIds, new Set<string>());
 }
 
 // The label of the one line an edge earns for `fieldKey`: the CEL condition
