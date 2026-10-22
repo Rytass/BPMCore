@@ -256,6 +256,7 @@ describe('InstanceTasksSection approver fill', () => {
   async function render(
     tasks: readonly TaskRecord[],
     onFillApproveError: (message: string) => boolean = jest.fn(() => false),
+    onDecidingChange?: (deciding: boolean) => void,
   ): Promise<React.RefObject<InstanceTasksSectionHandle | null>> {
     const ref = createRef<InstanceTasksSectionHandle>();
 
@@ -268,6 +269,7 @@ describe('InstanceTasksSection approver fill', () => {
           instance={fillInstance}
           memberProfilesById={new Map()}
           onChanged={jest.fn()}
+          onDecidingChange={onDecidingChange}
           onFillApproveError={onFillApproveError}
           ref={ref}
           tasks={tasks}
@@ -333,6 +335,37 @@ describe('InstanceTasksSection approver fill', () => {
         taskId: 'task-1',
       }),
     );
+  });
+
+  it('reports the decision settling, so the header buttons come back', async (): Promise<void> => {
+    jest.mocked(decideTask).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof decideTask>>,
+    );
+    const onDecidingChange = jest.fn();
+    const ref = await render(
+      [task({ id: 'task-1' })],
+      undefined,
+      onDecidingChange,
+    );
+
+    await approve(ref);
+
+    expect(onDecidingChange.mock.calls).toEqual([[false], [true], [false]]);
+  });
+
+  it('reports a failed decision settling too', async (): Promise<void> => {
+    jest.mocked(decideTask).mockRejectedValue(new Error('Task task-1 is not pending'));
+    const onDecidingChange = jest.fn();
+    const ref = await render(
+      [task({ id: 'task-1' })],
+      undefined,
+      onDecidingChange,
+    );
+
+    await approve(ref);
+
+    expect(onDecidingChange).toHaveBeenLastCalledWith(false);
+    expect(onDecidingChange).toHaveBeenCalledWith(true);
   });
 
   it('never sends a fill from an ad-hoc task', async (): Promise<void> => {

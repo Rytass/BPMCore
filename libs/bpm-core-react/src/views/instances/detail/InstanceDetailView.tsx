@@ -317,6 +317,7 @@ export function InstanceDetailView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deciding, setDeciding] = useState(false);
+  const [taskSectionDeciding, setTaskSectionDeciding] = useState(false);
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
   const [cancelComment, setCancelComment] = useState('');
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
@@ -923,9 +924,9 @@ export function InstanceDetailView({
     }
   }
 
-  // Derive deciding/canReturn for the PageHeader from the ref handle
-  // (falls back to local state for cancel/other actions).
-  const taskSectionDeciding = tasksSectionRef.current?.deciding ?? false;
+  // A decision made in the tasks section disables the header buttons too.
+  // Kept in state, not read off the ref: the ref would leave them disabled
+  // once the decision settled, since nothing re-renders this view then.
   const combinedDeciding = deciding || taskSectionDeciding;
 
   return (
@@ -1129,6 +1130,7 @@ export function InstanceDetailView({
               instance={instance}
               memberProfilesById={memberProfilesById}
               onChanged={refreshInstance}
+              onDecidingChange={setTaskSectionDeciding}
               onFillApproveError={handleFillApproveError}
               ref={tasksSectionRef}
               tasks={tasks}

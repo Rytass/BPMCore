@@ -5,6 +5,7 @@ import {
   CSSProperties,
   forwardRef,
   ReactElement,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useState,
@@ -165,6 +166,13 @@ export interface InstanceTasksSectionProps {
    * transfer) completes successfully. The container should refresh data.
    */
   readonly onChanged: () => void | Promise<void>;
+  /**
+   * Called whenever a task decision starts or settles. A container that puts
+   * the decision buttons outside this section keeps them disabled from this,
+   * rather than from `InstanceTasksSectionHandle.deciding`: a ref does not
+   * re-render the container when the decision settles.
+   */
+  readonly onDecidingChange?: (deciding: boolean) => void;
 }
 
 const ADHOC_MODE_LABELS: Readonly<Record<AdhocActionMode, string>> = {
@@ -224,6 +232,7 @@ export const InstanceTasksSection = forwardRef<
     instance,
     memberProfilesById,
     onChanged,
+    onDecidingChange,
     onFillApproveError,
     tasks,
   }: InstanceTasksSectionProps,
@@ -231,6 +240,10 @@ export const InstanceTasksSection = forwardRef<
 ): ReactElement {
   const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect((): void => {
+    onDecidingChange?.(deciding);
+  }, [deciding, onDecidingChange]);
 
   // Approve modal — the comment is optional here, unlike the reject reason.
   // Approving used to submit straight from the header button, so the decision
