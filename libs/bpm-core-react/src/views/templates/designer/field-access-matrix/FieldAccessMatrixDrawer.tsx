@@ -364,8 +364,12 @@ export function FieldAccessMatrixDrawer({
   // assistant edit made while the drawer was closed is what it starts from,
   // and edits behind an open drawer do not reset it.
   if (open && session === null) {
-    setSession(readMatrixSession(definition, formSchema));
-    setOnlyRelevant(true);
+    const opened = readMatrixSession(definition, formSchema);
+
+    setSession(opened);
+    // With nothing set yet the filter would hide every field and the matrix
+    // would open empty, so it starts collapsed only once something is set.
+    setOnlyRelevant(opened.pinnedFieldKeys.size > 0);
     setApplyError(null);
   }
 

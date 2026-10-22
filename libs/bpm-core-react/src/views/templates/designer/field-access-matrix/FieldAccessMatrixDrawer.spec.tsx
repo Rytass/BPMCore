@@ -261,6 +261,15 @@ describe('FieldAccessMatrixDrawer', () => {
     });
   }
 
+  function showAllFields(): void {
+    if (
+      container.querySelector<HTMLInputElement>('input[type="checkbox"]')
+        ?.checked
+    ) {
+      toggleFilter();
+    }
+  }
+
   it('shows the derived value for a cell nobody set', () => {
     render(
       definitionOf([
@@ -283,7 +292,7 @@ describe('FieldAccessMatrixDrawer', () => {
 
   it('applies nothing and closes when only a default was picked back', () => {
     render(definitionOf([userTask('manager'), userTask('finance')]));
-    toggleFilter();
+    showAllFields();
     choose('欄位amount 在關卡 1的設定', 'HIDE');
     choose('欄位amount 在關卡 1的設定', 'DEFAULT');
     click('套用');
@@ -333,7 +342,7 @@ describe('FieldAccessMatrixDrawer', () => {
         userTask('finance'),
       ]),
     );
-    toggleFilter();
+    showAllFields();
     choose('欄位amount 在關卡 2的設定', 'HIDE');
     click('套用');
 
@@ -365,7 +374,7 @@ describe('FieldAccessMatrixDrawer', () => {
   it('stays open on its draft and shows why when 套用 is refused', () => {
     onApply.mockReturnValue('節點 finance 不是簽核節點。');
     render(definitionOf([userTask('manager'), userTask('finance')]));
-    toggleFilter();
+    showAllFields();
     choose('欄位amount 在關卡 1的設定', 'HIDE');
     click('套用');
 
@@ -383,7 +392,7 @@ describe('FieldAccessMatrixDrawer', () => {
 
   it('keeps a change made to the flow while it was open', () => {
     render(definitionOf([userTask('manager'), userTask('finance')]));
-    toggleFilter();
+    showAllFields();
     choose('欄位amount 在關卡 1的設定', 'HIDE');
     // e.g. the assistant sets another cell behind the open drawer
     render(
@@ -409,7 +418,7 @@ describe('FieldAccessMatrixDrawer', () => {
 
   it('applies nothing on 取消', () => {
     render(definitionOf([userTask('manager'), userTask('finance')]));
-    toggleFilter();
+    showAllFields();
     choose('欄位amount 在關卡 1的設定', 'HIDE');
     click('取消');
 
@@ -426,7 +435,7 @@ describe('FieldAccessMatrixDrawer', () => {
         userTask('finance'),
       ]),
     );
-    toggleFilter();
+    showAllFields();
 
     const options = (label: string): readonly string[] =>
       [...select(label).options].map((option) => option.value);
@@ -541,6 +550,16 @@ describe('FieldAccessMatrixDrawer', () => {
 
     toggleFilter();
     expect(rowKeys()).toEqual(['amount', 'note', 'flag']);
+  });
+
+  it('opens on every field while nothing is set yet', () => {
+    render(definitionOf([userTask('manager'), userTask('finance')]));
+
+    expect(rowKeys()).toEqual(['amount', 'note', 'flag']);
+    expect(container.textContent).not.toContain('已收起');
+
+    toggleFilter();
+    expect(rowKeys()).toEqual([]);
   });
 });
 
