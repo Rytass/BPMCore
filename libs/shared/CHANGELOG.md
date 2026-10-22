@@ -1,3 +1,33 @@
+## 0.17.7 (2026-10-22)
+
+### 🚀 Features
+
+- **bpm-core-react:** add the field access overview to the template designer ([1de7665](https://github.com/Rytass/BPMCore/commit/1de7665))
+- **shared:** add the field access matrix and its commands ([b0a9aa3](https://github.com/Rytass/BPMCore/commit/b0a9aa3))
+- **bpm-core-react:** let the fill node's approver fill in fields on the case page ([9cd9eb2](https://github.com/Rytass/BPMCore/commit/9cd9eb2))
+- **bpm-core:** flag tasks whose node lets the approver fill in fields ([57f1d61](https://github.com/Rytass/BPMCore/commit/57f1d61))
+- **bpm-core-react:** resolve per-field access for the instance viewer ([7cd040c](https://github.com/Rytass/BPMCore/commit/7cd040c))
+- **bpm-core:** adopt fieldAccess node model per ADR 20 ([b25cf71](https://github.com/Rytass/BPMCore/commit/b25cf71))
+- **bpm-core-client:** send approver-filled data and keep it off launch and resubmit forms ([a33d7f9](https://github.com/Rytass/BPMCore/commit/a33d7f9))
+- **bpm-core:** refuse conditions that read approver-filled fields too early ([5ad995f](https://github.com/Rytass/BPMCore/commit/5ad995f))
+- **bpm-core:** refuse form rules that clash with approver-filled fields ([a55253e](https://github.com/Rytass/BPMCore/commit/a55253e))
+- **bpm-core:** refuse to publish field permissions the engine cannot honour ([7361a9e](https://github.com/Rytass/BPMCore/commit/7361a9e))
+- **bpm-core:** flag task notifications that need the form opened ([77fd492](https://github.com/Rytass/BPMCore/commit/77fd492))
+- **bpm-core:** let the filling node write approver-filled fields on approval ([502500c](https://github.com/Rytass/BPMCore/commit/502500c))
+- **shared:** add field permission helpers for approver-filled fields ([6386b1c](https://github.com/Rytass/BPMCore/commit/6386b1c))
+
+### 🩹 Fixes
+
+- **shared:** read a SET_FORM_FIELD path the way the engine writes it ([3ba2962](https://github.com/Rytass/BPMCore/commit/3ba2962))
+- **bpm-core-react:** send only the fill fields the approver changed ([1250eac](https://github.com/Rytass/BPMCore/commit/1250eac))
+- **template:** stop rethrowing designer save and publish errors ([af93e67](https://github.com/Rytass/BPMCore/commit/af93e67))
+- **bpm-core-client:** update launch mocks for the template version definition ([452d600](https://github.com/Rytass/BPMCore/commit/452d600))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.6 (2026-10-20)
 
 This was a version bump only for shared to align it with other projects, there were no code changes.

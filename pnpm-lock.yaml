@@ -405,7 +405,7 @@ importers:
         specifier: ^12.0.2
         version: 12.0.2(@nestjs/common@12.2.0(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.2.0)(reflect-metadata@0.2.2)(rxjs@7.8.2)(typeorm@1.1.2(babel-plugin-macros@3.1.0)(pg@8.23.1)(ts-node@10.9.2(@swc/core@1.16.18(@swc/helpers@0.5.23))(@types/node@20.19.43)(typescript@6.0.3)))
       '@rytass/bpm-core-shared':
-        specifier: ^0.17.6
+        specifier: ^0.17.7
         version: link:../shared
       '@rytass/secret-adapter-vault-nestjs':
         specifier: ^0.6.0
@@ -450,7 +450,7 @@ importers:
   libs/bpm-core-client:
     dependencies:
       '@rytass/bpm-core-shared':
-        specifier: ^0.17.6
+        specifier: ^0.17.7
         version: link:../shared
       tslib:
         specifier: ^2.8.1
@@ -483,10 +483,10 @@ importers:
         specifier: 1.7.0
         version: 1.7.0(@types/react@19.3.0)(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@rytass/bpm-core-client':
-        specifier: ^0.17.6
+        specifier: ^0.17.7
         version: link:../bpm-core-client
       '@rytass/bpm-core-shared':
-        specifier: ^0.17.6
+        specifier: ^0.17.7
         version: link:../shared
       '@uiw/react-codemirror':
         specifier: '>=4.0.0'
