@@ -352,10 +352,10 @@ export interface MemberOpenTaskRecord {
   readonly templateName: string | null;
 }
 
-/** A deactivated member who still holds open tasks, for the reassignment screen. */
 /** The administrator screens are in Traditional Chinese: names sort by stroke count. */
 const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
 
+/** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
   readonly memberId: string;
