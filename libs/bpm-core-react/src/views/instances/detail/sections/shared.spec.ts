@@ -674,3 +674,58 @@ describe('how an instance ended', (): void => {
     expect(isActivityError(instanceLog('INSTANCE_EXPIRED'), {})).toBe(true);
   });
 });
+
+describe('applicant resubmission in the timeline', () => {
+  const resubmitLog = (
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord =>
+    ({
+      actorMemberId: 'member-applicant',
+      createdAt: '2026-10-27T08:00:00.000Z',
+      eventType: 'INSTANCE_RESUBMITTED',
+      id: 'activity-resubmit',
+      instanceId: 'instance-1',
+      nodeId: null,
+      payloadJson: JSON.stringify(payload),
+      taskId: null,
+    }) as unknown as ActivityLogRecord;
+  const parts = (
+    payload: Readonly<Record<string, unknown>>,
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] =>
+    readActivityDetailParts(
+      resubmitLog(payload),
+      payload,
+      null,
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+    );
+
+  it('shows the resubmission as its own step', () => {
+    expect(isUserMeaningfulActivity(resubmitLog({}))).toBe(true);
+    expect(readActivityEventLabel('INSTANCE_RESUBMITTED', {})).toBe(
+      '申請人重新送出',
+    );
+    expect(isActivityError(resubmitLog({}), {})).toBe(false);
+  });
+
+  it('shows the comment the applicant wrote', () => {
+    expect(
+      parts({ comment: '已補上報價單', resubmitStrategy: 'RESTART' }),
+    ).toEqual([
+      {
+        label: '簽核意見',
+        text: '已補上報價單',
+        tone: 'neutral',
+        type: 'comment',
+      },
+    ]);
+  });
+
+  // Resubmissions logged before the comment existed carry only the strategy.
+  it('shows nothing extra when there is no comment', () => {
+    expect(parts({ resubmitStrategy: 'RESTART' })).toEqual([]);
+    expect(parts({ comment: null, resubmitStrategy: 'RESTART' })).toEqual([]);
+  });
+});

@@ -9506,11 +9506,48 @@ describe('WorkflowEngineService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
-          payload: { resubmitStrategy: 'FROM_RETURN_POINT' },
+          payload: { comment: null, resubmitStrategy: 'FROM_RETURN_POINT' },
         }),
       ]),
     );
   });
+
+  it.each([
+    ['records the trimmed comment', '  已補上報價單  ', '已補上報價單'],
+    ['records no comment when none is given', undefined, null],
+    ['records no comment when it is blank', '   ', null],
+  ])(
+    '%s on the resubmission activity',
+    async (_label, comment, expected): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        comment,
+        formDataJson: '{"amount":1200}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(
+        fixture.savedSingleActivityLogs.filter(
+          (log) =>
+            log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'member-001',
+          payload: { comment: expected, resubmitStrategy: 'RESTART' },
+        }),
+      ]);
+    },
+  );
 
   it('forks a token across multiple outgoing edges and creates parallel tasks', async (): Promise<void> => {
     const fixture = createServiceFixture({

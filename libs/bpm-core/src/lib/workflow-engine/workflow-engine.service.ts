@@ -1810,6 +1810,7 @@ export class WorkflowEngineService {
             instanceId: instance.id,
             nodeId: null,
             payload: {
+              comment: input.comment?.trim() || null,
               resubmitStrategy: returnedContext?.resubmitStrategy ?? 'RESTART',
             },
             taskId: null,

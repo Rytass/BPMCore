@@ -2107,16 +2107,21 @@ export async function cancelApprovalInstance({
 }
 
 export async function resubmitApprovalInstance({
+  comment,
   formData,
   initiatorMemberId,
   instanceId,
   title,
 }: {
+  /** The applicant's note on what changed; blank means none. */
+  readonly comment?: string | null;
   readonly formData: Readonly<Record<string, unknown>>;
   readonly initiatorMemberId: string;
   readonly instanceId: string;
   readonly title: string | null;
 }): Promise<void> {
+  const trimmedComment = comment?.trim();
+
   await requestGraphQl<ResubmitApprovalInstanceMutationData>(
     `mutation ResubmitApprovalInstance($input: ResubmitApprovalInstanceInput!) {
       resubmitApprovalInstance(input: $input) {
@@ -2126,6 +2131,9 @@ export async function resubmitApprovalInstance({
     }`,
     {
       input: {
+        // Left out when empty so the request stays valid against a server
+        // that predates the field.
+        ...(trimmedComment ? { comment: trimmedComment } : {}),
         formDataJson: JSON.stringify(formData),
         initiatorMemberId,
         instanceId,
