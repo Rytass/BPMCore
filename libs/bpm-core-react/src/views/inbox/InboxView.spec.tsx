@@ -1,7 +1,10 @@
 import { act, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import * as workflowApi from '@rytass/bpm-core-client/workflow';
-import type { TaskRecord } from '@rytass/bpm-core-client/workflow';
+import type {
+  ApprovalInstanceRecord,
+  TaskRecord,
+} from '@rytass/bpm-core-client/workflow';
 import { InboxView } from './InboxView';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -54,6 +57,7 @@ jest.mock('@mezzanine-ui/react', () => {
     SectionGroup: Container,
     Tab: (props: Readonly<Record<string, unknown>>): ReactElement => (
       <div>
+        {props.children as ReactNode}
         {['tracking', 'history'].map(
           (tab): ReactElement => (
             <button
@@ -68,7 +72,11 @@ jest.mock('@mezzanine-ui/react', () => {
         )}
       </div>
     ),
-    TabItem: Container,
+    TabItem: (props: Readonly<Record<string, unknown>>): ReactElement => (
+      <div data-badge-count={String(props.badgeCount ?? '')}>
+        {props.children as ReactNode}
+      </div>
+    ),
     Table,
     Typography: (props: Readonly<Record<string, unknown>>): ReactElement => (
       <span>{props.children as ReactNode}</span>
@@ -89,6 +97,7 @@ jest.mock('../../lib/routes-config', () => ({
 }));
 jest.mock('@rytass/bpm-core-client/workflow', () => ({
   listApprovalHistoryTasks: jest.fn(),
+  listApprovalInstancesPage: jest.fn(),
   listInboxTasks: jest.fn(),
   listTaskDecisions: jest.fn(),
   readApprovalInstance: jest.fn(),
@@ -96,6 +105,30 @@ jest.mock('@rytass/bpm-core-client/workflow', () => ({
 }));
 
 const api = workflowApi as jest.Mocked<typeof workflowApi>;
+
+function returnedInstance(
+  value: Partial<ApprovalInstanceRecord>,
+): ApprovalInstanceRecord {
+  return {
+    id: 'instance-r1',
+    initiatorMemberId: 'member-001',
+    startedAt: '2026-10-20T01:00:00.000Z',
+    state: 'RETURNED',
+    submittedByMemberId: 'member-001',
+    title: '出差申請',
+    ...value,
+  } as ApprovalInstanceRecord;
+}
+
+function returnedPage(
+  instances: readonly ApprovalInstanceRecord[],
+  totalCount: number = instances.length,
+): Awaited<ReturnType<typeof workflowApi.listApprovalInstancesPage>> {
+  return {
+    instances,
+    totalCount,
+  } as Awaited<ReturnType<typeof workflowApi.listApprovalInstancesPage>>;
+}
 
 function task(value: Partial<TaskRecord>): TaskRecord {
   return {
@@ -134,6 +167,7 @@ describe('InboxView node column', () => {
     api.readApprovalInstance.mockRejectedValue(new Error('not needed'));
     api.listTaskDecisions.mockResolvedValue([]);
     api.listApprovalHistoryTasks.mockResolvedValue([]);
+    api.listApprovalInstancesPage.mockResolvedValue(returnedPage([]));
   });
 
   afterEach((): void => {
@@ -221,5 +255,134 @@ describe('InboxView node column', () => {
 
     expect(nodeCell('task-1')).toBe('部門主管簽核');
     expect(nodeCell('task-2')).toBe('band-1');
+  });
+});
+
+describe('InboxView returned cases', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    jest.clearAllMocks();
+    api.listInboxTasks.mockResolvedValue([]);
+    api.listApprovalHistoryTasks.mockResolvedValue([]);
+    api.listTaskDecisions.mockResolvedValue([]);
+    api.readApprovalInstance.mockRejectedValue(new Error('not needed'));
+    api.readApprovalInstanceCaseTitle.mockImplementation(
+      (instance): string => instance.title ?? instance.id,
+    );
+    api.listApprovalInstancesPage.mockResolvedValue(returnedPage([]));
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+  });
+
+  async function renderInbox(): Promise<void> {
+    await act(async (): Promise<void> => {
+      root.render(<InboxView />);
+    });
+  }
+
+  const returnedSection = (): Element | null =>
+    container.querySelector('[data-returned-instances]');
+
+  it('lists the returned cases the member started', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([returnedInstance({ id: 'instance-r1' })]),
+    );
+
+    await renderInbox();
+
+    expect(api.listApprovalInstancesPage).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'RETURNED', view: 'SENT' }),
+    );
+    expect(returnedSection()?.textContent).toContain('被退回待重送');
+    expect(
+      returnedSection()?.querySelector(
+        '[data-row="instance-r1"] [data-column="案件"]',
+      )?.textContent,
+    ).toBe('出差申請');
+  });
+
+  // SENT also lists what an assistant filed for someone else, and only the
+  // initiator may resubmit.
+  it('leaves out returned cases someone else started', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([
+        returnedInstance({ id: 'instance-mine' }),
+        returnedInstance({
+          id: 'instance-filed-for-boss',
+          initiatorMemberId: 'member-boss',
+        }),
+      ]),
+    );
+
+    await renderInbox();
+
+    expect(
+      returnedSection()?.querySelector('[data-row="instance-mine"]'),
+    ).not.toBeNull();
+    expect(
+      returnedSection()?.querySelector('[data-row="instance-filed-for-boss"]'),
+    ).toBeNull();
+  });
+
+  it('shows nothing when no case is returned', async (): Promise<void> => {
+    await renderInbox();
+
+    expect(returnedSection()).toBeNull();
+  });
+
+  // Returned cases are not tasks, so the pending count stays the task count.
+  it('keeps returned cases out of the pending count', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([task({ id: 'task-1' })]);
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([
+        returnedInstance({ id: 'instance-r1' }),
+        returnedInstance({ id: 'instance-r2' }),
+      ]),
+    );
+
+    await renderInbox();
+
+    expect(
+      container.querySelector('[data-badge-count]')?.getAttribute(
+        'data-badge-count',
+      ),
+    ).toBe('1');
+    expect(returnedSection()?.querySelectorAll('[data-row]')).toHaveLength(2);
+  });
+
+  it('says where to find the rest when there are more than it lists', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([returnedInstance({ id: 'instance-r1' })], 101),
+    );
+
+    await renderInbox();
+
+    expect(returnedSection()?.textContent).toContain('我發起的');
+  });
+
+  // The total also counts cases filed for someone else, which are dropped
+  // here; only a full page means anything was left out.
+  it('does not mention the rest when everything is listed', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([
+        returnedInstance({ id: 'instance-r1' }),
+        returnedInstance({
+          id: 'instance-filed-for-boss',
+          initiatorMemberId: 'member-boss',
+        }),
+      ]),
+    );
+
+    await renderInbox();
+
+    expect(returnedSection()?.textContent).not.toContain('我發起的');
   });
 });
