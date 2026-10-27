@@ -42,10 +42,21 @@ import {
   readResolvedManager,
   ResolvedManagerRecord,
 } from '@rytass/bpm-core-client/organization';
+import {
+  type InactiveMemberWithOpenTasksRecord,
+  listInactiveMembersWithOpenTasks,
+} from '@rytass/bpm-core-client/workflow';
 
 type MemberRow = Readonly<
   Record<string, unknown> &
     MemberProfileRecord & {
+      key: string;
+    }
+>;
+
+type InactiveMemberRow = Readonly<
+  Record<string, unknown> &
+    InactiveMemberWithOpenTasksRecord & {
       key: string;
     }
 >;
@@ -64,6 +75,12 @@ export function AdminUsersView(): ReactElement {
   const [detailResolvedManager, setDetailResolvedManager] =
     useState<ResolvedManagerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [inactiveMembers, setInactiveMembers] = useState<
+    readonly InactiveMemberWithOpenTasksRecord[]
+  >([]);
+  const [inactiveMembersError, setInactiveMembersError] = useState<
+    string | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [memberPage, setMemberPage] = useState(1);
   const [memberPageSize, setMemberPageSize] = useState(10);
@@ -114,6 +131,61 @@ export function AdminUsersView(): ReactElement {
   useEffect((): void => {
     void refreshMembers();
   }, [refreshMembers]);
+
+  // Loaded on its own so a failure here leaves the member directory usable.
+  const refreshInactiveMembers = useCallback(async (): Promise<void> => {
+    try {
+      setInactiveMembers(await listInactiveMembersWithOpenTasks());
+      setInactiveMembersError(null);
+    } catch (requestError: unknown) {
+      setInactiveMembersError(readErrorMessage(requestError));
+    }
+  }, []);
+
+  useEffect((): void => {
+    void refreshInactiveMembers();
+  }, [refreshInactiveMembers]);
+
+  const inactiveMemberRows = useMemo(
+    (): InactiveMemberRow[] =>
+      inactiveMembers.map(
+        (member): InactiveMemberRow => ({ ...member, key: member.memberId }),
+      ),
+    [inactiveMembers],
+  );
+  const inactiveMemberColumns = useMemo(
+    (): TableColumn<InactiveMemberRow>[] => [
+      { dataIndex: 'name', key: 'name', title: '姓名', width: 160 },
+      { dataIndex: 'email', key: 'email', title: '信箱', width: 260 },
+      {
+        dataIndex: 'openTaskCount',
+        key: 'openTaskCount',
+        title: '待簽數',
+        width: 96,
+      },
+    ],
+    [],
+  );
+  const inactiveMemberActions = useMemo(
+    (): TableActions<InactiveMemberRow> => ({
+      render: (): ReturnType<TableActions<InactiveMemberRow>['render']> => [
+        {
+          name: '改派待辦',
+          onClick: (record): void => {
+            setReassignMember({
+              customFieldsJson: '{}',
+              email: record.email,
+              memberId: record.memberId,
+              name: record.name,
+            });
+          },
+        },
+      ],
+      variant: 'base-secondary',
+      width: 112,
+    }),
+    [],
+  );
 
   const rows = useMemo(
     (): MemberRow[] =>
@@ -200,6 +272,31 @@ export function AdminUsersView(): ReactElement {
       </PageHeader>
 
       <SectionGroup>
+        {inactiveMemberRows.length || inactiveMembersError ? (
+          <Section
+            contentHeader={
+              <ContentHeader
+                description="這些會員已停用，身上仍有待簽，請改派給在職的人。"
+                title="已停用、仍有待簽的會員"
+              />
+            }
+          >
+            <div data-inactive-members="">
+              {inactiveMembersError ? (
+                <Typography color="text-error" variant="body">
+                  {inactiveMembersError}
+                </Typography>
+              ) : (
+                <Table
+                  actions={inactiveMemberActions}
+                  columns={inactiveMemberColumns}
+                  dataSource={inactiveMemberRows}
+                  fullWidth
+                />
+              )}
+            </div>
+          </Section>
+        ) : null}
         <Section
           filterArea={
             <FilterArea className={styles.memberFilterArea}>
@@ -265,6 +362,8 @@ export function AdminUsersView(): ReactElement {
         member={reassignMember}
         onClose={(): void => {
           setReassignMember(null);
+          // A reassignment may have cleared someone off the list.
+          void refreshInactiveMembers();
         }}
       />
 
