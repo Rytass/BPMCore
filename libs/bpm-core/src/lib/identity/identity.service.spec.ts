@@ -333,12 +333,18 @@ describe('IdentityService.resolveInactiveMembers', () => {
       resolve: jest.fn(),
       resolveMany: jest.fn(),
     };
-    const service = new IdentityService(createCacheRepository(), resolver);
+    const cacheRepository = createCacheRepository();
+    const service = new IdentityService(cacheRepository, resolver);
 
     await expect(
       service.resolveInactiveMembers(['member-1']),
     ).resolves.toEqual([]);
+    // Neither the host nor the cache stands in for the missing method: a
+    // cached profile cannot say whether the member was deactivated.
+    expect(resolver.resolve).not.toHaveBeenCalled();
     expect(resolver.resolveMany).not.toHaveBeenCalled();
+    expect(cacheRepository.find).not.toHaveBeenCalled();
+    expect(cacheRepository.findOne).not.toHaveBeenCalled();
   });
 
   it('asks the host once per member, skipping empty ids, and skips the cache', async (): Promise<void> => {
