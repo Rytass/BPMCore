@@ -332,6 +332,24 @@ describe('InboxView returned cases', () => {
     ).toBeNull();
   });
 
+  it('shows the returned cases only on the pending tab', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([returnedInstance({ id: 'instance-r1' })]),
+    );
+
+    await renderInbox();
+
+    expect(returnedSection()).not.toBeNull();
+
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>('[data-tab="tracking"]')
+        ?.click();
+    });
+
+    expect(returnedSection()).toBeNull();
+  });
+
   it('shows nothing when no case is returned', async (): Promise<void> => {
     await renderInbox();
 

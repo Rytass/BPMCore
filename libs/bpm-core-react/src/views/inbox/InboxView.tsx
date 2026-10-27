@@ -65,8 +65,8 @@ const RETURNED_INSTANCE_PAGE_SIZE = 100;
 
 const RETURNED_SECTION_STYLE: CSSProperties = {
   display: 'grid',
-  gap: 8,
-  marginBottom: 24,
+  gap: 'var(--mzn-spacing-gap-base)',
+  marginBottom: 'var(--mzn-spacing-padding-vertical-spacious)',
 };
 
 type ApprovalHistoryRow = Readonly<
@@ -392,7 +392,7 @@ export function InboxView(): ReactElement {
                 </Typography>
                 <Typography color="text-neutral" variant="caption">
                   {returnedTruncated
-                    ? `你發起的案件被退回，請修改後重新送出。這裡最多列出 ${RETURNED_INSTANCE_PAGE_SIZE} 件，其餘請到「我發起的」查看。`
+                    ? '你發起的案件被退回，請修改後重新送出。可能還有其他被退回的案件，請到「我發起的」查看。'
                     : '你發起的案件被退回，請修改後重新送出。'}
                 </Typography>
                 <Table
@@ -441,7 +441,9 @@ function readReturnedInstanceRows(
   currentMemberId: string,
 ): readonly ReturnedInstanceRow[] {
   return instances
-    .filter((instance) => instance.initiatorMemberId === currentMemberId)
+    .filter(
+      (instance): boolean => instance.initiatorMemberId === currentMemberId,
+    )
     .map(
       (instance): ReturnedInstanceRow => ({
         caseTitle: readApprovalInstanceCaseTitle(instance),
