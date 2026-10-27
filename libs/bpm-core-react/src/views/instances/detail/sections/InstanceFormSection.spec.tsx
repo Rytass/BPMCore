@@ -109,7 +109,14 @@ jest.mock('@mezzanine-ui/react', () => {
     SectionGroup: MockContainer,
     Select: MockContainer,
     Table: MockTable,
-    Textarea: MockContainer,
+    Textarea: (props: Readonly<Record<string, unknown>>): ReactElement => (
+      <textarea
+        data-mock-textarea=""
+        onChange={props.onChange as never}
+        placeholder={String(props.placeholder ?? '')}
+        value={String(props.value ?? '')}
+      />
+    ),
     Toggle: MockContainer,
     Typography: (props: Readonly<Record<string, unknown>>): ReactElement => (
       <span>{props.children as ReactNode}</span>
@@ -353,5 +360,89 @@ describe('InstanceFormSection fill mode', () => {
     });
 
     expect(onReload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('InstanceFormSection resubmit comment', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+  });
+
+  async function render(
+    props: Partial<Parameters<typeof InstanceFormSection>[0]>,
+  ): Promise<void> {
+    await act(async (): Promise<void> => {
+      root.render(
+        <InstanceFormSection
+          canResubmitInstance
+          deciding={false}
+          error={null}
+          instance={INSTANCE}
+          loading={false}
+          onDataSourceStateChange={jest.fn()}
+          onResubmitFormChange={jest.fn()}
+          onResubmitInstance={jest.fn()}
+          onUploadAttachment={jest.fn()}
+          resubmitFormData={{ reason: '出差' }}
+          resubmitFormErrors={{}}
+          {...props}
+        />,
+      );
+    });
+  }
+
+  const commentBox = (): HTMLTextAreaElement | null =>
+    container.querySelector<HTMLTextAreaElement>(
+      `${FORM_FIELD_SELECTOR('resubmitComment')} textarea`,
+    );
+
+  it('lets the applicant write a comment with the resubmission', async (): Promise<void> => {
+    const onResubmitCommentChange = jest.fn();
+
+    await render({ onResubmitCommentChange, resubmitComment: '草稿' });
+
+    expect(commentBox()?.value).toBe('草稿');
+
+    act((): void => {
+      const target = commentBox();
+
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value',
+      )?.set?.call(target, '已補上報價單');
+      target?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(onResubmitCommentChange).toHaveBeenLastCalledWith('已補上報價單');
+  });
+
+  it('shows no comment box on a case the viewer cannot resubmit', async (): Promise<void> => {
+    await render({
+      canResubmitInstance: false,
+      onResubmitCommentChange: jest.fn(),
+      resubmitComment: '',
+    });
+
+    expect(commentBox()).toBeNull();
+  });
+
+  // A host that renders the section itself and has not wired the comment yet.
+  it('shows no comment box when nobody handles it', async (): Promise<void> => {
+    await render({});
+
+    expect(commentBox()).toBeNull();
+    expect(
+      container.querySelector('[data-mock-button="重新送出"]'),
+    ).not.toBeNull();
   });
 });

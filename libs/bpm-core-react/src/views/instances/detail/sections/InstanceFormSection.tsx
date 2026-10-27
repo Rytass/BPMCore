@@ -1,7 +1,12 @@
 'use client';
 
-import { CSSProperties, ReactElement, useMemo } from 'react';
-import { Button, InlineMessage, Typography } from '@mezzanine-ui/react';
+import { ChangeEvent, CSSProperties, ReactElement, useMemo } from 'react';
+import {
+  Button,
+  InlineMessage,
+  Textarea,
+  Typography,
+} from '@mezzanine-ui/react';
 import { RefreshCcwIcon } from '@mezzanine-ui/icons';
 import type { ResolvedFieldAccess } from '@rytass/bpm-core-shared';
 import {
@@ -9,6 +14,7 @@ import {
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
+import { BPMFormField } from '../../../../components/bpm-form-field';
 import { readApplicantFormSchema } from '../../approver-filled-form';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
 import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
@@ -23,6 +29,19 @@ const BUTTON_ROW_STYLE: CSSProperties = {
   flexWrap: 'wrap',
   gap: 8,
 };
+
+const COMMENT_TEXTAREA_STYLE: CSSProperties = {
+  minWidth: '100%',
+  width: '100%',
+};
+
+function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
+  if (!element) {
+    return;
+  }
+
+  element.style.width = '100%';
+}
 
 /** The fill state of the viewer's own task at a node that fills in fields. */
 export interface InstanceFormSectionFill {
@@ -79,6 +98,13 @@ export interface InstanceFormSectionProps {
   ) => void;
   /** Called when the user clicks "重新送出". */
   readonly onResubmitInstance: () => void;
+  /**
+   * The applicant's comment for the resubmission. The comment box shows only
+   * when `onResubmitCommentChange` is given.
+   */
+  readonly resubmitComment?: string;
+  /** Called when the applicant edits the resubmission comment. */
+  readonly onResubmitCommentChange?: ((value: string) => void) | null;
   /** Called when an attachment upload is requested via the form field. */
   readonly onUploadAttachment: (
     field: FormFieldDefinition,
@@ -103,8 +129,10 @@ export function InstanceFormSection({
   onDataSourceStateChange,
   onResubmitFormChange,
   onReloadAfterConflict = null,
+  onResubmitCommentChange = null,
   onResubmitInstance,
   onUploadAttachment,
+  resubmitComment = '',
   resubmitFormData,
   resubmitFormErrors,
 }: InstanceFormSectionProps): ReactElement {
@@ -206,6 +234,22 @@ export function InstanceFormSection({
                   : instance.formData
             }
           />
+          {canResubmitInstance && onResubmitCommentChange ? (
+            <BPMFormField label="簽核意見" name="resubmitComment">
+              <Textarea
+                disabled={deciding}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+                  onResubmitCommentChange(event.target.value)
+                }
+                placeholder="選填，例如說明這次補正或修改了哪些內容"
+                ref={applyFullWidthTextareaHost}
+                resize="vertical"
+                rows={4}
+                style={COMMENT_TEXTAREA_STYLE}
+                value={resubmitComment}
+              />
+            </BPMFormField>
+          ) : null}
           {canResubmitInstance ? (
             <div style={BUTTON_ROW_STYLE}>
               <Button

@@ -327,6 +327,7 @@ export function InstanceDetailView({
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
+  const [resubmitComment, setResubmitComment] = useState('');
   const [resubmitDataSourceStates, setResubmitDataSourceStates] = useState<
     Readonly<
       Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
@@ -911,11 +912,13 @@ export function InstanceDetailView({
 
     try {
       await resubmitApprovalInstance({
+        comment: resubmitComment,
         formData: resubmittedValues,
         initiatorMemberId: currentMemberId,
         instanceId: instance.id,
         title: instance.title,
       });
+      setResubmitComment('');
       await refreshInstance();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -1099,8 +1102,10 @@ export function InstanceDetailView({
                 setResubmitFormData(values);
                 setResubmitFormErrors({});
               }}
+              onResubmitCommentChange={setResubmitComment}
               onResubmitInstance={(): void => void handleResubmitInstance()}
               onUploadAttachment={handleUploadAttachment}
+              resubmitComment={resubmitComment}
               resubmitFormData={resubmitFormData}
               resubmitFormErrors={resubmitFormErrors}
             />
