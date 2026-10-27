@@ -1,3 +1,23 @@
+## 0.17.9 (2026-10-27)
+
+### 🚀 Features
+
+- **bpm-core:** list deactivated members who still hold open tasks ([0ecf8f5](https://github.com/Rytass/BPMCore/commit/0ecf8f5))
+- **bpm-core:** record the applicant's comment on a resubmission ([9961470](https://github.com/Rytass/BPMCore/commit/9961470))
+
+### 🩹 Fixes
+
+- **bpm-core:** keep member directory methods bound to their directory ([b5d3c51](https://github.com/Rytass/BPMCore/commit/b5d3c51))
+- **bpm-core:** answer empty only when no identity service is registered ([5ba1dd2](https://github.com/Rytass/BPMCore/commit/5ba1dd2))
+- **bpm-core:** read deactivated-member holders in one bounded query ([ac107c1](https://github.com/Rytass/BPMCore/commit/ac107c1))
+- **bpm-core:** cap the resubmission comment at 2000 characters ([7616e4e](https://github.com/Rytass/BPMCore/commit/7616e4e))
+- **bpm-core:** count only asked-about inactive members, sorted by stroke count ([384dbbe](https://github.com/Rytass/BPMCore/commit/384dbbe))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.8 (2026-10-22)
 
 ### 🩹 Fixes

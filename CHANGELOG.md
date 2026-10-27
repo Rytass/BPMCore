@@ -1,3 +1,35 @@
+## 0.17.9 (2026-10-27)
+
+### 🚀 Features
+
+- **bpm-core:** record the applicant's comment on a resubmission ([9961470](https://github.com/Rytass/BPMCore/commit/9961470))
+- **bpm-core:** list deactivated members who still hold open tasks ([0ecf8f5](https://github.com/Rytass/BPMCore/commit/0ecf8f5))
+- **bpm-core-client:** send the resubmission comment ([ce3883a](https://github.com/Rytass/BPMCore/commit/ce3883a))
+- **bpm-core-client:** add listInactiveMembersWithOpenTasks ([5f8b615](https://github.com/Rytass/BPMCore/commit/5f8b615))
+- **bpm-core-react:** let the applicant comment when resubmitting ([374c462](https://github.com/Rytass/BPMCore/commit/374c462))
+- **bpm-core-react:** list the member's returned cases on the inbox ([617f507](https://github.com/Rytass/BPMCore/commit/617f507))
+- **bpm-core-react:** list deactivated members with open tasks on the member screen ([78a2006](https://github.com/Rytass/BPMCore/commit/78a2006))
+
+### 🩹 Fixes
+
+- **bpm-core:** count only asked-about inactive members, sorted by stroke count ([384dbbe](https://github.com/Rytass/BPMCore/commit/384dbbe))
+- **bpm-core:** cap the resubmission comment at 2000 characters ([7616e4e](https://github.com/Rytass/BPMCore/commit/7616e4e))
+- **bpm-core:** read deactivated-member holders in one bounded query ([ac107c1](https://github.com/Rytass/BPMCore/commit/ac107c1))
+- **bpm-core:** answer empty only when no identity service is registered ([5ba1dd2](https://github.com/Rytass/BPMCore/commit/5ba1dd2))
+- **bpm-core:** keep member directory methods bound to their directory ([b5d3c51](https://github.com/Rytass/BPMCore/commit/b5d3c51))
+- **bpm-core-client:** send only UpdateMembershipInput fields from updateMembership ([1c01f6f](https://github.com/Rytass/BPMCore/commit/1c01f6f))
+- **bpm-core-react:** lock the member picker when editing a membership ([4bf22a6](https://github.com/Rytass/BPMCore/commit/4bf22a6))
+- **bpm-core-react:** allow saving an edited membership whose member is unresolved ([75df04a](https://github.com/Rytass/BPMCore/commit/75df04a))
+- **bpm-core-react:** keep the latest inactive-members reload ([e552a07](https://github.com/Rytass/BPMCore/commit/e552a07))
+- **bpm-core-react:** keep the inbox tasks when the returned cases fail to load ([49fa4e3](https://github.com/Rytass/BPMCore/commit/49fa4e3))
+- **bpm-core-react:** keep each resubmission comment draft with its own case ([4623cb1](https://github.com/Rytass/BPMCore/commit/4623cb1))
+- **bpm-core-react:** cap the resubmission comment box and match its width ([05a1ff7](https://github.com/Rytass/BPMCore/commit/05a1ff7))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.8 (2026-10-22)
 
 ### 🚀 Features

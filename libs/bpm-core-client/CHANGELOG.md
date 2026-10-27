@@ -1,3 +1,18 @@
+## 0.17.9 (2026-10-27)
+
+### 🚀 Features
+
+- **bpm-core-client:** add listInactiveMembersWithOpenTasks ([5f8b615](https://github.com/Rytass/BPMCore/commit/5f8b615))
+- **bpm-core-client:** send the resubmission comment ([ce3883a](https://github.com/Rytass/BPMCore/commit/ce3883a))
+
+### 🩹 Fixes
+
+- **bpm-core-client:** send only UpdateMembershipInput fields from updateMembership ([1c01f6f](https://github.com/Rytass/BPMCore/commit/1c01f6f))
+
+### ❤️ Thank You
+
+- Kai-Chieh Yang
+
 ## 0.17.8 (2026-10-22)
 
 ### 🩹 Fixes

@@ -1,3 +1,25 @@
+## 0.17.9 (2026-10-27)
+
+### 🚀 Features
+
+- **bpm-core-react:** list deactivated members with open tasks on the member screen ([78a2006](https://github.com/Rytass/BPMCore/commit/78a2006))
+- **bpm-core-react:** list the member's returned cases on the inbox ([617f507](https://github.com/Rytass/BPMCore/commit/617f507))
+- **bpm-core-react:** let the applicant comment when resubmitting ([374c462](https://github.com/Rytass/BPMCore/commit/374c462))
+
+### 🩹 Fixes
+
+- **bpm-core-react:** cap the resubmission comment box and match its width ([05a1ff7](https://github.com/Rytass/BPMCore/commit/05a1ff7))
+- **bpm-core-react:** keep each resubmission comment draft with its own case ([4623cb1](https://github.com/Rytass/BPMCore/commit/4623cb1))
+- **bpm-core-react:** keep the inbox tasks when the returned cases fail to load ([49fa4e3](https://github.com/Rytass/BPMCore/commit/49fa4e3))
+- **bpm-core-react:** keep the latest inactive-members reload ([e552a07](https://github.com/Rytass/BPMCore/commit/e552a07))
+- **bpm-core-react:** allow saving an edited membership whose member is unresolved ([75df04a](https://github.com/Rytass/BPMCore/commit/75df04a))
+- **bpm-core-react:** lock the member picker when editing a membership ([4bf22a6](https://github.com/Rytass/BPMCore/commit/4bf22a6))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.8 (2026-10-22)
 
 ### 🩹 Fixes
