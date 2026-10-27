@@ -25,6 +25,9 @@ interface BPMMemberResolver {
   // 選用：選人器搜尋與目錄分頁
   search?(searchText: string): Promise<readonly MemberMetadata[]>;
   searchPaged?(searchText: string, options: BPMMemberSearchPageOptions): Promise<BPMMemberSearchPage>;
+  // 選用：在給定 id 中，回傳 host 已停用的會員；不快取。未實作時
+  // inactiveMembersWithOpenTasks 一律為空
+  resolveInactive?(memberIds: readonly string[]): Promise<readonly MemberMetadata[]>;
 }
 
 // libs/shared/src/lib/identity.ts

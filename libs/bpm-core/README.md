@@ -1633,8 +1633,11 @@ administrator (`@BPMAdminOnly()`) can move it without that person's help:
   deactivated who still hold open seats, each with the number of rows
   `memberOpenTasks` would list for them. BPM cannot tell a deactivated member
   from an id it never knew, so this needs the optional `resolveInactive` on the
-  member resolver (`resolveInactiveMembers` on a member-base directory). The
-  answer is not cached. Without that method the list is always empty.
+  member resolver (`resolveInactiveMembers` on a member-base directory). BPM
+  hands it every member id holding an open seat on a running instance, active
+  ones included, so keep it a batched lookup. The answer is not cached.
+  Without that method, or when the engine is wired without the identity
+  module, the list is always empty.
 - `reassignTask(input)` moves one task's seat from `fromMemberId` to
   `toMemberId`. `reassignMemberTasks(input)` does the same for every open task
   the source member holds, one transaction and one result per task.
