@@ -1,6 +1,7 @@
 import { isUUID } from 'class-validator';
 import {
   isFormDataValueEmpty,
+  MemberMetadata,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
@@ -54,6 +55,7 @@ import {
   EntityManager,
   In,
   IsNull,
+  Not,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -348,6 +350,15 @@ export interface MemberOpenTaskRecord {
   readonly taskId: string;
   readonly templateId: string;
   readonly templateName: string | null;
+}
+
+/** A deactivated member who still holds open tasks, for the reassignment screen. */
+export interface InactiveMemberOpenTasksRecord {
+  readonly email: string;
+  readonly memberId: string;
+  readonly name: string;
+  /** Same count as {@link WorkflowEngineService.listMemberOpenTasks} returns rows. */
+  readonly openTaskCount: number;
 }
 
 /**
@@ -5593,6 +5604,84 @@ export class WorkflowEngineService {
         templateName: templateNameById.get(instance.templateId) ?? null,
       };
     });
+  }
+
+  /**
+   * Deactivated members who still hold open tasks, so an administrator can find
+   * them: a deactivated member no longer shows up in the member search.
+   *
+   * BPM cannot tell a deactivated member from an id it never knew, so the host
+   * names them: `resolveInactiveMembers` gets every member id that holds an open
+   * seat and returns the ones it knows but has deactivated. The count per member
+   * is the {@link listMemberOpenTasks} count, and members left with none are
+   * dropped.
+   */
+  async listInactiveMembersWithOpenTasks(
+    resolveInactiveMembers: (
+      memberIds: readonly string[],
+    ) => Promise<readonly MemberMetadata[]>,
+  ): Promise<readonly InactiveMemberOpenTasksRecord[]> {
+    const holderIds = await this.readOpenSeatHolderMemberIds();
+
+    if (!holderIds.length) {
+      return [];
+    }
+
+    // A member the host repeats is listed once. One it was not asked about
+    // holds no open seat, so the count below drops it.
+    const inactiveMembers = [
+      ...new Map(
+        (await resolveInactiveMembers(holderIds)).map(
+          (member): [string, MemberMetadata] => [member.memberId, member],
+        ),
+      ).values(),
+    ];
+    const counted = await Promise.all(
+      inactiveMembers.map(
+        async (member): Promise<InactiveMemberOpenTasksRecord> => ({
+          email: member.email,
+          memberId: member.memberId,
+          name: member.name,
+          openTaskCount: (await this.readRunningMemberTasks(member.memberId))
+            .length,
+        }),
+      ),
+    );
+
+    return counted
+      .filter((record): boolean => record.openTaskCount > 0)
+      .sort((left, right): number => left.name.localeCompare(right.name));
+  }
+
+  /**
+   * Every member id that may hold an open seat: the assignee of an open task,
+   * or an open candidate row. A superset on purpose (it does not check the
+   * instance state or settled rows); callers count with
+   * {@link readRunningMemberTasks}, which does.
+   */
+  private async readOpenSeatHolderMemberIds(): Promise<readonly string[]> {
+    const [assignedTasks, candidateRows] = await Promise.all([
+      this.taskRepository.find({
+        select: { assigneeMemberId: true, id: true },
+        where: {
+          assigneeMemberId: Not(IsNull()),
+          status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+        },
+      }),
+      this.taskCandidateRepository.find({
+        select: { id: true, memberId: true },
+        where: { status: In(OPEN_SEAT_STATUSES) },
+      }),
+    ]);
+
+    return [
+      ...new Set([
+        ...assignedTasks.flatMap((task) =>
+          task.assigneeMemberId ? [task.assigneeMemberId] : [],
+        ),
+        ...candidateRows.map((row) => row.memberId),
+      ]),
+    ].sort();
   }
 
   /**

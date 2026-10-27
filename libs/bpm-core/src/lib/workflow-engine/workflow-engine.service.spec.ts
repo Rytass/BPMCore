@@ -4,6 +4,7 @@ import {
   FormFieldOption,
   TableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 import {
   ApproverResolver,
   DecisionPolicy,
@@ -13394,6 +13395,144 @@ describe('administrator task reassignment', (): void => {
     await expect(
       fixture.service.listMemberOpenTasks('member-from'),
     ).resolves.toEqual([]);
+  });
+
+  describe('deactivated members who still hold open tasks', (): void => {
+    const inactiveMember = (memberId: string, name: string): MemberMetadata => ({
+      customFields: {},
+      email: `${memberId}@example.internal`,
+      memberId,
+      name,
+    });
+
+    // member-from holds task-1 as assignee and task-2 as a candidate;
+    // member-seat only holds a candidate seat on task-2; member-active holds
+    // task-3.
+    const createHolderFixture = (): ServiceFixture => {
+      const assigned = createTask({
+        assigneeMemberId: 'member-from',
+        id: 'task-1',
+        nodeId: 'task_finance',
+      });
+      const unassigned = createTask({
+        assigneeMemberId: null,
+        id: 'task-2',
+        nodeId: 'task_finance',
+      });
+      const activeHolders = createTask({
+        assigneeMemberId: 'member-active',
+        id: 'task-3',
+        nodeId: 'task_finance',
+      });
+      const fixture = createServiceFixture({
+        additionalProcessTasks: [unassigned, activeHolders],
+        currentVersionId: 'template-version-1',
+        decisionTask: assigned,
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processTaskCandidates: [
+          createTaskCandidate({
+            id: 'cand-2',
+            memberId: 'member-from',
+            taskId: 'task-2',
+          }),
+          createTaskCandidate({
+            id: 'cand-3',
+            memberId: 'member-seat',
+            taskId: 'task-2',
+          }),
+        ],
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      answerTaskQueriesFromSeeds(fixture, [assigned, unassigned, activeHolders]);
+      fixture.rootInstanceFind.mockResolvedValue([
+        createApprovalInstance({
+          workflowSnapshot: createLinearUserTaskWorkflow(),
+        }),
+      ]);
+
+      return fixture;
+    };
+
+    it('asks the host about every open-seat holder and counts what memberOpenTasks would list', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const resolveInactive = jest.fn(
+        (): Promise<readonly MemberMetadata[]> =>
+          Promise.resolve([inactiveMember('member-from', '離職者')]),
+      );
+
+      const rows =
+        await fixture.service.listInactiveMembersWithOpenTasks(resolveInactive);
+
+      expect(resolveInactive).toHaveBeenCalledWith([
+        'member-active',
+        'member-from',
+        'member-seat',
+      ]);
+      expect(rows).toEqual([
+        {
+          email: 'member-from@example.internal',
+          memberId: 'member-from',
+          name: '離職者',
+          openTaskCount: (
+            await fixture.service.listMemberOpenTasks('member-from')
+          ).length,
+        },
+      ]);
+      expect(rows[0]?.openTaskCount).toBe(2);
+    });
+
+    it('leaves out a deactivated member whose open tasks are on instances that are no longer running', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+
+      fixture.rootInstanceFind.mockResolvedValue([]);
+
+      await expect(
+        fixture.service.listInactiveMembersWithOpenTasks(
+          (): Promise<readonly MemberMetadata[]> =>
+            Promise.resolve([inactiveMember('member-from', '離職者')]),
+        ),
+      ).resolves.toEqual([]);
+    });
+
+    it('ignores members the host was not asked about and members it repeats, and sorts by name', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+
+      const rows = await fixture.service.listInactiveMembersWithOpenTasks(
+        (): Promise<readonly MemberMetadata[]> =>
+          Promise.resolve([
+            inactiveMember('member-from', '王小明'),
+            inactiveMember('member-stranger', '陌生人'),
+            inactiveMember('member-from', '王小明'),
+            inactiveMember('member-active', '李大華'),
+          ]),
+      );
+
+      expect(rows.map((row) => row.memberId)).toEqual([
+        'member-active',
+        'member-from',
+      ]);
+    });
+
+    it('does not ask the host when nobody holds an open seat', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const resolveInactive = jest.fn(
+        (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
+      );
+
+      fixture.rootTaskFind.mockResolvedValue([]);
+      fixture.taskCandidateFind.mockResolvedValue([]);
+
+      await expect(
+        fixture.service.listInactiveMembersWithOpenTasks(resolveInactive),
+      ).resolves.toEqual([]);
+      expect(resolveInactive).not.toHaveBeenCalled();
+    });
   });
 
   it('reads the template names of every listed task in one query', async (): Promise<void> => {

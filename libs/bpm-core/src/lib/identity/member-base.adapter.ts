@@ -36,6 +36,14 @@ export interface BPMMemberBaseDirectory<TMember> {
     searchText: string,
     options: BPMMemberSearchPageOptions,
   ) => Promise<BPMMemberBaseSearchPage<TMember>>;
+  /**
+   * Optional: of `memberIds`, the members the host knows but has
+   * deactivated. Backs {@link BPMMemberResolver.resolveInactive}; when
+   * omitted the adapter leaves it `undefined`.
+   */
+  readonly resolveInactiveMembers?: (
+    memberIds: readonly string[],
+  ) => Promise<readonly TMember[]>;
 }
 
 /**
@@ -92,6 +100,11 @@ export class BPMMemberBaseResolverAdapter<TMember>
     options: BPMMemberSearchPageOptions,
   ) => Promise<BPMMemberSearchPage>;
 
+  /** Present only when the wrapped directory implements `resolveInactiveMembers`. */
+  readonly resolveInactive?: (
+    memberIds: readonly string[],
+  ) => Promise<readonly MemberMetadata[]>;
+
   constructor(
     private readonly directory: BPMMemberBaseDirectory<TMember>,
     private readonly options: BPMMemberBaseAdapterOptions<TMember> = {},
@@ -112,6 +125,18 @@ export class BPMMemberBaseResolverAdapter<TMember>
           total: page.total,
         };
       };
+    }
+
+    const resolveInactiveMembers = directory.resolveInactiveMembers;
+
+    if (resolveInactiveMembers) {
+      this.resolveInactive = async (
+        memberIds: readonly string[],
+      ): Promise<readonly MemberMetadata[]> =>
+        (await resolveInactiveMembers(memberIds)).map(
+          (member): MemberMetadata =>
+            readMemberMetadataFromMemberBaseMember(member, this.options),
+        );
     }
   }
 

@@ -110,6 +110,18 @@ export interface BPMMemberResolver {
     searchText: string,
     options: BPMMemberSearchPageOptions,
   ): Promise<BPMMemberSearchPage>;
+
+  /**
+   * Optional: of `memberIds`, the members the host knows but has
+   * deactivated (left the company, account disabled). Omit ids that are
+   * active or unknown. BPM cannot tell a deactivated member from an id it
+   * never knew, so it relies on this to list deactivated members who still
+   * hold open tasks on the administrator's member screen. Not cached. When
+   * omitted, that list is always empty.
+   */
+  resolveInactive?(
+    memberIds: readonly string[],
+  ): Promise<readonly MemberMetadata[]>;
 }
 
 /**

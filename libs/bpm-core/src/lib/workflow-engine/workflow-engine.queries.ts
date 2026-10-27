@@ -1,3 +1,5 @@
+import { ModuleRef } from '@nestjs/core';
+import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { Args, ID, Int, Query, Resolver } from '@nestjs/graphql';
 import {
   BPMAdminOnly,
@@ -6,8 +8,15 @@ import {
   BPMCurrentMemberId,
   BPMAuthContext,
 } from '../bpm-auth';
-import { MemberOpenTaskObject } from './task-reassignment.object';
-import { MemberOpenTaskRecord } from './workflow-engine.service';
+import { IdentityService } from '../identity/identity.service';
+import {
+  InactiveMemberWithOpenTasksObject,
+  MemberOpenTaskObject,
+} from './task-reassignment.object';
+import {
+  InactiveMemberOpenTasksRecord,
+  MemberOpenTaskRecord,
+} from './workflow-engine.service';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
@@ -27,7 +36,10 @@ import { WorkflowTokenEntity } from './workflow-token.entity';
 @Resolver()
 @BPMAuthenticated()
 export class WorkflowEngineQueries {
-  constructor(private readonly workflowEngineService: WorkflowEngineService) {}
+  constructor(
+    private readonly workflowEngineService: WorkflowEngineService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
 
   @Query(() => [ApprovalInstanceEntity])
   async approvalInstances(
@@ -199,6 +211,26 @@ export class WorkflowEngineQueries {
     @Args('memberId', { type: () => ID }) memberId: string,
   ): Promise<readonly MemberOpenTaskRecord[]> {
     return this.workflowEngineService.listMemberOpenTasks(memberId);
+  }
+
+  @Query(() => [InactiveMemberWithOpenTasksObject], {
+    description:
+      'Administrator: members the host reports as deactivated who still hold ' +
+      'open tasks, with the count memberOpenTasks would list. Always empty ' +
+      'when the host member resolver does not implement resolveInactive.',
+  })
+  @BPMAdminOnly()
+  async inactiveMembersWithOpenTasks(): Promise<
+    readonly InactiveMemberOpenTasksRecord[]
+  > {
+    const identityService = this.moduleRef.get(IdentityService, {
+      strict: false,
+    });
+
+    return this.workflowEngineService.listInactiveMembersWithOpenTasks(
+      (memberIds): Promise<readonly MemberMetadata[]> =>
+        identityService.resolveInactiveMembers(memberIds),
+    );
   }
 
   @Query(() => [ApprovalTemplateEntity])

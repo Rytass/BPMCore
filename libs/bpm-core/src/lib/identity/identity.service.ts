@@ -152,6 +152,25 @@ export class IdentityService {
       .filter((metadata): metadata is MemberMetadata => Boolean(metadata));
   }
 
+  /**
+   * Of `memberIds`, the members the host reports as deactivated; empty when
+   * the host resolver does not implement `resolveInactive`. Not cached: a
+   * cached profile cannot say whether the member was deactivated since.
+   */
+  async resolveInactiveMembers(
+    memberIds: readonly string[],
+  ): Promise<readonly MemberMetadata[]> {
+    const uniqueMemberIds = [...new Set(memberIds)].filter(
+      (memberId) => memberId.length > 0,
+    );
+
+    if (!this.memberResolver.resolveInactive || !uniqueMemberIds.length) {
+      return [];
+    }
+
+    return this.memberResolver.resolveInactive(uniqueMemberIds);
+  }
+
   async listCachedMembers(): Promise<readonly MemberMetadataCacheEntity[]> {
     return this.cacheRepository.find({ order: { memberId: 'ASC' } });
   }

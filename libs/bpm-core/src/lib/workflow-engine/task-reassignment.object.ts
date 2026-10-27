@@ -1,4 +1,4 @@
-import { Field, ID, ObjectType } from '@nestjs/graphql';
+import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import {
   MemberTaskRoleEnum,
   TaskCandidateStatusEnum,
@@ -69,4 +69,24 @@ export class MemberOpenTaskObject {
 
   @Field()
   createdAt!: Date;
+}
+
+/**
+ * A member the host reports as deactivated who still holds open tasks, as the
+ * administrator's member screen lists them for reassignment.
+ */
+@ObjectType('InactiveMemberWithOpenTasks')
+export class InactiveMemberWithOpenTasksObject {
+  @Field(() => ID)
+  memberId!: string;
+
+  @Field()
+  name!: string;
+
+  @Field()
+  email!: string;
+
+  /** Same count as `memberOpenTasks` returns rows for this member. */
+  @Field(() => Int)
+  openTaskCount!: number;
 }
