@@ -24,6 +24,7 @@ import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   ApprovalInstanceRecord,
+  type ApprovalInstancesPageResult,
   listApprovalHistoryTasks,
   listApprovalInstancesPage,
   listInboxTasks,
@@ -307,20 +308,11 @@ export function InboxView(): ReactElement {
         return;
       }
 
-      const [nextPendingTasks, nextHistoryTasks, returnedPage] =
+      const [nextPendingTasks, nextHistoryTasks, returned] =
         await Promise.all([
           listInboxTasks(currentMemberId),
           listApprovalHistoryTasks(currentMemberId),
-          // SENT also lists cases filed on someone else's behalf; only the
-          // initiator may resubmit, so those are filtered out below.
-          listApprovalInstancesPage({
-            page: 1,
-            pageSize: RETURNED_INSTANCE_PAGE_SIZE,
-            searchText: null,
-            state: 'RETURNED',
-            templateId: null,
-            view: 'SENT',
-          }),
+          readReturnedInstances(currentMemberId),
         ]);
       const [nextPendingRows, nextHistoryRows] = await Promise.all([
         readInboxTaskRows(nextPendingTasks),
@@ -329,14 +321,8 @@ export function InboxView(): ReactElement {
 
       setPendingRows(nextPendingRows);
       setHistoryRows(nextHistoryRows);
-      setReturnedRows(
-        readReturnedInstanceRows(returnedPage.instances, currentMemberId),
-      );
-      // The total includes cases filed for someone else, so compare it with
-      // what this page fetched rather than with the rows kept.
-      setReturnedTruncated(
-        returnedPage.totalCount > returnedPage.instances.length,
-      );
+      setReturnedRows(returned?.rows ?? []);
+      setReturnedTruncated(returned?.truncated ?? false);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -385,22 +371,32 @@ export function InboxView(): ReactElement {
               <TabItem key="history">歷史簽核記錄</TabItem>
             </Tab>
 
-            {activeTab === 'pending' && returnedRows.length > 0 ? (
+            {/* A truncated page with none of the member's own cases still
+                points to 我發起的: theirs may sit past the first page. */}
+            {activeTab === 'pending' &&
+            (returnedRows.length > 0 || returnedTruncated) ? (
               <div data-returned-instances="" style={RETURNED_SECTION_STYLE}>
-                <Typography component="h2" variant="label-primary">
-                  被退回待重送
-                </Typography>
+                {/* Without rows there is nothing here to resubmit, only the
+                    pointer to 我發起的. */}
+                {returnedRows.length > 0 ? (
+                  <Typography component="h2" variant="label-primary">
+                    被退回待重送
+                  </Typography>
+                ) : null}
                 <Typography color="text-neutral" variant="caption">
-                  {returnedTruncated
-                    ? '你發起的案件被退回，請修改後重新送出。可能還有其他被退回的案件，請到「我發起的」查看。'
-                    : '你發起的案件被退回，請修改後重新送出。'}
+                  {readReturnedSectionHint(
+                    returnedRows.length > 0,
+                    returnedTruncated,
+                  )}
                 </Typography>
-                <Table
-                  actions={returnedTableActions}
-                  columns={returnedColumns}
-                  dataSource={[...returnedRows]}
-                  fullWidth
-                />
+                {returnedRows.length > 0 ? (
+                  <Table
+                    actions={returnedTableActions}
+                    columns={returnedColumns}
+                    dataSource={[...returnedRows]}
+                    fullWidth
+                  />
+                ) : null}
               </div>
             ) : null}
             {activeTab === 'pending' ? (
@@ -434,6 +430,53 @@ export function InboxView(): ReactElement {
         </SectionGroup>
       </>
   );
+}
+
+function readReturnedSectionHint(
+  hasRows: boolean,
+  truncated: boolean,
+): string {
+  if (!hasRows) {
+    return `前 ${RETURNED_INSTANCE_PAGE_SIZE} 筆被退回的案件中沒有你發起的，可能還有其他被退回的案件，請到「我發起的」查看。`;
+  }
+
+  return truncated
+    ? '你發起的案件被退回，請修改後重新送出。可能還有其他被退回的案件，請到「我發起的」查看。'
+    : '你發起的案件被退回，請修改後重新送出。';
+}
+
+/**
+ * Returned cases are a side list: a failure here, in the request or in reading
+ * its rows, hides that section instead of taking the pending and history tasks
+ * down with it.
+ */
+async function readReturnedInstances(
+  currentMemberId: string,
+): Promise<Readonly<{
+  rows: readonly ReturnedInstanceRow[];
+  truncated: boolean;
+}> | null> {
+  try {
+    // SENT also lists cases filed on someone else's behalf; only the
+    // initiator may resubmit, so those are filtered out here.
+    const page: ApprovalInstancesPageResult = await listApprovalInstancesPage({
+      page: 1,
+      pageSize: RETURNED_INSTANCE_PAGE_SIZE,
+      searchText: null,
+      state: 'RETURNED',
+      templateId: null,
+      view: 'SENT',
+    });
+
+    return {
+      rows: readReturnedInstanceRows(page.instances, currentMemberId),
+      // The total includes cases filed for someone else, so compare it with
+      // what this page fetched rather than with the rows kept.
+      truncated: page.totalCount > page.instances.length,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function readReturnedInstanceRows(

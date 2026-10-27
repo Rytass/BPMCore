@@ -376,18 +376,75 @@ describe('InboxView returned cases', () => {
     expect(returnedSection()?.querySelectorAll('[data-row]')).toHaveLength(2);
   });
 
+  // The returned list is a side list; losing it must not take the tasks down.
+  it('still lists the pending tasks when the returned cases fail to load', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([task({ id: 'task-1' })]);
+    api.listApprovalInstancesPage.mockRejectedValue(new Error('boom'));
+
+    await renderInbox();
+
+    expect(container.querySelector('[data-row="task-1"]')).not.toBeNull();
+    expect(returnedSection()).toBeNull();
+    expect(container.textContent).not.toContain('boom');
+  });
+
+  it('hides only the returned list when its rows cannot be read', async (): Promise<void> => {
+    api.listInboxTasks.mockResolvedValue([task({ id: 'task-1' })]);
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage([returnedInstance({ id: 'instance-r1' })]),
+    );
+    api.readApprovalInstanceCaseTitle.mockImplementation((): string => {
+      throw new Error('bad snapshot');
+    });
+
+    await renderInbox();
+
+    expect(container.querySelector('[data-row="task-1"]')).not.toBeNull();
+    expect(returnedSection()).toBeNull();
+    expect(container.textContent).not.toContain('bad snapshot');
+  });
+
+  // A full page of 100 with more behind it, as the server pages them.
+  const fullPage = (initiatorMemberId: string): ApprovalInstanceRecord[] =>
+    Array.from(
+      { length: 100 },
+      (_, index): ApprovalInstanceRecord =>
+        returnedInstance({ id: `instance-${index}`, initiatorMemberId }),
+    );
+
   it('says where to find the rest when there are more than it lists', async (): Promise<void> => {
     api.listApprovalInstancesPage.mockResolvedValue(
-      returnedPage([returnedInstance({ id: 'instance-r1' })], 101),
+      returnedPage(fullPage('member-001'), 101),
     );
 
     await renderInbox();
 
-    expect(returnedSection()?.textContent).toContain('我發起的');
+    expect(api.listApprovalInstancesPage).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, pageSize: 100 }),
+    );
+    expect(returnedSection()?.textContent).toContain(
+      '你發起的案件被退回，請修改後重新送出。可能還有其他被退回的案件，請到「我發起的」查看。',
+    );
+  });
+
+  // The member's own returned cases may all sit past a first page filled with
+  // cases filed for someone else; the pointer must still show.
+  it('points to the rest when the first page holds none of the member\'s own cases', async (): Promise<void> => {
+    api.listApprovalInstancesPage.mockResolvedValue(
+      returnedPage(fullPage('member-boss'), 101),
+    );
+
+    await renderInbox();
+
+    expect(returnedSection()?.textContent).toBe(
+      '前 100 筆被退回的案件中沒有你發起的，可能還有其他被退回的案件，請到「我發起的」查看。',
+    );
+    expect(returnedSection()?.querySelectorAll('[data-row]')).toHaveLength(0);
   });
 
   // The total also counts cases filed for someone else, which are dropped
-  // here; only a full page means anything was left out.
+  // here; only a total above what the page fetched means anything was left
+  // out.
   it('does not mention the rest when everything is listed', async (): Promise<void> => {
     api.listApprovalInstancesPage.mockResolvedValue(
       returnedPage([
