@@ -1,4 +1,5 @@
 import { ModuleRef } from '@nestjs/core';
+import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { IdentityService } from '../identity/identity.service';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
@@ -57,5 +58,41 @@ describe('WorkflowEngineQueries.inactiveMembersWithOpenTasks', () => {
       strict: false,
     });
     expect(resolveInactiveMembers).toHaveBeenCalledWith(['member-gone']);
+  });
+
+  // IdentityModule is wired by the root; an engine without it answers empty
+  // rather than failing the administrator's member screen.
+  it('answers empty when no identity service is registered', async (): Promise<void> => {
+    const listInactiveMembersWithOpenTasks = jest.fn();
+    const queries = new WorkflowEngineQueries(
+      {
+        listInactiveMembersWithOpenTasks,
+      } as unknown as WorkflowEngineService,
+      {
+        get: jest.fn((): never => {
+          throw new UnknownElementException('IdentityService');
+        }),
+      } as unknown as ModuleRef,
+    );
+
+    await expect(queries.inactiveMembersWithOpenTasks()).resolves.toEqual([]);
+    expect(listInactiveMembersWithOpenTasks).not.toHaveBeenCalled();
+  });
+
+  it('lets any other lookup failure through', async (): Promise<void> => {
+    const queries = new WorkflowEngineQueries(
+      {
+        listInactiveMembersWithOpenTasks: jest.fn(),
+      } as unknown as WorkflowEngineService,
+      {
+        get: jest.fn((): never => {
+          throw new Error('IdentityService failed to construct');
+        }),
+      } as unknown as ModuleRef,
+    );
+
+    await expect(queries.inactiveMembersWithOpenTasks()).rejects.toThrow(
+      'IdentityService failed to construct',
+    );
   });
 });

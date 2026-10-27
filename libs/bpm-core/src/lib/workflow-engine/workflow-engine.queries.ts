@@ -1,4 +1,5 @@
 import { ModuleRef } from '@nestjs/core';
+import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { Args, ID, Int, Query, Resolver } from '@nestjs/graphql';
 import {
@@ -217,15 +218,18 @@ export class WorkflowEngineQueries {
     description:
       'Administrator: members the host reports as deactivated who still hold ' +
       'open tasks, with the count memberOpenTasks would list. Always empty ' +
-      'when the host member resolver does not implement resolveInactive.',
+      'when the host member resolver does not implement resolveInactive, or ' +
+      'when the engine is wired without the identity module.',
   })
   @BPMAdminOnly()
   async inactiveMembersWithOpenTasks(): Promise<
     readonly InactiveMemberOpenTasksRecord[]
   > {
-    const identityService = this.moduleRef.get(IdentityService, {
-      strict: false,
-    });
+    const identityService = this.readIdentityService();
+
+    if (!identityService) {
+      return [];
+    }
 
     return this.workflowEngineService.listInactiveMembersWithOpenTasks(
       (memberIds): Promise<readonly MemberMetadata[]> =>
@@ -284,5 +288,25 @@ export class WorkflowEngineQueries {
       instanceId,
       currentAuthContext,
     );
+  }
+
+  /**
+   * Looked up at call time rather than injected: `IdentityModule` is a dynamic
+   * module the root configures with the host's options, so this module cannot
+   * import it. A host that wires the engine without it gets an empty list, the
+   * same answer as a member resolver without `resolveInactive`.
+   */
+  private readIdentityService(): IdentityService | null {
+    try {
+      return this.moduleRef.get(IdentityService, { strict: false });
+    } catch (error) {
+      // Only "not registered" means no identity module; anything else is a
+      // real failure and must not pass for an empty list.
+      if (error instanceof UnknownElementException) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 }
