@@ -2042,7 +2042,12 @@ function MembershipModal({
   return (
     <Modal
       cancelText="取消"
-      confirmButtonProps={{ disabled: !member || !orgUnit }}
+      // An edit never sends the member, and the picker is locked; requiring it
+      // would leave a membership whose member the host no longer resolves
+      // (for example a deactivated account) impossible to end.
+      confirmButtonProps={{
+        disabled: !orgUnit || (modal?.type !== 'EDIT' && !member),
+      }}
       confirmText={modal?.type === 'EDIT' ? '儲存' : '建立'}
       loading={saving}
       modalType="standard"
