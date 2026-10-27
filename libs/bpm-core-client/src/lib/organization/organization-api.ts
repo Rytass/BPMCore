@@ -724,6 +724,12 @@ export async function updateMembership(input: {
   readonly orgUnitId: string | null;
   readonly positionId: string | null;
 }): Promise<MembershipRecord> {
+  // Rebuilt field by field rather than forwarded: TypeScript does not reject
+  // excess properties that arrive through a spread, and GraphQL answers any
+  // key UpdateMembershipInput does not declare (such as memberId) with HTTP
+  // 400. The member a membership belongs to cannot be changed.
+  const { effectiveFrom, effectiveTo, id, isPrimary, orgUnitId, positionId } =
+    input;
   const data = await requestGraphQl<UpdateMembershipMutationData>(
     `mutation AdminUpdateMembership($input: UpdateMembershipInput!) {
       updateMembership(input: $input) {
@@ -738,7 +744,16 @@ export async function updateMembership(input: {
         updatedAt
       }
     }`,
-    { input },
+    {
+      input: {
+        effectiveFrom,
+        effectiveTo,
+        id,
+        isPrimary,
+        orgUnitId,
+        positionId,
+      },
+    },
   );
 
   return data.updateMembership;
