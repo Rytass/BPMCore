@@ -237,6 +237,34 @@ describe('AdminUsersView deactivated members with open tasks', () => {
     expect(inactiveSection()).toBeNull();
   });
 
+  it('keeps the latest reload when an earlier one answers late', async (): Promise<void> => {
+    await renderView();
+
+    let answerEarlierReload: (
+      rows: readonly InactiveMemberWithOpenTasksRecord[],
+    ) => void = (): void => undefined;
+
+    api.listInactiveMembersWithOpenTasks.mockReturnValueOnce(
+      new Promise((resolve): void => {
+        answerEarlierReload = resolve;
+      }),
+    );
+    await click(findButton(inactiveSection(), '改派待辦'));
+    await click(findButton(container, '關閉改派'));
+
+    api.listInactiveMembersWithOpenTasks.mockResolvedValueOnce([]);
+    await click(findButton(inactiveSection(), '改派待辦'));
+    await click(findButton(container, '關閉改派'));
+
+    expect(inactiveSection()).toBeNull();
+
+    await act(async (): Promise<void> => {
+      answerEarlierReload([goneMember]);
+    });
+
+    expect(inactiveSection()).toBeNull();
+  });
+
   it('shows nothing when no deactivated member holds an open task', async (): Promise<void> => {
     api.listInactiveMembersWithOpenTasks.mockResolvedValue([]);
 

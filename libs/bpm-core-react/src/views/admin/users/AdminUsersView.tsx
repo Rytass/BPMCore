@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -132,13 +133,27 @@ export function AdminUsersView(): ReactElement {
     void refreshMembers();
   }, [refreshMembers]);
 
+  const latestInactiveRequestRef = useRef(0);
+
   // Loaded on its own so a failure here leaves the member directory usable.
+  // Only the latest request may write: a reload started when the reassignment
+  // closes must not be overwritten by an earlier one answering late.
   const refreshInactiveMembers = useCallback(async (): Promise<void> => {
+    const request = latestInactiveRequestRef.current + 1;
+
+    latestInactiveRequestRef.current = request;
+
     try {
-      setInactiveMembers(await listInactiveMembersWithOpenTasks());
-      setInactiveMembersError(null);
+      const loaded = await listInactiveMembersWithOpenTasks();
+
+      if (latestInactiveRequestRef.current === request) {
+        setInactiveMembers(loaded);
+        setInactiveMembersError(null);
+      }
     } catch (requestError: unknown) {
-      setInactiveMembersError(readErrorMessage(requestError));
+      if (latestInactiveRequestRef.current === request) {
+        setInactiveMembersError(readErrorMessage(requestError));
+      }
     }
   }, []);
 
