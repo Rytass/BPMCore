@@ -11,6 +11,8 @@ import {
   GraphQLString,
   isNonNullType,
 } from 'graphql';
+import { validate } from 'class-validator';
+import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 
 // A code-first schema cannot be built without a Query root.
@@ -53,5 +55,21 @@ describe('WorkflowEngineMutations schema', () => {
 
     expect(comment?.type).toBe(GraphQLString);
     expect(isNonNullType(comment?.type)).toBe(false);
+  });
+
+  // The comment is stored whole in the activity log payload.
+  it('caps the resubmission comment at 2000 characters', async (): Promise<void> => {
+    const input = new ResubmitApprovalInstanceInput();
+    input.formDataJson = '{}';
+    input.instanceId = '11111111-1111-4111-8111-111111111111';
+    input.title = null;
+
+    input.comment = 'x'.repeat(2000);
+    expect(await validate(input)).toEqual([]);
+
+    input.comment = 'x'.repeat(2001);
+    expect(await validate(input)).toEqual([
+      expect.objectContaining({ property: 'comment' }),
+    ]);
   });
 });
