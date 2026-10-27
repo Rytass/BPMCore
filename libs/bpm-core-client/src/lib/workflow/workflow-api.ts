@@ -237,6 +237,17 @@ export interface MemberOpenTaskRecord {
 
 export type MemberTaskRole = 'ASSIGNEE' | 'CANDIDATE';
 
+/**
+ * A member the host reports as deactivated who still holds open tasks.
+ * `openTaskCount` is how many rows {@link listMemberOpenTasks} returns for them.
+ */
+export interface InactiveMemberWithOpenTasksRecord {
+  readonly email: string;
+  readonly memberId: string;
+  readonly name: string;
+  readonly openTaskCount: number;
+}
+
 export type TaskReassignmentOutcome =
   'REASSIGNED' | 'REJECTED' | 'WOULD_REASSIGN';
 
@@ -629,6 +640,10 @@ interface DecideTaskMutationData {
 
 interface MemberOpenTasksQueryData {
   readonly memberOpenTasks: readonly MemberOpenTaskRecord[];
+}
+
+interface InactiveMembersWithOpenTasksQueryData {
+  readonly inactiveMembersWithOpenTasks: readonly InactiveMemberWithOpenTasksRecord[];
 }
 
 interface ReassignTaskMutationData {
@@ -1972,6 +1987,27 @@ export async function listMemberOpenTasks(
   );
 
   return data.memberOpenTasks;
+}
+
+/**
+ * Administrator: deactivated members who still hold open tasks. Always empty
+ * when the host member resolver cannot tell who is deactivated.
+ */
+export async function listInactiveMembersWithOpenTasks(): Promise<
+  readonly InactiveMemberWithOpenTasksRecord[]
+> {
+  const data = await requestGraphQl<InactiveMembersWithOpenTasksQueryData>(
+    `query InactiveMembersWithOpenTasks {
+      inactiveMembersWithOpenTasks {
+        email
+        memberId
+        name
+        openTaskCount
+      }
+    }`,
+  );
+
+  return data.inactiveMembersWithOpenTasks;
 }
 
 const TASK_REASSIGNMENT_RESULT_SELECTION = `

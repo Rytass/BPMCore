@@ -5,6 +5,7 @@ import {
   listApprovalInstances,
   listApprovalInstancesPage,
   listInboxTasks,
+  listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
   reassignMemberTasks,
   reassignTask,
@@ -465,6 +466,28 @@ describe('@rytass/bpm-core-client/workflow', () => {
         expect(request.query).toContain('memberRole');
         expect(request.variables).toEqual({ memberId: 'member-from' });
         expect(rows).toEqual([]);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('lists the deactivated members who still hold open tasks', async (): Promise<void> => {
+      const member = {
+        email: 'gone@example.internal',
+        memberId: 'member-gone',
+        name: '離職者',
+        openTaskCount: 2,
+      };
+      const harness = installFetchMock({
+        inactiveMembersWithOpenTasks: [member],
+      });
+      try {
+        const rows = await listInactiveMembersWithOpenTasks();
+        const request = harness.capture();
+
+        expect(request.query).toContain('query InactiveMembersWithOpenTasks');
+        expect(request.query).toContain('openTaskCount');
+        expect(rows).toEqual([member]);
       } finally {
         harness.restore();
       }
