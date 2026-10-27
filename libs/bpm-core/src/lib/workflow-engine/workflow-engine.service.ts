@@ -55,7 +55,7 @@ import {
   EntityManager,
   In,
   IsNull,
-  Not,
+  ObjectLiteral,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -354,6 +354,14 @@ export interface MemberOpenTaskRecord {
 
 /** The administrator screens are in Traditional Chinese: names sort by stroke count. */
 const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
+
+/**
+ * How many deactivated members have their open tasks counted at once. Each
+ * count is a few queries, so an unbounded fan-out would put one query in
+ * flight per member, and claim that many pool connections at the same time, on
+ * every load of the member screen.
+ */
+const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
 
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
@@ -5640,55 +5648,103 @@ export class WorkflowEngineService {
           .map((member): [string, MemberMetadata] => [member.memberId, member]),
       ).values(),
     ];
-    const counted = await Promise.all(
-      inactiveMembers.map(
-        async (member): Promise<InactiveMemberOpenTasksRecord> => ({
-          email: member.email,
-          memberId: member.memberId,
-          name: member.name,
-          openTaskCount: (await this.readRunningMemberTasks(member.memberId))
-            .length,
-        }),
-      ),
+    const counted = await chunkArray(
+      inactiveMembers,
+      INACTIVE_MEMBER_COUNT_CONCURRENCY,
+    ).reduce(
+      async (
+        previous: Promise<readonly InactiveMemberOpenTasksRecord[]>,
+        batch,
+      ): Promise<readonly InactiveMemberOpenTasksRecord[]> => [
+        ...(await previous),
+        ...(await Promise.all(
+          batch.map(async (member): Promise<InactiveMemberOpenTasksRecord> => ({
+            email: member.email,
+            memberId: member.memberId,
+            name: member.name,
+            openTaskCount: (await this.readRunningMemberTasks(member.memberId))
+              .length,
+          })),
+        )),
+      ],
+      Promise.resolve([]),
     );
 
     return counted
       .filter((record): boolean => record.openTaskCount > 0)
       .sort(
         (left, right): number =>
-          left.name.localeCompare(right.name, INACTIVE_MEMBER_NAME_LOCALE),
+          left.name.localeCompare(right.name, INACTIVE_MEMBER_NAME_LOCALE) ||
+          // Namesakes are common; the id keeps their order stable.
+          (left.memberId < right.memberId
+            ? -1
+            : left.memberId > right.memberId
+              ? 1
+              : 0),
       );
   }
 
   /**
-   * Every member id that may hold an open seat: the assignee of an open task,
-   * or an open candidate row. A superset on purpose (it does not check the
-   * instance state or settled rows); callers count with
-   * {@link readRunningMemberTasks}, which does.
+   * Every member id that may hold an open seat on a RUNNING instance: the
+   * assignee of an open task, or an open candidate row on one. Still a
+   * superset (a countersign voter who already decided stays the assignee);
+   * callers count with {@link readRunningMemberTasks}, which drops those.
+   *
+   * One query that returns only the distinct holder ids, never a row per
+   * task or seat: the member screen loads it every time.
    */
   private async readOpenSeatHolderMemberIds(): Promise<readonly string[]> {
-    const [assignedTasks, candidateRows] = await Promise.all([
-      this.taskRepository.find({
-        select: { assigneeMemberId: true, id: true },
-        where: {
-          assigneeMemberId: Not(IsNull()),
-          status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
-        },
-      }),
-      this.taskCandidateRepository.find({
-        select: { id: true, memberId: true },
-        where: { status: In(OPEN_SEAT_STATUSES) },
-      }),
-    ]);
+    const taskTable = this.readQualifiedTableName(this.taskRepository);
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
+    );
+    const instanceTable = this.readQualifiedTableName(
+      this.approvalInstanceRepository,
+    );
+    const rows = await this.approvalInstanceRepository.query<
+      readonly { readonly memberId: string }[]
+    >(
+      `SELECT holder.member_id AS "memberId"
+         FROM (
+               SELECT task.assignee_member_id AS member_id
+                 FROM ${taskTable} AS task
+                 JOIN ${instanceTable} AS instance
+                   ON instance.id = task.instance_id
+                WHERE task.status = ANY($1::text[])
+                  AND task.assignee_member_id IS NOT NULL
+                  AND instance.state = $2
+               UNION
+               SELECT candidate.member_id
+                 FROM ${candidateTable} AS candidate
+                 JOIN ${taskTable} AS task ON task.id = candidate.task_id
+                 JOIN ${instanceTable} AS instance
+                   ON instance.id = task.instance_id
+                WHERE candidate.status = ANY($3::text[])
+                  AND task.status = ANY($1::text[])
+                  AND instance.state = $2
+              ) AS holder`,
+      [
+        [TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS],
+        ApprovalInstanceStateEnum.RUNNING,
+        [...OPEN_SEAT_STATUSES],
+      ],
+    );
 
-    return [
-      ...new Set([
-        ...assignedTasks.flatMap((task): readonly string[] =>
-          task.assigneeMemberId ? [task.assigneeMemberId] : [],
-        ),
-        ...candidateRows.map((row): string => row.memberId),
-      ]),
-    ].sort();
+    // Sorted here, not in SQL: the default JS order (UTF-16 code units),
+    // whatever the DB collation.
+    return rows.map((row): string => row.memberId).sort();
+  }
+
+  /** `schema.table` of a repository's entity, escaped for raw SQL. */
+  private readQualifiedTableName<TEntity extends ObjectLiteral>(
+    repository: Repository<TEntity>,
+  ): string {
+    const { driver } = this.approvalInstanceRepository.manager.connection;
+
+    return [repository.metadata.schema, repository.metadata.tableName]
+      .filter((part): part is string => Boolean(part))
+      .map((part): string => driver.escape(part))
+      .join('.');
   }
 
   /**
@@ -8791,6 +8847,17 @@ function capDecisionPolicyToCandidateCount(
     policy.threshold > candidateCount
     ? { ...policy, threshold: Math.max(candidateCount, 1) }
     : policy;
+}
+
+/** Splits `items` into consecutive runs of at most `size`. */
+function chunkArray<T>(
+  items: readonly T[],
+  size: number,
+): readonly (readonly T[])[] {
+  return Array.from(
+    { length: Math.ceil(items.length / size) },
+    (_, index): readonly T[] => items.slice(index * size, (index + 1) * size),
+  );
 }
 
 function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {

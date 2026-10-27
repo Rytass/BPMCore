@@ -13507,6 +13507,23 @@ describe('administrator task reassignment', (): void => {
       ).resolves.toEqual([]);
     });
 
+    it('orders namesakes by member id whatever order the host answers in', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+
+      const rows = await fixture.service.listInactiveMembersWithOpenTasks(
+        (): Promise<readonly MemberMetadata[]> =>
+          Promise.resolve([
+            inactiveMember('member-from', '王小明'),
+            inactiveMember('member-active', '王小明'),
+          ]),
+      );
+
+      expect(rows.map((row) => row.memberId)).toEqual([
+        'member-active',
+        'member-from',
+      ]);
+    });
+
     it('lists a member the host repeats once and sorts by name stroke count', async (): Promise<void> => {
       const fixture = createHolderFixture();
 
@@ -13558,6 +13575,138 @@ describe('administrator task reassignment', (): void => {
 
       expect(rows).toEqual([
         expect.objectContaining({ memberId: 'member-waiting', openTaskCount: 1 }),
+      ]);
+    });
+
+    it('does not ask the host about holders whose open tasks are all on instances that are no longer running', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const resolveInactive = jest.fn(
+        (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
+      );
+
+      fixture.rootInstanceFind.mockResolvedValue([]);
+
+      await expect(
+        fixture.service.listInactiveMembersWithOpenTasks(resolveInactive),
+      ).resolves.toEqual([]);
+      expect(resolveInactive).not.toHaveBeenCalled();
+    });
+
+    // Each count is a few queries; an unbounded fan-out would claim one pool
+    // connection per deactivated member at once on every load of the member
+    // screen.
+    it('counts at most five deactivated members at once', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const memberIds = Array.from(
+        { length: 12 },
+        (_, index): string => `member-gone-${String(index).padStart(2, '0')}`,
+      );
+      const service = fixture.service as unknown as {
+        readRunningMemberTasks: (memberId: string) => Promise<readonly unknown[]>;
+      };
+      const inFlight = { current: 0, peak: 0 };
+
+      jest
+        .spyOn(service, 'readRunningMemberTasks')
+        .mockImplementation(async (): Promise<readonly unknown[]> => {
+          inFlight.current += 1;
+          inFlight.peak = Math.max(inFlight.peak, inFlight.current);
+          await new Promise((resolve): void => {
+            setImmediate(resolve);
+          });
+          inFlight.current -= 1;
+
+          return [{}];
+        });
+      jest
+        .spyOn(
+          fixture.service as unknown as {
+            readOpenSeatHolderMemberIds: () => Promise<readonly string[]>;
+          },
+          'readOpenSeatHolderMemberIds',
+        )
+        .mockResolvedValue(memberIds);
+
+      const rows = await fixture.service.listInactiveMembersWithOpenTasks(
+        (ids): Promise<readonly MemberMetadata[]> =>
+          Promise.resolve(ids.map((id) => inactiveMember(id, id))),
+      );
+
+      expect(rows).toHaveLength(12);
+      expect(inFlight.peak).toBe(5);
+    });
+
+    // A PARALLEL_ALL voter stays the task's assignee after voting; their own
+    // COMPLETED candidate row says the seat is no longer theirs.
+    it('leaves out a deactivated member who already voted on the only task they are assigned', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const voted = createTaskCandidate({
+        id: 'cand-voted',
+        memberId: 'member-active',
+        status: TaskCandidateStatusEnum.COMPLETED,
+        taskId: 'task-3',
+      });
+      const seeded = fixture.taskCandidateFind.getMockImplementation();
+
+      fixture.taskCandidateFind.mockImplementation(
+        async (options): Promise<readonly TaskCandidateEntity[]> => [
+          ...((await seeded?.(options)) ?? []),
+          ...(matchesFindWhere(voted, options?.where) ? [voted] : []),
+        ],
+      );
+
+      await expect(
+        fixture.service.listInactiveMembersWithOpenTasks(
+          (): Promise<readonly MemberMetadata[]> =>
+            Promise.resolve([inactiveMember('member-active', '已投票者')]),
+        ),
+      ).resolves.toEqual([]);
+    });
+
+    it('reads the holders in one query scoped to open tasks on running instances', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+      const query = fixture.service['approvalInstanceRepository']
+        .query as jest.Mock;
+
+      query.mockClear();
+      await fixture.service.listInactiveMembersWithOpenTasks(
+        (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
+      );
+
+      const holderCalls = query.mock.calls.filter(([sql]): boolean =>
+        String(sql).includes('AS holder'),
+      );
+
+      expect(holderCalls).toHaveLength(1);
+
+      // The fixture answers from the parameters, so the conditions that tie
+      // each parameter to its column are pinned here.
+      const sql = String(holderCalls[0]?.[0]).replace(/\s+/g, ' ');
+
+      expect(sql).toContain('"bpm"."tasks"');
+      expect(sql).toContain('"bpm"."task_candidates"');
+      expect(sql).toContain('"bpm"."approval_instances"');
+      expect(sql).toContain('ON instance.id = task.instance_id');
+      expect(sql).toContain('ON task.id = candidate.task_id');
+      expect(sql).toContain('task.assignee_member_id IS NOT NULL');
+      expect(sql.match(/task\.status = ANY\(\$1::text\[\]\)/g)).toHaveLength(
+        2,
+      );
+      expect(sql.match(/instance\.state = \$2/g)).toHaveLength(2);
+      expect(sql).toContain('candidate.status = ANY($3::text[])');
+      expect(sql).toContain('UNION');
+      // The selected columns, which the fixture cannot check by running it.
+      expect(sql).toContain('SELECT holder.member_id AS "memberId"');
+      expect(sql).toContain('SELECT task.assignee_member_id AS member_id');
+      expect(sql).toContain('SELECT candidate.member_id FROM');
+      expect(holderCalls[0]?.[1]).toEqual([
+        [TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS],
+        ApprovalInstanceStateEnum.RUNNING,
+        [
+          TaskCandidateStatusEnum.PENDING,
+          TaskCandidateStatusEnum.CLAIMED,
+          TaskCandidateStatusEnum.WAITING,
+        ],
       ]);
     });
 
@@ -14283,14 +14432,26 @@ function createServiceFixture({
     find: rootInstanceFind,
     findOne: rootInstanceFindOne,
     metadata: { schema: 'bpm', tableName: 'approval_instances' },
-    // Stands in for the jsonb node query (`readTaskNodeSummaries`): the label,
-    // type and fieldAccess of each requested node, read from the instances
-    // `find` knows.
-    query: rootInstanceNodeLabelQuery,
+    // Stands in for the raw queries: the jsonb node query
+    // (`readTaskNodeSummaries`) and the open-seat holder query
+    // (`readOpenSeatHolderMemberIds`), both answered from what `find` knows.
+    query: jest.fn(
+      (
+        sql: string,
+        params: readonly unknown[],
+      ): Promise<readonly Readonly<Record<string, unknown>>[]> =>
+        sql.includes('AS holder')
+          ? readOpenSeatHolderRows(params)
+          : rootInstanceNodeLabelQuery(
+              sql,
+              params as readonly [readonly string[], readonly string[]],
+            ),
+    ),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
   const taskRepository = createRepository<TaskEntity>({
     find: rootTaskFind,
+    metadata: { schema: 'bpm', tableName: 'tasks' },
     findOne: jest.fn(
       (
         options?: Readonly<{ where?: Readonly<{ id?: string }> }>,
@@ -14312,7 +14473,44 @@ function createServiceFixture({
   );
   const taskCandidateRepository = createRepository<TaskCandidateEntity>({
     find: taskCandidateFind,
+    metadata: { schema: 'bpm', tableName: 'task_candidates' },
   });
+  // The SQL of `readOpenSeatHolderMemberIds`: assignees of open tasks and
+  // members with an open candidate row on one, both on RUNNING instances.
+  async function readOpenSeatHolderRows(
+    params: readonly unknown[],
+  ): Promise<readonly Readonly<Record<string, unknown>>[]> {
+    const [taskStatuses, instanceState, candidateStatuses] = params as readonly [
+      readonly TaskStatusEnum[],
+      ApprovalInstanceStateEnum,
+      readonly TaskCandidateStatusEnum[],
+    ];
+    const runningInstanceIds = new Set(
+      (await rootInstanceFind())
+        .filter((instance): boolean => instance.state === instanceState)
+        .map((instance): string => instance.id),
+    );
+    const openTasks = (
+      await rootTaskFind({ where: { status: In([...taskStatuses]) } })
+    ).filter((task): boolean => runningInstanceIds.has(task.instanceId));
+    const openTaskIds = new Set(openTasks.map((task): string => task.id));
+    const candidates = (
+      await taskCandidateFind({
+        where: { status: In([...candidateStatuses]) },
+      })
+    ).filter((candidate): boolean => openTaskIds.has(candidate.taskId));
+
+    return [
+      ...new Set([
+        ...openTasks.flatMap((task): readonly string[] =>
+          task.assigneeMemberId ? [task.assigneeMemberId] : [],
+        ),
+        ...candidates.map((candidate): string => candidate.memberId),
+      ]),
+    ]
+      .sort()
+      .map((memberId) => ({ memberId }));
+  }
   const taskDecisionRepository = createRepository<TaskDecisionEntity>({
     find: jest.fn(() => Promise.resolve([])),
   });
