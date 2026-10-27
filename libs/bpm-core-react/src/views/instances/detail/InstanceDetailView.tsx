@@ -101,6 +101,7 @@ import {
   readNodeRuntimeState,
   readTaskDecisionsForTasks,
 } from './sections/container-helpers';
+import { useResubmitCommentDraft } from './use-resubmit-comment-draft';
 import { InstanceFormSection } from './sections/InstanceFormSection';
 import { InstanceAttachmentsSection } from './sections/InstanceAttachmentsSection';
 import {
@@ -327,7 +328,11 @@ export function InstanceDetailView({
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
-  const [resubmitComment, setResubmitComment] = useState('');
+  const {
+    clearAfterResubmit: clearResubmitCommentAfterResubmit,
+    comment: resubmitComment,
+    setComment: setResubmitComment,
+  } = useResubmitCommentDraft(instanceId);
   const [resubmitDataSourceStates, setResubmitDataSourceStates] = useState<
     Readonly<
       Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
@@ -918,7 +923,7 @@ export function InstanceDetailView({
         instanceId: instance.id,
         title: instance.title,
       });
-      setResubmitComment('');
+      clearResubmitCommentAfterResubmit(instance.id);
       await refreshInstance();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
