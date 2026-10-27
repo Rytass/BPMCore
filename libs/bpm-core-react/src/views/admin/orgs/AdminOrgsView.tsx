@@ -913,9 +913,15 @@ export function AdminOrgsView(): ReactElement {
         onSubmit={(input): Promise<void> =>
           runMutation(async (): Promise<void> => {
             if (membershipModal?.type === 'EDIT' && membershipModal.record) {
+              // input.memberId is left out: UpdateMembershipInput has no
+              // such field, and the picker is locked while editing.
               await updateMembership({
-                ...input,
+                effectiveFrom: input.effectiveFrom,
+                effectiveTo: input.effectiveTo,
                 id: membershipModal.record.id,
+                isPrimary: input.isPrimary,
+                orgUnitId: input.orgUnitId,
+                positionId: input.positionId,
               });
             } else {
               await createMembership({
@@ -2061,6 +2067,7 @@ function MembershipModal({
       <div className={styles.modalFields}>
         <BPMFormField label="會員" name="memberId">
           <MemberPicker
+            disabled={modal?.type === 'EDIT'}
             name="memberId"
             onChange={setMember}
             placeholder="搜尋會員姓名或信箱"
