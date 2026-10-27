@@ -13406,8 +13406,8 @@ describe('administrator task reassignment', (): void => {
     });
 
     // member-from holds task-1 as assignee and task-2 as a candidate;
-    // member-seat only holds a candidate seat on task-2; member-active holds
-    // task-3.
+    // member-seat only holds a candidate seat on task-2, member-waiting only a
+    // WAITING one (a later SEQUENTIAL turn); member-active holds task-3.
     const createHolderFixture = (): ServiceFixture => {
       const assigned = createTask({
         assigneeMemberId: 'member-from',
@@ -13444,6 +13444,12 @@ describe('administrator task reassignment', (): void => {
             memberId: 'member-seat',
             taskId: 'task-2',
           }),
+          createTaskCandidate({
+            id: 'cand-4',
+            memberId: 'member-waiting',
+            status: TaskCandidateStatusEnum.WAITING,
+            taskId: 'task-2',
+          }),
         ],
         processWorkflowSnapshot: createLinearUserTaskWorkflow(),
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
@@ -13473,6 +13479,7 @@ describe('administrator task reassignment', (): void => {
         'member-active',
         'member-from',
         'member-seat',
+        'member-waiting',
       ]);
       expect(rows).toEqual([
         {
@@ -13500,22 +13507,57 @@ describe('administrator task reassignment', (): void => {
       ).resolves.toEqual([]);
     });
 
-    it('ignores members the host was not asked about and members it repeats, and sorts by name', async (): Promise<void> => {
+    it('lists a member the host repeats once and sorts by name stroke count', async (): Promise<void> => {
       const fixture = createHolderFixture();
 
+      // 王 (4 strokes) sorts before 李 (7) although its code point and its
+      // member id both come later.
       const rows = await fixture.service.listInactiveMembersWithOpenTasks(
         (): Promise<readonly MemberMetadata[]> =>
           Promise.resolve([
-            inactiveMember('member-from', '王小明'),
-            inactiveMember('member-stranger', '陌生人'),
+            inactiveMember('member-active', '李大華'),
             inactiveMember('member-from', '王小明'),
             inactiveMember('member-active', '李大華'),
           ]),
       );
 
       expect(rows.map((row) => row.memberId)).toEqual([
-        'member-active',
         'member-from',
+        'member-active',
+      ]);
+    });
+
+    it('does not look up open tasks for a member the host was not asked about', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+
+      await expect(
+        fixture.service.listInactiveMembersWithOpenTasks(
+          (): Promise<readonly MemberMetadata[]> =>
+            Promise.resolve([inactiveMember('member-stranger', '陌生人')]),
+        ),
+      ).resolves.toEqual([]);
+
+      const askedFor = [
+        ...fixture.rootTaskFind.mock.calls,
+        ...fixture.taskCandidateFind.mock.calls,
+      ].map(([options]): string => JSON.stringify(options?.where ?? null));
+
+      expect(
+        askedFor.filter((where): boolean => where.includes('member-stranger')),
+      ).toEqual([]);
+      expect(askedFor.length).toBeGreaterThan(0);
+    });
+
+    it('lists a member who only holds a WAITING seat', async (): Promise<void> => {
+      const fixture = createHolderFixture();
+
+      const rows = await fixture.service.listInactiveMembersWithOpenTasks(
+        (): Promise<readonly MemberMetadata[]> =>
+          Promise.resolve([inactiveMember('member-waiting', '後段簽核人')]),
+      );
+
+      expect(rows).toEqual([
+        expect.objectContaining({ memberId: 'member-waiting', openTaskCount: 1 }),
       ]);
     });
 

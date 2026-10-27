@@ -353,6 +353,9 @@ export interface MemberOpenTaskRecord {
 }
 
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
+/** The administrator screens are in Traditional Chinese: names sort by stroke count. */
+const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
+
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
   readonly memberId: string;
@@ -5627,13 +5630,14 @@ export class WorkflowEngineService {
       return [];
     }
 
-    // A member the host repeats is listed once. One it was not asked about
-    // holds no open seat, so the count below drops it.
+    const holderIdSet = new Set(holderIds);
+    // Only the ids it was asked about are counted, each once: a member the
+    // host adds would only cost task queries before the count dropped it.
     const inactiveMembers = [
       ...new Map(
-        (await resolveInactiveMembers(holderIds)).map(
-          (member): [string, MemberMetadata] => [member.memberId, member],
-        ),
+        (await resolveInactiveMembers(holderIds))
+          .filter((member): boolean => holderIdSet.has(member.memberId))
+          .map((member): [string, MemberMetadata] => [member.memberId, member]),
       ).values(),
     ];
     const counted = await Promise.all(
@@ -5650,7 +5654,10 @@ export class WorkflowEngineService {
 
     return counted
       .filter((record): boolean => record.openTaskCount > 0)
-      .sort((left, right): number => left.name.localeCompare(right.name));
+      .sort(
+        (left, right): number =>
+          left.name.localeCompare(right.name, INACTIVE_MEMBER_NAME_LOCALE),
+      );
   }
 
   /**
@@ -5676,10 +5683,10 @@ export class WorkflowEngineService {
 
     return [
       ...new Set([
-        ...assignedTasks.flatMap((task) =>
+        ...assignedTasks.flatMap((task): readonly string[] =>
           task.assigneeMemberId ? [task.assigneeMemberId] : [],
         ),
-        ...candidateRows.map((row) => row.memberId),
+        ...candidateRows.map((row): string => row.memberId),
       ]),
     ].sort();
   }

@@ -161,7 +161,7 @@ export class IdentityService {
     memberIds: readonly string[],
   ): Promise<readonly MemberMetadata[]> {
     const uniqueMemberIds = [...new Set(memberIds)].filter(
-      (memberId) => memberId.length > 0,
+      (memberId): boolean => memberId.length > 0,
     );
 
     if (!this.memberResolver.resolveInactive || !uniqueMemberIds.length) {
