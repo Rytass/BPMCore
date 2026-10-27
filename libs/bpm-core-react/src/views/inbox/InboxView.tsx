@@ -1,6 +1,13 @@
 'use client';
 
-import { type Key, ReactElement, useEffect, useMemo, useState } from 'react';
+import {
+  type CSSProperties,
+  type Key,
+  ReactElement,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import {
   Badge,
   Button,
@@ -17,7 +24,9 @@ import { PlusIcon } from '@mezzanine-ui/icons';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   ApprovalInstanceRecord,
+  type ApprovalInstancesPageResult,
   listApprovalHistoryTasks,
+  listApprovalInstancesPage,
   listInboxTasks,
   listTaskDecisions,
   readApprovalInstance,
@@ -44,6 +53,22 @@ type InboxTaskRow = Readonly<
       statusLabel: string;
     }
 >;
+
+type ReturnedInstanceRow = Readonly<{
+  caseTitle: string;
+  id: string;
+  key: string;
+  startedAt: string | null;
+}>;
+
+/** The server caps a page at 100; more than that is left to 我發起的. */
+const RETURNED_INSTANCE_PAGE_SIZE = 100;
+
+const RETURNED_SECTION_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 'var(--mzn-spacing-gap-base)',
+  marginBottom: 'var(--mzn-spacing-padding-vertical-spacious)',
+};
 
 type ApprovalHistoryRow = Readonly<
   Record<string, unknown> &
@@ -77,6 +102,10 @@ export function InboxView(): ReactElement {
   const [historyRows, setHistoryRows] = useState<ApprovalHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingRows, setPendingRows] = useState<InboxTaskRow[]>([]);
+  const [returnedRows, setReturnedRows] = useState<
+    readonly ReturnedInstanceRow[]
+  >([]);
+  const [returnedTruncated, setReturnedTruncated] = useState(false);
 
   useEffect((): void => {
     if (!currentMemberId) {
@@ -143,6 +172,37 @@ export function InboxView(): ReactElement {
       ],
       variant: 'base-secondary',
       width: 88,
+    }),
+    [router, routes],
+  );
+  const returnedColumns = useMemo(
+    (): TableColumn<ReturnedInstanceRow>[] => [
+      { dataIndex: 'caseTitle', key: 'caseTitle', title: '案件', width: 280 },
+      {
+        key: 'startedAt',
+        render: (record: ReturnedInstanceRow): ReactElement => (
+          <Typography component="span" variant="body">
+            {formatDateTime(record.startedAt)}
+          </Typography>
+        ),
+        title: '發起時間',
+        width: 220,
+      },
+    ],
+    [],
+  );
+  const returnedTableActions = useMemo(
+    (): TableActions<ReturnedInstanceRow> => ({
+      render: (
+        record,
+      ): ReturnType<TableActions<ReturnedInstanceRow>['render']> => [
+        {
+          name: '重新送出',
+          onClick: (): void => router.push(routes.caseDetail(record.id)),
+        },
+      ],
+      variant: 'base-secondary',
+      width: 120,
     }),
     [router, routes],
   );
@@ -243,13 +303,17 @@ export function InboxView(): ReactElement {
       if (!currentMemberId) {
         setPendingRows([]);
         setHistoryRows([]);
+        setReturnedRows([]);
+        setReturnedTruncated(false);
         return;
       }
 
-      const [nextPendingTasks, nextHistoryTasks] = await Promise.all([
-        listInboxTasks(currentMemberId),
-        listApprovalHistoryTasks(currentMemberId),
-      ]);
+      const [nextPendingTasks, nextHistoryTasks, returned] =
+        await Promise.all([
+          listInboxTasks(currentMemberId),
+          listApprovalHistoryTasks(currentMemberId),
+          readReturnedInstances(currentMemberId),
+        ]);
       const [nextPendingRows, nextHistoryRows] = await Promise.all([
         readInboxTaskRows(nextPendingTasks),
         readApprovalHistoryRows(nextHistoryTasks),
@@ -257,6 +321,8 @@ export function InboxView(): ReactElement {
 
       setPendingRows(nextPendingRows);
       setHistoryRows(nextHistoryRows);
+      setReturnedRows(returned?.rows ?? []);
+      setReturnedTruncated(returned?.truncated ?? false);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -305,6 +371,34 @@ export function InboxView(): ReactElement {
               <TabItem key="history">歷史簽核記錄</TabItem>
             </Tab>
 
+            {/* A truncated page with none of the member's own cases still
+                points to 我發起的: theirs may sit past the first page. */}
+            {activeTab === 'pending' &&
+            (returnedRows.length > 0 || returnedTruncated) ? (
+              <div data-returned-instances="" style={RETURNED_SECTION_STYLE}>
+                {/* Without rows there is nothing here to resubmit, only the
+                    pointer to 我發起的. */}
+                {returnedRows.length > 0 ? (
+                  <Typography component="h2" variant="label-primary">
+                    被退回待重送
+                  </Typography>
+                ) : null}
+                <Typography color="text-neutral" variant="caption">
+                  {readReturnedSectionHint(
+                    returnedRows.length > 0,
+                    returnedTruncated,
+                  )}
+                </Typography>
+                {returnedRows.length > 0 ? (
+                  <Table
+                    actions={returnedTableActions}
+                    columns={returnedColumns}
+                    dataSource={[...returnedRows]}
+                    fullWidth
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {activeTab === 'pending' ? (
               <Table
                 actions={pendingTableActions}
@@ -336,6 +430,71 @@ export function InboxView(): ReactElement {
         </SectionGroup>
       </>
   );
+}
+
+function readReturnedSectionHint(
+  hasRows: boolean,
+  truncated: boolean,
+): string {
+  if (!hasRows) {
+    return `前 ${RETURNED_INSTANCE_PAGE_SIZE} 筆被退回的案件中沒有你發起的，可能還有其他被退回的案件，請到「我發起的」查看。`;
+  }
+
+  return truncated
+    ? '你發起的案件被退回，請修改後重新送出。可能還有其他被退回的案件，請到「我發起的」查看。'
+    : '你發起的案件被退回，請修改後重新送出。';
+}
+
+/**
+ * Returned cases are a side list: a failure here, in the request or in reading
+ * its rows, hides that section instead of taking the pending and history tasks
+ * down with it.
+ */
+async function readReturnedInstances(
+  currentMemberId: string,
+): Promise<Readonly<{
+  rows: readonly ReturnedInstanceRow[];
+  truncated: boolean;
+}> | null> {
+  try {
+    // SENT also lists cases filed on someone else's behalf; only the
+    // initiator may resubmit, so those are filtered out here.
+    const page: ApprovalInstancesPageResult = await listApprovalInstancesPage({
+      page: 1,
+      pageSize: RETURNED_INSTANCE_PAGE_SIZE,
+      searchText: null,
+      state: 'RETURNED',
+      templateId: null,
+      view: 'SENT',
+    });
+
+    return {
+      rows: readReturnedInstanceRows(page.instances, currentMemberId),
+      // The total includes cases filed for someone else, so compare it with
+      // what this page fetched rather than with the rows kept.
+      truncated: page.totalCount > page.instances.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readReturnedInstanceRows(
+  instances: readonly ApprovalInstanceRecord[],
+  currentMemberId: string,
+): readonly ReturnedInstanceRow[] {
+  return instances
+    .filter(
+      (instance): boolean => instance.initiatorMemberId === currentMemberId,
+    )
+    .map(
+      (instance): ReturnedInstanceRow => ({
+        caseTitle: readApprovalInstanceCaseTitle(instance),
+        id: instance.id,
+        key: instance.id,
+        startedAt: instance.startedAt,
+      }),
+    );
 }
 
 async function readInboxTaskRows(
