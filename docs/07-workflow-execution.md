@@ -786,6 +786,8 @@ async function handleReturn(task, targetNodeId) {
 退回到發起節點（start event）後，instance 狀態為 RETURNED。發起人可：
 
 - 編輯 form_data → 再次 submit → state 回 RUNNING
+  （可選填一段重新送出說明 `comment`，上限 2000 個 UTF-16 code unit（即 JS 字串長度，以 trim 前的原始輸入計），trim 後寫入
+  `INSTANCE_RESUBMITTED` activity log 的 payload，空白存為 `null`）
 - 主動撤銷 → state = CANCELLED
 
 重新提交策略由節點的 `returnBehavior.resubmitStrategy` 決定：

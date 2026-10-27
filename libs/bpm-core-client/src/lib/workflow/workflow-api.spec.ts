@@ -10,6 +10,7 @@ import {
   reassignTask,
   readApprovalInstance,
   requestAdhocPreApproval,
+  resubmitApprovalInstance,
   readFormDataCaseTitle,
   retryWorkflowWebhookDelivery,
   listWorkflowWebhookDeliveries,
@@ -187,6 +188,84 @@ describe('@rytass/bpm-core-client/workflow', () => {
         harness.restore();
       }
     });
+  });
+
+  describe('resubmitApprovalInstance comment', () => {
+    const base = {
+      formData: { amount: 10 },
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    };
+    const result = { resubmitApprovalInstance: { id: 'instance-1', state: 'RUNNING' } };
+
+    it('sends the comment the applicant wrote', async (): Promise<void> => {
+      const harness = installFetchMock(result);
+      try {
+        await resubmitApprovalInstance({ ...base, comment: '已補上報價單' });
+
+        const input = harness.capture().variables?.['input'] as Record<
+          string,
+          unknown
+        >;
+
+        expect(input).toEqual({
+          comment: '已補上報價單',
+          formDataJson: '{"amount":10}',
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: null,
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('trims the comment before sending it', async (): Promise<void> => {
+      const harness = installFetchMock(result);
+      try {
+        await resubmitApprovalInstance({ ...base, comment: '  已補上報價單  ' });
+
+        const input = harness.capture().variables?.['input'] as Record<
+          string,
+          unknown
+        >;
+
+        expect(input['comment']).toBe('已補上報價單');
+      } finally {
+        harness.restore();
+      }
+    });
+
+    // Leaving the key out keeps the request valid against a server that
+    // predates the field.
+    it.each([
+      ['no comment is given', undefined],
+      ['the comment is null', null],
+      ['the comment is blank', '   '],
+    ])(
+      'omits comment when %s',
+      async (_label, comment): Promise<void> => {
+        const harness = installFetchMock(result);
+        try {
+          await resubmitApprovalInstance({ ...base, comment });
+
+          const input = harness.capture().variables?.['input'] as Record<
+            string,
+            unknown
+          >;
+
+          expect(Object.keys(input).sort()).toEqual([
+            'formDataJson',
+            'initiatorMemberId',
+            'instanceId',
+            'title',
+          ]);
+        } finally {
+          harness.restore();
+        }
+      },
+    );
   });
 
   describe('decideTask fill', () => {

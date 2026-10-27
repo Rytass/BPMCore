@@ -1,5 +1,5 @@
 import { Field, InputType } from '@nestjs/graphql';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 @InputType()
 export class ResubmitApprovalInstanceInput {
@@ -28,4 +28,16 @@ export class ResubmitApprovalInstanceInput {
   @IsOptional()
   @IsString()
   title!: string | null;
+
+  /**
+   * The applicant's note on what changed; shown on the resubmission step.
+   * Capped (in UTF-16 code units, the JS string length, before the service
+   * trims it) because it is stored whole in the activity log payload and sent
+   * back with every timeline load.
+   */
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  comment?: string | null;
 }
