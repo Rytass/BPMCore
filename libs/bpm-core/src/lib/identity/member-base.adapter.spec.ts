@@ -149,6 +149,33 @@ describe('member-base adapter resolveInactive', () => {
       'member-002',
     ]);
   });
+
+  it('calls resolveInactiveMembers on a class-based directory with its this', async (): Promise<void> => {
+    class Directory {
+      private readonly gone: readonly string[] = ['member-gone'];
+
+      resolveMember(): Promise<TestMemberBaseMember | null> {
+        return Promise.resolve(null);
+      }
+
+      resolveInactiveMembers(
+        memberIds: readonly string[],
+      ): Promise<readonly TestMemberBaseMember[]> {
+        return Promise.resolve(
+          memberIds
+            .filter((memberId): boolean => this.gone.includes(memberId))
+            .map(createMember),
+        );
+      }
+    }
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>(
+      new Directory(),
+    );
+
+    await expect(
+      resolver.resolveInactive?.(['member-gone', 'member-here']),
+    ).resolves.toEqual([expect.objectContaining({ memberId: 'member-gone' })]);
+  });
 });
 
 function createMember(id: string): TestMemberBaseMember {

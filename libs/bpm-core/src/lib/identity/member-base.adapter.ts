@@ -109,9 +109,11 @@ export class BPMMemberBaseResolverAdapter<TMember>
     private readonly directory: BPMMemberBaseDirectory<TMember>,
     private readonly options: BPMMemberBaseAdapterOptions<TMember> = {},
   ) {
-    const searchMembersPaged = directory.searchMembersPaged;
+    // Both optional methods stay bound to the directory: a class-based
+    // directory may read `this` inside them.
+    if (directory.searchMembersPaged) {
+      const searchMembersPaged = directory.searchMembersPaged.bind(directory);
 
-    if (searchMembersPaged) {
       this.searchPaged = async (
         searchText: string,
         pageOptions: BPMMemberSearchPageOptions,
@@ -127,9 +129,10 @@ export class BPMMemberBaseResolverAdapter<TMember>
       };
     }
 
-    const resolveInactiveMembers = directory.resolveInactiveMembers;
+    if (directory.resolveInactiveMembers) {
+      const resolveInactiveMembers =
+        directory.resolveInactiveMembers.bind(directory);
 
-    if (resolveInactiveMembers) {
       this.resolveInactive = async (
         memberIds: readonly string[],
       ): Promise<readonly MemberMetadata[]> =>
