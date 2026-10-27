@@ -221,6 +221,22 @@ describe('@rytass/bpm-core-client/workflow', () => {
       }
     });
 
+    it('trims the comment before sending it', async (): Promise<void> => {
+      const harness = installFetchMock(result);
+      try {
+        await resubmitApprovalInstance({ ...base, comment: '  已補上報價單  ' });
+
+        const input = harness.capture().variables?.['input'] as Record<
+          string,
+          unknown
+        >;
+
+        expect(input['comment']).toBe('已補上報價單');
+      } finally {
+        harness.restore();
+      }
+    });
+
     // Leaving the key out keeps the request valid against a server that
     // predates the field.
     it.each([
