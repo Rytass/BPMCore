@@ -112,6 +112,7 @@ jest.mock('@mezzanine-ui/react', () => {
     Textarea: (props: Readonly<Record<string, unknown>>): ReactElement => (
       <textarea
         data-mock-textarea=""
+        maxLength={props.maxLength as number | undefined}
         onChange={props.onChange as never}
         placeholder={String(props.placeholder ?? '')}
         value={String(props.value ?? '')}
@@ -424,6 +425,12 @@ describe('InstanceFormSection resubmit comment', () => {
     });
 
     expect(onResubmitCommentChange).toHaveBeenLastCalledWith('已補上報價單');
+  });
+
+  it('caps the comment at the length the server accepts', async (): Promise<void> => {
+    await render({ onResubmitCommentChange: jest.fn(), resubmitComment: '' });
+
+    expect(commentBox()?.maxLength).toBe(2000);
   });
 
   it('shows no comment box on a case the viewer cannot resubmit', async (): Promise<void> => {
