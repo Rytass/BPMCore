@@ -101,6 +101,7 @@ import {
   readNodeRuntimeState,
   readTaskDecisionsForTasks,
 } from './sections/container-helpers';
+import { useResubmitCommentDraft } from './use-resubmit-comment-draft';
 import { InstanceFormSection } from './sections/InstanceFormSection';
 import { InstanceAttachmentsSection } from './sections/InstanceAttachmentsSection';
 import {
@@ -327,6 +328,11 @@ export function InstanceDetailView({
   const [resubmitFormData, setResubmitFormData] = useState<WorkflowFormData>(
     {},
   );
+  const {
+    clearAfterResubmit: clearResubmitCommentAfterResubmit,
+    comment: resubmitComment,
+    setComment: setResubmitComment,
+  } = useResubmitCommentDraft(instanceId);
   const [resubmitDataSourceStates, setResubmitDataSourceStates] = useState<
     Readonly<
       Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
@@ -911,11 +917,13 @@ export function InstanceDetailView({
 
     try {
       await resubmitApprovalInstance({
+        comment: resubmitComment,
         formData: resubmittedValues,
         initiatorMemberId: currentMemberId,
         instanceId: instance.id,
         title: instance.title,
       });
+      clearResubmitCommentAfterResubmit(instance.id);
       await refreshInstance();
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
@@ -1099,8 +1107,10 @@ export function InstanceDetailView({
                 setResubmitFormData(values);
                 setResubmitFormErrors({});
               }}
+              onResubmitCommentChange={setResubmitComment}
               onResubmitInstance={(): void => void handleResubmitInstance()}
               onUploadAttachment={handleUploadAttachment}
+              resubmitComment={resubmitComment}
               resubmitFormData={resubmitFormData}
               resubmitFormErrors={resubmitFormErrors}
             />

@@ -2,6 +2,7 @@ import {
   createOrgUnit,
   deleteOrgUnit,
   readOrgUnitRetirementImpact,
+  updateMembership,
 } from './organization-api';
 
 interface CapturedRequest {
@@ -126,6 +127,67 @@ describe('@rytass/bpm-core-client/organization', () => {
         expect(request.query).toContain('orgUnitRetirementImpact');
         expect(request.variables).toEqual({ id: 'unit-1' });
         expect(result).toEqual(impact);
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+  describe('updateMembership', () => {
+    // UpdateMembershipInput (bpm-core organization/dto/membership.input.ts).
+    // A key outside this list fails GraphQL validation with HTTP 400 before
+    // the resolver runs.
+    const UPDATE_MEMBERSHIP_INPUT_FIELDS = [
+      'effectiveFrom',
+      'effectiveTo',
+      'id',
+      'isPrimary',
+      'orgUnitId',
+      'positionId',
+    ];
+
+    it('sends only the fields UpdateMembershipInput defines', async (): Promise<void> => {
+      // The admin membership modal hands back the member it was opened for.
+      // Spreading it into the call compiles, because TypeScript does not
+      // check excess properties that arrive through a spread.
+      const modalInput = {
+        effectiveFrom: '2026-10-01',
+        effectiveTo: '2026-10-26',
+        isPrimary: false,
+        memberId: 'member-1',
+        orgUnitId: 'unit-1',
+        positionId: null,
+      };
+      const harness = installFetchMock({
+        updateMembership: {
+          createdAt: '2026-10-01T00:00:00.000Z',
+          effectiveFrom: '2026-10-01',
+          effectiveTo: '2026-10-26',
+          id: 'membership-1',
+          isPrimary: false,
+          memberId: 'member-1',
+          orgUnitId: 'unit-1',
+          positionId: null,
+          updatedAt: '2026-10-27T00:00:00.000Z',
+        },
+      });
+      try {
+        await updateMembership({ ...modalInput, id: 'membership-1' });
+        const request = harness.capture();
+        const sentKeys = Object.keys(
+          (request.variables?.['input'] ?? {}) as Record<string, unknown>,
+        ).sort();
+
+        expect(sentKeys).toEqual(UPDATE_MEMBERSHIP_INPUT_FIELDS);
+        expect(request.variables).toEqual({
+          input: {
+            effectiveFrom: '2026-10-01',
+            effectiveTo: '2026-10-26',
+            id: 'membership-1',
+            isPrimary: false,
+            orgUnitId: 'unit-1',
+            positionId: null,
+          },
+        });
       } finally {
         harness.restore();
       }
