@@ -28,4 +28,10 @@ export class ResubmitApprovalInstanceInput {
   @IsOptional()
   @IsString()
   title!: string | null;
+
+  /** The applicant's note on what changed; shown on the resubmission step. */
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  comment?: string | null;
 }
