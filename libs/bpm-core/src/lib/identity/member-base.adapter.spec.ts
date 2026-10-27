@@ -111,6 +111,73 @@ describe('member-base adapter', () => {
   });
 });
 
+describe('member-base adapter resolveInactive', () => {
+  it('leaves resolveInactive undefined when the directory does not implement resolveInactiveMembers', (): void => {
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>({
+      resolveMember: (): Promise<TestMemberBaseMember | null> =>
+        Promise.resolve(null),
+    });
+
+    expect(resolver.resolveInactive).toBeUndefined();
+  });
+
+  it('delegates resolveInactive to the directory and maps members to member metadata', async (): Promise<void> => {
+    const resolveInactiveMembers = jest.fn(
+      (
+        memberIds: readonly string[],
+      ): Promise<readonly TestMemberBaseMember[]> =>
+        Promise.resolve(memberIds.slice(1).map(createMember)),
+    );
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>({
+      resolveInactiveMembers,
+      resolveMember: (): Promise<TestMemberBaseMember | null> =>
+        Promise.resolve(null),
+    });
+
+    await expect(
+      resolver.resolveInactive?.(['member-001', 'member-002']),
+    ).resolves.toEqual([
+      {
+        customFields: {},
+        email: 'member-002@example.com',
+        memberId: 'member-002',
+        name: 'Member member-002',
+      },
+    ]);
+    expect(resolveInactiveMembers).toHaveBeenCalledWith([
+      'member-001',
+      'member-002',
+    ]);
+  });
+
+  it('calls resolveInactiveMembers on a class-based directory with its this', async (): Promise<void> => {
+    class Directory {
+      private readonly gone: readonly string[] = ['member-gone'];
+
+      resolveMember(): Promise<TestMemberBaseMember | null> {
+        return Promise.resolve(null);
+      }
+
+      resolveInactiveMembers(
+        memberIds: readonly string[],
+      ): Promise<readonly TestMemberBaseMember[]> {
+        return Promise.resolve(
+          memberIds
+            .filter((memberId): boolean => this.gone.includes(memberId))
+            .map(createMember),
+        );
+      }
+    }
+    const resolver = new BPMMemberBaseResolverAdapter<TestMemberBaseMember>(
+      new Directory(),
+    );
+
+    await expect(
+      resolver.resolveInactive?.(['member-gone', 'member-here']),
+    ).resolves.toEqual([expect.objectContaining({ memberId: 'member-gone' })]);
+  });
+});
+
 function createMember(id: string): TestMemberBaseMember {
   return {
     email: `${id}@example.com`,

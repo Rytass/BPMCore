@@ -1,6 +1,7 @@
 import { isUUID } from 'class-validator';
 import {
   isFormDataValueEmpty,
+  MemberMetadata,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
@@ -54,6 +55,7 @@ import {
   EntityManager,
   In,
   IsNull,
+  ObjectLiteral,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -348,6 +350,26 @@ export interface MemberOpenTaskRecord {
   readonly taskId: string;
   readonly templateId: string;
   readonly templateName: string | null;
+}
+
+/** The administrator screens are in Traditional Chinese: names sort by stroke count. */
+const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
+
+/**
+ * How many deactivated members have their open tasks counted at once. Each
+ * count is a few queries, so an unbounded fan-out would put one query in
+ * flight per member, and claim that many pool connections at the same time, on
+ * every load of the member screen.
+ */
+const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
+
+/** A deactivated member who still holds open tasks, for the reassignment screen. */
+export interface InactiveMemberOpenTasksRecord {
+  readonly email: string;
+  readonly memberId: string;
+  readonly name: string;
+  /** Same count as {@link WorkflowEngineService.listMemberOpenTasks} returns rows. */
+  readonly openTaskCount: number;
 }
 
 /**
@@ -5597,6 +5619,136 @@ export class WorkflowEngineService {
   }
 
   /**
+   * Deactivated members who still hold open tasks, so an administrator can find
+   * them: a deactivated member no longer shows up in the member search.
+   *
+   * BPM cannot tell a deactivated member from an id it never knew, so the host
+   * names them: `resolveInactiveMembers` gets every member id that holds an open
+   * seat and returns the ones it knows but has deactivated. The count per member
+   * is the {@link listMemberOpenTasks} count, and members left with none are
+   * dropped.
+   */
+  async listInactiveMembersWithOpenTasks(
+    resolveInactiveMembers: (
+      memberIds: readonly string[],
+    ) => Promise<readonly MemberMetadata[]>,
+  ): Promise<readonly InactiveMemberOpenTasksRecord[]> {
+    const holderIds = await this.readOpenSeatHolderMemberIds();
+
+    if (!holderIds.length) {
+      return [];
+    }
+
+    const holderIdSet = new Set(holderIds);
+    // Only the ids it was asked about are counted, each once: a member the
+    // host adds would only cost task queries before the count dropped it.
+    const inactiveMembers = [
+      ...new Map(
+        (await resolveInactiveMembers(holderIds))
+          .filter((member): boolean => holderIdSet.has(member.memberId))
+          .map((member): [string, MemberMetadata] => [member.memberId, member]),
+      ).values(),
+    ];
+    const counted = await chunkArray(
+      inactiveMembers,
+      INACTIVE_MEMBER_COUNT_CONCURRENCY,
+    ).reduce(
+      async (
+        previous: Promise<readonly InactiveMemberOpenTasksRecord[]>,
+        batch,
+      ): Promise<readonly InactiveMemberOpenTasksRecord[]> => [
+        ...(await previous),
+        ...(await Promise.all(
+          batch.map(async (member): Promise<InactiveMemberOpenTasksRecord> => ({
+            email: member.email,
+            memberId: member.memberId,
+            name: member.name,
+            openTaskCount: (await this.readRunningMemberTasks(member.memberId))
+              .length,
+          })),
+        )),
+      ],
+      Promise.resolve([]),
+    );
+
+    return counted
+      .filter((record): boolean => record.openTaskCount > 0)
+      .sort(
+        (left, right): number =>
+          left.name.localeCompare(right.name, INACTIVE_MEMBER_NAME_LOCALE) ||
+          // Namesakes are common; the id keeps their order stable.
+          (left.memberId < right.memberId
+            ? -1
+            : left.memberId > right.memberId
+              ? 1
+              : 0),
+      );
+  }
+
+  /**
+   * Every member id that may hold an open seat on a RUNNING instance: the
+   * assignee of an open task, or an open candidate row on one. Still a
+   * superset (a countersign voter who already decided stays the assignee);
+   * callers count with {@link readRunningMemberTasks}, which drops those.
+   *
+   * One query that returns only the distinct holder ids, never a row per
+   * task or seat: the member screen loads it every time.
+   */
+  private async readOpenSeatHolderMemberIds(): Promise<readonly string[]> {
+    const taskTable = this.readQualifiedTableName(this.taskRepository);
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
+    );
+    const instanceTable = this.readQualifiedTableName(
+      this.approvalInstanceRepository,
+    );
+    const rows = await this.approvalInstanceRepository.query<
+      readonly { readonly memberId: string }[]
+    >(
+      `SELECT holder.member_id AS "memberId"
+         FROM (
+               SELECT task.assignee_member_id AS member_id
+                 FROM ${taskTable} AS task
+                 JOIN ${instanceTable} AS instance
+                   ON instance.id = task.instance_id
+                WHERE task.status = ANY($1::text[])
+                  AND task.assignee_member_id IS NOT NULL
+                  AND instance.state = $2
+               UNION
+               SELECT candidate.member_id
+                 FROM ${candidateTable} AS candidate
+                 JOIN ${taskTable} AS task ON task.id = candidate.task_id
+                 JOIN ${instanceTable} AS instance
+                   ON instance.id = task.instance_id
+                WHERE candidate.status = ANY($3::text[])
+                  AND task.status = ANY($1::text[])
+                  AND instance.state = $2
+              ) AS holder`,
+      [
+        [TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS],
+        ApprovalInstanceStateEnum.RUNNING,
+        [...OPEN_SEAT_STATUSES],
+      ],
+    );
+
+    // Sorted here, not in SQL: the default JS order (UTF-16 code units),
+    // whatever the DB collation.
+    return rows.map((row): string => row.memberId).sort();
+  }
+
+  /** `schema.table` of a repository's entity, escaped for raw SQL. */
+  private readQualifiedTableName<TEntity extends ObjectLiteral>(
+    repository: Repository<TEntity>,
+  ): string {
+    const { driver } = this.approvalInstanceRepository.manager.connection;
+
+    return [repository.metadata.schema, repository.metadata.tableName]
+      .filter((part): part is string => Boolean(part))
+      .map((part): string => driver.escape(part))
+      .join('.');
+  }
+
+  /**
    * The open tasks `memberId` holds on RUNNING instances, with the instance
    * each belongs to. The instance filter is applied here, not only in the query.
    */
@@ -8696,6 +8848,17 @@ function capDecisionPolicyToCandidateCount(
     policy.threshold > candidateCount
     ? { ...policy, threshold: Math.max(candidateCount, 1) }
     : policy;
+}
+
+/** Splits `items` into consecutive runs of at most `size`. */
+function chunkArray<T>(
+  items: readonly T[],
+  size: number,
+): readonly (readonly T[])[] {
+  return Array.from(
+    { length: Math.ceil(items.length / size) },
+    (_, index): readonly T[] => items.slice(index * size, (index + 1) * size),
+  );
 }
 
 function uniqueTasksById(tasks: readonly TaskEntity[]): readonly TaskEntity[] {

@@ -36,6 +36,14 @@ export interface BPMMemberBaseDirectory<TMember> {
     searchText: string,
     options: BPMMemberSearchPageOptions,
   ) => Promise<BPMMemberBaseSearchPage<TMember>>;
+  /**
+   * Optional: of `memberIds`, the members the host knows but has
+   * deactivated. Backs {@link BPMMemberResolver.resolveInactive}; when
+   * omitted the adapter leaves it `undefined`.
+   */
+  readonly resolveInactiveMembers?: (
+    memberIds: readonly string[],
+  ) => Promise<readonly TMember[]>;
 }
 
 /**
@@ -92,13 +100,20 @@ export class BPMMemberBaseResolverAdapter<TMember>
     options: BPMMemberSearchPageOptions,
   ) => Promise<BPMMemberSearchPage>;
 
+  /** Present only when the wrapped directory implements `resolveInactiveMembers`. */
+  readonly resolveInactive?: (
+    memberIds: readonly string[],
+  ) => Promise<readonly MemberMetadata[]>;
+
   constructor(
     private readonly directory: BPMMemberBaseDirectory<TMember>,
     private readonly options: BPMMemberBaseAdapterOptions<TMember> = {},
   ) {
-    const searchMembersPaged = directory.searchMembersPaged;
+    // Both optional methods stay bound to the directory: a class-based
+    // directory may read `this` inside them.
+    if (directory.searchMembersPaged) {
+      const searchMembersPaged = directory.searchMembersPaged.bind(directory);
 
-    if (searchMembersPaged) {
       this.searchPaged = async (
         searchText: string,
         pageOptions: BPMMemberSearchPageOptions,
@@ -112,6 +127,19 @@ export class BPMMemberBaseResolverAdapter<TMember>
           total: page.total,
         };
       };
+    }
+
+    if (directory.resolveInactiveMembers) {
+      const resolveInactiveMembers =
+        directory.resolveInactiveMembers.bind(directory);
+
+      this.resolveInactive = async (
+        memberIds: readonly string[],
+      ): Promise<readonly MemberMetadata[]> =>
+        (await resolveInactiveMembers(memberIds)).map(
+          (member): MemberMetadata =>
+            readMemberMetadataFromMemberBaseMember(member, this.options),
+        );
     }
   }
 

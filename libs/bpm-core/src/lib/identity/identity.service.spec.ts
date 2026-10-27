@@ -326,3 +326,59 @@ function readMemberMetadata(memberId: string): MemberMetadata {
     name: memberId,
   };
 }
+
+describe('IdentityService.resolveInactiveMembers', () => {
+  it('returns nothing, without asking, when the host resolver cannot tell', async (): Promise<void> => {
+    const resolver: MemberResolver = {
+      resolve: jest.fn(),
+      resolveMany: jest.fn(),
+    };
+    const cacheRepository = createCacheRepository();
+    const service = new IdentityService(cacheRepository, resolver);
+
+    await expect(
+      service.resolveInactiveMembers(['member-1']),
+    ).resolves.toEqual([]);
+    // Neither the host nor the cache stands in for the missing method: a
+    // cached profile cannot say whether the member was deactivated.
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(resolver.resolveMany).not.toHaveBeenCalled();
+    expect(cacheRepository.find).not.toHaveBeenCalled();
+    expect(cacheRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('asks the host once per member, skipping empty ids, and skips the cache', async (): Promise<void> => {
+    const cacheRepository = createCacheRepository();
+    const resolveInactive = jest.fn(
+      (memberIds: readonly string[]): Promise<readonly MemberMetadata[]> =>
+        Promise.resolve(memberIds.slice(0, 1).map(readMemberMetadata)),
+    );
+    const resolver: MemberResolver = {
+      resolve: jest.fn(),
+      resolveInactive,
+      resolveMany: jest.fn(),
+    };
+    const service = new IdentityService(cacheRepository, resolver);
+
+    await expect(
+      service.resolveInactiveMembers(['member-1', '', 'member-2', 'member-1']),
+    ).resolves.toEqual([readMemberMetadata('member-1')]);
+    expect(resolveInactive).toHaveBeenCalledWith(['member-1', 'member-2']);
+    expect(cacheRepository.save).not.toHaveBeenCalled();
+    expect(cacheRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('does not ask the host for an empty list', async (): Promise<void> => {
+    const resolveInactive = jest.fn(
+      (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
+    );
+    const service = new IdentityService(createCacheRepository(), {
+      resolve: jest.fn(),
+      resolveInactive,
+      resolveMany: jest.fn(),
+    });
+
+    await expect(service.resolveInactiveMembers([''])).resolves.toEqual([]);
+    expect(resolveInactive).not.toHaveBeenCalled();
+  });
+});

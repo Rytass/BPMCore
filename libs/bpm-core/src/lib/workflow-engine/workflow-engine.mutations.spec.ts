@@ -315,5 +315,8 @@ describe('WorkflowEngineMutations task reassignment', () => {
       'admin',
     );
     expect(access('WorkflowEngineQueries', 'memberOpenTasks')).toBe('admin');
+    expect(
+      access('WorkflowEngineQueries', 'inactiveMembersWithOpenTasks'),
+    ).toBe('admin');
   });
 });
