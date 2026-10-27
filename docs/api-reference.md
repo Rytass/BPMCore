@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-22): `libs/shared@0.17.6`, `libs/bpm-core-client@0.17.6`, `libs/bpm-core@0.17.6` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.6`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-27): `libs/shared@0.17.8`, `libs/bpm-core-client@0.17.8`, `libs/bpm-core@0.17.8` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.8`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
@@ -52,6 +52,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Node-level field access, shared lint rules (designer step 1): the field access publish rules move into `@rytass/bpm-core-shared` as structured issues (`FieldAccessIssue`, `readNodeFieldAccessIssues`, `readDefinitionFieldAccessIssues`, `readFormFieldAccessIssues`, `readFormFieldFillIssues`, `readUserTaskFillConflicts`, `readReachableWorkflowNodeIds`, `createWorkflowCoRunReader`, `referencesFormField`). The backend lint now reads them; its output is unchanged | Not yet released |
 | Node-level field access, designer (PR3): `readFieldAccessMatrix` and its types, the `setFieldAccessMatrix` / `removeLegacyFieldPermissions` commands (`FieldAccessMatrixEntry`) and the `set_field_access_matrix` / `remove_legacy_field_permissions` tools. The template designer gets the 欄位與關卡總覽 drawer, a 欄位顯示與補填 section on the user task panel and a 補填 / 隱藏 tag on the node card; field access issues block publishing, not saving. `WORKFLOW_CHAT_SYSTEM_PROMPT` gains a rule on field access | Not yet released |
 | Node-level field access — engine, publish lint, launch/resubmit forms (PR1); the seven field-access rows above are its parts. Nodes without `fieldAccess` behave as before; the one change that reaches every node is that `decideTask` re-reads the task after taking the instance lock. The refusals a host can meet are listed under [Decide-task errors](#decide-task-errors-approver-filled-fields) | Not yet released |
+| Returned cases on the inbox (PR #125): `InboxView` lists the member's own `RETURNED` cases (被退回待重送) above the pending tasks on the 待簽核 tab, from the first page of 100 of `listApprovalInstancesPage` (`view: 'SENT'`), and points to 我發起的 when more may exist; a failure there hides only that list. No export changes | Not yet released |
 
 ---
 
