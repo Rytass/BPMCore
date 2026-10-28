@@ -60,7 +60,7 @@ import {
 import {
   buildFormRendererValues,
   focusFormRendererField,
-  validateFormRendererValues,
+  validateFormRendererValuesInWorker,
 } from '@rytass/bpm-core-client/form';
 import {
   ActivityLogRecord,
@@ -318,6 +318,7 @@ export function InstanceDetailView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deciding, setDeciding] = useState(false);
+  const [checkingFill, setCheckingFill] = useState(false);
   const [taskSectionDeciding, setTaskSectionDeciding] = useState(false);
   const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
   const [cancelComment, setCancelComment] = useState('');
@@ -584,7 +585,7 @@ export function InstanceDetailView({
 
   // Checked before the approve dialog opens, against the same rules the
   // server applies, so the approver fixes fields instead of reading an error.
-  function handleApproveClick(): void {
+  async function handleApproveClick(): Promise<void> {
     // Without the fingerprint the server would read any fill as a conflict,
     // and reloading could not fix it.
     if (fillNode && !instance?.formDataFingerprint) {
@@ -599,11 +600,15 @@ export function InstanceDetailView({
       schemaSnapshot &&
       instance?.formDefinitionSnapshot.uiSchema
     ) {
-      const validation = validateFormRendererValues({
+      // Busy while the worker checks the formats, so a second click cannot
+      // open the dialog twice.
+      setCheckingFill(true);
+
+      const validation = await validateFormRendererValuesInWorker({
         schema: readFillValidationSchema(schemaSnapshot, fillNode),
         uiSchema: instance.formDefinitionSnapshot.uiSchema,
         values: fillValues,
-      });
+      }).finally((): void => setCheckingFill(false));
 
       if (!validation.valid) {
         setFillErrors(validation.errors);
@@ -895,7 +900,7 @@ export function InstanceDetailView({
     // The DataSource gate only speaks for fields that still hold a value, so a
     // cleared required field has to be caught here rather than by the backend.
     if (applicantSchema && instance.formDefinitionSnapshot.uiSchema) {
-      const validation = validateFormRendererValues({
+      const validation = await validateFormRendererValuesInWorker({
         schema: applicantSchema,
         uiSchema: instance.formDefinitionSnapshot.uiSchema,
         values: resubmittedValues,
@@ -935,7 +940,7 @@ export function InstanceDetailView({
   // A decision made in the tasks section disables the header buttons too.
   // Kept in state, not read off the ref: the ref would leave them disabled
   // once the decision settled, since nothing re-renders this view then.
-  const combinedDeciding = deciding || taskSectionDeciding;
+  const combinedDeciding = deciding || taskSectionDeciding || checkingFill;
 
   return (
     <>
@@ -1065,7 +1070,9 @@ export function InstanceDetailView({
                 icon={CheckedIcon}
                 iconType="leading"
                 key="task-approve"
-                onClick={handleApproveClick}
+                onClick={(): void => {
+                  void handleApproveClick();
+                }}
                 variant="base-primary"
               >
                 同意

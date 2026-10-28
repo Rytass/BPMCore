@@ -88,6 +88,14 @@ module.exports = {
 };
 ```
 
+### Content Security Policy (conditional)
+
+The case pages check text field formats in a Web Worker started from a `blob:`
+URL, so a designer's pattern that backtracks cannot freeze the page. If your
+host sets a Content Security Policy, allow `worker-src blob:` (or `script-src
+blob:` where `worker-src` is not set). Without it the check falls back to the
+main thread with no time limit; submitting still works.
+
 ### Designer feature flags (Next.js host env)
 
 The designer page shim (`pages/templates/designer`) reads these server-side

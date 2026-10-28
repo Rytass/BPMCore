@@ -26,7 +26,7 @@ import {
   focusFormRendererField,
   FormRendererValues,
   readFormDataSourceErrorMessage,
-  validateFormRendererValues,
+  validateFormRendererValuesInWorker,
 } from '@rytass/bpm-core-client/form';
 import {
   LaunchContext,
@@ -273,7 +273,9 @@ function NewApprovalInstanceContent({
       buildFormRendererValues(applicantSchema.fields, formValues),
       context.templateVersion.workflowDefinition,
     );
-    const validation = validateFormRendererValues({
+    // The format patterns run in a worker under the engine's time budget, so
+    // a pattern that backtracks cannot freeze the page.
+    const validation = await validateFormRendererValuesInWorker({
       schema: applicantSchema,
       uiSchema: context.formVersion.uiSchema,
       values: submittedValues,
