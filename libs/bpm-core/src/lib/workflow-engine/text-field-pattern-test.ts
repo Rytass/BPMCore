@@ -37,10 +37,10 @@ const isScriptTimeout = (error: unknown): boolean =>
  * value is never reported as not matching when it was not checked.
  *
  * Only the time spent in the regular expression is charged. Starting a timed
- * run costs about 50 µs on its own, far more than a normal match, so charging
- * it would refuse a large table of valid values; it grows with the number of
- * values, as the rest of the validation does, not with how a pattern
- * backtracks.
+ * run costs about 45 µs on its own, far more than a normal match, so charging
+ * it would refuse a large table of valid values. That cost is paid once per
+ * value with a pattern, and the schema bounds how many there are: a table with
+ * more rows than its `maxRows` is refused before any cell is checked.
  */
 export function createTimedTextFieldPatternTest(
   now: () => number = () => performance.now(),
