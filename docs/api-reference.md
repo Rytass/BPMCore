@@ -654,7 +654,12 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `ParsedConditionRule` | type | Parsed condition AST |
 | `buildFormRendererValues()` | function | Build initial values from schema (table fields seed `minRows` rows) |
 | `readVisibleFormRendererFields()` | function | Filter visible fields by condition |
-| `validateFormRendererValues()` | function | Whole-form validation, recursing into table rows; cell errors keyed by instance path |
+| `validateFormRendererValues()` | function | Whole-form validation, recursing into table rows; cell errors keyed by instance path. Synchronous; optional `testPattern` runs each format pattern (default `RegExp#test`, no time limit) |
+| `validateFormRendererValuesInWorker()` | async function | The same validation with the format patterns run in a Web Worker under `TEXT_FIELD_PATTERN_TIME_BUDGET_MS` of matching time; a pattern not answered in time is reported as `…的格式檢查逾時…`. Falls back to `validateFormRendererValues` when no worker can start (no `Worker`, CSP without `worker-src blob:`) or the worker fails. Options: `createWorker`, `deadlineMs` |
+| `createFormPatternWorker()` | function | The default worker (`blob:` URL), or `null` where `Worker` is unavailable |
+| `FormPatternWorker` / `FormPatternCheckRequest` / `FormPatternCheckResponse` | type | The worker contract, for a host or test that supplies its own `createWorker` |
+| `FormRendererPatternTimeoutError` | class | Thrown by a `testPattern` that could not answer in time; the value is reported as not checked |
+| `FORM_PATTERN_WORKER_START_ALLOWANCE_MS` | const | 1000: how long past the budget the main thread waits before terminating the worker |
 | `focusFormRendererField(key)` | function | DOM focus on a field or a table cell instance path |
 | `readFormTableCellPath()` | function | Build the `<tableKey>[<i>].<columnKey>` instance path |
 | DataSource query inputs | interface | `PreviewFormFieldOptionsInput` / `RuntimeFormFieldOptionsInput` / `PreviewResolveFormFieldOptionsInput` / `RuntimeResolveFormFieldOptionsInput` accept an optional `rowValues`, and their `fieldKey` accepts a `<tableKey>.<columnKey>` schema path |
