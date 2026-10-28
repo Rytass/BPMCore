@@ -301,8 +301,9 @@ export function readFormMemberIds(
 }
 
 /**
- * Runs a compiled text field pattern on a value. `false` means the value does
- * not match, which is also the answer when the run could not finish.
+ * Runs a compiled text field pattern on a value and answers whether it
+ * matches. A test with a time budget throws when the budget runs out; the
+ * error goes to the caller of {@link readTextFieldValueIssue}.
  */
 export type TextFieldPatternTest = (pattern: RegExp, value: string) => boolean;
 

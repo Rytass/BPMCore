@@ -2,43 +2,58 @@ import { createContext, Script } from 'vm';
 import type { TextFieldPatternTest } from '@rytass/bpm-core-shared/form';
 
 /**
- * How long one run of a text field pattern may take on the server. A format
- * check finishes in well under a millisecond; anything still running after
- * this is backtracking, and the value is refused rather than waited on.
+ * How long all the text field patterns of one validation pass may take
+ * together on the server. A normal format check finishes in well under a
+ * millisecond, so a whole form of them fits many times over; a pass that
+ * still runs past this is backtracking.
  */
-export const TEXT_FIELD_PATTERN_TIME_LIMIT_MS = 20;
+export const TEXT_FIELD_PATTERN_TIME_BUDGET_MS = 50;
+
+/** Thrown by a timed pattern test once its pass has used up the time budget. */
+export class TextFieldPatternTimeoutError extends Error {
+  constructor() {
+    super('The text field patterns could not be checked in time');
+    this.name = 'TextFieldPatternTimeoutError';
+  }
+}
 
 const RUN_PATTERN = new Script('pattern.test(value)');
 
 /**
- * A pattern test for one validation pass. The schema lint refuses the
- * patterns known to backtrack exponentially, but it is a heuristic, and some
- * shapes it lets through (`\w*\w*\w*!`) still take seconds on a few hundred
- * characters. Each run is therefore interrupted after
- * {@link TEXT_FIELD_PATTERN_TIME_LIMIT_MS} and counts as no match. Once one run
- * is interrupted the rest of the pass fails without running, so a request
- * full of such values costs one time limit, not one per value.
+ * A pattern test for one validation pass. The schema lint refuses repeated
+ * groups, the shape whose backtracking grows exponentially with the value,
+ * but what is left can still grow polynomially (`\w*\w*\w*!` takes seconds on
+ * a few hundred characters), and a form can hold many such values. The pass
+ * therefore shares one {@link TEXT_FIELD_PATTERN_TIME_BUDGET_MS} budget: each
+ * run is interrupted when the budget runs out, and that run and every later
+ * one throw {@link TextFieldPatternTimeoutError} instead of answering, so a
+ * value is never reported as not matching when it was not checked.
  */
-export function createTimedTextFieldPatternTest(): TextFieldPatternTest {
+export function createTimedTextFieldPatternTest(
+  now: () => number = () => performance.now(),
+): TextFieldPatternTest {
   const context = createContext({ pattern: null, value: '' });
-  let interrupted = false;
+  const deadline = now() + TEXT_FIELD_PATTERN_TIME_BUDGET_MS;
+  let exhausted = false;
 
   return (pattern, value) => {
-    if (interrupted) {
-      return false;
+    const remaining = Math.floor(deadline - now());
+
+    if (exhausted || remaining < 1) {
+      exhausted = true;
+
+      throw new TextFieldPatternTimeoutError();
     }
 
     context.pattern = pattern;
     context.value = value;
 
     try {
-      return RUN_PATTERN.runInContext(context, {
-        timeout: TEXT_FIELD_PATTERN_TIME_LIMIT_MS,
-      }) === true;
+      return RUN_PATTERN.runInContext(context, { timeout: remaining }) === true;
     } catch {
-      interrupted = true;
+      exhausted = true;
 
-      return false;
+      throw new TextFieldPatternTimeoutError();
     }
   };
 }

@@ -840,32 +840,80 @@ describe('WorkflowEngineService', () => {
       ).rejects.toThrow('formData.items[0].note must be text');
     });
 
-    it('refuses a value the pattern cannot finish checking in time', async (): Promise<void> => {
-      // The lint lets this adjacent-repeat shape through; unbounded, the run
-      // takes tens of seconds.
-      const fixture = createServiceFixture({
-        currentVersionId: 'template-version-1',
-        formSchema: {
-          fields: [
-            {
-              fieldKey: 'code',
-              label: '代碼',
-              pattern: '\\w*\\w*\\w*\\w*!',
-              required: false,
-              type: 'text',
-            },
-          ],
-          schemaVersion: 1,
-        },
-        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
-        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
-      });
-      const startedAt = Date.now();
+    describe('a pattern that cannot be checked in time', (): void => {
+      // The lint lets this adjacent-repeat shape through, since it has no
+      // repeated group; unbounded, one run on 500 characters takes tens of
+      // seconds.
+      const createSlowPatternFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'code',
+                label: '代碼',
+                pattern: '\\w*\\w*\\w*\\w*!',
+                required: false,
+                type: 'text',
+              },
+              {
+                columns: [
+                  {
+                    fieldKey: 'code',
+                    label: '代碼',
+                    pattern: '\\w*\\w*\\w*\\w*!',
+                    required: false,
+                    type: 'text',
+                  },
+                ],
+                fieldKey: 'rows',
+                label: '明細',
+                required: false,
+                type: 'table',
+              },
+              {
+                fieldKey: 'stored',
+                hidden: true,
+                label: '來源',
+                pattern: '\\w*\\w*\\w*\\w*!',
+                required: false,
+                type: 'text',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
 
-      await expect(
-        submit(fixture, { code: 'a'.repeat(500) }),
-      ).rejects.toThrow('formData.code does not match the required format');
-      expect(Date.now() - startedAt).toBeLessThan(2000);
+      it('refuses the value as not checked, quickly', async (): Promise<void> => {
+        const startedAt = Date.now();
+
+        await expect(
+          submit(createSlowPatternFixture(), { code: 'a'.repeat(500) }),
+        ).rejects.toThrow(
+          'formData.code could not be checked against the required format in time',
+        );
+        expect(Date.now() - startedAt).toBeLessThan(2000);
+      });
+
+      it('bounds a table full of such values by one budget for the request', async (): Promise<void> => {
+        // Each cell finishes on its own; a hundred of them would block for
+        // about a second without a shared budget.
+        const rows = Array.from({ length: 100 }, () => ({ code: 'a'.repeat(110) }));
+        const startedAt = Date.now();
+
+        await expect(
+          submit(createSlowPatternFixture(), { rows }),
+        ).rejects.toThrow('could not be checked against the required format in time');
+        expect(Date.now() - startedAt).toBeLessThan(500);
+      });
+
+      it('does not run the pattern of a field it only checks for type', async (): Promise<void> => {
+        await expect(
+          submit(createSlowPatternFixture(), { stored: 'a'.repeat(500) }),
+        ).resolves.toMatchObject({ id: 'instance-1' });
+      });
     });
 
     it('checks only the type of a hidden text field with rules', async (): Promise<void> => {

@@ -114,7 +114,10 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
-import { createTimedTextFieldPatternTest } from './text-field-pattern-test';
+import {
+  createTimedTextFieldPatternTest,
+  TextFieldPatternTimeoutError,
+} from './text-field-pattern-test';
 import {
   computeFormDataFingerprint,
   computeStableValueFingerprint,
@@ -9909,9 +9912,11 @@ function validateSubmittedTableRow(
  * `readTextFieldValueIssue` the renderer runs before it lets the filler send,
  * so a crafted request cannot store what the form would have refused — a
  * number or an array sent for a text field with rules included. `shapeOnly`
- * keeps only that type check, for a value nobody fills in at this step.
- * `testPattern` is the validation pass's timed pattern test (see
- * `createTimedTextFieldPatternTest`).
+ * keeps only that type check, for a value nobody fills in at this step, and
+ * does not run the pattern at all. `testPattern` is the validation pass's
+ * timed pattern test (see `createTimedTextFieldPatternTest`); once its time
+ * budget is spent, a value is reported as not checked rather than as a
+ * format error.
  */
 function readSubmittedTextValueErrors(
   field: FormFieldDefinition,
@@ -9930,7 +9935,24 @@ function readSubmittedTextValueErrors(
     return [];
   }
 
-  const issue = readTextFieldValueIssue(field, value, { testPattern });
+  const readIssue = (): ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
+    try {
+      return readTextFieldValueIssue(field, value, {
+        testPattern: shapeOnly ? (): boolean => true : testPattern,
+      });
+    } catch (error) {
+      if (error instanceof TextFieldPatternTimeoutError) {
+        return 'timeout';
+      }
+
+      throw error;
+    }
+  };
+  const issue = readIssue();
+
+  if (issue === 'timeout') {
+    return [`${path} could not be checked against the required format in time`];
+  }
 
   if (!issue || (shapeOnly && issue.kind !== 'type')) {
     return [];
