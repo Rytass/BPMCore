@@ -60,15 +60,23 @@ describe('createTimedTextFieldPatternTest', () => {
   });
 
   it('charges only the time spent matching, not the cost of starting a run', (): void => {
-    // Starting a timed run takes about 50 µs; charged, 5,000 fast runs would
-    // spend the budget several times over.
-    const test = createTimedTextFieldPatternTest();
-    const pattern = compile('[A-Z]{2}[0-9]{8}');
-    const answers = Array.from({ length: 5000 }, (): boolean =>
-      test(pattern, 'AB12345678'),
-    );
+    // A clock that moves 10 ms at every reading. The run reads it right
+    // before and after matching, so each run is charged 10 ms and five fit
+    // the budget. Charging the whole run (about 45 µs of start-up for a
+    // normal match, more than the match itself) would read it around the run
+    // as well and charge 30 ms; charging nothing would never stop.
+    const read = { count: 0 };
+    const test = createTimedTextFieldPatternTest((): number => 10 * read.count++);
+    const answers = Array.from({ length: 6 }, (): string => {
+      try {
+        return String(test(compile('[A-Z]+'), 'AB'));
+      } catch (error) {
+        return error instanceof TextFieldPatternTimeoutError ? 'timeout' : 'other';
+      }
+    });
 
-    expect(answers.every((answer) => answer)).toBe(true);
+    expect(TEXT_FIELD_PATTERN_TIME_BUDGET_MS).toBe(50);
+    expect(answers).toEqual(['true', 'true', 'true', 'true', 'true', 'timeout']);
   });
 
   it('throws without running once the budget is spent, and a new pass starts afresh', (): void => {
