@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
@@ -61,6 +62,8 @@ interface ListDelegationRulesOptions {
 
 @Injectable()
 export class DelegationService {
+  private readonly logger = new Logger(DelegationService.name);
+
   constructor(
     @InjectRepository(DelegationRuleEntity)
     private readonly delegationRuleRepository: Repository<DelegationRuleEntity>,
@@ -264,6 +267,11 @@ export class DelegationService {
    * Agents of `rules` the host reports as deactivated. Empty when there is no
    * rule to check, or no identity module (or no `resolveInactive` on the host
    * resolver): delegation then behaves as it did before this check existed.
+   *
+   * When the host directory fails to answer, every agent counts as
+   * deactivated, so each principal keeps the task: no task goes to an agent
+   * who could not be confirmed active, and a directory outage does not stop
+   * a launch or an advance either.
    */
   private async readInactiveAgentIds(
     rules: readonly DelegationRuleEntity[],
@@ -274,11 +282,23 @@ export class DelegationService {
       return new Set();
     }
 
-    const inactiveMembers = await identityService.resolveInactiveMembers(
-      rules.map((rule) => rule.agentMemberId),
-    );
+    const agentMemberIds = [
+      ...new Set(rules.map((rule) => rule.agentMemberId)),
+    ];
 
-    return new Set(inactiveMembers.map((member) => member.memberId));
+    return identityService.resolveInactiveMembers(agentMemberIds).then(
+      (inactiveMembers): ReadonlySet<string> =>
+        new Set(inactiveMembers.map((member) => member.memberId)),
+      (error: unknown): ReadonlySet<string> => {
+        this.logger.warn(
+          `Host directory lookup (resolveInactive) failed for delegation ` +
+            `agents ${agentMemberIds.join(', ')}; their principals keep the ` +
+            `task: ${error instanceof Error ? error.message : String(error)}`,
+        );
+
+        return new Set(agentMemberIds);
+      },
+    );
   }
 
   /**

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
@@ -525,6 +526,81 @@ describe('DelegationService', () => {
       await expect(
         service.resolveAssignee('member-001', context),
       ).rejects.toThrow('module graph broken');
+    });
+
+    describe('when the host directory fails to answer', (): void => {
+      const failingIdentityService = (): Readonly<{
+        readonly resolveInactiveMembers: jest.Mock;
+      }> => ({
+        resolveInactiveMembers: jest.fn(
+          (): Promise<readonly MemberMetadata[]> =>
+            Promise.reject(new Error('directory timed out')),
+        ),
+      });
+
+      it('leaves the task with the principal and warns', async (): Promise<void> => {
+        const service = createService(
+          singleRule,
+          createModuleRef(jest.fn(() => failingIdentityService())),
+        );
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation((): void => undefined);
+
+        await expect(
+          service.resolveAssignee('member-001', context),
+        ).resolves.toEqual({
+          delegationChain: [],
+          finalAssigneeMemberId: 'member-001',
+        });
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('resolveInactive'),
+        );
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('directory timed out'),
+        );
+        warn.mockRestore();
+      });
+
+      it('stops the chain at the agent whose own rules could not be checked', async (): Promise<void> => {
+        const answeringOnce = createIdentityService([]);
+        answeringOnce.resolveInactiveMembers.mockImplementationOnce(
+          (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
+        );
+        answeringOnce.resolveInactiveMembers.mockImplementation(
+          (): Promise<readonly MemberMetadata[]> =>
+            Promise.reject(new Error('directory timed out')),
+        );
+        const service = createService(
+          [
+            ...singleRule,
+            createDelegationRule({
+              agentMemberId: 'member-102',
+              id: 'rule-2',
+              principalMemberId: 'member-101',
+            }),
+          ],
+          createModuleRef(jest.fn(() => answeringOnce)),
+        );
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation((): void => undefined);
+
+        await expect(
+          service.resolveAssignee('member-001', context),
+        ).resolves.toEqual({
+          delegationChain: [
+            {
+              from: 'member-001',
+              reason: 'ALL',
+              ruleId: 'rule-1',
+              to: 'member-101',
+            },
+          ],
+          finalAssigneeMemberId: 'member-101',
+        });
+        warn.mockRestore();
+      });
     });
   });
 
