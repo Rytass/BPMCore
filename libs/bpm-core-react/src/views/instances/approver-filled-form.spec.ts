@@ -343,6 +343,25 @@ describe('approver-filled form helpers', () => {
       ).toEqual({ note: '至少需要 2 個字。' });
     });
 
+    it('words a format error with the designer\'s message when the field has one', () => {
+      const schema: FormDefinitionSchema = {
+        ...SCHEMA,
+        fields: SCHEMA.fields.map((field) =>
+          field.fieldKey === 'note' && field.type === 'text'
+            ? { ...field, pattern: '[A-Z]+', patternErrorMessage: '請填大寫英文' }
+            : field,
+        ),
+      };
+
+      expect(
+        readFillServerErrors(
+          'formData.note does not match the required format',
+          schema,
+          fillNode,
+        ),
+      ).toEqual({ note: '請填大寫英文' });
+    });
+
     it('matches a missing label that holds a comma, and gives up on the unknown', () => {
       const schema: FormDefinitionSchema = {
         ...SCHEMA,

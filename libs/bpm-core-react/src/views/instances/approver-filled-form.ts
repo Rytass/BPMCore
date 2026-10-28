@@ -13,6 +13,7 @@ import {
   type FormDefinitionSchema,
   type FormFieldDefinition,
   type FormFieldValue,
+  type TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { readFormTableRows } from '@rytass/bpm-core-client/form';
 import type { WorkflowFormData } from '@rytass/bpm-core-client/workflow';
@@ -210,7 +211,29 @@ const FORM_DATA_PATH_PATTERN =
   /^formData\.([A-Za-z_][A-Za-z0-9_]*(?:\[\d+\]\.[A-Za-z_][A-Za-z0-9_]*)?) (.+)$/;
 const MISSING_FIELDS_PREFIX = 'Form data is missing required fields: ';
 
-function readFillPathErrorText(path: string, reason: string): string {
+/**
+ * The field or table column a server error path such as `note` or
+ * `items[0].name` points at, so its own settings can word the error.
+ */
+function readFillPathField(
+  path: string,
+  fields: readonly FormFieldDefinition[],
+): FormFieldDefinition | TableColumnDefinition | undefined {
+  const [fieldKey, columnKey] = path.split(/\[\d+\]\./);
+  const field = fields.find((candidate) => candidate.fieldKey === fieldKey);
+
+  return columnKey === undefined
+    ? field
+    : field && isTableFieldDefinition(field)
+      ? field.columns.find((column) => column.fieldKey === columnKey)
+      : undefined;
+}
+
+function readFillPathErrorText(
+  path: string,
+  reason: string,
+  fields: readonly FormFieldDefinition[],
+): string {
   const atLeast = /^must include at least (\d+) row\(s\)$/.exec(reason);
   const atMost = /^must include at most (\d+) row\(s\)$/.exec(reason);
   const shortest = /^must be at least (\d+) characters$/.exec(reason);
@@ -237,7 +260,13 @@ function readFillPathErrorText(path: string, reason: string): string {
   }
 
   if (reason === 'does not match the required format') {
-    return '格式不正確。';
+    const field = readFillPathField(path, fields);
+    const message =
+      field && (field.type === 'text' || field.type === 'textarea')
+        ? field.patternErrorMessage?.trim()
+        : undefined;
+
+    return message || '格式不正確。';
   }
 
   return path.includes('[') ? '此欄內容不正確。' : '此欄位內容不正確。';
@@ -284,7 +313,9 @@ export function readFillServerErrors(
 
   return Object.fromEntries(
     parts.flatMap((part) =>
-      part === null ? [] : [[part[1], readFillPathErrorText(part[1], part[2])]],
+      part === null
+        ? []
+        : [[part[1], readFillPathErrorText(part[1], part[2], fillableFields)]],
     ),
   );
 }
