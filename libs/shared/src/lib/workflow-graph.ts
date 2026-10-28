@@ -914,6 +914,76 @@ export function isParallelGatewaySourceEdge(
   );
 }
 
+/**
+ * The nodes an approver at `nodeId` may send a case back to when the node lets
+ * them pick (`returnBehavior.allowedTargets: 'ANY'`): the start event, which
+ * hands the case back to the applicant, and every other user task that comes
+ * before `nodeId`: one with a path to `nodeId` that the start event also
+ * reaches without passing through `nodeId`. Gateways, notify steps, the end
+ * event and the stages after `nodeId` are left out: returning to the end event
+ * would approve the case, and returning to a later stage would skip the ones in
+ * between. The second condition is what keeps a loop honest — a stage after
+ * `nodeId` that loops back to it has a path to it too, but the start event
+ * only reaches it through `nodeId`. Listed in definition order, which is the
+ * order the return dialog shows.
+ */
+export function readSelectableReturnTargetNodeIds(
+  definition: WorkflowDefinition,
+  nodeId: string,
+): readonly string[] {
+  const walk = (
+    frontier: readonly string[],
+    visited: ReadonlySet<string>,
+    step: (ids: readonly string[]) => readonly string[],
+  ): ReadonlySet<string> => {
+    const fresh = [...new Set(frontier)].filter(
+      (candidateId) => !visited.has(candidateId),
+    );
+
+    return fresh.length
+      ? walk(step(fresh), new Set([...visited, ...fresh]), step)
+      : visited;
+  };
+  // Built once per call, so each step of a walk reads only the edges of its
+  // frontier instead of scanning every edge.
+  const readNeighbours = (
+    from: 'source' | 'target',
+  ): ((ids: readonly string[]) => readonly string[]) => {
+    const to = from === 'source' ? 'target' : 'source';
+    const neighboursById = definition.edges.reduce(
+      (map, edge) =>
+        map.set(edge[from], [...(map.get(edge[from]) ?? []), edge[to]]),
+      new Map<string, readonly string[]>(),
+    );
+
+    return (ids) => ids.flatMap((id) => neighboursById.get(id) ?? []);
+  };
+  const upstreamNodeIds = walk(
+    [nodeId],
+    new Set<string>(),
+    readNeighbours('target'),
+  );
+  // Seeding the visited set with `nodeId` stops the forward walk there, so
+  // what it reaches is what the start event reaches without passing through.
+  const reachedBeforeNodeIds = walk(
+    definition.nodes
+      .filter((node) => node.type === 'startEvent' && node.id !== nodeId)
+      .map((node) => node.id),
+    new Set([nodeId]),
+    readNeighbours('source'),
+  );
+
+  return definition.nodes
+    .filter(
+      (node) =>
+        node.id !== nodeId &&
+        upstreamNodeIds.has(node.id) &&
+        reachedBeforeNodeIds.has(node.id) &&
+        (node.type === 'startEvent' || node.type === 'userTask'),
+    )
+    .map((node) => node.id);
+}
+
 export function toggleSelectedEdgeId(
   edgeIds: readonly string[],
   edgeId: string,

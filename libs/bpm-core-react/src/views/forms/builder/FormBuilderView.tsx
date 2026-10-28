@@ -74,6 +74,10 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   TextFieldDefinition,
+  TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
+  TEXT_FIELD_PATTERN_MAX_LENGTH,
+  compileTextFieldPattern,
+  hasRepeatedTextFieldPatternGroup,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
@@ -2200,6 +2204,38 @@ export function FormBuilderView({
             { min: 1 },
           ),
         )}
+        {renderSettingsFormRow(
+          '格式（正規表示式）',
+          'fieldPattern',
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commit(withTextFieldPattern(field, event.target.value))
+            }
+            placeholder="例如：[0-9]{8}"
+            value={field.pattern ?? ''}
+            variant="base"
+          />,
+          false,
+          readTextFieldPatternHint(field.pattern),
+        )}
+        {field.pattern
+          ? renderSettingsFormRow(
+              '格式錯誤訊息',
+              'fieldPatternErrorMessage',
+              <Input
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  commit(
+                    withTextFieldPatternErrorMessage(field, event.target.value),
+                  )
+                }
+                placeholder="例如：統一編號為 8 位數字。"
+                value={field.patternErrorMessage ?? ''}
+                variant="base"
+              />,
+              false,
+              readTextFieldPatternErrorMessageHint(field.patternErrorMessage),
+            )
+          : null}
       </>
     );
   }
@@ -3448,6 +3484,7 @@ export function FormBuilderView({
     name: string,
     control: ReactElement,
     wide = false,
+    hint?: SettingsFormRowHint,
   ): ReactElement {
     return (
       <div
@@ -3463,6 +3500,9 @@ export function FormBuilderView({
               wide ? FormFieldLayout.VERTICAL : FormFieldLayout.STRETCH
             }
             name={name}
+            {...(hint
+              ? { hintText: hint.text, severity: hint.severity }
+              : {})}
           >
             {control}
           </BPMFormField>
@@ -3806,6 +3846,10 @@ function readDiscardedColumnSettings(
     discarded.push('長度限制');
   }
 
+  if (column.type === 'text' && column.pattern) {
+    discarded.push('格式');
+  }
+
   if (
     (column.type === 'number' || column.type === 'money') &&
     (typeof column.minimum === 'number' || typeof column.maximum === 'number')
@@ -3848,6 +3892,100 @@ function isDefaultColumnOptions(
         option.value === DEFAULT_COLUMN_OPTIONS[index]?.value,
     )
   );
+}
+
+interface SettingsFormRowHint {
+  readonly severity: 'error' | 'info';
+  readonly text: string;
+}
+
+/**
+ * Clearing the format also drops its error message: the schema linter refuses
+ * a message without a pattern, so leaving it behind would block the save.
+ */
+function withTextFieldPattern(
+  field: TextFieldDefinition,
+  pattern: string,
+): TextFieldDefinition {
+  if (pattern) {
+    return { ...field, pattern };
+  }
+
+  return Object.fromEntries(
+    Object.entries(field).filter(
+      ([key]) => key !== 'pattern' && key !== 'patternErrorMessage',
+    ),
+  ) as unknown as TextFieldDefinition;
+}
+
+/**
+ * Drops the key rather than storing `undefined`: the schema linter checks the
+ * key's presence, and an own `undefined` would read as a message that is not a
+ * string.
+ */
+function withTextFieldPatternErrorMessage(
+  field: TextFieldDefinition,
+  patternErrorMessage: string,
+): TextFieldDefinition {
+  if (patternErrorMessage) {
+    return { ...field, patternErrorMessage };
+  }
+
+  return Object.fromEntries(
+    Object.entries(field).filter(([key]) => key !== 'patternErrorMessage'),
+  ) as unknown as TextFieldDefinition;
+}
+
+/**
+ * Tells the designer whether the format will be accepted on save, with the
+ * same checks the schema linter runs.
+ */
+function readTextFieldPatternHint(
+  pattern: string | undefined,
+): SettingsFormRowHint {
+  if (pattern && !pattern.trim()) {
+    return {
+      severity: 'error',
+      text: '格式不能只有空白，儲存時會被拒絕。',
+    };
+  }
+
+  if (pattern && pattern.length > TEXT_FIELD_PATTERN_MAX_LENGTH) {
+    return {
+      severity: 'error',
+      text: `格式最多 ${TEXT_FIELD_PATTERN_MAX_LENGTH} 個字元，儲存時會被拒絕。`,
+    };
+  }
+
+  if (pattern && !compileTextFieldPattern(pattern)) {
+    return {
+      severity: 'error',
+      text: '這不是有效的正規表示式，儲存時會被拒絕。格式以 u 模式檢查，多餘的跳脫（例如在方括號 [ ] 外寫 \\-）也算錯誤。',
+    };
+  }
+
+  if (pattern && hasRepeatedTextFieldPatternGroup(pattern)) {
+    return {
+      severity: 'error',
+      text: '格式裡的括號群組後面不能接重複次數（例如 (ab)+、(\\w|\\d)*、(ab){2}），填寫的內容可能讓系統卡住，儲存時會被拒絕。請把重複的部分直接寫出來，或改用 [ ] 字元集合加次數。',
+    };
+  }
+
+  return {
+    severity: 'info',
+    text: '填寫的內容要整段符合格式才能送出；留空表示不檢查格式。',
+  };
+}
+
+function readTextFieldPatternErrorMessageHint(
+  message: string | undefined,
+): SettingsFormRowHint | undefined {
+  return message && message.length > TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH
+    ? {
+        severity: 'error',
+        text: `錯誤訊息最多 ${TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH} 個字元，儲存時會被拒絕。`,
+      }
+    : undefined;
 }
 
 function convertTableColumnType(

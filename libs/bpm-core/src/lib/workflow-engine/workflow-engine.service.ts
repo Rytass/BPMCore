@@ -21,6 +21,8 @@ import {
   isFormTableCellValue,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
+  readTextFieldValueIssue,
+  TextFieldPatternTest,
 } from '@rytass/bpm-core-shared/form';
 import {
   WorkflowDefinition,
@@ -38,6 +40,7 @@ import {
   isAsyncNotifyServiceTask,
   isNotifyRecipientsEmpty,
   readNotifyWebhookTargets,
+  readSelectableReturnTargetNodeIds,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import {
@@ -111,6 +114,10 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import {
+  createTimedTextFieldPatternTest,
+  TextFieldPatternTimeoutError,
+} from './text-field-pattern-test';
 import {
   computeFormDataFingerprint,
   computeStableValueFingerprint,
@@ -7454,6 +7461,14 @@ export class WorkflowEngineService {
         buildWorkflowExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
       );
+
+      assertServiceTaskTextValue(
+        instance.formDefinitionSnapshot,
+        action.fieldPath,
+        value,
+        node.data.label,
+      );
+
       const updatedFormData = writeValueAtPath(
         instance.formData,
         action.fieldPath,
@@ -8149,6 +8164,48 @@ function readDataSourceFieldKeyAtPath(
   return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
 }
 
+/**
+ * Holds a `SET_FORM_FIELD` write to the length and format rules the form
+ * applies to a filler, so a service task cannot store text the field would
+ * have refused. Breaking them throws, which rolls back the submit or decision
+ * that reached the node: the value is never half-written, and the node's value
+ * has to be corrected. Only a top-level field can carry those rules — the
+ * writer ignores an indexed path, and a nested record path names no field —
+ * and an unreadable snapshot is left alone, as in
+ * `readDataSourceFieldKeyAtPath`.
+ */
+function assertServiceTaskTextValue(
+  snapshot: Readonly<Record<string, unknown>>,
+  fieldPath: string,
+  value: unknown,
+  nodeLabel: string,
+): void {
+  const schema = snapshot?.schema;
+  const segments = normalizeFormFieldPath(fieldPath);
+
+  if (!isFormDefinitionSchema(schema) || segments.length !== 1) {
+    return;
+  }
+
+  const field = schema.fields.find(
+    (candidate) => candidate.fieldKey === segments[0],
+  );
+  const errors = field
+    ? readSubmittedTextValueErrors(field, value, {
+        testPattern: createTimedTextFieldPatternTest(),
+      })
+    : [];
+
+  if (!field || errors.length === 0) {
+    return;
+  }
+
+  throw new BadRequestException(
+    `系統節點「${nodeLabel}」要寫入欄位「${field.label || field.fieldKey}」的值不符合該欄位的規則` +
+      `（${errors.join('; ')}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
+  );
+}
+
 function readSnapshotWithoutField(
   snapshots: FormDataSourceValueSnapshots | null | undefined,
   fieldKey: string,
@@ -8525,6 +8582,19 @@ function readReturnTargetNodeId(
     }
 
     readWorkflowNodeOrThrow(workflow, trimmedRequestedNodeId);
+
+    // Only the applicant or a stage the case can already have passed: every
+    // other node would skip ahead, re-run a gateway, or — the end event —
+    // approve the case outright.
+    if (
+      !readSelectableReturnTargetNodeIds(workflow, currentNodeId).includes(
+        trimmedRequestedNodeId,
+      )
+    ) {
+      throw new ConflictException(
+        `User task ${currentNodeId} can only return to the applicant or an earlier user task, not ${trimmedRequestedNodeId}`,
+      );
+    }
 
     return trimmedRequestedNodeId;
   }
@@ -9589,6 +9659,7 @@ function validateSubmittedFormData(
   options: { readonly deferredFieldKeys?: ReadonlySet<string> } = {},
 ): void {
   const deferredFieldKeys = options.deferredFieldKeys ?? new Set<string>();
+  const testPattern = createTimedTextFieldPatternTest();
   const visibleFields = schema.fields.filter((field) =>
     isSubmittedFormFieldVisible(field, schema.fields, formData),
   );
@@ -9605,6 +9676,29 @@ function validateSubmittedFormData(
 
   throwFirstFormDataFieldError({
     missingFields,
+    // A field an approver fills in later is held to its rules when they fill
+    // it, not here: the applicant cannot see or change it, so only its type is
+    // checked, the same as a table nobody fills in.
+    readTextErrors: () => [
+      ...visibleFields.flatMap((field) =>
+        readSubmittedTextValueErrors(field, formData[field.fieldKey], {
+          shapeOnly: deferredFieldKeys.has(field.fieldKey),
+          testPattern,
+        }),
+      ),
+      // A field nobody can fill in right now — hidden (store-only), or one
+      // whose `visibleWhen` is false — keeps its submitted value, so its value
+      // is checked for its type. Only the type: its length and format apply
+      // once the field is shown and the filler can correct it.
+      ...schema.fields
+        .filter((field) => !visibleFields.includes(field))
+        .flatMap((field) =>
+          readSubmittedTextValueErrors(field, formData[field.fieldKey], {
+            shapeOnly: true,
+            testPattern,
+          }),
+        ),
+    ],
     // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
     // is visible, so a hidden field still holding a value must be well-formed
     // too. Whether a hidden field is *required* stays a visibility question
@@ -9626,6 +9720,7 @@ function validateSubmittedFormData(
             field,
             formData[field.fieldKey],
             isSubmittedFormFieldRequired(field, schema.fields, formData),
+            testPattern,
             deferredFieldKeys.has(field.fieldKey),
           ),
         ),
@@ -9640,6 +9735,7 @@ function validateSubmittedFormData(
             field,
             formData[field.fieldKey],
             false,
+            testPattern,
             true,
           ),
         ),
@@ -9661,6 +9757,7 @@ function validateFilledFormFields(
   requiredFieldKeys: ReadonlySet<string>,
 ): void {
   const fields = schema.fields.filter((field) => fieldKeys.has(field.fieldKey));
+  const testPattern = createTimedTextFieldPatternTest();
 
   // `readRowCellValue` is used below as an own-property reader for top-level
   // form keys: a key like `constructor` must not read off the prototype chain.
@@ -9672,6 +9769,14 @@ function validateFilledFormFields(
         requiredFieldKeys.has(field.fieldKey) &&
         isFormDataValueEmpty(readRowCellValue(formData, field.fieldKey)),
     ),
+    readTextErrors: () =>
+      fields.flatMap((field) =>
+        readSubmittedTextValueErrors(
+          field,
+          readRowCellValue(formData, field.fieldKey),
+          { testPattern },
+        ),
+      ),
     readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
     readTableErrors: () =>
       fields
@@ -9681,6 +9786,7 @@ function validateFilledFormFields(
             field,
             readRowCellValue(formData, field.fieldKey),
             requiredFieldKeys.has(field.fieldKey),
+            testPattern,
           ),
         ),
   });
@@ -9688,17 +9794,20 @@ function validateFilledFormFields(
 
 /**
  * The shared tail of submit and approver-fill validation: a missing required
- * field wins over a malformed member value, which wins over a table problem,
- * and the later checks are only evaluated when the earlier ones pass.
+ * field wins over a text value breaking its length or format rule, which wins
+ * over a malformed member value, which wins over a table problem, and the
+ * later checks are only evaluated when the earlier ones pass.
  */
 function throwFirstFormDataFieldError({
   missingFields,
   readMemberErrors,
   readTableErrors,
+  readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
   readonly readMemberErrors: () => readonly string[];
   readonly readTableErrors: () => readonly string[];
+  readonly readTextErrors: () => readonly string[];
 }): void {
   if (missingFields.length > 0) {
     throw new BadRequestException(
@@ -9706,6 +9815,12 @@ function throwFirstFormDataFieldError({
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
     );
+  }
+
+  const textErrors = readTextErrors();
+
+  if (textErrors.length > 0) {
+    throw new BadRequestException(textErrors.join('; '));
   }
 
   const memberErrors = readMemberErrors();
@@ -9723,14 +9838,14 @@ function throwFirstFormDataFieldError({
 
 /**
  * Authoritative shape, row-count and per-row required checks for one table
- * value (ADR 16 §3.7). Depth stops here on purpose: like the flat fields, only
- * required / shape / row count are enforced server side; `minimum`, `maxLength`
- * and friends stay a frontend hint.
+ * value (ADR 16 §3.7), plus the length and format rules of text columns, which
+ * the flat text fields share. `minimum` / `maximum` stay a frontend hint.
  */
 function validateSubmittedTableValue(
   field: TableFieldDefinition,
   value: unknown,
   required: boolean,
+  testPattern: TextFieldPatternTest,
   shapeOnly = false,
 ): readonly string[] {
   const path = `formData.${field.fieldKey}`;
@@ -9747,12 +9862,26 @@ function validateSubmittedTableValue(
     return [`${path} must be an array of rows`];
   }
 
+  // Too many rows is refused before any row is checked: the rows a submitter
+  // sends would otherwise decide how many cells the text patterns run on.
+  const maxRows = readTableMaxRows(field);
+
+  if (value.length > maxRows) {
+    return [`${path} must include at most ${maxRows} row(s)`];
+  }
+
   const rowErrors = value.flatMap((row, index) =>
-    validateSubmittedTableRow(field, row, `${path}[${index}]`, shapeOnly),
+    validateSubmittedTableRow(
+      field,
+      row,
+      `${path}[${index}]`,
+      testPattern,
+      shapeOnly,
+    ),
   );
 
-  // A malformed row cannot be counted against min/max meaningfully; report the
-  // shape problem first so the submitter fixes the real cause.
+  // A malformed row cannot be counted against the minimum meaningfully; report
+  // the shape problem first so the submitter fixes the real cause.
   if (rowErrors.length > 0) {
     return rowErrors;
   }
@@ -9766,6 +9895,7 @@ function validateSubmittedTableValue(
   );
 }
 
+/** The minimum only: the maximum is refused before any row is checked. */
 function validateSubmittedTableRowCount(
   field: TableFieldDefinition,
   rowCount: number,
@@ -9778,22 +9908,17 @@ function validateSubmittedTableRowCount(
     : required
       ? Math.max(readTableMinRows(field), 1)
       : readTableMinRows(field);
-  const maxRows = readTableMaxRows(field);
 
-  return [
-    ...(rowCount < minRows
-      ? [`${path} must include at least ${minRows} row(s)`]
-      : []),
-    ...(rowCount > maxRows
-      ? [`${path} must include at most ${maxRows} row(s)`]
-      : []),
-  ];
+  return rowCount < minRows
+    ? [`${path} must include at least ${minRows} row(s)`]
+    : [];
 }
 
 function validateSubmittedTableRow(
   field: TableFieldDefinition,
   row: unknown,
   path: string,
+  testPattern: TextFieldPatternTest,
   shapeOnly = false,
 ): readonly string[] {
   if (!isRecord(row)) {
@@ -9823,8 +9948,84 @@ function validateSubmittedTableRow(
             ),
         )
         .map((column) => `${path}.${column.fieldKey} is required`);
+  // A shape-only pass covers a table nobody fills in, so the filler-facing
+  // rules do not apply to it, the same as the required check above; only a
+  // cell of the wrong type is still refused.
+  const textErrors = field.columns.flatMap((column) =>
+    readSubmittedTextValueErrors(column, readRowCellValue(row, column.fieldKey), {
+      path: `${path}.${column.fieldKey}`,
+      shapeOnly,
+      testPattern,
+    }),
+  );
 
-  return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
+  return [...unknownKeyErrors, ...cellErrors, ...requiredErrors, ...textErrors];
+}
+
+/**
+ * The server half of the text length and format rules: the same
+ * `readTextFieldValueIssue` the renderer runs before it lets the filler send,
+ * so a crafted request cannot store what the form would have refused — a
+ * number or an array sent for a text field with rules included. `shapeOnly`
+ * keeps only that type check, for a value nobody fills in at this step, and
+ * does not run the pattern at all. `testPattern` is the validation pass's
+ * timed pattern test (see `createTimedTextFieldPatternTest`); once its time
+ * budget is spent, a value is reported as not checked rather than as a
+ * format error.
+ */
+function readSubmittedTextValueErrors(
+  field: FormFieldDefinition,
+  value: unknown,
+  {
+    path = `formData.${field.fieldKey}`,
+    shapeOnly = false,
+    testPattern,
+  }: {
+    readonly path?: string;
+    readonly shapeOnly?: boolean;
+    readonly testPattern: TextFieldPatternTest;
+  },
+): readonly string[] {
+  if (field.type !== 'text' && field.type !== 'textarea') {
+    return [];
+  }
+
+  const readIssue = (): ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
+    try {
+      return readTextFieldValueIssue(field, value, {
+        testPattern: shapeOnly ? (): boolean => true : testPattern,
+      });
+    } catch (error) {
+      if (error instanceof TextFieldPatternTimeoutError) {
+        return 'timeout';
+      }
+
+      throw error;
+    }
+  };
+  const issue = readIssue();
+
+  if (issue === 'timeout') {
+    return [`${path} could not be checked against the required format in time`];
+  }
+
+  if (!issue || (shapeOnly && issue.kind !== 'type')) {
+    return [];
+  }
+
+  if (issue.kind === 'type') {
+    return [`${path} must be text`];
+  }
+
+  if (issue.kind === 'minLength') {
+    return [`${path} must be at least ${issue.limit} characters`];
+  }
+
+  if (issue.kind === 'maxLength') {
+    return [`${path} must be at most ${issue.limit} characters`];
+  }
+
+  return [`${path} does not match the required format`];
 }
 
 /**

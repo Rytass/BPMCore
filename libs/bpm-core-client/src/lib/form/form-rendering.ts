@@ -16,6 +16,8 @@ import {
   isFormTableCellValue,
   isFormTableRowValues,
   isTableFieldDefinition,
+  readTextFieldValueIssue,
+  type TextFieldPatternTest,
 } from '@rytass/bpm-core-shared/form';
 
 export type ConditionOperator =
@@ -81,12 +83,32 @@ export function readVisibleFormRendererFields(
   );
 }
 
+/**
+ * Thrown by a `testPattern` that could not answer in time. The value is then
+ * reported as not checked, never as not matching the format.
+ */
+export class FormRendererPatternTimeoutError extends Error {
+  constructor() {
+    super('The text field pattern could not be checked in time');
+    this.name = 'FormRendererPatternTimeoutError';
+  }
+}
+
+/**
+ * Checks the values on the calling thread. `testPattern` runs each compiled
+ * text field pattern; by default it is `RegExp#test` with no time limit, so a
+ * pattern that backtracks blocks the caller. In a browser, prefer
+ * `validateFormRendererValuesInWorker`, which runs the patterns in a Web
+ * Worker under the engine's time budget.
+ */
 export function validateFormRendererValues({
   schema,
+  testPattern,
   uiSchema,
   values,
 }: {
   readonly schema: FormDefinitionSchema;
+  readonly testPattern?: TextFieldPatternTest;
   readonly uiSchema: FormUiSchema;
   readonly values: FormRendererValues;
 }): FormRendererValidationResult {
@@ -94,7 +116,7 @@ export function validateFormRendererValues({
   const errors = visibleFields.reduce<Readonly<Record<string, string>>>(
     (currentErrors, field) => ({
       ...currentErrors,
-      ...readFormRendererFieldErrors(field, schema, values),
+      ...readFormRendererFieldErrors(field, schema, values, testPattern),
     }),
     {},
   );
@@ -110,16 +132,77 @@ function readFormRendererFieldErrors(
   field: FormFieldDefinition,
   schema: FormDefinitionSchema,
   values: FormRendererValues,
+  testPattern: TextFieldPatternTest | undefined,
 ): Readonly<Record<string, string>> {
   const required = isFormRendererFieldRequired(field, schema.fields, values);
 
   if (isTableFieldDefinition(field)) {
-    return readFormTableErrors(field, values[field.fieldKey], required);
+    return readFormTableErrors(
+      field,
+      values[field.fieldKey],
+      required,
+      testPattern,
+    );
   }
 
-  return required && !isFormRendererFieldValuePresent(values[field.fieldKey])
-    ? { [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。` }
-    : {};
+  if (required && !isFormRendererFieldValuePresent(values[field.fieldKey])) {
+    return { [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。` };
+  }
+
+  const textError = readTextValueErrorMessage(
+    field,
+    values[field.fieldKey],
+    testPattern,
+  );
+
+  return textError ? { [field.fieldKey]: textError } : {};
+}
+
+/**
+ * The renderer half of the text length and format rules, worded for the filler;
+ * the engine runs the same `readTextFieldValueIssue`, so passing here means the
+ * submit is not refused for it. A pattern the worker could not finish in time
+ * is worded as a timeout, as on the approver page, not as a format error.
+ */
+function readTextValueErrorMessage(
+  field: FormFieldDefinition,
+  value: FormFieldValue | undefined,
+  testPattern: TextFieldPatternTest | undefined,
+): string | null {
+  if (field.type !== 'text' && field.type !== 'textarea') {
+    return null;
+  }
+
+  const label = field.label || field.fieldKey;
+  const issue = ((): ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
+    try {
+      return readTextFieldValueIssue(field, value, { testPattern });
+    } catch (error) {
+      if (error instanceof FormRendererPatternTimeoutError) {
+        return 'timeout';
+      }
+
+      throw error;
+    }
+  })();
+
+  if (!issue) {
+    return null;
+  }
+
+  if (issue === 'timeout') {
+    return `${label}的格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。`;
+  }
+
+  if (issue.kind === 'minLength') {
+    return `${label}至少需要 ${issue.limit} 個字。`;
+  }
+
+  if (issue.kind === 'maxLength') {
+    return `${label}最多 ${issue.limit} 個字。`;
+  }
+
+  return (issue.kind === 'pattern' && issue.message) || `${label}格式不正確。`;
 }
 
 /**
@@ -131,6 +214,7 @@ function readFormTableErrors(
   field: TableFieldDefinition,
   value: FormFieldValue | undefined,
   required: boolean,
+  testPattern: TextFieldPatternTest | undefined,
 ): Readonly<Record<string, string>> {
   const rows = readFormTableRows(value);
   const bounds = readFormTableRowBounds(field);
@@ -148,7 +232,7 @@ function readFormTableErrors(
   return rows.reduce<Readonly<Record<string, string>>>(
     (currentErrors, row, rowIndex) => ({
       ...currentErrors,
-      ...readFormTableRowErrors(field, row, rowIndex),
+      ...readFormTableRowErrors(field, row, rowIndex, testPattern),
     }),
     {},
   );
@@ -158,21 +242,26 @@ function readFormTableRowErrors(
   field: TableFieldDefinition,
   row: FormTableRowValue,
   rowIndex: number,
+  testPattern: TextFieldPatternTest | undefined,
 ): Readonly<Record<string, string>> {
-  return field.columns
-    .filter(
-      (column) =>
-        column.required &&
-        !isFormRendererFieldValuePresent(readFormTableCellValue(row, column)),
-    )
-    .reduce<Readonly<Record<string, string>>>(
-      (currentErrors, column) => ({
-        ...currentErrors,
-        [readFormTableCellPath(field.fieldKey, rowIndex, column.fieldKey)]:
-          `${column.label || column.fieldKey}為必填欄位。`,
-      }),
-      {},
-    );
+  return field.columns.reduce<Readonly<Record<string, string>>>(
+    (currentErrors, column) => {
+      const value = readFormTableCellValue(row, column);
+      const error =
+        column.required && !isFormRendererFieldValuePresent(value)
+          ? `${column.label || column.fieldKey}為必填欄位。`
+          : readTextValueErrorMessage(column, value, testPattern);
+
+      return error
+        ? {
+            ...currentErrors,
+            [readFormTableCellPath(field.fieldKey, rowIndex, column.fieldKey)]:
+              error,
+          }
+        : currentErrors;
+    },
+    {},
+  );
 }
 
 /**

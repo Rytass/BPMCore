@@ -64,8 +64,17 @@ export type TextFieldDefinition = BaseFormFieldDefinition<
    * `http(s)://` 網址會變成連結，其他值照純文字顯示。不支援 table 欄。
    */
   readonly displayAs?: 'link';
+  /** 字數上限，以字元（code point）計。送出時前後端都會檢查。 */
   readonly maxLength?: number;
+  /** 字數下限，以字元（code point）計；空值交給 `required` 判斷。 */
   readonly minLength?: number;
+  /**
+   * 格式：整個值必須符合的正規表示式，不用自己寫 `^`／`$`（同 HTML `pattern`），
+   * 以 `u` 旗標比對。送出時前後端都會檢查，空值不檢查。
+   */
+  readonly pattern?: string;
+  /** 不符合 `pattern` 時給填寫者看的訊息；沒填時顯示預設訊息。 */
+  readonly patternErrorMessage?: string;
 };
 
 export type NumberFieldDefinition = BaseFormFieldDefinition<
@@ -289,6 +298,237 @@ export function readFormMemberIds(
           typeof item === 'string' && item.trim().length > 0,
       )
     : [];
+}
+
+/**
+ * Runs a compiled text field pattern on a value and answers whether it
+ * matches. A test with a time budget throws when the budget runs out; the
+ * error goes to the caller of {@link readTextFieldValueIssue}.
+ */
+export type TextFieldPatternTest = (pattern: RegExp, value: string) => boolean;
+
+function readCompiledPatternMatch(
+  pattern: string,
+  value: string,
+  testPattern: TextFieldPatternTest,
+): boolean {
+  const compiled = compileTextFieldPattern(pattern);
+
+  return compiled !== null && testPattern(compiled, value);
+}
+
+export type TextFieldValueIssue =
+  | Readonly<{ kind: 'maxLength'; limit: number }>
+  | Readonly<{ kind: 'minLength'; limit: number }>
+  | Readonly<{ kind: 'pattern'; message: string | null }>
+  | Readonly<{ kind: 'type' }>;
+
+/** How many compiled patterns {@link compileTextFieldPattern} keeps. */
+const COMPILED_TEXT_FIELD_PATTERN_CACHE_SIZE = 256;
+
+const compiledTextFieldPatterns = new Map<string, RegExp | null>();
+
+/**
+ * Compiles a text field `pattern` the way the value check applies it: the whole
+ * value has to match, under the `u` flag. Returns `null` for a pattern that
+ * does not compile, which the schema lint rejects at publish time.
+ *
+ * The pattern is compiled on its own first: wrapped in `^(?:…)$` straight
+ * away, an unbalanced one such as `a)|(?:b` would close the wrapper early and
+ * compile as `^(?:a)|(?:b)$`, which no longer anchors the whole value.
+ *
+ * Compiled once per pattern and reused, since a table checks the same pattern
+ * on every row. The flags carry no `g` or `y`, so a shared `RegExp` keeps no
+ * `lastIndex` between tests.
+ */
+export function compileTextFieldPattern(pattern: string): RegExp | null {
+  const cached = compiledTextFieldPatterns.get(pattern);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const compiled = compileAnchoredTextFieldPattern(pattern);
+
+  if (
+    compiledTextFieldPatterns.size >= COMPILED_TEXT_FIELD_PATTERN_CACHE_SIZE
+  ) {
+    // Designers write the patterns, so the set is open-ended: drop the oldest.
+    compiledTextFieldPatterns.delete(
+      compiledTextFieldPatterns.keys().next().value as string,
+    );
+  }
+
+  compiledTextFieldPatterns.set(pattern, compiled);
+
+  return compiled;
+}
+
+function compileAnchoredTextFieldPattern(pattern: string): RegExp | null {
+  try {
+    new RegExp(pattern, 'u');
+
+    return new RegExp(`^(?:${pattern})$`, 'u');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How long the text field patterns of one validation pass may spend matching,
+ * together. A normal format check spends about a microsecond in the regular
+ * expression, so even a full table of them uses a small part of it; a pass
+ * that still runs past this is backtracking. The engine enforces it on submit
+ * and fill, and the form renderer applies the same budget in a Web Worker
+ * (`validateFormRendererValuesInWorker`), so the two agree on what times out.
+ */
+export const TEXT_FIELD_PATTERN_TIME_BUDGET_MS = 50;
+
+/** Longest `pattern` the schema lint accepts. */
+export const TEXT_FIELD_PATTERN_MAX_LENGTH = 500;
+
+/** Longest `patternErrorMessage` the schema lint accepts. */
+export const TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH = 200;
+
+const REPEATING_QUANTIFIER = /^(?:([*+])|\{(\d+)(,(\d*))?\})\??/;
+const BRACED_ESCAPE = /^\\[pPu]\{[^}]*\}/;
+const FIXED_ESCAPE = /^\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|c[A-Za-z]|k<[^>]*>)/;
+
+/**
+ * Length of the quantifier at `index` when it lets the preceding atom repeat
+ * (`*`, `+`, `{n,}`, `{n,m}` with m > 1, `{n}` with n > 1, each optionally
+ * lazy), or 0. `?` and `{1}` do not repeat anything.
+ */
+function readRepeatingQuantifierLength(pattern: string, index: number): number {
+  const match = REPEATING_QUANTIFIER.exec(pattern.slice(index));
+
+  if (!match) {
+    return 0;
+  }
+
+  const [quantifier, starOrPlus, minimum, range, maximum] = match;
+  const repeats = starOrPlus
+    ? true
+    : range === undefined
+      ? Number(minimum) > 1
+      : maximum === '' || Number(maximum) > 1;
+
+  return repeats ? quantifier.length : 0;
+}
+
+/** Length of the escape at `index`, so `\u{41}` or `\p{L}` is read as one atom. */
+function readEscapeLength(pattern: string, index: number): number {
+  const rest = pattern.slice(index);
+  const match = BRACED_ESCAPE.exec(rest) ?? FIXED_ESCAPE.exec(rest);
+
+  return match ? match[0].length : 2;
+}
+
+/**
+ * Whether a text field `pattern` repeats a group: a `(...)` followed by `*`,
+ * `+`, `{n,}`, `{n,m}` with m > 1 or `{n}` with n > 1. The engine runs the
+ * pattern on whatever a filler sends, and a repeated group is the only way a
+ * pattern's backtracking can grow exponentially with the length of the value:
+ * `(a+)*`, `(\w|\d)+`, `(a?a?)+` and `(ab?|b)+` all take seconds on a few
+ * dozen characters that almost match. A repeated character, class or escape
+ * matches each character one way, so without repeated groups the cost grows
+ * at most polynomially with the value. The degree grows with the pattern,
+ * though: `\w*\w*\w*!` is slow on a few hundred characters, a dozen `\w*`
+ * on a few dozen, and a long run of overlapping alternatives such as
+ * `(?:a|a)(?:a|a)…` is slow on any value. The engine bounds all of that with a
+ * time budget (see the `testPattern` option of {@link readTextFieldValueIssue})
+ * and refuses the value as not checked; the form renderer applies the same
+ * budget in a Web Worker (`validateFormRendererValuesInWorker`). This check
+ * does not warn the designer about it.
+ * Safe repeated groups are refused too, such as `(-[a-z]+)*` or `(ab){2}`;
+ * the designer writes the repetition out or drops the group.
+ */
+export function hasRepeatedTextFieldPatternGroup(pattern: string): boolean {
+  const scan = (index: number, inClass: boolean): boolean => {
+    if (index >= pattern.length) {
+      return false;
+    }
+
+    const char = pattern[index];
+
+    if (char === '\\') {
+      return scan(index + readEscapeLength(pattern, index), inClass);
+    }
+
+    if (inClass) {
+      return scan(index + 1, char !== ']');
+    }
+
+    if (char === '[') {
+      return scan(index + 1, true);
+    }
+
+    return (
+      (char === ')' && readRepeatingQuantifierLength(pattern, index + 1) > 0) ||
+      scan(index + 1, false)
+    );
+  };
+
+  return scan(0, false);
+}
+
+/**
+ * The first rule a filled-in text value breaks — length first, then format —
+ * or `null` when it passes. The one check the form renderer and the engine
+ * both run, so a value the filler is allowed to send is one the server takes.
+ * An empty value is left to the required check. Any other value that is not a
+ * string is a `type` issue when the field sets a length or a format, since
+ * none of those rules can be applied to it; a field without rules keeps
+ * accepting what it accepted before. A pattern that does not compile fails
+ * closed: the lint keeps one from being published, and silently accepting
+ * every value would be worse. `testPattern` runs the compiled pattern on the
+ * value; the engine passes one with a time limit, since a pattern the lint
+ * lets through can still backtrack long enough to stall a server.
+ */
+export function readTextFieldValueIssue(
+  field: Pick<
+    TextFieldDefinition,
+    'maxLength' | 'minLength' | 'pattern' | 'patternErrorMessage'
+  >,
+  value: unknown,
+  {
+    testPattern = (pattern, text) => pattern.test(text),
+  }: { readonly testPattern?: TextFieldPatternTest } = {},
+): TextFieldValueIssue | null {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    return typeof field.minLength === 'number' ||
+      typeof field.maxLength === 'number' ||
+      Boolean(field.pattern)
+      ? { kind: 'type' }
+      : null;
+  }
+
+  const length = Array.from(value).length;
+
+  if (typeof field.minLength === 'number' && length < field.minLength) {
+    return { kind: 'minLength', limit: field.minLength };
+  }
+
+  if (typeof field.maxLength === 'number' && length > field.maxLength) {
+    return { kind: 'maxLength', limit: field.maxLength };
+  }
+
+  if (
+    typeof field.pattern === 'string' &&
+    field.pattern !== '' &&
+    !readCompiledPatternMatch(field.pattern, value, testPattern)
+  ) {
+    return {
+      kind: 'pattern',
+      message: field.patternErrorMessage?.trim() || null,
+    };
+  }
+
+  return null;
 }
 
 export function isTableFieldDefinition(

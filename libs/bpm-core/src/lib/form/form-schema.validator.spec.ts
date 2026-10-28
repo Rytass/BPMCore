@@ -101,6 +101,169 @@ describe('form schema validator', () => {
     );
   });
 
+  describe('text field format', (): void => {
+    function lintText(settings: Readonly<Record<string, unknown>>): readonly string[] {
+      return lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'invoiceNo',
+              label: '發票號碼',
+              required: false,
+              type: 'text',
+              ...settings,
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'invoiceNo', width: 'HALF' }],
+          schemaVersion: 1,
+        }),
+      ).errors;
+    }
+
+    it('accepts a pattern with its error message', (): void => {
+      expect(
+        lintText({
+          pattern: '[A-Z]{2}[0-9]{8}',
+          patternErrorMessage: '發票號碼為 2 碼英文加 8 碼數字',
+        }),
+      ).toEqual([]);
+    });
+
+    it('rejects a pattern that does not compile, is blank, or is too long', (): void => {
+      expect(lintText({ pattern: '[A-Z' })).toContain(
+        'schema.fields[0].pattern is not a valid regular expression',
+      );
+      // Would compile once wrapped, as `^(?:a)|(?:b)$`, and stop anchoring.
+      expect(lintText({ pattern: 'a)|(?:b' })).toContain(
+        'schema.fields[0].pattern is not a valid regular expression',
+      );
+      expect(lintText({ pattern: '  ' })).toContain(
+        'schema.fields[0].pattern must be a non-empty string',
+      );
+      expect(lintText({ pattern: 'a'.repeat(501) })).toContain(
+        'schema.fields[0].pattern must be at most 500 characters',
+      );
+    });
+
+    it('rejects a pattern that repeats a group', (): void => {
+      const message =
+        'schema.fields[0].pattern must not repeat a group, which can stall the server';
+
+      expect(lintText({ pattern: '([A-Za-z0-9]+\\s?)*' })).toContain(message);
+      expect(lintText({ pattern: '(\\w|\\d)+' })).toContain(message);
+      expect(lintText({ pattern: '(a?a?)+' })).toContain(message);
+      expect(lintText({ pattern: '(ab?|b)+' })).toContain(message);
+    });
+
+    it('rejects a format on a field that is not text', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'amount',
+              label: '金額',
+              pattern: '[0-9]+',
+              patternErrorMessage: '只能是數字',
+              required: false,
+              type: 'number',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'amount', width: 'HALF' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          'schema.fields[0].pattern 只能用在文字欄位',
+          'schema.fields[0].patternErrorMessage 只能用在文字欄位',
+        ]),
+      );
+    });
+
+    it('rejects an error message without a pattern', (): void => {
+      expect(lintText({ patternErrorMessage: '格式錯誤' })).toContain(
+        'schema.fields[0].patternErrorMessage requires schema.fields[0].pattern',
+      );
+    });
+
+    it('lints the pattern of a table text column too', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                {
+                  fieldKey: 'invoiceNo',
+                  label: '發票號碼',
+                  pattern: '(',
+                  required: false,
+                  type: 'text',
+                },
+              ],
+              fieldKey: 'invoices',
+              label: '發票',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'invoices', width: 'FULL' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toContain(
+        'schema.fields[0].columns[0].pattern is not a valid regular expression',
+      );
+    });
+
+    it('rejects a format on a table column that is not text', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                {
+                  fieldKey: 'qty',
+                  label: '數量',
+                  pattern: '[0-9]+',
+                  patternErrorMessage: '只能是數字',
+                  required: false,
+                  type: 'number',
+                },
+              ],
+              fieldKey: 'items',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'items', width: 'FULL' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          'schema.fields[0].columns[0].pattern 只能用在文字欄位',
+          'schema.fields[0].columns[0].patternErrorMessage 只能用在文字欄位',
+        ]),
+      );
+    });
+  });
+
   it('rejects invalid type-specific field settings', (): void => {
     const result = lintFormSchemaJson(
       JSON.stringify({

@@ -69,6 +69,7 @@ import { computeFormDataFingerprint } from './form-data-fingerprint';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
+import * as textFieldPatternTest from './text-field-pattern-test';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
@@ -750,6 +751,338 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Form data is missing required fields: 事由');
   });
 
+  describe('text length and format on submit', (): void => {
+    const invoiceSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'invoiceNo',
+          label: '發票號碼',
+          maxLength: 10,
+          pattern: '[A-Z]{2}[0-9]{8}',
+          patternErrorMessage: '發票號碼為 2 碼英文加 8 碼數字',
+          required: false,
+          type: 'text',
+        },
+        {
+          columns: [
+            {
+              fieldKey: 'note',
+              label: '說明',
+              maxLength: 3,
+              required: false,
+              type: 'text',
+            },
+          ],
+          fieldKey: 'items',
+          label: '明細',
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const submit = (
+      fixture: ServiceFixture,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+    const createFixture = (): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: invoiceSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    it('accepts values that keep the rules, and an empty optional field', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'AB12345678', items: [{ note: '計程車' }] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(submit(createFixture(), {})).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
+    it('rejects a value the format does not match', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'ab12345678' }),
+      ).rejects.toThrow('formData.invoiceNo does not match the required format');
+    });
+
+    it('rejects a value over the length limit before checking its format', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'AB123456789' }),
+      ).rejects.toThrow('formData.invoiceNo must be at most 10 characters');
+    });
+
+    it('rejects a table text cell over its length limit', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { items: [{ note: '高鐵車票' }] }),
+      ).rejects.toThrow('formData.items[0].note must be at most 3 characters');
+    });
+
+    // Every rule above reads a string; a number or an array would slip past
+    // all of them if the type were not checked first.
+    it('rejects a value that is not text, for a field and a table cell', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 123456789012345 }),
+      ).rejects.toThrow('formData.invoiceNo must be text');
+      await expect(
+        submit(createFixture(), { invoiceNo: ['AB12345678'] }),
+      ).rejects.toThrow('formData.invoiceNo must be text');
+      await expect(
+        submit(createFixture(), { items: [{ note: 123456 }] }),
+      ).rejects.toThrow('formData.items[0].note must be text');
+    });
+
+    describe('a pattern that cannot be checked in time', (): void => {
+      // The lint lets this adjacent-repeat shape through, since it has no
+      // repeated group; unbounded, one run on 500 characters takes tens of
+      // seconds.
+      const createSlowPatternFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'code',
+                label: '代碼',
+                pattern: '\\w*\\w*\\w*\\w*!',
+                required: false,
+                type: 'text',
+              },
+              {
+                columns: [
+                  {
+                    fieldKey: 'code',
+                    label: '代碼',
+                    pattern: '\\w*\\w*\\w*\\w*!',
+                    required: false,
+                    type: 'text',
+                  },
+                ],
+                fieldKey: 'rows',
+                label: '明細',
+                required: false,
+                type: 'table',
+              },
+              {
+                fieldKey: 'stored',
+                hidden: true,
+                label: '來源',
+                pattern: '\\w*\\w*\\w*\\w*!',
+                required: false,
+                type: 'text',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      it('refuses the value as not checked, quickly', async (): Promise<void> => {
+        const startedAt = Date.now();
+
+        await expect(
+          submit(createSlowPatternFixture(), { code: 'a'.repeat(500) }),
+        ).rejects.toThrow(
+          'formData.code could not be checked against the required format in time',
+        );
+        expect(Date.now() - startedAt).toBeLessThan(2000);
+      });
+
+      it('bounds a table full of such values by one budget for the request', async (): Promise<void> => {
+        // Each cell finishes on its own; a hundred of them would block for
+        // about a second without a shared budget.
+        const rows = Array.from({ length: 100 }, () => ({ code: 'a'.repeat(110) }));
+        const startedAt = Date.now();
+
+        await expect(
+          submit(createSlowPatternFixture(), { rows }),
+        ).rejects.toThrow('could not be checked against the required format in time');
+        expect(Date.now() - startedAt).toBeLessThan(500);
+      });
+
+      it('does not run the pattern of a field it only checks for type', async (): Promise<void> => {
+        await expect(
+          submit(createSlowPatternFixture(), { stored: 'a'.repeat(500) }),
+        ).resolves.toMatchObject({ id: 'instance-1' });
+      });
+    });
+
+    it('accepts a full table of valid values within the budget', async (): Promise<void> => {
+      // 100 rows × 12 pattern columns, 1,200 cells. Starting each timed run
+      // costs about 45 µs, so a budget that charged it would spend about 54 ms
+      // here, just over the budget. The accounting itself is pinned, with a
+      // clock under the spec's control, by the unit spec of
+      // createTimedTextFieldPatternTest; this one checks a full table end to
+      // end with the real clock.
+      const columnKeys = Array.from({ length: 12 }, (_, index): string => `c${index}`);
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: {
+          fields: [
+            {
+              columns: columnKeys.map((fieldKey) => ({
+                fieldKey,
+                label: fieldKey,
+                pattern: '[A-Z]{2}[0-9]{8}',
+                required: false,
+                type: 'text' as const,
+              })),
+              fieldKey: 'rows',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        },
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const rows = Array.from({ length: 100 }, () =>
+        Object.fromEntries(columnKeys.map((key) => [key, 'AB12345678'])),
+      );
+
+      await expect(submit(fixture, { rows })).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
+    it('refuses a table over its row limit before running any pattern', async (): Promise<void> => {
+      const runPattern = jest.fn((pattern: RegExp, value: string): boolean =>
+        pattern.test(value),
+      );
+      const createTest = jest
+        .spyOn(textFieldPatternTest, 'createTimedTextFieldPatternTest')
+        .mockReturnValue(runPattern);
+      const createFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                columns: [
+                  {
+                    fieldKey: 'code',
+                    label: '代碼',
+                    pattern: '[A-Z]{2}[0-9]{8}',
+                    required: false,
+                    type: 'text',
+                  },
+                ],
+                fieldKey: 'rows',
+                label: '明細',
+                required: false,
+                type: 'table',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      try {
+        // The spy sees the runs of a table within the limit.
+        await expect(
+          submit(createFixture(), { rows: [{ code: 'AB12345678' }] }),
+        ).resolves.toMatchObject({ id: 'instance-1' });
+        expect(runPattern).toHaveBeenCalledTimes(1);
+        runPattern.mockClear();
+
+        await expect(
+          submit(createFixture(), {
+            rows: Array.from({ length: 20000 }, () => ({ code: 'a' })),
+          }),
+        ).rejects.toThrow('formData.rows must include at most 100 row(s)');
+        expect(runPattern).not.toHaveBeenCalled();
+      } finally {
+        createTest.mockRestore();
+      }
+    });
+
+    it('checks only the type of a hidden text field with rules', async (): Promise<void> => {
+      const createHiddenFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'sourceDocId',
+                hidden: true,
+                label: '來源單據',
+                maxLength: 4,
+                pattern: '[A-Z]+',
+                required: false,
+                type: 'text',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      await expect(
+        submit(createHiddenFixture(), { sourceDocId: 123 }),
+      ).rejects.toThrow('formData.sourceDocId must be text');
+      // Nobody fills a hidden field in, so its length and format are not held.
+      await expect(
+        submit(createHiddenFixture(), { sourceDocId: 'po-12345' }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('checks only the type of a text field whose visibleWhen is false', async (): Promise<void> => {
+      const createConditionalFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'kind',
+                label: '類別',
+                required: false,
+                type: 'text',
+              },
+              {
+                fieldKey: 'note',
+                label: '備註',
+                minLength: 8,
+                pattern: '[A-Z]+',
+                required: false,
+                type: 'text',
+                visibleWhen: 'form.kind == "B"',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      await expect(
+        submit(createConditionalFixture(), { kind: 'A', note: 123 }),
+      ).rejects.toThrow('formData.note must be text');
+      // The applicant cannot see the field, so its length and format wait
+      // until it is shown.
+      await expect(
+        submit(createConditionalFixture(), { kind: 'A', note: 'ab' }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        submit(createConditionalFixture(), { kind: 'B', note: 'ab' }),
+      ).rejects.toThrow('formData.note must be at least 8 characters');
+    });
+  });
+
   it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -853,6 +1186,7 @@ describe('WorkflowEngineService', () => {
       formDataJson: string,
       options: {
         readonly endUserSubmission?: boolean;
+        readonly formSchema?: FormDefinitionSchema;
         readonly processFormData: Readonly<Record<string, unknown>>;
         readonly withResolver?: boolean;
         readonly workflow?: WorkflowDefinition;
@@ -861,7 +1195,7 @@ describe('WorkflowEngineService', () => {
       readonly fixture: ServiceFixture;
       readonly resolver?: BPMFormDataSourceValueResolver;
     }> => {
-      const formSchema = createFinanceTableFormSchema();
+      const formSchema = options.formSchema ?? createFinanceTableFormSchema();
       const resolver = options.withResolver
         ? createValueResolver({})
         : undefined;
@@ -944,6 +1278,40 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance?.formData).toEqual({
         amount: 10,
         financeItems: [{ seq: 1, taxAmount: 5 }],
+      });
+    });
+
+    // The applicant cannot see or change an approver-filled field, so a stored
+    // value its rules now refuse (saved before they were enforced) must not
+    // block the resubmit; the fill step holds the approver to them instead.
+    it('does not hold a restored approver-filled text to its length on an end-user resubmit', async (): Promise<void> => {
+      const baseSchema = createFinanceTableFormSchema();
+      const { fixture } = await resubmit('{"amount":10}', {
+        endUserSubmission: true,
+        formSchema: {
+          ...baseSchema,
+          fields: [
+            ...baseSchema.fields,
+            {
+              fieldKey: 'invoiceNote',
+              label: '發票備註',
+              maxLength: 3,
+              required: false,
+              type: 'text',
+            },
+          ],
+        },
+        processFormData: { amount: 10, invoiceNote: '超過三個字的備註' },
+        workflow: createFieldAccessWorkflow({
+          financeFieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'invoiceNote', fill: 'OPTIONAL' },
+          ],
+        }),
+      });
+
+      expect(fixture.savedInstance?.formData).toMatchObject({
+        invoiceNote: '超過三個字的備註',
       });
     });
 
@@ -1563,6 +1931,39 @@ describe('WorkflowEngineService', () => {
           decide(fixture),
           BadRequestException,
           'formData.financeItems[0].taxAmount is required',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('holds an approver-filled text to its format', async (): Promise<void> => {
+        const base = createFinanceTableFormSchema();
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          formSchema: {
+            ...base,
+            fields: [
+              ...base.fields,
+              {
+                fieldKey: 'invoiceNo',
+                label: '發票號碼',
+                pattern: '[A-Z]{2}[0-9]{8}',
+                required: false,
+                type: 'text',
+              },
+            ],
+          },
+          workflow: createFieldAccessWorkflow({
+            financeFieldAccess: [
+              financeItemsAccess,
+              { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },
+            ],
+          }),
+        });
+
+        await expectRejection(
+          decide(fixture, { formDataJson: '{"invoiceNo":"12345678"}' }),
+          BadRequestException,
+          'formData.invoiceNo does not match the required format',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -3030,6 +3431,52 @@ describe('WorkflowEngineService', () => {
         }),
       }),
     );
+  });
+
+  it('refuses a set-form-field value that breaks the text field rules', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: {
+        schema: createApprovalLevelFormSchema({ pattern: '[A-Z]{2}' }),
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      new BadRequestException(
+        '系統節點「設定簽核層級」要寫入欄位「簽核層級」的值不符合該欄位的規則' +
+          '（formData.approvalLevel does not match the required format），' +
+          '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
+      ),
+    );
+    expect(fixture.savedSingleActivityLogs).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: 'SET_FORM_FIELD' }),
+      }),
+    );
+  });
+
+  it('writes a set-form-field value that meets the text field rules', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: {
+        schema: createApprovalLevelFormSchema({ maxLength: 4 }),
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, approvalLevel: '主管簽核' },
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
   });
 
   it('runs a service task on an instance whose form snapshot cannot be parsed', async (): Promise<void> => {
@@ -7502,6 +7949,135 @@ describe('WorkflowEngineService', () => {
 
     expect(decision.action).toBe(TaskDecisionActionEnum.RETURNED);
     expect(decision.comment).toBe('請補上發票影本');
+  });
+
+  describe('returning to a node the approver picks (allowedTargets ANY)', (): void => {
+    function createAnyReturnFixture(): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          returnBehavior: { allowReturn: true, allowedTargets: 'ANY' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    }
+
+    // Before the target was narrowed, picking the end event saved the case as
+    // APPROVED: a "return" that approved it.
+    it('rejects the end event as a return target instead of approving the case', async (): Promise<void> => {
+      const fixture = createAnyReturnFixture();
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          returnToNodeId: 'end',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'User task task_finance can only return to the applicant or an earlier user task, not end',
+      );
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    // start → task_finance → task_review → end, with task_review able to send
+    // the case back to task_finance. task_review has a path to task_finance but
+    // only runs after it, so returning there from task_finance would skip
+    // task_finance's own approval.
+    it('rejects a later stage that loops back as a return target', async (): Promise<void> => {
+      const linear = createLinearUserTaskWorkflow({
+        returnBehavior: { allowReturn: true, allowedTargets: 'ANY' },
+      });
+      const finance = linear.nodes.find((node) => node.id === 'task_finance');
+
+      if (!finance || finance.type !== 'userTask') {
+        throw new Error('The linear workflow has no task_finance user task.');
+      }
+
+      const edge = (
+        source: string,
+        target: string,
+      ): WorkflowDefinition['edges'][number] => ({
+        data: {},
+        id: `edge_${source}_${target}`,
+        source,
+        target,
+        type: 'smoothstep',
+      });
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: {
+          ...linear,
+          edges: [
+            ...linear.edges.filter((candidate) => candidate.id !== 'edge_task_end'),
+            edge('task_finance', 'task_review'),
+            edge('task_review', 'task_finance'),
+            edge('task_review', 'end'),
+          ],
+          nodes: [
+            ...linear.nodes,
+            {
+              ...finance,
+              data: { ...finance.data, label: '覆核' },
+              id: 'task_review',
+            },
+          ],
+        },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          returnToNodeId: 'task_review',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'User task task_finance can only return to the applicant or an earlier user task, not task_review',
+      );
+    });
+
+    it('still returns the case to the applicant', async (): Promise<void> => {
+      const fixture = createAnyReturnFixture();
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.RETURNED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        returnToNodeId: 'start',
+        taskId: 'task-1',
+      });
+
+      expect(decision.returnToNodeId).toBe('start');
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.RETURNED,
+      );
+    });
   });
 
   it('still allows an empty return comment when requireComment is not set', async (): Promise<void> => {
@@ -15538,6 +16114,24 @@ function createValueResolver(
     resolveFormFieldOptions: jest.fn(() =>
       Promise.resolve([] as readonly FormFieldOption[]),
     ),
+  };
+}
+
+function createApprovalLevelFormSchema(
+  rules: { readonly maxLength?: number; readonly pattern?: string },
+): FormDefinitionSchema {
+  return {
+    fields: [
+      { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+      {
+        fieldKey: 'approvalLevel',
+        label: '簽核層級',
+        required: false,
+        type: 'text',
+        ...rules,
+      },
+    ],
+    schemaVersion: 1,
   };
 }
 

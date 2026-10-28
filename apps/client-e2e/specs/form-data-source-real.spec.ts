@@ -430,7 +430,7 @@ test.describe('Optional DataSource parameter bindings', () => {
     await clearSelectedTags(page, 'projectCostCenterMultiple');
     await page.getByRole('button', { name: '重新送出' }).click();
 
-    await expect(page.getByText('請先補齊必填欄位。')).toBeVisible();
+    await expect(page.getByText('請先修正表單中標示的欄位。')).toBeVisible();
     expect(resubmitRequests).toEqual([]);
   });
 
@@ -477,7 +477,7 @@ test.describe('Optional DataSource parameter bindings', () => {
     await page.getByRole('button', { name: '確認取消' }).click();
 
     await expect.poll((): number => cancelRequests.length).toBe(1);
-    await expect(page.getByText('請先補齊必填欄位。')).toHaveCount(0);
+    await expect(page.getByText('請先修正表單中標示的欄位。')).toHaveCount(0);
   });
 });
 

@@ -318,6 +318,10 @@ queue 或 integration bus。Designer 目前只建立 `NOTIFY` + `DIRECT` members
 channel 固定為 `IN_APP`；`WEBHOOK` 與 `SET_FORM_FIELD` 目前仍屬於 schema/API
 能力，尚未提供 designer 表單介面。
 
+`SET_FORM_FIELD` 寫入頂層文字欄位時，套用與填寫者相同的長度與格式規則（`minLength`、
+`maxLength`、`pattern`，格式比對同樣有 50 ms 時間預算）。不符合時拋 `400`，觸發這一步的送出或
+簽核整筆回滾、值不會寫入；案件依範本快照執行，修正範本不會影響已在進行中的案件。
+
 #### 知會節點 Webhook（ADR 18）
 
 ```ts

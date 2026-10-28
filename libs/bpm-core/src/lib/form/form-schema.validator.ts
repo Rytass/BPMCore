@@ -1,4 +1,6 @@
 import {
+  compileTextFieldPattern,
+  hasRepeatedTextFieldPatternGroup,
   FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -8,6 +10,8 @@ import {
   isFormMemberValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
+  TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
+  TEXT_FIELD_PATTERN_MAX_LENGTH,
 } from '@rytass/bpm-core-shared/form';
 import { referencesTableInternals } from './form-table-reference';
 
@@ -249,16 +253,34 @@ function lintFieldDefinition(
   ];
 }
 
-/** `displayAs` is a text-field option; every other type must not carry it. */
+/**
+ * `displayAs`, `pattern` and `patternErrorMessage` are text-field options;
+ * every other type must not carry them, or a format the designer set would be
+ * silently ignored.
+ */
 function lintDisplayAsTarget(
   field: Readonly<Record<string, unknown>>,
   type: FormFieldDefinition['type'],
   path: string,
 ): readonly string[] {
-  return Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
-    !TEXT_FIELD_TYPES.has(type)
-    ? [`${path}.displayAs 只能用在文字欄位`]
-    : [];
+  return lintTextOnlyKeys(field, type, path, [
+    'displayAs',
+    'pattern',
+    'patternErrorMessage',
+  ]);
+}
+
+function lintTextOnlyKeys(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+  keys: readonly string[],
+): readonly string[] {
+  return TEXT_FIELD_TYPES.has(type)
+    ? []
+    : keys
+        .filter((key) => Object.prototype.hasOwnProperty.call(field, key))
+        .map((key) => `${path}.${key} 只能用在文字欄位`);
 }
 
 function lintFieldTypeSpecifics(
@@ -405,10 +427,62 @@ function lintTextField(
     ...maxLengthErrors,
     ...lengthRangeErrors,
     ...displayAsErrors,
+    ...lintTextFieldPattern(field, path),
     ...lintOptionalDefaultValue(field.defaultValue, path, (value) =>
       typeof value === 'string' || value === null,
     ),
   ];
+}
+
+/**
+ * The pattern is compiled on every submit, server side included, so it has to
+ * compile now — a broken one would fail every value — and stay short enough to
+ * read. The engine runs it on whatever a filler sends, so a pattern that
+ * repeats a group is refused too: that is the shape whose backtracking can
+ * grow exponentially with the value and stall the server (see
+ * `hasRepeatedTextFieldPatternGroup`). What is left grows at most
+ * polynomially with the value, with a degree that grows with the pattern, and
+ * the engine bounds it with one time budget shared by every pattern of a
+ * submit, resubmit or fill.
+ */
+function lintTextFieldPattern(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  const hasPattern = Object.prototype.hasOwnProperty.call(field, 'pattern');
+  const hasMessage = Object.prototype.hasOwnProperty.call(
+    field,
+    'patternErrorMessage',
+  );
+  const patternErrors = !hasPattern
+    ? []
+    : typeof field.pattern !== 'string' || field.pattern.trim() === ''
+      ? [`${path}.pattern must be a non-empty string`]
+      : field.pattern.length > TEXT_FIELD_PATTERN_MAX_LENGTH
+        ? [
+            `${path}.pattern must be at most ${TEXT_FIELD_PATTERN_MAX_LENGTH} characters`,
+          ]
+        : compileTextFieldPattern(field.pattern) === null
+          ? [`${path}.pattern is not a valid regular expression`]
+          : hasRepeatedTextFieldPatternGroup(field.pattern)
+            ? [
+                `${path}.pattern must not repeat a group, which can stall the server`,
+              ]
+            : [];
+  const messageErrors = !hasMessage
+    ? []
+    : !hasPattern
+      ? [`${path}.patternErrorMessage requires ${path}.pattern`]
+      : typeof field.patternErrorMessage !== 'string'
+        ? [`${path}.patternErrorMessage must be a string`]
+        : field.patternErrorMessage.length >
+            TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH
+          ? [
+              `${path}.patternErrorMessage must be at most ${TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH} characters`,
+            ]
+          : [];
+
+  return [...patternErrors, ...messageErrors];
 }
 
 function lintNumberField(
@@ -806,7 +880,11 @@ function lintTableColumn(
     return basicErrors;
   }
 
-  return [...basicErrors, ...lintFieldTypeSpecifics(column, type, path, scope)];
+  return [
+    ...basicErrors,
+    ...lintTextOnlyKeys(column, type, path, ['pattern', 'patternErrorMessage']),
+    ...lintFieldTypeSpecifics(column, type, path, scope),
+  ];
 }
 
 function lintTableColumnType(

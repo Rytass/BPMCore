@@ -18,6 +18,7 @@ import {
   readNotifyWebhookStructureIssues,
   readApproverResolverIssue,
   readNotifyWebhookTargetCatalogIssues,
+  readSelectableReturnTargetNodeIds,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
 import { FormFieldDefinition } from './form';
@@ -212,6 +213,168 @@ describe('createWorkflowNode defaults', () => {
         node.data.action.recipients,
     ).toEqual(ONE_MANAGER);
     expect(readNotifyServiceTaskIssue(node)).toBeNull();
+  });
+});
+
+describe('readSelectableReturnTargetNodeIds', () => {
+  // start → task_1 → gateway → task_2 → task_3 → end, with task_2 also
+  // notifying and a loop from task_3 back to task_2.
+  function createReturnTargetWorkflow(): WorkflowDefinition {
+    const fallback = readFallbackWorkflowDefinition();
+    const node = (type: 'exclusiveGateway' | 'serviceTask' | 'userTask', index: number, id: string) => ({
+      ...createWorkflowNode(type, index),
+      id,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+
+    return {
+      ...fallback,
+      edges: [
+        edge('start', 'task_1'),
+        edge('task_1', 'gateway'),
+        edge('gateway', 'task_2'),
+        edge('task_2', 'notify'),
+        edge('task_2', 'task_3'),
+        edge('task_3', 'task_2'),
+        edge('task_3', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        node('userTask', 1, 'task_1'),
+        node('exclusiveGateway', 2, 'gateway'),
+        node('userTask', 3, 'task_2'),
+        node('serviceTask', 4, 'notify'),
+        node('userTask', 5, 'task_3'),
+      ],
+    } as WorkflowDefinition;
+  }
+
+  it('offers the applicant and the user tasks before the node, in definition order', () => {
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_2'),
+    ).toEqual(['start', 'task_1']);
+  });
+
+  it('leaves out a later stage that loops back, since returning there skips ahead', () => {
+    // task_3 has a path back to task_2, but the case reaches task_3 only
+    // through task_2: returning there would skip task_2's own approval.
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_2'),
+    ).not.toContain('task_3');
+  });
+
+  it('offers the stages on every branch before a join', () => {
+    const fallback = readFallbackWorkflowDefinition();
+    const task = (index: number, id: string) => ({
+      ...createWorkflowNode('userTask', index),
+      id,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+    const definition = {
+      ...fallback,
+      edges: [
+        edge('start', 'branch_a'),
+        edge('start', 'branch_b'),
+        edge('branch_a', 'join'),
+        edge('branch_b', 'join'),
+        edge('join', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        task(1, 'branch_a'),
+        task(2, 'branch_b'),
+        task(3, 'join'),
+      ],
+    } as WorkflowDefinition;
+
+    expect(readSelectableReturnTargetNodeIds(definition, 'join')).toEqual([
+      'start',
+      'branch_a',
+      'branch_b',
+    ]);
+    expect(readSelectableReturnTargetNodeIds(definition, 'branch_a')).toEqual([
+      'start',
+    ]);
+  });
+
+  it('offers the stages on every branch of a parallel gateway fork and join', () => {
+    const fallback = readFallbackWorkflowDefinition();
+    const task = (index: number, id: string) => ({
+      ...createWorkflowNode('userTask', index),
+      id,
+    });
+    // The designer palette has no parallel gateway; a definition can still
+    // hold one, so the node is built from a gateway and retyped.
+    const parallelGateway = (index: number, id: string) => ({
+      ...createWorkflowNode('exclusiveGateway', index),
+      id,
+      type: 'parallelGateway' as const,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+    const definition = {
+      ...fallback,
+      edges: [
+        edge('start', 'fork'),
+        edge('fork', 'branch_a'),
+        edge('fork', 'branch_b'),
+        edge('branch_a', 'merge'),
+        edge('branch_b', 'merge'),
+        edge('merge', 'after_join'),
+        edge('after_join', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        parallelGateway(1, 'fork'),
+        task(2, 'branch_a'),
+        task(3, 'branch_b'),
+        parallelGateway(4, 'merge'),
+        task(5, 'after_join'),
+      ],
+    } as WorkflowDefinition;
+
+    expect(readSelectableReturnTargetNodeIds(definition, 'after_join')).toEqual(
+      ['start', 'branch_a', 'branch_b'],
+    );
+    expect(readSelectableReturnTargetNodeIds(definition, 'branch_b')).toEqual([
+      'start',
+    ]);
+  });
+
+  it('leaves out gateways, notify steps, the end event and the node itself', () => {
+    const targets = readSelectableReturnTargetNodeIds(
+      createReturnTargetWorkflow(),
+      'task_3',
+    );
+
+    expect(targets).toEqual(['start', 'task_1', 'task_2']);
+    expect(targets).not.toContain('gateway');
+    expect(targets).not.toContain('notify');
+    expect(targets).not.toContain('end');
+    expect(targets).not.toContain('task_3');
+  });
+
+  it('offers only the applicant at the first stage', () => {
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_1'),
+    ).toEqual(['start']);
   });
 });
 

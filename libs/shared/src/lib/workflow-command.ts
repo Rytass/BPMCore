@@ -5,6 +5,7 @@ import {
   DecisionPolicy,
   ExcludeInitiatorConfig,
   FieldAccessEntry,
+  ReturnBehavior,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaConfig,
@@ -85,6 +86,11 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskApprover';
       readonly nodeId: string;
       readonly approverResolver: ApproverResolver;
+    }
+  | {
+      readonly type: 'setUserTaskReturnAllowedTargets';
+      readonly nodeId: string;
+      readonly allowedTargets: ReturnBehavior['allowedTargets'];
     }
   | {
       readonly type: 'setUserTaskReturnResubmitStrategy';
@@ -290,6 +296,8 @@ export function applyWorkflowCommand(
       return applySetNodeTriggerMode(state, command);
     case 'setUserTaskApprover':
       return applySetUserTaskApprover(state, command);
+    case 'setUserTaskReturnAllowedTargets':
+      return applySetUserTaskReturnAllowedTargets(state, command);
     case 'setUserTaskReturnResubmitStrategy':
       return applySetUserTaskReturnResubmitStrategy(state, command);
     case 'setUserTaskReturnRequireComment':
@@ -600,6 +608,30 @@ function applySetUserTaskApprover(
                     )
                   ? { type: 'SINGLE' }
                   : (node.data.decisionPolicy ?? { type: 'SINGLE' }),
+            },
+          }
+        : node,
+    'userTask',
+  );
+}
+
+function applySetUserTaskReturnAllowedTargets(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskReturnAllowedTargets' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) =>
+      node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              returnBehavior: {
+                ...node.data.returnBehavior,
+                allowedTargets: command.allowedTargets,
+              },
             },
           }
         : node,

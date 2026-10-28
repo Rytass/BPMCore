@@ -106,6 +106,7 @@ import {
   WorkflowEdgeData,
   WorkflowNode,
   WorkflowNodeTriggerMode,
+  ReturnBehavior,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -262,6 +263,10 @@ type InitiatorPolicyModeOption = Readonly<{
 }>;
 type ReturnResubmitStrategyOption = Readonly<{
   id: ReturnResubmitStrategy;
+  name: string;
+}>;
+type ReturnAllowedTargetsOption = Readonly<{
+  id: ReturnBehavior['allowedTargets'];
   name: string;
 }>;
 type ApproverResolverMode = Extract<
@@ -567,6 +572,11 @@ const NODE_TRIGGER_MODE_OPTIONS: readonly {
 }[] = [
   { id: 'AND', name: '全部前置完成' },
   { id: 'OR', name: '任一前置完成' },
+];
+const RETURN_ALLOWED_TARGETS_OPTIONS: readonly ReturnAllowedTargetsOption[] = [
+  { id: 'INITIATOR', name: '退回申請人' },
+  { id: 'PREVIOUS', name: '退回上一個節點' },
+  { id: 'ANY', name: '由簽核者選擇（申請人或之前的簽核節點）' },
 ];
 const RETURN_RESUBMIT_STRATEGY_OPTIONS: readonly ReturnResubmitStrategyOption[] =
   [
@@ -1764,6 +1774,20 @@ export function TemplateDesignerView({
         '簽核政策已重設為單人簽核，請重新設定。',
       nodeId,
       policyType: 'SINGLE',
+    });
+  }
+
+  function updateUserTaskReturnAllowedTargets(
+    allowedTargets: ReturnBehavior['allowedTargets'],
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      allowedTargets,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskReturnAllowedTargets',
     });
   }
 
@@ -3288,6 +3312,28 @@ export function TemplateDesignerView({
         ) : null}
         {node.data.returnBehavior.allowReturn ? (
           <BPMFormField
+            hintText="簽核者按下退回時，單子要回到哪裡。選「由簽核者選擇」時，可以退回申請人，或這一關之前任一個簽核節點。"
+            label="可退回到"
+            name="returnAllowedTargets"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateUserTaskReturnAllowedTargets(
+                  readReturnAllowedTargets(option?.id ?? null),
+                )
+              }
+              options={[...RETURN_ALLOWED_TARGETS_OPTIONS]}
+              value={readSelectOption(
+                RETURN_ALLOWED_TARGETS_OPTIONS,
+                node.data.returnBehavior.allowedTargets,
+              )}
+            />
+          </BPMFormField>
+        ) : null}
+        {node.data.returnBehavior.allowReturn ? (
+          <BPMFormField
             hintText="退回發起人後，重新送出時要從流程開始重跑，或直接回到退回的簽核節點。"
             label="重送策略"
             name="returnResubmitStrategy"
@@ -4498,6 +4544,12 @@ function readWorkflowNodeTriggerMode(
   value: string | null,
 ): WorkflowNodeTriggerMode {
   return value === 'OR' ? 'OR' : 'AND';
+}
+
+function readReturnAllowedTargets(
+  value: string | null,
+): ReturnBehavior['allowedTargets'] {
+  return value === 'PREVIOUS' || value === 'ANY' ? value : 'INITIATOR';
 }
 
 function readReturnResubmitStrategy(

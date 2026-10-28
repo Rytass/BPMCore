@@ -139,6 +139,8 @@ async function processInstance(instanceId: string): Promise<void> {
             consumeToken(token);
           } else {
             // 系統節點的 WEBHOOK／SET_FORM_FIELD 動作執行完照常前進。
+            // 例外：SET_FORM_FIELD 寫入的值不符合文字欄位的長度或格式規則時拋 400，
+            // 觸發這一步的送出或簽核整筆回滾（WEBHOOK 失敗則只記 SERVICE_TASK_FAILED）。
             advanceTokenToNext(token);
           }
           break;

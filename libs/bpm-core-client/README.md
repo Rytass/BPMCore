@@ -77,6 +77,17 @@ path — new projects should opt in to modern resolution.
 | `loginApi()` storage | Cookie lands in browser jar, persists across navigations.                                 | Returned `Set-Cookie` header is dropped — caller must read and reuse it explicitly.                                            |
 | `window.location`    | Used to detect `localhost` for the dev fallback endpoint.                                 | `typeof window === 'undefined'` → endpoint resolver returns `/graphql` (relative), which is invalid in Node unless overridden. |
 
+### Form format checks run in a Web Worker
+
+`validateFormRendererValuesInWorker` (from `@rytass/bpm-core-client/form`) runs
+the text field format patterns in a Web Worker started from a `blob:` URL, under
+the engine's 50 ms matching budget, so a pattern that backtracks cannot freeze
+the page. A host with a Content Security Policy must allow `worker-src blob:`
+(or `script-src blob:` where `worker-src` is not set). Without it, or where
+there is no `Worker` (SSR, Node), the check falls back to the main thread with
+no time limit — it still runs, it just is not bounded. The synchronous
+`validateFormRendererValues` is unchanged.
+
 ### Server Component / Server Action recipe
 
 Next.js App Router server runtime needs two things: an absolute endpoint and
