@@ -77,7 +77,7 @@ import {
   TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
   TEXT_FIELD_PATTERN_MAX_LENGTH,
   compileTextFieldPattern,
-  hasAmbiguousTextFieldPatternRepeat,
+  hasRepeatedTextFieldPatternGroup,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
@@ -3947,10 +3947,10 @@ function readTextFieldPatternHint(
     };
   }
 
-  if (pattern && hasAmbiguousTextFieldPatternRepeat(pattern)) {
+  if (pattern && hasRepeatedTextFieldPatternGroup(pattern)) {
     return {
       severity: 'error',
-      text: '格式裡有會重複、而且同一段文字能用不只一種方式對上的群組（例如 (a+)*、(\\w|\\d)+），填寫的內容可能讓系統卡住，儲存時會被拒絕。請改寫成群組裡不再重複、各個選項開頭的字都不同的寫法。',
+      text: '格式裡的括號群組後面不能接重複次數（例如 (ab)+、(\\w|\\d)*、(ab){2}），填寫的內容可能讓系統卡住，儲存時會被拒絕。請把重複的部分直接寫出來，或改用 [ ] 字元集合加次數。',
     };
   }
 

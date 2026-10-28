@@ -1,6 +1,6 @@
 import {
   compileTextFieldPattern,
-  hasAmbiguousTextFieldPatternRepeat,
+  hasRepeatedTextFieldPatternGroup,
   FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -439,11 +439,10 @@ function lintTextField(
  * The pattern is compiled on every submit, server side included, so it has to
  * compile now — a broken one would fail every value — and stay short enough to
  * read. The engine runs it on whatever a filler sends, so a pattern that
- * repeats a group able to match the same text more than one way is refused
- * too: a value that almost matches it backtracks exponentially and stalls the
- * server. That check is a heuristic (see `hasAmbiguousTextFieldPatternRepeat`);
- * what it lets through is bounded by the time limit the engine runs every
- * pattern under.
+ * repeats a group is refused too: that is the shape whose backtracking can
+ * grow exponentially with the value and stall the server (see
+ * `hasRepeatedTextFieldPatternGroup`). What is left grows at most
+ * polynomially, and the engine bounds it with a time budget per check.
  */
 function lintTextFieldPattern(
   field: Readonly<Record<string, unknown>>,
@@ -464,9 +463,9 @@ function lintTextFieldPattern(
           ]
         : compileTextFieldPattern(field.pattern) === null
           ? [`${path}.pattern is not a valid regular expression`]
-          : hasAmbiguousTextFieldPatternRepeat(field.pattern)
+          : hasRepeatedTextFieldPatternGroup(field.pattern)
             ? [
-                `${path}.pattern must not repeat a group that can match the same text in more than one way, which can stall the server`,
+                `${path}.pattern must not repeat a group, which can stall the server`,
               ]
             : [];
   const messageErrors = !hasMessage

@@ -144,13 +144,14 @@ describe('form schema validator', () => {
       );
     });
 
-    it('rejects a pattern that repeats an ambiguous group', (): void => {
+    it('rejects a pattern that repeats a group', (): void => {
       const message =
-        'schema.fields[0].pattern must not repeat a group that can match the same text in more than one way, which can stall the server';
+        'schema.fields[0].pattern must not repeat a group, which can stall the server';
 
       expect(lintText({ pattern: '([A-Za-z0-9]+\\s?)*' })).toContain(message);
       expect(lintText({ pattern: '(\\w|\\d)+' })).toContain(message);
-      expect(lintText({ pattern: '(.|\\s)*@' })).toContain(message);
+      expect(lintText({ pattern: '(a?a?)+' })).toContain(message);
+      expect(lintText({ pattern: '(ab?|b)+' })).toContain(message);
     });
 
     it('rejects a format on a field that is not text', (): void => {

@@ -12,7 +12,7 @@ import {
   normalizeFormDefinitionSchema,
   readFormMemberIds,
   readFormTableCellValue,
-  hasAmbiguousTextFieldPatternRepeat,
+  hasRepeatedTextFieldPatternGroup,
   readTextFieldValueIssue,
   TABLE_COLUMN_FIELD_TYPES,
 } from './form';
@@ -223,54 +223,67 @@ describe('member field contracts', () => {
   });
 });
 
-describe('hasAmbiguousTextFieldPatternRepeat', () => {
-  it('flags a repeated group that repeats inside', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('(a+)*')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('([A-Za-z0-9]+\\s?)*')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(?:\\d{2,})+')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('((a)+){2,}')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('((ab*))+')).toBe(true);
+describe('hasRepeatedTextFieldPatternGroup', () => {
+  it('flags a group followed by a repeating quantifier', () => {
+    // Repeats inside, overlapping alternatives, optional atoms: every
+    // exponential shape needs a repeated group.
+    [
+      '(a+)*',
+      '([A-Za-z0-9]+\\s?)*',
+      '(\\w|\\d)+',
+      '(.|\\s)*@',
+      '(a|ab)*',
+      '(a?a?)+',
+      '(aa?)+',
+      '(ab?|b)+',
+      '([0-9][0-9]?)+',
+      '(?:[A-Z][A-Z]?-?)+',
+      '(?<n>ab?|b)+',
+      '(?=a)+',
+      '(ab){2}',
+      '(ab){2,}',
+      '(ab){0,3}',
+      '(ab)+?',
+    ].forEach((pattern) => {
+      expect(hasRepeatedTextFieldPatternGroup(pattern)).toBe(true);
+    });
   });
 
-  it('accepts flat patterns and groups that do not repeat twice', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('[A-Z]{2}[0-9]{8}')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(ab)*c+')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(a+)?')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(a+){1}')).toBe(false);
-    // Quantifier characters inside a class or escaped are literals.
-    expect(hasAmbiguousTextFieldPatternRepeat('([+*])+')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\+)+')).toBe(false);
+  it('accepts groups that do not repeat and repeated single atoms', () => {
+    [
+      '[A-Z]{2}[0-9]{8}',
+      '\\d{8}|[A-Z]{2}\\d{8}',
+      '(foo|bar)?',
+      '(ab){1}',
+      '(ab){0,1}',
+      '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}',
+      '\\w*\\w*\\w*!',
+    ].forEach((pattern) => {
+      expect(hasRepeatedTextFieldPatternGroup(pattern)).toBe(false);
+    });
   });
 
-  it('flags a repeated group whose alternatives can start alike', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\w|\\d)+')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(.|\\s)*@')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(a|ab)*')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(?:a|)+')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(a?b|c)+')).toBe(true);
-    // An overlapping alternation nested one level down still repeats.
-    expect(hasAmbiguousTextFieldPatternRepeat('((a|ab))*')).toBe(true);
+  it('reads an escaped or bracketed parenthesis as a literal', () => {
+    expect(hasRepeatedTextFieldPatternGroup('\\(a\\)+')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('[)]+')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('[\\])]+')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('[(]a)+')).toBe(true);
   });
 
-  it('accepts alternatives that each start with their own literal', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('(foo|bar)+')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(?:-|_|\\.)+')).toBe(false);
-    // An alternation that is not repeated is not a concern.
-    expect(hasAmbiguousTextFieldPatternRepeat('\\d{8}|[A-Z]{2}\\d{8}')).toBe(
+  it('reads braced and fixed-width escapes as one atom', () => {
+    // A `)` inside an escape's braces or name is not a group end, so the
+    // quantifier after it does not repeat a group.
+    expect(hasRepeatedTextFieldPatternGroup('\\p{L)+}')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('\\u{4)+}')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('(?<a>x)\\k<a)+>')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('\\u{41}+\\x41+\\u0041+\\cA+')).toBe(
       false,
     );
   });
 
-  it('reads braced and fixed-width escapes as one atom', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\u{41}b)*')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\p{L}b)*')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\x41b)*')).toBe(false);
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\p{L}+)*')).toBe(true);
-  });
-
-  it('is a heuristic: it also flags some safe patterns', () => {
-    expect(hasAmbiguousTextFieldPatternRepeat('[a-z]+(-[a-z]+)*')).toBe(true);
-    expect(hasAmbiguousTextFieldPatternRepeat('(\\d|-)+')).toBe(true);
+  it('is conservative: it also refuses repeated groups that are safe', () => {
+    expect(hasRepeatedTextFieldPatternGroup('[a-z]+(-[a-z]+)*')).toBe(true);
+    expect(hasRepeatedTextFieldPatternGroup('(\\d{3},)*\\d{3}')).toBe(true);
   });
 });
 
