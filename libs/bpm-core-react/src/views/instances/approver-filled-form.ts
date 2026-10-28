@@ -269,6 +269,11 @@ function readFillPathErrorText(
     return message || '格式不正確。';
   }
 
+  // The server ran out of time on the format check; the value may be fine.
+  if (reason === 'could not be checked against the required format in time') {
+    return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
+  }
+
   return path.includes('[') ? '此欄內容不正確。' : '此欄位內容不正確。';
 }
 

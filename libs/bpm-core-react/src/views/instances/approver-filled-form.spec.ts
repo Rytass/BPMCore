@@ -362,6 +362,16 @@ describe('approver-filled form helpers', () => {
       ).toEqual({ note: '請填大寫英文' });
     });
 
+    it('does not word a format check that ran out of time as a format error', () => {
+      expect(
+        readFillServerErrors(
+          'formData.note could not be checked against the required format in time',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toEqual({ note: '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。' });
+    });
+
     it('matches a missing label that holds a comma, and gives up on the unknown', () => {
       const schema: FormDefinitionSchema = {
         ...SCHEMA,
