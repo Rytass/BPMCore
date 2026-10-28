@@ -1,4 +1,5 @@
 import {
+  compileTextFieldPattern,
   FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -34,6 +35,9 @@ const SELECT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'radio',
   'select',
 ]);
+
+const TEXT_FIELD_PATTERN_MAX_LENGTH = 500;
+const TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH = 200;
 
 const TEXT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'text',
@@ -405,10 +409,53 @@ function lintTextField(
     ...maxLengthErrors,
     ...lengthRangeErrors,
     ...displayAsErrors,
+    ...lintTextFieldPattern(field, path),
     ...lintOptionalDefaultValue(field.defaultValue, path, (value) =>
       typeof value === 'string' || value === null,
     ),
   ];
+}
+
+/**
+ * The pattern is compiled on every submit, server side included, so it has to
+ * compile now — a broken one would fail every value — and stay short enough to
+ * read. The length cap is a sanity bound, not a ReDoS defence: only a designer
+ * can author a pattern.
+ */
+function lintTextFieldPattern(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  const hasPattern = Object.prototype.hasOwnProperty.call(field, 'pattern');
+  const hasMessage = Object.prototype.hasOwnProperty.call(
+    field,
+    'patternErrorMessage',
+  );
+  const patternErrors = !hasPattern
+    ? []
+    : typeof field.pattern !== 'string' || field.pattern.trim() === ''
+      ? [`${path}.pattern must be a non-empty string`]
+      : field.pattern.length > TEXT_FIELD_PATTERN_MAX_LENGTH
+        ? [
+            `${path}.pattern must be at most ${TEXT_FIELD_PATTERN_MAX_LENGTH} characters`,
+          ]
+        : compileTextFieldPattern(field.pattern) === null
+          ? [`${path}.pattern is not a valid regular expression`]
+          : [];
+  const messageErrors = !hasMessage
+    ? []
+    : !hasPattern
+      ? [`${path}.patternErrorMessage requires ${path}.pattern`]
+      : typeof field.patternErrorMessage !== 'string'
+        ? [`${path}.patternErrorMessage must be a string`]
+        : field.patternErrorMessage.length >
+            TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH
+          ? [
+              `${path}.patternErrorMessage must be at most ${TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH} characters`,
+            ]
+          : [];
+
+  return [...patternErrors, ...messageErrors];
 }
 
 function lintNumberField(
