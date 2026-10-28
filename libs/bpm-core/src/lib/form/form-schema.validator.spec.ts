@@ -144,6 +144,41 @@ describe('form schema validator', () => {
       );
     });
 
+    it('rejects a pattern that repeats a repeating group', (): void => {
+      expect(lintText({ pattern: '([A-Za-z0-9]+\\s?)*' })).toContain(
+        'schema.fields[0].pattern must not repeat a group that itself repeats, which can stall the server',
+      );
+    });
+
+    it('rejects a format on a field that is not text', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'amount',
+              label: '金額',
+              pattern: '[0-9]+',
+              patternErrorMessage: '只能是數字',
+              required: false,
+              type: 'number',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'amount', width: 'HALF' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          'schema.fields[0].pattern 只能用在文字欄位',
+          'schema.fields[0].patternErrorMessage 只能用在文字欄位',
+        ]),
+      );
+    });
+
     it('rejects an error message without a pattern', (): void => {
       expect(lintText({ patternErrorMessage: '格式錯誤' })).toContain(
         'schema.fields[0].patternErrorMessage requires schema.fields[0].pattern',

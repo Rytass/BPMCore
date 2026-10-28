@@ -1,5 +1,6 @@
 import {
   compileTextFieldPattern,
+  hasNestedTextFieldPatternQuantifier,
   FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -253,16 +254,21 @@ function lintFieldDefinition(
   ];
 }
 
-/** `displayAs` is a text-field option; every other type must not carry it. */
+/**
+ * `displayAs`, `pattern` and `patternErrorMessage` are text-field options;
+ * every other type must not carry them, or a format the designer set would be
+ * silently ignored.
+ */
 function lintDisplayAsTarget(
   field: Readonly<Record<string, unknown>>,
   type: FormFieldDefinition['type'],
   path: string,
 ): readonly string[] {
-  return Object.prototype.hasOwnProperty.call(field, 'displayAs') &&
-    !TEXT_FIELD_TYPES.has(type)
-    ? [`${path}.displayAs 只能用在文字欄位`]
-    : [];
+  return TEXT_FIELD_TYPES.has(type)
+    ? []
+    : (['displayAs', 'pattern', 'patternErrorMessage'] as const)
+        .filter((key) => Object.prototype.hasOwnProperty.call(field, key))
+        .map((key) => `${path}.${key} 只能用在文字欄位`);
 }
 
 function lintFieldTypeSpecifics(
@@ -419,8 +425,10 @@ function lintTextField(
 /**
  * The pattern is compiled on every submit, server side included, so it has to
  * compile now — a broken one would fail every value — and stay short enough to
- * read. The length cap is a sanity bound, not a ReDoS defence: only a designer
- * can author a pattern.
+ * read. The engine runs it on whatever a filler sends, so a pattern that
+ * repeats a repeating group is refused too: a value that almost matches it
+ * backtracks exponentially and stalls the server. That check is a heuristic
+ * (see `hasNestedTextFieldPatternQuantifier`), not a full ReDoS defence.
  */
 function lintTextFieldPattern(
   field: Readonly<Record<string, unknown>>,
@@ -441,7 +449,11 @@ function lintTextFieldPattern(
           ]
         : compileTextFieldPattern(field.pattern) === null
           ? [`${path}.pattern is not a valid regular expression`]
-          : [];
+          : hasNestedTextFieldPatternQuantifier(field.pattern)
+            ? [
+                `${path}.pattern must not repeat a group that itself repeats, which can stall the server`,
+              ]
+            : [];
   const messageErrors = !hasMessage
     ? []
     : !hasPattern
