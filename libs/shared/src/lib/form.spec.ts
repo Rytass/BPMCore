@@ -1,4 +1,5 @@
 import {
+  compileTextFieldPattern,
   FormDefinitionSchema,
   isFormIdentifierKey,
   isFormMemberValue,
@@ -11,6 +12,7 @@ import {
   normalizeFormDefinitionSchema,
   readFormMemberIds,
   readFormTableCellValue,
+  readTextFieldValueIssue,
   TABLE_COLUMN_FIELD_TYPES,
 } from './form';
 
@@ -217,5 +219,74 @@ describe('member field contracts', () => {
     expect(readFormMemberIds(null)).toEqual([]);
     expect(readFormMemberIds(true)).toEqual([]);
     expect(readFormMemberIds([{ qty: 1 }])).toEqual([]);
+  });
+});
+
+describe('readTextFieldValueIssue', () => {
+  const invoiceNumber = {
+    pattern: '[A-Z]{2}[0-9]{8}',
+    patternErrorMessage: '發票號碼為 2 碼英文加 8 碼數字',
+  };
+
+  it('accepts a value that matches the whole pattern', () => {
+    expect(readTextFieldValueIssue(invoiceNumber, 'AB12345678')).toBeNull();
+  });
+
+  it('rejects a value that only contains a match, with the configured message', () => {
+    expect(readTextFieldValueIssue(invoiceNumber, 'xAB12345678')).toEqual({
+      kind: 'pattern',
+      message: '發票號碼為 2 碼英文加 8 碼數字',
+    });
+    expect(readTextFieldValueIssue(invoiceNumber, 'AB123456789')).toEqual({
+      kind: 'pattern',
+      message: '發票號碼為 2 碼英文加 8 碼數字',
+    });
+  });
+
+  it('falls back to no message when none is configured', () => {
+    expect(
+      readTextFieldValueIssue({ pattern: '[0-9]+', patternErrorMessage: '  ' }, 'abc'),
+    ).toEqual({ kind: 'pattern', message: null });
+  });
+
+  it('counts characters, not UTF-16 units, against the length limits', () => {
+    expect(readTextFieldValueIssue({ maxLength: 2 }, '台灣')).toBeNull();
+    expect(readTextFieldValueIssue({ maxLength: 2 }, '😀😀')).toBeNull();
+    expect(readTextFieldValueIssue({ maxLength: 2 }, '台灣好')).toEqual({
+      kind: 'maxLength',
+      limit: 2,
+    });
+    expect(readTextFieldValueIssue({ minLength: 3 }, '台灣')).toEqual({
+      kind: 'minLength',
+      limit: 3,
+    });
+  });
+
+  it('checks length before format', () => {
+    expect(
+      readTextFieldValueIssue({ ...invoiceNumber, maxLength: 10 }, 'AB123456789'),
+    ).toEqual({ kind: 'maxLength', limit: 10 });
+  });
+
+  it('leaves an empty or non-string value to the required and shape checks', () => {
+    expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, '')).toBeNull();
+    expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, null)).toBeNull();
+    expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, undefined)).toBeNull();
+  });
+
+  it('fails closed on a pattern that does not compile', () => {
+    expect(compileTextFieldPattern('[')).toBeNull();
+    expect(readTextFieldValueIssue({ pattern: '[' }, 'anything')).toEqual({
+      kind: 'pattern',
+      message: null,
+    });
+  });
+
+  it('cannot be widened by an alternation in the pattern', () => {
+    expect(readTextFieldValueIssue({ pattern: 'a|b' }, 'ab')).toEqual({
+      kind: 'pattern',
+      message: null,
+    });
+    expect(readTextFieldValueIssue({ pattern: 'a|b' }, 'b')).toBeNull();
   });
 });

@@ -64,8 +64,17 @@ export type TextFieldDefinition = BaseFormFieldDefinition<
    * `http(s)://` 網址會變成連結，其他值照純文字顯示。不支援 table 欄。
    */
   readonly displayAs?: 'link';
+  /** 字數上限，以字元（code point）計。送出時前後端都會檢查。 */
   readonly maxLength?: number;
+  /** 字數下限，以字元（code point）計；空值交給 `required` 判斷。 */
   readonly minLength?: number;
+  /**
+   * 格式：整個值必須符合的正規表示式，不用自己寫 `^`／`$`（同 HTML `pattern`），
+   * 以 `u` 旗標比對。送出時前後端都會檢查，空值不檢查。
+   */
+  readonly pattern?: string;
+  /** 不符合 `pattern` 時給填寫者看的訊息；沒填時顯示預設訊息。 */
+  readonly patternErrorMessage?: string;
 };
 
 export type NumberFieldDefinition = BaseFormFieldDefinition<
@@ -289,6 +298,67 @@ export function readFormMemberIds(
           typeof item === 'string' && item.trim().length > 0,
       )
     : [];
+}
+
+export type TextFieldValueIssue =
+  | Readonly<{ kind: 'maxLength'; limit: number }>
+  | Readonly<{ kind: 'minLength'; limit: number }>
+  | Readonly<{ kind: 'pattern'; message: string | null }>;
+
+/**
+ * Compiles a text field `pattern` the way the value check applies it: the whole
+ * value has to match, under the `u` flag. Returns `null` for a pattern that
+ * does not compile, which the schema lint rejects at publish time.
+ */
+export function compileTextFieldPattern(pattern: string): RegExp | null {
+  try {
+    return new RegExp(`^(?:${pattern})$`, 'u');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The first rule a filled-in text value breaks — length first, then format —
+ * or `null` when it passes. The one check the form renderer and the engine
+ * both run, so a value the filler is allowed to send is one the server takes.
+ * An empty or non-string value is left to the required check and the shape
+ * check. A pattern that does not compile fails closed: the lint keeps one from
+ * being published, and silently accepting every value would be worse.
+ */
+export function readTextFieldValueIssue(
+  field: Pick<
+    TextFieldDefinition,
+    'maxLength' | 'minLength' | 'pattern' | 'patternErrorMessage'
+  >,
+  value: unknown,
+): TextFieldValueIssue | null {
+  if (typeof value !== 'string' || value === '') {
+    return null;
+  }
+
+  const length = Array.from(value).length;
+
+  if (typeof field.minLength === 'number' && length < field.minLength) {
+    return { kind: 'minLength', limit: field.minLength };
+  }
+
+  if (typeof field.maxLength === 'number' && length > field.maxLength) {
+    return { kind: 'maxLength', limit: field.maxLength };
+  }
+
+  if (
+    typeof field.pattern === 'string' &&
+    field.pattern !== '' &&
+    !compileTextFieldPattern(field.pattern)?.test(value)
+  ) {
+    return {
+      kind: 'pattern',
+      message: field.patternErrorMessage?.trim() || null,
+    };
+  }
+
+  return null;
 }
 
 export function isTableFieldDefinition(
