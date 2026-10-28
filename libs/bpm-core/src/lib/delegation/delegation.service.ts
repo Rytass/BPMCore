@@ -50,6 +50,31 @@ export interface DelegationStep extends Readonly<Record<string, unknown>> {
   readonly to: string;
 }
 
+/**
+ * How long a delegation waits for the host's `resolveInactive`. Resolution runs
+ * inside a launch or advance transaction, so a directory that hangs must not
+ * hold its connection and locks: past this it counts as not answering.
+ */
+const DIRECTORY_LOOKUP_TIMEOUT_MS = 5_000;
+
+/** `pending`, or a rejection once `timeoutMs` has passed without an answer. */
+function readWithinTime<TValue>(
+  pending: Promise<TValue>,
+  timeoutMs: number,
+): Promise<TValue> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  return Promise.race([
+    pending,
+    new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(
+        (): void => reject(new Error(`no answer within ${timeoutMs} ms`)),
+        timeoutMs,
+      );
+    }),
+  ]).finally((): void => clearTimeout(timeoutId));
+}
+
 /** A hop whose rules and deactivated agents were read ahead of the walk. */
 interface PreloadedDelegationHop {
   readonly inactiveAgentIds: ReadonlySet<string>;
@@ -322,8 +347,8 @@ export class DelegationService {
    * rule to check, or no identity module (or no `resolveInactive` on the host
    * resolver): delegation then behaves as it did before this check existed.
    *
-   * When the host directory fails to answer, every agent counts as
-   * deactivated, so each principal keeps the task: no task goes to an agent
+   * When the host directory fails to answer, or has not answered within
+   * {@link DIRECTORY_LOOKUP_TIMEOUT_MS}, every agent counts as deactivated, so each principal keeps the task: no task goes to an agent
    * who could not be confirmed active, and a directory outage does not stop
    * a launch or an advance either.
    */
@@ -340,7 +365,10 @@ export class DelegationService {
       ...new Set(rules.map((rule) => rule.agentMemberId)),
     ];
 
-    return identityService.resolveInactiveMembers(agentMemberIds).then(
+    return readWithinTime(
+      identityService.resolveInactiveMembers(agentMemberIds),
+      DIRECTORY_LOOKUP_TIMEOUT_MS,
+    ).then(
       (inactiveMembers): ReadonlySet<string> =>
         new Set(inactiveMembers.map((member) => member.memberId)),
       (error: unknown): ReadonlySet<string> => {

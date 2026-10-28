@@ -601,6 +601,40 @@ describe('DelegationService', () => {
         });
         warn.mockRestore();
       });
+      it('stops waiting for a directory that does not answer', async (): Promise<void> => {
+        jest.useFakeTimers();
+        const service = createService(
+          singleRule,
+          createModuleRef(
+            jest.fn(() => ({
+              resolveInactiveMembers: jest.fn(
+                (): Promise<readonly MemberMetadata[]> =>
+                  new Promise<readonly MemberMetadata[]>(() => undefined),
+              ),
+            })),
+          ),
+        );
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation((): void => undefined);
+
+        try {
+          const resolution = service.resolveAssignee('member-001', context);
+
+          await jest.advanceTimersByTimeAsync(5_000);
+
+          await expect(resolution).resolves.toEqual({
+            delegationChain: [],
+            finalAssigneeMemberId: 'member-001',
+          });
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('no answer within 5000 ms'),
+          );
+        } finally {
+          warn.mockRestore();
+          jest.useRealTimers();
+        }
+      });
     });
 
     describe('resolving a whole node at once', (): void => {
