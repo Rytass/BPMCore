@@ -327,9 +327,15 @@ export type TextFieldValueIssue =
  * Compiles a text field `pattern` the way the value check applies it: the whole
  * value has to match, under the `u` flag. Returns `null` for a pattern that
  * does not compile, which the schema lint rejects at publish time.
+ *
+ * The pattern is compiled on its own first: wrapped in `^(?:…)$` straight
+ * away, an unbalanced one such as `a)|(?:b` would close the wrapper early and
+ * compile as `^(?:a)|(?:b)$`, which no longer anchors the whole value.
  */
 export function compileTextFieldPattern(pattern: string): RegExp | null {
   try {
+    new RegExp(pattern, 'u');
+
     return new RegExp(`^(?:${pattern})$`, 'u');
   } catch {
     return null;

@@ -136,6 +136,10 @@ describe('form schema validator', () => {
       expect(lintText({ pattern: '[A-Z' })).toContain(
         'schema.fields[0].pattern is not a valid regular expression',
       );
+      // Would compile once wrapped, as `^(?:a)|(?:b)$`, and stop anchoring.
+      expect(lintText({ pattern: 'a)|(?:b' })).toContain(
+        'schema.fields[0].pattern is not a valid regular expression',
+      );
       expect(lintText({ pattern: '  ' })).toContain(
         'schema.fields[0].pattern must be a non-empty string',
       );

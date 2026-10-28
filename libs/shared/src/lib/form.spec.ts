@@ -381,4 +381,14 @@ describe('readTextFieldValueIssue', () => {
     });
     expect(readTextFieldValueIssue({ pattern: 'a|b' }, 'b')).toBeNull();
   });
+
+  // Wrapped as is, `a)|(?:b` would compile to `^(?:a)|(?:b)$` and let "ab"
+  // through on the anchored `a` alone.
+  it('refuses a pattern whose parentheses close the anchoring early', () => {
+    expect(compileTextFieldPattern('a)|(?:b')).toBeNull();
+    expect(readTextFieldValueIssue({ pattern: 'a)|(?:b' }, 'ab')).toEqual({
+      kind: 'pattern',
+      message: null,
+    });
+  });
 });
