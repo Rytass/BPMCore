@@ -1040,6 +1040,47 @@ describe('WorkflowEngineService', () => {
         submit(createHiddenFixture(), { sourceDocId: 'po-12345' }),
       ).resolves.toMatchObject({ id: 'instance-1' });
     });
+
+    it('checks only the type of a text field whose visibleWhen is false', async (): Promise<void> => {
+      const createConditionalFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'kind',
+                label: '類別',
+                required: false,
+                type: 'text',
+              },
+              {
+                fieldKey: 'note',
+                label: '備註',
+                minLength: 8,
+                pattern: '[A-Z]+',
+                required: false,
+                type: 'text',
+                visibleWhen: 'form.kind == "B"',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      await expect(
+        submit(createConditionalFixture(), { kind: 'A', note: 123 }),
+      ).rejects.toThrow('formData.note must be text');
+      // The applicant cannot see the field, so its length and format wait
+      // until it is shown.
+      await expect(
+        submit(createConditionalFixture(), { kind: 'A', note: 'ab' }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        submit(createConditionalFixture(), { kind: 'B', note: 'ab' }),
+      ).rejects.toThrow('formData.note must be at least 8 characters');
+    });
   });
 
   it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {

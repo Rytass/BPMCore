@@ -9636,10 +9636,12 @@ function validateSubmittedFormData(
           testPattern,
         }),
       ),
-      // A hidden (store-only) field keeps its submitted value although nobody
-      // fills it in, so, like a hidden table, its value is checked for its type.
+      // A field nobody can fill in right now — hidden (store-only), or one
+      // whose `visibleWhen` is false — keeps its submitted value, so its value
+      // is checked for its type. Only the type: its length and format apply
+      // once the field is shown and the filler can correct it.
       ...schema.fields
-        .filter((field) => field.hidden === true)
+        .filter((field) => !visibleFields.includes(field))
         .flatMap((field) =>
           readSubmittedTextValueErrors(field, formData[field.fieldKey], {
             shapeOnly: true,
