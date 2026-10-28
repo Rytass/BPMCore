@@ -70,12 +70,12 @@ interface MemberMetadata {
 
 ## 3. Delegation（代理）
 
-| 維度      | 說明                                                      |
-| --------- | --------------------------------------------------------- |
-| **scope** | `ALL` / `TEMPLATE_LIST` / `CONDITION_BASED`（CEL 表達式） |
-| **時間**  | start_at / end_at                                         |
-| **層級**  | 規則代理（事先設定）+ 任務級轉派（即時手動）              |
-| **稽核**  | `original_assignee` 一定保留，與 `delegated_to` 並存      |
+| 維度      | 說明                                                            |
+| --------- | --------------------------------------------------------------- |
+| **scope** | `ALL` / `TEMPLATE_LIST` / `CONDITION_BASED`（CEL 表達式）       |
+| **時間**  | start_at / end_at                                               |
+| **層級**  | 規則代理（事先設定）+ 任務級轉派（即時手動）                    |
+| **稽核**  | `original_assignee` 一定保留，與 `delegated_to` 並存            |
 | **停用**  | 宿主回報已停用的代理人，其規則略過；查不到時擋下派送（07 §4.2） |
 
 詳見 [07 — 流程執行](./07-workflow-execution.md) 中 Delegation 解析順序。
