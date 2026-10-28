@@ -1,3 +1,40 @@
+## 0.18.0 (2026-10-28)
+
+### 🚀 Features
+
+- **bpm-core-client:** check text field formats in a Web Worker ([a3c3d65](https://github.com/Rytass/BPMCore/commit/a3c3d65))
+- **shared:** detect text formats that repeat a repeating group ([5a18fc7](https://github.com/Rytass/BPMCore/commit/5a18fc7))
+- **bpm-core-react:** name text length and format errors on the case pages ([074d4b9](https://github.com/Rytass/BPMCore/commit/074d4b9))
+- **shared:** check text length and format with one shared rule ([a38127d](https://github.com/Rytass/BPMCore/commit/a38127d))
+- **shared:** add the setUserTaskReturnAllowedTargets command ([ded2690](https://github.com/Rytass/BPMCore/commit/ded2690))
+- **shared:** list the nodes a return to a chosen node may go to ([306ac32](https://github.com/Rytass/BPMCore/commit/306ac32))
+
+### 🩹 Fixes
+
+- **bpm-core:** ask the directory only about delegation rules in scope ([022304e](https://github.com/Rytass/BPMCore/commit/022304e))
+- **bpm-core:** hold service-task text writes to the field's rules ([fcde1df](https://github.com/Rytass/BPMCore/commit/fcde1df))
+- **bpm-core-react:** check formats off the main thread on the case pages ([58a1a9d](https://github.com/Rytass/BPMCore/commit/58a1a9d))
+- **bpm-core:** keep the directory's error out of the delegation refusal ([14ccd0e](https://github.com/Rytass/BPMCore/commit/14ccd0e))
+- **bpm-core:** refuse to dispatch when the delegation directory lookup fails ([8ef8a88](https://github.com/Rytass/BPMCore/commit/8ef8a88))
+- **shared:** refuse a text pattern whose parentheses close the anchoring early ([330ef06](https://github.com/Rytass/BPMCore/commit/330ef06))
+- **bpm-core:** check the type of a text field whose visibleWhen is false ([b256040](https://github.com/Rytass/BPMCore/commit/b256040))
+- **bpm-core:** share one pattern time budget per validation pass ([8f81919](https://github.com/Rytass/BPMCore/commit/8f81919))
+- **shared:** refuse every repeated group in a text field pattern ([d0daa77](https://github.com/Rytass/BPMCore/commit/d0daa77))
+- **shared:** refuse repeated alternations whose branches can start alike ([5e6e12e](https://github.com/Rytass/BPMCore/commit/5e6e12e))
+- **shared:** report a non-text value on a text field that has rules ([41eac23](https://github.com/Rytass/BPMCore/commit/41eac23))
+- **shared:** keep a later stage that loops back out of the return targets ([86c2fd0](https://github.com/Rytass/BPMCore/commit/86c2fd0))
+
+### 🔥 Performance
+
+- **shared:** walk return targets over adjacency maps ([a56de04](https://github.com/Rytass/BPMCore/commit/a56de04))
+- **shared:** compile each text field pattern once and reuse it ([7410ba6](https://github.com/Rytass/BPMCore/commit/7410ba6))
+- **bpm-core:** ask the host directory once per node when resolving delegation ([cb62b00](https://github.com/Rytass/BPMCore/commit/cb62b00))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.9 (2026-10-27)
 
 This was a version bump only for shared to align it with other projects, there were no code changes.

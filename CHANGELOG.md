@@ -1,3 +1,73 @@
+## 0.18.0 (2026-10-28)
+
+### 🚀 Features
+
+- ⚠️  **bpm-core:** refuse ANY returns outside the applicant and earlier user tasks ([e6d5af0](https://github.com/Rytass/BPMCore/commit/e6d5af0))
+- **bpm-core:** refuse text formats that cannot be checked ([88635de](https://github.com/Rytass/BPMCore/commit/88635de))
+- ⚠️  **bpm-core:** enforce text length and format on submit and fill ([c8ec5b3](https://github.com/Rytass/BPMCore/commit/c8ec5b3))
+- **bpm-core-client:** check text length and format before sending ([b57e857](https://github.com/Rytass/BPMCore/commit/b57e857))
+- **bpm-core-client:** check text field formats in a Web Worker ([a3c3d65](https://github.com/Rytass/BPMCore/commit/a3c3d65))
+- **bpm-core-react:** offer only reachable nodes in the return dialog ([690042a](https://github.com/Rytass/BPMCore/commit/690042a))
+- **bpm-core-react:** set where a return goes on the user task panel ([b3b9fe0](https://github.com/Rytass/BPMCore/commit/b3b9fe0))
+- **bpm-core-react:** set a text format in the form builder ([ce74cd1](https://github.com/Rytass/BPMCore/commit/ce74cd1))
+- **bpm-core-react:** name text length and format errors on the case pages ([074d4b9](https://github.com/Rytass/BPMCore/commit/074d4b9))
+- **shared:** list the nodes a return to a chosen node may go to ([306ac32](https://github.com/Rytass/BPMCore/commit/306ac32))
+- **shared:** add the setUserTaskReturnAllowedTargets command ([ded2690](https://github.com/Rytass/BPMCore/commit/ded2690))
+- **shared:** check text length and format with one shared rule ([a38127d](https://github.com/Rytass/BPMCore/commit/a38127d))
+- **shared:** detect text formats that repeat a repeating group ([5a18fc7](https://github.com/Rytass/BPMCore/commit/5a18fc7))
+
+### 🩹 Fixes
+
+- **bpm-core:** skip delegation rules whose agent has been deactivated ([3434b25](https://github.com/Rytass/BPMCore/commit/3434b25))
+- **bpm-core:** refuse non-text values and leave approver-filled text to its fill step ([bad4656](https://github.com/Rytass/BPMCore/commit/bad4656))
+- **bpm-core:** refuse nested text formats and formats on non-text fields ([471222c](https://github.com/Rytass/BPMCore/commit/471222c))
+- **bpm-core:** refuse a format on a table column that is not text ([8308db8](https://github.com/Rytass/BPMCore/commit/8308db8))
+- **bpm-core:** check the type of a hidden text field with rules ([1282eea](https://github.com/Rytass/BPMCore/commit/1282eea))
+- **bpm-core:** run text field patterns under a time limit ([327d0a6](https://github.com/Rytass/BPMCore/commit/327d0a6))
+- **bpm-core:** share one pattern time budget per validation pass ([8f81919](https://github.com/Rytass/BPMCore/commit/8f81919))
+- **bpm-core:** charge only matching time to the pattern budget ([eddfb07](https://github.com/Rytass/BPMCore/commit/eddfb07))
+- **bpm-core:** refuse a table over its row limit before checking its rows ([d22afa7](https://github.com/Rytass/BPMCore/commit/d22afa7))
+- **bpm-core:** keep the task with the principal when the directory lookup fails ([aacccbe](https://github.com/Rytass/BPMCore/commit/aacccbe))
+- **bpm-core:** check the type of a text field whose visibleWhen is false ([b256040](https://github.com/Rytass/BPMCore/commit/b256040))
+- **bpm-core:** stop waiting for a delegation directory lookup after 5 seconds ([c1473c6](https://github.com/Rytass/BPMCore/commit/c1473c6))
+- **bpm-core:** refuse to dispatch when the delegation directory lookup fails ([8ef8a88](https://github.com/Rytass/BPMCore/commit/8ef8a88))
+- **bpm-core:** keep the directory's error out of the delegation refusal ([14ccd0e](https://github.com/Rytass/BPMCore/commit/14ccd0e))
+- **bpm-core:** hold service-task text writes to the field's rules ([fcde1df](https://github.com/Rytass/BPMCore/commit/fcde1df))
+- **bpm-core:** ask the directory only about delegation rules in scope ([022304e](https://github.com/Rytass/BPMCore/commit/022304e))
+- **bpm-core-react:** warn about every format the linter refuses ([d637d58](https://github.com/Rytass/BPMCore/commit/d637d58))
+- **bpm-core-react:** show the designer's message for a fill format error ([a69399d](https://github.com/Rytass/BPMCore/commit/a69399d))
+- **bpm-core-react:** flag an over-long pattern or error message in the builder ([68baf21](https://github.com/Rytass/BPMCore/commit/68baf21))
+- **bpm-core-react:** word a timed-out format check on the approver page ([3a223a3](https://github.com/Rytass/BPMCore/commit/3a223a3))
+- **bpm-core-react:** check formats off the main thread on the case pages ([58a1a9d](https://github.com/Rytass/BPMCore/commit/58a1a9d))
+- **bpm-core-react:** release the busy state when form validation throws ([a300d2b](https://github.com/Rytass/BPMCore/commit/a300d2b))
+- **bpm-core-react:** drop patternErrorMessage when the designer clears it ([74a007b](https://github.com/Rytass/BPMCore/commit/74a007b))
+- **shared:** keep a later stage that loops back out of the return targets ([86c2fd0](https://github.com/Rytass/BPMCore/commit/86c2fd0))
+- **shared:** report a non-text value on a text field that has rules ([41eac23](https://github.com/Rytass/BPMCore/commit/41eac23))
+- **shared:** refuse repeated alternations whose branches can start alike ([5e6e12e](https://github.com/Rytass/BPMCore/commit/5e6e12e))
+- **shared:** refuse every repeated group in a text field pattern ([d0daa77](https://github.com/Rytass/BPMCore/commit/d0daa77))
+- **shared:** refuse a text pattern whose parentheses close the anchoring early ([330ef06](https://github.com/Rytass/BPMCore/commit/330ef06))
+
+### 🔥 Performance
+
+- **bpm-core:** ask the host directory once per node when resolving delegation ([cb62b00](https://github.com/Rytass/BPMCore/commit/cb62b00))
+- **bpm-core:** create the pattern test's vm context on its first run ([cbc8633](https://github.com/Rytass/BPMCore/commit/cbc8633))
+- **shared:** compile each text field pattern once and reuse it ([7410ba6](https://github.com/Rytass/BPMCore/commit/7410ba6))
+- **shared:** walk return targets over adjacency maps ([a56de04](https://github.com/Rytass/BPMCore/commit/a56de04))
+
+### ⚠️  Breaking Changes
+
+- **bpm-core:** enforce text length and format on submit and fill  ([c8ec5b3](https://github.com/Rytass/BPMCore/commit/c8ec5b3))
+  a text value outside minLength / maxLength, or one that does
+  not match pattern, is refused with 400.
+- **bpm-core:** refuse ANY returns outside the applicant and earlier user tasks  ([e6d5af0](https://github.com/Rytass/BPMCore/commit/e6d5af0))
+  decideTask RETURN with allowedTargets ANY refuses a target
+  that is not the start event or a user task upstream of the returning node.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.9 (2026-10-27)
 
 ### 🚀 Features

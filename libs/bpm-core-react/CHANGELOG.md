@@ -1,3 +1,39 @@
+## 0.18.0 (2026-10-28)
+
+### 🚀 Features
+
+- **bpm-core-client:** check text field formats in a Web Worker ([a3c3d65](https://github.com/Rytass/BPMCore/commit/a3c3d65))
+- **bpm-core-react:** name text length and format errors on the case pages ([074d4b9](https://github.com/Rytass/BPMCore/commit/074d4b9))
+- **bpm-core-react:** set a text format in the form builder ([ce74cd1](https://github.com/Rytass/BPMCore/commit/ce74cd1))
+- **bpm-core-react:** set where a return goes on the user task panel ([b3b9fe0](https://github.com/Rytass/BPMCore/commit/b3b9fe0))
+- **bpm-core-react:** offer only reachable nodes in the return dialog ([690042a](https://github.com/Rytass/BPMCore/commit/690042a))
+
+### 🩹 Fixes
+
+- **bpm-core:** ask the directory only about delegation rules in scope ([022304e](https://github.com/Rytass/BPMCore/commit/022304e))
+- **bpm-core-react:** drop patternErrorMessage when the designer clears it ([74a007b](https://github.com/Rytass/BPMCore/commit/74a007b))
+- **bpm-core-react:** release the busy state when form validation throws ([a300d2b](https://github.com/Rytass/BPMCore/commit/a300d2b))
+- **bpm-core:** hold service-task text writes to the field's rules ([fcde1df](https://github.com/Rytass/BPMCore/commit/fcde1df))
+- **bpm-core-react:** check formats off the main thread on the case pages ([58a1a9d](https://github.com/Rytass/BPMCore/commit/58a1a9d))
+- **bpm-core:** keep the directory's error out of the delegation refusal ([14ccd0e](https://github.com/Rytass/BPMCore/commit/14ccd0e))
+- **bpm-core:** refuse to dispatch when the delegation directory lookup fails ([8ef8a88](https://github.com/Rytass/BPMCore/commit/8ef8a88))
+- **bpm-core:** check the type of a text field whose visibleWhen is false ([b256040](https://github.com/Rytass/BPMCore/commit/b256040))
+- **bpm-core-react:** word a timed-out format check on the approver page ([3a223a3](https://github.com/Rytass/BPMCore/commit/3a223a3))
+- **shared:** refuse every repeated group in a text field pattern ([d0daa77](https://github.com/Rytass/BPMCore/commit/d0daa77))
+- **bpm-core-react:** flag an over-long pattern or error message in the builder ([68baf21](https://github.com/Rytass/BPMCore/commit/68baf21))
+- **shared:** refuse repeated alternations whose branches can start alike ([5e6e12e](https://github.com/Rytass/BPMCore/commit/5e6e12e))
+- **bpm-core-react:** show the designer's message for a fill format error ([a69399d](https://github.com/Rytass/BPMCore/commit/a69399d))
+- **bpm-core-react:** warn about every format the linter refuses ([d637d58](https://github.com/Rytass/BPMCore/commit/d637d58))
+
+### 🔥 Performance
+
+- **bpm-core:** ask the host directory once per node when resolving delegation ([cb62b00](https://github.com/Rytass/BPMCore/commit/cb62b00))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.17.9 (2026-10-27)
 
 ### 🚀 Features
