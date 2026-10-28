@@ -239,7 +239,7 @@ describe('hasRepeatedTextFieldPatternGroup', () => {
       '([0-9][0-9]?)+',
       '(?:[A-Z][A-Z]?-?)+',
       '(?<n>ab?|b)+',
-      '(?=a)+',
+      '(?:ab)*',
       '(ab){2}',
       '(ab){2,}',
       '(ab){0,3}',
@@ -267,6 +267,9 @@ describe('hasRepeatedTextFieldPatternGroup', () => {
     expect(hasRepeatedTextFieldPatternGroup('\\(a\\)+')).toBe(false);
     expect(hasRepeatedTextFieldPatternGroup('[)]+')).toBe(false);
     expect(hasRepeatedTextFieldPatternGroup('[\\])]+')).toBe(false);
+    // A `)+` inside a class is two literal characters.
+    expect(hasRepeatedTextFieldPatternGroup('[)+]')).toBe(false);
+    expect(hasRepeatedTextFieldPatternGroup('[\\])+]')).toBe(false);
     expect(hasRepeatedTextFieldPatternGroup('[(]a)+')).toBe(true);
   });
 
