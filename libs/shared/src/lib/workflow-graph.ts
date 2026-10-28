@@ -944,10 +944,24 @@ export function readSelectableReturnTargetNodeIds(
       ? walk(step(fresh), new Set([...visited, ...fresh]), step)
       : visited;
   };
-  const upstreamNodeIds = walk([nodeId], new Set<string>(), (ids) =>
-    definition.edges
-      .filter((edge) => ids.includes(edge.target))
-      .map((edge) => edge.source),
+  // Built once per call, so each step of a walk reads only the edges of its
+  // frontier instead of scanning every edge.
+  const readNeighbours = (
+    from: 'source' | 'target',
+  ): ((ids: readonly string[]) => readonly string[]) => {
+    const to = from === 'source' ? 'target' : 'source';
+    const neighboursById = definition.edges.reduce(
+      (map, edge) =>
+        map.set(edge[from], [...(map.get(edge[from]) ?? []), edge[to]]),
+      new Map<string, readonly string[]>(),
+    );
+
+    return (ids) => ids.flatMap((id) => neighboursById.get(id) ?? []);
+  };
+  const upstreamNodeIds = walk(
+    [nodeId],
+    new Set<string>(),
+    readNeighbours('target'),
   );
   // Seeding the visited set with `nodeId` stops the forward walk there, so
   // what it reaches is what the start event reaches without passing through.
@@ -956,10 +970,7 @@ export function readSelectableReturnTargetNodeIds(
       .filter((node) => node.type === 'startEvent' && node.id !== nodeId)
       .map((node) => node.id),
     new Set([nodeId]),
-    (ids) =>
-      definition.edges
-        .filter((edge) => ids.includes(edge.source))
-        .map((edge) => edge.target),
+    readNeighbours('source'),
   );
 
   return definition.nodes
