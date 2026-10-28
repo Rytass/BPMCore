@@ -39,7 +39,6 @@ const SELECT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'select',
 ]);
 
-
 const TEXT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'text',
   'textarea',
