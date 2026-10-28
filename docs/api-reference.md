@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-27): `libs/shared@0.17.8`, `libs/bpm-core-client@0.17.8`, `libs/bpm-core@0.17.8` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.8`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-28): `libs/shared@0.17.9`, `libs/bpm-core-client@0.17.9`, `libs/bpm-core@0.17.9` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.9`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
@@ -55,6 +55,8 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Resubmission comment (PR #124): optional `ResubmitApprovalInstanceInput.comment` (at most 2000 UTF-16 code units, stored in the `INSTANCE_RESUBMITTED` payload), the client `resubmitApprovalInstance({ comment })`, and `InstanceFormSectionProps.resubmitComment` / `onResubmitCommentChange`. A blank comment is not sent, so an older server is unaffected | Not yet released |
 | Returned cases on the inbox (PR #125): `InboxView` lists the member's own `RETURNED` cases (被退回待重送) above the pending tasks on the 待簽核 tab, from the first page of 100 of `listApprovalInstancesPage` (`view: 'SENT'`), and points to 我發起的 when more may exist; a failure there hides only that list. No export changes | Not yet released |
 | Deactivated members with open tasks (PR #126): `inactiveMembersWithOpenTasks` (admin-only), `WorkflowEngineService.listInactiveMembersWithOpenTasks`, `InactiveMemberOpenTasksRecord` / `InactiveMemberWithOpenTasksObject`, the optional `BPMMemberResolver.resolveInactive` and `BPMMemberBaseDirectory.resolveInactiveMembers`, the client `listInactiveMembersWithOpenTasks` / `InactiveMemberWithOpenTasksRecord`, and the 已停用、仍有待簽的會員 section on the member screen (`AdminUsersView`). A host without `resolveInactive` sees an empty list | Not yet released |
+| Return targets in the designer: the user task panel gets 可退回到 (`ReturnBehavior.allowedTargets`: 退回申請人 / 退回上一個節點 / 由簽核者選擇), written by the new `setUserTaskReturnAllowedTargets` command. **Behaviour change:** with `allowedTargets: 'ANY'` the engine now accepts only the applicant (start event) or a user task upstream of the returning node (`readSelectableReturnTargetNodeIds`), and refuses any other node with a `409 Conflict`. Before, it accepted any node in the definition, so a return to the end event approved the case and a return to a downstream node skipped the steps in between. The instance page's return dialog offers the same list | Not yet released |
+| Text length and format enforced: `TextFieldDefinition.pattern` / `patternErrorMessage`, `readTextFieldValueIssue`, `compileTextFieldPattern`, `TextFieldValueIssue`. **Behaviour change:** `minLength` / `maxLength` were a hint only and are now enforced, together with `pattern`, by the engine on submit, resubmit and approver fill (`400` with `formData.<key> must be at least N characters` / `must be at most N characters` / `does not match the required format`) and by `validateFormRendererValues` before the request is sent. Table text columns are included. The schema linter refuses a pattern that does not compile, a pattern over 500 characters, and an error message without a pattern or over 200 characters. A form already saved with lengths that its stored data breaks will refuse those values on the next submit | Not yet released |
 
 ---
 
@@ -321,7 +323,7 @@ Form-schema definitions.
 | `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
 | `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
 | `FormTableRowValue` | type | One table row: column key to cell value |
-| `TextFieldDefinition` | type | `text` / `textarea`, optional `minLength` / `maxLength`; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
+| `TextFieldDefinition` | type | `text` / `textarea`, optional `minLength` / `maxLength` (counted in code points) and `pattern` (a regular expression the whole value must match, `u` flag) with an optional `patternErrorMessage`, all enforced by the engine and the renderer; `displayAs?: 'link'` renders a safe path or http(s) URL as a link in read-only views. Every field also takes `hidden?: boolean` (store only, never rendered; not a permission boundary) — see docs/08 §7 |
 | `NumberFieldDefinition` | type | `number` / `money`, optional `minimum` / `maximum` |
 | `DateFieldDefinition` | type | date / datetime |
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
@@ -356,6 +358,9 @@ Form-schema definitions.
 | `readFormMemberIds()` | function | Member ids held by a member field value, whichever shape it has |
 | `isTableFieldDefinition()` | function | Table field type guard |
 | `isTableColumnFieldType()` | function | Whether a field type may be used as a column |
+| `readTextFieldValueIssue()` | function | The first length or format rule a text value breaks (`TextFieldValueIssue`: `minLength` / `maxLength` with `limit`, or `pattern` with the designer's `message`), `null` for an empty value or one that passes; an uncompilable pattern counts as a mismatch. Shared by the engine and the renderer |
+| `compileTextFieldPattern()` | function | Compiles a `pattern` anchored to the whole value with the `u` flag, `null` when it does not compile |
+| `TextFieldValueIssue` | type | Result of `readTextFieldValueIssue` |
 | `isFormTableCellValue()` | function | Primitive cell-value guard |
 | `isFormTableRowValue()` | function | Single table row guard |
 | `isFormTableRowValues()` | function | Table row array guard |
@@ -393,7 +398,7 @@ Form-schema definitions.
 | `ApproverResolverFallback` | type | Fallback when a manager resolver (`ORG_MANAGER` / `ORG_UNIT_MANAGER` / `ORG_MANAGER_CHAIN`) finds no manager: `NONE`, `DIRECT` (`memberId`, optional `allowInitiatorSelfApproval`), or `POSITION` (`positionId`, optional `allowInitiatorSelfApproval`; every current holder becomes an approver, the initiator is dropped unless self approval is allowed). `POSITION` was released in `v0.17.0`. Needs engine ≥ the version that introduced `POSITION`; older engines refuse a template carrying it at run time |
 | `readUnsupportedApproverFallbackType(fallback)` | function | The fallback's `type` when this build does not know it (a definition saved by a newer version), otherwise `null`. The single list of known fallback types, read by both the engine (refuses at run time) and the designer (keeps it read-only); adding a member to `ApproverResolverFallback` does not compile until it is listed |
 | `DecisionPolicy` | type | SINGLE / SEQUENTIAL / PARALLEL_ALL / PARALLEL_ANY / QUORUM |
-| `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`) |
+| `ReturnBehavior` | interface | Return-handling settings (incl. `requireComment`). `allowedTargets`: `INITIATOR` returns to the applicant, `PREVIOUS` to the source of the node's first incoming edge, `ANY` to a node the approver picks among `readSelectableReturnTargetNodeIds` |
 | `ReturnResubmitStrategy` | type | `'FROM_RETURN_POINT' \| 'RESTART'` |
 | `SlaConfig` | interface | SLA timer config (incl. `calendar`) |
 | `ExcludeInitiatorConfig` | interface | `UserTaskNodeData.excludeInitiator` — separation of duties: when present the instance's initiator is never one of the node's approvers (a delegate acting for them counts as them), and neither is the member who submitted on their behalf (`submittedByMemberId`, same rule; an `ORG_MANAGER_CHAIN` walk climbs past him instead of stopping at him). `{ whenEmpty }`; absent keeps the previous behaviour |
@@ -448,6 +453,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `readFallbackWorkflowDefinition` / `isEmptyDesignerWorkflowDefinition` | function | Empty/default definition |
 | `isWorkflowConnectionValid` / `isWorkflowNodeRemovable` / `isWorkflowNodeInputConnectable` / `isWorkflowNodeOutputConnectable` / `isAsyncNotifyServiceTask` | function | Connection rules |
 | `isExclusiveGatewaySourceEdge` / `isParallelGatewaySourceEdge` / `toggleSelectedEdgeId` | function | Gateway/edge helpers |
+| `readSelectableReturnTargetNodeIds(definition, nodeId)` | function | The nodes an `allowedTargets: 'ANY'` return from `nodeId` may go to: the start event and every user task with a path to `nodeId`, in definition order, never `nodeId` itself. In a loop a node after `nodeId` also has a path back to it and is listed. Used by the engine and the return dialog |
 | `readWorkflowDefinitionIssue` / `readApproverResolverIssue` / `hasConfiguredConditionEdges` / `readServiceTaskMemberIds` | function | Validation |
 | `isOrgManagerChainDecisionPolicyInvalid` | function | `true` when an `ORG_MANAGER_CHAIN` approver is paired with a decision policy other than `SEQUENTIAL` / `PARALLEL_ALL` (or none); shared by `readWorkflowDefinitionIssue`, `lintWorkflowDefinition`, the designer and the `setUserTaskApprover` command, which swaps such a policy for `SEQUENTIAL` (the chain then signs nearest manager first) |
 | `NOTIFY_WEBHOOK_TARGET_LIMIT` / `NOTIFY_WEBHOOK_CONTEXT_PATHS` / `NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX` | const | Per-node webhook cap (10), the allowed `CONTEXT` binding paths, and the endpoint version ceiling (int32) |
@@ -472,7 +478,7 @@ The serialisable command layer + pure reducer that both the designer UI and the 
 |---|---|---|
 | `WorkflowDesignerState` | interface | Single source of truth (definition + formSchema + selection + policy) |
 | `WorkflowNodeAnchor` | interface | Where a new node wires in (`edgeId` / `afterNodeId`) |
-| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/setFieldAccessMatrix/removeLegacyFieldPermissions/…). `setFieldAccessMatrix { entries, nodeIds? }` writes every user task at once — a user task with no entry listed loses its `fieldAccess` key — or, with `nodeIds`, only those user tasks, leaving the rest as they are; it rejects an entry on a node that is not a user task or outside `nodeIds`, a `nodeIds` entry that is not a user task, a malformed entry, or one field listed twice for a node. `removeLegacyFieldPermissions { nodeId }` drops the deprecated `fieldPermissions` key without converting it |
+| `WorkflowCommand` | type | Fine-grained primitive command union (add/rename/delete/connect/setEdgeCondition/setUserTaskReturnRequireComment/setUserTaskReturnAllowedTargets/setUserTaskSla/setUserTaskDecisionPolicy/setUserTaskExcludeInitiator/setFieldAccessMatrix/removeLegacyFieldPermissions/…). `setFieldAccessMatrix { entries, nodeIds? }` writes every user task at once — a user task with no entry listed loses its `fieldAccess` key — or, with `nodeIds`, only those user tasks, leaving the rest as they are; it rejects an entry on a node that is not a user task or outside `nodeIds`, a `nodeIds` entry that is not a user task, a malformed entry, or one field listed twice for a node. `removeLegacyFieldPermissions { nodeId }` drops the deprecated `fieldPermissions` key without converting it |
 | `FieldAccessMatrixEntry` | interface | `FieldAccessEntry` plus its `nodeId`, the shape of `setFieldAccessMatrix` entries |
 | `WorkflowMacroCommand` | type | High-level intents (insertApprovalStep / insertNotification / insertConditionalBranch) |
 | `AnyWorkflowCommand` | type | `WorkflowCommand \| WorkflowMacroCommand` |
