@@ -22,6 +22,7 @@ import {
   isTableFieldDefinition,
   readFormFieldSelectionMode,
   readTextFieldValueIssue,
+  TextFieldPatternTest,
 } from '@rytass/bpm-core-shared/form';
 import {
   WorkflowDefinition,
@@ -113,6 +114,7 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { createTimedTextFieldPatternTest } from './text-field-pattern-test';
 import {
   computeFormDataFingerprint,
   computeStableValueFingerprint,
@@ -9604,6 +9606,7 @@ function validateSubmittedFormData(
   options: { readonly deferredFieldKeys?: ReadonlySet<string> } = {},
 ): void {
   const deferredFieldKeys = options.deferredFieldKeys ?? new Set<string>();
+  const testPattern = createTimedTextFieldPatternTest();
   const visibleFields = schema.fields.filter((field) =>
     isSubmittedFormFieldVisible(field, schema.fields, formData),
   );
@@ -9627,6 +9630,7 @@ function validateSubmittedFormData(
       ...visibleFields.flatMap((field) =>
         readSubmittedTextValueErrors(field, formData[field.fieldKey], {
           shapeOnly: deferredFieldKeys.has(field.fieldKey),
+          testPattern,
         }),
       ),
       // A hidden (store-only) field keeps its submitted value although nobody
@@ -9636,6 +9640,7 @@ function validateSubmittedFormData(
         .flatMap((field) =>
           readSubmittedTextValueErrors(field, formData[field.fieldKey], {
             shapeOnly: true,
+            testPattern,
           }),
         ),
     ],
@@ -9660,6 +9665,7 @@ function validateSubmittedFormData(
             field,
             formData[field.fieldKey],
             isSubmittedFormFieldRequired(field, schema.fields, formData),
+            testPattern,
             deferredFieldKeys.has(field.fieldKey),
           ),
         ),
@@ -9674,6 +9680,7 @@ function validateSubmittedFormData(
             field,
             formData[field.fieldKey],
             false,
+            testPattern,
             true,
           ),
         ),
@@ -9695,6 +9702,7 @@ function validateFilledFormFields(
   requiredFieldKeys: ReadonlySet<string>,
 ): void {
   const fields = schema.fields.filter((field) => fieldKeys.has(field.fieldKey));
+  const testPattern = createTimedTextFieldPatternTest();
 
   // `readRowCellValue` is used below as an own-property reader for top-level
   // form keys: a key like `constructor` must not read off the prototype chain.
@@ -9711,6 +9719,7 @@ function validateFilledFormFields(
         readSubmittedTextValueErrors(
           field,
           readRowCellValue(formData, field.fieldKey),
+          { testPattern },
         ),
       ),
     readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
@@ -9722,6 +9731,7 @@ function validateFilledFormFields(
             field,
             readRowCellValue(formData, field.fieldKey),
             requiredFieldKeys.has(field.fieldKey),
+            testPattern,
           ),
         ),
   });
@@ -9780,6 +9790,7 @@ function validateSubmittedTableValue(
   field: TableFieldDefinition,
   value: unknown,
   required: boolean,
+  testPattern: TextFieldPatternTest,
   shapeOnly = false,
 ): readonly string[] {
   const path = `formData.${field.fieldKey}`;
@@ -9797,7 +9808,13 @@ function validateSubmittedTableValue(
   }
 
   const rowErrors = value.flatMap((row, index) =>
-    validateSubmittedTableRow(field, row, `${path}[${index}]`, shapeOnly),
+    validateSubmittedTableRow(
+      field,
+      row,
+      `${path}[${index}]`,
+      testPattern,
+      shapeOnly,
+    ),
   );
 
   // A malformed row cannot be counted against min/max meaningfully; report the
@@ -9843,6 +9860,7 @@ function validateSubmittedTableRow(
   field: TableFieldDefinition,
   row: unknown,
   path: string,
+  testPattern: TextFieldPatternTest,
   shapeOnly = false,
 ): readonly string[] {
   if (!isRecord(row)) {
@@ -9879,6 +9897,7 @@ function validateSubmittedTableRow(
     readSubmittedTextValueErrors(column, readRowCellValue(row, column.fieldKey), {
       path: `${path}.${column.fieldKey}`,
       shapeOnly,
+      testPattern,
     }),
   );
 
@@ -9891,6 +9910,8 @@ function validateSubmittedTableRow(
  * so a crafted request cannot store what the form would have refused — a
  * number or an array sent for a text field with rules included. `shapeOnly`
  * keeps only that type check, for a value nobody fills in at this step.
+ * `testPattern` is the validation pass's timed pattern test (see
+ * `createTimedTextFieldPatternTest`).
  */
 function readSubmittedTextValueErrors(
   field: FormFieldDefinition,
@@ -9898,13 +9919,18 @@ function readSubmittedTextValueErrors(
   {
     path = `formData.${field.fieldKey}`,
     shapeOnly = false,
-  }: { readonly path?: string; readonly shapeOnly?: boolean } = {},
+    testPattern,
+  }: {
+    readonly path?: string;
+    readonly shapeOnly?: boolean;
+    readonly testPattern: TextFieldPatternTest;
+  },
 ): readonly string[] {
   if (field.type !== 'text' && field.type !== 'textarea') {
     return [];
   }
 
-  const issue = readTextFieldValueIssue(field, value);
+  const issue = readTextFieldValueIssue(field, value, { testPattern });
 
   if (!issue || (shapeOnly && issue.kind !== 'type')) {
     return [];

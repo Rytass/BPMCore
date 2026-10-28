@@ -840,6 +840,34 @@ describe('WorkflowEngineService', () => {
       ).rejects.toThrow('formData.items[0].note must be text');
     });
 
+    it('refuses a value the pattern cannot finish checking in time', async (): Promise<void> => {
+      // The lint lets this adjacent-repeat shape through; unbounded, the run
+      // takes tens of seconds.
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: {
+          fields: [
+            {
+              fieldKey: 'code',
+              label: '代碼',
+              pattern: '\\w*\\w*\\w*\\w*!',
+              required: false,
+              type: 'text',
+            },
+          ],
+          schemaVersion: 1,
+        },
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const startedAt = Date.now();
+
+      await expect(
+        submit(fixture, { code: 'a'.repeat(500) }),
+      ).rejects.toThrow('formData.code does not match the required format');
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+    });
+
     it('checks only the type of a hidden text field with rules', async (): Promise<void> => {
       const createHiddenFixture = (): ServiceFixture =>
         createServiceFixture({
