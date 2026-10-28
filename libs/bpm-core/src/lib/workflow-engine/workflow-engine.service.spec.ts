@@ -69,6 +69,7 @@ import { computeFormDataFingerprint } from './form-data-fingerprint';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
+import * as textFieldPatternTest from './text-field-pattern-test';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
@@ -917,8 +918,12 @@ describe('WorkflowEngineService', () => {
     });
 
     it('accepts a full table of valid values within the budget', async (): Promise<void> => {
-      // 1,200 cells. Starting each timed run costs about 50 µs, so a budget
-      // that charged it would refuse this table although every match is fast.
+      // 100 rows × 12 pattern columns, 1,200 cells. Starting each timed run
+      // costs about 45 µs, so a budget that charged it would spend about 54 ms
+      // here, just over the budget. The accounting itself is pinned, with a
+      // clock under the spec's control, by the unit spec of
+      // createTimedTextFieldPatternTest; this one checks a full table end to
+      // end with the real clock.
       const columnKeys = Array.from({ length: 12 }, (_, index): string => `c${index}`);
       const fixture = createServiceFixture({
         currentVersionId: 'template-version-1',
@@ -950,6 +955,59 @@ describe('WorkflowEngineService', () => {
       await expect(submit(fixture, { rows })).resolves.toMatchObject({
         id: 'instance-1',
       });
+    });
+
+    it('refuses a table over its row limit before running any pattern', async (): Promise<void> => {
+      const runPattern = jest.fn((pattern: RegExp, value: string): boolean =>
+        pattern.test(value),
+      );
+      const createTest = jest
+        .spyOn(textFieldPatternTest, 'createTimedTextFieldPatternTest')
+        .mockReturnValue(runPattern);
+      const createFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                columns: [
+                  {
+                    fieldKey: 'code',
+                    label: '代碼',
+                    pattern: '[A-Z]{2}[0-9]{8}',
+                    required: false,
+                    type: 'text',
+                  },
+                ],
+                fieldKey: 'rows',
+                label: '明細',
+                required: false,
+                type: 'table',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      try {
+        // The spy sees the runs of a table within the limit.
+        await expect(
+          submit(createFixture(), { rows: [{ code: 'AB12345678' }] }),
+        ).resolves.toMatchObject({ id: 'instance-1' });
+        expect(runPattern).toHaveBeenCalledTimes(1);
+        runPattern.mockClear();
+
+        await expect(
+          submit(createFixture(), {
+            rows: Array.from({ length: 20000 }, () => ({ code: 'a' })),
+          }),
+        ).rejects.toThrow('formData.rows must include at most 100 row(s)');
+        expect(runPattern).not.toHaveBeenCalled();
+      } finally {
+        createTest.mockRestore();
+      }
     });
 
     it('checks only the type of a hidden text field with rules', async (): Promise<void> => {

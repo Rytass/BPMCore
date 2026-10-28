@@ -9810,6 +9810,14 @@ function validateSubmittedTableValue(
     return [`${path} must be an array of rows`];
   }
 
+  // Too many rows is refused before any row is checked: the rows a submitter
+  // sends would otherwise decide how many cells the text patterns run on.
+  const maxRows = readTableMaxRows(field);
+
+  if (value.length > maxRows) {
+    return [`${path} must include at most ${maxRows} row(s)`];
+  }
+
   const rowErrors = value.flatMap((row, index) =>
     validateSubmittedTableRow(
       field,
@@ -9820,8 +9828,8 @@ function validateSubmittedTableValue(
     ),
   );
 
-  // A malformed row cannot be counted against min/max meaningfully; report the
-  // shape problem first so the submitter fixes the real cause.
+  // A malformed row cannot be counted against the minimum meaningfully; report
+  // the shape problem first so the submitter fixes the real cause.
   if (rowErrors.length > 0) {
     return rowErrors;
   }
