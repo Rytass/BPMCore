@@ -26,7 +26,9 @@ interface BPMMemberResolver {
   search?(searchText: string): Promise<readonly MemberMetadata[]>;
   searchPaged?(searchText: string, options: BPMMemberSearchPageOptions): Promise<BPMMemberSearchPage>;
   // 選用：在給定 id 中，回傳 host 已停用的會員；不快取。未實作時
-  // inactiveMembersWithOpenTasks 一律為空
+  // inactiveMembersWithOpenTasks 一律為空，代理也不檢查代理人是否停用。
+  // 有實作時，派送任務前會用它略過停用代理人的規則；它拋錯或 5 秒內
+  // 未回應，派送會以 503 擋下（見 07 §4.2）
   resolveInactive?(memberIds: readonly string[]): Promise<readonly MemberMetadata[]>;
 }
 
@@ -68,12 +70,13 @@ interface MemberMetadata {
 
 ## 3. Delegation（代理）
 
-| 維度      | 說明                                                      |
-| --------- | --------------------------------------------------------- |
-| **scope** | `ALL` / `TEMPLATE_LIST` / `CONDITION_BASED`（CEL 表達式） |
-| **時間**  | start_at / end_at                                         |
-| **層級**  | 規則代理（事先設定）+ 任務級轉派（即時手動）              |
-| **稽核**  | `original_assignee` 一定保留，與 `delegated_to` 並存      |
+| 維度      | 說明                                                            |
+| --------- | --------------------------------------------------------------- |
+| **scope** | `ALL` / `TEMPLATE_LIST` / `CONDITION_BASED`（CEL 表達式）       |
+| **時間**  | start_at / end_at                                               |
+| **層級**  | 規則代理（事先設定）+ 任務級轉派（即時手動）                    |
+| **稽核**  | `original_assignee` 一定保留，與 `delegated_to` 並存            |
+| **停用**  | 宿主回報已停用的代理人，其規則略過；查不到時擋下派送（07 §4.2） |
 
 詳見 [07 — 流程執行](./07-workflow-execution.md) 中 Delegation 解析順序。
 

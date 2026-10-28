@@ -6448,16 +6448,16 @@ export class WorkflowEngineService {
     resolvedCandidates: readonly ResolvedApproverCandidate[],
     gradeGated: boolean,
   ): Promise<readonly RuntimeTaskCandidate[]> {
-    const context = this.buildDelegationContext(instance, nodeId);
-    const resolved = await Promise.all(
-      resolvedCandidates.map(async (candidate) => ({
-        candidate,
-        resolution: await this.delegationService.resolveAssignee(
-          candidate.memberId,
-          context,
-        ),
-      })),
+    // One batch for the node, so the host directory is asked once for every
+    // candidate's delegation agents rather than once per candidate.
+    const resolutions = await this.delegationService.resolveAssignees(
+      resolvedCandidates.map((candidate) => candidate.memberId),
+      this.buildDelegationContext(instance, nodeId),
     );
+    const resolved = resolvedCandidates.map((candidate, index) => ({
+      candidate,
+      resolution: resolutions[index],
+    }));
     // One batch of grade lookups for the whole node, not two per delegate.
     const levels = gradeGated
       ? await this.readMemberPositionLevels(
