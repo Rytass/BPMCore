@@ -374,6 +374,16 @@ function compileAnchoredTextFieldPattern(pattern: string): RegExp | null {
   }
 }
 
+/**
+ * How long the text field patterns of one validation pass may spend matching,
+ * together. A normal format check spends about a microsecond in the regular
+ * expression, so even a full table of them uses a small part of it; a pass
+ * that still runs past this is backtracking. The engine enforces it on submit
+ * and fill, and the form renderer applies the same budget in a Web Worker
+ * (`validateFormRendererValuesInWorker`), so the two agree on what times out.
+ */
+export const TEXT_FIELD_PATTERN_TIME_BUDGET_MS = 50;
+
 /** Longest `pattern` the schema lint accepts. */
 export const TEXT_FIELD_PATTERN_MAX_LENGTH = 500;
 
@@ -427,8 +437,9 @@ function readEscapeLength(pattern: string, index: number): number {
  * on a few dozen, and a long run of overlapping alternatives such as
  * `(?:a|a)(?:a|a)…` is slow on any value. The engine bounds all of that with a
  * time budget (see the `testPattern` option of {@link readTextFieldValueIssue})
- * and refuses the value as not checked; the browser has no such limit, and
- * this check does not warn the designer about it.
+ * and refuses the value as not checked; the form renderer applies the same
+ * budget in a Web Worker (`validateFormRendererValuesInWorker`). This check
+ * does not warn the designer about it.
  * Safe repeated groups are refused too, such as `(-[a-z]+)*` or `(ab){2}`;
  * the designer writes the repetition out or drops the group.
  */

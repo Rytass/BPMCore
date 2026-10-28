@@ -1,13 +1,12 @@
 import { Context, createContext, Script } from 'vm';
-import type { TextFieldPatternTest } from '@rytass/bpm-core-shared/form';
+import {
+  TEXT_FIELD_PATTERN_TIME_BUDGET_MS,
+  type TextFieldPatternTest,
+} from '@rytass/bpm-core-shared/form';
 
-/**
- * How long the text field patterns of one validation pass may spend matching,
- * together, on the server. A normal format check spends about a microsecond
- * in the regular expression, so even a full table of them uses a small part
- * of it; a pass that still runs past this is backtracking.
- */
-export const TEXT_FIELD_PATTERN_TIME_BUDGET_MS = 50;
+// Defined in shared so the form renderer's worker applies the same budget;
+// still exported from here, where the engine has always exported it.
+export { TEXT_FIELD_PATTERN_TIME_BUDGET_MS };
 
 /** Thrown by a timed pattern test once its pass has used up the time budget. */
 export class TextFieldPatternTimeoutError extends Error {
