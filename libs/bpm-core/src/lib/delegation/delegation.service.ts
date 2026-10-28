@@ -50,6 +50,12 @@ export interface DelegationStep extends Readonly<Record<string, unknown>> {
   readonly to: string;
 }
 
+/** A hop whose rules and deactivated agents were read ahead of the walk. */
+interface PreloadedDelegationHop {
+  readonly inactiveAgentIds: ReadonlySet<string>;
+  readonly rules: readonly DelegationRuleEntity[];
+}
+
 interface ListDelegationRulesOptions {
   readonly agentMemberId?: string | null;
   readonly includeInactive?: boolean;
@@ -187,12 +193,47 @@ export class DelegationService {
     context: DelegationResolutionContext,
     at: Date = new Date(),
   ): Promise<DelegationResolution> {
-    return this.walkDelegationChain(
-      originalAssigneeMemberId,
+    const [resolution] = await this.resolveAssignees(
+      [originalAssigneeMemberId],
       context,
       at,
-      new Set([originalAssigneeMemberId]),
-      [],
+    );
+
+    return resolution;
+  }
+
+  /**
+   * {@link resolveAssignee} for every member of `originalAssigneeMemberIds`,
+   * in the same order. The first hop of every chain shares one
+   * `resolveInactive` call, so a node with many candidates asks the host
+   * directory once rather than once per candidate; only a hop beyond the
+   * first asks again.
+   */
+  async resolveAssignees(
+    originalAssigneeMemberIds: readonly string[],
+    context: DelegationResolutionContext,
+    at: Date = new Date(),
+  ): Promise<readonly DelegationResolution[]> {
+    const rulesByPrincipal = await Promise.all(
+      originalAssigneeMemberIds.map((memberId) =>
+        this.readCurrentRules(memberId, at),
+      ),
+    );
+    const inactiveAgentIds = await this.readInactiveAgentIds(
+      rulesByPrincipal.flat(),
+    );
+
+    return Promise.all(
+      originalAssigneeMemberIds.map((memberId, index) =>
+        this.walkDelegationChain(
+          memberId,
+          context,
+          at,
+          new Set([memberId]),
+          [],
+          { inactiveAgentIds, rules: rulesByPrincipal[index] },
+        ),
+      ),
     );
   }
 
@@ -202,25 +243,14 @@ export class DelegationService {
     at: Date,
     visitedMemberIds: ReadonlySet<string>,
     chain: readonly DelegationStep[],
+    preloadedHop?: PreloadedDelegationHop,
   ): Promise<DelegationResolution> {
-    const currentRules = (
-      await this.delegationRuleRepository.find({
-        // Higher priority wins, as with manager rules; among equal priorities
-        // the rule created first wins. TypeORM sorts by key order, so
-        // `priority` has to be the first key — it used to come second and
-        // only broke ties between rules created in the same instant.
-        order: {
-          priority: 'DESC',
-          createdAt: 'ASC',
-        },
-        where: {
-          principalMemberId,
-          startAt: LessThanOrEqual(at),
-          status: DelegationRuleStatusEnum.ACTIVE,
-        },
-      })
-    ).filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime());
-    const inactiveAgentIds = await this.readInactiveAgentIds(currentRules);
+    const currentRules =
+      preloadedHop?.rules ??
+      (await this.readCurrentRules(principalMemberId, at));
+    const inactiveAgentIds =
+      preloadedHop?.inactiveAgentIds ??
+      (await this.readInactiveAgentIds(currentRules));
     // A rule whose agent the host has deactivated no longer applies: handing
     // the task to them would leave it with someone who can no longer sign in.
     // Checked before the scope so a scope condition is still only evaluated
@@ -261,6 +291,30 @@ export class DelegationService {
       new Set(visitedMemberIds).add(applicableRule.agentMemberId),
       nextChain,
     );
+  }
+
+  /** The principal's rules in force at `at`, the applicable one first. */
+  private async readCurrentRules(
+    principalMemberId: string,
+    at: Date,
+  ): Promise<readonly DelegationRuleEntity[]> {
+    return (
+      await this.delegationRuleRepository.find({
+        // Higher priority wins, as with manager rules; among equal priorities
+        // the rule created first wins. TypeORM sorts by key order, so
+        // `priority` has to be the first key — it used to come second and
+        // only broke ties between rules created in the same instant.
+        order: {
+          priority: 'DESC',
+          createdAt: 'ASC',
+        },
+        where: {
+          principalMemberId,
+          startAt: LessThanOrEqual(at),
+          status: DelegationRuleStatusEnum.ACTIVE,
+        },
+      })
+    ).filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime());
   }
 
   /**

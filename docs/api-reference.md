@@ -1354,7 +1354,7 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 | Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules) |
 | DTOs | `CreateDelegationRuleInput`, `UpdateDelegationRuleInput` |
 | Enums | `DelegationRuleStatusEnum`, `DelegationScopeTypeEnum` |
-| Service | `DelegationService` |
+| Service | `DelegationService` (`resolveAssignee` for one member, `resolveAssignees` for a whole node — the first hop of every chain shares one host `resolveInactive` call; a rule whose agent is deactivated is skipped, and when the host directory fails to answer each principal keeps the task) |
 | Module | `DelegationModule` |
 
 ## `@rytass/bpm-core-nestjs-module/calendar`

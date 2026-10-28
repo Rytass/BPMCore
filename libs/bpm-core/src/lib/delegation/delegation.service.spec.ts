@@ -602,6 +602,83 @@ describe('DelegationService', () => {
         warn.mockRestore();
       });
     });
+
+    describe('resolving a whole node at once', (): void => {
+      const nodeRules = [
+        ...singleRule,
+        createDelegationRule({
+          agentMemberId: 'member-102',
+          id: 'rule-2',
+          principalMemberId: 'member-002',
+        }),
+      ];
+
+      it('asks the host directory once for every candidate', async (): Promise<void> => {
+        const identityService = createIdentityService(['member-102']);
+        const service = createService(
+          nodeRules,
+          createModuleRef(jest.fn(() => identityService)),
+        );
+
+        await expect(
+          service.resolveAssignees(
+            ['member-001', 'member-002', 'member-003'],
+            context,
+          ),
+        ).resolves.toEqual([
+          {
+            delegationChain: [
+              {
+                from: 'member-001',
+                reason: 'ALL',
+                ruleId: 'rule-1',
+                to: 'member-101',
+              },
+            ],
+            finalAssigneeMemberId: 'member-101',
+          },
+          { delegationChain: [], finalAssigneeMemberId: 'member-002' },
+          { delegationChain: [], finalAssigneeMemberId: 'member-003' },
+        ]);
+        // One call for the first hop of the node; member-101 has no rule of
+        // its own, so its hop asks nothing.
+        expect(identityService.resolveInactiveMembers).toHaveBeenCalledTimes(1);
+        expect(identityService.resolveInactiveMembers).toHaveBeenCalledWith([
+          'member-101',
+          'member-102',
+        ]);
+      });
+
+      it('keeps every candidate with rules on a directory failure, and the rest as they are', async (): Promise<void> => {
+        const service = createService(
+          nodeRules,
+          createModuleRef(
+            jest.fn(() => ({
+              resolveInactiveMembers: jest.fn(
+                (): Promise<readonly MemberMetadata[]> =>
+                  Promise.reject(new Error('directory timed out')),
+              ),
+            })),
+          ),
+        );
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation((): void => undefined);
+
+        await expect(
+          service.resolveAssignees(
+            ['member-001', 'member-002', 'member-003'],
+            context,
+          ),
+        ).resolves.toEqual([
+          { delegationChain: [], finalAssigneeMemberId: 'member-001' },
+          { delegationChain: [], finalAssigneeMemberId: 'member-002' },
+          { delegationChain: [], finalAssigneeMemberId: 'member-003' },
+        ]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        warn.mockRestore();
+      });
+    });
   });
 
   it('rejects direct delegation cycles when creating a rule', async (): Promise<void> => {
