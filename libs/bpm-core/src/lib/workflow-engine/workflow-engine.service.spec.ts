@@ -7504,6 +7504,66 @@ describe('WorkflowEngineService', () => {
     expect(decision.comment).toBe('請補上發票影本');
   });
 
+  describe('returning to a node the approver picks (allowedTargets ANY)', (): void => {
+    function createAnyReturnFixture(): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          returnBehavior: { allowReturn: true, allowedTargets: 'ANY' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    }
+
+    // Before the target was narrowed, picking the end event saved the case as
+    // APPROVED: a "return" that approved it.
+    it('rejects the end event as a return target instead of approving the case', async (): Promise<void> => {
+      const fixture = createAnyReturnFixture();
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          returnToNodeId: 'end',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'User task task_finance can only return to the applicant or an earlier user task, not end',
+      );
+      expect(fixture.savedInstance?.state).not.toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    it('still returns the case to the applicant', async (): Promise<void> => {
+      const fixture = createAnyReturnFixture();
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.RETURNED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        returnToNodeId: 'start',
+        taskId: 'task-1',
+      });
+
+      expect(decision.returnToNodeId).toBe('start');
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.RETURNED,
+      );
+    });
+  });
+
   it('still allows an empty return comment when requireComment is not set', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

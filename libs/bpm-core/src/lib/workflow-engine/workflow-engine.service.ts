@@ -38,6 +38,7 @@ import {
   isAsyncNotifyServiceTask,
   isNotifyRecipientsEmpty,
   readNotifyWebhookTargets,
+  readSelectableReturnTargetNodeIds,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import {
@@ -8525,6 +8526,19 @@ function readReturnTargetNodeId(
     }
 
     readWorkflowNodeOrThrow(workflow, trimmedRequestedNodeId);
+
+    // Only the applicant or a stage the case can already have passed: every
+    // other node would skip ahead, re-run a gateway, or — the end event —
+    // approve the case outright.
+    if (
+      !readSelectableReturnTargetNodeIds(workflow, currentNodeId).includes(
+        trimmedRequestedNodeId,
+      )
+    ) {
+      throw new ConflictException(
+        `User task ${currentNodeId} can only return to the applicant or an earlier user task, not ${trimmedRequestedNodeId}`,
+      );
+    }
 
     return trimmedRequestedNodeId;
   }
