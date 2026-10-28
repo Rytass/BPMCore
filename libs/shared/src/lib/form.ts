@@ -303,7 +303,8 @@ export function readFormMemberIds(
 export type TextFieldValueIssue =
   | Readonly<{ kind: 'maxLength'; limit: number }>
   | Readonly<{ kind: 'minLength'; limit: number }>
-  | Readonly<{ kind: 'pattern'; message: string | null }>;
+  | Readonly<{ kind: 'pattern'; message: string | null }>
+  | Readonly<{ kind: 'type' }>;
 
 /**
  * Compiles a text field `pattern` the way the value check applies it: the whole
@@ -322,9 +323,12 @@ export function compileTextFieldPattern(pattern: string): RegExp | null {
  * The first rule a filled-in text value breaks — length first, then format —
  * or `null` when it passes. The one check the form renderer and the engine
  * both run, so a value the filler is allowed to send is one the server takes.
- * An empty or non-string value is left to the required check and the shape
- * check. A pattern that does not compile fails closed: the lint keeps one from
- * being published, and silently accepting every value would be worse.
+ * An empty value is left to the required check. Any other value that is not a
+ * string is a `type` issue when the field sets a length or a format, since
+ * none of those rules can be applied to it; a field without rules keeps
+ * accepting what it accepted before. A pattern that does not compile fails
+ * closed: the lint keeps one from being published, and silently accepting
+ * every value would be worse.
  */
 export function readTextFieldValueIssue(
   field: Pick<
@@ -333,8 +337,16 @@ export function readTextFieldValueIssue(
   >,
   value: unknown,
 ): TextFieldValueIssue | null {
-  if (typeof value !== 'string' || value === '') {
+  if (value === undefined || value === null || value === '') {
     return null;
+  }
+
+  if (typeof value !== 'string') {
+    return typeof field.minLength === 'number' ||
+      typeof field.maxLength === 'number' ||
+      Boolean(field.pattern)
+      ? { kind: 'type' }
+      : null;
   }
 
   const length = Array.from(value).length;

@@ -268,10 +268,18 @@ describe('readTextFieldValueIssue', () => {
     ).toEqual({ kind: 'maxLength', limit: 10 });
   });
 
-  it('leaves an empty or non-string value to the required and shape checks', () => {
+  it('leaves an empty value to the required check', () => {
     expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, '')).toBeNull();
     expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, null)).toBeNull();
     expect(readTextFieldValueIssue({ ...invoiceNumber, minLength: 10 }, undefined)).toBeNull();
+  });
+
+  it('reports a value that is not text when the field has a rule to apply', () => {
+    expect(readTextFieldValueIssue(invoiceNumber, 1234567890)).toEqual({ kind: 'type' });
+    expect(readTextFieldValueIssue({ maxLength: 3 }, ['ab'])).toEqual({ kind: 'type' });
+    expect(readTextFieldValueIssue({ minLength: 1 }, true)).toEqual({ kind: 'type' });
+    // A field without rules accepts what it accepted before.
+    expect(readTextFieldValueIssue({}, 1234567890)).toBeNull();
   });
 
   it('fails closed on a pattern that does not compile', () => {

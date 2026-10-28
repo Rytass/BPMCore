@@ -155,7 +155,7 @@ function readTextValueErrorMessage(
     return `${label}最多 ${issue.limit} 個字。`;
   }
 
-  return issue.message ?? `${label}格式不正確。`;
+  return (issue.kind === 'pattern' && issue.message) || `${label}格式不正確。`;
 }
 
 /**
