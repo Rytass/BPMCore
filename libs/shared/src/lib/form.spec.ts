@@ -12,7 +12,7 @@ import {
   normalizeFormDefinitionSchema,
   readFormMemberIds,
   readFormTableCellValue,
-  hasNestedTextFieldPatternQuantifier,
+  hasAmbiguousTextFieldPatternRepeat,
   readTextFieldValueIssue,
   TABLE_COLUMN_FIELD_TYPES,
 } from './form';
@@ -223,28 +223,54 @@ describe('member field contracts', () => {
   });
 });
 
-describe('hasNestedTextFieldPatternQuantifier', () => {
+describe('hasAmbiguousTextFieldPatternRepeat', () => {
   it('flags a repeated group that repeats inside', () => {
-    expect(hasNestedTextFieldPatternQuantifier('(a+)*')).toBe(true);
-    expect(hasNestedTextFieldPatternQuantifier('([A-Za-z0-9]+\\s?)*')).toBe(true);
-    expect(hasNestedTextFieldPatternQuantifier('(?:\\d{2,})+')).toBe(true);
-    expect(hasNestedTextFieldPatternQuantifier('((a)+){2,}')).toBe(true);
-    expect(hasNestedTextFieldPatternQuantifier('((ab*))+')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(a+)*')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('([A-Za-z0-9]+\\s?)*')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(?:\\d{2,})+')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('((a)+){2,}')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('((ab*))+')).toBe(true);
   });
 
   it('accepts flat patterns and groups that do not repeat twice', () => {
-    expect(hasNestedTextFieldPatternQuantifier('[A-Z]{2}[0-9]{8}')).toBe(false);
-    expect(hasNestedTextFieldPatternQuantifier('(ab)*c+')).toBe(false);
-    expect(hasNestedTextFieldPatternQuantifier('(a+)?')).toBe(false);
-    expect(hasNestedTextFieldPatternQuantifier('(a+){1}')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('[A-Z]{2}[0-9]{8}')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(ab)*c+')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(a+)?')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(a+){1}')).toBe(false);
     // Quantifier characters inside a class or escaped are literals.
-    expect(hasNestedTextFieldPatternQuantifier('([+*])+')).toBe(false);
-    expect(hasNestedTextFieldPatternQuantifier('(\\+)+')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('([+*])+')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\+)+')).toBe(false);
   });
 
-  it('is a heuristic: it flags some safe patterns and misses overlapping alternatives', () => {
-    expect(hasNestedTextFieldPatternQuantifier('[a-z]+(-[a-z]+)*')).toBe(true);
-    expect(hasNestedTextFieldPatternQuantifier('(a|ab)*')).toBe(false);
+  it('flags a repeated group whose alternatives can start alike', () => {
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\w|\\d)+')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(.|\\s)*@')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(a|ab)*')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(?:a|)+')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(a?b|c)+')).toBe(true);
+    // An overlapping alternation nested one level down still repeats.
+    expect(hasAmbiguousTextFieldPatternRepeat('((a|ab))*')).toBe(true);
+  });
+
+  it('accepts alternatives that each start with their own literal', () => {
+    expect(hasAmbiguousTextFieldPatternRepeat('(foo|bar)+')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(?:-|_|\\.)+')).toBe(false);
+    // An alternation that is not repeated is not a concern.
+    expect(hasAmbiguousTextFieldPatternRepeat('\\d{8}|[A-Z]{2}\\d{8}')).toBe(
+      false,
+    );
+  });
+
+  it('reads braced and fixed-width escapes as one atom', () => {
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\u{41}b)*')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\p{L}b)*')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\x41b)*')).toBe(false);
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\p{L}+)*')).toBe(true);
+  });
+
+  it('is a heuristic: it also flags some safe patterns', () => {
+    expect(hasAmbiguousTextFieldPatternRepeat('[a-z]+(-[a-z]+)*')).toBe(true);
+    expect(hasAmbiguousTextFieldPatternRepeat('(\\d|-)+')).toBe(true);
   });
 });
 
@@ -306,6 +332,22 @@ describe('readTextFieldValueIssue', () => {
     expect(readTextFieldValueIssue({ minLength: 1 }, true)).toEqual({ kind: 'type' });
     // A field without rules accepts what it accepted before.
     expect(readTextFieldValueIssue({}, 1234567890)).toBeNull();
+  });
+
+  it('runs the pattern through the given test, failing when it does not pass', () => {
+    const seen: string[] = [];
+    const refuse = (pattern: RegExp, text: string): boolean => {
+      seen.push(`${pattern.source}:${text}`);
+
+      return false;
+    };
+
+    expect(
+      readTextFieldValueIssue(invoiceNumber, 'AB12345678', {
+        testPattern: refuse,
+      }),
+    ).toEqual({ kind: 'pattern', message: '發票號碼為 2 碼英文加 8 碼數字' });
+    expect(seen).toEqual(['^(?:[A-Z]{2}[0-9]{8})$:AB12345678']);
   });
 
   it('fails closed on a pattern that does not compile', () => {

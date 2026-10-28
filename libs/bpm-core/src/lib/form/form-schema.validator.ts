@@ -1,6 +1,6 @@
 import {
   compileTextFieldPattern,
-  hasNestedTextFieldPatternQuantifier,
+  hasAmbiguousTextFieldPatternRepeat,
   FORM_TABLE_MAX_ROWS,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -10,6 +10,8 @@ import {
   isFormMemberValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
+  TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
+  TEXT_FIELD_PATTERN_MAX_LENGTH,
 } from '@rytass/bpm-core-shared/form';
 import { referencesTableInternals } from './form-table-reference';
 
@@ -37,8 +39,6 @@ const SELECT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'select',
 ]);
 
-const TEXT_FIELD_PATTERN_MAX_LENGTH = 500;
-const TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH = 200;
 
 const TEXT_FIELD_TYPES = new Set<FormFieldDefinition['type']>([
   'text',
@@ -426,9 +426,11 @@ function lintTextField(
  * The pattern is compiled on every submit, server side included, so it has to
  * compile now — a broken one would fail every value — and stay short enough to
  * read. The engine runs it on whatever a filler sends, so a pattern that
- * repeats a repeating group is refused too: a value that almost matches it
- * backtracks exponentially and stalls the server. That check is a heuristic
- * (see `hasNestedTextFieldPatternQuantifier`), not a full ReDoS defence.
+ * repeats a group able to match the same text more than one way is refused
+ * too: a value that almost matches it backtracks exponentially and stalls the
+ * server. That check is a heuristic (see `hasAmbiguousTextFieldPatternRepeat`);
+ * what it lets through is bounded by the time limit the engine runs every
+ * pattern under.
  */
 function lintTextFieldPattern(
   field: Readonly<Record<string, unknown>>,
@@ -449,9 +451,9 @@ function lintTextFieldPattern(
           ]
         : compileTextFieldPattern(field.pattern) === null
           ? [`${path}.pattern is not a valid regular expression`]
-          : hasNestedTextFieldPatternQuantifier(field.pattern)
+          : hasAmbiguousTextFieldPatternRepeat(field.pattern)
             ? [
-                `${path}.pattern must not repeat a group that itself repeats, which can stall the server`,
+                `${path}.pattern must not repeat a group that can match the same text in more than one way, which can stall the server`,
               ]
             : [];
   const messageErrors = !hasMessage

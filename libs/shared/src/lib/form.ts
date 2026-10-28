@@ -300,6 +300,22 @@ export function readFormMemberIds(
     : [];
 }
 
+/**
+ * Runs a compiled text field pattern on a value. `false` means the value does
+ * not match, which is also the answer when the run could not finish.
+ */
+export type TextFieldPatternTest = (pattern: RegExp, value: string) => boolean;
+
+function readCompiledPatternMatch(
+  pattern: string,
+  value: string,
+  testPattern: TextFieldPatternTest,
+): boolean {
+  const compiled = compileTextFieldPattern(pattern);
+
+  return compiled !== null && testPattern(compiled, value);
+}
+
 export type TextFieldValueIssue =
   | Readonly<{ kind: 'maxLength'; limit: number }>
   | Readonly<{ kind: 'minLength'; limit: number }>
@@ -319,7 +335,18 @@ export function compileTextFieldPattern(pattern: string): RegExp | null {
   }
 }
 
+/** Longest `pattern` the schema lint accepts. */
+export const TEXT_FIELD_PATTERN_MAX_LENGTH = 500;
+
+/** Longest `patternErrorMessage` the schema lint accepts. */
+export const TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH = 200;
+
 const REPEATING_QUANTIFIER = /^(?:([*+])|\{(\d+)(,(\d*))?\})\??/;
+const ZERO_ALLOWING_QUANTIFIER = /^(?:[?*]|\{0[,}])/;
+const BRACED_ESCAPE = /^\\[pPu]\{[^}]*\}/;
+const FIXED_ESCAPE = /^\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|c[A-Za-z]|k<[^>]*>)/;
+const GROUP_OPENING = /^\((?:\?(?::|=|!|<=|<!|<[^>]*>))?/;
+const PATTERN_SYNTAX_CHARACTERS = '.^$|()[]{}*+?\\';
 
 /**
  * Length of the quantifier at `index` when it lets the preceding atom repeat
@@ -343,21 +370,89 @@ function readRepeatingQuantifierLength(pattern: string, index: number): number {
   return repeats ? quantifier.length : 0;
 }
 
+/** Length of the escape at `index`, so `\u{41}` or `\p{L}` is read as one atom. */
+function readEscapeLength(pattern: string, index: number): number {
+  const rest = pattern.slice(index);
+  const match = BRACED_ESCAPE.exec(rest) ?? FIXED_ESCAPE.exec(rest);
+
+  return match ? match[0].length : 2;
+}
+
 /**
- * Whether a text field `pattern` repeats a group that already repeats
- * something inside it — `(a+)*`, `([A-Za-z0-9]+\s?)*`. The engine runs the
- * pattern on whatever a filler sends, and this is the shape whose backtracking
- * grows exponentially with the length of a value that almost matches, long
- * enough to stall the server. A heuristic, so it errs both ways: it also flags
- * some patterns that are safe, such as `[a-z]+(-[a-z]+)*`, and it does not
- * catch a repeated alternation whose branches overlap, such as `(a|ab)*`.
+ * Per open group while scanning a pattern: whether something inside it can
+ * match the same text in more than one way, and the first atom of each
+ * alternative — a literal character, `null` for anything else (a class, a
+ * shorthand, a group, an atom that may match nothing), `undefined` while the
+ * current alternative is still empty.
  */
-export function hasNestedTextFieldPatternQuantifier(pattern: string): boolean {
-  // `groups` holds, per open group, whether anything inside it repeats; the
-  // first entry is the pattern itself.
+interface PatternGroupScan {
+  readonly ambiguous: boolean;
+  readonly branchStarts: readonly (string | null | undefined)[];
+}
+
+const OPEN_GROUP: PatternGroupScan = {
+  ambiguous: false,
+  branchStarts: [undefined],
+};
+
+/**
+ * Whether a text field `pattern` repeats a group that can match the same text
+ * in more than one way: one that repeats something inside it — `(a+)*`,
+ * `([A-Za-z0-9]+\s?)*` — or one whose alternatives can start with the same
+ * character — `(\w|\d)+`, `(.|\s)*`, `(a|ab)*`. The engine runs the pattern
+ * on whatever a filler sends, and these are the shapes whose backtracking
+ * grows exponentially with the length of a value that almost matches, long
+ * enough to stall the server. Alternatives are only accepted when each starts
+ * with a literal character no other one starts with, as in `(foo|bar)+`. A
+ * heuristic, so it also flags some patterns that are safe, such as
+ * `[a-z]+(-[a-z]+)*` or `(\d|-)+`, and it does not see the polynomial cost of
+ * adjacent repeats such as `\w*\w*\w*!`; the engine bounds what gets through
+ * with a time limit on every run (see the `testPattern` option of
+ * {@link readTextFieldValueIssue}).
+ */
+export function hasAmbiguousTextFieldPatternRepeat(pattern: string): boolean {
+  const withFirstAtom = (
+    groups: readonly PatternGroupScan[],
+    start: string | null,
+  ): readonly PatternGroupScan[] => {
+    const current = groups[groups.length - 1] ?? OPEN_GROUP;
+    const branch = current.branchStarts[current.branchStarts.length - 1];
+
+    return branch === undefined
+      ? [
+          ...groups.slice(0, -1),
+          {
+            ...current,
+            branchStarts: [...current.branchStarts.slice(0, -1), start],
+          },
+        ]
+      : groups;
+  };
+  const markAmbiguous = (
+    groups: readonly PatternGroupScan[],
+  ): readonly PatternGroupScan[] => {
+    const current = groups[groups.length - 1] ?? OPEN_GROUP;
+
+    return [...groups.slice(0, -1), { ...current, ambiguous: true }];
+  };
+  // An atom's own quantifier decides whether it repeats and whether it can
+  // stand for its alternative's first character.
+  const afterAtom = (
+    groups: readonly PatternGroupScan[],
+    start: string | null,
+    next: number,
+  ): boolean => {
+    const quantifierLength = readRepeatingQuantifierLength(pattern, next);
+    const mayBeEmpty = ZERO_ALLOWING_QUANTIFIER.test(pattern.slice(next));
+    const withStart = withFirstAtom(groups, mayBeEmpty ? null : start);
+
+    return quantifierLength > 0
+      ? scan(next + quantifierLength, markAmbiguous(withStart), false)
+      : scan(next, withStart, false);
+  };
   const scan = (
     index: number,
-    groups: readonly boolean[],
+    groups: readonly PatternGroupScan[],
     inClass: boolean,
   ): boolean => {
     if (index >= pattern.length) {
@@ -365,51 +460,82 @@ export function hasNestedTextFieldPatternQuantifier(pattern: string): boolean {
     }
 
     const char = pattern[index];
-    const markRepeating = (current: readonly boolean[]): readonly boolean[] => [
-      ...current.slice(0, -1),
-      true,
-    ];
-
-    if (char === '\\') {
-      return scan(index + 2, groups, inClass);
-    }
 
     if (inClass) {
-      return scan(index + 1, groups, char !== ']');
+      if (char === '\\') {
+        return scan(index + readEscapeLength(pattern, index), groups, true);
+      }
+
+      return char === ']'
+        ? afterAtom(groups, null, index + 1)
+        : scan(index + 1, groups, true);
+    }
+
+    if (char === '\\') {
+      const length = readEscapeLength(pattern, index);
+      const escaped = pattern.slice(index + 1, index + length);
+      const literal =
+        length === 2 && !/[0-9A-Za-z]/.test(escaped) ? escaped : null;
+
+      return afterAtom(groups, literal, index + length);
     }
 
     if (char === '[') {
-      return scan(index + 1, groups, true);
+      return scan(index + 1, withFirstAtom(groups, null), true);
     }
 
     if (char === '(') {
-      return scan(index + 1, [...groups, false], false);
+      const opening = GROUP_OPENING.exec(pattern.slice(index))?.[0] ?? '(';
+
+      return scan(index + opening.length, [...groups, OPEN_GROUP], false);
     }
 
-    if (char === ')') {
-      const innerRepeats = groups[groups.length - 1] ?? false;
-      const outer = groups.length > 1 ? groups.slice(0, -1) : [false];
-      const quantifierLength = readRepeatingQuantifierLength(pattern, index + 1);
-
-      if (quantifierLength > 0 && innerRepeats) {
-        return true;
-      }
+    if (char === '|') {
+      const current = groups[groups.length - 1] ?? OPEN_GROUP;
 
       return scan(
-        index + 1 + quantifierLength,
-        quantifierLength > 0 || innerRepeats ? markRepeating(outer) : outer,
+        index + 1,
+        [
+          ...groups.slice(0, -1),
+          { ...current, branchStarts: [...current.branchStarts, undefined] },
+        ],
         false,
       );
     }
 
-    const quantifierLength = readRepeatingQuantifierLength(pattern, index);
+    if (char === ')') {
+      const closed = groups[groups.length - 1] ?? OPEN_GROUP;
+      const outer = groups.length > 1 ? groups.slice(0, -1) : [OPEN_GROUP];
+      const starts = closed.branchStarts.map(start => start ?? null);
+      const literalStarts = starts.filter(
+        (start): start is string => start !== null,
+      );
+      const overlapping =
+        starts.length > 1 &&
+        (literalStarts.length < starts.length ||
+          new Set(literalStarts).size < literalStarts.length);
+      const inner = closed.ambiguous || overlapping;
+      const next = index + 1;
 
-    return quantifierLength > 0
-      ? scan(index + quantifierLength, markRepeating(groups), false)
-      : scan(index + 1, groups, false);
+      if (readRepeatingQuantifierLength(pattern, next) > 0 && inner) {
+        return true;
+      }
+
+      return afterAtom(inner ? markAmbiguous(outer) : outer, null, next);
+    }
+
+    if (char === '?' || char === '^' || char === '$') {
+      return scan(index + 1, groups, false);
+    }
+
+    return afterAtom(
+      groups,
+      PATTERN_SYNTAX_CHARACTERS.includes(char) ? null : char,
+      index + 1,
+    );
   };
 
-  return scan(0, [false], false);
+  return scan(0, [OPEN_GROUP], false);
 }
 
 /**
@@ -421,7 +547,9 @@ export function hasNestedTextFieldPatternQuantifier(pattern: string): boolean {
  * none of those rules can be applied to it; a field without rules keeps
  * accepting what it accepted before. A pattern that does not compile fails
  * closed: the lint keeps one from being published, and silently accepting
- * every value would be worse.
+ * every value would be worse. `testPattern` runs the compiled pattern on the
+ * value; the engine passes one with a time limit, since a pattern the lint
+ * lets through can still backtrack long enough to stall a server.
  */
 export function readTextFieldValueIssue(
   field: Pick<
@@ -429,6 +557,9 @@ export function readTextFieldValueIssue(
     'maxLength' | 'minLength' | 'pattern' | 'patternErrorMessage'
   >,
   value: unknown,
+  {
+    testPattern = (pattern, text) => pattern.test(text),
+  }: { readonly testPattern?: TextFieldPatternTest } = {},
 ): TextFieldValueIssue | null {
   if (value === undefined || value === null || value === '') {
     return null;
@@ -455,7 +586,7 @@ export function readTextFieldValueIssue(
   if (
     typeof field.pattern === 'string' &&
     field.pattern !== '' &&
-    !compileTextFieldPattern(field.pattern)?.test(value)
+    !readCompiledPatternMatch(field.pattern, value, testPattern)
   ) {
     return {
       kind: 'pattern',

@@ -75,7 +75,7 @@ import {
   TableFieldDefinition,
   TextFieldDefinition,
   compileTextFieldPattern,
-  hasNestedTextFieldPatternQuantifier,
+  hasAmbiguousTextFieldPatternRepeat,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
@@ -3936,10 +3936,10 @@ function readTextFieldPatternHint(
     };
   }
 
-  if (pattern && hasNestedTextFieldPatternQuantifier(pattern)) {
+  if (pattern && hasAmbiguousTextFieldPatternRepeat(pattern)) {
     return {
       severity: 'error',
-      text: '格式裡有「重複的群組中又有重複」（例如 (a+)*），填寫的內容可能讓系統卡住，儲存時會被拒絕，請改寫成不巢狀的寫法。',
+      text: '格式裡有會重複、而且同一段文字能用不只一種方式對上的群組（例如 (a+)*、(\\w|\\d)+），填寫的內容可能讓系統卡住，儲存時會被拒絕。請改寫成群組裡不再重複、各個選項開頭的字都不同的寫法。',
     };
   }
 
