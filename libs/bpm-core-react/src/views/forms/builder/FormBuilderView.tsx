@@ -74,6 +74,7 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   TextFieldDefinition,
+  compileTextFieldPattern,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
@@ -2200,6 +2201,37 @@ export function FormBuilderView({
             { min: 1 },
           ),
         )}
+        {renderSettingsFormRow(
+          '格式（正規表示式）',
+          'fieldPattern',
+          <Input
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              commit(withTextFieldPattern(field, event.target.value))
+            }
+            placeholder="例如：[0-9]{8}"
+            value={field.pattern ?? ''}
+            variant="base"
+          />,
+          false,
+          readTextFieldPatternHint(field.pattern),
+        )}
+        {field.pattern
+          ? renderSettingsFormRow(
+              '格式錯誤訊息',
+              'fieldPatternErrorMessage',
+              <Input
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  commit({
+                    ...field,
+                    patternErrorMessage: event.target.value || undefined,
+                  })
+                }
+                placeholder="例如：統一編號為 8 位數字。"
+                value={field.patternErrorMessage ?? ''}
+                variant="base"
+              />,
+            )
+          : null}
       </>
     );
   }
@@ -3448,6 +3480,7 @@ export function FormBuilderView({
     name: string,
     control: ReactElement,
     wide = false,
+    hint?: SettingsFormRowHint,
   ): ReactElement {
     return (
       <div
@@ -3463,6 +3496,9 @@ export function FormBuilderView({
               wide ? FormFieldLayout.VERTICAL : FormFieldLayout.STRETCH
             }
             name={name}
+            {...(hint
+              ? { hintText: hint.text, severity: hint.severity }
+              : {})}
           >
             {control}
           </BPMFormField>
@@ -3806,6 +3842,10 @@ function readDiscardedColumnSettings(
     discarded.push('長度限制');
   }
 
+  if (column.type === 'text' && column.pattern) {
+    discarded.push('格式');
+  }
+
   if (
     (column.type === 'number' || column.type === 'money') &&
     (typeof column.minimum === 'number' || typeof column.maximum === 'number')
@@ -3848,6 +3888,50 @@ function isDefaultColumnOptions(
         option.value === DEFAULT_COLUMN_OPTIONS[index]?.value,
     )
   );
+}
+
+interface SettingsFormRowHint {
+  readonly severity: 'error' | 'info';
+  readonly text: string;
+}
+
+/**
+ * Clearing the format also drops its error message: the schema linter refuses
+ * a message without a pattern, so leaving it behind would block the save.
+ */
+function withTextFieldPattern(
+  field: TextFieldDefinition,
+  pattern: string,
+): TextFieldDefinition {
+  if (pattern) {
+    return { ...field, pattern };
+  }
+
+  return Object.fromEntries(
+    Object.entries(field).filter(
+      ([key]) => key !== 'pattern' && key !== 'patternErrorMessage',
+    ),
+  ) as unknown as TextFieldDefinition;
+}
+
+/**
+ * Tells the designer whether the format will be accepted on save, using the
+ * same compiler the engine and the renderer check values with.
+ */
+function readTextFieldPatternHint(
+  pattern: string | undefined,
+): SettingsFormRowHint {
+  if (pattern && !compileTextFieldPattern(pattern)) {
+    return {
+      severity: 'error',
+      text: '這不是有效的正規表示式，儲存時會被拒絕。',
+    };
+  }
+
+  return {
+    severity: 'info',
+    text: '填寫的內容要整段符合格式才能送出；留空表示不檢查格式。',
+  };
 }
 
 function convertTableColumnType(
