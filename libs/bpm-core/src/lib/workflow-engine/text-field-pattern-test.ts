@@ -47,6 +47,9 @@ export function createTimedTextFieldPatternTest(
   // Created on the first run, so a pass over a form without any pattern
   // never pays for a context.
   let context: Context | undefined;
+  // Mutable on purpose: the budget is shared by every run of one validation
+  // pass, so each run has to see what the earlier ones spent. Closure state
+  // keeps that local to the pass.
   let left = TEXT_FIELD_PATTERN_TIME_BUDGET_MS;
   let exhausted = false;
 
