@@ -264,9 +264,22 @@ function lintDisplayAsTarget(
   type: FormFieldDefinition['type'],
   path: string,
 ): readonly string[] {
+  return lintTextOnlyKeys(field, type, path, [
+    'displayAs',
+    'pattern',
+    'patternErrorMessage',
+  ]);
+}
+
+function lintTextOnlyKeys(
+  field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
+  path: string,
+  keys: readonly string[],
+): readonly string[] {
   return TEXT_FIELD_TYPES.has(type)
     ? []
-    : (['displayAs', 'pattern', 'patternErrorMessage'] as const)
+    : keys
         .filter((key) => Object.prototype.hasOwnProperty.call(field, key))
         .map((key) => `${path}.${key} 只能用在文字欄位`);
 }
@@ -867,7 +880,11 @@ function lintTableColumn(
     return basicErrors;
   }
 
-  return [...basicErrors, ...lintFieldTypeSpecifics(column, type, path, scope)];
+  return [
+    ...basicErrors,
+    ...lintTextOnlyKeys(column, type, path, ['pattern', 'patternErrorMessage']),
+    ...lintFieldTypeSpecifics(column, type, path, scope),
+  ];
 }
 
 function lintTableColumnType(

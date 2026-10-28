@@ -220,6 +220,43 @@ describe('form schema validator', () => {
         'schema.fields[0].columns[0].pattern is not a valid regular expression',
       );
     });
+
+    it('rejects a format on a table column that is not text', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                {
+                  fieldKey: 'qty',
+                  label: '數量',
+                  pattern: '[0-9]+',
+                  patternErrorMessage: '只能是數字',
+                  required: false,
+                  type: 'number',
+                },
+              ],
+              fieldKey: 'items',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'items', width: 'FULL' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          'schema.fields[0].columns[0].pattern 只能用在文字欄位',
+          'schema.fields[0].columns[0].patternErrorMessage 只能用在文字欄位',
+        ]),
+      );
+    });
   });
 
   it('rejects invalid type-specific field settings', (): void => {
