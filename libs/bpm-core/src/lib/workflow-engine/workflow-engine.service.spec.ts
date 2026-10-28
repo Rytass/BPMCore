@@ -839,6 +839,37 @@ describe('WorkflowEngineService', () => {
         submit(createFixture(), { items: [{ note: 123456 }] }),
       ).rejects.toThrow('formData.items[0].note must be text');
     });
+
+    it('checks only the type of a hidden text field with rules', async (): Promise<void> => {
+      const createHiddenFixture = (): ServiceFixture =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema: {
+            fields: [
+              {
+                fieldKey: 'sourceDocId',
+                hidden: true,
+                label: '來源單據',
+                maxLength: 4,
+                pattern: '[A-Z]+',
+                required: false,
+                type: 'text',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      await expect(
+        submit(createHiddenFixture(), { sourceDocId: 123 }),
+      ).rejects.toThrow('formData.sourceDocId must be text');
+      // Nobody fills a hidden field in, so its length and format are not held.
+      await expect(
+        submit(createHiddenFixture(), { sourceDocId: 'po-12345' }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
   });
 
   it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {

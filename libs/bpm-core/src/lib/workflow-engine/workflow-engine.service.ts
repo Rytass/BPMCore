@@ -9623,12 +9623,22 @@ function validateSubmittedFormData(
     // A field an approver fills in later is held to its rules when they fill
     // it, not here: the applicant cannot see or change it, so only its type is
     // checked, the same as a table nobody fills in.
-    readTextErrors: () =>
-      visibleFields.flatMap((field) =>
+    readTextErrors: () => [
+      ...visibleFields.flatMap((field) =>
         readSubmittedTextValueErrors(field, formData[field.fieldKey], {
           shapeOnly: deferredFieldKeys.has(field.fieldKey),
         }),
       ),
+      // A hidden (store-only) field keeps its submitted value although nobody
+      // fills it in, so, like a hidden table, its value is checked for its type.
+      ...schema.fields
+        .filter((field) => field.hidden === true)
+        .flatMap((field) =>
+          readSubmittedTextValueErrors(field, formData[field.fieldKey], {
+            shapeOnly: true,
+          }),
+        ),
+    ],
     // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
     // is visible, so a hidden field still holding a value must be well-formed
     // too. Whether a hidden field is *required* stays a visibility question
