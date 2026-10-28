@@ -7461,6 +7461,14 @@ export class WorkflowEngineService {
         buildWorkflowExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
       );
+
+      assertServiceTaskTextValue(
+        instance.formDefinitionSnapshot,
+        action.fieldPath,
+        value,
+        node.data.label,
+      );
+
       const updatedFormData = writeValueAtPath(
         instance.formData,
         action.fieldPath,
@@ -8154,6 +8162,48 @@ function readDataSourceFieldKeyAtPath(
   );
 
   return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
+}
+
+/**
+ * Holds a `SET_FORM_FIELD` write to the length and format rules the form
+ * applies to a filler, so a service task cannot store text the field would
+ * have refused. Breaking them throws, which rolls back the submit or decision
+ * that reached the node: the value is never half-written, and the node's value
+ * has to be corrected. Only a top-level field can carry those rules — the
+ * writer ignores an indexed path, and a nested record path names no field —
+ * and an unreadable snapshot is left alone, as in
+ * `readDataSourceFieldKeyAtPath`.
+ */
+function assertServiceTaskTextValue(
+  snapshot: Readonly<Record<string, unknown>>,
+  fieldPath: string,
+  value: unknown,
+  nodeLabel: string,
+): void {
+  const schema = snapshot?.schema;
+  const segments = normalizeFormFieldPath(fieldPath);
+
+  if (!isFormDefinitionSchema(schema) || segments.length !== 1) {
+    return;
+  }
+
+  const field = schema.fields.find(
+    (candidate) => candidate.fieldKey === segments[0],
+  );
+  const errors = field
+    ? readSubmittedTextValueErrors(field, value, {
+        testPattern: createTimedTextFieldPatternTest(),
+      })
+    : [];
+
+  if (!field || errors.length === 0) {
+    return;
+  }
+
+  throw new BadRequestException(
+    `系統節點「${nodeLabel}」要寫入欄位「${field.label || field.fieldKey}」的值不符合該欄位的規則` +
+      `（${errors.join('; ')}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
+  );
 }
 
 function readSnapshotWithoutField(

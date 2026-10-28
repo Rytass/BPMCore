@@ -3433,6 +3433,52 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('refuses a set-form-field value that breaks the text field rules', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: {
+        schema: createApprovalLevelFormSchema({ pattern: '[A-Z]{2}' }),
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      new BadRequestException(
+        '系統節點「設定簽核層級」要寫入欄位「簽核層級」的值不符合該欄位的規則' +
+          '（formData.approvalLevel does not match the required format），' +
+          '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
+      ),
+    );
+    expect(fixture.savedSingleActivityLogs).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: 'SET_FORM_FIELD' }),
+      }),
+    );
+  });
+
+  it('writes a set-form-field value that meets the text field rules', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: {
+        schema: createApprovalLevelFormSchema({ maxLength: 4 }),
+      },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, approvalLevel: '主管簽核' },
+      state: ApprovalInstanceStateEnum.APPROVED,
+    });
+  });
+
   it('runs a service task on an instance whose form snapshot cannot be parsed', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -16053,6 +16099,24 @@ function createValueResolver(
     resolveFormFieldOptions: jest.fn(() =>
       Promise.resolve([] as readonly FormFieldOption[]),
     ),
+  };
+}
+
+function createApprovalLevelFormSchema(
+  rules: { readonly maxLength?: number; readonly pattern?: string },
+): FormDefinitionSchema {
+  return {
+    fields: [
+      { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+      {
+        fieldKey: 'approvalLevel',
+        label: '簽核層級',
+        required: false,
+        type: 'text',
+        ...rules,
+      },
+    ],
+    schemaVersion: 1,
   };
 }
 
