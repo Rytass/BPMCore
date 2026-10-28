@@ -916,6 +916,42 @@ describe('WorkflowEngineService', () => {
       });
     });
 
+    it('accepts a full table of valid values within the budget', async (): Promise<void> => {
+      // 1,200 cells. Starting each timed run costs about 50 µs, so a budget
+      // that charged it would refuse this table although every match is fast.
+      const columnKeys = Array.from({ length: 12 }, (_, index): string => `c${index}`);
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: {
+          fields: [
+            {
+              columns: columnKeys.map((fieldKey) => ({
+                fieldKey,
+                label: fieldKey,
+                pattern: '[A-Z]{2}[0-9]{8}',
+                required: false,
+                type: 'text' as const,
+              })),
+              fieldKey: 'rows',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        },
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const rows = Array.from({ length: 100 }, () =>
+        Object.fromEntries(columnKeys.map((key) => [key, 'AB12345678'])),
+      );
+
+      await expect(submit(fixture, { rows })).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
     it('checks only the type of a hidden text field with rules', async (): Promise<void> => {
       const createHiddenFixture = (): ServiceFixture =>
         createServiceFixture({

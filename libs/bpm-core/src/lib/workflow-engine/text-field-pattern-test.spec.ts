@@ -59,15 +59,44 @@ describe('createTimedTextFieldPatternTest', () => {
     );
   });
 
+  it('charges only the time spent matching, not the cost of starting a run', (): void => {
+    // Starting a timed run takes about 50 µs; charged, 5,000 fast runs would
+    // spend the budget several times over.
+    const test = createTimedTextFieldPatternTest();
+    const pattern = compile('[A-Z]{2}[0-9]{8}');
+    const answers = Array.from({ length: 5000 }, (): boolean =>
+      test(pattern, 'AB12345678'),
+    );
+
+    expect(answers.every((answer) => answer)).toBe(true);
+  });
+
   it('throws without running once the budget is spent, and a new pass starts afresh', (): void => {
-    const clock = { now: 0 };
-    const test = createTimedTextFieldPatternTest(() => clock.now);
+    // The run reads the clock before and after matching: this one is charged
+    // the whole budget.
+    const readings = [0, TEXT_FIELD_PATTERN_TIME_BUDGET_MS];
+    const read = { count: 0 };
+    const test = createTimedTextFieldPatternTest(
+      (): number => readings[Math.min(read.count++, readings.length - 1)],
+    );
 
     expect(test(compile('[A-Z]+'), 'AB')).toBe(true);
-    clock.now = TEXT_FIELD_PATTERN_TIME_BUDGET_MS;
+
+    const readsBefore = read.count;
+
     expect(() => test(compile('[A-Z]+'), 'AB')).toThrow(
       TextFieldPatternTimeoutError,
     );
+    expect(read.count).toBe(readsBefore);
     expect(createTimedTextFieldPatternTest()(compile('[A-Z]+'), 'AB')).toBe(true);
+  });
+
+  it('lets an error other than a timeout through, and keeps the budget', (): void => {
+    const test = createTimedTextFieldPatternTest();
+
+    expect(() =>
+      test(compile('[A-Z]+'), Symbol('not text') as unknown as string),
+    ).toThrow('Symbol');
+    expect(test(compile('[A-Z]+'), 'AB')).toBe(true);
   });
 });
