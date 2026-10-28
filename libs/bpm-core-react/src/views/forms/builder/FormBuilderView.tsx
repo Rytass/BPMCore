@@ -74,6 +74,8 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   TextFieldDefinition,
+  TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
+  TEXT_FIELD_PATTERN_MAX_LENGTH,
   compileTextFieldPattern,
   hasAmbiguousTextFieldPatternRepeat,
   isFormDataSourceFieldDefinition,
@@ -2231,6 +2233,8 @@ export function FormBuilderView({
                 value={field.patternErrorMessage ?? ''}
                 variant="base"
               />,
+              false,
+              readTextFieldPatternErrorMessageHint(field.patternErrorMessage),
             )
           : null}
       </>
@@ -3929,6 +3933,13 @@ function readTextFieldPatternHint(
     };
   }
 
+  if (pattern && pattern.length > TEXT_FIELD_PATTERN_MAX_LENGTH) {
+    return {
+      severity: 'error',
+      text: `格式最多 ${TEXT_FIELD_PATTERN_MAX_LENGTH} 個字元，儲存時會被拒絕。`,
+    };
+  }
+
   if (pattern && !compileTextFieldPattern(pattern)) {
     return {
       severity: 'error',
@@ -3947,6 +3958,17 @@ function readTextFieldPatternHint(
     severity: 'info',
     text: '填寫的內容要整段符合格式才能送出；留空表示不檢查格式。',
   };
+}
+
+function readTextFieldPatternErrorMessageHint(
+  message: string | undefined,
+): SettingsFormRowHint | undefined {
+  return message && message.length > TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH
+    ? {
+        severity: 'error',
+        text: `錯誤訊息最多 ${TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH} 個字元，儲存時會被拒絕。`,
+      }
+    : undefined;
 }
 
 function convertTableColumnType(
