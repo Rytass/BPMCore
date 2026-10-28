@@ -378,6 +378,23 @@ describe('user task return and SLA commands', () => {
     });
   });
 
+  it('changes where a return goes without touching other return settings', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const result = applyWorkflowCommand(state, {
+      allowedTargets: 'ANY',
+      nodeId,
+      type: 'setUserTaskReturnAllowedTargets',
+    });
+
+    expect(readUserTaskNode(result.state).data.returnBehavior).toEqual({
+      allowReturn: true,
+      allowedTargets: 'ANY',
+      requireComment: false,
+      resubmitStrategy: 'RESTART',
+    });
+  });
+
   it('sets and clears the node SLA, dropping the key when removed', () => {
     const state = stateWithUserTask();
     const nodeId = readUserTaskNode(state).id;
