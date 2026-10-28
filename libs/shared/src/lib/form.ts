@@ -384,8 +384,13 @@ function readEscapeLength(pattern: string, index: number): number {
  * `(a+)*`, `(\w|\d)+`, `(a?a?)+` and `(ab?|b)+` all take seconds on a few
  * dozen characters that almost match. A repeated character, class or escape
  * matches each character one way, so without repeated groups the cost grows
- * at most polynomially (`\w*\w*\w*!`), and the engine bounds that with a time
- * budget (see the `testPattern` option of {@link readTextFieldValueIssue}).
+ * at most polynomially with the value. The degree grows with the pattern,
+ * though: `\w*\w*\w*!` is slow on a few hundred characters, a dozen `\w*`
+ * on a few dozen, and a long run of overlapping alternatives such as
+ * `(?:a|a)(?:a|a)…` is slow on any value. The engine bounds all of that with a
+ * time budget (see the `testPattern` option of {@link readTextFieldValueIssue})
+ * and refuses the value as not checked; the browser has no such limit, and
+ * this check does not warn the designer about it.
  * Safe repeated groups are refused too, such as `(-[a-z]+)*` or `(ab){2}`;
  * the designer writes the repetition out or drops the group.
  */
