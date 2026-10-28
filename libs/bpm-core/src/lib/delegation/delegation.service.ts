@@ -3,10 +3,14 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, LessThanOrEqual, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import { IdentityService } from '../identity/identity.service';
 import {
   CreateDelegationRuleInput,
   UpdateDelegationRuleInput,
@@ -61,6 +65,7 @@ export class DelegationService {
     @InjectRepository(DelegationRuleEntity)
     private readonly delegationRuleRepository: Repository<DelegationRuleEntity>,
     private readonly conditionService: ConditionService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   async listDelegationRules(
@@ -195,7 +200,7 @@ export class DelegationService {
     visitedMemberIds: ReadonlySet<string>,
     chain: readonly DelegationStep[],
   ): Promise<DelegationResolution> {
-    const applicableRule = (
+    const currentRules = (
       await this.delegationRuleRepository.find({
         // Higher priority wins, as with manager rules; among equal priorities
         // the rule created first wins. TypeORM sorts by key order, so
@@ -211,9 +216,17 @@ export class DelegationService {
           status: DelegationRuleStatusEnum.ACTIVE,
         },
       })
-    )
-      .filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime())
-      .find((rule) => this.matchesRuleScope(rule, context));
+    ).filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime());
+    const inactiveAgentIds = await this.readInactiveAgentIds(currentRules);
+    // A rule whose agent the host has deactivated no longer applies: handing
+    // the task to them would leave it with someone who can no longer sign in.
+    // Checked before the scope so a scope condition is still only evaluated
+    // for the rules up to the one that applies.
+    const applicableRule = currentRules.find(
+      (rule) =>
+        !inactiveAgentIds.has(rule.agentMemberId) &&
+        this.matchesRuleScope(rule, context),
+    );
 
     if (!applicableRule) {
       return {
@@ -245,6 +258,50 @@ export class DelegationService {
       new Set(visitedMemberIds).add(applicableRule.agentMemberId),
       nextChain,
     );
+  }
+
+  /**
+   * Agents of `rules` the host reports as deactivated. Empty when there is no
+   * rule to check, or no identity module (or no `resolveInactive` on the host
+   * resolver): delegation then behaves as it did before this check existed.
+   */
+  private async readInactiveAgentIds(
+    rules: readonly DelegationRuleEntity[],
+  ): Promise<ReadonlySet<string>> {
+    const identityService = rules.length ? this.readIdentityService() : null;
+
+    if (!identityService) {
+      return new Set();
+    }
+
+    const inactiveMembers = await identityService.resolveInactiveMembers(
+      rules.map((rule) => rule.agentMemberId),
+    );
+
+    return new Set(inactiveMembers.map((member) => member.memberId));
+  }
+
+  /**
+   * Looked up at call time rather than injected: `IdentityModule` is a dynamic
+   * module the root configures with the host's options, so this module cannot
+   * import it (same as `WorkflowEngineQueries.readIdentityService`).
+   */
+  private readIdentityService(): IdentityService | null {
+    if (!this.moduleRef) {
+      return null;
+    }
+
+    try {
+      return this.moduleRef.get(IdentityService, { strict: false });
+    } catch (error) {
+      // Only "not registered" means no identity module; anything else is a
+      // real failure and must not pass for "no deactivated agent".
+      if (error instanceof UnknownElementException) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   private matchesRuleScope(
