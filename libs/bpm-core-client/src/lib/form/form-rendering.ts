@@ -130,7 +130,8 @@ function readFormRendererFieldErrors(
 /**
  * The renderer half of the text length and format rules, worded for the filler;
  * the engine runs the same `readTextFieldValueIssue`, so passing here means the
- * submit is not refused for it.
+ * submit is not refused for it, unless the server runs out of its time budget
+ * on a pattern that this check, which has no time limit, finished.
  */
 function readTextValueErrorMessage(
   field: FormFieldDefinition,
