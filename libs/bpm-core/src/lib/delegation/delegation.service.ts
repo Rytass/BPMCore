@@ -2,11 +2,17 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, LessThanOrEqual, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import { IdentityService } from '../identity/identity.service';
 import {
   CreateDelegationRuleInput,
   UpdateDelegationRuleInput,
@@ -45,6 +51,47 @@ export interface DelegationStep extends Readonly<Record<string, unknown>> {
   readonly to: string;
 }
 
+/**
+ * How long a delegation waits for the host's `resolveInactive`. Resolution runs
+ * inside a launch or advance transaction, so a directory that hangs must not
+ * hold its connection and locks: past this it counts as a failed lookup.
+ */
+const DIRECTORY_LOOKUP_TIMEOUT_MS = 5_000;
+
+/** `pending`, or a rejection once `timeoutMs` has passed without an answer. */
+function readWithinTime<TValue>(
+  pending: Promise<TValue>,
+  timeoutMs: number,
+): Promise<TValue> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  return Promise.race([
+    pending,
+    new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(
+        (): void => reject(new Error(`no answer within ${timeoutMs} ms`)),
+        timeoutMs,
+      );
+    }),
+  ]).finally((): void => clearTimeout(timeoutId));
+}
+
+/**
+ * A principal's rule that can apply in this context: its scope matched, or
+ * its scope condition threw. The error is held rather than thrown, so a rule
+ * whose agent turns out to be deactivated is skipped without failing the walk.
+ */
+interface ScopedDelegationRule {
+  readonly rule: DelegationRuleEntity;
+  readonly scopeError: { readonly error: unknown } | null;
+}
+
+/** A hop whose in-scope rules and deactivated agents were read ahead of the walk. */
+interface PreloadedDelegationHop {
+  readonly inactiveAgentIds: ReadonlySet<string>;
+  readonly rules: readonly ScopedDelegationRule[];
+}
+
 interface ListDelegationRulesOptions {
   readonly agentMemberId?: string | null;
   readonly includeInactive?: boolean;
@@ -57,10 +104,13 @@ interface ListDelegationRulesOptions {
 
 @Injectable()
 export class DelegationService {
+  private readonly logger = new Logger(DelegationService.name);
+
   constructor(
     @InjectRepository(DelegationRuleEntity)
     private readonly delegationRuleRepository: Repository<DelegationRuleEntity>,
     private readonly conditionService: ConditionService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   async listDelegationRules(
@@ -179,12 +229,47 @@ export class DelegationService {
     context: DelegationResolutionContext,
     at: Date = new Date(),
   ): Promise<DelegationResolution> {
-    return this.walkDelegationChain(
-      originalAssigneeMemberId,
+    const [resolution] = await this.resolveAssignees(
+      [originalAssigneeMemberId],
       context,
       at,
-      new Set([originalAssigneeMemberId]),
-      [],
+    );
+
+    return resolution;
+  }
+
+  /**
+   * {@link resolveAssignee} for every member of `originalAssigneeMemberIds`,
+   * in the same order. The first hop of every chain shares one
+   * `resolveInactive` call, so a node with many candidates asks the host
+   * directory once rather than once per candidate; only a hop beyond the
+   * first asks again.
+   */
+  async resolveAssignees(
+    originalAssigneeMemberIds: readonly string[],
+    context: DelegationResolutionContext,
+    at: Date = new Date(),
+  ): Promise<readonly DelegationResolution[]> {
+    const rulesByPrincipal = await Promise.all(
+      originalAssigneeMemberIds.map((memberId) =>
+        this.readScopedRules(memberId, context, at),
+      ),
+    );
+    const inactiveAgentIds = await this.readInactiveAgentIds(
+      rulesByPrincipal.flat().map(({ rule }) => rule),
+    );
+
+    return Promise.all(
+      originalAssigneeMemberIds.map((memberId, index) =>
+        this.walkDelegationChain(
+          memberId,
+          context,
+          at,
+          new Set([memberId]),
+          [],
+          { inactiveAgentIds, rules: rulesByPrincipal[index] },
+        ),
+      ),
     );
   }
 
@@ -194,26 +279,27 @@ export class DelegationService {
     at: Date,
     visitedMemberIds: ReadonlySet<string>,
     chain: readonly DelegationStep[],
+    preloadedHop?: PreloadedDelegationHop,
   ): Promise<DelegationResolution> {
-    const applicableRule = (
-      await this.delegationRuleRepository.find({
-        // Higher priority wins, as with manager rules; among equal priorities
-        // the rule created first wins. TypeORM sorts by key order, so
-        // `priority` has to be the first key — it used to come second and
-        // only broke ties between rules created in the same instant.
-        order: {
-          priority: 'DESC',
-          createdAt: 'ASC',
-        },
-        where: {
-          principalMemberId,
-          startAt: LessThanOrEqual(at),
-          status: DelegationRuleStatusEnum.ACTIVE,
-        },
-      })
-    )
-      .filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime())
-      .find((rule) => this.matchesRuleScope(rule, context));
+    const currentRules =
+      preloadedHop?.rules ??
+      (await this.readScopedRules(principalMemberId, context, at));
+    const inactiveAgentIds =
+      preloadedHop?.inactiveAgentIds ??
+      (await this.readInactiveAgentIds(currentRules.map(({ rule }) => rule)));
+    // A rule whose agent the host has deactivated no longer applies: handing
+    // the task to them would leave it with someone who can no longer sign in.
+    const applicable = currentRules.find(
+      ({ rule }) => !inactiveAgentIds.has(rule.agentMemberId),
+    );
+
+    // A scope condition that failed to evaluate fails the walk only when its
+    // rule is the one that would apply, as when scopes were evaluated in turn.
+    if (applicable?.scopeError) {
+      throw applicable.scopeError.error;
+    }
+
+    const applicableRule = applicable?.rule;
 
     if (!applicableRule) {
       return {
@@ -245,6 +331,129 @@ export class DelegationService {
       new Set(visitedMemberIds).add(applicableRule.agentMemberId),
       nextChain,
     );
+  }
+
+  /**
+   * The principal's rules in force at `at` that can apply in `context`, the
+   * applicable one first. Every scope is evaluated up front so the directory is
+   * asked only about agents that matter: a principal whose rules are all out
+   * of scope never waits on, or is refused by, the host directory.
+   */
+  private async readScopedRules(
+    principalMemberId: string,
+    context: DelegationResolutionContext,
+    at: Date,
+  ): Promise<readonly ScopedDelegationRule[]> {
+    const rules = await this.readCurrentRules(principalMemberId, at);
+
+    return rules.flatMap((rule): readonly ScopedDelegationRule[] => {
+      try {
+        return this.matchesRuleScope(rule, context)
+          ? [{ rule, scopeError: null }]
+          : [];
+      } catch (error) {
+        return [{ rule, scopeError: { error } }];
+      }
+    });
+  }
+
+  /** The principal's rules in force at `at`, the applicable one first. */
+  private async readCurrentRules(
+    principalMemberId: string,
+    at: Date,
+  ): Promise<readonly DelegationRuleEntity[]> {
+    return (
+      await this.delegationRuleRepository.find({
+        // Higher priority wins, as with manager rules; among equal priorities
+        // the rule created first wins. TypeORM sorts by key order, so
+        // `priority` has to be the first key — it used to come second and
+        // only broke ties between rules created in the same instant.
+        order: {
+          priority: 'DESC',
+          createdAt: 'ASC',
+        },
+        where: {
+          principalMemberId,
+          startAt: LessThanOrEqual(at),
+          status: DelegationRuleStatusEnum.ACTIVE,
+        },
+      })
+    ).filter((rule) => !rule.endAt || rule.endAt.getTime() > at.getTime());
+  }
+
+  /**
+   * Agents of `rules` the host reports as deactivated. Empty when there is no
+   * rule to check, or no identity module (or no `resolveInactive` on the host
+   * resolver): delegation then behaves as it did before this check existed.
+   *
+   * When the host directory fails to answer, or has not answered within
+   * {@link DIRECTORY_LOOKUP_TIMEOUT_MS}, the dispatch is refused with a
+   * `ServiceUnavailableException` that names the directory lookup (the agent
+   * ids and the host's error go to the server log only): a task is
+   * never handed to an agent who could not be confirmed active, nor quietly
+   * left with a principal whose rule says it should move. The launch or
+   * advance that needed it rolls back and can be retried.
+   */
+  private async readInactiveAgentIds(
+    rules: readonly DelegationRuleEntity[],
+  ): Promise<ReadonlySet<string>> {
+    const identityService = rules.length ? this.readIdentityService() : null;
+
+    if (!identityService) {
+      return new Set();
+    }
+
+    const agentMemberIds = [
+      ...new Set(rules.map((rule) => rule.agentMemberId)),
+    ];
+
+    return readWithinTime(
+      identityService.resolveInactiveMembers(agentMemberIds),
+      DIRECTORY_LOOKUP_TIMEOUT_MS,
+    ).then(
+      (inactiveMembers): ReadonlySet<string> =>
+        new Set(inactiveMembers.map((member) => member.memberId)),
+      (error: unknown): never => {
+        // The host's error and the agent ids stay in the server log: the
+        // caller is whoever submitted or approved, and the host's message can
+        // carry internal details such as the directory's address.
+        this.logger.error(
+          `Member directory lookup (resolveInactive) failed for delegation ` +
+            `agents ${agentMemberIds.join(', ')}; nothing was dispatched: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+
+        throw new ServiceUnavailableException(
+          'The member directory lookup (resolveInactive) failed, so it is ' +
+            'not known whether the delegation agents are still active; ' +
+            'nothing was dispatched. Retry once the directory is reachable.',
+          { cause: error },
+        );
+      },
+    );
+  }
+
+  /**
+   * Looked up at call time rather than injected: `IdentityModule` is a dynamic
+   * module the root configures with the host's options, so this module cannot
+   * import it (same as `WorkflowEngineQueries.readIdentityService`).
+   */
+  private readIdentityService(): IdentityService | null {
+    if (!this.moduleRef) {
+      return null;
+    }
+
+    try {
+      return this.moduleRef.get(IdentityService, { strict: false });
+    } catch (error) {
+      // Only "not registered" means no identity module; anything else is a
+      // real failure and must not pass for "no deactivated agent".
+      if (error instanceof UnknownElementException) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   private matchesRuleScope(

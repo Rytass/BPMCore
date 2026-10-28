@@ -14204,6 +14204,10 @@ interface ServiceFixture {
       Promise<DelegationResolution>,
       [string]
     >;
+    readonly resolveAssignees: jest.Mock<
+      Promise<readonly DelegationResolution[]>,
+      [readonly string[]]
+    >;
   };
   readonly notificationService: Pick<
     NotificationService,
@@ -14649,15 +14653,26 @@ function createServiceFixture({
         },
       ),
     });
+  const resolveAssignee = jest.fn(
+    (assigneeMemberId: string): Promise<DelegationResolution> =>
+      Promise.resolve(
+        delegationResolutionByMember[assigneeMemberId] ??
+          delegationResolution ?? {
+            delegationChain: [],
+            finalAssigneeMemberId: assigneeMemberId,
+          },
+      ),
+  );
+  // The batch answers through `resolveAssignee`, so a test that stubs one
+  // member's delegation covers both entry points.
   const delegationService = {
-    resolveAssignee: jest.fn(
-      (assigneeMemberId: string): Promise<DelegationResolution> =>
-        Promise.resolve(
-          delegationResolutionByMember[assigneeMemberId] ??
-            delegationResolution ?? {
-              delegationChain: [],
-              finalAssigneeMemberId: assigneeMemberId,
-            },
+    resolveAssignee,
+    resolveAssignees: jest.fn(
+      (
+        assigneeMemberIds: readonly string[],
+      ): Promise<readonly DelegationResolution[]> =>
+        Promise.all(
+          assigneeMemberIds.map((memberId) => resolveAssignee(memberId)),
         ),
     ),
   };

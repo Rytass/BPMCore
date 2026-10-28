@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-10-27): `libs/shared@0.17.8`, `libs/bpm-core-client@0.17.8`, `libs/bpm-core@0.17.8` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.8`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-10-28): `libs/shared@0.17.9`, `libs/bpm-core-client@0.17.9`, `libs/bpm-core@0.17.9` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.17.9`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
@@ -55,6 +55,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Resubmission comment (PR #124): optional `ResubmitApprovalInstanceInput.comment` (at most 2000 UTF-16 code units, stored in the `INSTANCE_RESUBMITTED` payload), the client `resubmitApprovalInstance({ comment })`, and `InstanceFormSectionProps.resubmitComment` / `onResubmitCommentChange`. A blank comment is not sent, so an older server is unaffected | Not yet released |
 | Returned cases on the inbox (PR #125): `InboxView` lists the member's own `RETURNED` cases (被退回待重送) above the pending tasks on the 待簽核 tab, from the first page of 100 of `listApprovalInstancesPage` (`view: 'SENT'`), and points to 我發起的 when more may exist; a failure there hides only that list. No export changes | Not yet released |
 | Deactivated members with open tasks (PR #126): `inactiveMembersWithOpenTasks` (admin-only), `WorkflowEngineService.listInactiveMembersWithOpenTasks`, `InactiveMemberOpenTasksRecord` / `InactiveMemberWithOpenTasksObject`, the optional `BPMMemberResolver.resolveInactive` and `BPMMemberBaseDirectory.resolveInactiveMembers`, the client `listInactiveMembersWithOpenTasks` / `InactiveMemberWithOpenTasksRecord`, and the 已停用、仍有待簽的會員 section on the member screen (`AdminUsersView`). A host without `resolveInactive` sees an empty list | Not yet released |
+| Delegation skips deactivated agents (PR #127): `DelegationService.resolveAssignees` (one host `resolveInactive` call per node for the first hop of every candidate's chain, asking only about the agents of rules whose scope applies to the case; the engine's dispatch uses it), and a rule whose agent the host reports as deactivated is skipped — the next rule applies, else the principal keeps the task. **Behaviour change for hosts that implement `resolveInactive`:** dispatch now depends on it — when it throws or has not answered within 5 seconds, the launch, advance or next-candidate step fails with a `ServiceUnavailableException` (503) naming the member directory lookup (agent ids and the host's error are logged on the server, not returned), and rolls back. Hosts without it see no change | Not yet released |
 
 ---
 
@@ -1354,7 +1355,7 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 | Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules) |
 | DTOs | `CreateDelegationRuleInput`, `UpdateDelegationRuleInput` |
 | Enums | `DelegationRuleStatusEnum`, `DelegationScopeTypeEnum` |
-| Service | `DelegationService` |
+| Service | `DelegationService` (`resolveAssignee` for one member, `resolveAssignees` for a whole node — the first hop of every chain shares one host `resolveInactive` call, which covers only rules in scope; a rule whose agent is deactivated is skipped, and when the host directory fails or has not answered within 5 seconds the dispatch is refused with a `ServiceUnavailableException` naming the `resolveInactive` lookup) |
 | Module | `DelegationModule` |
 
 ## `@rytass/bpm-core-nestjs-module/calendar`

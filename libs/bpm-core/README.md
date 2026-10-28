@@ -701,8 +701,9 @@ export interface BPMMemberResolver {
   resolveMany(memberIds: readonly string[]): Promise<ReadonlyMap<string, MemberMetadata>>;
   search?(searchText: string): Promise<readonly MemberMetadata[]>;
   // Of memberIds, the members the host has deactivated. Backs
-  // inactiveMembersWithOpenTasks; on a member-base directory, implement
-  // resolveInactiveMembers instead.
+  // inactiveMembersWithOpenTasks and lets delegation skip a deactivated
+  // agent; on a member-base directory, implement resolveInactiveMembers
+  // instead. Once implemented, dispatch depends on it: see Delegation Rules.
   resolveInactive?(memberIds: readonly string[]): Promise<readonly MemberMetadata[]>;
 }
 ```
@@ -1688,6 +1689,32 @@ A rule's condition may read only these roots: `env`, `form`, `formData`,
 `templateId`, `templateVersionId`, `title`), and `principal` (with `memberId`).
 Saving a rule with any other root is refused. Rules saved before that check was
 added are not changed. They still fail when evaluated.
+
+> Unreleased (PR #127): deactivated agents.
+
+A rule whose agent the host reports as deactivated is skipped: the next rule of
+the principal applies, and when none is left the principal keeps the task. In a
+chain A → B → C where C is deactivated, the task stops at B. BPM asks the
+optional `resolveInactive` on the member resolver (`resolveInactiveMembers` on a
+member-base directory) about the agents of the rules whose scope applies to the
+case — once per node for the first hop of every candidate's chain, and once per
+further hop that has such a rule. A rule out of scope is never looked up, so a
+principal none of whose rules apply is never held up by the directory. Every
+scope is evaluated first; a scope condition that fails to evaluate fails the
+dispatch only when its rule is the one that would apply. Tasks already assigned
+to a deactivated agent are not taken back. Without `resolveInactive`, or without
+the identity module, delegation behaves as before.
+
+Once a host implements it, dispatch depends on it. When `resolveInactive`
+throws, or has not answered within 5 seconds, the launch, advance or
+next-candidate step that needed it fails with a `ServiceUnavailableException`
+(503) naming the member directory lookup, and its transaction rolls back. The
+agent ids and the host's own error go to the server log only, never to the
+caller, since a host error can carry internal details such as the directory's
+address. A task is never handed to an agent who could not be
+confirmed active, nor silently left with the principal. Keep the lookup
+available: during a directory outage, no case can be dispatched to a node where
+someone has a delegation rule that applies to it.
 
 ## GraphQL Surface
 
