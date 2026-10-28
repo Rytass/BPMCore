@@ -1,4 +1,5 @@
 import { compileTextFieldPattern } from '@rytass/bpm-core-shared/form';
+import * as vm from 'vm';
 import {
   createTimedTextFieldPatternTest,
   TEXT_FIELD_PATTERN_TIME_BUDGET_MS,
@@ -24,6 +25,21 @@ describe('createTimedTextFieldPatternTest', () => {
 
     expect(test(compile('[A-Z]{2}[0-9]{8}'), 'AB12345678')).toBe(true);
     expect(test(compile('[A-Z]{2}[0-9]{8}'), 'ab12345678')).toBe(false);
+  });
+
+  it('creates its context only when a pattern first runs', (): void => {
+    const createContext = jest.spyOn(vm, 'createContext');
+
+    try {
+      const test = createTimedTextFieldPatternTest();
+
+      expect(createContext).not.toHaveBeenCalled();
+      test(compile('[0-9]+'), '42');
+      test(compile('[0-9]+'), '43');
+      expect(createContext).toHaveBeenCalledTimes(1);
+    } finally {
+      createContext.mockRestore();
+    }
   });
 
   it('interrupts a run that outlasts the budget and throws', (): void => {

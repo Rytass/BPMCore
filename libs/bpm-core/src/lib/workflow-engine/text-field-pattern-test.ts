@@ -1,4 +1,4 @@
-import { createContext, Script } from 'vm';
+import { Context, createContext, Script } from 'vm';
 import type { TextFieldPatternTest } from '@rytass/bpm-core-shared/form';
 
 /**
@@ -45,14 +45,9 @@ const isScriptTimeout = (error: unknown): boolean =>
 export function createTimedTextFieldPatternTest(
   now: () => number = () => performance.now(),
 ): TextFieldPatternTest {
-  const context = createContext({
-    matched: false,
-    now,
-    pattern: null,
-    spent: 0,
-    started: 0,
-    value: '',
-  });
+  // Created on the first run, so a pass over a form without any pattern
+  // never pays for a context.
+  let context: Context | undefined;
   let left = TEXT_FIELD_PATTERN_TIME_BUDGET_MS;
   let exhausted = false;
 
@@ -65,6 +60,14 @@ export function createTimedTextFieldPatternTest(
       throw new TextFieldPatternTimeoutError();
     }
 
+    context ??= createContext({
+      matched: false,
+      now,
+      pattern: null,
+      spent: 0,
+      started: 0,
+      value: '',
+    });
     context.pattern = pattern;
     context.value = value;
 
