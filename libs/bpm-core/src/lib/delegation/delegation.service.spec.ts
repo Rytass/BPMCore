@@ -444,6 +444,46 @@ describe('DelegationService', () => {
       });
     });
 
+    describe('a rule whose scope condition fails to evaluate', (): void => {
+      // Not a boolean, so evaluating the scope throws.
+      const brokenScopeRules = [
+        createDelegationRule({
+          agentMemberId: 'member-101',
+          id: 'rule-broken',
+          principalMemberId: 'member-001',
+          scopeConditionCel: '"not a boolean"',
+          scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+        }),
+        createDelegationRule({
+          agentMemberId: 'member-102',
+          id: 'rule-fallback',
+          principalMemberId: 'member-001',
+        }),
+      ];
+
+      it('is skipped when its agent is deactivated', async (): Promise<void> => {
+        const service = createService(
+          brokenScopeRules,
+          createModuleRef(jest.fn(() => createIdentityService(['member-101']))),
+        );
+
+        await expect(
+          service.resolveAssignee('member-001', context),
+        ).resolves.toMatchObject({ finalAssigneeMemberId: 'member-102' });
+      });
+
+      it('fails the walk when its rule is the one that would apply', async (): Promise<void> => {
+        const service = createService(
+          brokenScopeRules,
+          createModuleRef(jest.fn(() => createIdentityService([]))),
+        );
+
+        await expect(
+          service.resolveAssignee('member-001', context),
+        ).rejects.toThrow('must evaluate to a boolean');
+      });
+    });
+
     it('leaves the task with the principal when every agent is deactivated', async (): Promise<void> => {
       const service = createService(
         twoRules,
@@ -591,6 +631,30 @@ describe('DelegationService', () => {
         await expect(
           service.resolveAssignee('member-001', context),
         ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      });
+
+      it('is not asked about rules whose scope does not apply', async (): Promise<void> => {
+        const identityService = failingIdentityService();
+        const service = createService(
+          [
+            createDelegationRule({
+              agentMemberId: 'member-101',
+              id: 'rule-other-template',
+              principalMemberId: 'member-001',
+              scopeTemplateIds: ['template-other'],
+              scopeType: DelegationScopeTypeEnum.TEMPLATE_LIST,
+            }),
+          ],
+          createModuleRef(jest.fn(() => identityService)),
+        );
+
+        await expect(
+          service.resolveAssignee('member-001', context),
+        ).resolves.toEqual({
+          delegationChain: [],
+          finalAssigneeMemberId: 'member-001',
+        });
+        expect(identityService.resolveInactiveMembers).not.toHaveBeenCalled();
       });
 
       it('stops waiting for a directory that does not answer', async (): Promise<void> => {

@@ -1696,8 +1696,12 @@ A rule whose agent the host reports as deactivated is skipped: the next rule of
 the principal applies, and when none is left the principal keeps the task. In a
 chain A → B → C where C is deactivated, the task stops at B. BPM asks the
 optional `resolveInactive` on the member resolver (`resolveInactiveMembers` on a
-member-base directory), once per node for the first hop of every candidate's
-chain and once per further hop that has a current rule. Tasks already assigned
+member-base directory) about the agents of the rules whose scope applies to the
+case — once per node for the first hop of every candidate's chain, and once per
+further hop that has such a rule. A rule out of scope is never looked up, so a
+principal none of whose rules apply is never held up by the directory. Every
+scope is evaluated first; a scope condition that fails to evaluate fails the
+dispatch only when its rule is the one that would apply. Tasks already assigned
 to a deactivated agent are not taken back. Without `resolveInactive`, or without
 the identity module, delegation behaves as before.
 
@@ -1710,7 +1714,7 @@ caller, since a host error can carry internal details such as the directory's
 address. A task is never handed to an agent who could not be
 confirmed active, nor silently left with the principal. Keep the lookup
 available: during a directory outage, no case can be dispatched to a node where
-someone has a current delegation rule.
+someone has a delegation rule that applies to it.
 
 ## GraphQL Surface
 

@@ -76,10 +76,20 @@ function readWithinTime<TValue>(
   ]).finally((): void => clearTimeout(timeoutId));
 }
 
-/** A hop whose rules and deactivated agents were read ahead of the walk. */
+/**
+ * A principal's rule that can apply in this context: its scope matched, or
+ * its scope condition threw. The error is held rather than thrown, so a rule
+ * whose agent turns out to be deactivated is skipped without failing the walk.
+ */
+interface ScopedDelegationRule {
+  readonly rule: DelegationRuleEntity;
+  readonly scopeError: { readonly error: unknown } | null;
+}
+
+/** A hop whose in-scope rules and deactivated agents were read ahead of the walk. */
 interface PreloadedDelegationHop {
   readonly inactiveAgentIds: ReadonlySet<string>;
-  readonly rules: readonly DelegationRuleEntity[];
+  readonly rules: readonly ScopedDelegationRule[];
 }
 
 interface ListDelegationRulesOptions {
@@ -242,11 +252,11 @@ export class DelegationService {
   ): Promise<readonly DelegationResolution[]> {
     const rulesByPrincipal = await Promise.all(
       originalAssigneeMemberIds.map((memberId) =>
-        this.readCurrentRules(memberId, at),
+        this.readScopedRules(memberId, context, at),
       ),
     );
     const inactiveAgentIds = await this.readInactiveAgentIds(
-      rulesByPrincipal.flat(),
+      rulesByPrincipal.flat().map(({ rule }) => rule),
     );
 
     return Promise.all(
@@ -273,19 +283,23 @@ export class DelegationService {
   ): Promise<DelegationResolution> {
     const currentRules =
       preloadedHop?.rules ??
-      (await this.readCurrentRules(principalMemberId, at));
+      (await this.readScopedRules(principalMemberId, context, at));
     const inactiveAgentIds =
       preloadedHop?.inactiveAgentIds ??
-      (await this.readInactiveAgentIds(currentRules));
+      (await this.readInactiveAgentIds(currentRules.map(({ rule }) => rule)));
     // A rule whose agent the host has deactivated no longer applies: handing
     // the task to them would leave it with someone who can no longer sign in.
-    // Checked before the scope so a scope condition is still only evaluated
-    // for the rules up to the one that applies.
-    const applicableRule = currentRules.find(
-      (rule) =>
-        !inactiveAgentIds.has(rule.agentMemberId) &&
-        this.matchesRuleScope(rule, context),
+    const applicable = currentRules.find(
+      ({ rule }) => !inactiveAgentIds.has(rule.agentMemberId),
     );
+
+    // A scope condition that failed to evaluate fails the walk only when its
+    // rule is the one that would apply, as when scopes were evaluated in turn.
+    if (applicable?.scopeError) {
+      throw applicable.scopeError.error;
+    }
+
+    const applicableRule = applicable?.rule;
 
     if (!applicableRule) {
       return {
@@ -317,6 +331,30 @@ export class DelegationService {
       new Set(visitedMemberIds).add(applicableRule.agentMemberId),
       nextChain,
     );
+  }
+
+  /**
+   * The principal's rules in force at `at` that can apply in `context`, the
+   * applicable one first. Every scope is evaluated up front so the directory is
+   * asked only about agents that matter: a principal whose rules are all out
+   * of scope never waits on, or is refused by, the host directory.
+   */
+  private async readScopedRules(
+    principalMemberId: string,
+    context: DelegationResolutionContext,
+    at: Date,
+  ): Promise<readonly ScopedDelegationRule[]> {
+    const rules = await this.readCurrentRules(principalMemberId, at);
+
+    return rules.flatMap((rule): readonly ScopedDelegationRule[] => {
+      try {
+        return this.matchesRuleScope(rule, context)
+          ? [{ rule, scopeError: null }]
+          : [];
+      } catch (error) {
+        return [{ rule, scopeError: { error } }];
+      }
+    });
   }
 
   /** The principal's rules in force at `at`, the applicable one first. */

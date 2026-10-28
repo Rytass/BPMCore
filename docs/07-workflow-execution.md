@@ -508,17 +508,18 @@ async function applyDelegation(
 - 規則的 `priority` 預設 100；數字越大越優先，不是越小越優先。
 - 找不到可用規則即結束代理鏈；代理鏈中若回到已經出現過的成員，丟 `ConflictException`。
   規則儲存時也會檢查不得形成循環（`assertNoActiveCycle`），所以正常資料不會走到這裡。
-- **已停用的代理人（未發佈，PR #127）**：每一跳先把該 principal 當下有效規則的代理人，一次交給宿主
+- **已停用的代理人（未發佈，PR #127）**：每一跳先把該 principal 當下有效、且 scope 符合這次案件的規則的代理人，一次交給宿主
   member resolver 的 `resolveInactive` 查詢；宿主回報已停用（離職、帳號停用）的代理人，其規則**略過**，
-  改看下一條規則，都不適用時任務留在該 principal。停用檢查在 scope 之前，所以 scope 條件仍只對到「實際套用的那條」
-  為止的規則求值。宿主沒實作 `resolveInactive`、或引擎沒有接 identity module 時，行為與以前相同。
+  改看下一條規則，都不適用時任務留在該 principal。scope 不符的規則不會拿去查詢，所以規則全都不適用的
+  principal 不會因目錄故障而被擋下。每條規則的 scope 都會先求值；某條 scope 條件求值出錯時，只有在該規則正是
+  要套用的那條（代理人在職、且排在它前面的規則都不適用）才讓派送失敗，與逐條求值時的結果相同。宿主沒實作 `resolveInactive`、或引擎沒有接 identity module 時，行為與以前相同。
   已指派給停用代理人的既有任務不會被收回。
 - **同一節點一次查詢**：建立任務時（`delegateResolvedCandidates` → `DelegationService.resolveAssignees`），
   節點上所有候選人第一跳的代理人合併成**一次** `resolveInactive`；只有第二跳以後才各自再查。
 - **目錄查詢失敗時擋下派送**：`resolveInactive` 拋錯，或 5 秒內沒有回應，就丟
   `ServiceUnavailableException`（503），訊息寫明是 member directory lookup（`resolveInactive`）失敗；涉及的代理人 id 與宿主回傳的錯誤只寫進 server log（`DelegationService` 的 error log），不回給呼叫端，避免外洩目錄位址等內部資訊；
   該次送件、推進或輪到下一位的交易整個 rollback，可在目錄恢復後重試。不會把任務交給無法確認在職的代理人，
-  也不會在沒有紀錄的情況下留給 principal。代價是目錄故障期間，凡是節點上有人設了有效代理規則的案件都無法派送。
+  也不會在沒有紀錄的情況下留給 principal。代價是目錄故障期間，凡是節點上有人有適用這次案件的代理規則，該案件都無法派送。
 
 **委派條件（`CONDITION_BASED`）的 CEL context**（`buildDelegationExpressionContext`）：
 
