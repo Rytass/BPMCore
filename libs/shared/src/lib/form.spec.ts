@@ -391,4 +391,14 @@ describe('readTextFieldValueIssue', () => {
       message: null,
     });
   });
+
+  it('compiles a pattern once and reuses it', () => {
+    const compiled = compileTextFieldPattern('[A-Z]{3}');
+
+    expect(compiled).not.toBeNull();
+    expect(compileTextFieldPattern('[A-Z]{3}')).toBe(compiled);
+    expect(compileTextFieldPattern('a)|(?:b')).toBe(
+      compileTextFieldPattern('a)|(?:b'),
+    );
+  });
 });

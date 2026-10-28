@@ -323,6 +323,11 @@ export type TextFieldValueIssue =
   | Readonly<{ kind: 'pattern'; message: string | null }>
   | Readonly<{ kind: 'type' }>;
 
+/** How many compiled patterns {@link compileTextFieldPattern} keeps. */
+const COMPILED_TEXT_FIELD_PATTERN_CACHE_SIZE = 256;
+
+const compiledTextFieldPatterns = new Map<string, RegExp | null>();
+
 /**
  * Compiles a text field `pattern` the way the value check applies it: the whole
  * value has to match, under the `u` flag. Returns `null` for a pattern that
@@ -331,8 +336,35 @@ export type TextFieldValueIssue =
  * The pattern is compiled on its own first: wrapped in `^(?:…)$` straight
  * away, an unbalanced one such as `a)|(?:b` would close the wrapper early and
  * compile as `^(?:a)|(?:b)$`, which no longer anchors the whole value.
+ *
+ * Compiled once per pattern and reused, since a table checks the same pattern
+ * on every row. The flags carry no `g` or `y`, so a shared `RegExp` keeps no
+ * `lastIndex` between tests.
  */
 export function compileTextFieldPattern(pattern: string): RegExp | null {
+  const cached = compiledTextFieldPatterns.get(pattern);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const compiled = compileAnchoredTextFieldPattern(pattern);
+
+  if (
+    compiledTextFieldPatterns.size >= COMPILED_TEXT_FIELD_PATTERN_CACHE_SIZE
+  ) {
+    // Designers write the patterns, so the set is open-ended: drop the oldest.
+    compiledTextFieldPatterns.delete(
+      compiledTextFieldPatterns.keys().next().value as string,
+    );
+  }
+
+  compiledTextFieldPatterns.set(pattern, compiled);
+
+  return compiled;
+}
+
+function compileAnchoredTextFieldPattern(pattern: string): RegExp | null {
   try {
     new RegExp(pattern, 'u');
 
