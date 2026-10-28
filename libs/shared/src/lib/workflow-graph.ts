@@ -914,6 +914,49 @@ export function isParallelGatewaySourceEdge(
   );
 }
 
+/**
+ * The nodes an approver at `nodeId` may send a case back to when the node lets
+ * them pick (`returnBehavior.allowedTargets: 'ANY'`): the start event, which
+ * hands the case back to the applicant, and every other user task with a path
+ * to `nodeId` — the stages the case can already have passed. Gateways, notify
+ * steps, the end event and the stages after `nodeId` are left out: returning
+ * to the end event would approve the case, and a later stage has not run yet.
+ * A loop back into `nodeId` counts as a path; the visited set ends the walk.
+ * Listed in definition order, which is the order the return dialog shows.
+ */
+export function readSelectableReturnTargetNodeIds(
+  definition: WorkflowDefinition,
+  nodeId: string,
+): readonly string[] {
+  const walkUpstream = (
+    frontier: readonly string[],
+    visited: ReadonlySet<string>,
+  ): ReadonlySet<string> => {
+    const fresh = [...new Set(frontier)].filter(
+      (candidateId) => !visited.has(candidateId),
+    );
+
+    return fresh.length
+      ? walkUpstream(
+          definition.edges
+            .filter((edge) => fresh.includes(edge.target))
+            .map((edge) => edge.source),
+          new Set([...visited, ...fresh]),
+        )
+      : visited;
+  };
+  const upstreamNodeIds = walkUpstream([nodeId], new Set<string>());
+
+  return definition.nodes
+    .filter(
+      (node) =>
+        node.id !== nodeId &&
+        upstreamNodeIds.has(node.id) &&
+        (node.type === 'startEvent' || node.type === 'userTask'),
+    )
+    .map((node) => node.id);
+}
+
 export function toggleSelectedEdgeId(
   edgeIds: readonly string[],
   edgeId: string,

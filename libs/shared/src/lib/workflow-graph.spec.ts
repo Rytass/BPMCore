@@ -18,6 +18,7 @@ import {
   readNotifyWebhookStructureIssues,
   readApproverResolverIssue,
   readNotifyWebhookTargetCatalogIssues,
+  readSelectableReturnTargetNodeIds,
   readWorkflowDefinitionIssue,
 } from './workflow-graph';
 import { FormFieldDefinition } from './form';
@@ -212,6 +213,71 @@ describe('createWorkflowNode defaults', () => {
         node.data.action.recipients,
     ).toEqual(ONE_MANAGER);
     expect(readNotifyServiceTaskIssue(node)).toBeNull();
+  });
+});
+
+describe('readSelectableReturnTargetNodeIds', () => {
+  // start → task_1 → gateway → task_2 → task_3 → end, with task_2 also
+  // notifying and a loop from task_3 back to task_2.
+  function createReturnTargetWorkflow(): WorkflowDefinition {
+    const fallback = readFallbackWorkflowDefinition();
+    const node = (type: 'exclusiveGateway' | 'serviceTask' | 'userTask', index: number, id: string) => ({
+      ...createWorkflowNode(type, index),
+      id,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+
+    return {
+      ...fallback,
+      edges: [
+        edge('start', 'task_1'),
+        edge('task_1', 'gateway'),
+        edge('gateway', 'task_2'),
+        edge('task_2', 'notify'),
+        edge('task_2', 'task_3'),
+        edge('task_3', 'task_2'),
+        edge('task_3', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        node('userTask', 1, 'task_1'),
+        node('exclusiveGateway', 2, 'gateway'),
+        node('userTask', 3, 'task_2'),
+        node('serviceTask', 4, 'notify'),
+        node('userTask', 5, 'task_3'),
+      ],
+    } as WorkflowDefinition;
+  }
+
+  it('offers the applicant and the user tasks before the node, in definition order', () => {
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_2'),
+    ).toEqual(['start', 'task_1', 'task_3']);
+  });
+
+  it('leaves out gateways, notify steps, the end event and the node itself', () => {
+    const targets = readSelectableReturnTargetNodeIds(
+      createReturnTargetWorkflow(),
+      'task_3',
+    );
+
+    expect(targets).toEqual(['start', 'task_1', 'task_2']);
+    expect(targets).not.toContain('gateway');
+    expect(targets).not.toContain('notify');
+    expect(targets).not.toContain('end');
+    expect(targets).not.toContain('task_3');
+  });
+
+  it('offers only the applicant at the first stage', () => {
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_1'),
+    ).toEqual(['start']);
   });
 });
 
