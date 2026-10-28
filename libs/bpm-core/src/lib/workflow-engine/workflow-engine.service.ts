@@ -9620,9 +9620,14 @@ function validateSubmittedFormData(
 
   throwFirstFormDataFieldError({
     missingFields,
+    // A field an approver fills in later is held to its rules when they fill
+    // it, not here: the applicant cannot see or change it, so only its type is
+    // checked, the same as a table nobody fills in.
     readTextErrors: () =>
       visibleFields.flatMap((field) =>
-        readSubmittedTextValueErrors(field, formData[field.fieldKey]),
+        readSubmittedTextValueErrors(field, formData[field.fieldKey], {
+          shapeOnly: deferredFieldKeys.has(field.fieldKey),
+        }),
       ),
     // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
     // is visible, so a hidden field still holding a value must be well-formed
@@ -9858,16 +9863,14 @@ function validateSubmittedTableRow(
         )
         .map((column) => `${path}.${column.fieldKey} is required`);
   // A shape-only pass covers a table nobody fills in, so the filler-facing
-  // rules do not apply to it, the same as the required check above.
-  const textErrors = shapeOnly
-    ? []
-    : field.columns.flatMap((column) =>
-        readSubmittedTextValueErrors(
-          column,
-          readRowCellValue(row, column.fieldKey),
-          `${path}.${column.fieldKey}`,
-        ),
-      );
+  // rules do not apply to it, the same as the required check above; only a
+  // cell of the wrong type is still refused.
+  const textErrors = field.columns.flatMap((column) =>
+    readSubmittedTextValueErrors(column, readRowCellValue(row, column.fieldKey), {
+      path: `${path}.${column.fieldKey}`,
+      shapeOnly,
+    }),
+  );
 
   return [...unknownKeyErrors, ...cellErrors, ...requiredErrors, ...textErrors];
 }
@@ -9875,12 +9878,17 @@ function validateSubmittedTableRow(
 /**
  * The server half of the text length and format rules: the same
  * `readTextFieldValueIssue` the renderer runs before it lets the filler send,
- * so a crafted request cannot store what the form would have refused.
+ * so a crafted request cannot store what the form would have refused — a
+ * number or an array sent for a text field with rules included. `shapeOnly`
+ * keeps only that type check, for a value nobody fills in at this step.
  */
 function readSubmittedTextValueErrors(
   field: FormFieldDefinition,
   value: unknown,
-  path = `formData.${field.fieldKey}`,
+  {
+    path = `formData.${field.fieldKey}`,
+    shapeOnly = false,
+  }: { readonly path?: string; readonly shapeOnly?: boolean } = {},
 ): readonly string[] {
   if (field.type !== 'text' && field.type !== 'textarea') {
     return [];
@@ -9888,8 +9896,12 @@ function readSubmittedTextValueErrors(
 
   const issue = readTextFieldValueIssue(field, value);
 
-  if (!issue) {
+  if (!issue || (shapeOnly && issue.kind !== 'type')) {
     return [];
+  }
+
+  if (issue.kind === 'type') {
+    return [`${path} must be text`];
   }
 
   if (issue.kind === 'minLength') {

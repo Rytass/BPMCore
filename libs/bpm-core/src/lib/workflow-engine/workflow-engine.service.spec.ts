@@ -825,6 +825,20 @@ describe('WorkflowEngineService', () => {
         submit(createFixture(), { items: [{ note: '高鐵車票' }] }),
       ).rejects.toThrow('formData.items[0].note must be at most 3 characters');
     });
+
+    // Every rule above reads a string; a number or an array would slip past
+    // all of them if the type were not checked first.
+    it('rejects a value that is not text, for a field and a table cell', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 123456789012345 }),
+      ).rejects.toThrow('formData.invoiceNo must be text');
+      await expect(
+        submit(createFixture(), { invoiceNo: ['AB12345678'] }),
+      ).rejects.toThrow('formData.invoiceNo must be text');
+      await expect(
+        submit(createFixture(), { items: [{ note: 123456 }] }),
+      ).rejects.toThrow('formData.items[0].note must be text');
+    });
   });
 
   it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {
@@ -930,6 +944,7 @@ describe('WorkflowEngineService', () => {
       formDataJson: string,
       options: {
         readonly endUserSubmission?: boolean;
+        readonly formSchema?: FormDefinitionSchema;
         readonly processFormData: Readonly<Record<string, unknown>>;
         readonly withResolver?: boolean;
         readonly workflow?: WorkflowDefinition;
@@ -938,7 +953,7 @@ describe('WorkflowEngineService', () => {
       readonly fixture: ServiceFixture;
       readonly resolver?: BPMFormDataSourceValueResolver;
     }> => {
-      const formSchema = createFinanceTableFormSchema();
+      const formSchema = options.formSchema ?? createFinanceTableFormSchema();
       const resolver = options.withResolver
         ? createValueResolver({})
         : undefined;
@@ -1021,6 +1036,40 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance?.formData).toEqual({
         amount: 10,
         financeItems: [{ seq: 1, taxAmount: 5 }],
+      });
+    });
+
+    // The applicant cannot see or change an approver-filled field, so a stored
+    // value its rules now refuse (saved before they were enforced) must not
+    // block the resubmit; the fill step holds the approver to them instead.
+    it('does not hold a restored approver-filled text to its length on an end-user resubmit', async (): Promise<void> => {
+      const baseSchema = createFinanceTableFormSchema();
+      const { fixture } = await resubmit('{"amount":10}', {
+        endUserSubmission: true,
+        formSchema: {
+          ...baseSchema,
+          fields: [
+            ...baseSchema.fields,
+            {
+              fieldKey: 'invoiceNote',
+              label: '發票備註',
+              maxLength: 3,
+              required: false,
+              type: 'text',
+            },
+          ],
+        },
+        processFormData: { amount: 10, invoiceNote: '超過三個字的備註' },
+        workflow: createFieldAccessWorkflow({
+          financeFieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'invoiceNote', fill: 'OPTIONAL' },
+          ],
+        }),
+      });
+
+      expect(fixture.savedInstance?.formData).toMatchObject({
+        invoiceNote: '超過三個字的備註',
       });
     });
 
