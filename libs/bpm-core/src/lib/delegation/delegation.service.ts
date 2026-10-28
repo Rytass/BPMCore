@@ -2,9 +2,9 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
@@ -53,7 +53,7 @@ export interface DelegationStep extends Readonly<Record<string, unknown>> {
 /**
  * How long a delegation waits for the host's `resolveInactive`. Resolution runs
  * inside a launch or advance transaction, so a directory that hangs must not
- * hold its connection and locks: past this it counts as not answering.
+ * hold its connection and locks: past this it counts as a failed lookup.
  */
 const DIRECTORY_LOOKUP_TIMEOUT_MS = 5_000;
 
@@ -93,8 +93,6 @@ interface ListDelegationRulesOptions {
 
 @Injectable()
 export class DelegationService {
-  private readonly logger = new Logger(DelegationService.name);
-
   constructor(
     @InjectRepository(DelegationRuleEntity)
     private readonly delegationRuleRepository: Repository<DelegationRuleEntity>,
@@ -348,9 +346,11 @@ export class DelegationService {
    * resolver): delegation then behaves as it did before this check existed.
    *
    * When the host directory fails to answer, or has not answered within
-   * {@link DIRECTORY_LOOKUP_TIMEOUT_MS}, every agent counts as deactivated, so each principal keeps the task: no task goes to an agent
-   * who could not be confirmed active, and a directory outage does not stop
-   * a launch or an advance either.
+   * {@link DIRECTORY_LOOKUP_TIMEOUT_MS}, the dispatch is refused with a
+   * `ServiceUnavailableException` that names the directory lookup: a task is
+   * never handed to an agent who could not be confirmed active, nor quietly
+   * left with a principal whose rule says it should move. The launch or
+   * advance that needed it rolls back and can be retried.
    */
   private async readInactiveAgentIds(
     rules: readonly DelegationRuleEntity[],
@@ -371,14 +371,13 @@ export class DelegationService {
     ).then(
       (inactiveMembers): ReadonlySet<string> =>
         new Set(inactiveMembers.map((member) => member.memberId)),
-      (error: unknown): ReadonlySet<string> => {
-        this.logger.warn(
-          `Host directory lookup (resolveInactive) failed for delegation ` +
-            `agents ${agentMemberIds.join(', ')}; their principals keep the ` +
-            `task: ${error instanceof Error ? error.message : String(error)}`,
+      (error: unknown): never => {
+        throw new ServiceUnavailableException(
+          `The member directory lookup (resolveInactive) failed, so it is ` +
+            `not known whether delegation agents ${agentMemberIds.join(', ')} ` +
+            `are still active; nothing was dispatched: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
         );
-
-        return new Set(agentMemberIds);
       },
     );
   }

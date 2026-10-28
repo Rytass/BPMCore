@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
@@ -538,31 +538,22 @@ describe('DelegationService', () => {
         ),
       });
 
-      it('leaves the task with the principal and warns', async (): Promise<void> => {
+      it('refuses the dispatch and names the directory lookup', async (): Promise<void> => {
         const service = createService(
           singleRule,
           createModuleRef(jest.fn(() => failingIdentityService())),
         );
-        const warn = jest
-          .spyOn(Logger.prototype, 'warn')
-          .mockImplementation((): void => undefined);
+        const resolution = service.resolveAssignee('member-001', context);
 
-        await expect(
-          service.resolveAssignee('member-001', context),
-        ).resolves.toEqual({
-          delegationChain: [],
-          finalAssigneeMemberId: 'member-001',
-        });
-        expect(warn).toHaveBeenCalledWith(
-          expect.stringContaining('resolveInactive'),
+        await expect(resolution).rejects.toBeInstanceOf(
+          ServiceUnavailableException,
         );
-        expect(warn).toHaveBeenCalledWith(
-          expect.stringContaining('directory timed out'),
+        await expect(resolution).rejects.toThrow(
+          /member directory lookup \(resolveInactive\) failed.*member-101.*directory timed out/,
         );
-        warn.mockRestore();
       });
 
-      it('stops the chain at the agent whose own rules could not be checked', async (): Promise<void> => {
+      it('refuses on a later hop too, rather than stopping the chain there', async (): Promise<void> => {
         const answeringOnce = createIdentityService([]);
         answeringOnce.resolveInactiveMembers.mockImplementationOnce(
           (): Promise<readonly MemberMetadata[]> => Promise.resolve([]),
@@ -582,25 +573,12 @@ describe('DelegationService', () => {
           ],
           createModuleRef(jest.fn(() => answeringOnce)),
         );
-        const warn = jest
-          .spyOn(Logger.prototype, 'warn')
-          .mockImplementation((): void => undefined);
 
         await expect(
           service.resolveAssignee('member-001', context),
-        ).resolves.toEqual({
-          delegationChain: [
-            {
-              from: 'member-001',
-              reason: 'ALL',
-              ruleId: 'rule-1',
-              to: 'member-101',
-            },
-          ],
-          finalAssigneeMemberId: 'member-101',
-        });
-        warn.mockRestore();
+        ).rejects.toBeInstanceOf(ServiceUnavailableException);
       });
+
       it('stops waiting for a directory that does not answer', async (): Promise<void> => {
         jest.useFakeTimers();
         const service = createService(
@@ -614,24 +592,16 @@ describe('DelegationService', () => {
             })),
           ),
         );
-        const warn = jest
-          .spyOn(Logger.prototype, 'warn')
-          .mockImplementation((): void => undefined);
 
         try {
           const resolution = service.resolveAssignee('member-001', context);
+          const settled = expect(resolution).rejects.toThrow(
+            'no answer within 5000 ms',
+          );
 
           await jest.advanceTimersByTimeAsync(5_000);
-
-          await expect(resolution).resolves.toEqual({
-            delegationChain: [],
-            finalAssigneeMemberId: 'member-001',
-          });
-          expect(warn).toHaveBeenCalledWith(
-            expect.stringContaining('no answer within 5000 ms'),
-          );
+          await settled;
         } finally {
-          warn.mockRestore();
           jest.useRealTimers();
         }
       });
@@ -683,7 +653,7 @@ describe('DelegationService', () => {
         ]);
       });
 
-      it('keeps every candidate with rules on a directory failure, and the rest as they are', async (): Promise<void> => {
+      it('refuses the whole node on a directory failure', async (): Promise<void> => {
         const service = createService(
           nodeRules,
           createModuleRef(
@@ -695,22 +665,13 @@ describe('DelegationService', () => {
             })),
           ),
         );
-        const warn = jest
-          .spyOn(Logger.prototype, 'warn')
-          .mockImplementation((): void => undefined);
 
         await expect(
           service.resolveAssignees(
             ['member-001', 'member-002', 'member-003'],
             context,
           ),
-        ).resolves.toEqual([
-          { delegationChain: [], finalAssigneeMemberId: 'member-001' },
-          { delegationChain: [], finalAssigneeMemberId: 'member-002' },
-          { delegationChain: [], finalAssigneeMemberId: 'member-003' },
-        ]);
-        expect(warn).toHaveBeenCalledTimes(1);
-        warn.mockRestore();
+        ).rejects.toBeInstanceOf(ServiceUnavailableException);
       });
     });
   });
