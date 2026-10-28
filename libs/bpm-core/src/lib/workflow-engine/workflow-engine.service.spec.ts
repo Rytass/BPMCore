@@ -7656,6 +7656,75 @@ describe('WorkflowEngineService', () => {
       );
     });
 
+    // start → task_finance → task_review → end, with task_review able to send
+    // the case back to task_finance. task_review has a path to task_finance but
+    // only runs after it, so returning there from task_finance would skip
+    // task_finance's own approval.
+    it('rejects a later stage that loops back as a return target', async (): Promise<void> => {
+      const linear = createLinearUserTaskWorkflow({
+        returnBehavior: { allowReturn: true, allowedTargets: 'ANY' },
+      });
+      const finance = linear.nodes.find((node) => node.id === 'task_finance');
+
+      if (!finance || finance.type !== 'userTask') {
+        throw new Error('The linear workflow has no task_finance user task.');
+      }
+
+      const edge = (
+        source: string,
+        target: string,
+      ): WorkflowDefinition['edges'][number] => ({
+        data: {},
+        id: `edge_${source}_${target}`,
+        source,
+        target,
+        type: 'smoothstep',
+      });
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: {
+          ...linear,
+          edges: [
+            ...linear.edges.filter((candidate) => candidate.id !== 'edge_task_end'),
+            edge('task_finance', 'task_review'),
+            edge('task_review', 'task_finance'),
+            edge('task_review', 'end'),
+          ],
+          nodes: [
+            ...linear.nodes,
+            {
+              ...finance,
+              data: { ...finance.data, label: '覆核' },
+              id: 'task_review',
+            },
+          ],
+        },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.RETURNED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          returnToNodeId: 'task_review',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'User task task_finance can only return to the applicant or an earlier user task, not task_review',
+      );
+    });
+
     it('still returns the case to the applicant', async (): Promise<void> => {
       const fixture = createAnyReturnFixture();
 

@@ -258,7 +258,55 @@ describe('readSelectableReturnTargetNodeIds', () => {
   it('offers the applicant and the user tasks before the node, in definition order', () => {
     expect(
       readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_2'),
-    ).toEqual(['start', 'task_1', 'task_3']);
+    ).toEqual(['start', 'task_1']);
+  });
+
+  it('leaves out a later stage that loops back, since returning there skips ahead', () => {
+    // task_3 has a path back to task_2, but the case reaches task_3 only
+    // through task_2: returning there would skip task_2's own approval.
+    expect(
+      readSelectableReturnTargetNodeIds(createReturnTargetWorkflow(), 'task_2'),
+    ).not.toContain('task_3');
+  });
+
+  it('offers the stages on every branch before a join', () => {
+    const fallback = readFallbackWorkflowDefinition();
+    const task = (index: number, id: string) => ({
+      ...createWorkflowNode('userTask', index),
+      id,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+    const definition = {
+      ...fallback,
+      edges: [
+        edge('start', 'branch_a'),
+        edge('start', 'branch_b'),
+        edge('branch_a', 'join'),
+        edge('branch_b', 'join'),
+        edge('join', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        task(1, 'branch_a'),
+        task(2, 'branch_b'),
+        task(3, 'join'),
+      ],
+    } as WorkflowDefinition;
+
+    expect(readSelectableReturnTargetNodeIds(definition, 'join')).toEqual([
+      'start',
+      'branch_a',
+      'branch_b',
+    ]);
+    expect(readSelectableReturnTargetNodeIds(definition, 'branch_a')).toEqual([
+      'start',
+    ]);
   });
 
   it('leaves out gateways, notify steps, the end event and the node itself', () => {
