@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
@@ -543,14 +543,28 @@ describe('DelegationService', () => {
           singleRule,
           createModuleRef(jest.fn(() => failingIdentityService())),
         );
-        const resolution = service.resolveAssignee('member-001', context);
+        const logError = jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation((): void => undefined);
 
-        await expect(resolution).rejects.toBeInstanceOf(
-          ServiceUnavailableException,
-        );
-        await expect(resolution).rejects.toThrow(
-          /member directory lookup \(resolveInactive\) failed.*member-101.*directory timed out/,
-        );
+        try {
+          const resolution = service.resolveAssignee('member-001', context);
+
+          await expect(resolution).rejects.toBeInstanceOf(
+            ServiceUnavailableException,
+          );
+          await expect(resolution).rejects.toThrow(
+            'member directory lookup (resolveInactive) failed',
+          );
+          // What the host said, and who the agents are, stay on the server.
+          await expect(resolution).rejects.not.toThrow('directory timed out');
+          await expect(resolution).rejects.not.toThrow('member-101');
+          expect(logError).toHaveBeenCalledWith(
+            expect.stringMatching(/member-101.*directory timed out/),
+          );
+        } finally {
+          logError.mockRestore();
+        }
       });
 
       it('refuses on a later hop too, rather than stopping the chain there', async (): Promise<void> => {
@@ -593,15 +607,23 @@ describe('DelegationService', () => {
           ),
         );
 
+        const logError = jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation((): void => undefined);
+
         try {
           const resolution = service.resolveAssignee('member-001', context);
-          const settled = expect(resolution).rejects.toThrow(
-            'no answer within 5000 ms',
+          const settled = expect(resolution).rejects.toBeInstanceOf(
+            ServiceUnavailableException,
           );
 
           await jest.advanceTimersByTimeAsync(5_000);
           await settled;
+          expect(logError).toHaveBeenCalledWith(
+            expect.stringContaining('no answer within 5000 ms'),
+          );
         } finally {
+          logError.mockRestore();
           jest.useRealTimers();
         }
       });

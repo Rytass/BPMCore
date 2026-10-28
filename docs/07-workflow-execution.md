@@ -516,7 +516,7 @@ async function applyDelegation(
 - **同一節點一次查詢**：建立任務時（`delegateResolvedCandidates` → `DelegationService.resolveAssignees`），
   節點上所有候選人第一跳的代理人合併成**一次** `resolveInactive`；只有第二跳以後才各自再查。
 - **目錄查詢失敗時擋下派送**：`resolveInactive` 拋錯，或 5 秒內沒有回應，就丟
-  `ServiceUnavailableException`（503），訊息寫明是 member directory lookup（`resolveInactive`）失敗與涉及的代理人；
+  `ServiceUnavailableException`（503），訊息寫明是 member directory lookup（`resolveInactive`）失敗；涉及的代理人 id 與宿主回傳的錯誤只寫進 server log（`DelegationService` 的 error log），不回給呼叫端，避免外洩目錄位址等內部資訊；
   該次送件、推進或輪到下一位的交易整個 rollback，可在目錄恢復後重試。不會把任務交給無法確認在職的代理人，
   也不會在沒有紀錄的情況下留給 principal。代價是目錄故障期間，凡是節點上有人設了有效代理規則的案件都無法派送。
 

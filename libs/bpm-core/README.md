@@ -1704,8 +1704,10 @@ the identity module, delegation behaves as before.
 Once a host implements it, dispatch depends on it. When `resolveInactive`
 throws, or has not answered within 5 seconds, the launch, advance or
 next-candidate step that needed it fails with a `ServiceUnavailableException`
-(503) naming the member directory lookup and the agents involved, and its
-transaction rolls back. A task is never handed to an agent who could not be
+(503) naming the member directory lookup, and its transaction rolls back. The
+agent ids and the host's own error go to the server log only, never to the
+caller, since a host error can carry internal details such as the directory's
+address. A task is never handed to an agent who could not be
 confirmed active, nor silently left with the principal. Keep the lookup
 available: during a directory outage, no case can be dispatched to a node where
 someone has a current delegation rule.

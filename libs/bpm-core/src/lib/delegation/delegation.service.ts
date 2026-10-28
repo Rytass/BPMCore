@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -93,6 +94,8 @@ interface ListDelegationRulesOptions {
 
 @Injectable()
 export class DelegationService {
+  private readonly logger = new Logger(DelegationService.name);
+
   constructor(
     @InjectRepository(DelegationRuleEntity)
     private readonly delegationRuleRepository: Repository<DelegationRuleEntity>,
@@ -347,7 +350,8 @@ export class DelegationService {
    *
    * When the host directory fails to answer, or has not answered within
    * {@link DIRECTORY_LOOKUP_TIMEOUT_MS}, the dispatch is refused with a
-   * `ServiceUnavailableException` that names the directory lookup: a task is
+   * `ServiceUnavailableException` that names the directory lookup (the agent
+   * ids and the host's error go to the server log only): a task is
    * never handed to an agent who could not be confirmed active, nor quietly
    * left with a principal whose rule says it should move. The launch or
    * advance that needed it rolls back and can be retried.
@@ -372,11 +376,20 @@ export class DelegationService {
       (inactiveMembers): ReadonlySet<string> =>
         new Set(inactiveMembers.map((member) => member.memberId)),
       (error: unknown): never => {
-        throw new ServiceUnavailableException(
-          `The member directory lookup (resolveInactive) failed, so it is ` +
-            `not known whether delegation agents ${agentMemberIds.join(', ')} ` +
-            `are still active; nothing was dispatched: ` +
+        // The host's error and the agent ids stay in the server log: the
+        // caller is whoever submitted or approved, and the host's message can
+        // carry internal details such as the directory's address.
+        this.logger.error(
+          `Member directory lookup (resolveInactive) failed for delegation ` +
+            `agents ${agentMemberIds.join(', ')}; nothing was dispatched: ` +
             `${error instanceof Error ? error.message : String(error)}`,
+        );
+
+        throw new ServiceUnavailableException(
+          'The member directory lookup (resolveInactive) failed, so it is ' +
+            'not known whether the delegation agents are still active; ' +
+            'nothing was dispatched. Retry once the directory is reachable.',
+          { cause: error },
         );
       },
     );
