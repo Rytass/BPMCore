@@ -273,28 +273,28 @@ function NewApprovalInstanceContent({
       buildFormRendererValues(applicantSchema.fields, formValues),
       context.templateVersion.workflowDefinition,
     );
-    // The format patterns run in a worker under the engine's time budget, so
-    // a pattern that backtracks cannot freeze the page.
-    const validation = await validateFormRendererValuesInWorker({
-      schema: applicantSchema,
-      uiSchema: context.formVersion.uiSchema,
-      values: submittedValues,
-    });
+    // Inside the `try`, so a validation that throws still clears `submitting`
+    // and shows its error instead of leaving the button busy for good.
+    try {
+      // The format patterns run in a worker under the engine's time budget, so
+      // a pattern that backtracks cannot freeze the page.
+      const validation = await validateFormRendererValuesInWorker({
+        schema: applicantSchema,
+        uiSchema: context.formVersion.uiSchema,
+        values: submittedValues,
+      });
 
-    if (!validation.valid) {
-      setFormErrors(validation.errors);
-      setError('請先修正表單中標示的欄位。');
+      if (!validation.valid) {
+        setFormErrors(validation.errors);
+        setError('請先修正表單中標示的欄位。');
 
-      if (validation.firstInvalidFieldKey) {
-        focusFormRendererField(validation.firstInvalidFieldKey);
+        if (validation.firstInvalidFieldKey) {
+          focusFormRendererField(validation.firstInvalidFieldKey);
+        }
+
+        return;
       }
 
-      setSubmitting(false);
-
-      return;
-    }
-
-    try {
       const instanceId = await submitApprovalInstance({
         formData: submittedValues,
         initiatorMemberId: currentMemberId,

@@ -604,11 +604,23 @@ export function InstanceDetailView({
       // open the dialog twice.
       setCheckingFill(true);
 
+      // The click handler discards this promise, so a validation that throws
+      // has to be reported here or the approver sees nothing happen.
       const validation = await validateFormRendererValuesInWorker({
         schema: readFillValidationSchema(schemaSnapshot, fillNode),
         uiSchema: instance.formDefinitionSnapshot.uiSchema,
         values: fillValues,
-      }).finally((): void => setCheckingFill(false));
+      })
+        .catch((validationError: unknown): null => {
+          Message.error(readErrorMessage(validationError));
+
+          return null;
+        })
+        .finally((): void => setCheckingFill(false));
+
+      if (!validation) {
+        return;
+      }
 
       if (!validation.valid) {
         setFillErrors(validation.errors);
@@ -897,30 +909,31 @@ export function InstanceDetailView({
       instance.workflowSnapshot,
     );
 
-    // The DataSource gate only speaks for fields that still hold a value, so a
-    // cleared required field has to be caught here rather than by the backend.
-    if (applicantSchema && instance.formDefinitionSnapshot.uiSchema) {
-      const validation = await validateFormRendererValuesInWorker({
-        schema: applicantSchema,
-        uiSchema: instance.formDefinitionSnapshot.uiSchema,
-        values: resubmittedValues,
-      });
-
-      if (!validation.valid) {
-        setResubmitFormErrors(validation.errors);
-        setError('請先修正表單中標示的欄位。');
-
-        if (validation.firstInvalidFieldKey) {
-          focusFormRendererField(validation.firstInvalidFieldKey);
-        }
-
-        setDeciding(false);
-
-        return;
-      }
-    }
-
+    // Inside the `try`, so a validation that throws still clears `deciding`
+    // and shows its error instead of leaving the buttons busy for good.
     try {
+      // The DataSource gate only speaks for fields that still hold a value, so
+      // a cleared required field has to be caught here rather than by the
+      // backend.
+      if (applicantSchema && instance.formDefinitionSnapshot.uiSchema) {
+        const validation = await validateFormRendererValuesInWorker({
+          schema: applicantSchema,
+          uiSchema: instance.formDefinitionSnapshot.uiSchema,
+          values: resubmittedValues,
+        });
+
+        if (!validation.valid) {
+          setResubmitFormErrors(validation.errors);
+          setError('請先修正表單中標示的欄位。');
+
+          if (validation.firstInvalidFieldKey) {
+            focusFormRendererField(validation.firstInvalidFieldKey);
+          }
+
+          return;
+        }
+      }
+
       await resubmitApprovalInstance({
         comment: resubmitComment,
         formData: resubmittedValues,
