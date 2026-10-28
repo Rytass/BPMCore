@@ -750,6 +750,83 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('Form data is missing required fields: 事由');
   });
 
+  describe('text length and format on submit', (): void => {
+    const invoiceSchema: FormDefinitionSchema = {
+      fields: [
+        {
+          fieldKey: 'invoiceNo',
+          label: '發票號碼',
+          maxLength: 10,
+          pattern: '[A-Z]{2}[0-9]{8}',
+          patternErrorMessage: '發票號碼為 2 碼英文加 8 碼數字',
+          required: false,
+          type: 'text',
+        },
+        {
+          columns: [
+            {
+              fieldKey: 'note',
+              label: '說明',
+              maxLength: 3,
+              required: false,
+              type: 'text',
+            },
+          ],
+          fieldKey: 'items',
+          label: '明細',
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const submit = (
+      fixture: ServiceFixture,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+    const createFixture = (): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: invoiceSchema,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    it('accepts values that keep the rules, and an empty optional field', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'AB12345678', items: [{ note: '計程車' }] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(submit(createFixture(), {})).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
+    it('rejects a value the format does not match', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'ab12345678' }),
+      ).rejects.toThrow('formData.invoiceNo does not match the required format');
+    });
+
+    it('rejects a value over the length limit before checking its format', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { invoiceNo: 'AB123456789' }),
+      ).rejects.toThrow('formData.invoiceNo must be at most 10 characters');
+    });
+
+    it('rejects a table text cell over its length limit', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(), { items: [{ note: '高鐵車票' }] }),
+      ).rejects.toThrow('formData.items[0].note must be at most 3 characters');
+    });
+  });
+
   it('requires conditional fields only when their condition is visible and required', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -1563,6 +1640,39 @@ describe('WorkflowEngineService', () => {
           decide(fixture),
           BadRequestException,
           'formData.financeItems[0].taxAmount is required',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('holds an approver-filled text to its format', async (): Promise<void> => {
+        const base = createFinanceTableFormSchema();
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          formSchema: {
+            ...base,
+            fields: [
+              ...base.fields,
+              {
+                fieldKey: 'invoiceNo',
+                label: '發票號碼',
+                pattern: '[A-Z]{2}[0-9]{8}',
+                required: false,
+                type: 'text',
+              },
+            ],
+          },
+          workflow: createFieldAccessWorkflow({
+            financeFieldAccess: [
+              financeItemsAccess,
+              { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },
+            ],
+          }),
+        });
+
+        await expectRejection(
+          decide(fixture, { formDataJson: '{"invoiceNo":"12345678"}' }),
+          BadRequestException,
+          'formData.invoiceNo does not match the required format',
         );
         expect(fixture.savedInstance).toBeNull();
       });

@@ -21,6 +21,7 @@ import {
   isFormTableCellValue,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
+  readTextFieldValueIssue,
 } from '@rytass/bpm-core-shared/form';
 import {
   WorkflowDefinition,
@@ -9619,6 +9620,10 @@ function validateSubmittedFormData(
 
   throwFirstFormDataFieldError({
     missingFields,
+    readTextErrors: () =>
+      visibleFields.flatMap((field) =>
+        readSubmittedTextValueErrors(field, formData[field.fieldKey]),
+      ),
     // A `DYNAMIC_FORM` resolver reads a member value whether or not its field
     // is visible, so a hidden field still holding a value must be well-formed
     // too. Whether a hidden field is *required* stays a visibility question
@@ -9686,6 +9691,13 @@ function validateFilledFormFields(
         requiredFieldKeys.has(field.fieldKey) &&
         isFormDataValueEmpty(readRowCellValue(formData, field.fieldKey)),
     ),
+    readTextErrors: () =>
+      fields.flatMap((field) =>
+        readSubmittedTextValueErrors(
+          field,
+          readRowCellValue(formData, field.fieldKey),
+        ),
+      ),
     readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
     readTableErrors: () =>
       fields
@@ -9702,17 +9714,20 @@ function validateFilledFormFields(
 
 /**
  * The shared tail of submit and approver-fill validation: a missing required
- * field wins over a malformed member value, which wins over a table problem,
- * and the later checks are only evaluated when the earlier ones pass.
+ * field wins over a text value breaking its length or format rule, which wins
+ * over a malformed member value, which wins over a table problem, and the
+ * later checks are only evaluated when the earlier ones pass.
  */
 function throwFirstFormDataFieldError({
   missingFields,
   readMemberErrors,
   readTableErrors,
+  readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
   readonly readMemberErrors: () => readonly string[];
   readonly readTableErrors: () => readonly string[];
+  readonly readTextErrors: () => readonly string[];
 }): void {
   if (missingFields.length > 0) {
     throw new BadRequestException(
@@ -9720,6 +9735,12 @@ function throwFirstFormDataFieldError({
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
     );
+  }
+
+  const textErrors = readTextErrors();
+
+  if (textErrors.length > 0) {
+    throw new BadRequestException(textErrors.join('; '));
   }
 
   const memberErrors = readMemberErrors();
@@ -9737,9 +9758,8 @@ function throwFirstFormDataFieldError({
 
 /**
  * Authoritative shape, row-count and per-row required checks for one table
- * value (ADR 16 §3.7). Depth stops here on purpose: like the flat fields, only
- * required / shape / row count are enforced server side; `minimum`, `maxLength`
- * and friends stay a frontend hint.
+ * value (ADR 16 §3.7), plus the length and format rules of text columns, which
+ * the flat text fields share. `minimum` / `maximum` stay a frontend hint.
  */
 function validateSubmittedTableValue(
   field: TableFieldDefinition,
@@ -9837,8 +9857,50 @@ function validateSubmittedTableRow(
             ),
         )
         .map((column) => `${path}.${column.fieldKey} is required`);
+  // A shape-only pass covers a table nobody fills in, so the filler-facing
+  // rules do not apply to it, the same as the required check above.
+  const textErrors = shapeOnly
+    ? []
+    : field.columns.flatMap((column) =>
+        readSubmittedTextValueErrors(
+          column,
+          readRowCellValue(row, column.fieldKey),
+          `${path}.${column.fieldKey}`,
+        ),
+      );
 
-  return [...unknownKeyErrors, ...cellErrors, ...requiredErrors];
+  return [...unknownKeyErrors, ...cellErrors, ...requiredErrors, ...textErrors];
+}
+
+/**
+ * The server half of the text length and format rules: the same
+ * `readTextFieldValueIssue` the renderer runs before it lets the filler send,
+ * so a crafted request cannot store what the form would have refused.
+ */
+function readSubmittedTextValueErrors(
+  field: FormFieldDefinition,
+  value: unknown,
+  path = `formData.${field.fieldKey}`,
+): readonly string[] {
+  if (field.type !== 'text' && field.type !== 'textarea') {
+    return [];
+  }
+
+  const issue = readTextFieldValueIssue(field, value);
+
+  if (!issue) {
+    return [];
+  }
+
+  if (issue.kind === 'minLength') {
+    return [`${path} must be at least ${issue.limit} characters`];
+  }
+
+  if (issue.kind === 'maxLength') {
+    return [`${path} must be at most ${issue.limit} characters`];
+  }
+
+  return [`${path} does not match the required format`];
 }
 
 /**
