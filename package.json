@@ -97,7 +97,7 @@
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/view": "^6.43.15",
     "@hello-pangea/dnd": "18.0.1",
-    "@mezzanine-ui/core": "1.2.3",
+    "@mezzanine-ui/core": "1.2.4",
     "@mezzanine-ui/icons": "1.0.2",
     "@mezzanine-ui/react": "1.7.0",
     "@mezzanine-ui/system": "1.0.2",
