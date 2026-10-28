@@ -1,3 +1,8 @@
+import {
+  createWorkflowNode,
+  readFallbackWorkflowDefinition,
+} from '@rytass/bpm-core-shared/workflow-graph';
+import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import type {
   ActivityLogRecord,
   MemberProfileRecord,
@@ -15,6 +20,7 @@ import {
   readAdhocTargetDraft,
   readMemberDisplayText,
   readNodeRuntimeState,
+  readReturnTargetOptions,
   readSequentialActivityPayloadMemberIds,
 } from './shared';
 
@@ -727,5 +733,64 @@ describe('applicant resubmission in the timeline', () => {
   it('shows nothing extra when there is no comment', () => {
     expect(parts({ resubmitStrategy: 'RESTART' })).toEqual([]);
     expect(parts({ comment: null, resubmitStrategy: 'RESTART' })).toEqual([]);
+  });
+});
+
+describe('readReturnTargetOptions', (): void => {
+  // start → 主管簽核 → 條件分流 → 財務簽核 → 總經理簽核 → end
+  function createWorkflow(): WorkflowDefinition {
+    const fallback = readFallbackWorkflowDefinition();
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+    const userTask = (index: number, id: string, label: string) => {
+      const node = createWorkflowNode('userTask', index);
+
+      return node.type === 'userTask'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              label,
+              returnBehavior: {
+                ...node.data.returnBehavior,
+                allowedTargets: 'ANY' as const,
+              },
+            },
+            id,
+          }
+        : node;
+    };
+
+    return {
+      ...fallback,
+      edges: [
+        edge('start', 'manager'),
+        edge('manager', 'gateway'),
+        edge('gateway', 'finance'),
+        edge('finance', 'ceo'),
+        edge('ceo', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        userTask(1, 'manager', '主管簽核'),
+        { ...createWorkflowNode('exclusiveGateway', 2), id: 'gateway' },
+        userTask(3, 'finance', '財務簽核'),
+        userTask(4, 'ceo', '總經理簽核'),
+      ],
+    } as WorkflowDefinition;
+  }
+
+  it('offers the applicant and the earlier stages when the approver picks the target', (): void => {
+    const workflow = createWorkflow();
+    const finance = workflow.nodes.find((node) => node.id === 'finance');
+
+    expect(
+      finance ? readReturnTargetOptions(workflow, finance).map((option) => option.id) : null,
+    ).toEqual(['start', 'manager']);
   });
 });

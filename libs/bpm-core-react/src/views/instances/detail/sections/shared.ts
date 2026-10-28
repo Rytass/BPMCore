@@ -17,6 +17,7 @@ import {
 } from '@rytass/bpm-core-client/workflow';
 import { readFormDataSourceErrorMessage } from '@rytass/bpm-core-client/form';
 import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
+import { readSelectableReturnTargetNodeIds } from '@rytass/bpm-core-shared/workflow-graph';
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { formatMemberLabel } from '../../../../lib/format-member-label';
 import { readSubmittedOnBehalfLabel } from '../submitted-by';
@@ -374,8 +375,12 @@ export function readReturnTargetOptions(
   }
 
   if (node.data.returnBehavior.allowedTargets === 'ANY') {
+    // The same list the engine accepts, so the dialog never offers a target
+    // the return would then be refused for.
+    const targetNodeIds = readSelectableReturnTargetNodeIds(workflow, node.id);
+
     return workflow.nodes
-      .filter((candidate) => candidate.id !== node.id)
+      .filter((candidate) => targetNodeIds.includes(candidate.id))
       .map((candidate) => ({
         id: candidate.id,
         name: `${candidate.data.label}（${readNodeKindLabel(candidate.type)}）`,
