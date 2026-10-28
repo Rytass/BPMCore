@@ -213,6 +213,8 @@ const MISSING_FIELDS_PREFIX = 'Form data is missing required fields: ';
 function readFillPathErrorText(path: string, reason: string): string {
   const atLeast = /^must include at least (\d+) row\(s\)$/.exec(reason);
   const atMost = /^must include at most (\d+) row\(s\)$/.exec(reason);
+  const shortest = /^must be at least (\d+) characters$/.exec(reason);
+  const longest = /^must be at most (\d+) characters$/.exec(reason);
 
   if (reason === 'is required') {
     return '此欄為必填。';
@@ -224,6 +226,18 @@ function readFillPathErrorText(path: string, reason: string): string {
 
   if (atMost) {
     return `最多 ${atMost[1]} 列。`;
+  }
+
+  if (shortest) {
+    return `至少需要 ${shortest[1]} 個字。`;
+  }
+
+  if (longest) {
+    return `最多 ${longest[1]} 個字。`;
+  }
+
+  if (reason === 'does not match the required format') {
+    return '格式不正確。';
   }
 
   return path.includes('[') ? '此欄內容不正確。' : '此欄位內容不正確。';

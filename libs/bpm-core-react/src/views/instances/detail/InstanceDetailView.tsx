@@ -903,7 +903,7 @@ export function InstanceDetailView({
 
       if (!validation.valid) {
         setResubmitFormErrors(validation.errors);
-        setError('請先補齊必填欄位。');
+        setError('請先修正表單中標示的欄位。');
 
         if (validation.firstInvalidFieldKey) {
           focusFormRendererField(validation.firstInvalidFieldKey);

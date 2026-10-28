@@ -323,6 +323,26 @@ describe('approver-filled form helpers', () => {
       ).toEqual({ note: '備註為必填欄位。' });
     });
 
+    it('maps the server\'s text length and format errors', () => {
+      expect(
+        readFillServerErrors(
+          'formData.note must be at most 20 characters; formData.financeItems[1].name does not match the required format',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toEqual({
+        'financeItems[1].name': '格式不正確。',
+        note: '最多 20 個字。',
+      });
+      expect(
+        readFillServerErrors(
+          'formData.note must be at least 2 characters',
+          SCHEMA,
+          fillNode,
+        ),
+      ).toEqual({ note: '至少需要 2 個字。' });
+    });
+
     it('matches a missing label that holds a comma, and gives up on the unknown', () => {
       const schema: FormDefinitionSchema = {
         ...SCHEMA,

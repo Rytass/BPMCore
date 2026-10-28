@@ -281,7 +281,7 @@ function NewApprovalInstanceContent({
 
     if (!validation.valid) {
       setFormErrors(validation.errors);
-      setError('請先補齊必填欄位。');
+      setError('請先修正表單中標示的欄位。');
 
       if (validation.firstInvalidFieldKey) {
         focusFormRendererField(validation.firstInvalidFieldKey);
