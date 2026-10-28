@@ -16,6 +16,7 @@ import {
   isFormTableCellValue,
   isFormTableRowValues,
   isTableFieldDefinition,
+  readTextFieldValueIssue,
 } from '@rytass/bpm-core-shared/form';
 
 export type ConditionOperator =
@@ -117,9 +118,44 @@ function readFormRendererFieldErrors(
     return readFormTableErrors(field, values[field.fieldKey], required);
   }
 
-  return required && !isFormRendererFieldValuePresent(values[field.fieldKey])
-    ? { [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。` }
-    : {};
+  if (required && !isFormRendererFieldValuePresent(values[field.fieldKey])) {
+    return { [field.fieldKey]: `${field.label || field.fieldKey}為必填欄位。` };
+  }
+
+  const textError = readTextValueErrorMessage(field, values[field.fieldKey]);
+
+  return textError ? { [field.fieldKey]: textError } : {};
+}
+
+/**
+ * The renderer half of the text length and format rules, worded for the filler;
+ * the engine runs the same `readTextFieldValueIssue`, so passing here means the
+ * submit is not refused for it.
+ */
+function readTextValueErrorMessage(
+  field: FormFieldDefinition,
+  value: FormFieldValue | undefined,
+): string | null {
+  if (field.type !== 'text' && field.type !== 'textarea') {
+    return null;
+  }
+
+  const issue = readTextFieldValueIssue(field, value);
+  const label = field.label || field.fieldKey;
+
+  if (!issue) {
+    return null;
+  }
+
+  if (issue.kind === 'minLength') {
+    return `${label}至少需要 ${issue.limit} 個字。`;
+  }
+
+  if (issue.kind === 'maxLength') {
+    return `${label}最多 ${issue.limit} 個字。`;
+  }
+
+  return issue.message ?? `${label}格式不正確。`;
 }
 
 /**
@@ -159,20 +195,24 @@ function readFormTableRowErrors(
   row: FormTableRowValue,
   rowIndex: number,
 ): Readonly<Record<string, string>> {
-  return field.columns
-    .filter(
-      (column) =>
-        column.required &&
-        !isFormRendererFieldValuePresent(readFormTableCellValue(row, column)),
-    )
-    .reduce<Readonly<Record<string, string>>>(
-      (currentErrors, column) => ({
-        ...currentErrors,
-        [readFormTableCellPath(field.fieldKey, rowIndex, column.fieldKey)]:
-          `${column.label || column.fieldKey}為必填欄位。`,
-      }),
-      {},
-    );
+  return field.columns.reduce<Readonly<Record<string, string>>>(
+    (currentErrors, column) => {
+      const value = readFormTableCellValue(row, column);
+      const error =
+        column.required && !isFormRendererFieldValuePresent(value)
+          ? `${column.label || column.fieldKey}為必填欄位。`
+          : readTextValueErrorMessage(column, value);
+
+      return error
+        ? {
+            ...currentErrors,
+            [readFormTableCellPath(field.fieldKey, rowIndex, column.fieldKey)]:
+              error,
+          }
+        : currentErrors;
+    },
+    {},
+  );
 }
 
 /**

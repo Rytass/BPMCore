@@ -489,3 +489,94 @@ describe('member fields in the renderer', () => {
     ).toBe(true);
   });
 });
+
+describe('text length and format in the renderer', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      {
+        fieldKey: 'taxId',
+        label: '統一編號',
+        maxLength: 8,
+        minLength: 8,
+        pattern: '[0-9]+',
+        patternErrorMessage: '統一編號只能是數字。',
+        required: false,
+        type: 'text',
+      },
+      {
+        fieldKey: 'code',
+        label: '代碼',
+        pattern: '[A-Z]{3}',
+        required: false,
+        type: 'text',
+      },
+      {
+        columns: [
+          {
+            fieldKey: 'note',
+            label: '備註',
+            maxLength: 3,
+            required: false,
+            type: 'text',
+          },
+        ],
+        fieldKey: 'items',
+        label: '明細',
+        required: false,
+        type: 'table',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const uiSchema: FormUiSchema = {
+    layout: [
+      { fieldKey: 'taxId', width: 'HALF' },
+      { fieldKey: 'code', width: 'HALF' },
+      { fieldKey: 'items', width: 'FULL' },
+    ],
+    schemaVersion: 1,
+  };
+
+  it('accepts values that satisfy every rule, and empty optional fields', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { code: 'ABC', items: [{ note: 'ok' }], taxId: '12345678' },
+      }).valid,
+    ).toBe(true);
+    expect(
+      validateFormRendererValues({ schema, uiSchema, values: {} }).valid,
+    ).toBe(true);
+  });
+
+  it('reports length before format, and the designer message for a mismatch', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { code: 'abc', taxId: '1234' },
+      }).errors,
+    ).toEqual({
+      code: '代碼格式不正確。',
+      taxId: '統一編號至少需要 8 個字。',
+    });
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { taxId: '1234567A' },
+      }).errors,
+    ).toEqual({ taxId: '統一編號只能是數字。' });
+  });
+
+  it('reports an over-long table cell by its instance path', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { items: [{ note: 'ok' }, { note: 'toolong' }] },
+      }).errors,
+    ).toEqual({ 'items[1].note': '備註最多 3 個字。' });
+  });
+});
