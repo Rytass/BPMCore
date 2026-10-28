@@ -309,6 +309,55 @@ describe('readSelectableReturnTargetNodeIds', () => {
     ]);
   });
 
+  it('offers the stages on every branch of a parallel gateway fork and join', () => {
+    const fallback = readFallbackWorkflowDefinition();
+    const task = (index: number, id: string) => ({
+      ...createWorkflowNode('userTask', index),
+      id,
+    });
+    // The designer palette has no parallel gateway; a definition can still
+    // hold one, so the node is built from a gateway and retyped.
+    const parallelGateway = (index: number, id: string) => ({
+      ...createWorkflowNode('exclusiveGateway', index),
+      id,
+      type: 'parallelGateway' as const,
+    });
+    const edge = (source: string, target: string) => ({
+      data: {},
+      id: `${source}->${target}`,
+      source,
+      target,
+      type: 'smoothstep' as const,
+    });
+    const definition = {
+      ...fallback,
+      edges: [
+        edge('start', 'fork'),
+        edge('fork', 'branch_a'),
+        edge('fork', 'branch_b'),
+        edge('branch_a', 'merge'),
+        edge('branch_b', 'merge'),
+        edge('merge', 'after_join'),
+        edge('after_join', 'end'),
+      ],
+      nodes: [
+        ...fallback.nodes,
+        parallelGateway(1, 'fork'),
+        task(2, 'branch_a'),
+        task(3, 'branch_b'),
+        parallelGateway(4, 'merge'),
+        task(5, 'after_join'),
+      ],
+    } as WorkflowDefinition;
+
+    expect(readSelectableReturnTargetNodeIds(definition, 'after_join')).toEqual(
+      ['start', 'branch_a', 'branch_b'],
+    );
+    expect(readSelectableReturnTargetNodeIds(definition, 'branch_b')).toEqual([
+      'start',
+    ]);
+  });
+
   it('leaves out gateways, notify steps, the end event and the node itself', () => {
     const targets = readSelectableReturnTargetNodeIds(
       createReturnTargetWorkflow(),
