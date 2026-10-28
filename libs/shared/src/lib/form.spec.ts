@@ -12,6 +12,7 @@ import {
   normalizeFormDefinitionSchema,
   readFormMemberIds,
   readFormTableCellValue,
+  hasNestedTextFieldPatternQuantifier,
   readTextFieldValueIssue,
   TABLE_COLUMN_FIELD_TYPES,
 } from './form';
@@ -219,6 +220,31 @@ describe('member field contracts', () => {
     expect(readFormMemberIds(null)).toEqual([]);
     expect(readFormMemberIds(true)).toEqual([]);
     expect(readFormMemberIds([{ qty: 1 }])).toEqual([]);
+  });
+});
+
+describe('hasNestedTextFieldPatternQuantifier', () => {
+  it('flags a repeated group that repeats inside', () => {
+    expect(hasNestedTextFieldPatternQuantifier('(a+)*')).toBe(true);
+    expect(hasNestedTextFieldPatternQuantifier('([A-Za-z0-9]+\\s?)*')).toBe(true);
+    expect(hasNestedTextFieldPatternQuantifier('(?:\\d{2,})+')).toBe(true);
+    expect(hasNestedTextFieldPatternQuantifier('((a)+){2,}')).toBe(true);
+    expect(hasNestedTextFieldPatternQuantifier('((ab*))+')).toBe(true);
+  });
+
+  it('accepts flat patterns and groups that do not repeat twice', () => {
+    expect(hasNestedTextFieldPatternQuantifier('[A-Z]{2}[0-9]{8}')).toBe(false);
+    expect(hasNestedTextFieldPatternQuantifier('(ab)*c+')).toBe(false);
+    expect(hasNestedTextFieldPatternQuantifier('(a+)?')).toBe(false);
+    expect(hasNestedTextFieldPatternQuantifier('(a+){1}')).toBe(false);
+    // Quantifier characters inside a class or escaped are literals.
+    expect(hasNestedTextFieldPatternQuantifier('([+*])+')).toBe(false);
+    expect(hasNestedTextFieldPatternQuantifier('(\\+)+')).toBe(false);
+  });
+
+  it('is a heuristic: it flags some safe patterns and misses overlapping alternatives', () => {
+    expect(hasNestedTextFieldPatternQuantifier('[a-z]+(-[a-z]+)*')).toBe(true);
+    expect(hasNestedTextFieldPatternQuantifier('(a|ab)*')).toBe(false);
   });
 });
 

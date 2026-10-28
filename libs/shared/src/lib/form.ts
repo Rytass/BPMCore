@@ -319,6 +319,99 @@ export function compileTextFieldPattern(pattern: string): RegExp | null {
   }
 }
 
+const REPEATING_QUANTIFIER = /^(?:([*+])|\{(\d+)(,(\d*))?\})\??/;
+
+/**
+ * Length of the quantifier at `index` when it lets the preceding atom repeat
+ * (`*`, `+`, `{n,}`, `{n,m}` with m > 1, `{n}` with n > 1, each optionally
+ * lazy), or 0. `?` and `{1}` do not repeat anything.
+ */
+function readRepeatingQuantifierLength(pattern: string, index: number): number {
+  const match = REPEATING_QUANTIFIER.exec(pattern.slice(index));
+
+  if (!match) {
+    return 0;
+  }
+
+  const [quantifier, starOrPlus, minimum, range, maximum] = match;
+  const repeats = starOrPlus
+    ? true
+    : range === undefined
+      ? Number(minimum) > 1
+      : maximum === '' || Number(maximum) > 1;
+
+  return repeats ? quantifier.length : 0;
+}
+
+/**
+ * Whether a text field `pattern` repeats a group that already repeats
+ * something inside it — `(a+)*`, `([A-Za-z0-9]+\s?)*`. The engine runs the
+ * pattern on whatever a filler sends, and this is the shape whose backtracking
+ * grows exponentially with the length of a value that almost matches, long
+ * enough to stall the server. A heuristic, so it errs both ways: it also flags
+ * some patterns that are safe, such as `[a-z]+(-[a-z]+)*`, and it does not
+ * catch a repeated alternation whose branches overlap, such as `(a|ab)*`.
+ */
+export function hasNestedTextFieldPatternQuantifier(pattern: string): boolean {
+  // `groups` holds, per open group, whether anything inside it repeats; the
+  // first entry is the pattern itself.
+  const scan = (
+    index: number,
+    groups: readonly boolean[],
+    inClass: boolean,
+  ): boolean => {
+    if (index >= pattern.length) {
+      return false;
+    }
+
+    const char = pattern[index];
+    const markRepeating = (current: readonly boolean[]): readonly boolean[] => [
+      ...current.slice(0, -1),
+      true,
+    ];
+
+    if (char === '\\') {
+      return scan(index + 2, groups, inClass);
+    }
+
+    if (inClass) {
+      return scan(index + 1, groups, char !== ']');
+    }
+
+    if (char === '[') {
+      return scan(index + 1, groups, true);
+    }
+
+    if (char === '(') {
+      return scan(index + 1, [...groups, false], false);
+    }
+
+    if (char === ')') {
+      const innerRepeats = groups[groups.length - 1] ?? false;
+      const outer = groups.length > 1 ? groups.slice(0, -1) : [false];
+      const quantifierLength = readRepeatingQuantifierLength(pattern, index + 1);
+
+      if (quantifierLength > 0 && innerRepeats) {
+        return true;
+      }
+
+      return scan(
+        index + 1 + quantifierLength,
+        quantifierLength > 0 || innerRepeats ? markRepeating(outer) : outer,
+        false,
+      );
+    }
+
+    const quantifierLength = readRepeatingQuantifierLength(pattern, index);
+
+    return quantifierLength > 0
+      ? scan(index + quantifierLength, markRepeating(groups), false)
+      : scan(index + 1, groups, false);
+  };
+
+  return scan(0, [false], false);
+}
+
 /**
  * The first rule a filled-in text value breaks — length first, then format —
  * or `null` when it passes. The one check the form renderer and the engine
