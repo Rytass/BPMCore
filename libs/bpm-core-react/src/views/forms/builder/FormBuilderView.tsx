@@ -2224,10 +2224,9 @@ export function FormBuilderView({
               'fieldPatternErrorMessage',
               <Input
                 onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                  commit({
-                    ...field,
-                    patternErrorMessage: event.target.value || undefined,
-                  })
+                  commit(
+                    withTextFieldPatternErrorMessage(field, event.target.value),
+                  )
                 }
                 placeholder="例如：統一編號為 8 位數字。"
                 value={field.patternErrorMessage ?? ''}
@@ -3916,6 +3915,24 @@ function withTextFieldPattern(
     Object.entries(field).filter(
       ([key]) => key !== 'pattern' && key !== 'patternErrorMessage',
     ),
+  ) as unknown as TextFieldDefinition;
+}
+
+/**
+ * Drops the key rather than storing `undefined`: the schema linter checks the
+ * key's presence, and an own `undefined` would read as a message that is not a
+ * string.
+ */
+function withTextFieldPatternErrorMessage(
+  field: TextFieldDefinition,
+  patternErrorMessage: string,
+): TextFieldDefinition {
+  if (patternErrorMessage) {
+    return { ...field, patternErrorMessage };
+  }
+
+  return Object.fromEntries(
+    Object.entries(field).filter(([key]) => key !== 'patternErrorMessage'),
   ) as unknown as TextFieldDefinition;
 }
 
