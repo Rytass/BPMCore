@@ -9845,6 +9845,7 @@ function validateSubmittedTableValue(
   );
 }
 
+/** The minimum only: the maximum is refused before any row is checked. */
 function validateSubmittedTableRowCount(
   field: TableFieldDefinition,
   rowCount: number,
@@ -9857,16 +9858,10 @@ function validateSubmittedTableRowCount(
     : required
       ? Math.max(readTableMinRows(field), 1)
       : readTableMinRows(field);
-  const maxRows = readTableMaxRows(field);
 
-  return [
-    ...(rowCount < minRows
-      ? [`${path} must include at least ${minRows} row(s)`]
-      : []),
-    ...(rowCount > maxRows
-      ? [`${path} must include at most ${maxRows} row(s)`]
-      : []),
-  ];
+  return rowCount < minRows
+    ? [`${path} must include at least ${minRows} row(s)`]
+    : [];
 }
 
 function validateSubmittedTableRow(
