@@ -442,7 +442,9 @@ function lintTextField(
  * repeats a group is refused too: that is the shape whose backtracking can
  * grow exponentially with the value and stall the server (see
  * `hasRepeatedTextFieldPatternGroup`). What is left grows at most
- * polynomially, and the engine bounds it with a time budget per check.
+ * polynomially with the value, with a degree that grows with the pattern, and
+ * the engine bounds it with one time budget shared by every pattern of a
+ * submit, resubmit or fill.
  */
 function lintTextFieldPattern(
   field: Readonly<Record<string, unknown>>,
