@@ -75,6 +75,7 @@ import {
   TableFieldDefinition,
   TextFieldDefinition,
   compileTextFieldPattern,
+  hasNestedTextFieldPatternQuantifier,
   isFormDataSourceFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
@@ -3915,16 +3916,30 @@ function withTextFieldPattern(
 }
 
 /**
- * Tells the designer whether the format will be accepted on save, using the
- * same compiler the engine and the renderer check values with.
+ * Tells the designer whether the format will be accepted on save, with the
+ * same checks the schema linter runs.
  */
 function readTextFieldPatternHint(
   pattern: string | undefined,
 ): SettingsFormRowHint {
+  if (pattern && !pattern.trim()) {
+    return {
+      severity: 'error',
+      text: '格式不能只有空白，儲存時會被拒絕。',
+    };
+  }
+
   if (pattern && !compileTextFieldPattern(pattern)) {
     return {
       severity: 'error',
-      text: '這不是有效的正規表示式，儲存時會被拒絕。',
+      text: '這不是有效的正規表示式，儲存時會被拒絕。格式以 u 模式檢查，多餘的跳脫（例如在方括號 [ ] 外寫 \\-）也算錯誤。',
+    };
+  }
+
+  if (pattern && hasNestedTextFieldPatternQuantifier(pattern)) {
+    return {
+      severity: 'error',
+      text: '格式裡有「重複的群組中又有重複」（例如 (a+)*），填寫的內容可能讓系統卡住，儲存時會被拒絕，請改寫成不巢狀的寫法。',
     };
   }
 
