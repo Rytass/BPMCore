@@ -41,18 +41,17 @@ jobs:
 
       # Reported but never failing, so the current findings stay visible in
       # every run instead of being suppressed into an allowlist nobody revisits.
-      # Two of them (image-size, via @nx/webpack > less) have no published fix
-      # at all, so a blocking high gate would be permanently red and would stop
-      # meaning anything.
+      # Some have no published fix at all (deepmerge, via jest-config), and a
+      # gate that is permanently red stops meaning anything.
       - name: Audit dependencies (report)
         run: pnpm audit --audit-level moderate || true
         continue-on-error: true
 
-      # Blocking. Nothing critical is outstanding, so this stays green until
-      # something genuinely new lands — including an override going stale, which
-      # is how the last batch of alerts accumulated.
-      - name: Audit dependencies (fail on critical)
-        run: pnpm audit --audit-level critical
+      # Blocking. Nothing high or critical is outstanding, so this stays green
+      # until something genuinely new lands — including an override going
+      # stale, which is how the last batch of alerts accumulated.
+      - name: Audit dependencies (fail on high)
+        run: pnpm audit --audit-level high
 
       - name: Typecheck
         run: pnpm typecheck
