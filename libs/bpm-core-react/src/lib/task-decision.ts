@@ -8,10 +8,17 @@ export function compareTaskDecisionDesc(
   left: TaskDecisionRecord,
   right: TaskDecisionRecord,
 ): number {
-  const byTime =
-    new Date(right.decidedAt).getTime() - new Date(left.decidedAt).getTime();
+  const byTime = readDecisionTime(right) - readDecisionTime(left);
 
-  return byTime !== 0 ? byTime : right.id.localeCompare(left.id);
+  // NaN when neither time parses, which a comparator must never return.
+  return byTime > 0 || byTime < 0 ? byTime : right.id.localeCompare(left.id);
+}
+
+/** A decision time that does not parse sorts as the oldest. */
+export function readDecisionTime(decision: TaskDecisionRecord): number {
+  const time = new Date(decision.decidedAt).getTime();
+
+  return Number.isNaN(time) ? -Infinity : time;
 }
 
 export function readLatestTaskDecision(

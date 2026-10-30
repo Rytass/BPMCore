@@ -1,5 +1,6 @@
 import type { TaskDecisionRecord } from '@rytass/bpm-core-client/workflow';
 import {
+  compareTaskDecisionDesc,
   readLatestTaskDecision,
   readLatestTaskDecisionsByTaskId,
 } from './task-decision';
@@ -54,5 +55,23 @@ describe('readLatestTaskDecisionsByTaskId', (): void => {
     expect(
       readLatestTaskDecisionsByTaskId([...tied].reverse()).get('task-1'),
     ).toBe(readLatestTaskDecision(tied));
+  });
+});
+
+describe('compareTaskDecisionDesc', (): void => {
+  it('sorts a time that does not parse as the oldest', (): void => {
+    const valid = decision('d1', 'task-1', '2026-10-30T01:00:00.000Z');
+    const invalid = decision('d2', 'task-1', 'not a time');
+
+    expect(compareTaskDecisionDesc(valid, invalid)).toBeLessThan(0);
+    expect(compareTaskDecisionDesc(invalid, valid)).toBeGreaterThan(0);
+  });
+
+  it('falls back to the id when neither time parses', (): void => {
+    const first = decision('d1', 'task-1', 'not a time');
+    const second = decision('d2', 'task-1', 'also not a time');
+
+    expect(compareTaskDecisionDesc(first, second)).toBeGreaterThan(0);
+    expect(Number.isNaN(compareTaskDecisionDesc(first, second))).toBe(false);
   });
 });
