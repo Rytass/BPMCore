@@ -83,7 +83,7 @@ overrides:
   # because the root declaration pins the 16.4 minor on purpose; `^` here
   # would override that and pull an unverified 16.5. Patches still flow.
   'next': '~16.4.3'
-  'nodemailer': '^10.1.7'
+  'nodemailer': '^10.3.1'
   # The one deliberate exact pin, and it mirrors react-pdf's own: react-pdf
   # depends on `pdfjs-dist` exactly (6.3.289 for react-pdf 11), while
   # bpm-core-react's peer is a range, so `autoInstallPeers` resolved the peer to
