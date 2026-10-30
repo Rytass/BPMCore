@@ -346,11 +346,18 @@ Typechecking passes through some of these; the Nest one only showed up because
 `git show HEAD:pnpm-lock.yaml` against the new one for packages that gained a
 version.
 
-CI reports `pnpm audit` on every run and fails only on `critical`. A blocking
-`high` gate would be permanently red — `image-size`, reached through
-`@nx/webpack > less`, has no published fix — and a permanently red gate stops
-being read. Nothing is suppressed into an allowlist; the outstanding findings
-stay visible in the log.
+CI reports `pnpm audit` on every run and fails on `high` and `critical`. The
+gate sat at `critical` while `image-size`, reached through
+`@nx/webpack > less`, had no published fix; less 4.8 dropped it, so the
+2026-10-31 dependency round cleared every `high` and raised the gate. What
+remains is a moderate `uuid` (`webpack-dev-server > sockjs` holds it at 8) and
+a low `deepmerge` (`jest-config`) with no patched version at all — the reason
+the gate stops above `moderate`. Nothing is suppressed into an allowlist; the
+outstanding findings stay visible in the log.
+
+A `high` advisory with no published fix would turn every run red. Fix it with
+an override if a patched version exists; otherwise lower the gate to
+`critical` in the same commit and say why here, rather than leaving CI red.
 
 ## Dev Supervisor 控制通道（`pnpm dev:ctl`）
 
