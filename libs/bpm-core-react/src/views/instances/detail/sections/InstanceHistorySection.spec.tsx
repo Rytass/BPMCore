@@ -16,9 +16,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 // `@mezzanine-ui/core/stepper` and `@mezzanine-ui/react` are ESM-only, which
 // the jest environment cannot load; the rest of this lib's component specs
-// stub them the same way. The stubs keep `style` and `className` so what this
-// spec asserts — the inline styles the section hands to Typography — still
-// reaches the DOM.
+// stub them the same way. The stubs keep `style`, `className` and `variant` so
+// what this spec asserts — what the section hands to Typography — still reaches
+// the DOM.
 jest.mock('@mezzanine-ui/core/stepper', () => ({
   stepClasses: new Proxy(
     {},
@@ -33,6 +33,7 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <span
         className={props.className as string | undefined}
+        data-variant={props.variant as string | undefined}
         style={props.style as CSSProperties | undefined}
       >
         {props.children as ReactNode}
@@ -202,7 +203,7 @@ describe('InstanceHistorySection comment rendering', () => {
     ]);
 
     // Wusong reported comments as too small to notice once they moved to their
-    // own line; the larger size is what sets them apart from the caption-sized
+    // own line; the larger size is what sets them apart from the body-sized
     // metadata run above them, for approvals and rejections alike.
     for (const text of [
       '同意說明：核准，請依核定條件執行',
@@ -213,6 +214,20 @@ describe('InstanceHistorySection comment rendering', () => {
       expect(comment?.style.fontSize).toBe(COMMENT_FONT_SIZE);
       expect(comment?.style.lineHeight).toBe(COMMENT_LINE_HEIGHT);
     }
+  });
+
+  it('sets the signer and time line in body text', () => {
+    root = renderHistory(container, [
+      createDecisionActivityLog('a4', 'APPROVED', '核准，請依核定條件執行'),
+    ]);
+
+    // Wusong reported this line as too small at caption size. Body is one step
+    // up and still one step below the comment, which the test above pins.
+    expect(
+      container.querySelector<HTMLElement>('.mzn-step-description')?.dataset[
+        'variant'
+      ],
+    ).toBe('body');
   });
 
   it('does not repeat the last comment on a signer who wrote nothing', () => {

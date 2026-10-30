@@ -161,7 +161,7 @@ const ActivityHistoryStep = forwardRef<
           <span className={stepClasses.titleConnectLine} />
         </Typography>
         {inlineDescriptionParts.length > 0 ? (
-          <Typography className={stepClasses.description} variant="caption">
+          <Typography className={stepClasses.description} variant="body">
             {inlineDescriptionParts.map((part, partIndex) => (
               <Fragment key={`${part.type}-${partIndex}`}>
                 {partIndex > 0 ? ' · ' : null}
