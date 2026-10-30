@@ -20,7 +20,11 @@ import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workfl
 import { readSelectableReturnTargetNodeIds } from '@rytass/bpm-core-shared/workflow-graph';
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { formatMemberLabel } from '../../../../lib/format-member-label';
-import { compareTaskDecisionDesc } from '../../../../lib/task-decision';
+import {
+  compareTaskDecisionDesc,
+  groupTaskDecisionsByTaskId,
+  readDecisionTime,
+} from '../../../../lib/task-decision';
 import { readSubmittedOnBehalfLabel } from '../submitted-by';
 
 // ---------------------------------------------------------------------------
@@ -963,40 +967,54 @@ function readLoggedTaskDecision(
   taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
   taskDecisions: readonly TaskDecisionRecord[] | null,
 ): TaskDecisionRecord | null {
-  if (!activityLog.taskId) {
+  const taskId = activityLog.taskId;
+
+  if (!taskId) {
     return null;
   }
 
   const decisionId = readStringField(payload, 'decisionId');
   const isOwnDecision = (decision: TaskDecisionRecord): boolean =>
-    decision.taskId === activityLog.taskId &&
-    (decisionId
+    decisionId
       ? decision.id === decisionId
-      : decision.decidedByMemberId === activityLog.actorMemberId);
-  const candidates = (
-    taskDecisions ?? [taskDecisionsByTaskId.get(activityLog.taskId) ?? null]
-  ).filter(
-    (decision): decision is TaskDecisionRecord =>
-      decision !== null && isOwnDecision(decision),
-  );
+      : decision.decidedByMemberId === activityLog.actorMemberId;
 
-  return readDecisionClosestTo(candidates, activityLog.createdAt);
+  if (!taskDecisions) {
+    const latest = taskDecisionsByTaskId.get(taskId) ?? null;
+
+    return latest && isOwnDecision(latest) ? latest : null;
+  }
+
+  return readDecisionClosestTo(
+    taskDecisions.filter(
+      (decision): boolean =>
+        decision.taskId === taskId && isOwnDecision(decision),
+    ),
+    new Date(activityLog.createdAt).getTime(),
+  );
 }
 
 function readDecisionClosestTo(
   decisions: readonly TaskDecisionRecord[],
-  at: string,
+  time: number,
 ): TaskDecisionRecord | null {
-  const time = new Date(at).getTime();
   const readDistance = (decision: TaskDecisionRecord): number =>
-    Math.abs(new Date(decision.decidedAt).getTime() - time);
+    Math.abs(readDecisionTime(decision) - time);
+  const isCloser = (
+    decision: TaskDecisionRecord,
+    closest: TaskDecisionRecord,
+  ): boolean => {
+    const byDistance = readDistance(decision) - readDistance(closest);
 
-  return (
-    [...decisions].sort(
-      (left, right): number =>
-        readDistance(left) - readDistance(right) ||
-        compareTaskDecisionDesc(left, right),
-    )[0] ?? null
+    // NaN when the log time or both decision times do not parse.
+    return byDistance < 0 ||
+      (!(byDistance > 0) && compareTaskDecisionDesc(decision, closest) < 0);
+  };
+
+  return decisions.reduce<TaskDecisionRecord | null>(
+    (closest, decision): TaskDecisionRecord =>
+      !closest || isCloser(decision, closest) ? decision : closest,
+    null,
   );
 }
 
@@ -1271,6 +1289,10 @@ export function readActivityStepRecords(
   formSchema: FormDefinitionSchema | null = null,
   taskDecisions: readonly TaskDecisionRecord[] | null = null,
 ): ActivityStepRecord[] {
+  // Grouped once, so each log searches only its own task's decisions.
+  const decisionsByTaskId = taskDecisions
+    ? groupTaskDecisionsByTaskId(taskDecisions)
+    : null;
   const historySteps = activityLogs
     .filter(isUserMeaningfulActivity)
     .map((activityLog): ActivityStepRecord => {
@@ -1300,7 +1322,9 @@ export function readActivityStepRecords(
           signatureVerification,
           memberProfilesById,
           formSchema,
-          taskDecisions,
+          decisionsByTaskId
+            ? (decisionsByTaskId.get(activityLog.taskId ?? '') ?? [])
+            : null,
         ),
       ].filter(isActivityDescriptionPart);
 

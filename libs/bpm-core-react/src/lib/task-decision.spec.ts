@@ -1,6 +1,7 @@
 import type { TaskDecisionRecord } from '@rytass/bpm-core-client/workflow';
 import {
   compareTaskDecisionDesc,
+  groupTaskDecisionsByTaskId,
   readLatestTaskDecision,
   readLatestTaskDecisionsByTaskId,
 } from './task-decision';
@@ -73,5 +74,17 @@ describe('compareTaskDecisionDesc', (): void => {
 
     expect(compareTaskDecisionDesc(first, second)).toBeGreaterThan(0);
     expect(Number.isNaN(compareTaskDecisionDesc(first, second))).toBe(false);
+  });
+});
+
+describe('groupTaskDecisionsByTaskId', (): void => {
+  it('keeps every decision of each task in order', (): void => {
+    const a1 = decision('a1', 'task-a', '2026-10-30T01:00:00.000Z');
+    const b1 = decision('b1', 'task-b', '2026-10-30T01:00:00.000Z');
+    const a2 = decision('a2', 'task-a', '2026-10-30T02:00:00.000Z');
+    const groups = groupTaskDecisionsByTaskId([a1, b1, a2]);
+
+    expect(groups.get('task-a')).toEqual([a1, a2]);
+    expect(groups.get('task-b')).toEqual([b1]);
   });
 });

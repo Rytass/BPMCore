@@ -1070,5 +1070,39 @@ describe('decision comments on a task several members signed', (): void => {
         ),
       ).toBe('決議：同意 | 同意說明：收回後同意');
     });
+
+    it('looks only at the decisions of the log\'s own task', (): void => {
+      // Same member on two tasks; the other task's decision is closer in time.
+      const own = createChainDecision(0, 'task-1', '自己 task 的意見');
+      const other = {
+        ...createChainDecision(0, 'task-2', '別的 task 的意見'),
+        decidedAt: '2026-10-30T01:05:00.000Z',
+        id: 'decision-other',
+      } as unknown as TaskDecisionRecord;
+      const log = {
+        ...createChainLog(0, 'task-1', {}),
+        createdAt: '2026-10-30T01:05:00.000Z',
+      };
+      const [step] = readActivityStepRecords(
+        [log],
+        [],
+        [],
+        null,
+        'IN_PROGRESS' as never,
+        new Map(),
+        readLatestTaskDecisionsByTaskId([own, other]),
+        new Map(),
+        null,
+        null,
+        [own, other],
+      );
+
+      expect(step?.descriptionParts).toContainEqual(
+        expect.objectContaining({ text: '自己 task 的意見' }),
+      );
+      expect(step?.descriptionParts).not.toContainEqual(
+        expect.objectContaining({ text: '別的 task 的意見' }),
+      );
+    });
   });
 });

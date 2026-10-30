@@ -27,6 +27,20 @@ export function readLatestTaskDecision(
   return [...decisions].sort(compareTaskDecisionDesc)[0] ?? null;
 }
 
+/** Every decision of each task, in the order given. */
+export function groupTaskDecisionsByTaskId(
+  decisions: readonly TaskDecisionRecord[],
+): ReadonlyMap<string, readonly TaskDecisionRecord[]> {
+  return decisions.reduce(
+    (groups, decision): Map<string, readonly TaskDecisionRecord[]> =>
+      groups.set(decision.taskId, [
+        ...(groups.get(decision.taskId) ?? []),
+        decision,
+      ]),
+    new Map<string, readonly TaskDecisionRecord[]>(),
+  );
+}
+
 /**
  * The newest decision on each task. A sequential or countersign task holds
  * decisions from several signers, so an entry here is only the last signer's.

@@ -7,6 +7,7 @@ import {
   ReactElement,
   RefCallback,
   forwardRef,
+  useMemo,
 } from 'react';
 import {
   Stepper,
@@ -285,18 +286,34 @@ export function InstanceHistorySection({
   workflowSnapshot,
   workflowTokens,
 }: InstanceHistorySectionProps): ReactElement {
-  const activitySteps: readonly ActivityStepRecord[] = readActivityStepRecords(
-    activityLogs,
-    tasks,
-    workflowTokens,
-    workflowSnapshot,
-    instanceState,
-    memberProfilesById,
-    taskDecisionsByTaskId,
-    signaturesById,
-    signatureVerification,
-    formSchema,
-    taskDecisions,
+  const activitySteps = useMemo(
+    (): readonly ActivityStepRecord[] =>
+      readActivityStepRecords(
+        activityLogs,
+        tasks,
+        workflowTokens,
+        workflowSnapshot,
+        instanceState,
+        memberProfilesById,
+        taskDecisionsByTaskId,
+        signaturesById,
+        signatureVerification,
+        formSchema,
+        taskDecisions,
+      ),
+    [
+      activityLogs,
+      formSchema,
+      instanceState,
+      memberProfilesById,
+      signatureVerification,
+      signaturesById,
+      taskDecisions,
+      taskDecisionsByTaskId,
+      tasks,
+      workflowSnapshot,
+      workflowTokens,
+    ],
   );
 
   const currentActivityStep = readCurrentActivityStep(activitySteps);
