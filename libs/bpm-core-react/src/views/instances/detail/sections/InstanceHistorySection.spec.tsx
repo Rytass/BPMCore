@@ -217,7 +217,7 @@ describe('InstanceHistorySection comment rendering', () => {
     }
   });
 
-  it('sets the signer and time line in body text', () => {
+  it('sets the signer and time line in body text', (): void => {
     root = renderHistory(container, [
       createDecisionActivityLog('a4', 'APPROVED', '核准，請依核定條件執行'),
     ]);
@@ -237,7 +237,7 @@ describe('InstanceHistorySection comment rendering', () => {
     ).toBe('div');
   });
 
-  it('does not repeat the last comment on a signer who wrote nothing', () => {
+  it('does not repeat the last comment on a signer who wrote nothing', (): void => {
     const silentLog = createDecisionActivityLog('s1', 'APPROVED', '');
     const signedLog = createDecisionActivityLog('s2', 'APPROVED', '協理意見');
     const taskId = 'task-shared';

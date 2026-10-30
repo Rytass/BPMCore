@@ -1198,6 +1198,7 @@ export function InstanceDetailView({
               memberProfilesById={memberProfilesById}
               signatureVerification={signatureVerification}
               signaturesById={signaturesById}
+              taskDecisions={taskDecisions}
               taskDecisionsByTaskId={taskDecisionsByTaskId}
               tasks={tasks}
               workflowSnapshot={instance?.workflowSnapshot ?? null}

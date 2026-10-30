@@ -797,7 +797,7 @@ describe('readReturnTargetOptions', (): void => {
   });
 });
 
-describe('decision comments on a task several members signed', () => {
+describe('decision comments on a task several members signed', (): void => {
   const DECISION_ACTOR_IDS = ['member-a', 'member-b', 'member-c'];
 
   function createChainLog(
@@ -835,12 +835,12 @@ describe('decision comments on a task several members signed', () => {
     } as unknown as TaskDecisionRecord;
   }
 
-  function readComment(
+  function readParts(
     log: ActivityLogRecord,
     payload: Readonly<Record<string, unknown>>,
     decisions: readonly TaskDecisionRecord[],
-  ): string | null {
-    const comment = readActivityDetailParts(
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] {
+    return readActivityDetailParts(
       log,
       payload,
       null,
@@ -848,7 +848,17 @@ describe('decision comments on a task several members signed', () => {
       new Map(),
       null,
       new Map(),
-    ).find((part) => part.type === 'comment');
+    );
+  }
+
+  function readComment(
+    log: ActivityLogRecord,
+    payload: Readonly<Record<string, unknown>>,
+    decisions: readonly TaskDecisionRecord[],
+  ): string | null {
+    const comment = readParts(log, payload, decisions).find(
+      (part): boolean => part.type === 'comment',
+    );
 
     return comment?.type === 'comment' ? comment.text : null;
   }
@@ -857,12 +867,16 @@ describe('decision comments on a task several members signed', () => {
     comments: readonly (string | null)[],
     readTaskId: (index: number) => string,
   ): readonly (string | null)[] {
-    const decisions = comments.map((comment, index) =>
+    const decisions = comments.map((comment, index): TaskDecisionRecord =>
       createChainDecision(index, readTaskId(index), comment),
     );
 
-    return comments.map((comment, index) => {
-      const payload = { action: 'APPROVED', comment };
+    return comments.map((comment, index): string | null => {
+      const payload = {
+        action: 'APPROVED',
+        comment,
+        decisionId: `decision-${index}`,
+      };
 
       return readComment(
         createChainLog(index, readTaskId(index), payload),
@@ -882,30 +896,179 @@ describe('decision comments on a task several members signed', () => {
 
   it.each(chains)(
     'keeps each signer to their own comment on a shared task when %s',
-    (_name, comments) => {
+    (_name, comments): void => {
       // A SEQUENTIAL node is one task for the whole chain, and the timeline's
       // decisions are keyed by task, so that map only holds the last signer.
-      // A log that carries `comment: null` said the signer wrote nothing.
-      expect(readChainComments(comments, () => 'task-shared')).toEqual(comments);
+      expect(readChainComments(comments, (): string => 'task-shared')).toEqual(
+        comments,
+      );
     },
   );
 
   it.each(chains)(
     'keeps each signer to their own comment on separate tasks when %s',
-    (_name, comments) => {
+    (_name, comments): void => {
       expect(
-        readChainComments(comments, (index) => `task-${index}`),
+        readChainComments(comments, (index): string => `task-${index}`),
       ).toEqual(comments);
     },
   );
 
-  it('falls back to the decision for a log written without a comment key', () => {
-    const payload = { action: 'APPROVED' };
+  describe('borrowing the decision for fields the log left out', (): void => {
+    // The last signer transferred the task, so every field the timeline can
+    // borrow is set on the decision the map holds.
+    const lastDecision = {
+      ...createChainDecision(2, 'task-shared', '轉給副理'),
+      action: 'TRANSFERRED',
+      signatureId: 'signature-c',
+      transferToMemberId: 'member-deputy',
+    } as unknown as TaskDecisionRecord;
 
-    expect(
-      readComment(createChainLog(0, 'task-1', payload), payload, [
-        createChainDecision(0, 'task-1', '舊紀錄的意見'),
-      ]),
-    ).toBe('舊紀錄的意見');
+    function readBorrowedText(
+      actorIndex: number,
+      payload: Readonly<Record<string, unknown>>,
+    ): string {
+      return readParts(
+        createChainLog(actorIndex, 'task-shared', payload),
+        payload,
+        [createChainDecision(0, 'task-shared', null), lastDecision],
+      )
+        .map((part): string =>
+          part.type === 'comment'
+            ? `${part.label}：${part.text}`
+            : part.type === 'text'
+              ? part.text
+              : `${part.prefix}${part.label}`,
+        )
+        .join(' | ');
+    }
+
+    function readSignedParts(
+      actorIndex: number,
+      payload: Readonly<Record<string, unknown>>,
+    ): readonly ReturnType<typeof readActivityDetailParts>[number][] {
+      return readActivityDetailParts(
+        createChainLog(actorIndex, 'task-shared', payload),
+        payload,
+        null,
+        readLatestTaskDecisionsByTaskId([lastDecision]),
+        new Map([
+          ['signature-c', { signedPayloadHash: 'abcdef0123456789' } as never],
+        ]),
+        null,
+        new Map(),
+      );
+    }
+
+    it('borrows every field from the decision the log names', (): void => {
+      expect(readBorrowedText(2, { decisionId: 'decision-2' })).toBe(
+        '決議：轉派 | 轉派給：member-deputy | 轉派說明：轉給副理',
+      );
+      expect(readSignedParts(2, { decisionId: 'decision-2' })).toContainEqual(
+        expect.objectContaining({ text: expect.stringContaining('簽章') }),
+      );
+    });
+
+    it('borrows nothing from a decision the log does not name', (): void => {
+      expect(readBorrowedText(0, { decisionId: 'decision-0' })).toBe('');
+      expect(readSignedParts(0, { decisionId: 'decision-0' })).toEqual([]);
+    });
+
+    it('borrows from the same member when the log names no decision', (): void => {
+      // The rows reset-demo-data seeds carry no decisionId.
+      expect(readBorrowedText(2, {})).toBe(
+        '決議：轉派 | 轉派給：member-deputy | 轉派說明：轉給副理',
+      );
+      expect(readSignedParts(2, {})).toContainEqual(
+        expect.objectContaining({ text: expect.stringContaining('簽章') }),
+      );
+    });
+
+    it('borrows nothing from another member when the log names no decision', (): void => {
+      expect(readBorrowedText(0, {})).toBe('');
+      expect(readSignedParts(0, {})).toEqual([]);
+    });
+  });
+
+  describe('with every decision on the instance', (): void => {
+    function readWithList(
+      log: ActivityLogRecord,
+      payload: Readonly<Record<string, unknown>>,
+      decisions: readonly TaskDecisionRecord[],
+    ): string {
+      return readActivityDetailParts(
+        log,
+        payload,
+        null,
+        readLatestTaskDecisionsByTaskId(decisions),
+        new Map(),
+        null,
+        new Map(),
+        null,
+        decisions,
+      )
+        .map((part): string =>
+          part.type === 'comment'
+            ? `${part.label}：${part.text}`
+            : part.type === 'text'
+              ? part.text
+              : `${part.prefix}${part.label}`,
+        )
+        .join(' | ');
+    }
+
+    const decisions = [
+      createChainDecision(0, 'task-shared', '課長意見'),
+      createChainDecision(1, 'task-shared', '經理意見'),
+      {
+        ...createChainDecision(2, 'task-shared', '退回重填'),
+        action: 'REJECTED',
+      } as unknown as TaskDecisionRecord,
+    ];
+
+    it('gives an earlier signer their own decision, not the newest', (): void => {
+      expect(
+        readWithList(
+          createChainLog(0, 'task-shared', { decisionId: 'decision-0' }),
+          { decisionId: 'decision-0' },
+          decisions,
+        ),
+      ).toBe('決議：同意 | 同意說明：課長意見');
+    });
+
+    it('gives an earlier signer their own decision when the log names none', (): void => {
+      expect(
+        readWithList(createChainLog(1, 'task-shared', {}), {}, decisions),
+      ).toBe('決議：同意 | 同意說明：經理意見');
+    });
+
+    it('matches a member with two decisions on the log made at the time', (): void => {
+      // A seat transferred away and back leaves one member two decisions.
+      const twice = [
+        {
+          ...createChainDecision(0, 'task-shared', '先轉出'),
+          action: 'TRANSFERRED',
+          transferToMemberId: 'member-b',
+        } as unknown as TaskDecisionRecord,
+        {
+          ...createChainDecision(2, 'task-shared', '收回後同意'),
+          decidedByMemberId: DECISION_ACTOR_IDS[0],
+        } as unknown as TaskDecisionRecord,
+      ];
+
+      expect(
+        readWithList(createChainLog(0, 'task-shared', {}), {}, twice),
+      ).toBe('決議：轉派 | 轉派給：member-b | 轉派說明：先轉出');
+      expect(
+        readWithList(
+          {
+            ...createChainLog(0, 'task-shared', {}),
+            createdAt: '2026-10-30T01:02:00.000Z',
+          },
+          {},
+          twice,
+        ),
+      ).toBe('決議：同意 | 同意說明：收回後同意');
+    });
   });
 });

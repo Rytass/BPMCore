@@ -20,6 +20,7 @@ import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workfl
 import { readSelectableReturnTargetNodeIds } from '@rytass/bpm-core-shared/workflow-graph';
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { formatMemberLabel } from '../../../../lib/format-member-label';
+import { compareTaskDecisionDesc } from '../../../../lib/task-decision';
 import { readSubmittedOnBehalfLabel } from '../submitted-by';
 
 // ---------------------------------------------------------------------------
@@ -865,6 +866,7 @@ export function readActivityDetailParts(
   signatureVerification: SignatureVerificationRecord | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
   formSchema: FormDefinitionSchema | null = null,
+  taskDecisions: readonly TaskDecisionRecord[] | null = null,
 ): readonly ActivityStepDescriptionPart[] {
   if (activityLog.eventType === 'INSTANCE_RESUBMITTED') {
     return [
@@ -888,19 +890,16 @@ export function readActivityDetailParts(
     ].filter(isActivityDescriptionPart);
   }
 
-  const taskDecision = activityLog.taskId
-    ? taskDecisionsByTaskId.get(activityLog.taskId)
-    : null;
+  const taskDecision = readLoggedTaskDecision(
+    activityLog,
+    payload,
+    taskDecisionsByTaskId,
+    taskDecisions,
+  );
   const action =
     readStringField(payload, 'action') ?? taskDecision?.action ?? null;
-  // The decision map holds only the last signer of a task. A log carrying the
-  // key has already said what this signer wrote, null included; only logs
-  // written without the key (seeded rows, for one) have to borrow from the
-  // decision.
   const comment =
-    'comment' in payload
-      ? readStringField(payload, 'comment')
-      : (taskDecision?.comment ?? null);
+    readStringField(payload, 'comment') ?? taskDecision?.comment ?? null;
   const transferToMemberId =
     readStringField(payload, 'transferToMemberId') ??
     taskDecision?.transferToMemberId ??
@@ -945,6 +944,60 @@ export function readActivityDetailParts(
         )
       : null,
   ].filter(isActivityDescriptionPart);
+}
+
+/**
+ * The decision a `TASK_DECIDED` log records, for the fields its payload left
+ * out. A sequential or countersign task has several signers, so the decision
+ * must be this log's own: the one its `decisionId` names, or for a log written
+ * without one (the rows `reset-demo-data` seeds), the same member's decision
+ * made closest to the log. Otherwise one signer would show another's comment,
+ * action, transfer target or signature.
+ *
+ * With the full list that holds for every signer. With only the newest decision
+ * per task, a log that is not the newest on its task gets nothing.
+ */
+function readLoggedTaskDecision(
+  activityLog: ActivityLogRecord,
+  payload: Readonly<Record<string, unknown>>,
+  taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>,
+  taskDecisions: readonly TaskDecisionRecord[] | null,
+): TaskDecisionRecord | null {
+  if (!activityLog.taskId) {
+    return null;
+  }
+
+  const decisionId = readStringField(payload, 'decisionId');
+  const isOwnDecision = (decision: TaskDecisionRecord): boolean =>
+    decision.taskId === activityLog.taskId &&
+    (decisionId
+      ? decision.id === decisionId
+      : decision.decidedByMemberId === activityLog.actorMemberId);
+  const candidates = (
+    taskDecisions ?? [taskDecisionsByTaskId.get(activityLog.taskId) ?? null]
+  ).filter(
+    (decision): decision is TaskDecisionRecord =>
+      decision !== null && isOwnDecision(decision),
+  );
+
+  return readDecisionClosestTo(candidates, activityLog.createdAt);
+}
+
+function readDecisionClosestTo(
+  decisions: readonly TaskDecisionRecord[],
+  at: string,
+): TaskDecisionRecord | null {
+  const time = new Date(at).getTime();
+  const readDistance = (decision: TaskDecisionRecord): number =>
+    Math.abs(new Date(decision.decidedAt).getTime() - time);
+
+  return (
+    [...decisions].sort(
+      (left, right): number =>
+        readDistance(left) - readDistance(right) ||
+        compareTaskDecisionDesc(left, right),
+    )[0] ?? null
+  );
 }
 
 /**
@@ -1216,6 +1269,7 @@ export function readActivityStepRecords(
   signaturesById: ReadonlyMap<string, SignatureRecord>,
   signatureVerification: SignatureVerificationRecord | null,
   formSchema: FormDefinitionSchema | null = null,
+  taskDecisions: readonly TaskDecisionRecord[] | null = null,
 ): ActivityStepRecord[] {
   const historySteps = activityLogs
     .filter(isUserMeaningfulActivity)
@@ -1246,6 +1300,7 @@ export function readActivityStepRecords(
           signatureVerification,
           memberProfilesById,
           formSchema,
+          taskDecisions,
         ),
       ].filter(isActivityDescriptionPart);
 

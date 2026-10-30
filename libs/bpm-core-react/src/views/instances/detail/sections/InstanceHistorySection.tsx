@@ -254,6 +254,13 @@ export interface InstanceHistorySectionProps {
   readonly memberProfilesById: ReadonlyMap<string, MemberProfileRecord>;
   /** Task decisions indexed by taskId (latest per task). */
   readonly taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>;
+  /**
+   * Every decision on the instance's tasks. When given, a `TASK_DECIDED` row
+   * fills what its payload left out from its own decision, found by the
+   * payload's `decisionId` or else by the member and time, instead of from the
+   * newest decision on its task.
+   */
+  readonly taskDecisions?: readonly TaskDecisionRecord[] | null;
   /** Signatures indexed by id. */
   readonly signaturesById: ReadonlyMap<string, SignatureRecord>;
   /** Signature chain verification result, or null. */
@@ -272,6 +279,7 @@ export function InstanceHistorySection({
   memberProfilesById,
   signatureVerification,
   signaturesById,
+  taskDecisions = null,
   taskDecisionsByTaskId,
   tasks,
   workflowSnapshot,
@@ -288,6 +296,7 @@ export function InstanceHistorySection({
     signaturesById,
     signatureVerification,
     formSchema,
+    taskDecisions,
   );
 
   const currentActivityStep = readCurrentActivityStep(activitySteps);
