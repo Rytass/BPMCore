@@ -37,6 +37,7 @@ import {
 import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
 import { readTaskNodeText } from '../../lib/task-node-label';
+import { readLatestTaskDecision } from '../../lib/task-decision';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
 
@@ -316,7 +317,7 @@ export function InboxView(): ReactElement {
         ]);
       const [nextPendingRows, nextHistoryRows] = await Promise.all([
         readInboxTaskRows(nextPendingTasks),
-        readApprovalHistoryRows(nextHistoryTasks),
+        readApprovalHistoryRows(nextHistoryTasks, currentMemberId),
       ]);
 
       setPendingRows(nextPendingRows);
@@ -517,6 +518,7 @@ async function readInboxTaskRows(
 
 async function readApprovalHistoryRows(
   tasks: readonly TaskRecord[],
+  currentMemberId: string,
 ): Promise<ApprovalHistoryRow[]> {
   const [decisionLists, instances] = await Promise.all([
     Promise.all(tasks.map((task) => listTaskDecisions(task.id))),
@@ -524,7 +526,8 @@ async function readApprovalHistoryRows(
   ]);
 
   return tasks.map((task, index): ApprovalHistoryRow => {
-    const decision = readLatestTaskDecision(decisionLists[index] ?? []);
+    const decisions = decisionLists[index] ?? [];
+    const decision = readLatestOwnTaskDecision(decisions, currentMemberId);
     const instance = instances[index] ?? null;
 
     return {
@@ -534,7 +537,11 @@ async function readApprovalHistoryRows(
       decisionComment: decision?.comment ?? null,
       decisionCommentText: readDecisionCommentText(decision?.comment ?? null),
       decisionLabel: readTaskDecisionLabel(decision?.action ?? null),
-      decidedAt: decision?.decidedAt ?? task.completedAt,
+      // completedAt is when the last signer finished, so it can stand in only
+      // when the task has no decisions at all.
+      decidedAt:
+        decision?.decidedAt ??
+        (decisions.length === 0 ? task.completedAt : null),
       instanceState: instance?.state ?? null,
       instanceStateLabel: readInstanceStateLabel(instance?.state ?? null),
       key: task.id,
@@ -564,18 +571,18 @@ function readTaskCaseTitle(
   return instance ? readApprovalInstanceCaseTitle(instance) : task.instanceId;
 }
 
-function readLatestTaskDecision(
+// A sequential or countersign task holds decisions from several signers, so
+// the newest one on the task can be somebody else's. A delegate is the one
+// recorded as deciding, and a principal never gets the delegated task in this
+// list.
+function readLatestOwnTaskDecision(
   decisions: readonly TaskDecisionRecord[],
+  currentMemberId: string,
 ): TaskDecisionRecord | null {
-  return [...decisions].sort(compareTaskDecisionDesc)[0] ?? null;
-}
-
-function compareTaskDecisionDesc(
-  left: TaskDecisionRecord,
-  right: TaskDecisionRecord,
-): number {
-  return (
-    new Date(right.decidedAt).getTime() - new Date(left.decidedAt).getTime()
+  return readLatestTaskDecision(
+    decisions.filter(
+      (decision): boolean => decision.decidedByMemberId === currentMemberId,
+    ),
   );
 }
 

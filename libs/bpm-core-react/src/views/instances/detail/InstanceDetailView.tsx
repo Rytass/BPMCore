@@ -91,12 +91,12 @@ import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
 import { isBPMAdminMember } from '../../../lib/use-bpm-member';
+import { readLatestTaskDecisionsByTaskId } from '../../../lib/task-decision';
 import { PDFPreview } from '../../../components/pdf-preview';
 import {
   readActingTask,
   readErrorMessage,
   readInstanceStateLabel,
-  readLatestTaskDecisionsByTaskId,
   readMemberProfilesForTimeline,
   readNodeRuntimeState,
   readTaskDecisionsForTasks,
@@ -1198,6 +1198,7 @@ export function InstanceDetailView({
               memberProfilesById={memberProfilesById}
               signatureVerification={signatureVerification}
               signaturesById={signaturesById}
+              taskDecisions={taskDecisions}
               taskDecisionsByTaskId={taskDecisionsByTaskId}
               tasks={tasks}
               workflowSnapshot={instance?.workflowSnapshot ?? null}

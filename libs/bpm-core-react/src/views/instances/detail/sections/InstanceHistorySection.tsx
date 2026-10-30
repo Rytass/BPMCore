@@ -7,6 +7,7 @@ import {
   ReactElement,
   RefCallback,
   forwardRef,
+  useMemo,
 } from 'react';
 import {
   Stepper,
@@ -161,7 +162,12 @@ const ActivityHistoryStep = forwardRef<
           <span className={stepClasses.titleConnectLine} />
         </Typography>
         {inlineDescriptionParts.length > 0 ? (
-          <Typography className={stepClasses.description} variant="caption">
+          // Body renders a <p>, and the Tooltip popper inside is a <div>.
+          <Typography
+            className={stepClasses.description}
+            component="div"
+            variant="body"
+          >
             {inlineDescriptionParts.map((part, partIndex) => (
               <Fragment key={`${part.type}-${partIndex}`}>
                 {partIndex > 0 ? ' · ' : null}
@@ -249,6 +255,13 @@ export interface InstanceHistorySectionProps {
   readonly memberProfilesById: ReadonlyMap<string, MemberProfileRecord>;
   /** Task decisions indexed by taskId (latest per task). */
   readonly taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord>;
+  /**
+   * Every decision on the instance's tasks. When given, a `TASK_DECIDED` row
+   * fills what its payload left out from its own decision, found by the
+   * payload's `decisionId` or else by the member and time, instead of from the
+   * newest decision on its task.
+   */
+  readonly taskDecisions?: readonly TaskDecisionRecord[] | null;
   /** Signatures indexed by id. */
   readonly signaturesById: ReadonlyMap<string, SignatureRecord>;
   /** Signature chain verification result, or null. */
@@ -267,22 +280,40 @@ export function InstanceHistorySection({
   memberProfilesById,
   signatureVerification,
   signaturesById,
+  taskDecisions = null,
   taskDecisionsByTaskId,
   tasks,
   workflowSnapshot,
   workflowTokens,
 }: InstanceHistorySectionProps): ReactElement {
-  const activitySteps: readonly ActivityStepRecord[] = readActivityStepRecords(
-    activityLogs,
-    tasks,
-    workflowTokens,
-    workflowSnapshot,
-    instanceState,
-    memberProfilesById,
-    taskDecisionsByTaskId,
-    signaturesById,
-    signatureVerification,
-    formSchema,
+  const activitySteps = useMemo(
+    (): readonly ActivityStepRecord[] =>
+      readActivityStepRecords(
+        activityLogs,
+        tasks,
+        workflowTokens,
+        workflowSnapshot,
+        instanceState,
+        memberProfilesById,
+        taskDecisionsByTaskId,
+        signaturesById,
+        signatureVerification,
+        formSchema,
+        taskDecisions,
+      ),
+    [
+      activityLogs,
+      formSchema,
+      instanceState,
+      memberProfilesById,
+      signatureVerification,
+      signaturesById,
+      taskDecisions,
+      taskDecisionsByTaskId,
+      tasks,
+      workflowSnapshot,
+      workflowTokens,
+    ],
   );
 
   const currentActivityStep = readCurrentActivityStep(activitySteps);
