@@ -568,9 +568,10 @@ function readTaskCaseTitle(
   return instance ? readApprovalInstanceCaseTitle(instance) : task.instanceId;
 }
 
-// A sequential or countersign task holds one decision per signer, so the newest
-// one on the task can be somebody else's. A delegate is the one recorded as
-// deciding, and a principal never gets the delegated task in this list.
+// A sequential or countersign task holds decisions from several signers, so
+// the newest one on the task can be somebody else's. A delegate is the one
+// recorded as deciding, and a principal never gets the delegated task in this
+// list.
 function readLatestOwnTaskDecision(
   decisions: readonly TaskDecisionRecord[],
   currentMemberId: string,

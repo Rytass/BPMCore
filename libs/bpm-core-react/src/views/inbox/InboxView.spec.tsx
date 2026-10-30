@@ -6,6 +6,7 @@ import type {
   TaskDecisionRecord,
   TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
+import { formatDateTime } from '../../lib/format-date-time';
 import { InboxView } from './InboxView';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -613,17 +614,27 @@ describe('InboxView own decision', () => {
         chain.shared ? 'task-shared' : `task-${order}`;
       const taskId = readTaskId(index);
       const signing = chain.signings[index];
+      const decisions = chain.signings.map((item, order) =>
+        decision(readTaskId(order), item, order + 1),
+      );
 
+      // completedAt differs from every decision time, so a fallback to it
+      // cannot pass for the signer's own time.
       await openHistoryAs(
         memberId,
-        task({ id: taskId, status: 'COMPLETED' }),
-        chain.signings.map((item, order) =>
-          decision(readTaskId(order), item, order + 1),
-        ),
+        task({
+          completedAt: '2026-10-30T05:00:00.000Z',
+          id: taskId,
+          status: 'COMPLETED',
+        }),
+        decisions,
       );
 
       expect(cell(taskId, '決議')).toBe(DECISION_LABELS[signing.action]);
       expect(cell(taskId, '意見')).toBe(signing.comment ?? '-');
+      expect(cell(taskId, '簽核時間')).toBe(
+        formatDateTime(decisions[index].decidedAt),
+      );
     },
   );
 
