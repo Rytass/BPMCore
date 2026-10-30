@@ -161,7 +161,12 @@ const ActivityHistoryStep = forwardRef<
           <span className={stepClasses.titleConnectLine} />
         </Typography>
         {inlineDescriptionParts.length > 0 ? (
-          <Typography className={stepClasses.description} variant="body">
+          // Body renders a <p>, and the Tooltip popper inside is a <div>.
+          <Typography
+            className={stepClasses.description}
+            component="div"
+            variant="body"
+          >
             {inlineDescriptionParts.map((part, partIndex) => (
               <Fragment key={`${part.type}-${partIndex}`}>
                 {partIndex > 0 ? ' · ' : null}

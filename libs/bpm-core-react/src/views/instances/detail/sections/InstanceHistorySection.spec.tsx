@@ -16,9 +16,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 // `@mezzanine-ui/core/stepper` and `@mezzanine-ui/react` are ESM-only, which
 // the jest environment cannot load; the rest of this lib's component specs
-// stub them the same way. The stubs keep `style`, `className` and `variant` so
-// what this spec asserts — what the section hands to Typography — still reaches
-// the DOM.
+// stub them the same way. The stubs keep `style`, `className`, `component` and
+// `variant` so what this spec asserts — what the section hands to Typography —
+// still reaches the DOM.
 jest.mock('@mezzanine-ui/core/stepper', () => ({
   stepClasses: new Proxy(
     {},
@@ -33,6 +33,7 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <span
         className={props.className as string | undefined}
+        data-component={props.component as string | undefined}
         data-variant={props.variant as string | undefined}
         style={props.style as CSSProperties | undefined}
       >
@@ -228,6 +229,12 @@ describe('InstanceHistorySection comment rendering', () => {
         'variant'
       ],
     ).toBe('body');
+    // Body defaults to a <p>, which cannot hold the Tooltip popper's <div>.
+    expect(
+      container.querySelector<HTMLElement>('.mzn-step-description')?.dataset[
+        'component'
+      ],
+    ).toBe('div');
   });
 
   it('does not repeat the last comment on a signer who wrote nothing', () => {
