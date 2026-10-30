@@ -893,8 +893,13 @@ export function readActivityDetailParts(
     : null;
   const action =
     readStringField(payload, 'action') ?? taskDecision?.action ?? null;
+  // The decision map holds only the last signer of a task. A log carrying the
+  // key has already said what this signer wrote, null included; only logs from
+  // before the key existed have to borrow from the decision.
   const comment =
-    readStringField(payload, 'comment') ?? taskDecision?.comment ?? null;
+    'comment' in payload
+      ? readStringField(payload, 'comment')
+      : (taskDecision?.comment ?? null);
   const transferToMemberId =
     readStringField(payload, 'transferToMemberId') ??
     taskDecision?.transferToMemberId ??

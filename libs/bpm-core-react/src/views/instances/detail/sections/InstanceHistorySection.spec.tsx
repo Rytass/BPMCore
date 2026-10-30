@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type {
   ActivityLogRecord,
   ApprovalInstanceRecord,
+  TaskDecisionRecord,
 } from '@rytass/bpm-core-client/workflow';
 import { InstanceHistorySection } from './InstanceHistorySection';
 
@@ -78,6 +79,7 @@ function createDecisionActivityLog(
 function renderHistory(
   container: HTMLElement,
   activityLogs: readonly ActivityLogRecord[],
+  taskDecisionsByTaskId: ReadonlyMap<string, TaskDecisionRecord> = new Map(),
 ): Root {
   const root = createRoot(container);
 
@@ -90,7 +92,7 @@ function renderHistory(
           memberProfilesById={new Map()}
           signatureVerification={null}
           signaturesById={new Map()}
-          taskDecisionsByTaskId={new Map()}
+          taskDecisionsByTaskId={taskDecisionsByTaskId}
           tasks={[]}
           workflowSnapshot={null}
           workflowTokens={[]}
@@ -211,5 +213,26 @@ describe('InstanceHistorySection comment rendering', () => {
       expect(comment?.style.fontSize).toBe(COMMENT_FONT_SIZE);
       expect(comment?.style.lineHeight).toBe(COMMENT_LINE_HEIGHT);
     }
+  });
+
+  it('does not repeat the last comment on a signer who wrote nothing', () => {
+    const silentLog = createDecisionActivityLog('s1', 'APPROVED', '');
+    const signedLog = createDecisionActivityLog('s2', 'APPROVED', '協理意見');
+    const taskId = 'task-shared';
+
+    root = renderHistory(
+      container,
+      [
+        {
+          ...silentLog,
+          payloadJson: JSON.stringify({ action: 'APPROVED', comment: null }),
+          taskId,
+        },
+        { ...signedLog, taskId },
+      ],
+      new Map([[taskId, { comment: '協理意見' } as TaskDecisionRecord]]),
+    );
+
+    expect(container.textContent?.match(/協理意見/g)).toHaveLength(1);
   });
 });

@@ -6,9 +6,11 @@ import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import type {
   ActivityLogRecord,
   MemberProfileRecord,
+  TaskDecisionRecord,
   TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
 
+import { readLatestTaskDecisionsByTaskId } from './container-helpers';
 import {
   canMemberActOnTask,
   isActivityError,
@@ -792,5 +794,118 @@ describe('readReturnTargetOptions', (): void => {
     expect(
       finance ? readReturnTargetOptions(workflow, finance).map((option) => option.id) : null,
     ).toEqual(['start', 'manager']);
+  });
+});
+
+describe('decision comments on a task several members signed', () => {
+  const DECISION_ACTOR_IDS = ['member-a', 'member-b', 'member-c'];
+
+  function createChainLog(
+    index: number,
+    taskId: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord {
+    return {
+      actorMemberId: DECISION_ACTOR_IDS[index],
+      createdAt: `2026-10-30T01:0${index}:00.000Z`,
+      eventType: 'TASK_DECIDED',
+      id: `activity-${index}`,
+      instanceId: 'instance-1',
+      nodeId: 'userTask_1',
+      payloadJson: JSON.stringify(payload),
+      taskId,
+    } as unknown as ActivityLogRecord;
+  }
+
+  function createChainDecision(
+    index: number,
+    taskId: string,
+    comment: string | null,
+  ): TaskDecisionRecord {
+    return {
+      action: 'APPROVED',
+      comment,
+      decidedAt: `2026-10-30T01:0${index}:00.000Z`,
+      decidedByMemberId: DECISION_ACTOR_IDS[index],
+      id: `decision-${index}`,
+      returnToNodeId: null,
+      signatureId: null,
+      taskId,
+      transferToMemberId: null,
+    } as unknown as TaskDecisionRecord;
+  }
+
+  function readComment(
+    log: ActivityLogRecord,
+    payload: Readonly<Record<string, unknown>>,
+    decisions: readonly TaskDecisionRecord[],
+  ): string | null {
+    const comment = readActivityDetailParts(
+      log,
+      payload,
+      null,
+      readLatestTaskDecisionsByTaskId(decisions),
+      new Map(),
+      null,
+      new Map(),
+    ).find((part) => part.type === 'comment');
+
+    return comment?.type === 'comment' ? comment.text : null;
+  }
+
+  function readChainComments(
+    comments: readonly (string | null)[],
+    readTaskId: (index: number) => string,
+  ): readonly (string | null)[] {
+    const decisions = comments.map((comment, index) =>
+      createChainDecision(index, readTaskId(index), comment),
+    );
+
+    return comments.map((comment, index) => {
+      const payload = { action: 'APPROVED', comment };
+
+      return readComment(
+        createChainLog(index, readTaskId(index), payload),
+        payload,
+        decisions,
+      );
+    });
+  }
+
+  const chains: readonly (readonly [string, readonly (string | null)[]])[] = [
+    ['the first signer wrote nothing', [null, '經理意見', '協理意見']],
+    ['the middle signer wrote nothing', ['課長意見', null, '協理意見']],
+    ['only the middle signer wrote', [null, '經理意見', null]],
+    ['only the first signer wrote', ['課長意見', null, null]],
+    ['everyone wrote', ['課長意見', '經理意見', '協理意見']],
+  ];
+
+  it.each(chains)(
+    'keeps each signer to their own comment on a shared task when %s',
+    (_name, comments) => {
+      // A SEQUENTIAL node is one task for the whole chain, and the timeline's
+      // decisions are keyed by task, so that map only holds the last signer.
+      // A log that carries `comment: null` said the signer wrote nothing.
+      expect(readChainComments(comments, () => 'task-shared')).toEqual(comments);
+    },
+  );
+
+  it.each(chains)(
+    'keeps each signer to their own comment on separate tasks when %s',
+    (_name, comments) => {
+      expect(
+        readChainComments(comments, (index) => `task-${index}`),
+      ).toEqual(comments);
+    },
+  );
+
+  it('falls back to the decision for a log written without a comment key', () => {
+    const payload = { action: 'APPROVED' };
+
+    expect(
+      readComment(createChainLog(0, 'task-1', payload), payload, [
+        createChainDecision(0, 'task-1', '舊紀錄的意見'),
+      ]),
+    ).toBe('舊紀錄的意見');
   });
 });
