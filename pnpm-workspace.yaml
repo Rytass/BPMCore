@@ -15,9 +15,9 @@ overrides:
   # peers are open (`ai: >=6.0.0`), so `autoInstallPeers` resolves them to the
   # newest major and once installed ai 7 / @ai-sdk 4 next to the workspace's
   # 6 / 3. The workspace is on 7 / 4 now; raise these as one set.
-  '@ai-sdk/openai': '^4.0.98'
-  '@ai-sdk/provider-utils': '^5.0.64'
-  '@ai-sdk/react': '^4.0.150'
+  '@ai-sdk/openai': '^4.0.106'
+  '@ai-sdk/provider-utils': '^5.0.72'
+  '@ai-sdk/react': '^4.0.162'
   '@babel/core': '^7.29.6'
   '@babel/plugin-transform-modules-systemjs': '^7.29.4'
   '@xhmikosr/decompress': '^11.1.3'
@@ -52,7 +52,7 @@ overrides:
   '@rytass/secret-adapter-vault-nestjs': '^0.6.0'
   '@vitest/mocker': '^4.1.11'
   'adm-zip': '^0.6.0'
-  'ai': '^7.0.146'
+  'ai': '^7.0.158'
   'axios': '^1.16.0'
   'body-parser@1': '^1.20.6'
   'body-parser@2': '^2.3.0'
