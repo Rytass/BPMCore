@@ -482,6 +482,12 @@ describe('InboxView own decision', () => {
     readonly memberId: string;
   }
 
+  interface Chain {
+    readonly name: string;
+    readonly shared: boolean;
+    readonly signings: readonly Signing[];
+  }
+
   let container: HTMLDivElement;
   let root: Root;
 
@@ -548,11 +554,7 @@ describe('InboxView own decision', () => {
     });
   }
 
-  const chains: readonly {
-    readonly name: string;
-    readonly shared: boolean;
-    readonly signings: readonly Signing[];
-  }[] = [
+  const chains: readonly Chain[] = [
     {
       name: 'a shared task where everyone wrote',
       shared: true,
@@ -601,11 +603,16 @@ describe('InboxView own decision', () => {
   ];
 
   it.each(
-    chains.flatMap((chain) =>
-      chain.signings.map(
-        (signing, index) =>
-          [`${chain.name}`, signing.memberId, chain, index] as const,
-      ),
+    chains.flatMap(
+      (chain): readonly (readonly [string, string, Chain, number])[] =>
+        chain.signings.map(
+          (signing, index): readonly [string, string, Chain, number] => [
+            `${chain.name}`,
+            signing.memberId,
+            chain,
+            index,
+          ],
+        ),
     ),
   )(
     'on %s, shows %s their own row',
@@ -614,8 +621,9 @@ describe('InboxView own decision', () => {
         chain.shared ? 'task-shared' : `task-${order}`;
       const taskId = readTaskId(index);
       const signing = chain.signings[index];
-      const decisions = chain.signings.map((item, order) =>
-        decision(readTaskId(order), item, order + 1),
+      const decisions = chain.signings.map(
+        (item, order): TaskDecisionRecord =>
+          decision(readTaskId(order), item, order + 1),
       );
 
       // completedAt differs from every decision time, so a fallback to it
@@ -751,7 +759,11 @@ describe('InboxView own decision', () => {
   it('shows no one else\'s decision to a member who has none on the task', async (): Promise<void> => {
     await openHistoryAs(
       CHIEF,
-      task({ id: 'task-shared', status: 'COMPLETED' }),
+      task({
+        completedAt: '2026-10-30T05:00:00.000Z',
+        id: 'task-shared',
+        status: 'COMPLETED',
+      }),
       [
         decision(
           'task-shared',
@@ -763,5 +775,24 @@ describe('InboxView own decision', () => {
 
     expect(cell('task-shared', '決議')).toBe('未記錄');
     expect(cell('task-shared', '意見')).toBe('-');
+    // completedAt is when the other signer finished, not this member.
+    expect(cell('task-shared', '簽核時間')).toBe('-');
+  });
+
+  it('falls back to the completion time for a task with no decisions', async (): Promise<void> => {
+    await openHistoryAs(
+      CHIEF,
+      task({
+        completedAt: '2026-10-30T05:00:00.000Z',
+        id: 'task-shared',
+        status: 'COMPLETED',
+      }),
+      [],
+    );
+
+    expect(cell('task-shared', '決議')).toBe('未記錄');
+    expect(cell('task-shared', '簽核時間')).toBe(
+      formatDateTime('2026-10-30T05:00:00.000Z'),
+    );
   });
 });

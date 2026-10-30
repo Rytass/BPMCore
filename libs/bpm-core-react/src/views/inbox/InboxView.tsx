@@ -526,10 +526,8 @@ async function readApprovalHistoryRows(
   ]);
 
   return tasks.map((task, index): ApprovalHistoryRow => {
-    const decision = readLatestOwnTaskDecision(
-      decisionLists[index] ?? [],
-      currentMemberId,
-    );
+    const decisions = decisionLists[index] ?? [];
+    const decision = readLatestOwnTaskDecision(decisions, currentMemberId);
     const instance = instances[index] ?? null;
 
     return {
@@ -539,7 +537,11 @@ async function readApprovalHistoryRows(
       decisionComment: decision?.comment ?? null,
       decisionCommentText: readDecisionCommentText(decision?.comment ?? null),
       decisionLabel: readTaskDecisionLabel(decision?.action ?? null),
-      decidedAt: decision?.decidedAt ?? task.completedAt,
+      // completedAt is when the last signer finished, so it can stand in only
+      // when the task has no decisions at all.
+      decidedAt:
+        decision?.decidedAt ??
+        (decisions.length === 0 ? task.completedAt : null),
       instanceState: instance?.state ?? null,
       instanceStateLabel: readInstanceStateLabel(instance?.state ?? null),
       key: task.id,
