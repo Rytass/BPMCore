@@ -37,6 +37,7 @@ import {
 import { formatDateTime } from '../../lib/format-date-time';
 import { useAuth } from '../../lib/auth-provider';
 import { readTaskNodeText } from '../../lib/task-node-label';
+import { readLatestTaskDecision } from '../../lib/task-decision';
 import { useRouterAdapter } from '../../lib/router-adapter';
 import { useBPMRoutes } from '../../lib/routes-config';
 
@@ -576,21 +577,10 @@ function readLatestOwnTaskDecision(
   decisions: readonly TaskDecisionRecord[],
   currentMemberId: string,
 ): TaskDecisionRecord | null {
-  return (
-    decisions
-      .filter(
-        (decision): boolean => decision.decidedByMemberId === currentMemberId,
-      )
-      .sort(compareTaskDecisionDesc)[0] ?? null
-  );
-}
-
-function compareTaskDecisionDesc(
-  left: TaskDecisionRecord,
-  right: TaskDecisionRecord,
-): number {
-  return (
-    new Date(right.decidedAt).getTime() - new Date(left.decidedAt).getTime()
+  return readLatestTaskDecision(
+    decisions.filter(
+      (decision): boolean => decision.decidedByMemberId === currentMemberId,
+    ),
   );
 }
 

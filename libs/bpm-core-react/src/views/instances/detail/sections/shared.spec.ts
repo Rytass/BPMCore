@@ -10,7 +10,7 @@ import type {
   TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
 
-import { readLatestTaskDecisionsByTaskId } from './container-helpers';
+import { readLatestTaskDecisionsByTaskId } from '../../../../lib/task-decision';
 import {
   canMemberActOnTask,
   isActivityError,

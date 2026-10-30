@@ -99,22 +99,3 @@ export async function readTaskDecisionsForTasks(
 
   return decisionLists.flat();
 }
-
-export function readLatestTaskDecisionsByTaskId(
-  taskDecisions: readonly TaskDecisionRecord[],
-): ReadonlyMap<string, TaskDecisionRecord> {
-  return taskDecisions.reduce<ReadonlyMap<string, TaskDecisionRecord>>(
-    (decisionsByTaskId, decision) => {
-      const currentDecision = decisionsByTaskId.get(decision.taskId);
-      const nextDecision =
-        !currentDecision ||
-        new Date(decision.decidedAt).getTime() >
-          new Date(currentDecision.decidedAt).getTime()
-          ? decision
-          : currentDecision;
-
-      return new Map(decisionsByTaskId).set(decision.taskId, nextDecision);
-    },
-    new Map(),
-  );
-}
