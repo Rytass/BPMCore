@@ -316,7 +316,7 @@ export function InboxView(): ReactElement {
         ]);
       const [nextPendingRows, nextHistoryRows] = await Promise.all([
         readInboxTaskRows(nextPendingTasks),
-        readApprovalHistoryRows(nextHistoryTasks),
+        readApprovalHistoryRows(nextHistoryTasks, currentMemberId),
       ]);
 
       setPendingRows(nextPendingRows);
@@ -517,6 +517,7 @@ async function readInboxTaskRows(
 
 async function readApprovalHistoryRows(
   tasks: readonly TaskRecord[],
+  currentMemberId: string,
 ): Promise<ApprovalHistoryRow[]> {
   const [decisionLists, instances] = await Promise.all([
     Promise.all(tasks.map((task) => listTaskDecisions(task.id))),
@@ -524,7 +525,10 @@ async function readApprovalHistoryRows(
   ]);
 
   return tasks.map((task, index): ApprovalHistoryRow => {
-    const decision = readLatestTaskDecision(decisionLists[index] ?? []);
+    const decision = readLatestOwnTaskDecision(
+      decisionLists[index] ?? [],
+      currentMemberId,
+    );
     const instance = instances[index] ?? null;
 
     return {
@@ -564,10 +568,20 @@ function readTaskCaseTitle(
   return instance ? readApprovalInstanceCaseTitle(instance) : task.instanceId;
 }
 
-function readLatestTaskDecision(
+// A sequential or countersign task holds one decision per signer, so the newest
+// one on the task can be somebody else's. A delegate is the one recorded as
+// deciding, and a principal never gets the delegated task in this list.
+function readLatestOwnTaskDecision(
   decisions: readonly TaskDecisionRecord[],
+  currentMemberId: string,
 ): TaskDecisionRecord | null {
-  return [...decisions].sort(compareTaskDecisionDesc)[0] ?? null;
+  return (
+    decisions
+      .filter(
+        (decision): boolean => decision.decidedByMemberId === currentMemberId,
+      )
+      .sort(compareTaskDecisionDesc)[0] ?? null
+  );
 }
 
 function compareTaskDecisionDesc(

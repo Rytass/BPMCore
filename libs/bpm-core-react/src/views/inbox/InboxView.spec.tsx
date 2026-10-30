@@ -3,11 +3,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import * as workflowApi from '@rytass/bpm-core-client/workflow';
 import type {
   ApprovalInstanceRecord,
+  TaskDecisionRecord,
   TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
 import { InboxView } from './InboxView';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+let mockCurrentMemberId = 'member-001';
 
 jest.mock('@mezzanine-ui/core/table', () => ({}));
 jest.mock('@mezzanine-ui/react/ContentHeader', () => ({
@@ -86,7 +89,7 @@ jest.mock('@mezzanine-ui/react', () => {
 
 jest.mock('../../lib/auth-provider', () => ({
   useAuth: (): { readonly member: { readonly memberId: string } } => ({
-    member: { memberId: 'member-001' },
+    member: { memberId: mockCurrentMemberId },
   }),
 }));
 jest.mock('../../lib/router-adapter', () => ({
@@ -459,5 +462,295 @@ describe('InboxView returned cases', () => {
     await renderInbox();
 
     expect(returnedSection()?.textContent).not.toContain('我發起的');
+  });
+});
+
+describe('InboxView own decision', () => {
+  const CHIEF = 'member-chief';
+  const MANAGER = 'member-manager';
+  const DIRECTOR = 'member-director';
+  const DECISION_LABELS: Readonly<Record<string, string>> = {
+    APPROVED: '同意',
+    REJECTED: '拒絕',
+    TRANSFERRED: '轉派',
+  };
+
+  interface Signing {
+    readonly action: TaskDecisionRecord['action'];
+    readonly comment: string | null;
+    readonly memberId: string;
+  }
+
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    jest.clearAllMocks();
+    api.listInboxTasks.mockResolvedValue([]);
+    api.listApprovalInstancesPage.mockResolvedValue(returnedPage([]));
+    api.readApprovalInstance.mockRejectedValue(new Error('not needed'));
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+    mockCurrentMemberId = 'member-001';
+  });
+
+  function decision(
+    taskId: string,
+    signing: Signing,
+    order: number,
+  ): TaskDecisionRecord {
+    return {
+      ...signing,
+      decidedAt: `2026-10-30T01:0${order}:00.000Z`,
+      decidedByMemberId: signing.memberId,
+      id: `${taskId}-${order}`,
+      returnToNodeId: null,
+      signatureId: null,
+      taskId,
+      transferToMemberId: null,
+    } as unknown as TaskDecisionRecord;
+  }
+
+  function cell(taskId: string, column: string): string | undefined {
+    return (
+      container.querySelector(`[data-row="${taskId}"] [data-column="${column}"]`)
+        ?.textContent ?? undefined
+    );
+  }
+
+  async function openHistoryAs(
+    memberId: string,
+    taskRecord: TaskRecord,
+    decisions: readonly TaskDecisionRecord[],
+    tab: 'history' | 'tracking' = 'history',
+  ): Promise<void> {
+    mockCurrentMemberId = memberId;
+    api.listApprovalHistoryTasks.mockResolvedValue([taskRecord]);
+    api.listTaskDecisions.mockImplementation(
+      async (taskId: string): Promise<readonly TaskDecisionRecord[]> =>
+        decisions.filter((item): boolean => item.taskId === taskId),
+    );
+
+    await act(async (): Promise<void> => {
+      root.render(<InboxView />);
+    });
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>(`[data-tab="${tab}"]`)
+        ?.click();
+    });
+  }
+
+  const chains: readonly {
+    readonly name: string;
+    readonly shared: boolean;
+    readonly signings: readonly Signing[];
+  }[] = [
+    {
+      name: 'a shared task where everyone wrote',
+      shared: true,
+      signings: [
+        { action: 'APPROVED', comment: '課長意見', memberId: CHIEF },
+        { action: 'APPROVED', comment: '經理意見', memberId: MANAGER },
+        { action: 'APPROVED', comment: '協理意見', memberId: DIRECTOR },
+      ],
+    },
+    {
+      name: 'a shared task where the last signer wrote nothing',
+      shared: true,
+      signings: [
+        { action: 'APPROVED', comment: '課長意見', memberId: CHIEF },
+        { action: 'APPROVED', comment: '經理意見', memberId: MANAGER },
+        { action: 'APPROVED', comment: null, memberId: DIRECTOR },
+      ],
+    },
+    {
+      name: 'a shared task the last signer rejected',
+      shared: true,
+      signings: [
+        { action: 'APPROVED', comment: null, memberId: CHIEF },
+        { action: 'APPROVED', comment: null, memberId: MANAGER },
+        { action: 'REJECTED', comment: '退回重填', memberId: DIRECTOR },
+      ],
+    },
+    {
+      name: 'separate tasks where everyone wrote',
+      shared: false,
+      signings: [
+        { action: 'APPROVED', comment: '課長意見', memberId: CHIEF },
+        { action: 'APPROVED', comment: '經理意見', memberId: MANAGER },
+        { action: 'APPROVED', comment: '協理意見', memberId: DIRECTOR },
+      ],
+    },
+    {
+      name: 'separate tasks the last signer rejected',
+      shared: false,
+      signings: [
+        { action: 'APPROVED', comment: null, memberId: CHIEF },
+        { action: 'APPROVED', comment: null, memberId: MANAGER },
+        { action: 'REJECTED', comment: '退回重填', memberId: DIRECTOR },
+      ],
+    },
+  ];
+
+  it.each(
+    chains.flatMap((chain) =>
+      chain.signings.map(
+        (signing, index) =>
+          [`${chain.name}`, signing.memberId, chain, index] as const,
+      ),
+    ),
+  )(
+    'on %s, shows %s their own row',
+    async (_name, memberId, chain, index): Promise<void> => {
+      const readTaskId = (order: number): string =>
+        chain.shared ? 'task-shared' : `task-${order}`;
+      const taskId = readTaskId(index);
+      const signing = chain.signings[index];
+
+      await openHistoryAs(
+        memberId,
+        task({ id: taskId, status: 'COMPLETED' }),
+        chain.signings.map((item, order) =>
+          decision(readTaskId(order), item, order + 1),
+        ),
+      );
+
+      expect(cell(taskId, '決議')).toBe(DECISION_LABELS[signing.action]);
+      expect(cell(taskId, '意見')).toBe(signing.comment ?? '-');
+    },
+  );
+
+  it('shows the same own decision on the tracking tab', async (): Promise<void> => {
+    api.readApprovalInstance.mockResolvedValue({
+      instance: { state: 'RUNNING' },
+    } as Awaited<ReturnType<typeof workflowApi.readApprovalInstance>>);
+    api.readApprovalInstanceCaseTitle.mockReturnValue('案件');
+
+    await openHistoryAs(
+      CHIEF,
+      task({ id: 'task-shared', status: 'IN_PROGRESS' }),
+      [
+        decision(
+          'task-shared',
+          { action: 'APPROVED', comment: '課長意見', memberId: CHIEF },
+          1,
+        ),
+        decision(
+          'task-shared',
+          { action: 'REJECTED', comment: '退回重填', memberId: MANAGER },
+          2,
+        ),
+      ],
+      'tracking',
+    );
+
+    expect(cell('task-shared', '決議')).toBe('同意');
+    expect(cell('task-shared', '意見')).toBe('課長意見');
+  });
+
+  it('shows a delegate the decision they made for the original assignee', async (): Promise<void> => {
+    // decideTask records whoever acted, and a delegated task is assigned to
+    // the delegate with the principal kept in originalAssigneeMemberId.
+    await openHistoryAs(
+      'member-delegate',
+      task({
+        assigneeMemberId: 'member-delegate',
+        id: 'task-shared',
+        originalAssigneeMemberId: CHIEF,
+        status: 'COMPLETED',
+      }),
+      [
+        decision(
+          'task-shared',
+          {
+            action: 'APPROVED',
+            comment: '代理意見',
+            memberId: 'member-delegate',
+          },
+          1,
+        ),
+        decision(
+          'task-shared',
+          { action: 'APPROVED', comment: '經理意見', memberId: MANAGER },
+          2,
+        ),
+      ],
+    );
+
+    expect(cell('task-shared', '意見')).toBe('代理意見');
+  });
+
+  it('keeps a signer on their approval after a later signer transferred the task', async (): Promise<void> => {
+    await openHistoryAs(
+      CHIEF,
+      task({ id: 'task-shared', status: 'TRANSFERRED' }),
+      [
+        decision(
+          'task-shared',
+          { action: 'APPROVED', comment: '課長意見', memberId: CHIEF },
+          1,
+        ),
+        decision(
+          'task-shared',
+          { action: 'TRANSFERRED', comment: '轉給副理', memberId: MANAGER },
+          2,
+        ),
+      ],
+    );
+
+    expect(cell('task-shared', '決議')).toBe('同意');
+    expect(cell('task-shared', '意見')).toBe('課長意見');
+  });
+
+  it('shows the latest of a member\'s own decisions on a task', async (): Promise<void> => {
+    // A seat transferred away and back leaves the member two decisions.
+    await openHistoryAs(
+      CHIEF,
+      task({ id: 'task-shared', status: 'COMPLETED' }),
+      [
+        decision(
+          'task-shared',
+          { action: 'TRANSFERRED', comment: '先轉出', memberId: CHIEF },
+          1,
+        ),
+        decision(
+          'task-shared',
+          { action: 'APPROVED', comment: '收回後同意', memberId: CHIEF },
+          2,
+        ),
+        decision(
+          'task-shared',
+          { action: 'APPROVED', comment: '經理意見', memberId: MANAGER },
+          3,
+        ),
+      ],
+    );
+
+    expect(cell('task-shared', '決議')).toBe('同意');
+    expect(cell('task-shared', '意見')).toBe('收回後同意');
+  });
+
+  it('shows no one else\'s decision to a member who has none on the task', async (): Promise<void> => {
+    await openHistoryAs(
+      CHIEF,
+      task({ id: 'task-shared', status: 'COMPLETED' }),
+      [
+        decision(
+          'task-shared',
+          { action: 'REJECTED', comment: '退回重填', memberId: MANAGER },
+          1,
+        ),
+      ],
+    );
+
+    expect(cell('task-shared', '決議')).toBe('未記錄');
+    expect(cell('task-shared', '意見')).toBe('-');
   });
 });
