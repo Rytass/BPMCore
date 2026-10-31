@@ -134,18 +134,11 @@ import {
 import { readFormBuilder } from '@rytass/bpm-core-client/form';
 import { readTemplateErrorMessage } from '../template-error-message';
 import {
-  OrgUnitOption,
   OrgUnitPicker,
-  PositionOption,
   PositionPicker,
-  readOrgUnitOption,
-  readPositionOption,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
-import {
-  readDefaultMinPositionLevel,
-  readMinPositionLevelOptions,
-} from './position-level-options';
+import { readMinPositionLevelOptions } from './position-level-options';
 import {
   OrgUnitRecord,
   MembershipRecord,
@@ -175,15 +168,30 @@ import {
   NotifyWebhookCatalogState,
   NotifyWebhookTargetsEditor,
 } from './NotifyWebhookTargetsEditor';
+import {
+  APPROVER_RESOLVER_MODE_OPTIONS,
+  MANAGER_LEVEL_OPTIONS,
+  MemberSelectOption,
+  readApproverResolverMemberIds,
+  readApproverResolverMode,
+  readApproverResolverSummary,
+  readDefaultApproverResolver,
+  readFallbackMemberSelectOption,
+  readManagerLevelOption,
+  readManagerLevelOptionById,
+  readMemberSelectOption,
+  readOrgUnitDisplayName,
+  readPositionDisplayName,
+  readSelectedOrgUnitOption,
+  readSelectedPositionOption,
+  updateApproverResolverFallback,
+} from './approver-resolver-model';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
 import {
   DryRunAssigneeDirectory,
   readDryRunAssigneeLabel,
 } from './dry-run-assignee-label';
-import {
-  readDynamicFormFieldChoice,
-  readDynamicFormSummary,
-} from './dynamic-form-resolver-options';
+import { readDynamicFormFieldChoice } from './dynamic-form-resolver-options';
 import {
   readFormVersionLabel,
   readTemplateVersionDescription,
@@ -230,20 +238,6 @@ type ConditionValueOption = Readonly<{
   id: string;
   name: string;
 }>;
-type MemberSelectOption = Readonly<{
-  displayName: string;
-  email: string;
-  id: string;
-  memberId: string;
-  name: string;
-  /**
-   * Set on the placeholder written when a member's profile could not be
-   * fetched. Marking it explicitly lets {@link mergeMemberOptions} replace the
-   * placeholder once the real profile turns up, instead of the "未知會員"
-   * sentinel sticking for the rest of the session.
-   */
-  unresolved?: boolean;
-}>;
 type InitiatorPolicyMode =
   | 'ALL'
   | 'CUSTOM'
@@ -268,26 +262,6 @@ type ReturnResubmitStrategyOption = Readonly<{
 type ReturnAllowedTargetsOption = Readonly<{
   id: ReturnBehavior['allowedTargets'];
   name: string;
-}>;
-type ApproverResolverMode = Extract<
-  ApproverResolver['type'],
-  | 'DIRECT'
-  | 'DYNAMIC_FORM'
-  | 'ORG_MANAGER'
-  | 'ORG_MANAGER_CHAIN'
-  | 'ORG_UNIT_MANAGER'
-  | 'ORG_UNIT_MEMBER'
-  | 'ORG_UNIT_POSITION'
-  | 'POSITION'
->;
-type ApproverResolverModeOption = Readonly<{
-  id: ApproverResolverMode;
-  name: string;
-}>;
-type ManagerLevelOption = Readonly<{
-  id: string;
-  name: string;
-  value: number;
 }>;
 type QuorumThresholdTypeOption = Readonly<{
   id: 'COUNT' | 'PERCENTAGE';
@@ -593,24 +567,9 @@ const SLA_WARNING_AT_OPTIONS: readonly {
   { id: '0.75', name: '剩四分之一時提醒', value: 0.75 },
   { id: '0.9', name: '剩十分之一時提醒', value: 0.9 },
 ];
-const APPROVER_RESOLVER_MODE_OPTIONS: readonly ApproverResolverModeOption[] = [
-  { id: 'DIRECT', name: '指定會員' },
-  { id: 'DYNAMIC_FORM', name: '依表單欄位指定' },
-  { id: 'ORG_MANAGER', name: '發起人主管' },
-  { id: 'ORG_MANAGER_CHAIN', name: '主管鏈（簽到指定職等）' },
-  { id: 'ORG_UNIT_MANAGER', name: '指定組織主管' },
-  { id: 'ORG_UNIT_MEMBER', name: '組織任一人' },
-  { id: 'ORG_UNIT_POSITION', name: '組織特定職位' },
-  { id: 'POSITION', name: '指定職位' },
-];
 const QUORUM_THRESHOLD_TYPE_OPTIONS: readonly QuorumThresholdTypeOption[] = [
   { id: 'COUNT', name: '人數' },
   { id: 'PERCENTAGE', name: '百分比' },
-];
-const MANAGER_LEVEL_OPTIONS: readonly ManagerLevelOption[] = [
-  { id: '1', name: '直屬主管', value: 1 },
-  { id: '2', name: '第二層主管', value: 2 },
-  { id: '3', name: '第三層主管', value: 3 },
 ];
 const APPROVER_FALLBACK_MODE_OPTIONS: readonly ApproverFallbackModeOption[] = [
   { id: 'NONE', name: '停止流程並提示' },
@@ -4702,66 +4661,7 @@ function omitSlaKey(
   ) as SlaConfig;
 }
 
-function readApproverResolverMode(value: string): ApproverResolverMode {
-  return value === 'DYNAMIC_FORM' ||
-    value === 'ORG_MANAGER' ||
-    value === 'ORG_MANAGER_CHAIN' ||
-    value === 'ORG_UNIT_MANAGER' ||
-    value === 'ORG_UNIT_MEMBER' ||
-    value === 'ORG_UNIT_POSITION' ||
-    value === 'POSITION'
-    ? value
-    : 'DIRECT';
-}
 
-function readDefaultApproverResolver(
-  value: string | null,
-  positions: readonly PositionRecord[],
-): ApproverResolver {
-  const mode = readApproverResolverMode(value ?? 'DIRECT');
-
-  if (mode === 'DYNAMIC_FORM') {
-    return { formPath: '', type: 'DYNAMIC_FORM' };
-  }
-
-  if (mode === 'ORG_MANAGER') {
-    return { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' };
-  }
-
-  if (mode === 'ORG_MANAGER_CHAIN') {
-    return {
-      minPositionLevel: readDefaultMinPositionLevel(positions),
-      type: 'ORG_MANAGER_CHAIN',
-    };
-  }
-
-  if (mode === 'ORG_UNIT_MANAGER') {
-    return { orgUnitId: '', type: 'ORG_UNIT_MANAGER' };
-  }
-
-  if (mode === 'ORG_UNIT_MEMBER') {
-    return {
-      includeDescendants: false,
-      orgUnitId: '',
-      type: 'ORG_UNIT_MEMBER',
-    };
-  }
-
-  if (mode === 'ORG_UNIT_POSITION') {
-    return {
-      includeDescendants: false,
-      orgUnitId: '',
-      positionId: '',
-      type: 'ORG_UNIT_POSITION',
-    };
-  }
-
-  if (mode === 'POSITION') {
-    return { positionId: '', type: 'POSITION' };
-  }
-
-  return { memberIds: [], type: 'DIRECT' };
-}
 
 function readApproverFallbackMode(value: string | null): ApproverFallbackMode {
   if (value === 'DIRECT' || value === 'POSITION') {
@@ -4789,37 +4689,8 @@ function readApproverFallbackModeDraft(
   return { type: 'NONE' };
 }
 
-function updateApproverResolverFallback(
-  resolver: ApproverResolver,
-  fallback: ApproverResolverFallback,
-): ApproverResolver {
-  if (
-    resolver.type === 'ORG_MANAGER' ||
-    resolver.type === 'ORG_MANAGER_CHAIN'
-  ) {
-    return { ...resolver, fallback };
-  }
 
-  if (resolver.type === 'ORG_UNIT_MANAGER') {
-    return { ...resolver, fallback };
-  }
 
-  return resolver;
-}
-
-function readManagerLevelOption(levelsUp: number): ManagerLevelOption {
-  return (
-    MANAGER_LEVEL_OPTIONS.find((option) => option.value === levelsUp) ??
-    MANAGER_LEVEL_OPTIONS[0]
-  );
-}
-
-function readManagerLevelOptionById(id: string | null): ManagerLevelOption {
-  return (
-    MANAGER_LEVEL_OPTIONS.find((option) => option.id === id) ??
-    MANAGER_LEVEL_OPTIONS[0]
-  );
-}
 
 function readInitiatorPolicyMode(
   value: string | null,
@@ -5146,60 +5017,11 @@ function readMemberSelectOptions(
   }));
 }
 
-function readFallbackMemberSelectOption(memberId: string): MemberSelectOption {
-  return {
-    displayName: '未知會員',
-    email: '',
-    id: memberId,
-    memberId,
-    name: '未知會員',
-    unresolved: true,
-  };
-}
 
-function readMemberSelectOption(
-  options: readonly MemberSelectOption[],
-  memberId: string,
-): MemberSelectOption {
-  return (
-    options.find((option) => option.memberId === memberId) ??
-    readFallbackMemberSelectOption(memberId)
-  );
-}
 
-function readSelectedOrgUnitOption(
-  orgUnits: readonly OrgUnitRecord[],
-  orgUnitId: string,
-): OrgUnitOption | null {
-  const orgUnit = orgUnits.find((candidate) => candidate.id === orgUnitId);
 
-  return orgUnit ? readOrgUnitOption(orgUnit) : null;
-}
 
-function readSelectedPositionOption(
-  positions: readonly PositionRecord[],
-  positionId: string,
-): PositionOption | null {
-  const position = positions.find((candidate) => candidate.id === positionId);
 
-  return position ? readPositionOption(position) : null;
-}
-
-function readOrgUnitDisplayName(
-  orgUnits: readonly OrgUnitRecord[],
-  orgUnitId: string,
-): string {
-  return readSelectedOrgUnitOption(orgUnits, orgUnitId)?.name ?? '未指定組織';
-}
-
-function readPositionDisplayName(
-  positions: readonly PositionRecord[],
-  positionId: string,
-): string {
-  return (
-    readSelectedPositionOption(positions, positionId)?.name ?? '未指定職位'
-  );
-}
 
 function readDryRunInitiatorMetadataSnapshot(
   memberId: string,
@@ -5368,35 +5190,6 @@ function mergeMemberOptions(
   return changed ? [...upgradedOptions, ...newOptions] : currentOptions;
 }
 
-/**
- * Every member id a resolver names outright, so the designer can pre-fetch
- * their display names on load.
- *
- * The manager resolvers' `DIRECT` fallback ("固定改派") counts: it is a member
- * the author picked and the property form renders it through
- * `readMemberSelectOption`, which falls back to the "未知會員" sentinel for any
- * id it cannot find. Leaving it out meant a saved fallback always rendered as
- * 未知會員 until an unrelated search happened to return that member.
- */
-function readApproverResolverMemberIds(
-  resolver: ApproverResolver,
-): readonly string[] {
-  if (resolver.type === 'DIRECT') {
-    return resolver.memberIds;
-  }
-
-  if (
-    resolver.type === 'ORG_MANAGER' ||
-    resolver.type === 'ORG_MANAGER_CHAIN' ||
-    resolver.type === 'ORG_UNIT_MANAGER'
-  ) {
-    return resolver.fallback?.type === 'DIRECT' && resolver.fallback.memberId
-      ? [resolver.fallback.memberId]
-      : [];
-  }
-
-  return [];
-}
 
 function readWorkflowDirectMemberIds(
   definition: WorkflowDefinition,
@@ -5438,54 +5231,6 @@ function readNodeApproverSummary(
   return null;
 }
 
-function readApproverResolverSummary(
-  resolver: ApproverResolver,
-  memberOptions: readonly MemberSelectOption[],
-  orgUnits: readonly OrgUnitRecord[],
-  positions: readonly PositionRecord[],
-  formSchema: FormDefinitionSchema | null,
-): string {
-  if (resolver.type === 'DIRECT') {
-    return readMemberEmailSummary(
-      resolver.memberIds,
-      memberOptions,
-      '未指定簽核者',
-    );
-  }
-
-  if (resolver.type === 'ORG_MANAGER') {
-    return readManagerLevelOption(resolver.levelsUp).name;
-  }
-
-  if (resolver.type === 'ORG_MANAGER_CHAIN') {
-    return `主管鏈：簽到職等 ${resolver.minPositionLevel}`;
-  }
-
-  if (resolver.type === 'ORG_UNIT_MANAGER') {
-    return `組織主管：${readOrgUnitDisplayName(orgUnits, resolver.orgUnitId)}`;
-  }
-
-  if (resolver.type === 'ORG_UNIT_MEMBER') {
-    return `組織任一人：${readOrgUnitDisplayName(orgUnits, resolver.orgUnitId)}`;
-  }
-
-  if (resolver.type === 'ORG_UNIT_POSITION') {
-    return `組織職位：${readOrgUnitDisplayName(
-      orgUnits,
-      resolver.orgUnitId,
-    )} / ${readPositionDisplayName(positions, resolver.positionId)}`;
-  }
-
-  if (resolver.type === 'POSITION') {
-    return `職位：${readPositionDisplayName(positions, resolver.positionId)}`;
-  }
-
-  if (resolver.type === 'DYNAMIC_FORM') {
-    return readDynamicFormSummary(formSchema, resolver.formPath);
-  }
-
-  return '自訂表達式';
-}
 
 function readNodeApproverLines(
   node: WorkflowNode,
@@ -5552,25 +5297,6 @@ function readDryRunWebhookLabels(
     : [];
 }
 
-function readMemberEmailSummary(
-  memberIds: readonly string[],
-  memberOptions: readonly MemberSelectOption[],
-  emptyLabel: string,
-): string {
-  const memberLabels = memberIds.map(
-    (memberId) => readMemberSelectOption(memberOptions, memberId).name,
-  );
-
-  if (memberLabels.length === 0) {
-    return emptyLabel;
-  }
-
-  if (memberLabels.length <= 2) {
-    return memberLabels.join('、');
-  }
-
-  return `${memberLabels.slice(0, 2).join('、')} 等 ${memberLabels.length} 人`;
-}
 
 function formatMemberDisplayName(name: string, email: string): string {
   return formatMemberLabel(name, email);

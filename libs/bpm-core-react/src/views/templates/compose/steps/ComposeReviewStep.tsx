@@ -12,6 +12,7 @@ import type {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
+import { readApproverResolverDetail } from '../../designer/approver-resolver-model';
 
 type FlowNodeRow = Readonly<
   Record<string, unknown> & {
@@ -163,28 +164,7 @@ function readNodeDetail(node: WorkflowNode): string | null {
     return null;
   }
 
-  switch (node.data.approverResolver.type) {
-    case 'DIRECT':
-      return '指定成員';
-    case 'POSITION':
-      return '指定職位';
-    case 'ORG_UNIT_MEMBER':
-      return '單位成員';
-    case 'ORG_UNIT_POSITION':
-      return '單位職位';
-    case 'ORG_MANAGER':
-      return '主管';
-    case 'ORG_MANAGER_CHAIN':
-      return '主管鏈';
-    case 'ORG_UNIT_MANAGER':
-      return '單位主管';
-    case 'DYNAMIC_FORM':
-      return '依表單欄位指定';
-    case 'EXPRESSION':
-      return '運算式';
-    default:
-      return '簽核人';
-  }
+  return readApproverResolverDetail(node.data.approverResolver);
 }
 
 const STACK_STYLE: CSSProperties = {
