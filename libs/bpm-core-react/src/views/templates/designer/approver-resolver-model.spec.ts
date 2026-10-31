@@ -14,7 +14,6 @@ import {
   NODE_ACTOR_SUBJECT_OPTIONS,
   ORG_UNIT_SOURCE_OPTIONS,
   buildApproverResolver,
-  isDefaultedOrgUnitSwitch,
   UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
   readApproverSourceChoice,
   readApproverManagerRule,
@@ -649,11 +648,7 @@ describe('readApproverResolverEditorState / buildApproverResolver', () => {
     expect('orgUnitId' in next).toBe(false);
   });
 
-  it('restores the original 只取最近一層主管 on a round trip fixed org -> form field -> fixed org', () => {
-    const withoutKey: ApproverResolver = {
-      orgUnitId: 'org-sales',
-      type: 'ORG_UNIT_MANAGER',
-    };
+  it('keeps 只取最近一層主管 on, visible, after fixed org -> form field -> fixed org (no guess about what the author had)', () => {
     const roundTrip = (resolver: ApproverResolver): ApproverResolver =>
       buildApproverResolver(
         withOrgUnitSource(
@@ -664,39 +659,21 @@ describe('readApproverResolverEditorState / buildApproverResolver', () => {
           'FIXED',
         ),
       );
-
-    // An absent key stays absent: the form-field default (on) must not leak back.
-    expect(roundTrip(withoutKey)).toStrictEqual(withoutKey);
-    // Controls: an explicit choice, either way, survives the round trip.
-    const off: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: false };
-    const on: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: true };
-
-    expect(roundTrip(off)).toStrictEqual(off);
-    expect(roundTrip(on)).toStrictEqual(on);
-  });
-
-  it('only remembers the defaulted 只取最近一層主管 while the stored resolver is what the switch wrote', () => {
-    const produced: ApproverResolver = {
-      formPath: '',
-      preferClosestOrgUnit: true,
-      type: 'FORM_ORG_UNIT_MANAGER',
+    const withoutKey: ApproverResolver = {
+      orgUnitId: 'org-sales',
+      type: 'ORG_UNIT_MANAGER',
     };
+    const back = roundTrip(withoutKey);
 
-    expect(isDefaultedOrgUnitSwitch(produced, produced)).toBe(true);
-    // Picking the form field afterwards does not change that.
-    expect(
-      isDefaultedOrgUnitSwitch({ ...produced, formPath: 'form.dept' }, produced),
-    ).toBe(true);
-    // Controls: an edit to the value, or another source, makes it the author's.
-    expect(
-      isDefaultedOrgUnitSwitch(
-        { ...produced, preferClosestOrgUnit: false },
-        produced,
-      ),
-    ).toBe(false);
-    expect(
-      isDefaultedOrgUnitSwitch({ orgUnitId: 'o', type: 'ORG_UNIT_MANAGER' }, produced),
-    ).toBe(false);
+    // The default the form field switched on stays; the author can turn it off.
+    expect(back).toStrictEqual({ ...withoutKey, preferClosestOrgUnit: true });
+    expect(readApproverManagerRule(back)?.preferClosestOrgUnit).toBe(true);
+    // An explicit choice, either way, is never removed or flipped.
+    const on: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: true };
+    const off: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: false };
+
+    expect(roundTrip(on)).toStrictEqual(on);
+    expect(roundTrip(off)).toStrictEqual(off);
   });
 
   it('does not override a 只取最近一層主管 choice already made when switching to a form field', () => {

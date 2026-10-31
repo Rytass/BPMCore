@@ -196,7 +196,6 @@ import {
   readPositionDisplayName,
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
-  isDefaultedOrgUnitSwitch,
   updateApproverResolverFallback,
   withOrgUnitSource,
   withPreferClosestOrgUnit,
@@ -774,12 +773,6 @@ export function TemplateDesignerView({
 
   // Org/position data is loaded further down; mirror it into refs so the stable
   // `directory` object below always reads the latest without re-creation.
-  // What the last 固定組織 -> 表單欄位 switch wrote when it turned 只取最近一層
-  // 主管 on by default, so switching back can take that default off again.
-  const defaultedOrgSwitchRef = useRef<{
-    readonly nodeId: string;
-    readonly resolver: ApproverResolver;
-  } | null>(null);
   const orgUnitsRef = useRef<readonly OrgUnitRecord[]>([]);
   const positionsRef = useRef<readonly PositionRecord[]>([]);
   // Backs the assistant's member/org lookup query tools (search_members /
@@ -3008,22 +3001,14 @@ export function TemplateDesignerView({
                     return;
                   }
 
-                  const remembered = defaultedOrgSwitchRef.current;
-                  const nextState = withOrgUnitSource(
-                    remembered?.nodeId === node.id &&
-                      isDefaultedOrgUnitSwitch(resolver, remembered.resolver)
-                      ? { ...editorState, preferClosestOrgUnitDefaulted: true }
-                      : editorState,
-                    option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
+                  updateUserTaskResolver(
+                    buildApproverResolver(
+                      withOrgUnitSource(
+                        editorState,
+                        option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
+                      ),
+                    ),
                   );
-                  const next = buildApproverResolver(nextState);
-
-                  defaultedOrgSwitchRef.current =
-                    nextState.mode === 'ORG_UNIT_MANAGER' &&
-                    nextState.preferClosestOrgUnitDefaulted
-                      ? { nodeId: node.id, resolver: next }
-                      : null;
-                  updateUserTaskResolver(next);
                 }}
                 options={[...ORG_UNIT_SOURCE_OPTIONS]}
                 value={readSelectOption(

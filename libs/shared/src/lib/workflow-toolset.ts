@@ -207,7 +207,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'set_user_task_approver',
     description:
-      '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。' +
+      '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）；例外：FORM_MEMBER_MANAGER／FORM_ORG_UNIT_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER 缺 formPath／nodeIds 時會保留該類型、不會改成直屬主管，validate_workflow 會回報缺漏欄位（自行編造的類型名稱仍會變成直屬主管）。' +
       '原有的決策政策會保留；若新的 approverResolver 沒有 fallback 欄位，原有的無主管時備援也會保留（要清除請明確傳入 fallback.type 為 NONE）。' +
       '只有當新的簽核人員人數已撐不住原本的 QUORUM 門檻（那樣這一關將永遠無法通過）時，' +
       '才會自動重設為 SINGLE（單人簽核）。若發生重設，請主動告知使用者，並視需要用 ' +
@@ -434,7 +434,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'insert_approval_step',
     description:
-      '高階：新增一個簽核關卡。approverResolver 可省略 —— 省略或資料不全時，預設為「直屬主管」（ORG_MANAGER，從申請人往上 1 層），不需要真實會員 id。畫初稿時建議直接省略簽核人、先把流程結構建出來。',
+      '高階：新增一個簽核關卡。approverResolver 可省略 —— 省略或資料不全時，預設為「直屬主管」（ORG_MANAGER，從申請人往上 1 層），不需要真實會員 id（例外：FORM_MEMBER_MANAGER／FORM_ORG_UNIT_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER 缺 formPath／nodeIds 時保留該類型，validate_workflow 會回報缺漏欄位；自行編造的類型名稱仍會變成直屬主管）。畫初稿時建議直接省略簽核人、先把流程結構建出來。',
     inputSchema: objectSchema(
       {
         approverResolver: APPROVER_RESOLVER_SCHEMA,

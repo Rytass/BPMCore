@@ -555,13 +555,6 @@ export type ApproverResolverEditorState =
       mode: 'ORG_UNIT_MANAGER';
       orgSource: OrgUnitManagerSource;
       orgUnitId: string;
-      /**
-       * Set by 固定組織 -> 表單欄位 when it turned 只取最近一層主管 on because the
-       * stored resolver had no such key; going back to 固定組織 then removes the
-       * key again instead of leaving a routing change on the node. Only the
-       * switch itself sets it, so it is never read from a saved resolver.
-       */
-      preferClosestOrgUnitDefaulted?: true;
     }> &
       ManagerRule)
   | (Readonly<{
@@ -704,10 +697,9 @@ export function withApproverSubject(
 
 /**
  * Applies the 組織 choice of 指定組織主管. A form-field org starts with 只取最近
- * 一層主管 on (SPEC 3.3) unless the author already chose; going back to a fixed
- * org removes that default again when the switch itself put it there, so the
- * round trip hands back the original resolver. Otherwise a fixed org keeps the
- * stored choice as it is.
+ * 一層主管 on (SPEC 3.3) unless the author already chose; a fixed org keeps the
+ * stored choice as it is. Switching back does not take the default off again:
+ * the toggle keeps whatever value the resolver has, and stays visible.
  */
 export function withOrgUnitSource(
   state: ApproverResolverEditorState,
@@ -717,48 +709,13 @@ export function withOrgUnitSource(
     return state;
   }
 
-  const { preferClosestOrgUnitDefaulted, ...rest } = state;
-
-  if (source === 'FORM_FIELD') {
-    return rest.preferClosestOrgUnit === undefined
-      ? {
-          ...rest,
-          orgSource: source,
-          preferClosestOrgUnit: true,
-          preferClosestOrgUnitDefaulted: true,
-        }
-      : { ...rest, orgSource: source };
-  }
-
-  if (preferClosestOrgUnitDefaulted) {
-    return {
-      ...(rest.fallback !== undefined ? { fallback: rest.fallback } : {}),
-      formPath: rest.formPath,
-      mode: rest.mode,
-      orgSource: source,
-      orgUnitId: rest.orgUnitId,
-    };
-  }
-
-  return { ...rest, orgSource: source };
-}
-
-/**
- * Whether `current` is still exactly what a 固定組織 -> 表單欄位 switch wrote
- * (`produced`), apart from the form field the author may have picked since. The
- * designer keeps the state's memory of the defaulted 只取最近一層主管 only while
- * this holds: an edit to anything else makes the stored value the author's.
- */
-export function isDefaultedOrgUnitSwitch(
-  current: ApproverResolver,
-  produced: ApproverResolver,
-): boolean {
-  return (
-    current.type === 'FORM_ORG_UNIT_MANAGER' &&
-    produced.type === 'FORM_ORG_UNIT_MANAGER' &&
-    JSON.stringify({ ...current, formPath: '' }) ===
-      JSON.stringify({ ...produced, formPath: '' })
-  );
+  return {
+    ...state,
+    orgSource: source,
+    ...(source === 'FORM_FIELD' && state.preferClosestOrgUnit === undefined
+      ? { preferClosestOrgUnit: true }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
