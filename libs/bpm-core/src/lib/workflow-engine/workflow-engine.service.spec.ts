@@ -4690,6 +4690,724 @@ describe('WorkflowEngineService', () => {
     expect(fixture.savedTasks).toHaveLength(0);
   });
 
+  describe('approver sources that read the form (FORM_MEMBER_MANAGER, FORM_ORG_UNIT_MANAGER)', (): void => {
+    type FormSourceResolver = Extract<
+      ApproverResolver,
+      { type: 'FORM_MEMBER_MANAGER' | 'FORM_ORG_UNIT_MANAGER' }
+    >;
+    type OrgData = Pick<
+      Parameters<typeof createServiceFixture>[0],
+      | 'processManagerResolutions'
+      | 'processMemberships'
+      | 'processOrgUnits'
+      | 'processPositions'
+    >;
+
+    const createFormSourceFixture = ({
+      delegationResolutionByMember,
+      excludeInitiator,
+      formData,
+      org,
+      resolver,
+    }: {
+      readonly delegationResolutionByMember?: Parameters<
+        typeof createServiceFixture
+      >[0]['delegationResolutionByMember'];
+      readonly excludeInitiator?: ExcludeInitiatorConfig;
+      readonly formData: Readonly<Record<string, unknown>>;
+      readonly org: OrgData;
+      readonly resolver: ApproverResolver;
+    }): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        delegationResolutionByMember,
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        ...org,
+        processFormData: formData,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: resolver,
+          decisionPolicy: { type: 'PARALLEL_ANY' },
+          excludeInitiator,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const readAssignees = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly string[] =>
+      fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+    // Picked employee -> m1 -> m2, all by MEMBER-scope rules; the initiator
+    // (member-001) belongs to nobody, so any answer comes from the pick.
+    const memberChainOrg = createManagerChainOrg({
+      grades: { 'member-emp': null, 'member-m1': null, 'member-m2': null },
+      links: [
+        ['member-emp', 'member-m1'],
+        ['member-m1', 'member-m2'],
+      ],
+    });
+    const memberResolver = (
+      value: Partial<
+        Extract<ApproverResolver, { type: 'FORM_MEMBER_MANAGER' }>
+      > = {},
+    ): FormSourceResolver => ({
+      formPath: 'picked',
+      levelsUp: 1,
+      type: 'FORM_MEMBER_MANAGER',
+      ...value,
+    });
+    // company (CEO) > finance (head) and hr (head); member-001 files forms
+    // from finance.
+    const departmentOrgUnits = [
+      createOrgUnit({ id: 'org-company', path: 'org' }),
+      createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+      createOrgUnit({ id: 'org-hr', path: 'org.hr' }),
+    ];
+    const unitRule = (
+      id: string,
+      scopeId: string,
+      managerMemberId: string,
+      priority = 0,
+    ): ManagerResolutionEntity =>
+      createManagerResolution({
+        id,
+        managerMemberId,
+        priority,
+        scopeId,
+        scopeType: ManagerResolutionScopeTypeEnum.ORG_UNIT,
+      });
+    const departmentOrg = (
+      rules: readonly ManagerResolutionEntity[],
+      orgUnits = departmentOrgUnits,
+      extraMemberships: readonly MembershipEntity[] = [],
+    ): OrgData => ({
+      processManagerResolutions: rules,
+      processMemberships: [
+        createMembership({ memberId: 'member-001', orgUnitId: 'org-finance' }),
+        ...extraMemberships,
+      ],
+      processOrgUnits: orgUnits,
+      processPositions: [],
+    });
+    const orgResolver = (
+      value: Partial<
+        Extract<ApproverResolver, { type: 'FORM_ORG_UNIT_MANAGER' }>
+      > = {},
+    ): FormSourceResolver => ({
+      formPath: 'dept',
+      preferClosestOrgUnit: true,
+      type: 'FORM_ORG_UNIT_MANAGER',
+      ...value,
+    });
+
+    describe('FORM_MEMBER_MANAGER', (): void => {
+      it('assigns the direct manager of the person picked on the form, not the initiator manager', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-emp' },
+          org: memberChainOrg,
+          resolver: memberResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-m1']);
+        expect(fixture.savedTaskCandidates[0]).toMatchObject({
+          sourceType: 'FORM_MEMBER_MANAGER',
+        });
+      });
+
+      it('climbs levelsUp tiers above the picked person', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-emp' },
+          org: memberChainOrg,
+          resolver: memberResolver({ levelsUp: 2 }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-m2']);
+      });
+
+      // Mutual managers: tier 1 of A is B, tier 2 of A would be A again.
+      // levelsUp 2 is what reaches the loop; levelsUp 1 never leaves B.
+      const mutualOrg = createManagerChainOrg({
+        grades: { 'member-a': null, 'member-b': null },
+        links: [
+          ['member-a', 'member-b'],
+          ['member-b', 'member-a'],
+        ],
+      });
+
+      it('does not loop through mutual managers: tier 2 of A is nobody, so the no-manager fallback runs (NONE)', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-a' },
+          org: mutualOrg,
+          resolver: memberResolver({ levelsUp: 2 }),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：找不到表單欄位「picked」所選人員的第 2 層主管，且未設定改派固定人',
+        );
+        expect(fixture.savedTasks).toEqual([]);
+      });
+
+      it('hands the fixed fallback person the task when mutual managers loop (DIRECT)', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-a' },
+          org: mutualOrg,
+          resolver: memberResolver({
+            fallback: { memberId: 'member-admin', type: 'DIRECT' },
+            levelsUp: 2,
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-admin']);
+      });
+
+      it('still reaches the other half of a mutual pair at tier 1', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-a' },
+          org: mutualOrg,
+          resolver: memberResolver({ levelsUp: 1 }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-b']);
+      });
+
+      it('excludes the picked person at every tier: a unit head is handed to the tier above', async (): Promise<void> => {
+        // The picked person heads finance (priority 10 outranks the company
+        // rule), so without excluding him the tier-1 manager is himself.
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-emp' },
+          org: departmentOrg(
+            [
+              unitRule('rule-finance', 'org-finance', 'member-emp', 10),
+              unitRule('rule-company', 'org-company', 'member-ceo'),
+            ],
+            departmentOrgUnits,
+            [
+              createMembership({
+                id: 'membership-emp',
+                memberId: 'member-emp',
+                orgUnitId: 'org-finance',
+              }),
+            ],
+          ),
+          resolver: memberResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-ceo']);
+      });
+
+      it('control: ORG_MANAGER still resolves an initiator who heads the unit to himself, as before', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: {},
+          org: departmentOrg([
+            unitRule('rule-finance', 'org-finance', 'member-001', 10),
+            unitRule('rule-company', 'org-company', 'member-ceo'),
+          ]),
+          resolver: {
+            baseFromInitiator: true,
+            levelsUp: 1,
+            type: 'ORG_MANAGER',
+          },
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-001']);
+      });
+
+      it('control: the same data with FORM_MEMBER_MANAGER picking that unit head goes to the tier above', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-001' },
+          org: departmentOrg([
+            unitRule('rule-finance', 'org-finance', 'member-001', 10),
+            unitRule('rule-company', 'org-company', 'member-ceo'),
+          ]),
+          resolver: memberResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-ceo']);
+      });
+
+      it('refuses a field that holds two people instead of picking one', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: ['member-emp', 'member-m1'] },
+          org: memberChainOrg,
+          resolver: memberResolver(),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 依表單欄位「picked」只能選一位人員',
+        );
+        expect(fixture.savedTasks).toEqual([]);
+      });
+
+      it('accepts a one-person array the way DYNAMIC_FORM does', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: ['member-emp'] },
+          org: memberChainOrg,
+          resolver: memberResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-m1']);
+      });
+
+      it.each([
+        ['absent', {}],
+        ['blank', { picked: '  ' }],
+        ['an empty array', { picked: [] }],
+      ])(
+        'throws the DYNAMIC_FORM-style error when the field is %s',
+        async (_name, formData): Promise<void> => {
+          const fixture = createFormSourceFixture({
+            formData,
+            org: memberChainOrg,
+            resolver: memberResolver(),
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」 依表單欄位「picked」找不到簽核人',
+          );
+          expect(fixture.savedTasks).toEqual([]);
+        },
+      );
+
+      it('falls back when the picked person has no manager', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { picked: 'member-m2' },
+          org: memberChainOrg,
+          resolver: memberResolver({
+            fallback: { memberId: 'member-admin', type: 'DIRECT' },
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-admin']);
+      });
+
+      it('assigns the delegate when the resolved manager has a delegation rule', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          delegationResolutionByMember: {
+            'member-m1': {
+              delegationChain: [
+                {
+                  from: 'member-m1',
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-1',
+                  to: 'member-deputy',
+                },
+              ],
+              finalAssigneeMemberId: 'member-deputy',
+            },
+          },
+          formData: { picked: 'member-emp' },
+          org: memberChainOrg,
+          resolver: memberResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks[0]).toMatchObject({
+          assigneeMemberId: 'member-deputy',
+          originalAssigneeMemberId: 'member-m1',
+        });
+      });
+
+      it('lets excludeInitiator keep the filer out when the picked person manager is the filer', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          excludeInitiator: { whenEmpty: 'FAIL' },
+          formData: { picked: 'member-emp' },
+          org: createManagerChainOrg({
+            grades: { 'member-001': null, 'member-emp': null },
+            links: [['member-emp', 'member-001']],
+          }),
+          resolver: memberResolver(),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(fixture.savedTasks).toEqual([]);
+      });
+    });
+
+    describe('FORM_ORG_UNIT_MANAGER', (): void => {
+      it("assigns the picked unit's manager, not the filer's own unit manager", async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-hr' },
+          org: departmentOrg([
+            unitRule('rule-finance', 'org-finance', 'member-fin-head'),
+            unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+          ]),
+          resolver: orgResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-hr-head']);
+        expect(fixture.savedTaskCandidates[0]).toMatchObject({
+          sourceType: 'FORM_ORG_UNIT_MANAGER',
+        });
+      });
+
+      it('lets the parent unit rule take over when the picked unit has none', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-hr' },
+          org: departmentOrg([
+            unitRule('rule-company', 'org-company', 'member-ceo'),
+          ]),
+          resolver: orgResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-ceo']);
+      });
+
+      it('falls back when no unit up the tree has a rule (NONE)', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-hr' },
+          org: departmentOrg([]),
+          resolver: orgResolver(),
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：找不到指定組織的主管規則，且未設定改派固定人',
+        );
+      });
+
+      it('falls back to the fixed person when no unit up the tree has a rule (DIRECT)', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-hr' },
+          org: departmentOrg([]),
+          resolver: orgResolver({
+            fallback: { memberId: 'member-admin', type: 'DIRECT' },
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-admin']);
+      });
+
+      it('takes the no-manager path when the picked unit has been deleted, even if it kept a rule', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-hr' },
+          org: departmentOrg(
+            [unitRule('rule-hr', 'org-hr', 'member-hr-head')],
+            [
+              createOrgUnit({ id: 'org-company', path: 'org' }),
+              createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+              createOrgUnit({
+                deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+                id: 'org-hr',
+                path: 'org.hr',
+              }),
+            ],
+          ),
+          resolver: orgResolver({
+            fallback: { memberId: 'member-admin', type: 'DIRECT' },
+          }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-admin']);
+      });
+
+      it.each([
+        ['absent', {}],
+        ['blank', { dept: '  ' }],
+        ['not text', { dept: 42 }],
+        ['an array', { dept: ['org-hr'] }],
+      ])(
+        'throws when the unit field is %s',
+        async (_name, formData): Promise<void> => {
+          const fixture = createFormSourceFixture({
+            formData,
+            org: departmentOrg([
+              unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+            ]),
+            resolver: orgResolver(),
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」 依表單欄位「dept」找不到所選組織',
+          );
+          expect(fixture.savedTasks).toEqual([]);
+        },
+      );
+
+      // The filer heads the picked unit (priority 10 outranks the company rule).
+      const filerHeadsPickedUnit = departmentOrg([
+        unitRule('rule-finance', 'org-finance', 'member-001', 10),
+        unitRule('rule-company', 'org-company', 'member-ceo'),
+      ]);
+
+      it('assigns the filer himself when he heads the picked unit and the node keeps no one out', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: { dept: 'org-finance' },
+          org: filerHeadsPickedUnit,
+          resolver: orgResolver({ preferClosestOrgUnit: false }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-001']);
+      });
+
+      it("hands the filer's own manager the task when he heads the picked unit and the node says INITIATOR_MANAGER", async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+          formData: { dept: 'org-finance' },
+          org: filerHeadsPickedUnit,
+          resolver: orgResolver({ preferClosestOrgUnit: false }),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(readAssignees(fixture)).toEqual(['member-ceo']);
+      });
+
+      it('assigns the delegate when the unit manager has a delegation rule', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          delegationResolutionByMember: {
+            'member-hr-head': {
+              delegationChain: [
+                {
+                  from: 'member-hr-head',
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-1',
+                  to: 'member-deputy',
+                },
+              ],
+              finalAssigneeMemberId: 'member-deputy',
+            },
+          },
+          formData: { dept: 'org-hr' },
+          org: departmentOrg([
+            unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+          ]),
+          resolver: orgResolver(),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks[0]).toMatchObject({
+          assigneeMemberId: 'member-deputy',
+          originalAssigneeMemberId: 'member-hr-head',
+        });
+      });
+    });
+
+    describe('sources this engine does not route', (): void => {
+      it('names the real type, not "null", for a source the shared package knows but the engine does not route yet (NODE_ACTOR)', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: {},
+          org: memberChainOrg,
+          resolver: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+        });
+
+        // Task 2b replaces this with real NODE_ACTOR routing.
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('不支援簽核人來源「NODE_ACTOR」');
+      });
+
+      it('control: an unknown type still reports its own name', async (): Promise<void> => {
+        const fixture = createFormSourceFixture({
+          formData: {},
+          org: memberChainOrg,
+          resolver: { type: 'FUTURE_TYPE' } as unknown as ApproverResolver,
+        });
+
+        await expect(
+          fixture.service.processInstance('instance-1'),
+        ).rejects.toThrow('不支援簽核人來源「FUTURE_TYPE」');
+      });
+    });
+
+    describe('dry run', (): void => {
+      const dryRun = (
+        approverResolver: ApproverResolver,
+        formDataJson = '{}',
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson,
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(
+            createLinearUserTaskWorkflow({ approverResolver }),
+          ),
+        });
+
+      it.each<readonly [string, ApproverResolver, string]>([
+        [
+          'FORM_MEMBER_MANAGER',
+          { formPath: 'picked', levelsUp: 2, type: 'FORM_MEMBER_MANAGER' },
+          'formMemberManager:picked:2',
+        ],
+        [
+          'FORM_ORG_UNIT_MANAGER',
+          { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' },
+          'formOrgUnitManager:dept',
+        ],
+        [
+          'NODE_ACTOR',
+          { nodeIds: ['task_a', 'task_b'], type: 'NODE_ACTOR' },
+          'nodeActor:task_a,task_b',
+        ],
+        [
+          'NODE_ACTOR_MANAGER',
+          {
+            levelsUp: 3,
+            nodeIds: ['task_a', 'task_b'],
+            type: 'NODE_ACTOR_MANAGER',
+          },
+          'nodeActorManager:task_a,task_b:3',
+        ],
+      ])(
+        'shows %s as a placeholder that names what the runtime would resolve',
+        (_name, approverResolver, placeholder): void => {
+          const result = dryRun(approverResolver);
+
+          expect(result.steps).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                assigneeMemberId: placeholder,
+                nodeId: 'task_finance',
+                status: 'WAITING',
+              }),
+            ]),
+          );
+        },
+      );
+
+      it('stops the branch on a source from a newer engine instead of using its type name as a person', (): void => {
+        const result = dryRun({
+          type: 'FUTURE_TYPE',
+        } as unknown as ApproverResolver);
+
+        expect(result.steps).toEqual([
+          expect.objectContaining({ nodeId: 'start', status: 'PASSED' }),
+          expect.objectContaining({
+            assigneeMemberId: null,
+            message:
+              '簽核節點「財務簽核」此引擎版本不支援簽核人來源「FUTURE_TYPE」，請升級 BPMCore 後再試',
+            nodeId: 'task_finance',
+            status: 'STOPPED',
+          }),
+        ]);
+      });
+
+      it('control: a known source still resolves as before (DYNAMIC_FORM picks a real member)', (): void => {
+        const result = dryRun(
+          { formPath: 'approver', type: 'DYNAMIC_FORM' },
+          '{"approver":"member-x"}',
+        );
+
+        expect(result.steps).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              assigneeMemberId: 'member-x',
+              nodeId: 'task_finance',
+              status: 'WAITING',
+            }),
+          ]),
+        );
+      });
+    });
+
+    describe('as notify recipients', (): void => {
+      const notifyFixture = (
+        recipients: ApproverResolver,
+        formData: Readonly<Record<string, unknown>> = {},
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processFormData: formData,
+          processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+            recipients,
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+      it.each<readonly [string, ApproverResolver]>([
+        ['NODE_ACTOR', { nodeIds: ['task_a'], type: 'NODE_ACTOR' }],
+        [
+          'NODE_ACTOR_MANAGER',
+          { levelsUp: 1, nodeIds: ['task_a'], type: 'NODE_ACTOR_MANAGER' },
+        ],
+        [
+          'FORM_MEMBER_MANAGER',
+          { formPath: 'picked', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+        ],
+        [
+          'FORM_ORG_UNIT_MANAGER',
+          { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' },
+        ],
+      ])(
+        'refuses %s as a notify node recipient and sends nothing',
+        async (type, recipients): Promise<void> => {
+          const fixture = notifyFixture(recipients, {
+            dept: 'org-hr',
+            picked: 'member-emp',
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            `知會節點「財務知會」不能使用簽核人來源「${type}」當收件人`,
+          );
+          expect(
+            fixture.notificationService.createServiceTaskNotifications,
+          ).not.toHaveBeenCalled();
+        },
+      );
+
+      it('control: DYNAMIC_FORM recipients still get the notification', async (): Promise<void> => {
+        const fixture = notifyFixture(
+          { formPath: 'approver', type: 'DYNAMIC_FORM' },
+          { approver: 'member-x' },
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({ recipientMemberIds: ['member-x'] }),
+        );
+      });
+    });
+  });
+
   it('allows self fallback only when the workflow explicitly allows initiator self approval', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

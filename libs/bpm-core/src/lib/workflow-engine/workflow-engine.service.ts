@@ -18,6 +18,7 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isFormOrgUnitValue,
   isFormTableCellValue,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -33,6 +34,7 @@ import {
   ServiceTaskNode,
   ApproverResolver,
   ApproverResolverFallback,
+  isNotifyRecipientResolverType,
   readUnsupportedApproverFallbackType,
   readUnsupportedApproverResolverType,
   ReturnResubmitStrategy,
@@ -3297,6 +3299,18 @@ export class WorkflowEngineService {
   ): DryRunAssignment {
     const resolver = node.data.approverResolver;
     const excludeInitiator = node.data.excludeInitiator;
+    const unsupportedType = readUnsupportedApproverResolverType(resolver);
+
+    // A source from a newer engine cannot be simulated. Say so and end the
+    // branch instead of showing its type name as if it were a person.
+    if (unsupportedType !== null) {
+      return {
+        assigneeMemberId: null,
+        message: `簽核節點「${readDryRunNodeName(node)}」此引擎版本不支援簽核人來源「${unsupportedType}」，請升級 BPMCore 後再試`,
+        outcome: 'STOPPED',
+      };
+    }
+
     const memberIds = this.readDryRunMemberIds(
       input,
       resolver,
@@ -3434,6 +3448,8 @@ export class WorkflowEngineService {
         : readDryRunFallbackMemberIds(input, resolver.fallback);
     }
 
+    // The form pick, the unit's rules and an earlier node's outcome are not
+    // known before the instance runs: these stand in as placeholders.
     return null;
   }
 
@@ -6698,14 +6714,123 @@ export class WorkflowEngineService {
       );
     }
 
+    if (resolver.type === 'FORM_MEMBER_MANAGER') {
+      return this.resolveFormMemberManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'FORM_ORG_UNIT_MANAGER') {
+      return this.resolveFormOrgUnitManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
     // A template saved by a newer engine can carry an approver source this
     // engine does not know. Refuse it by name instead of quietly resolving it
     // as the initiator's manager, which would route the task to the wrong
-    // person.
+    // person. A source this engine's shared package knows but does not route
+    // yet reports its own type name.
+    const unresolvedResolver = resolver as { readonly type: string };
+
     throw new ConflictException(
-      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${readUnsupportedApproverResolverType(
-        resolver as { readonly type: string },
-      )}」。請升級 BPMCore 後再發佈或執行此流程。`,
+      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${
+        readUnsupportedApproverResolverType(unresolvedResolver) ??
+        unresolvedResolver.type
+      }」。請升級 BPMCore 後再發佈或執行此流程。`,
+    );
+  }
+
+  /**
+   * FORM_MEMBER_MANAGER: the manager of the one person picked on the form.
+   * The picked person is the starting point and is kept out of every level's
+   * result, so a unit head who is picked is handed to the tier above instead
+   * of coming back as his own manager.
+   */
+  private async resolveFormMemberManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'FORM_MEMBER_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const source = `依表單欄位「${resolver.formPath}」`;
+    const pickedMemberIds = readMemberIdsFromValue(
+      readValueAtPath(instance.formData, resolver.formPath),
+      label,
+      subject,
+      source,
+    );
+
+    // Picking one silently would route the document by accident.
+    if (pickedMemberIds.length > 1) {
+      throw new ConflictException(`${label} ${source}只能選一位人員`);
+    }
+
+    const levelsUp = Number.isFinite(resolver.levelsUp)
+      ? Math.max(Math.trunc(resolver.levelsUp), 1)
+      : 1;
+    const managerMemberIds = await this.resolveManagerMemberIdsExcludingSubject(
+      manager,
+      pickedMemberIds[0],
+      levelsUp,
+      resolver.preferClosestOrgUnit === true,
+    );
+
+    if (managerMemberIds.length > 0) {
+      return managerMemberIds;
+    }
+
+    return this.resolveFallbackAssignees(
+      manager,
+      instance,
+      resolver.fallback,
+      label,
+      subject,
+      `找不到表單欄位「${resolver.formPath}」所選人員的第 ${levelsUp} 層主管`,
+    );
+  }
+
+  /**
+   * FORM_ORG_UNIT_MANAGER: the manager of the organisation unit picked on the
+   * form, through the same rules as a fixed ORG_UNIT_MANAGER. A deleted unit
+   * resolves to nobody and takes the "no manager" path.
+   */
+  private async resolveFormOrgUnitManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'FORM_ORG_UNIT_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const orgUnitValue = readValueAtPath(instance.formData, resolver.formPath);
+
+    if (typeof orgUnitValue !== 'string' || !isFormOrgUnitValue(orgUnitValue)) {
+      throw new ConflictException(
+        `${label} 依表單欄位「${resolver.formPath}」找不到所選組織`,
+      );
+    }
+
+    return this.resolveOrgUnitManagerCandidates(
+      manager,
+      instance,
+      orgUnitValue.trim(),
+      resolver.fallback,
+      label,
+      resolver.preferClosestOrgUnit === true,
+      subject,
     );
   }
 
@@ -7104,6 +7229,51 @@ export class WorkflowEngineService {
     );
 
     return uniqueTexts(nextLevelGroups.flat());
+  }
+
+  /**
+   * The managers `levelsUp` tiers above `startMemberId`. Every tier is looked
+   * up with the person it starts from excluded (as the manager chain does), so
+   * a unit head falls through to the tier above, and anyone already walked
+   * past — the starting person included — counts as nobody, so a pair of
+   * mutual managers cannot loop back. Nobody at any tier returns `[]`; the
+   * caller applies its own fallback.
+   */
+  private async resolveManagerMemberIdsExcludingSubject(
+    manager: EntityManager,
+    startMemberId: string,
+    levelsUp: number,
+    preferClosestOrgUnit: boolean,
+  ): Promise<readonly string[]> {
+    const date = this.readOrganizationToday();
+    let walkedMemberIds: readonly string[] = [startMemberId];
+    let currentMemberIds: readonly string[] = [startMemberId];
+
+    for (let level = 0; level < levelsUp; level += 1) {
+      const managerGroups = await Promise.all(
+        currentMemberIds.map((memberId) =>
+          this.resolveDirectManagerMemberIds(
+            manager,
+            memberId,
+            date,
+            preferClosestOrgUnit,
+            [memberId],
+          ),
+        ),
+      );
+      const nextMemberIds = uniqueTexts(managerGroups.flat()).filter(
+        (memberId) => !walkedMemberIds.includes(memberId),
+      );
+
+      if (nextMemberIds.length === 0) {
+        return [];
+      }
+
+      walkedMemberIds = [...walkedMemberIds, ...nextMemberIds];
+      currentMemberIds = nextMemberIds;
+    }
+
+    return currentMemberIds;
   }
 
   private async resolveDirectManagerMemberIds(
@@ -7533,6 +7703,19 @@ export class WorkflowEngineService {
       );
 
       return;
+    }
+
+    // The sources that read the form or an earlier node's outcome are not
+    // offered to a notify node (the publish lint refuses them); a definition
+    // that reaches here with one anyway is refused by name. A type this
+    // engine does not know is left to the resolver's own refusal below.
+    if (
+      readUnsupportedApproverResolverType(action.recipients) === null &&
+      !isNotifyRecipientResolverType(action.recipients.type)
+    ) {
+      throw new ConflictException(
+        `知會節點「${node.data.label}」不能使用簽核人來源「${action.recipients.type}」當收件人，請改用指定人員、職位、組織或主管`,
+      );
     }
 
     // A webhook-only NOTIFY node names nobody. Resolving its empty DIRECT
@@ -10428,6 +10611,22 @@ function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
     return `orgUnitManager:${resolver.orgUnitId}`;
+  }
+
+  if (resolver.type === 'FORM_MEMBER_MANAGER') {
+    return `formMemberManager:${resolver.formPath}:${resolver.levelsUp}`;
+  }
+
+  if (resolver.type === 'FORM_ORG_UNIT_MANAGER') {
+    return `formOrgUnitManager:${resolver.formPath}`;
+  }
+
+  if (resolver.type === 'NODE_ACTOR') {
+    return `nodeActor:${resolver.nodeIds.join(',')}`;
+  }
+
+  if (resolver.type === 'NODE_ACTOR_MANAGER') {
+    return `nodeActorManager:${resolver.nodeIds.join(',')}:${resolver.levelsUp}`;
   }
 
   return resolver.type === 'ORG_MANAGER_CHAIN'
