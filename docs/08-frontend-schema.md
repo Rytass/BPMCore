@@ -310,7 +310,9 @@ position / org id 是否真實存在。
 `readWorkflowDefinitionIssue`（AI 工具組、`workflow-command` 用）不含這項檢查。
 
 AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種來源；必要欄位
-（`formPath`、`nodeIds`）缺漏時照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
+（`formPath`、`nodeIds`）缺漏時**保留該來源的 `type`**，`formPath` 存成空字串、`nodeIds` 存成空陣列，
+就緒檢查（`validate_workflow`、設計器、發布）會回報，不會改成「發起人主管」而靜默放行；
+只有模型自己編出、本版本不認得的 `type` 名稱仍照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
 既有主管型一樣沿用節點原本的 `fallback`。
 
 #### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`

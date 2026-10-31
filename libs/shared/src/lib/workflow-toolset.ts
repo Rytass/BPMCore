@@ -116,7 +116,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
     'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「人員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
     'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id）；' +
-    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
+    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；這四種來源必填的 formPath／nodeIds 缺漏時不會被改成直屬主管，而是保留為未完成的設定，validate_workflow 會回報；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
   properties: {
     type: {
       enum: [
@@ -1264,9 +1264,13 @@ function readFieldAccessNodeIds(value: unknown): readonly string[] {
 
 /**
  * Coerce an LLM-supplied approver resolver into a valid one, **never throwing**.
- * When required ids are missing (the model can't know real member/org ids), we
- * fall back to {@link DEFAULT_MANAGER_RESOLVER} so the operation still succeeds;
- * `validate_workflow` surfaces anything that still needs the user's attention.
+ * When required ids are missing (the model can't know real member/org ids), the
+ * older sources fall back to {@link DEFAULT_MANAGER_RESOLVER} so the operation
+ * still succeeds; a type name this build does not know does the same. The four
+ * form / prior-node sources (`FORM_MEMBER_MANAGER`, `FORM_ORG_UNIT_MANAGER`,
+ * `NODE_ACTOR`, `NODE_ACTOR_MANAGER`) instead keep their type with an empty
+ * `formPath` / `nodeIds`, so `validate_workflow` and the publish lint report the
+ * gap instead of the node silently routing to the initiator's manager.
  */
 function parseApproverResolver(value: unknown): ApproverResolver {
   if (!isRecord(value)) {
@@ -1349,53 +1353,44 @@ function parseApproverResolver(value: unknown): ApproverResolver {
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
+    // The four sources below keep their own type even when a required id is
+    // missing (`formPath: ''`, `nodeIds: []`). Falling back to the initiator's
+    // manager would store a valid-looking ORG_MANAGER that passes every
+    // readiness check and routes somewhere the author never chose;
+    // `readApproverResolverIssue` reports the incomplete shape instead.
     case 'FORM_MEMBER_MANAGER': {
-      const formPath = readNonEmptyString(value['formPath']);
       const fallback = parseApproverResolverFallback(value['fallback']);
 
-      return formPath
-        ? {
-            formPath,
-            levelsUp: readPositiveInteger(value['levelsUp'], 1),
-            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
-            type: 'FORM_MEMBER_MANAGER',
-            ...(fallback ? { fallback } : {}),
-          }
-        : DEFAULT_MANAGER_RESOLVER;
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'FORM_MEMBER_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
     }
     case 'FORM_ORG_UNIT_MANAGER': {
-      const formPath = readNonEmptyString(value['formPath']);
       const fallback = parseApproverResolverFallback(value['fallback']);
 
-      return formPath
-        ? {
-            formPath,
-            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
-            type: 'FORM_ORG_UNIT_MANAGER',
-            ...(fallback ? { fallback } : {}),
-          }
-        : DEFAULT_MANAGER_RESOLVER;
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'FORM_ORG_UNIT_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
     }
-    case 'NODE_ACTOR': {
-      const nodeIds = readStringArray(value['nodeIds']);
-
-      return nodeIds.length > 0
-        ? { nodeIds, type: 'NODE_ACTOR' }
-        : DEFAULT_MANAGER_RESOLVER;
-    }
+    case 'NODE_ACTOR':
+      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
     case 'NODE_ACTOR_MANAGER': {
-      const nodeIds = readStringArray(value['nodeIds']);
       const fallback = parseApproverResolverFallback(value['fallback']);
 
-      return nodeIds.length > 0
-        ? {
-            levelsUp: readPositiveInteger(value['levelsUp'], 1),
-            nodeIds,
-            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
-            type: 'NODE_ACTOR_MANAGER',
-            ...(fallback ? { fallback } : {}),
-          }
-        : DEFAULT_MANAGER_RESOLVER;
+      return {
+        levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        nodeIds: readStringArray(value['nodeIds']),
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'NODE_ACTOR_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
     }
     case 'DYNAMIC_FORM': {
       const formPath = readNonEmptyString(value['formPath']);

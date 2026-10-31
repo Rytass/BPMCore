@@ -1,4 +1,8 @@
-import { readFallbackWorkflowDefinition } from './workflow-graph';
+import {
+  readApproverResolverIssue,
+  readFallbackWorkflowDefinition,
+} from './workflow-graph';
+import { ApproverResolver } from './workflow';
 import { WorkflowDesignerState } from './workflow-command';
 import {
   WORKFLOW_TOOLSET,
@@ -1254,7 +1258,9 @@ describe('set_user_task_approver — form / prior-node sources', () => {
     return { nodeId, state };
   }
 
-  function readApproverResolver(state: WorkflowDesignerState): unknown {
+  function readApproverResolver(
+    state: WorkflowDesignerState,
+  ): ApproverResolver {
     const node = state.definition.nodes.find(
       (candidate) => candidate.type === 'userTask',
     );
@@ -1385,22 +1391,74 @@ describe('set_user_task_approver — form / prior-node sources', () => {
   });
 
   it.each([
-    ['FORM_MEMBER_MANAGER without formPath', { type: 'FORM_MEMBER_MANAGER' }],
+    [
+      'FORM_MEMBER_MANAGER without formPath',
+      { type: 'FORM_MEMBER_MANAGER' },
+      'FORM_MEMBER_MANAGER',
+    ],
     [
       'FORM_MEMBER_MANAGER with a blank formPath',
       { formPath: '  ', type: 'FORM_MEMBER_MANAGER' },
+      'FORM_MEMBER_MANAGER',
     ],
-    ['FORM_ORG_UNIT_MANAGER without formPath', { type: 'FORM_ORG_UNIT_MANAGER' }],
-    ['NODE_ACTOR without nodeIds', { type: 'NODE_ACTOR' }],
-    ['NODE_ACTOR with empty nodeIds', { nodeIds: [], type: 'NODE_ACTOR' }],
+    [
+      'FORM_ORG_UNIT_MANAGER without formPath',
+      { type: 'FORM_ORG_UNIT_MANAGER' },
+      'FORM_ORG_UNIT_MANAGER',
+    ],
+    ['NODE_ACTOR without nodeIds', { type: 'NODE_ACTOR' }, 'NODE_ACTOR'],
+    [
+      'NODE_ACTOR with empty nodeIds',
+      { nodeIds: [], type: 'NODE_ACTOR' },
+      'NODE_ACTOR',
+    ],
+    [
+      'NODE_ACTOR with a non-array nodeIds',
+      { nodeIds: 'a', type: 'NODE_ACTOR' },
+      'NODE_ACTOR',
+    ],
     [
       'NODE_ACTOR_MANAGER with empty nodeIds',
       { nodeIds: [], type: 'NODE_ACTOR_MANAGER' },
+      'NODE_ACTOR_MANAGER',
     ],
-  ])('falls back to the manager default for %s', async (_label, resolver) => {
+  ])(
+    'keeps the incomplete shape of the requested type for %s so the readiness check reports it',
+    async (_label, resolver, expectedType) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const next = await runTool(state, 'set_user_task_approver', {
+        approverResolver: resolver,
+        nodeId,
+      });
+      const stored = readApproverResolver(next);
+
+      expect(stored.type).toBe(expectedType);
+      expect(stored).not.toMatchObject(MANAGER_DEFAULT);
+      expect(readApproverResolverIssue(stored)).not.toBeNull();
+    },
+  );
+
+  it('validate_workflow reports an incomplete new source instead of passing it', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const next = await runTool(state, 'set_user_task_approver', {
-      approverResolver: resolver,
+      approverResolver: { type: 'NODE_ACTOR' },
+      nodeId,
+    });
+    const validation = await executeWorkflowTool(next, 'validate_workflow', {});
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: expect.stringContaining('需要指定前面的簽核關卡'),
+      });
+    }
+  });
+
+  it('still maps a type name the model invented to the manager default', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { formPath: 'form.dept', type: 'FORM_MANAGER_OF_SOMEONE' },
       nodeId,
     });
 
