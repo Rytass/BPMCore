@@ -26,12 +26,7 @@
       }
     },
     "test": {
-      "executor": "@nx/jest:jest",
-      "outputs": [
-        "{workspaceRoot}/coverage/libs/bpm-core"
-      ],
       "options": {
-        "jestConfig": "libs/bpm-core/jest.config.cts",
         "passWithNoTests": true
       }
     },

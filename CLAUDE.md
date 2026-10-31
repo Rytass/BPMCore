@@ -156,7 +156,7 @@ the publish output is therefore not a failure by itself; the version in the
 it. nx reads the variable in `runCommand` (`tasks-runner/run-command.js`) and
 in the CLI argument splitter (`utils/command-line-utils.js`), which is why it
 works on `nx run shared:build`; `command-line/release/publish.js` calls
-`runCommandForTasks` directly and never consults it. With the variable set,
+`runTasksForCommand` directly and never consults it. With the variable set,
 `nx release publish --dry-run` still reports the three builds as
 `[local cache]`, and so did the real v0.14.0 publish. The flag form is
 different: `nx release publish --skip-nx-cache` does make the builds run
@@ -176,6 +176,15 @@ build step. nx's own "OTP expired, re-run this" hint is of that shape
 (`nx release publish --projects=… --otp=…`); it is safe only because `dist` is
 already current by then. Building by hand first is the rule if you ever narrow a
 release.
+
+**Re-verified on nx 24.0.2 (2026-10-31).** `publish.js`,
+`utils/package-json.js`, `release/utils/semver.js` and
+`utils/sync-generators.js` are byte-identical to 23.3.0. `nx release --dry-run`
+resolved the four packages to one version as before, and
+`nx release publish --dry-run` still ran the builds ahead of publishing: the
+three `@nx/js:tsc` builds from the cache, `bpm-core-react` rebuilt every time,
+`--skip-nx-cache` forcing all four and `NX_SKIP_NX_CACHE=true` forcing none.
+Diff those files again whenever nx moves.
 
 **All four packages are one fixed version set** — `shared`, `bpm-core`,
 `bpm-core-client` and `bpm-core-react` share a version number, a `v{version}`

@@ -128,5 +128,8 @@
       "tag": true,
       "tagMessage": "v{version}"
     }
+  },
+  "affected": {
+    "legacy": true
   }
 }

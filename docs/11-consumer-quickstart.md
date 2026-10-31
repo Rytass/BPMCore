@@ -680,7 +680,7 @@ import './global.scss';
 BPMCore 自己的畫面只透過 design token（CSS variable）調整外觀，所以 host 覆寫
 token 就能換色，不需要改元件。
 
-> **Next.js + pnpm strict：依 build 結果決定（未在外部消費端重現驗證）**。`@rytass/bpm-core-react` 以編譯後的 `dist/`（ESM）發佈；BPMCore 自己的 `apps/client` 並未設定 `transpilePackages`，而是透過 tsconfig paths 直接吃原始碼，由 `@nx/next` 處理。若 host 的 `next build` 出現 `Module not found`（例如解析 `@rytass/bpm-core-client/workflow` 等 subpath 的 peer 相依失敗），再於 `next.config.js` 加入：
+> **Next.js + pnpm strict：依 build 結果決定（未在外部消費端重現驗證）**。`@rytass/bpm-core-react` 以編譯後的 `dist/`（ESM）發佈；BPMCore 自己的 `apps/client` 並未設定 `transpilePackages`，而是透過 tsconfig paths 直接吃原始碼，由 Next.js 自行解析（`next.config.js` 沒有任何 Nx 包裝；nx 24 已移除 `withNx`）。若 host 的 `next build` 出現 `Module not found`（例如解析 `@rytass/bpm-core-client/workflow` 等 subpath 的 peer 相依失敗），再於 `next.config.js` 加入：
 >
 > ```js
 > module.exports = {
