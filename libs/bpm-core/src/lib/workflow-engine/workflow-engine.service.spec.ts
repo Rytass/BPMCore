@@ -4691,6 +4691,12 @@ describe('WorkflowEngineService', () => {
   });
 
   describe('approver sources that read the form (FORM_MEMBER_MANAGER, FORM_ORG_UNIT_MANAGER)', (): void => {
+    // Unit ids are uuids: a FORM_ORG_UNIT_MANAGER field value that is not a uuid
+    // is refused before it reaches the uuid column.
+    const ORG_COMPANY = '00000000-0000-4000-8000-0000000000c1';
+    const ORG_FINANCE = '00000000-0000-4000-8000-0000000000f1';
+    const ORG_HR = '00000000-0000-4000-8000-0000000000a1';
+
     type FormSourceResolver = Extract<
       ApproverResolver,
       { type: 'FORM_MEMBER_MANAGER' | 'FORM_ORG_UNIT_MANAGER' }
@@ -4757,9 +4763,9 @@ describe('WorkflowEngineService', () => {
     // company (CEO) > finance (head) and hr (head); member-001 files forms
     // from finance.
     const departmentOrgUnits = [
-      createOrgUnit({ id: 'org-company', path: 'org' }),
-      createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
-      createOrgUnit({ id: 'org-hr', path: 'org.hr' }),
+      createOrgUnit({ id: ORG_COMPANY, path: 'org' }),
+      createOrgUnit({ id: ORG_FINANCE, path: 'org.finance' }),
+      createOrgUnit({ id: ORG_HR, path: 'org.hr' }),
     ];
     const unitRule = (
       id: string,
@@ -4781,7 +4787,7 @@ describe('WorkflowEngineService', () => {
     ): OrgData => ({
       processManagerResolutions: rules,
       processMemberships: [
-        createMembership({ memberId: 'member-001', orgUnitId: 'org-finance' }),
+        createMembership({ memberId: 'member-001', orgUnitId: ORG_FINANCE }),
         ...extraMemberships,
       ],
       processOrgUnits: orgUnits,
@@ -4885,15 +4891,15 @@ describe('WorkflowEngineService', () => {
           formData: { picked: 'member-emp' },
           org: departmentOrg(
             [
-              unitRule('rule-finance', 'org-finance', 'member-emp', 10),
-              unitRule('rule-company', 'org-company', 'member-ceo'),
+              unitRule('rule-finance', ORG_FINANCE, 'member-emp', 10),
+              unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
             ],
             departmentOrgUnits,
             [
               createMembership({
                 id: 'membership-emp',
                 memberId: 'member-emp',
-                orgUnitId: 'org-finance',
+                orgUnitId: ORG_FINANCE,
               }),
             ],
           ),
@@ -4909,8 +4915,8 @@ describe('WorkflowEngineService', () => {
         const fixture = createFormSourceFixture({
           formData: {},
           org: departmentOrg([
-            unitRule('rule-finance', 'org-finance', 'member-001', 10),
-            unitRule('rule-company', 'org-company', 'member-ceo'),
+            unitRule('rule-finance', ORG_FINANCE, 'member-001', 10),
+            unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
           ]),
           resolver: {
             baseFromInitiator: true,
@@ -4928,8 +4934,8 @@ describe('WorkflowEngineService', () => {
         const fixture = createFormSourceFixture({
           formData: { picked: 'member-001' },
           org: departmentOrg([
-            unitRule('rule-finance', 'org-finance', 'member-001', 10),
-            unitRule('rule-company', 'org-company', 'member-ceo'),
+            unitRule('rule-finance', ORG_FINANCE, 'member-001', 10),
+            unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
           ]),
           resolver: memberResolver(),
         });
@@ -5041,9 +5047,13 @@ describe('WorkflowEngineService', () => {
           resolver: memberResolver(),
         });
 
+        // The unsupported-type refusal is a ConflictException too, so the
+        // message is what proves excludeInitiator was the thing that refused.
         await expect(
           fixture.service.processInstance('instance-1'),
-        ).rejects.toBeInstanceOf(ConflictException);
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。',
+        );
         expect(fixture.savedTasks).toEqual([]);
       });
     });
@@ -5051,10 +5061,10 @@ describe('WorkflowEngineService', () => {
     describe('FORM_ORG_UNIT_MANAGER', (): void => {
       it("assigns the picked unit's manager, not the filer's own unit manager", async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg([
-            unitRule('rule-finance', 'org-finance', 'member-fin-head'),
-            unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+            unitRule('rule-finance', ORG_FINANCE, 'member-fin-head'),
+            unitRule('rule-hr', ORG_HR, 'member-hr-head'),
           ]),
           resolver: orgResolver(),
         });
@@ -5069,9 +5079,9 @@ describe('WorkflowEngineService', () => {
 
       it('lets the parent unit rule take over when the picked unit has none', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg([
-            unitRule('rule-company', 'org-company', 'member-ceo'),
+            unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
           ]),
           resolver: orgResolver(),
         });
@@ -5083,7 +5093,7 @@ describe('WorkflowEngineService', () => {
 
       it('falls back when no unit up the tree has a rule (NONE)', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg([]),
           resolver: orgResolver(),
         });
@@ -5097,7 +5107,7 @@ describe('WorkflowEngineService', () => {
 
       it('falls back to the fixed person when no unit up the tree has a rule (DIRECT)', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg([]),
           resolver: orgResolver({
             fallback: { memberId: 'member-admin', type: 'DIRECT' },
@@ -5111,15 +5121,15 @@ describe('WorkflowEngineService', () => {
 
       it('takes the no-manager path when the picked unit has been deleted, even if it kept a rule', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg(
-            [unitRule('rule-hr', 'org-hr', 'member-hr-head')],
+            [unitRule('rule-hr', ORG_HR, 'member-hr-head')],
             [
-              createOrgUnit({ id: 'org-company', path: 'org' }),
-              createOrgUnit({ id: 'org-finance', path: 'org.finance' }),
+              createOrgUnit({ id: ORG_COMPANY, path: 'org' }),
+              createOrgUnit({ id: ORG_FINANCE, path: 'org.finance' }),
               createOrgUnit({
                 deletedAt: new Date('2026-09-01T00:00:00.000Z'),
-                id: 'org-hr',
+                id: ORG_HR,
                 path: 'org.hr',
               }),
             ],
@@ -5138,14 +5148,15 @@ describe('WorkflowEngineService', () => {
         ['absent', {}],
         ['blank', { dept: '  ' }],
         ['not text', { dept: 42 }],
-        ['an array', { dept: ['org-hr'] }],
+        ['an array', { dept: [ORG_HR] }],
+        ['text that is not a unit id', { dept: 'org-hr' }],
       ])(
         'throws when the unit field is %s',
         async (_name, formData): Promise<void> => {
           const fixture = createFormSourceFixture({
             formData,
             org: departmentOrg([
-              unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+              unitRule('rule-hr', ORG_HR, 'member-hr-head'),
             ]),
             resolver: orgResolver(),
           });
@@ -5161,13 +5172,13 @@ describe('WorkflowEngineService', () => {
 
       // The filer heads the picked unit (priority 10 outranks the company rule).
       const filerHeadsPickedUnit = departmentOrg([
-        unitRule('rule-finance', 'org-finance', 'member-001', 10),
-        unitRule('rule-company', 'org-company', 'member-ceo'),
+        unitRule('rule-finance', ORG_FINANCE, 'member-001', 10),
+        unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
       ]);
 
       it('assigns the filer himself when he heads the picked unit and the node keeps no one out', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
-          formData: { dept: 'org-finance' },
+          formData: { dept: ORG_FINANCE },
           org: filerHeadsPickedUnit,
           resolver: orgResolver({ preferClosestOrgUnit: false }),
         });
@@ -5180,7 +5191,7 @@ describe('WorkflowEngineService', () => {
       it("hands the filer's own manager the task when he heads the picked unit and the node says INITIATOR_MANAGER", async (): Promise<void> => {
         const fixture = createFormSourceFixture({
           excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
-          formData: { dept: 'org-finance' },
+          formData: { dept: ORG_FINANCE },
           org: filerHeadsPickedUnit,
           resolver: orgResolver({ preferClosestOrgUnit: false }),
         });
@@ -5205,9 +5216,9 @@ describe('WorkflowEngineService', () => {
               finalAssigneeMemberId: 'member-deputy',
             },
           },
-          formData: { dept: 'org-hr' },
+          formData: { dept: ORG_HR },
           org: departmentOrg([
-            unitRule('rule-hr', 'org-hr', 'member-hr-head'),
+            unitRule('rule-hr', ORG_HR, 'member-hr-head'),
           ]),
           resolver: orgResolver(),
         });

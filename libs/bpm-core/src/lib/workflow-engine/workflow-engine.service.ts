@@ -6851,7 +6851,13 @@ export class WorkflowEngineService {
   ): Promise<readonly string[]> {
     const orgUnitValue = readValueAtPath(instance.formData, resolver.formPath);
 
-    if (typeof orgUnitValue !== 'string' || !isFormOrgUnitValue(orgUnitValue)) {
+    // A value that is not a uuid would reach the uuid column of the org unit
+    // lookup and surface as a database error instead of this refusal.
+    if (
+      typeof orgUnitValue !== 'string' ||
+      !isFormOrgUnitValue(orgUnitValue) ||
+      !isUUID(orgUnitValue.trim())
+    ) {
       throw new ConflictException(
         `${label} 依表單欄位「${resolver.formPath}」找不到所選組織`,
       );
