@@ -4,6 +4,7 @@ import { GUARDS_METADATA } from '@nestjs/common/constants';
 import {
   BPMAdminGuard,
   BPMAuthContext,
+  BPMAuthenticatedGuard,
   BPMDesignerGuard,
   BPMResolverAccessLevel,
   listBPMResolverHandlers,
@@ -20,6 +21,7 @@ import { WorkflowWebhookEndpointAdminResolver } from '../workflow-webhook/workfl
 import { WorkflowWebhookQueries } from '../workflow-webhook/workflow-webhook.queries';
 import { OrganizationDirectoryQueries } from './organization-directory.queries';
 import { OrganizationMutations } from './organization.mutations';
+import { OrganizationPickerQueries } from './organization-picker.queries';
 import { OrganizationQueries } from './organization.queries';
 
 type Principal = 'admin' | 'designer' | 'user';
@@ -185,6 +187,9 @@ const DESIGNER_PAGE_OPERATIONS: readonly Operation[] = [
   op(OrganizationDirectoryQueries, 'orgUnits', 'designer'),
   op(OrganizationDirectoryQueries, 'positions', 'designer'),
   op(OrganizationDirectoryQueries, 'memberships', 'designer'),
+  // The 組織選擇 field's picker: any signed-in member, not only a designer.
+  op(OrganizationPickerQueries, 'searchOrgUnitOptions', 'authenticated'),
+  op(OrganizationPickerQueries, 'orgUnitOptionsByIds', 'authenticated'),
   // Template and form reads.
   op(TemplateQueries, 'approvalTemplate', 'authenticated'),
   op(TemplateQueries, 'approvalTemplateVersions', 'authenticated'),
@@ -241,6 +246,43 @@ describe('organization read access for template designers', () => {
       'orgUnits',
       'positions',
     ]);
+  });
+
+  it('opens exactly the two picker reads to any signed-in member', (): void => {
+    expect([...methodsOf('OrganizationPickerQueries')].sort()).toEqual([
+      'orgUnitOptionsByIds',
+      'searchOrgUnitOptions',
+    ]);
+
+    for (const method of methodsOf('OrganizationPickerQueries')) {
+      // Rejecting a signed-out caller is the sign-in guard's job, so prove it
+      // is attached rather than run it (see `canCall`).
+      expect([
+        method,
+        readGuards(OrganizationPickerQueries, method).includes(
+          BPMAuthenticatedGuard,
+        ),
+      ]).toEqual([method, true]);
+
+      for (const principal of ['admin', 'designer', 'user'] as const) {
+        expect([
+          method,
+          principal,
+          canCall(OrganizationPickerQueries, method, principal),
+        ]).toEqual([method, principal, true]);
+      }
+    }
+  });
+
+  it('does not let the picker open the unit listing: orgUnits stays designer-only', (): void => {
+    expect(
+      readRegisteredAccess('OrganizationDirectoryQueries', 'orgUnits'),
+    ).toBe('designer');
+    expect(canCall(OrganizationDirectoryQueries, 'orgUnits', 'user')).toBe(
+      false,
+    );
+    expect(canCall(OrganizationQueries, 'orgUnit', 'user')).toBe(false);
+    expect(canCall(OrganizationQueries, 'orgUnit', 'designer')).toBe(false);
   });
 
   it('keeps every other organization read administrator-only', (): void => {

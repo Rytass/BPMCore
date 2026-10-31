@@ -579,8 +579,9 @@ Process-wide overrides read by every request. `configureBPMClient()` replaces th
 | Category | Names |
 |---|---|
 | Types | `OrgUnitType`, `ManagerResolutionScopeType` |
-| Records | `OrgUnitRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `OrganizationDirectoryRecord`, `ResolvedManagerRecord` |
+| Records | `OrgUnitRecord`, `OrgUnitOptionRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `OrganizationDirectoryRecord`, `ResolvedManagerRecord` |
 | Queries | `readOrganizationDashboard()` (admin pages), `readOrganizationDirectory()` (every unit, position and membership; the designer's read, open to designers), `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()`, `readOrgUnitRetirementImpact(id)` |
+| Picker queries (any signed-in member) | `searchOrgUnitOptions(searchText)` (live units, server caps at 20), `resolveOrgUnitOptions(ids)` (retired units included with `deleted: true`; no request for an empty list) — both return `OrgUnitOptionRecord[]` |
 | OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit(id, { transferToOrgUnitId? })`, `commitOrgUnitTreeDraft()` |
 | Position Mutations | `createPosition()`, `updatePosition()`, `deletePosition(id)` |
 | Membership Mutations | `createMembership()`, `updateMembership()`, `deleteMembership()` |
@@ -848,13 +849,15 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Category | Names |
 |---|---|
 | Entities | `OrgUnitEntity`, `PositionEntity`, `MembershipEntity`, `ManagerResolutionEntity` |
-| ObjectTypes | `OrgUnitRetirementImpactObject`, `OrgUnitTreeCommitResultObject`, `OrganizationSummaryObject`, `ResolvedManagerObject` |
+| ObjectTypes | `OrgUnitOptionObject`, `OrgUnitRetirementImpactObject`, `OrgUnitTreeCommitResultObject`, `OrganizationSummaryObject`, `ResolvedManagerObject` |
 | Enums | `OrgUnitTypeEnum`, `ManagerResolutionScopeTypeEnum` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService`, `DeleteOrgUnitOptions` |
 | Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
-| GraphQL | `OrganizationDirectoryQueries`, `OrganizationQueries`, `OrganizationMutations` |
+| GraphQL | `OrganizationDirectoryQueries`, `OrganizationPickerQueries`, `OrganizationQueries`, `OrganizationMutations` |
+
+`OrganizationPickerQueries` is `@BPMAuthenticated()` — any signed-in member, not only a designer — and holds only the two reads behind the 組織選擇 (`org_unit`) form field, because a person filling in a form is not a designer: `searchOrgUnitOptions(searchText, limit)` (live units whose code or name contains the text, case-insensitive with `%` `_` `\` matched literally; a blank text lists the first units in tree order; `limit` defaults to 20 and is clamped to 1–50) and `orgUnitOptionsByIds(ids)` (up to 100 ids, **including retired units** with `deleted: true`, so a stored value can still be shown; an id that is not a uuid matches nothing). Both return `OrgUnitOption { id, code, name, deleted }` and nothing else — no parent, path, type or metadata. `OrganizationService` exposes them as `searchOrgUnitOptions({ searchText, limit })` and `listOrgUnitOptionsByIds(ids)`.
 
 `OrganizationDirectoryQueries` is `@BPMDesignerOnly()` and holds only `orgUnits`, `positions` and `memberships`: the template designer and the compose wizard (which embeds it) load them through `readOrganizationDirectory()` to fill their approver pickers, and a designer is not necessarily an administrator. `OrganizationQueries` (manager rules, the counts, the summary, `orgUnit`, `orgUnitRetirementImpact`, `resolvedManager`) and `OrganizationMutations` stay `@BPMAdminOnly()` as whole classes, so a read added to `OrganizationQueries` is closed to designers by default. Nest runs class and method guards together, so a method can only be made stricter than its class, never looser; a read is opened to designers by moving it to `OrganizationDirectoryQueries`.
 

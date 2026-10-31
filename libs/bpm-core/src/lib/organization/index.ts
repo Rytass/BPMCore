@@ -1,5 +1,6 @@
 export * from './dto/manager-resolution.input';
 export * from './dto/membership.input';
+export * from './dto/org-unit-option.object';
 export * from './dto/org-unit.input';
 export * from './dto/position.input';
 export * from './manager-resolution.entity';
@@ -8,6 +9,7 @@ export * from './org-unit.entity';
 export * from './org-unit-retirement-impact.object';
 export * from './org-unit-tree-commit-result.object';
 export * from './organization-directory.queries';
+export * from './organization-picker.queries';
 export * from './organization-summary.object';
 export * from './organization.enums';
 export * from './organization-time-zone';

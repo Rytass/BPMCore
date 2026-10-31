@@ -34,6 +34,7 @@ import {
 import { ManagerResolutionEntity } from './manager-resolution.entity';
 import { MembershipEntity } from './membership.entity';
 import { OrgUnitEntity } from './org-unit.entity';
+import { OrgUnitOptionObject } from './dto/org-unit-option.object';
 import { OrgUnitRetirementImpactObject } from './org-unit-retirement-impact.object';
 import {
   ManagerResolutionScopeTypeEnum,
@@ -73,6 +74,12 @@ const ROOT_PATH_PREFIX = 'org';
  * truncated.
  */
 const MAX_PAGE_SIZE = 100;
+
+const DEFAULT_ORG_UNIT_OPTION_LIMIT = 20;
+const MAX_ORG_UNIT_OPTION_LIMIT = 50;
+const MAX_ORG_UNIT_OPTION_IDS = 100;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const paginationLogger = new Logger('OrganizationPagination');
 const positionDeletionLogger = new Logger('OrganizationPositionDeletion');
@@ -517,6 +524,61 @@ export class OrganizationService {
       order: { path: 'ASC' },
       where: createOrgUnitWhere({ parentId, searchText, type }),
     });
+  }
+
+  /**
+   * Live units whose code or name contains `searchText`, for the 組織選擇
+   * picker. Retired units are never offered. A blank search lists the first
+   * units in tree order, like `listOrgUnits`.
+   */
+  async searchOrgUnitOptions({
+    limit,
+    searchText,
+  }: {
+    readonly limit?: number | null;
+    readonly searchText?: string | null;
+  }): Promise<readonly OrgUnitOptionObject[]> {
+    const units = await this.orgUnitRepository.find({
+      order: { path: 'ASC' },
+      take: normalizeOrgUnitOptionLimit(limit),
+      where: createOrgUnitWhere({ searchText: escapeLikePattern(searchText) }),
+    });
+
+    return units.map(toOrgUnitOption);
+  }
+
+  /**
+   * The units behind already-stored 組織選擇 values. Unlike
+   * `searchOrgUnitOptions` this includes retired units (`deleted: true`), so a
+   * submitted form can still show what was picked. An id that is not a uuid
+   * cannot match a unit and is dropped rather than sent to the uuid column.
+   */
+  async listOrgUnitOptionsByIds(
+    ids: readonly string[],
+  ): Promise<readonly OrgUnitOptionObject[]> {
+    if (ids.length > MAX_ORG_UNIT_OPTION_IDS) {
+      throw new BadRequestException(
+        `At most ${MAX_ORG_UNIT_OPTION_IDS} org unit ids can be resolved at once`,
+      );
+    }
+
+    const uuids = [
+      ...new Set(
+        ids.filter((id) => UUID_PATTERN.test(id)).map((id) => id.toLowerCase()),
+      ),
+    ];
+
+    if (!uuids.length) {
+      return [];
+    }
+
+    const units = await this.orgUnitRepository.find({
+      order: { path: 'ASC' },
+      where: { id: In(uuids) },
+      withDeleted: true,
+    });
+
+    return units.map(toOrgUnitOption);
   }
 
   async countOrgUnits({
@@ -1336,6 +1398,33 @@ export class OrganizationService {
 
     return ranks[scopeType];
   }
+}
+
+function toOrgUnitOption(unit: OrgUnitEntity): OrgUnitOptionObject {
+  return {
+    code: unit.code,
+    deleted: unit.deletedAt != null,
+    id: unit.id,
+    name: unit.name,
+  };
+}
+
+function normalizeOrgUnitOptionLimit(limit?: number | null): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) {
+    return DEFAULT_ORG_UNIT_OPTION_LIMIT;
+  }
+
+  return Math.min(MAX_ORG_UNIT_OPTION_LIMIT, Math.max(1, Math.floor(limit)));
+}
+
+/**
+ * Makes `%`, `_` and `\` in a user's search text match themselves under
+ * `ILIKE`, whose default escape character is a backslash.
+ */
+function escapeLikePattern(
+  searchText?: string | null,
+): string | null | undefined {
+  return searchText?.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 function createOrgUnitWhere({

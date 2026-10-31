@@ -2,6 +2,8 @@ import {
   createOrgUnit,
   deleteOrgUnit,
   readOrgUnitRetirementImpact,
+  resolveOrgUnitOptions,
+  searchOrgUnitOptions,
   updateMembership,
 } from './organization-api';
 
@@ -132,6 +134,81 @@ describe('@rytass/bpm-core-client/organization', () => {
       }
     });
   });
+  describe('searchOrgUnitOptions', () => {
+    it('sends the text as searchText and returns the options', async (): Promise<void> => {
+      const options = [
+        { code: 'FIN', deleted: false, id: 'unit-1', name: 'Finance' },
+      ];
+      const harness = installFetchMock({ searchOrgUnitOptions: options });
+      try {
+        const result = await searchOrgUnitOptions('fin');
+        const request = harness.capture();
+
+        expect(request.query).toContain('searchOrgUnitOptions');
+        expect(request.query).toContain('$searchText: String');
+        expect(request.query).toContain('searchText: $searchText');
+        expect(request.query).not.toContain('orgUnits');
+        expect(request.variables).toEqual({ searchText: 'fin' });
+        expect(result).toEqual(options);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('selects the four fields of an option and nothing else', async (): Promise<void> => {
+      const harness = installFetchMock({ searchOrgUnitOptions: [] });
+      try {
+        await searchOrgUnitOptions('');
+        const request = harness.capture();
+        const selection = request.query
+          .slice(request.query.indexOf('searchOrgUnitOptions(', 20))
+          .replace(/[^{]*\{/, '')
+          .split('}')[0]
+          .split(/\s+/)
+          .filter(Boolean)
+          .sort();
+
+        expect(selection).toEqual(['code', 'deleted', 'id', 'name']);
+        expect(request.variables).toEqual({ searchText: '' });
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('resolveOrgUnitOptions', () => {
+    it('sends the ids and returns retired units too', async (): Promise<void> => {
+      const options = [
+        { code: 'OLD', deleted: true, id: 'unit-2', name: 'Old Unit' },
+      ];
+      const harness = installFetchMock({ orgUnitOptionsByIds: options });
+      try {
+        const result = await resolveOrgUnitOptions(['unit-2']);
+        const request = harness.capture();
+
+        expect(request.query).toContain('orgUnitOptionsByIds');
+        expect(request.query).toContain('$ids: [ID!]!');
+        expect(request.variables).toEqual({ ids: ['unit-2'] });
+        expect(result).toEqual(options);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('makes no request for an empty list', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const fetchMock = jest.fn();
+      (global as { fetch: typeof fetch }).fetch =
+        fetchMock as unknown as typeof fetch;
+      try {
+        await expect(resolveOrgUnitOptions([])).resolves.toEqual([]);
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
+      }
+    });
+  });
+
   describe('updateMembership', () => {
     // UpdateMembershipInput (bpm-core organization/dto/membership.input.ts).
     // A key outside this list fails GraphQL validation with HTTP 400 before
