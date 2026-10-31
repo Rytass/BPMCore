@@ -865,7 +865,7 @@ interface OrgUnitOptionsByIdsQueryData {
  * field. Open to any signed-in member, unlike {@link readOrganizationDirectory}.
  *
  * A blank `searchText` lists the first units in tree order. The server returns
- * at most 20 matches.
+ * 20 matches by default (50 at most).
  */
 export async function searchOrgUnitOptions(
   searchText: string,
@@ -885,20 +885,33 @@ export async function searchOrgUnitOptions(
   return data.searchOrgUnitOptions;
 }
 
+/** The most ids the server takes in one `orgUnitOptionsByIds` request. */
+const ORG_UNIT_OPTIONS_BY_IDS_LIMIT = 100;
+
 /**
  * Looks up the units behind already-stored 組織選擇 values, retired ones
  * included (`deleted: true`), so a submitted form can still show their names.
- * Makes no request for an empty list; the server accepts up to 100 ids.
+ *
+ * Duplicate ids are asked for once, and a long list is split into requests of
+ * at most 100 ids (the server refuses more in one call); the results come back
+ * in request order. Makes no request for an empty list.
  */
 export async function resolveOrgUnitOptions(
   ids: readonly string[],
 ): Promise<readonly OrgUnitOptionRecord[]> {
-  if (!ids.length) {
-    return [];
-  }
-
-  const data = await requestGraphQl<OrgUnitOptionsByIdsQueryData>(
-    `query OrgUnitOptionsByIds($ids: [ID!]!) {
+  const distinctIds = [...new Set(ids)];
+  const chunks = Array.from(
+    { length: Math.ceil(distinctIds.length / ORG_UNIT_OPTIONS_BY_IDS_LIMIT) },
+    (_, index) =>
+      distinctIds.slice(
+        index * ORG_UNIT_OPTIONS_BY_IDS_LIMIT,
+        (index + 1) * ORG_UNIT_OPTIONS_BY_IDS_LIMIT,
+      ),
+  );
+  const results = await Promise.all(
+    chunks.map(async (chunk): Promise<readonly OrgUnitOptionRecord[]> => {
+      const data = await requestGraphQl<OrgUnitOptionsByIdsQueryData>(
+        `query OrgUnitOptionsByIds($ids: [ID!]!) {
       orgUnitOptionsByIds(ids: $ids) {
         code
         deleted
@@ -906,8 +919,12 @@ export async function resolveOrgUnitOptions(
         name
       }
     }`,
-    { ids },
+        { ids: chunk },
+      );
+
+      return data.orgUnitOptionsByIds;
+    }),
   );
 
-  return data.orgUnitOptionsByIds;
+  return results.flat();
 }

@@ -72,6 +72,7 @@ import {
 } from './form-data-source-field';
 import { resolveFormFieldLink } from './form-field-link';
 import { MemberFieldControl } from './member-field';
+import { OrgUnitFieldControl } from './org-unit-field';
 
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
@@ -1065,6 +1066,19 @@ function renderStaticControl(
         name={field.fieldKey}
         onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
         placeholder={field.placeholder}
+        readonly={readonly}
+        size={size}
+        value={value}
+      />
+    );
+  }
+
+  if (field.type === 'org_unit') {
+    return (
+      <OrgUnitFieldControl
+        name={field.fieldKey}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        placeholder={field.placeholder ?? readInputPlaceholder(field.type)}
         readonly={readonly}
         size={size}
         value={value}

@@ -195,6 +195,70 @@ describe('@rytass/bpm-core-client/organization', () => {
       }
     });
 
+    it('drops duplicate ids and asks for at most 100 ids per request', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const requestedIds: string[][] = [];
+      const fetchMock = jest.fn(
+        async (_url: unknown, init?: RequestInit): Promise<Response> => {
+          const ids = (
+            JSON.parse(String(init?.body ?? '{}')) as {
+              variables: { ids: string[] };
+            }
+          ).variables.ids;
+
+          requestedIds.push(ids);
+
+          return new Response(
+            JSON.stringify({
+              data: {
+                orgUnitOptionsByIds: ids.map((id) => ({
+                  code: id,
+                  deleted: false,
+                  id,
+                  name: id,
+                })),
+              },
+            }),
+            {
+              headers: { 'Content-Type': 'application/json' },
+              status: 200,
+            },
+          );
+        },
+      );
+      (global as { fetch: typeof fetch }).fetch =
+        fetchMock as unknown as typeof fetch;
+      try {
+        const ids = Array.from({ length: 205 }, (_, index) => `unit-${index}`);
+        const result = await resolveOrgUnitOptions([
+          ...ids,
+          ...ids.slice(0, 5),
+        ]);
+
+        // 205 distinct ids (the 5 repeats are dropped) -> 100 + 100 + 5.
+        expect(requestedIds.map((chunk) => chunk.length)).toEqual([
+          100, 100, 5,
+        ]);
+        expect(result.map((option) => option.id)).toEqual(ids);
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
+      }
+    });
+
+    it('sends exactly 100 ids in one request', async (): Promise<void> => {
+      const options: never[] = [];
+      const harness = installFetchMock({ orgUnitOptionsByIds: options });
+      try {
+        const ids = Array.from({ length: 100 }, (_, index) => `unit-${index}`);
+
+        await resolveOrgUnitOptions(ids);
+
+        expect(harness.capture().variables).toEqual({ ids });
+      } finally {
+        harness.restore();
+      }
+    });
+
     it('makes no request for an empty list', async (): Promise<void> => {
       const originalFetch = global.fetch;
       const fetchMock = jest.fn();

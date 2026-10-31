@@ -276,6 +276,28 @@ jest.mock('./member-field', () => ({
   ),
 }));
 
+// Same split for `org_unit`: the picker is covered by org-unit-field.spec.tsx.
+jest.mock('./org-unit-field', () => ({
+  OrgUnitFieldControl: (
+    props: Readonly<Record<string, unknown>>,
+  ): ReactElement => (
+    <div
+      data-mock-org-unit-field={String(props.name)}
+      data-mock-org-unit-placeholder={String(props.placeholder)}
+      data-mock-org-unit-readonly={String(props.readonly)}
+      data-mock-org-unit-value={JSON.stringify(props.value ?? null)}
+    >
+      <button
+        data-mock-org-unit-pick=""
+        onClick={(): void =>
+          (props.onChange as (value: unknown) => void)('unit-1')
+        }
+        type="button"
+      />
+    </div>
+  ),
+}));
+
 const previewOptionsMock = previewFormFieldOptions as jest.MockedFunction<
   typeof previewFormFieldOptions
 >;
@@ -1069,6 +1091,107 @@ describe('FormRenderer member field', () => {
       expect(
         readMember(harness.container, 'watchers')?.dataset.mockMemberValue,
       ).toBe('["m1","m2"]');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
+describe('FormRenderer org unit field', () => {
+  function createOrgUnitSchema(): FormDefinitionSchema {
+    return {
+      fields: [
+        {
+          fieldKey: 'department',
+          label: '申請部門',
+          required: true,
+          type: 'org_unit',
+        },
+        {
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ],
+      schemaVersion: 1,
+    };
+  }
+
+  function readOrgUnit(container: HTMLElement): HTMLElement | null {
+    return container.querySelector('[data-mock-org-unit-field="department"]');
+  }
+
+  it('renders the org unit picker and writes the picked unit id back', async (): Promise<void> => {
+    const harness = await mountRenderer({ schema: createOrgUnitSchema() });
+
+    try {
+      expect(readOrgUnit(harness.container)?.dataset.mockOrgUnitValue).toBe(
+        'null',
+      );
+      expect(
+        readOrgUnit(harness.container)?.dataset.mockOrgUnitPlaceholder,
+      ).toBe('搜尋組織名稱');
+
+      act((): void => {
+        (
+          readOrgUnit(harness.container)?.querySelector(
+            'button',
+          ) as HTMLButtonElement
+        ).click();
+      });
+
+      expect(harness.readValues().department).toBe('unit-1');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('hands the stored id to a read-only picker so it can show the name', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: createOrgUnitSchema(),
+      value: { department: 'unit-1' },
+    });
+
+    try {
+      expect(readOrgUnit(harness.container)?.dataset.mockOrgUnitReadonly).toBe(
+        'true',
+      );
+      expect(readOrgUnit(harness.container)?.dataset.mockOrgUnitValue).toBe(
+        '"unit-1"',
+      );
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('shows the required error under the picker', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      errors: { department: '申請部門為必填欄位。' },
+      schema: createOrgUnitSchema(),
+    });
+
+    try {
+      expect(
+        harness.container.querySelector('[data-form-field-key="department"]')
+          ?.textContent,
+      ).toContain('申請部門為必填欄位。');
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('leaves the member field on the member picker', async (): Promise<void> => {
+    const harness = await mountRenderer({ schema: createOrgUnitSchema() });
+
+    try {
+      expect(
+        harness.container.querySelector('[data-mock-member-field="reviewer"]'),
+      ).not.toBeNull();
+      expect(
+        harness.container.querySelector('[data-mock-org-unit-field="reviewer"]'),
+      ).toBeNull();
     } finally {
       await unmountRenderer(harness);
     }

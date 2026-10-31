@@ -581,7 +581,7 @@ Process-wide overrides read by every request. `configureBPMClient()` replaces th
 | Types | `OrgUnitType`, `ManagerResolutionScopeType` |
 | Records | `OrgUnitRecord`, `OrgUnitOptionRecord`, `OrgUnitRetirementImpactRecord`, `PositionRecord`, `MembershipRecord`, `ManagerResolutionRecord`, `OrganizationSummaryRecord`, `OrganizationDirectoryRecord`, `ResolvedManagerRecord` |
 | Queries | `readOrganizationDashboard()` (admin pages), `readOrganizationDirectory()` (every unit, position and membership; the designer's read, open to designers), `listMemberships()`, `listManagerResolutions()`, `readResolvedManager()`, `readOrgUnitRetirementImpact(id)` |
-| Picker queries (any signed-in member) | `searchOrgUnitOptions(searchText)` (live units, server caps at 20), `resolveOrgUnitOptions(ids)` (retired units included with `deleted: true`; no request for an empty list) — both return `OrgUnitOptionRecord[]` |
+| Picker queries (any signed-in member) | `searchOrgUnitOptions(searchText)` (live units; the server returns 20 by default and at most 50), `resolveOrgUnitOptions(ids)` (retired units included with `deleted: true`; duplicate ids are dropped and a long list is sent in requests of at most 100 ids, the server's limit; no request for an empty list) — both return `OrgUnitOptionRecord[]` |
 | OrgUnit Mutations | `createOrgUnit()`, `updateOrgUnit()`, `deleteOrgUnit(id, { transferToOrgUnitId? })`, `commitOrgUnitTreeDraft()` |
 | Position Mutations | `createPosition()`, `updatePosition()`, `deletePosition(id)` |
 | Membership Mutations | `createMembership()`, `updateMembership()`, `deleteMembership()` |
@@ -779,7 +779,7 @@ Task notification payloads (`TASK_ASSIGNED`, `TASK_TRANSFERRED`) carry `hasFilla
 | Name | Purpose |
 |---|---|
 | `readApprovalInstanceCaseTitle(instance)` | Display title from an instance |
-| `readFormDataCaseTitle({ ... })` | Display title from form data before submission; skips table fields and labels a table value as `N 列` |
+| `readFormDataCaseTitle({ ... })` | Display title from form data before submission; skips table, member (人員選擇) and org unit (組織選擇) fields and labels a table value as `N 列` |
 
 ---
 
