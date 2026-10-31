@@ -278,7 +278,8 @@ position / org id 是否真實存在。
 `fallback` 與既有主管型同規則（`DIRECT` 要有 `memberId`、`POSITION` 要有 `positionId`）。
 `NODE_ACTOR`／`NODE_ACTOR_MANAGER` 另有圖檢查 `readNodeActorSourceIssues(definition, nodeId, sourceNodeIds)`：
 來源關卡必須是存在的簽核關卡、不得有進入條件或「排除發起人後沒人時跳過此關」、不得重複或指到自己；
-從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上。
+從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上；
+每個來源都必須在本節點的上游（從該來源出發走得到本節點）——排在本節點之後或沒接上流程的關卡不能當來源。
 **知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`
 會擋，AI 工具組寫入知會收件人時一律退回預設的直屬主管。
 
@@ -318,6 +319,27 @@ type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
   不是人能手打的值。表單內的顯示／必填／唯讀規則也不會把人員選擇欄位列為條件來源。
 - **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
   為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
+
+#### 組織選擇欄位（`org_unit`，未發佈）與 `FORM_ORG_UNIT_MANAGER`
+
+`FORM_ORG_UNIT_MANAGER` 的 `formPath` 讀到的值必須是組織單位 id（字串）。表單欄位類型
+**`org_unit`（組織選擇）** 就是為此而設：
+
+```ts
+type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
+```
+
+- **儲存值**：單一組織單位 id 字串；只存 id，名稱在顯示時才解析。沒選時是省略／`null`。
+  沒有 `multiple`（只能選一個組織），也不能當表格欄。`isFormOrgUnitValue(value)` 判斷
+  儲存值是否合格（非空白字串）。
+- **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——組織
+  id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
+- **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
+  的欄位須是 `org_unit`、必填且不會被隱藏（驗證與試跑由後續任務補上）。
+- **未發佈／尚未實作**：後端表單 schema 對 `org_unit` 欄位的接受與送出驗證、Builder 的欄位
+  庫與設定項、Renderer 的組織搜尋控制項、試跑範例值與案件頁的部門名稱顯示，都由後續任務
+  補上；目前只有型別、`isOrgUnitFieldDefinition`／`isFormOrgUnitValue`、條件與 webhook
+  相容判斷已在 `@rytass/bpm-core-shared`。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：

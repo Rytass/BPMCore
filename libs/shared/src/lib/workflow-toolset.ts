@@ -114,9 +114,9 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
-    'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「成員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
+    'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「人員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
     'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id）；' +
-    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。後三者的 fallback 規則同上；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
+    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
   properties: {
     type: {
       enum: [
