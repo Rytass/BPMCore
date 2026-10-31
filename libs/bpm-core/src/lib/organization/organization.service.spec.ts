@@ -1937,8 +1937,15 @@ describe('OrganizationService org unit options', () => {
 
       for (const clause of options.where) {
         expect(clause.deletedAt).toEqual(expect.any(FindOperator));
+        expect((clause.deletedAt as FindOperator<Date>).type).toBe('isNull');
       }
 
+      expect((options.where[0].code as FindOperator<string>).type).toBe(
+        'ilike',
+      );
+      expect((options.where[1].name as FindOperator<string>).type).toBe(
+        'ilike',
+      );
       expect((options.where[0].code as FindOperator<string>).value).toBe(
         '%fin%',
       );
