@@ -14,6 +14,7 @@ export type FormFieldDefinition =
   | BooleanFieldDefinition
   | FileUploadFieldDefinition
   | MemberFieldDefinition
+  | OrgUnitFieldDefinition
   | TableFieldDefinition;
 
 interface BaseFormFieldDefinition<TType extends string> {
@@ -190,6 +191,13 @@ export type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
 };
 
 /**
+ * 組織選擇. The stored value is a single organization unit id (string) — id
+ * only, so it feeds a `FORM_ORG_UNIT_MANAGER` approver resolver unchanged.
+ * `multiple` is not supported and it is not a table column type.
+ */
+export type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
+
+/**
  * Field types a table column may use. `textarea`, `radio`, `checkbox`,
  * `file_upload` and nested `table` are intentionally excluded in V1
  * (ADR 16 §3.10); opening any of them later is an additive change.
@@ -262,6 +270,17 @@ export function isMemberFieldDefinition(
   field: FormFieldDefinition,
 ): field is MemberFieldDefinition {
   return field.type === 'member';
+}
+
+export function isOrgUnitFieldDefinition(
+  field: FormFieldDefinition,
+): field is OrgUnitFieldDefinition {
+  return field.type === 'org_unit';
+}
+
+/** Whether `value` is a well-formed stored org unit value: a non-blank string. */
+export function isFormOrgUnitValue(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**
