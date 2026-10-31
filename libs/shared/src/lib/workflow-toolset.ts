@@ -13,6 +13,8 @@ import {
   WorkflowEdgeConditionOperator,
   WorkflowNode,
   WorkflowNodeTriggerMode,
+  isFallbackCapableApproverResolverType,
+  isNotifyRecipientResolverType,
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
@@ -110,7 +112,11 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
     'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
-    'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
+    'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
+    'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
+    'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「成員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
+    'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id）；' +
+    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。後三者的 fallback 規則同上；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
   properties: {
     type: {
       enum: [
@@ -123,6 +129,10 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
         'ORG_UNIT_MANAGER',
         'DYNAMIC_FORM',
         'EXPRESSION',
+        'FORM_ORG_UNIT_MANAGER',
+        'FORM_MEMBER_MANAGER',
+        'NODE_ACTOR',
+        'NODE_ACTOR_MANAGER',
       ],
       type: 'string',
     },
@@ -750,16 +760,15 @@ export async function executeWorkflowTool(
 
 type FallbackCapableApproverResolver = Extract<
   ApproverResolver,
-  { readonly type: 'ORG_MANAGER' | 'ORG_UNIT_MANAGER' | 'ORG_MANAGER_CHAIN' }
+  { readonly fallback?: ApproverResolverFallback }
 >;
 
 function isFallbackCapableApproverResolver(
   resolver: ApproverResolver | undefined,
 ): resolver is FallbackCapableApproverResolver {
   return (
-    resolver?.type === 'ORG_MANAGER' ||
-    resolver?.type === 'ORG_UNIT_MANAGER' ||
-    resolver?.type === 'ORG_MANAGER_CHAIN'
+    resolver !== undefined &&
+    isFallbackCapableApproverResolverType(resolver.type)
   );
 }
 
@@ -1340,6 +1349,54 @@ function parseApproverResolver(value: unknown): ApproverResolver {
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
+    case 'FORM_MEMBER_MANAGER': {
+      const formPath = readNonEmptyString(value['formPath']);
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return formPath
+        ? {
+            formPath,
+            levelsUp: readPositiveInteger(value['levelsUp'], 1),
+            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+            type: 'FORM_MEMBER_MANAGER',
+            ...(fallback ? { fallback } : {}),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'FORM_ORG_UNIT_MANAGER': {
+      const formPath = readNonEmptyString(value['formPath']);
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return formPath
+        ? {
+            formPath,
+            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+            type: 'FORM_ORG_UNIT_MANAGER',
+            ...(fallback ? { fallback } : {}),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'NODE_ACTOR': {
+      const nodeIds = readStringArray(value['nodeIds']);
+
+      return nodeIds.length > 0
+        ? { nodeIds, type: 'NODE_ACTOR' }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
+    case 'NODE_ACTOR_MANAGER': {
+      const nodeIds = readStringArray(value['nodeIds']);
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return nodeIds.length > 0
+        ? {
+            levelsUp: readPositiveInteger(value['levelsUp'], 1),
+            nodeIds,
+            preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+            type: 'NODE_ACTOR_MANAGER',
+            ...(fallback ? { fallback } : {}),
+          }
+        : DEFAULT_MANAGER_RESOLVER;
+    }
     case 'DYNAMIC_FORM': {
       const formPath = readNonEmptyString(value['formPath']);
 
@@ -1357,6 +1414,21 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     default:
       return DEFAULT_MANAGER_RESOLVER;
   }
+}
+
+/**
+ * A notify node's recipients: {@link parseApproverResolver}, except that a
+ * source a notify node may not use (see `isNotifyRecipientResolverType`) is
+ * treated like any other shape this assistant does not know and becomes
+ * {@link DEFAULT_MANAGER_RESOLVER}. `validate_workflow` and the publish lint
+ * stay the gate for what a hand-written definition carries.
+ */
+function parseNotifyRecipients(value: unknown): ApproverResolver {
+  const resolver = parseApproverResolver(value);
+
+  return isNotifyRecipientResolverType(resolver.type)
+    ? resolver
+    : DEFAULT_MANAGER_RESOLVER;
 }
 
 /**
@@ -1495,7 +1567,7 @@ function parseServiceAction(value: unknown): ServiceAction {
   // NOTIFY (default for any other / missing type).
   return {
     channels: readNotifyChannels(value['channels']),
-    recipients: parseApproverResolver(value['recipients']),
+    recipients: parseNotifyRecipients(value['recipients']),
     type: 'NOTIFY',
     ...readOptionalString(value, 'template', 'template'),
   };
