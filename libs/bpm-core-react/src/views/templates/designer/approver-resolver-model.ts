@@ -374,7 +374,9 @@ export function readApproverResolverSummary(
   }
 
   // A type saved by a newer BPMCore: say so rather than call it an expression.
-  return `不支援的簽核來源（${readUnsupportedApproverResolverType(resolver) ?? ''}）`;
+  return readUnsupportedApproverSourceLabel(
+    readUnsupportedApproverResolverType(resolver) ?? '',
+  );
 }
 
 function readStageSummary(
@@ -477,6 +479,15 @@ export function readFallbackMemberSelectOption(
 }
 
 /**
+ * The one label for a resolver `type` this build does not know (a definition
+ * saved by a newer BPMCore): the designer's read-only 簽核來源 entry, the node
+ * summary and the compose review table all say it with this.
+ */
+export function readUnsupportedApproverSourceLabel(type: string): string {
+  return `不支援的簽核來源（${type}）`;
+}
+
+/**
  * The short 簽核方式 label the compose review table shows for a user task.
  */
 export function readApproverResolverDetail(resolver: ApproverResolver): string {
@@ -508,7 +519,9 @@ export function readApproverResolverDetail(resolver: ApproverResolver): string {
     case 'NODE_ACTOR_MANAGER':
       return '前面關卡簽核者的主管';
     default:
-      return '簽核人';
+      return readUnsupportedApproverSourceLabel(
+        readUnsupportedApproverResolverType(resolver) ?? '',
+      );
   }
 }
 
@@ -542,6 +555,13 @@ export type ApproverResolverEditorState =
       mode: 'ORG_UNIT_MANAGER';
       orgSource: OrgUnitManagerSource;
       orgUnitId: string;
+      /**
+       * Set by 固定組織 -> 表單欄位 when it turned 只取最近一層主管 on because the
+       * stored resolver had no such key; going back to 固定組織 then removes the
+       * key again instead of leaving a routing change on the node. Only the
+       * switch itself sets it, so it is never read from a saved resolver.
+       */
+      preferClosestOrgUnitDefaulted?: true;
     }> &
       ManagerRule)
   | (Readonly<{
@@ -684,7 +704,9 @@ export function withApproverSubject(
 
 /**
  * Applies the 組織 choice of 指定組織主管. A form-field org starts with 只取最近
- * 一層主管 on (SPEC 3.3) unless the author already chose; a fixed org keeps the
+ * 一層主管 on (SPEC 3.3) unless the author already chose; going back to a fixed
+ * org removes that default again when the switch itself put it there, so the
+ * round trip hands back the original resolver. Otherwise a fixed org keeps the
  * stored choice as it is.
  */
 export function withOrgUnitSource(
@@ -695,13 +717,48 @@ export function withOrgUnitSource(
     return state;
   }
 
-  return {
-    ...state,
-    orgSource: source,
-    ...(source === 'FORM_FIELD' && state.preferClosestOrgUnit === undefined
-      ? { preferClosestOrgUnit: true }
-      : {}),
-  };
+  const { preferClosestOrgUnitDefaulted, ...rest } = state;
+
+  if (source === 'FORM_FIELD') {
+    return rest.preferClosestOrgUnit === undefined
+      ? {
+          ...rest,
+          orgSource: source,
+          preferClosestOrgUnit: true,
+          preferClosestOrgUnitDefaulted: true,
+        }
+      : { ...rest, orgSource: source };
+  }
+
+  if (preferClosestOrgUnitDefaulted) {
+    return {
+      ...(rest.fallback !== undefined ? { fallback: rest.fallback } : {}),
+      formPath: rest.formPath,
+      mode: rest.mode,
+      orgSource: source,
+      orgUnitId: rest.orgUnitId,
+    };
+  }
+
+  return { ...rest, orgSource: source };
+}
+
+/**
+ * Whether `current` is still exactly what a 固定組織 -> 表單欄位 switch wrote
+ * (`produced`), apart from the form field the author may have picked since. The
+ * designer keeps the state's memory of the defaulted 只取最近一層主管 only while
+ * this holds: an edit to anything else makes the stored value the author's.
+ */
+export function isDefaultedOrgUnitSwitch(
+  current: ApproverResolver,
+  produced: ApproverResolver,
+): boolean {
+  return (
+    current.type === 'FORM_ORG_UNIT_MANAGER' &&
+    produced.type === 'FORM_ORG_UNIT_MANAGER' &&
+    JSON.stringify({ ...current, formPath: '' }) ===
+      JSON.stringify({ ...produced, formPath: '' })
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -714,26 +771,6 @@ export const UNSUPPORTED_APPROVER_SOURCE_OPTION_ID = 'UNSUPPORTED';
 const UNSUPPORTED_APPROVER_SOURCE_HINT =
   '此引擎版本不支援這種簽核來源；這裡選擇其他簽核來源會覆寫原設定';
 
-/**
- * A resolver type this build does not know is shown, never edited: no editor
- * renders for it and nothing is written unless the author explicitly picks a
- * different source (which replaces the stored one, like the unsupported
- * fallback entry).
- */
-export function isApproverSourceReadOnly(
-  state: ApproverResolverEditorState,
-): boolean {
-  return state.mode === 'UNSUPPORTED';
-}
-
-export function readApproverSourceReadOnlyText(
-  state: ApproverResolverEditorState,
-): string | null {
-  return state.mode === 'UNSUPPORTED'
-    ? `不支援的簽核來源（${state.type}）`
-    : null;
-}
-
 export type ApproverSourceChoice = Readonly<{
   /** Hint under the select, `null` when nothing needs saying. */
   hint: string | null;
@@ -743,7 +780,9 @@ export type ApproverSourceChoice = Readonly<{
 
 /**
  * The 簽核來源 select: the source options, plus, for a type this build does
- * not know, a read-only entry carrying its name that is the current value.
+ * not know, a read-only entry carrying its name that is the current value: it
+ * is shown, never edited, and nothing is written unless the author explicitly
+ * picks a different source (which replaces the stored one).
  * `readApproverResolverMode` would call such a type 指定會員.
  */
 export function readApproverSourceChoice(
@@ -752,7 +791,7 @@ export function readApproverSourceChoice(
   if (state.mode === 'UNSUPPORTED') {
     const selected = {
       id: UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
-      name: `不支援的簽核來源（${state.type}）`,
+      name: readUnsupportedApproverSourceLabel(state.type),
     };
 
     return {

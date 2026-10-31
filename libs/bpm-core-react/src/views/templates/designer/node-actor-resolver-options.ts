@@ -23,6 +23,10 @@ export type NodeActorStageChoice = Readonly<{
 export const NO_UPSTREAM_USER_TASK_HINT =
   '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（沒有進入條件、也沒設跳過此關）';
 
+/** The 關卡 picker's hint while the selection has no problem to report. */
+export const NODE_ACTOR_STAGE_HINT =
+  '簽核人取自你選的前面關卡實際簽核的人；可複選，整組要涵蓋每條路徑。複選多個關卡時，取最近實際走到的那一關的簽核人，不是全部關卡的簽核人。';
+
 const UNUSABLE_STAGE_SUFFIX = '（無法使用）';
 const MISSING_STAGE_SUFFIX = '（已不存在）';
 

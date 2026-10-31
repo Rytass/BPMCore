@@ -893,8 +893,9 @@ const ORG_UNIT_OPTIONS_BY_IDS_LIMIT = 100;
  * included (`deleted: true`), so a submitted form can still show their names.
  *
  * Duplicate ids are asked for once, and a long list is split into requests of
- * at most 100 ids (the server refuses more in one call); the results come back
- * in request order. Makes no request for an empty list.
+ * at most 100 ids (the server refuses more in one call); the order of the
+ * results is not guaranteed (the server returns tree order within a chunk), so
+ * match them to your ids by `id`. Makes no request for an empty list.
  */
 export async function resolveOrgUnitOptions(
   ids: readonly string[],

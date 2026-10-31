@@ -14,14 +14,13 @@ import {
   NODE_ACTOR_SUBJECT_OPTIONS,
   ORG_UNIT_SOURCE_OPTIONS,
   buildApproverResolver,
+  isDefaultedOrgUnitSwitch,
   UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
-  isApproverSourceReadOnly,
   readApproverSourceChoice,
   readApproverManagerRule,
   readApproverResolverDetail,
   readApproverResolverEditorState,
   readApproverSourcePick,
-  readApproverSourceReadOnlyText,
   readApproverSubjectChoice,
   readApproverSubjectOption,
   readApproverSubjectPick,
@@ -650,6 +649,56 @@ describe('readApproverResolverEditorState / buildApproverResolver', () => {
     expect('orgUnitId' in next).toBe(false);
   });
 
+  it('restores the original 只取最近一層主管 on a round trip fixed org -> form field -> fixed org', () => {
+    const withoutKey: ApproverResolver = {
+      orgUnitId: 'org-sales',
+      type: 'ORG_UNIT_MANAGER',
+    };
+    const roundTrip = (resolver: ApproverResolver): ApproverResolver =>
+      buildApproverResolver(
+        withOrgUnitSource(
+          withOrgUnitSource(
+            readApproverResolverEditorState(resolver),
+            'FORM_FIELD',
+          ),
+          'FIXED',
+        ),
+      );
+
+    // An absent key stays absent: the form-field default (on) must not leak back.
+    expect(roundTrip(withoutKey)).toStrictEqual(withoutKey);
+    // Controls: an explicit choice, either way, survives the round trip.
+    const off: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: false };
+    const on: ApproverResolver = { ...withoutKey, preferClosestOrgUnit: true };
+
+    expect(roundTrip(off)).toStrictEqual(off);
+    expect(roundTrip(on)).toStrictEqual(on);
+  });
+
+  it('only remembers the defaulted 只取最近一層主管 while the stored resolver is what the switch wrote', () => {
+    const produced: ApproverResolver = {
+      formPath: '',
+      preferClosestOrgUnit: true,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    };
+
+    expect(isDefaultedOrgUnitSwitch(produced, produced)).toBe(true);
+    // Picking the form field afterwards does not change that.
+    expect(
+      isDefaultedOrgUnitSwitch({ ...produced, formPath: 'form.dept' }, produced),
+    ).toBe(true);
+    // Controls: an edit to the value, or another source, makes it the author's.
+    expect(
+      isDefaultedOrgUnitSwitch(
+        { ...produced, preferClosestOrgUnit: false },
+        produced,
+      ),
+    ).toBe(false);
+    expect(
+      isDefaultedOrgUnitSwitch({ orgUnitId: 'o', type: 'ORG_UNIT_MANAGER' }, produced),
+    ).toBe(false);
+  });
+
   it('does not override a 只取最近一層主管 choice already made when switching to a form field', () => {
     expect(
       buildApproverResolver(
@@ -885,7 +934,7 @@ describe('readApproverResolverDetail (new types)', () => {
     [FORM_ORG_UNIT_MANAGER, '表單欄位組織的主管'],
     [NODE_ACTOR, '前面關卡的簽核者'],
     [NODE_ACTOR_MANAGER, '前面關卡簽核者的主管'],
-    [FUTURE_RESOLVER, '簽核人'],
+    [FUTURE_RESOLVER, '不支援的簽核來源（FUTURE_TYPE）'],
   ] as const)('labels %j as %s', (resolver, label) => {
     expect(readApproverResolverDetail(resolver)).toBe(label);
   });
@@ -894,9 +943,8 @@ describe('readApproverResolverDetail (new types)', () => {
 describe('approver source gating (6b)', () => {
   const stateOf = readApproverResolverEditorState;
 
-  it('treats only an unknown type as read-only, and says which type', () => {
-    expect(isApproverSourceReadOnly(stateOf(FUTURE_RESOLVER))).toBe(true);
-    expect(readApproverSourceReadOnlyText(stateOf(FUTURE_RESOLVER))).toBe(
+  it('offers the read-only entry only for an unknown type, and says which type', () => {
+    expect(readApproverSourceChoice(stateOf(FUTURE_RESOLVER)).selected.name).toBe(
       '不支援的簽核來源（FUTURE_TYPE）',
     );
     [
@@ -906,9 +954,20 @@ describe('approver source gating (6b)', () => {
       NODE_ACTOR,
       NODE_ACTOR_MANAGER,
     ].forEach((resolver) => {
-      expect(isApproverSourceReadOnly(stateOf(resolver))).toBe(false);
-      expect(readApproverSourceReadOnlyText(stateOf(resolver))).toBeNull();
+      const choice = readApproverSourceChoice(stateOf(resolver));
+
+      expect(choice.hint).toBeNull();
+      expect(choice.selected.id).not.toBe(UNSUPPORTED_APPROVER_SOURCE_OPTION_ID);
     });
+  });
+
+  it('writes the unsupported label once: the designer, the summary and the review table agree', () => {
+    const label = '不支援的簽核來源（FUTURE_TYPE）';
+
+    expect(readApproverSourceChoice(stateOf(FUTURE_RESOLVER)).selected.name).toBe(
+      label,
+    );
+    expect(readApproverResolverDetail(FUTURE_RESOLVER)).toBe(label);
   });
 
   it('shows an unknown type as its own read-only 簽核來源 entry, not as 指定會員', () => {

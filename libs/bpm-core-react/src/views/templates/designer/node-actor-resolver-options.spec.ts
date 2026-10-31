@@ -5,6 +5,7 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-graph';
 import {
+  NODE_ACTOR_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
@@ -355,5 +356,15 @@ describe('readNodeActorGraphIssues', () => {
     expect(readNodeActorGraphIssues(definition)[0]).toMatch(
       /^簽核節點「me」：/u,
     );
+  });
+});
+
+describe('NODE_ACTOR_STAGE_HINT', () => {
+  it('says that several picked stages use the most recent stage actually reached', () => {
+    expect(NODE_ACTOR_STAGE_HINT).toContain('可複選');
+    expect(NODE_ACTOR_STAGE_HINT).toContain('最近');
+    expect(NODE_ACTOR_STAGE_HINT).toContain('不是全部');
+    // Control: the original coverage sentence is still there.
+    expect(NODE_ACTOR_STAGE_HINT).toContain('整組要涵蓋每條路徑');
   });
 });

@@ -139,6 +139,7 @@ import {
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
+  NODE_ACTOR_STAGE_HINT,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
 } from './node-actor-resolver-options';
@@ -195,6 +196,7 @@ import {
   readPositionDisplayName,
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
+  isDefaultedOrgUnitSwitch,
   updateApproverResolverFallback,
   withOrgUnitSource,
   withPreferClosestOrgUnit,
@@ -772,6 +774,12 @@ export function TemplateDesignerView({
 
   // Org/position data is loaded further down; mirror it into refs so the stable
   // `directory` object below always reads the latest without re-creation.
+  // What the last 固定組織 -> 表單欄位 switch wrote when it turned 只取最近一層
+  // 主管 on by default, so switching back can take that default off again.
+  const defaultedOrgSwitchRef = useRef<{
+    readonly nodeId: string;
+    readonly resolver: ApproverResolver;
+  } | null>(null);
   const orgUnitsRef = useRef<readonly OrgUnitRecord[]>([]);
   const positionsRef = useRef<readonly PositionRecord[]>([]);
   // Backs the assistant's member/org lookup query tools (search_members /
@@ -2679,7 +2687,9 @@ export function TemplateDesignerView({
     const resolver = node.data.approverResolver;
     // The panel edits the screen state, not the JSON type: ②本人／主管 and
     // ①固定組織／表單欄位 are one option each, and a type this build does not
-    // know is held read-only (its JSON is saved back exactly as stored).
+    // know is held read-only: no editor renders for it and the JSON is not
+    // rewritten, but saving the draft is blocked (readApproverResolverIssue)
+    // until the author picks another 簽核來源 or deletes the node.
     const editorState = readApproverResolverEditorState(resolver);
     const sourceChoice = readApproverSourceChoice(editorState);
     const subjectChoice = readApproverSubjectChoice(editorState);
@@ -2834,8 +2844,10 @@ export function TemplateDesignerView({
           <Select
             clearable={false}
             onChange={(option): void => {
-              // Re-picking the source already shown, or the read-only entry of
-              // an unsupported type, writes nothing.
+              // Re-picking the source already stored, or the read-only entry of
+              // an unsupported type, writes nothing. An EXPRESSION resolver is
+              // shown as 指定會員 but is not one, so picking 指定會員 on it still
+              // switches (and replaces the expression).
               const next = readApproverSourcePick(
                 resolver,
                 option?.id ?? null,
@@ -2996,14 +3008,22 @@ export function TemplateDesignerView({
                     return;
                   }
 
-                  updateUserTaskResolver(
-                    buildApproverResolver(
-                      withOrgUnitSource(
-                        editorState,
-                        option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
-                      ),
-                    ),
+                  const remembered = defaultedOrgSwitchRef.current;
+                  const nextState = withOrgUnitSource(
+                    remembered?.nodeId === node.id &&
+                      isDefaultedOrgUnitSwitch(resolver, remembered.resolver)
+                      ? { ...editorState, preferClosestOrgUnitDefaulted: true }
+                      : editorState,
+                    option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
                   );
+                  const next = buildApproverResolver(nextState);
+
+                  defaultedOrgSwitchRef.current =
+                    nextState.mode === 'ORG_UNIT_MANAGER' &&
+                    nextState.preferClosestOrgUnitDefaulted
+                      ? { nodeId: node.id, resolver: next }
+                      : null;
+                  updateUserTaskResolver(next);
                 }}
                 options={[...ORG_UNIT_SOURCE_OPTIONS]}
                 value={readSelectOption(
@@ -3068,7 +3088,7 @@ export function TemplateDesignerView({
               hintText={
                 nodeActorChoice && nodeActorChoice.problems.length > 0
                   ? nodeActorChoice.problems.join('；')
-                  : '簽核人取自你選的前面關卡實際簽核的人；可複選，整組要涵蓋每條路徑。'
+                  : NODE_ACTOR_STAGE_HINT
               }
               label="關卡"
               name="approverNodeIds"
