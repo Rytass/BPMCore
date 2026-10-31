@@ -183,9 +183,8 @@ import {
   readApproverResolverEditorState,
   readApproverResolverMemberIds,
   readApproverResolverSummary,
-  readApproverSourceModeId,
+  readApproverSourceChoice,
   readApproverSourcePick,
-  readApproverSourceReadOnlyText,
   readApproverSubjectChoice,
   readApproverSubjectPick,
   readFallbackMemberSelectOption,
@@ -1220,34 +1219,34 @@ export function TemplateDesignerView({
   );
   const publishIssue =
     webhookPublishIssue ?? fieldAccessPublishIssue ?? nodeActorPublishIssue;
-  const flowNodes = useMemo(
-    (): FlowNode[] =>
-      workflowDefinition.nodes.map((node) =>
-        readFlowNode(
-          node,
-          memberOptions,
-          orgUnits,
-          positions,
-          node.id === selectedNodeId,
-          initiatorPolicyDraft,
-          webhookFormSchema,
-          // Stage names for the 依前面關卡的簽核者 cards, instead of a count.
-          workflowDefinition.nodes.map((candidate) => ({
-            id: candidate.id,
-            name: candidate.data.label || candidate.id,
-          })),
-        ),
+  const flowNodes = useMemo((): FlowNode[] => {
+    // Stage names for the 依前面關卡的簽核者 cards, instead of a count.
+    const nodeNames = workflowDefinition.nodes.map((candidate) => ({
+      id: candidate.id,
+      name: candidate.data.label || candidate.id,
+    }));
+
+    return workflowDefinition.nodes.map((node) =>
+      readFlowNode(
+        node,
+        memberOptions,
+        orgUnits,
+        positions,
+        node.id === selectedNodeId,
+        initiatorPolicyDraft,
+        webhookFormSchema,
+        nodeNames,
       ),
-    [
-      initiatorPolicyDraft,
-      memberOptions,
-      orgUnits,
-      positions,
-      selectedNodeId,
-      webhookFormSchema,
-      workflowDefinition.nodes,
-    ],
-  );
+    );
+  }, [
+    initiatorPolicyDraft,
+    memberOptions,
+    orgUnits,
+    positions,
+    selectedNodeId,
+    webhookFormSchema,
+    workflowDefinition.nodes,
+  ]);
   const formVersionBindingLocked = useMemo(
     (): boolean => hasConfiguredConditionEdges(workflowDefinition),
     [workflowDefinition],
@@ -2682,7 +2681,7 @@ export function TemplateDesignerView({
     // ①固定組織／表單欄位 are one option each, and a type this build does not
     // know is held read-only (its JSON is saved back exactly as stored).
     const editorState = readApproverResolverEditorState(resolver);
-    const sourceReadOnlyText = readApproverSourceReadOnlyText(editorState);
+    const sourceChoice = readApproverSourceChoice(editorState);
     const subjectChoice = readApproverSubjectChoice(editorState);
     const managerRule = readApproverManagerRule(resolver);
     const selectedMembers =
@@ -2826,39 +2825,31 @@ export function TemplateDesignerView({
 
     return (
       <>
-        {sourceReadOnlyText !== null ? (
-          <BPMFormField
-            hintText="此簽核來源來自較新版本的 BPMCore，本版本無法編輯，儲存時會原樣保留；請升級後再編輯。"
-            label="簽核來源"
-            name="approverResolverType"
-          >
-            <Input disabled value={sourceReadOnlyText} variant="base" />
-          </BPMFormField>
-        ) : (
-          <BPMFormField label="簽核來源" name="approverResolverType" required>
-            <Select
-              clearable={false}
-              onChange={(option): void => {
-                // Re-picking the option already shown must not rebuild a clean
-                // default over what the author filled in.
-                const next = readApproverSourcePick(
-                  resolver,
-                  option?.id ?? null,
-                  positions,
-                );
+        <BPMFormField
+          hintText={sourceChoice.hint ?? undefined}
+          label="簽核來源"
+          name="approverResolverType"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              // Re-picking the source already shown, or the read-only entry of
+              // an unsupported type, writes nothing.
+              const next = readApproverSourcePick(
+                resolver,
+                option?.id ?? null,
+                positions,
+              );
 
-                if (next) {
-                  updateUserTaskResolver(next);
-                }
-              }}
-              options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
-              value={readSelectOption(
-                APPROVER_RESOLVER_MODE_OPTIONS,
-                readApproverSourceModeId(editorState),
-              )}
-            />
-          </BPMFormField>
-        )}
+              if (next) {
+                updateUserTaskResolver(next);
+              }
+            }}
+            options={[...sourceChoice.options]}
+            value={sourceChoice.selected}
+          />
+        </BPMFormField>
         {resolver.type === 'DIRECT' ? (
           <BPMFormField
             hintText={readDecisionPolicyHint(node.data.decisionPolicy)}

@@ -14,11 +14,12 @@ import {
   NODE_ACTOR_SUBJECT_OPTIONS,
   ORG_UNIT_SOURCE_OPTIONS,
   buildApproverResolver,
+  UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
   isApproverSourceReadOnly,
+  readApproverSourceChoice,
   readApproverManagerRule,
   readApproverResolverDetail,
   readApproverResolverEditorState,
-  readApproverSourceModeId,
   readApproverSourcePick,
   readApproverSourceReadOnlyText,
   readApproverSubjectChoice,
@@ -910,26 +911,95 @@ describe('approver source gating (6b)', () => {
     });
   });
 
-  it('has no 簽核來源 option for an unknown type (not 指定會員)', () => {
-    expect(readApproverSourceModeId(stateOf(FUTURE_RESOLVER))).toBeNull();
+  it('shows an unknown type as its own read-only 簽核來源 entry, not as 指定會員', () => {
+    const choice = readApproverSourceChoice(stateOf(FUTURE_RESOLVER));
+
+    expect(choice.selected).toStrictEqual({
+      id: UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
+      name: '不支援的簽核來源（FUTURE_TYPE）',
+    });
+    expect(choice.options.map((option) => option.id)).toStrictEqual([
+      ...APPROVER_RESOLVER_MODE_OPTIONS.map((option) => option.id),
+      UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
+    ]);
+    expect(choice.hint).toBe(
+      '此引擎版本不支援這種簽核來源；這裡選擇其他簽核來源會覆寫原設定',
+    );
+    // Control: a known source offers the plain list and no hint.
+    const known = readApproverSourceChoice(stateOf(FORM_MEMBER_MANAGER));
+
+    expect(known.options).toStrictEqual(APPROVER_RESOLVER_MODE_OPTIONS);
+    expect(known.selected).toStrictEqual({
+      id: 'DYNAMIC_FORM',
+      name: '依表單欄位指定',
+    });
+    expect(known.hint).toBeNull();
     expect(
-      readApproverSourceModeId(stateOf({ memberIds: [], type: 'DIRECT' })),
-    ).toBe('DIRECT');
-    expect(readApproverSourceModeId(stateOf(FORM_MEMBER_MANAGER))).toBe(
-      'DYNAMIC_FORM',
-    );
-    expect(readApproverSourceModeId(stateOf(FORM_ORG_UNIT_MANAGER))).toBe(
-      'ORG_UNIT_MANAGER',
-    );
-    expect(readApproverSourceModeId(stateOf(NODE_ACTOR_MANAGER))).toBe(
-      'NODE_ACTOR',
-    );
+      readApproverSourceChoice(stateOf(NODE_ACTOR_MANAGER)).selected.id,
+    ).toBe('NODE_ACTOR');
+    expect(
+      readApproverSourceChoice(stateOf(FORM_ORG_UNIT_MANAGER)).selected.id,
+    ).toBe('ORG_UNIT_MANAGER');
   });
 
-  it('a 簽核來源 pick on an unknown type changes nothing, whatever is picked', () => {
-    ['DIRECT', 'NODE_ACTOR', 'POSITION', null].forEach((id) => {
-      expect(readApproverSourcePick(FUTURE_RESOLVER, id, POSITIONS)).toBeNull();
+  it('picking the read-only entry changes nothing; picking another source replaces it with that default', () => {
+    expect(
+      readApproverSourcePick(
+        FUTURE_RESOLVER,
+        UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
+        POSITIONS,
+      ),
+    ).toBeNull();
+    expect(readApproverSourcePick(FUTURE_RESOLVER, null, POSITIONS)).toBeNull();
+    expect(
+      readApproverSourcePick(FUTURE_RESOLVER, 'not-an-option', POSITIONS),
+    ).toBeNull();
+    expect(
+      readApproverSourcePick(FUTURE_RESOLVER, 'DIRECT', POSITIONS),
+    ).toStrictEqual({
+      memberIds: [],
+      type: 'DIRECT',
     });
+    expect(
+      readApproverSourcePick(FUTURE_RESOLVER, 'NODE_ACTOR', POSITIONS),
+    ).toStrictEqual({
+      nodeIds: [],
+      type: 'NODE_ACTOR',
+    });
+  });
+
+  it('lets an EXPRESSION resolver be switched to 指定會員, but re-picking a real shown source stays a no-op', () => {
+    const expression: ApproverResolver = {
+      expression: 'x',
+      type: 'EXPRESSION',
+    };
+
+    expect(
+      readApproverSourcePick(expression, 'DIRECT', POSITIONS),
+    ).toStrictEqual({
+      memberIds: [],
+      type: 'DIRECT',
+    });
+    expect(
+      readApproverSourcePick(expression, 'POSITION', POSITIONS),
+    ).toStrictEqual({
+      positionId: '',
+      type: 'POSITION',
+    });
+    expect(
+      readApproverSourcePick(
+        { positionId: 'pos-lead', type: 'POSITION' },
+        'POSITION',
+        POSITIONS,
+      ),
+    ).toBeNull();
+    expect(
+      readApproverSourcePick(
+        { levelsUp: 1, baseFromInitiator: true, type: 'ORG_MANAGER' },
+        'ORG_MANAGER',
+        POSITIONS,
+      ),
+    ).toBeNull();
   });
 
   it('re-picking the shown 簽核來源 is a no-op for every shared option', () => {

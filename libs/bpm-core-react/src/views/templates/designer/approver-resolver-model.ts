@@ -708,10 +708,17 @@ export function withOrgUnitSource(
 // Screen gating: what the 簽核來源 panel may show and write.
 // ---------------------------------------------------------------------------
 
+/** The id of the read-only entry an unknown resolver type is shown as. */
+export const UNSUPPORTED_APPROVER_SOURCE_OPTION_ID = 'UNSUPPORTED';
+
+const UNSUPPORTED_APPROVER_SOURCE_HINT =
+  '此引擎版本不支援這種簽核來源；這裡選擇其他簽核來源會覆寫原設定';
+
 /**
- * A resolver type this build does not know is shown, never edited: the panel
- * renders no 簽核來源 select and no editor, so nothing can replace the stored
- * JSON (which is saved back as it is).
+ * A resolver type this build does not know is shown, never edited: no editor
+ * renders for it and nothing is written unless the author explicitly picks a
+ * different source (which replaces the stored one, like the unsupported
+ * fallback entry).
  */
 export function isApproverSourceReadOnly(
   state: ApproverResolverEditorState,
@@ -727,44 +734,79 @@ export function readApproverSourceReadOnlyText(
     : null;
 }
 
+export type ApproverSourceChoice = Readonly<{
+  /** Hint under the select, `null` when nothing needs saying. */
+  hint: string | null;
+  options: readonly Readonly<{ id: string; name: string }>[];
+  selected: Readonly<{ id: string; name: string }>;
+}>;
+
 /**
- * The 簽核來源 option the state is under, `null` for a read-only state (which
- * has no option; `readApproverResolverMode` would call it 指定會員).
+ * The 簽核來源 select: the source options, plus, for a type this build does
+ * not know, a read-only entry carrying its name that is the current value.
+ * `readApproverResolverMode` would call such a type 指定會員.
  */
-export function readApproverSourceModeId(
+export function readApproverSourceChoice(
   state: ApproverResolverEditorState,
-): ApproverResolverMode | null {
+): ApproverSourceChoice {
   if (state.mode === 'UNSUPPORTED') {
-    return null;
+    const selected = {
+      id: UNSUPPORTED_APPROVER_SOURCE_OPTION_ID,
+      name: `不支援的簽核來源（${state.type}）`,
+    };
+
+    return {
+      hint: UNSUPPORTED_APPROVER_SOURCE_HINT,
+      options: [...APPROVER_RESOLVER_MODE_OPTIONS, selected],
+      selected,
+    };
   }
 
-  return state.mode === 'AS_STORED'
-    ? readApproverResolverMode(state.resolver.type)
-    : state.mode;
+  const modeId =
+    state.mode === 'AS_STORED'
+      ? readApproverResolverMode(state.resolver.type)
+      : state.mode;
+
+  return {
+    hint: null,
+    options: APPROVER_RESOLVER_MODE_OPTIONS,
+    selected:
+      APPROVER_RESOLVER_MODE_OPTIONS.find((option) => option.id === modeId) ??
+      APPROVER_RESOLVER_MODE_OPTIONS[0],
+  };
 }
 
 /**
  * The resolver a 簽核來源 pick produces, or `null` when the pick must change
- * nothing: a read-only state, no option, an id that is not an option, or the
- * option already shown. Re-picking the shown option used to rebuild a clean
- * default and wipe what the author had filled in.
+ * nothing: no option, an id that is not an option (the read-only unsupported
+ * entry included), or the source already stored. Re-picking the shown source
+ * used to rebuild a clean default and wipe what the author had filled in.
+ *
+ * "Already stored" is the state's own mode, not the displayed option: an
+ * EXPRESSION resolver is displayed as 指定會員 but is not one, so picking 指定會員
+ * still switches it.
  */
 export function readApproverSourcePick(
   resolver: ApproverResolver,
   optionId: string | null,
   positions: readonly PositionRecord[],
 ): ApproverResolver | null {
-  const state = readApproverResolverEditorState(resolver);
-
   if (
-    isApproverSourceReadOnly(state) ||
     optionId === null ||
     !APPROVER_RESOLVER_MODE_OPTIONS.some((option) => option.id === optionId)
   ) {
     return null;
   }
 
-  return readApproverResolverMode(optionId) === readApproverSourceModeId(state)
+  const state = readApproverResolverEditorState(resolver);
+  const storedId =
+    state.mode === 'AS_STORED'
+      ? state.resolver.type
+      : state.mode === 'UNSUPPORTED'
+        ? null
+        : state.mode;
+
+  return optionId === storedId
     ? null
     : readDefaultApproverResolver(optionId, positions);
 }
