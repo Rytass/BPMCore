@@ -8,6 +8,7 @@ import {
   FormUiSchema,
   isFormIdentifierKey,
   isFormMemberValue,
+  isFormOrgUnitValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
   TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
@@ -24,6 +25,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'member',
   'money',
   'number',
+  'org_unit',
   'autocomplete',
   'radio',
   'select',
@@ -311,6 +313,10 @@ function lintFieldTypeSpecifics(
 
   if (type === 'member') {
     return lintMemberField(field, path);
+  }
+
+  if (type === 'org_unit') {
+    return lintOrgUnitField(field, path);
   }
 
   if (type === 'table') {
@@ -761,6 +767,26 @@ function lintMemberField(
       field.defaultValue,
       path,
       (value) => value === null || isFormMemberValue(value, field.multiple === true),
+    ),
+  ];
+}
+
+function lintOrgUnitField(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  return [
+    // One field holds one organization unit id: `FORM_ORG_UNIT_MANAGER` reads
+    // a single value.
+    ...(Object.prototype.hasOwnProperty.call(field, 'multiple')
+      ? [`${path}.multiple is not supported for org_unit fields`]
+      : []),
+    // Submit rejects a blank unit id, so a default of `''` would make every
+    // untouched form unsubmittable.
+    ...lintOptionalDefaultValue(
+      field.defaultValue,
+      path,
+      (value) => value === null || isFormOrgUnitValue(value),
     ),
   ];
 }

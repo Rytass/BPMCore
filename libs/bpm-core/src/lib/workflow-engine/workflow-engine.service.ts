@@ -78,6 +78,7 @@ import {
   BPMFormDataSourceException,
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
+import { readSubmittedOrgUnitValueErrors } from '../form/form-org-unit-value.validator';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -10055,8 +10056,9 @@ function readCandidateStatusForClosedTask(
 /**
  * `deferredFieldKeys` are fields an approver fills in later: they are checked
  * for shape (a table is an array of well-formed rows, a member value is a
- * member id) but never for being present, so an empty one cannot block a
- * submission that has nobody to fill it yet.
+ * member id, an org unit value is an organization unit id) but never for
+ * being present, so an empty one cannot block a submission that has nobody to
+ * fill it yet.
  */
 function validateSubmittedFormData(
   schema: FormDefinitionSchema,
@@ -10117,6 +10119,17 @@ function validateSubmittedFormData(
         ),
         formData,
       ),
+    // A `FORM_ORG_UNIT_MANAGER` resolver reads the unit whether or not its
+    // field is visible, so a hidden field still holding a value is checked too.
+    readOrgUnitErrors: () =>
+      readSubmittedOrgUnitValueErrors(
+        schema.fields.filter(
+          (field) =>
+            visibleFields.includes(field) ||
+            isSubmittedFieldValuePresent(formData[field.fieldKey]),
+        ),
+        formData,
+      ),
     readTableErrors: () => [
       ...visibleFields
         .filter(isTableFieldDefinition)
@@ -10151,7 +10164,8 @@ function validateSubmittedFormData(
 /**
  * What an approval at a node has to leave behind: every field the node lets the
  * approver fill in is well-formed (a table is an array of well-formed rows with
- * its required columns and minimum rows, a member value is a member id) and
+ * its required columns and minimum rows, a member value is a member id, an
+ * org unit value is an organization unit id) and
  * every one the node marks `required` is present. The messages are the submit
  * ones: a host tells the two entry points apart by which call it made.
  */
@@ -10183,6 +10197,7 @@ function validateFilledFormFields(
         ),
       ),
     readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
+    readOrgUnitErrors: () => readSubmittedOrgUnitValueErrors(fields, formData),
     readTableErrors: () =>
       fields
         .filter(isTableFieldDefinition)
@@ -10200,17 +10215,20 @@ function validateFilledFormFields(
 /**
  * The shared tail of submit and approver-fill validation: a missing required
  * field wins over a text value breaking its length or format rule, which wins
- * over a malformed member value, which wins over a table problem, and the
- * later checks are only evaluated when the earlier ones pass.
+ * over a malformed member value, which wins over a malformed org unit value,
+ * which wins over a table problem, and the later checks are only evaluated
+ * when the earlier ones pass.
  */
 function throwFirstFormDataFieldError({
   missingFields,
   readMemberErrors,
+  readOrgUnitErrors,
   readTableErrors,
   readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
   readonly readMemberErrors: () => readonly string[];
+  readonly readOrgUnitErrors: () => readonly string[];
   readonly readTableErrors: () => readonly string[];
   readonly readTextErrors: () => readonly string[];
 }): void {
@@ -10232,6 +10250,12 @@ function throwFirstFormDataFieldError({
 
   if (memberErrors.length > 0) {
     throw new BadRequestException(memberErrors.join('; '));
+  }
+
+  const orgUnitErrors = readOrgUnitErrors();
+
+  if (orgUnitErrors.length > 0) {
+    throw new BadRequestException(orgUnitErrors.join('; '));
   }
 
   const tableErrors = readTableErrors();

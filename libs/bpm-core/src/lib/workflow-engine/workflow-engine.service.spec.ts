@@ -2056,6 +2056,88 @@ describe('WorkflowEngineService', () => {
         );
       });
 
+      describe('an approver-filled org_unit field', () => {
+        const UNIT_ID = '3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c';
+        const orgUnitFormSchema = (): FormDefinitionSchema => {
+          const base = createFinanceTableFormSchema();
+
+          return {
+            ...base,
+            fields: [
+              ...base.fields,
+              {
+                fieldKey: 'ownerUnit',
+                label: '負責單位',
+                required: false,
+                type: 'org_unit',
+              },
+            ],
+          };
+        };
+        const orgUnitWorkflow = (fill: 'OPTIONAL' | 'REQUIRED'): WorkflowDefinition =>
+          createFieldAccessWorkflow({
+            financeFieldAccess: [
+              financeItemsAccess,
+              requiredInvoiceKindAccess,
+              { display: 'SHOW', fieldKey: 'ownerUnit', fill },
+            ],
+          });
+        const baseFormData = {
+          amount: 10,
+          financeItems: FILLED_ROW,
+          invoiceKind: 'B2B',
+        };
+
+        it.each([
+          ['an array', [UNIT_ID]],
+          ['a number', 7],
+          ['an object', { id: UNIT_ID }],
+          ['a string that is not a uuid', 'dept-1'],
+        ])('refuses %s', async (_kind, bad): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: baseFormData,
+            formSchema: orgUnitFormSchema(),
+            workflow: orgUnitWorkflow('OPTIONAL'),
+          });
+
+          await expectRejection(
+            decide(fixture, { formDataJson: JSON.stringify({ ownerUnit: bad }) }),
+            BadRequestException,
+            'formData.ownerUnit must be an organization unit id',
+          );
+          expect(fixture.savedInstance).toBeNull();
+        });
+
+        it('accepts an organization unit id (反向控制)', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: baseFormData,
+            formSchema: orgUnitFormSchema(),
+            workflow: orgUnitWorkflow('OPTIONAL'),
+          });
+
+          const decision = await decide(fixture, {
+            formDataJson: JSON.stringify({ ownerUnit: UNIT_ID }),
+          });
+
+          expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+          expect(fixture.savedInstance?.formData.ownerUnit).toBe(UNIT_ID);
+        });
+
+        it('leaves a missing value to the required check', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: baseFormData,
+            formSchema: orgUnitFormSchema(),
+            workflow: orgUnitWorkflow('REQUIRED'),
+          });
+
+          await expectRejection(
+            decide(fixture),
+            BadRequestException,
+            'Form data is missing required fields: 負責單位',
+          );
+        });
+      });
+
       it('does not hold an ad-hoc task on the filling node to required fields', async (): Promise<void> => {
         const fixture = createDecideFixture({
           formData: { amount: 10 },
@@ -2370,6 +2452,55 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('formData.reviewers must be an array of member ids');
     await expect(
       submit({ owner: 'member-002', reviewers: ['member-003', 'member-004'] }),
+    ).resolves.toMatchObject({ id: 'instance-1' });
+  });
+
+  it('rejects a submitted org_unit value that is not an organization unit id', async (): Promise<void> => {
+    const unitId = '3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c';
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'unit', label: '部門', required: true, type: 'org_unit' },
+          {
+            fieldKey: 'backupUnit',
+            label: '備援部門',
+            required: false,
+            type: 'org_unit',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    await expect(submit({ unit: [unitId] })).rejects.toThrow(
+      'formData.unit must be an organization unit id',
+    );
+    await expect(submit({ unit: 7 })).rejects.toThrow(
+      'formData.unit must be an organization unit id',
+    );
+    await expect(submit({ unit: 'dept-1' })).rejects.toThrow(
+      'formData.unit must be an organization unit id',
+    );
+    await expect(submit({ unit: unitId, backupUnit: [unitId] })).rejects.toThrow(
+      'formData.backupUnit must be an organization unit id',
+    );
+    // A blank required value is the required check's, not a shape error.
+    await expect(submit({ unit: '  ' })).rejects.toThrow(
+      'Form data is missing required fields: 部門',
+    );
+    await expect(
+      submit({ unit: unitId, backupUnit: unitId }),
     ).resolves.toMatchObject({ id: 'instance-1' });
   });
 

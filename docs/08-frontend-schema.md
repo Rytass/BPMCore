@@ -327,7 +327,7 @@ type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
 - **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
   為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
 
-#### 組織選擇欄位（`org_unit`，未發佈）與 `FORM_ORG_UNIT_MANAGER`
+#### 組織選擇欄位（`org_unit`）與 `FORM_ORG_UNIT_MANAGER`
 
 `FORM_ORG_UNIT_MANAGER` 的 `formPath` 讀到的值必須是組織單位 id（字串）。表單欄位類型
 **`org_unit`（組織選擇）** 就是為此而設：
@@ -343,10 +343,13 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
   id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
 - **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
   的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查；試跑由後續任務補上）。
-- **未發佈／尚未實作**：後端表單 schema 對 `org_unit` 欄位的接受與送出驗證、Builder 的欄位
-  庫與設定項、Renderer 的組織搜尋控制項、試跑範例值與案件頁的部門名稱顯示，都由後續任務
-  補上；目前只有型別、`isOrgUnitFieldDefinition`／`isFormOrgUnitValue`、條件與 webhook
-  相容判斷已在 `@rytass/bpm-core-shared`。
+- **表單 schema**：後端接受 `org_unit` 欄位；`multiple` 不支援（`schema.fields[i].multiple is not supported for org_unit fields`），
+  `defaultValue` 只能是 `null` 或非空白字串，放進表格欄位會被擋（和 `member` 一樣不是表格欄類型）。
+- **送出驗證**：必填沿用既有檢查；有值時必須是非空白、且是 uuid 的字串（和引擎在 `FORM_ORG_UNIT_MANAGER`
+  節點查組織前的檢查同一條），否則 `400`：`formData.<fieldKey> must be an organization unit id`。
+  簽核者補填的 `org_unit` 欄位（欄位權限不限欄位類型）同一條。後端不會查組織是否存在。
+- **未發佈／尚未實作**：Builder 的欄位庫與設定項、Renderer 的組織搜尋控制項、試跑範例值與
+  案件頁的部門名稱顯示，都由後續任務補上。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
@@ -717,13 +720,14 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 #### 錯誤表二：補填節點核准時的驗證（`BadRequestException`）
 
-第 5 點的驗證只丟 `BadRequestException`，依序檢查，**前一類有問題就不檢查後一類**；成員與表格各類的
+第 5 點的驗證只丟 `BadRequestException`，依序檢查，**前一類有問題就不檢查後一類**；成員、組織與表格各類的
 多筆訊息以 `; ` 串接。訊息沿用送出時的那一套，host 靠自己呼叫的是哪一支 API 分辨來源。
 
 | 檢查 | 訊息 |
 | --- | --- |
 | 本節點 `fill: 'REQUIRED'` 的非表格補填欄位為空 | `Form data is missing required fields: <label or fieldKey>, …` |
 | 成員欄位的值形狀不對 | `formData.<fieldKey> must be a member id`（單選）／`formData.<fieldKey> must be an array of member ids`（多選） |
+| 組織欄位的值不是組織單位 id（非空白 uuid 字串） | `formData.<fieldKey> must be an organization unit id` |
 | 表格不是列的陣列 | `formData.<fieldKey> must be an array of rows` |
 | 列不是物件 | `formData.<fieldKey>[<i>] must be an object` |
 | 列裡有不存在的欄 | `formData.<fieldKey>[<i>].<columnKey> is not a table column` |

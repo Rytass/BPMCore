@@ -1237,6 +1237,7 @@ A `REJECTED` decision without a comment gets the existing `Reject decision comme
 |---|---|
 | A non-table field the node marks `required` is empty | `Form data is missing required fields: <label or fieldKey>, …` |
 | A member field holds the wrong shape | `formData.<fieldKey> must be a member id` (single) / `formData.<fieldKey> must be an array of member ids` (multiple) |
+| An `org_unit` field holds anything but a non-blank uuid string | `formData.<fieldKey> must be an organization unit id` |
 | A table is not an array | `formData.<fieldKey> must be an array of rows` |
 | A row is not an object | `formData.<fieldKey>[<i>] must be an object` |
 | A row has a key that is not a column | `formData.<fieldKey>[<i>].<columnKey> is not a table column` |

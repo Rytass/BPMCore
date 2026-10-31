@@ -1600,4 +1600,117 @@ describe('form schema validator', () => {
       ]);
     });
   });
+  describe('org_unit fields', () => {
+    const layoutFor = (...fieldKeys: readonly string[]): string =>
+      JSON.stringify({
+        layout: fieldKeys.map((fieldKey) => ({ fieldKey, width: 'HALF' })),
+        schemaVersion: 1,
+      });
+
+    it('accepts an org_unit field, required or not', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            { fieldKey: 'unit', label: '申請部門', required: true, type: 'org_unit' },
+            { fieldKey: 'backupUnit', label: '備援部門', required: false, type: 'org_unit' },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('unit', 'backupUnit'),
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts a null or non-blank default and rejects anything else', (): void => {
+      const field = (defaultValue: unknown, fieldKey: string): unknown => ({
+        defaultValue,
+        fieldKey,
+        label: fieldKey,
+        required: false,
+        type: 'org_unit',
+      });
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            field(null, 'a'),
+            field('unit-1', 'b'),
+            field('', 'c'),
+            field(['unit-1'], 'd'),
+            field(3, 'e'),
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('a', 'b', 'c', 'd', 'e'),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[2].defaultValue has invalid type for field type',
+        'schema.fields[3].defaultValue has invalid type for field type',
+        'schema.fields[4].defaultValue has invalid type for field type',
+      ]);
+    });
+
+    it('rejects multiple on an org_unit field', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'unit',
+              label: '部門',
+              multiple: true,
+              required: false,
+              type: 'org_unit',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('unit'),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].multiple is not supported for org_unit fields',
+      ]);
+    });
+
+    it('does not allow an org_unit column inside a table', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                { fieldKey: 'unit', label: '部門', required: false, type: 'org_unit' },
+              ],
+              fieldKey: 'items',
+              label: 'Items',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        JSON.stringify({
+          layout: [{ fieldKey: 'items', width: 'FULL' }],
+          schemaVersion: 1,
+        }),
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].columns[0].type is not supported for a table column',
+      ]);
+    });
+
+    it('still rejects a type that is not supported at all (反向控制)', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [{ fieldKey: 'x', label: 'X', required: false, type: 'org_unitt' }],
+          schemaVersion: 1,
+        }),
+        layoutFor('x'),
+      );
+
+      expect(result.errors).toContain('schema.fields[0].type is not supported');
+    });
+  });
 });
