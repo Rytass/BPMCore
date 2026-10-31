@@ -8,12 +8,12 @@ import {
   FormUiSchema,
   isFormIdentifierKey,
   isFormMemberValue,
-  isFormOrgUnitValue,
   isTableColumnFieldType,
   normalizeFormDefinitionSchema,
   TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
   TEXT_FIELD_PATTERN_MAX_LENGTH,
 } from '@rytass/bpm-core-shared/form';
+import { isSubmittableOrgUnitValue } from './form-org-unit-value.validator';
 import { referencesTableInternals } from './form-table-reference';
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
@@ -777,16 +777,16 @@ function lintOrgUnitField(
 ): readonly string[] {
   return [
     // One field holds one organization unit id: `FORM_ORG_UNIT_MANAGER` reads
-    // a single value.
-    ...(Object.prototype.hasOwnProperty.call(field, 'multiple')
+    // a single value. `multiple: false` is what an editor writes for "off".
+    ...(field.multiple === true
       ? [`${path}.multiple is not supported for org_unit fields`]
       : []),
-    // Submit rejects a blank unit id, so a default of `''` would make every
-    // untouched form unsubmittable.
+    // Submit refuses anything that is not a unit id (a uuid), so a default
+    // that is not one would make every untouched form unsubmittable.
     ...lintOptionalDefaultValue(
       field.defaultValue,
       path,
-      (value) => value === null || isFormOrgUnitValue(value),
+      (value) => value === null || isSubmittableOrgUnitValue(value),
     ),
   ];
 }

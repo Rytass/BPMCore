@@ -6,6 +6,19 @@ import {
 } from '@rytass/bpm-core-shared/form';
 
 /**
+ * Whether `value` is a unit id the engine can use: a non-blank string that is
+ * a uuid (trimmed, as the engine does before its lookup). The one predicate
+ * behind the submit check and the schema's default-value check.
+ */
+export function isSubmittableOrgUnitValue(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    isFormOrgUnitValue(value) &&
+    isUUID(value.trim())
+  );
+}
+
+/**
  * Shape errors for the org_unit fields among `fields` (the ones the caller is
  * about to accept). An org unit value is one organization unit id: a non-blank
  * string that is a uuid — the same rule the engine applies before it looks the
@@ -31,9 +44,7 @@ export function readSubmittedOrgUnitValueErrors(
       return [];
     }
 
-    return typeof value === 'string' &&
-      isFormOrgUnitValue(value) &&
-      isUUID(value.trim())
+    return isSubmittableOrgUnitValue(value)
       ? []
       : [`formData.${field.fieldKey} must be an organization unit id`];
   });

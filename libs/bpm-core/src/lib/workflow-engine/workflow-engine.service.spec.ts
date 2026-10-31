@@ -2504,6 +2504,48 @@ describe('WorkflowEngineService', () => {
     ).resolves.toMatchObject({ id: 'instance-1' });
   });
 
+  it('reports a malformed member before a malformed org unit, and that before a malformed table', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: {
+        fields: [
+          { fieldKey: 'owner', label: '負責人', required: false, type: 'member' },
+          { fieldKey: 'unit', label: '部門', required: false, type: 'org_unit' },
+          {
+            columns: [{ fieldKey: 'name', label: '品項', required: false, type: 'text' }],
+            fieldKey: 'items',
+            label: '明細',
+            required: false,
+            type: 'table',
+          },
+        ],
+        schemaVersion: 1,
+      },
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const submit = (formData: Readonly<Record<string, unknown>>): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+
+    // Exact messages: the later group must not be appended to the first.
+    await expect(submit({ owner: [7], unit: [7] })).rejects.toMatchObject({
+      message: 'formData.owner must be a member id',
+    });
+    await expect(submit({ unit: [7], items: 'x' })).rejects.toMatchObject({
+      message: 'formData.unit must be an organization unit id',
+    });
+    // Reverse control: with the org unit well-formed the table error shows.
+    await expect(
+      submit({ unit: '3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c', items: 'x' }),
+    ).rejects.toMatchObject({ message: 'formData.items must be an array of rows' });
+  });
+
   it('shape-checks a hidden member field that still holds a value', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

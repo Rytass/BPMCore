@@ -936,6 +936,67 @@ describe('TemplateService', () => {
       },
     );
 
+    describe('an org_unit field that an approver fills in (Q-U3)', (): void => {
+      const unitField = (required: boolean): FormDefinitionSchema => ({
+        fields: [{ fieldKey: 'unit', label: '部門', required, type: 'org_unit' }],
+        schemaVersion: 1,
+      });
+      // task_1 lets the approver fill `unit`; task_2 reads it as the source.
+      const workflow = createFieldAccessWorkflow([
+        [{ display: 'SHOW', fieldKey: 'unit', fill: 'OPTIONAL' }],
+        [],
+      ]);
+      const readingWorkflow = {
+        ...workflow,
+        nodes: workflow.nodes.map((node) =>
+          node.id === 'task_2' && node.type === 'userTask'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  approverResolver: { formPath: 'unit', type: 'FORM_ORG_UNIT_MANAGER' },
+                },
+              }
+            : node,
+        ),
+      } as WorkflowDefinition;
+      const publishWith = (
+        formSchema: FormDefinitionSchema,
+        workflowDefinition: WorkflowDefinition,
+      ): Promise<unknown> =>
+        createTableConditionPublishService({
+          schema: formSchema,
+          workflowDefinition,
+        }).publishApprovalTemplateVersion('template-version-1');
+
+      it('refuses a source field that is non-required because an approver fills it', async (): Promise<void> => {
+        await expect(publishWith(unitField(false), readingWorkflow)).rejects.toThrow(
+          'workflow.nodes.task_2.approverResolver.formPath must reference a required org unit field that no visibility rule or hidden flag can leave empty: unit',
+        );
+      });
+
+      it('refuses a required field that an approver also fills in', async (): Promise<void> => {
+        await expect(publishWith(unitField(true), readingWorkflow)).rejects.toThrow(
+          WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule('unit', 'required'),
+        );
+      });
+
+      it('publishes the same source when nobody fills the field in (反向控制)', async (): Promise<void> => {
+        const plain = {
+          ...readingWorkflow,
+          nodes: readingWorkflow.nodes.map((node) =>
+            node.id === 'task_1' && node.type === 'userTask'
+              ? { ...node, data: { ...node.data, fieldAccess: [] } }
+              : node,
+          ),
+        } as WorkflowDefinition;
+
+        await expect(publishWith(unitField(true), plain)).resolves.toMatchObject({
+          id: 'template-version-1',
+        });
+      });
+    });
+
     it('still lets DYNAMIC_FORM read a multiple member field (反向控制)', async (): Promise<void> => {
       await expect(
         publish({ formPath: 'bosses', type: 'DYNAMIC_FORM' }),

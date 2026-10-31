@@ -343,8 +343,8 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
   id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
 - **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
   的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查；試跑由後續任務補上）。
-- **表單 schema**：後端接受 `org_unit` 欄位；`multiple` 不支援（`schema.fields[i].multiple is not supported for org_unit fields`），
-  `defaultValue` 只能是 `null` 或非空白字串，放進表格欄位會被擋（和 `member` 一樣不是表格欄類型）。
+- **表單 schema**：後端接受 `org_unit` 欄位；`multiple: true` 不支援（`schema.fields[i].multiple is not supported for org_unit fields`，`false` 照常接受），
+  `defaultValue` 只能是 `null` 或 uuid 字串（和送出驗證同一條，否則每張沒動過的表單都送不出去），放進表格欄位會被擋（和 `member` 一樣不是表格欄類型）。
 - **送出驗證**：必填沿用既有檢查；有值時必須是非空白、且是 uuid 的字串（和引擎在 `FORM_ORG_UNIT_MANAGER`
   節點查組織前的檢查同一條），否則 `400`：`formData.<fieldKey> must be an organization unit id`。
   簽核者補填的 `org_unit` 欄位（欄位權限不限欄位類型）同一條。後端不會查組織是否存在。

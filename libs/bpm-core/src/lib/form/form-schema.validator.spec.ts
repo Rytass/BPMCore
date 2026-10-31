@@ -1623,7 +1623,7 @@ describe('form schema validator', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('accepts a null or non-blank default and rejects anything else', (): void => {
+    it('accepts a null or uuid default and rejects anything else', (): void => {
       const field = (defaultValue: unknown, fieldKey: string): unknown => ({
         defaultValue,
         fieldKey,
@@ -1635,24 +1635,46 @@ describe('form schema validator', () => {
         JSON.stringify({
           fields: [
             field(null, 'a'),
-            field('unit-1', 'b'),
-            field('', 'c'),
-            field(['unit-1'], 'd'),
-            field(3, 'e'),
+            field('3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c', 'b'),
+            field('unit-1', 'c'),
+            field('', 'd'),
+            field(['3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c'], 'e'),
+            field(3, 'f'),
           ],
           schemaVersion: 1,
         }),
-        layoutFor('a', 'b', 'c', 'd', 'e'),
+        layoutFor('a', 'b', 'c', 'd', 'e', 'f'),
       );
 
       expect(result.errors).toEqual([
         'schema.fields[2].defaultValue has invalid type for field type',
         'schema.fields[3].defaultValue has invalid type for field type',
         'schema.fields[4].defaultValue has invalid type for field type',
+        'schema.fields[5].defaultValue has invalid type for field type',
       ]);
     });
 
-    it('rejects multiple on an org_unit field', (): void => {
+    it('accepts multiple: false on an org_unit field (what an editor writes for off)', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              fieldKey: 'unit',
+              label: '部門',
+              multiple: false,
+              required: false,
+              type: 'org_unit',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        layoutFor('unit'),
+      );
+
+      expect(result.errors).toEqual([]);
+    });
+
+    it('rejects multiple: true on an org_unit field', (): void => {
       const result = lintFormSchemaJson(
         JSON.stringify({
           fields: [
