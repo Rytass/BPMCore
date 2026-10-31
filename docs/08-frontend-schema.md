@@ -219,7 +219,32 @@ type ApproverResolver =
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
-  | { readonly expression: string; readonly type: 'EXPRESSION' };
+  | { readonly expression: string; readonly type: 'EXPRESSION' }
+  // 未發佈：依表單上選的人，簽那個人往上 levelsUp 層的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string; // 指向 member 單選欄位
+      readonly levelsUp: number;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_MEMBER_MANAGER';
+    }
+  // 未發佈：依表單上選的組織，簽該組織的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string; // 指向 org_unit 欄位
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_ORG_UNIT_MANAGER';
+    }
+  // 未發佈：簽前面指定關卡實際簽核的人
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+  // 未發佈：前面指定關卡實際簽核的人，往上 levelsUp 層的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly levelsUp: number;
+      readonly nodeIds: readonly string[];
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'NODE_ACTOR_MANAGER';
+    };
 
 type ApproverResolverFallback =
   | { readonly type: 'NONE' }
@@ -246,6 +271,20 @@ Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC
 已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+四種新來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、`NODE_ACTOR_MANAGER`，未發佈）
+的就緒檢查（`readApproverResolverIssue`）：`formPath` 不可空白、`nodeIds` 不可為空、
+`FORM_MEMBER_MANAGER`／`NODE_ACTOR_MANAGER` 的 `levelsUp` 須為 ≥ 1 的整數，三個主管型的
+`fallback` 與既有主管型同規則（`DIRECT` 要有 `memberId`、`POSITION` 要有 `positionId`）。
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 另有圖檢查 `readNodeActorSourceIssues(definition, nodeId, sourceNodeIds)`：
+來源關卡必須是存在的簽核關卡、不得有進入條件或「排除發起人後沒人時跳過此關」、不得重複或指到自己；
+從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上。
+**知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`
+會擋，AI 工具組寫入知會收件人時一律退回預設的直屬主管。
+
+AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種來源；必要欄位
+（`formPath`、`nodeIds`）缺漏時照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
+既有主管型一樣沿用節點原本的 `fallback`。
 
 #### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
 

@@ -26,7 +26,15 @@ import {
   WorkflowEdgeData,
   WorkflowNode,
   WorkflowNodeTriggerMode,
+  isFallbackCapableApproverResolverType,
+  isNotifyRecipientResolverType,
+  readUnsupportedApproverResolverType,
 } from './workflow';
+import {
+  isOnOwnParallelBranch,
+  readReachableWorkflowNodeIds,
+  readWorkflowParallelBranchSets,
+} from './workflow-reachability';
 
 /**
  * Pure, framework-agnostic structural operations over a {@link WorkflowDefinition}.
@@ -1166,6 +1174,10 @@ export function isOrgManagerChainDecisionPolicyInvalid(
 export function readApproverResolverIssue(
   resolver: ApproverResolver,
 ): string | null {
+  if (readUnsupportedApproverResolverType(resolver) !== null) {
+    return '簽核節點的簽核來源不在這個版本支援的範圍內，請改選其他簽核來源。';
+  }
+
   if (resolver.type === 'DIRECT' && resolver.memberIds.length === 0) {
     return '簽核節點需要指定簽核會員。';
   }
@@ -1197,9 +1209,32 @@ export function readApproverResolverIssue(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' ||
-      resolver.type === 'ORG_UNIT_MANAGER' ||
-      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    (resolver.type === 'FORM_MEMBER_MANAGER' ||
+      resolver.type === 'FORM_ORG_UNIT_MANAGER') &&
+    !resolver.formPath.trim()
+  ) {
+    return '簽核節點需要指定表單欄位。';
+  }
+
+  if (
+    (resolver.type === 'FORM_MEMBER_MANAGER' ||
+      resolver.type === 'NODE_ACTOR_MANAGER') &&
+    !(Number.isInteger(resolver.levelsUp) && resolver.levelsUp >= 1)
+  ) {
+    return '簽核節點需要指定有效的主管層級。';
+  }
+
+  if (
+    (resolver.type === 'NODE_ACTOR' ||
+      resolver.type === 'NODE_ACTOR_MANAGER') &&
+    resolver.nodeIds.length === 0
+  ) {
+    return '簽核節點需要指定前面的簽核關卡。';
+  }
+
+  if (
+    isFallbackCapableApproverResolverType(resolver.type) &&
+    'fallback' in resolver &&
     resolver.fallback?.type === 'DIRECT' &&
     !resolver.fallback.memberId.trim()
   ) {
@@ -1207,9 +1242,8 @@ export function readApproverResolverIssue(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' ||
-      resolver.type === 'ORG_UNIT_MANAGER' ||
-      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    isFallbackCapableApproverResolverType(resolver.type) &&
+    'fallback' in resolver &&
     resolver.fallback?.type === 'POSITION' &&
     !resolver.fallback.positionId.trim()
   ) {
@@ -1225,6 +1259,116 @@ export function readApproverResolverIssue(
   }
 
   return null;
+}
+
+/**
+ * The graph checks behind a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` node: the
+ * "who signed earlier" source only works when every case reaches `nodeId`
+ * through one of `sourceNodeIds`, and that source actually signed. Returns
+ * Chinese issue lines for the designer and the publish lint; `[]` means the
+ * source is sound. `nodeId` is the node that uses the source.
+ *
+ * 1. at least one source, no repeats, never the node itself;
+ * 2. every source exists and is a `userTask`;
+ * 3. no source may be skipped: no `entryCondition`, and its
+ *    `excludeInitiator` must not skip the whole node when it ends up empty;
+ * 4. coverage: walking from the start without entering any source must not
+ *    reach `nodeId` (else some case never passes a source);
+ * 5. no two sources on different branches of one parallel split (they would
+ *    both run, and "the earlier signer" would not be one person).
+ *
+ * The graph is a DAG: the publish lint refuses cycles before this runs.
+ */
+export function readNodeActorSourceIssues(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  sourceNodeIds: readonly string[],
+): readonly string[] {
+  if (sourceNodeIds.length === 0) {
+    return ['簽核節點需要指定前面的簽核關卡。'];
+  }
+
+  if (new Set(sourceNodeIds).size !== sourceNodeIds.length) {
+    return ['簽核來源的前面關卡不可重複。'];
+  }
+
+  if (sourceNodeIds.includes(nodeId)) {
+    return ['簽核來源的前面關卡不可以是自己。'];
+  }
+
+  const labelOf = (id: string): string => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.data.label ? `「${node.data.label}」` : `「${id}」`;
+  };
+  const sourceNodes = sourceNodeIds.map((id) =>
+    definition.nodes.find((candidate) => candidate.id === id),
+  );
+  const missingId = sourceNodeIds.find(
+    (id, index) => sourceNodes[index] === undefined,
+  );
+
+  if (missingId !== undefined) {
+    return [`簽核來源的前面關卡「${missingId}」不存在。`];
+  }
+
+  const notUserTaskId = sourceNodeIds.find(
+    (id, index) => sourceNodes[index]?.type !== 'userTask',
+  );
+
+  if (notUserTaskId !== undefined) {
+    return [`簽核來源的前面關卡 ${labelOf(notUserTaskId)} 不是簽核關卡。`];
+  }
+
+  const skippableIssues = sourceNodes.flatMap((node): readonly string[] => {
+    if (node?.type !== 'userTask') {
+      return [];
+    }
+
+    return [
+      ...(node.data.entryCondition?.trim()
+        ? [
+            `簽核來源的前面關卡 ${labelOf(node.id)} 設有進入條件，可能被跳過、沒有人簽核。`,
+          ]
+        : []),
+      ...(node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
+        ? [
+            `簽核來源的前面關卡 ${labelOf(node.id)} 在排除發起人後沒人時會跳過此關，可能沒有人簽核。`,
+          ]
+        : []),
+    ];
+  });
+  const startNodeIds = definition.nodes
+    .filter((node) => node.type === 'startEvent')
+    .map((node) => node.id);
+  const reachableWithoutSource = readReachableWorkflowNodeIds(
+    definition.edges,
+    startNodeIds,
+    new Set(sourceNodeIds),
+  );
+  const coverageIssues = reachableWithoutSource.has(nodeId)
+    ? [
+        `有一條路徑不會經過所選的前面關卡（${sourceNodeIds
+          .map(labelOf)
+          .join('、')}）就走到 ${labelOf(nodeId)}，那一趟沒有人可以當簽核人。`,
+      ]
+    : [];
+  const parallelBranches = readWorkflowParallelBranchSets(definition);
+  const parallelIssues = sourceNodeIds.flatMap((id, index) =>
+    sourceNodeIds
+      .slice(index + 1)
+      .filter((otherId) =>
+        parallelBranches.some((branches) =>
+          isOnOwnParallelBranch(branches, id, otherId),
+        ),
+      )
+      .map(
+        (otherId) =>
+          `前面關卡 ${labelOf(id)} 與 ${labelOf(otherId)} 在平行分支的不同路線上，兩關會同時簽核，不能一起當簽核來源。`,
+      ),
+  );
+
+  return [...skippableIssues, ...coverageIssues, ...parallelIssues];
 }
 
 export function hasConfiguredConditionEdges(
@@ -1361,6 +1505,10 @@ export function isNotifyRecipientsEmpty(
 export function readNotifyRecipientsIssue(
   recipients: ApproverResolver,
 ): string | null {
+  if (!isNotifyRecipientResolverType(recipients.type)) {
+    return '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。';
+  }
+
   if (recipients.type === 'POSITION' && !recipients.positionId.trim()) {
     return '知會節點需要指定職位。';
   }
@@ -1456,6 +1604,7 @@ export function isFormFieldCompatibleWithWebhookParameter(
 
   return (
     (field.type === 'member' && field.multiple !== true) ||
+    field.type === 'org_unit' ||
     field.type === 'text' ||
     field.type === 'textarea' ||
     field.type === 'date' ||
@@ -1945,11 +2094,12 @@ export function readConditionOperator(
 export function readConditionOperatorIds(
   field: FormFieldDefinition,
 ): readonly WorkflowEdgeConditionOperator[] {
-  // A member id is an opaque directory key: nobody can type the right one into
-  // a condition, so only "was someone picked" is offered.
+  // A member or org unit id is an opaque directory key: nobody can type the
+  // right one into a condition, so only "was someone picked" is offered.
   if (
     field.type === 'file_upload' ||
     field.type === 'member' ||
+    field.type === 'org_unit' ||
     field.type === 'table'
   ) {
     return ['IS_FILLED', 'IS_EMPTY'];
@@ -2160,6 +2310,19 @@ export function readConditionExpression(
 
     if (operator === 'IS_EMPTY') {
       return `${fieldReference} == null || ${fieldReference} == "" || ${fieldReference} == []`;
+    }
+
+    return undefined;
+  }
+
+  if (field.type === 'org_unit') {
+    // One org unit id (a string): only "was one picked" compiles, like member.
+    if (operator === 'IS_FILLED') {
+      return `${fieldReference} != null && ${fieldReference} != ""`;
+    }
+
+    if (operator === 'IS_EMPTY') {
+      return `${fieldReference} == null || ${fieldReference} == ""`;
     }
 
     return undefined;

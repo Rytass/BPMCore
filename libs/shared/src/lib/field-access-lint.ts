@@ -16,13 +16,25 @@ import type {
   FieldAccessFill,
   UserTaskNode,
   WorkflowDefinition,
-  WorkflowEdge,
 } from './workflow';
 import {
   APPLICANT_FIELD_CONDITION_RULES,
   APPROVER_FILLED_FORM_RULES,
   WORKFLOW_LINT_MESSAGES,
 } from './workflow-graph';
+import {
+  isOnOwnParallelBranch,
+  readReachableWorkflowNodeIds,
+  readWorkflowParallelBranchSets,
+} from './workflow-reachability';
+
+// The graph walks live in a leaf module so `workflow-graph` can use them too
+// (it cannot import this file: this file reads its constants at load time).
+export {
+  isOnOwnParallelBranch,
+  readReachableWorkflowNodeIds,
+  readWorkflowParallelBranchSets,
+};
 
 /**
  * The field access rules (ADR 20 §4) as structured issues. The publish lint
@@ -236,38 +248,6 @@ export function readNodeFieldAccessIssues(
 }
 
 /**
- * The nodes reachable from `startNodeIds` along `edges` without entering one
- * of `blockedNodeIds`, the start nodes included unless blocked. Walks the
- * graph one frontier at a time and drops every node it has already seen, so a
- * cycle ends the walk instead of feeding it.
- */
-export function readReachableWorkflowNodeIds(
-  edges: readonly WorkflowEdge[],
-  startNodeIds: readonly string[],
-  blockedNodeIds: ReadonlySet<string> = new Set(),
-): ReadonlySet<string> {
-  const walk = (
-    frontier: readonly string[],
-    visited: ReadonlySet<string>,
-  ): ReadonlySet<string> => {
-    const fresh = [...new Set(frontier)].filter(
-      (nodeId) => !visited.has(nodeId) && !blockedNodeIds.has(nodeId),
-    );
-
-    return fresh.length
-      ? walk(
-          edges
-            .filter((edge) => fresh.includes(edge.source))
-            .map((edge) => edge.target),
-          new Set([...visited, ...fresh]),
-        )
-      : visited;
-  };
-
-  return walk(startNodeIds, new Set<string>());
-}
-
-/**
  * Whether two nodes can both run in one case: one reaches the other, or a
  * parallel split sends each down a branch of its own (reachable from one
  * outgoing edge of the split but not from another, and the other way round).
@@ -292,36 +272,16 @@ export function createWorkflowCoRunReader(
 
     return reachable;
   };
-  const parallelBranches = definition.nodes
-    .filter((node) => node.type === 'parallelGateway')
-    .map((node) =>
-      definition.edges
-        .filter((edge) => edge.source === node.id)
-        .map((edge) => readReachable(edge.target)),
-    )
-    .filter((branches) => branches.length >= 2);
-  const isOnOwnBranch = (
-    branches: readonly ReadonlySet<string>[],
-    nodeId: string,
-    otherNodeId: string,
-  ): boolean =>
-    branches.some(
-      (branch, index) =>
-        branch.has(nodeId) &&
-        !branch.has(otherNodeId) &&
-        branches.some(
-          (other, otherIndex) =>
-            otherIndex !== index &&
-            other.has(otherNodeId) &&
-            !other.has(nodeId),
-        ),
-    );
+  const parallelBranches = readWorkflowParallelBranchSets(
+    definition,
+    readReachable,
+  );
 
   return (nodeId, otherNodeId) =>
     readReachable(nodeId).has(otherNodeId) ||
     readReachable(otherNodeId).has(nodeId) ||
     parallelBranches.some((branches) =>
-      isOnOwnBranch(branches, nodeId, otherNodeId),
+      isOnOwnParallelBranch(branches, nodeId, otherNodeId),
     );
 }
 
