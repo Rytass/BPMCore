@@ -219,7 +219,32 @@ type ApproverResolver =
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
-  | { readonly expression: string; readonly type: 'EXPRESSION' };
+  | { readonly expression: string; readonly type: 'EXPRESSION' }
+  // 未發佈：依表單上選的人，簽那個人往上 levelsUp 層的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string; // 指向 member 單選欄位
+      readonly levelsUp: number;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_MEMBER_MANAGER';
+    }
+  // 未發佈：依表單上選的組織，簽該組織的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string; // 指向 org_unit 欄位
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_ORG_UNIT_MANAGER';
+    }
+  // 未發佈：簽前面指定關卡實際簽核的人
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+  // 未發佈：前面指定關卡實際簽核的人，往上 levelsUp 層的主管
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly levelsUp: number;
+      readonly nodeIds: readonly string[];
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'NODE_ACTOR_MANAGER';
+    };
 
 type ApproverResolverFallback =
   | { readonly type: 'NONE' }
@@ -239,21 +264,70 @@ type ApproverResolverFallback =
 `readUnsupportedApproverFallbackType(fallback)`（未發佈，v0.16.2 之後）回傳本版本不認得的 fallback `type`
 （例如由較新版本存下的定義），否則為 `null`；Designer 遇到時以唯讀顯示，引擎則在節點啟動時拒絕。
 
-Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
-指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
+Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`／`FORM_MEMBER_MANAGER`）、
+「依前面關卡的簽核者」（`NODE_ACTOR`／`NODE_ACTOR_MANAGER`）、發起人主管、主管鏈、
+指定組織主管（固定組織＝`ORG_UNIT_MANAGER`、表單欄位＝`FORM_ORG_UNIT_MANAGER`）、組織任一人、
+組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
 只由 API／AI 建立並照常顯示。「依表單欄位指定」只列出綁定表單中的 `member` 欄位
 （`formPath` = 欄位的 `fieldKey`）；表單沒有人員選擇欄位時會提示先到表單設計加入，儲存值
 已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
 
+四種新來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、`NODE_ACTOR_MANAGER`，未發佈）
+的就緒檢查（`readApproverResolverIssue`）：`formPath` 不可空白、`nodeIds` 不可為空、
+`FORM_MEMBER_MANAGER`／`NODE_ACTOR_MANAGER` 的 `levelsUp` 須為 ≥ 1 的整數，三個主管型的
+`fallback` 與既有主管型同規則（`DIRECT` 要有 `memberId`、`POSITION` 要有 `positionId`）。
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 另有圖檢查 `readNodeActorSourceIssues(definition, nodeId, sourceNodeIds)`：
+來源關卡必須是存在的簽核關卡、不得有進入條件或「排除發起人後沒人時跳過此關」、不得重複或指到自己；
+從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上；
+每個來源都必須在本節點的上游（從該來源出發走得到本節點）——排在本節點之後或沒接上流程的關卡不能當來源。
+**知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`
+會擋，AI 工具組寫入知會收件人時一律退回預設的直屬主管。
+
+後端 publish validation 對這四種來源另有檢查（`lintWorkflowDefinition`／`TemplateService`）：
+結構規則同上（`formPath`、`levelsUp`、`nodeIds` 存在且是簽核關卡、不含自己、fallback 欄位），
+認不得的 resolver `type` 與知會收件人用這四種來源都直接擋；`FORM_MEMBER_MANAGER` 的 `formPath`
+須指向**單選**、必填、不會被 `visibleWhen`／`hidden` 藏起來的 `member` 欄位，
+`FORM_ORG_UNIT_MANAGER` 須指向必填且不會被藏的 `org_unit` 欄位（判準與 `DYNAMIC_FORM` 同一套）；
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查（`readNodeActorSourceIssues`）在結構檢查通過後執行。
+
+設計器的「簽核來源」面板依畫面選擇編輯，而不是 JSON 的 `type`：「依表單欄位指定」與
+「依前面關卡的簽核者」各有一個「簽核人」下拉（欄位裡的人／關卡的簽核者＝本人，或直屬／第二層／第三層主管），
+選主管時才出現「只取最近一層主管」「無主管時」；「指定組織主管」的「組織」可選固定組織或表單欄位
+（切到表單欄位時「只取最近一層主管」預設開啟；切回固定組織時維持開啟，作者可自行關掉，
+固定組織也要重新選一次）；「依前面關卡的簽核者」的「關卡」複選多個時，取最近實際走到的那一關的簽核人，不是全部。
+儲存的主管層級 < 1 時（手寫或 API 寫入）顯示為「第 N 層主管（無效）」而不是本人，JSON 照原樣保留，
+發布檢查會擋。本版本不認得的 resolver `type` 在「簽核來源」下拉顯示為唯讀的目前值
+「不支援的簽核來源（type）」，旁邊提示「此引擎版本不支援這種簽核來源；這裡選擇其他簽核來源會覆寫原設定」，
+沒有任何編輯器；不選別的來源就不會寫入任何東西。但就緒檢查（`readApproverResolverIssue`）把認不得的
+`type` 視為問題，草稿儲存與發布都會被擋，所以這個節點要改選其他簽核來源（或刪除節點）才能儲存。
+重新選取節點實際儲存的來源不會重置設定；但 `EXPRESSION` resolver 在下拉顯示為「指定會員」，
+在它上面選「指定會員」仍會切換（並覆寫原運算式）。
+「關卡」複選的提示即時顯示 `readNodeActorSourceIssues` 的整組問題（涵蓋、跨平行分支、可被跳過的關卡等）。
+
+設計器對這兩種來源的圖檢查是**只擋發布、不擋儲存草稿**（與欄位權限矩陣的問題清單同一道：
+側欄顯示「發布前需修正：簽核節點「<名稱>」：…」，發布按鈕停用）；實作是 designer 端的
+`readNodeActorGraphIssues(definition)`（`designer/node-actor-resolver-options.ts`），逐一對每個
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 簽核節點呼叫 `readNodeActorSourceIssues`。shared 的
+`readWorkflowDefinitionIssue`（AI 工具組、`workflow-command` 用）不含這項檢查。
+
+AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種來源；必要欄位
+（`formPath`、`nodeIds`）缺漏時**保留該來源的 `type`**，`formPath` 存成空字串、`nodeIds` 存成空陣列，
+就緒檢查（`validate_workflow`、設計器、發布）會回報，不會改成「發起人主管」而靜默放行；
+只有模型自己編出、本版本不認得的 `type` 名稱仍照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
+既有主管型一樣沿用節點原本的 `fallback`。
+
 #### 人員選擇欄位（`member`）與 `DYNAMIC_FORM`
 
 試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
 `assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
-`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
-designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
-顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入占位值
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`，以及
+四種新來源的 `formMemberManager:<formPath>:<levelsUp>`、`formOrgUnitManager:<formPath>`、
+`nodeActor:<nodeId,nodeId…>`、`nodeActorManager:<nodeId,nodeId…>:<levelsUp>`）；
+designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」；
+`nodeActor:` 系列顯示前面關卡的名稱，已刪除的關卡顯示 id），真實成員 id
+顯示姓名，不認得的字串原樣顯示。`org_unit` 欄位的試跑樣本值是占位字串 `formOrgUnit:<fieldKey>`。試跑的範例表單資料中，`member` 欄位預設填入占位值
 `formMember:<fieldKey>`（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人，
 試跑結果顯示為「表單欄位「<欄位名稱>」選的人（送出時依填寫內容決定）」（欄位沒有名稱或已刪除時顯示 `fieldKey`）。刻意不填試跑發起人：
 真實送出時通常選的是別人，填發起人會讓設了「排除申請人」的節點在試跑中被略過或停住。
@@ -279,6 +353,40 @@ type MemberFieldDefinition = BaseFormFieldDefinition<'member'> & {
   不是人能手打的值。表單內的顯示／必填／唯讀規則也不會把人員選擇欄位列為條件來源。
 - **送出驗證**：必填沿用既有檢查（空字串、空陣列視為未填）；有值時必須是非空字串（可複選
   為非空字串陣列），否則 `400`。後端不會查成員是否存在，這和 `DIRECT` resolver 一致。
+
+#### 組織選擇欄位（`org_unit`）與 `FORM_ORG_UNIT_MANAGER`
+
+`FORM_ORG_UNIT_MANAGER` 的 `formPath` 讀到的值必須是組織單位 id（字串）。表單欄位類型
+**`org_unit`（組織選擇）** 就是為此而設：
+
+```ts
+type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
+```
+
+- **儲存值**：單一組織單位 id 字串；只存 id，名稱在顯示時才解析。沒選時是省略／`null`。
+  沒有 `multiple`（只能選一個組織），也不能當表格欄。`isFormOrgUnitValue(value)` 判斷
+  儲存值是否合格（非空白字串）。
+- **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——組織
+  id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
+- **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
+  的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查；試跑由後續任務補上）。
+- **表單 schema**：後端接受 `org_unit` 欄位；`multiple: true` 不支援（`schema.fields[i].multiple is not supported for org_unit fields`，`false` 照常接受），
+  `defaultValue` 只能是 `null` 或 uuid 字串（和送出驗證同一條，否則每張沒動過的表單都送不出去），放進表格欄位會被擋（和 `member` 一樣不是表格欄類型）。
+- **送出驗證**：必填沿用既有檢查；有值時必須是非空白、且是 uuid 的字串（和引擎在 `FORM_ORG_UNIT_MANAGER`
+  節點查組織前的檢查同一條），否則 `400`：`formData.<fieldKey> must be an organization unit id`。
+  簽核者補填的 `org_unit` 欄位（欄位權限不限欄位類型）同一條。後端不會查組織是否存在。
+- **Builder**：欄位庫的「組織選擇」，沒有專屬設定項（只有標題、必填等一般欄位共有的設定）；
+  不提供預設值 UI，也不能當作表格欄。表單內的顯示／必填／唯讀規則不會把組織選擇欄位列為
+  條件來源。
+- **Renderer**：填寫與唯讀都用同一個組織搜尋（代碼或名稱，走 `searchOrgUnitOptions`／
+  `resolveOrgUnitOptions`，任何登入成員都能查，不必是設計者）。選單打開時列出前幾個組織，
+  輸入文字即搜尋；搜尋失敗會在欄位下方顯示「搜尋組織失敗，請稍後再試。」，已選的組織不會被清掉。
+  已存的 id 在名稱回來前先顯示 id，回來後換成名稱；已刪除的組織名稱後面加「（已刪除）」；查不到
+  的 id（或查詢失敗）顯示「未知組織」，送單頁與案件頁一致。
+- **簽核者補填摘要**：核准對話框的補填摘要同樣顯示組織名稱，查不到顯示「未知組織」。
+- **案件標題**：組織選擇欄位不會被選作待辦匣／案件列表的標題（它存的是組織 id），和人員選擇
+  欄位一樣會被跳過。
+- **未發佈／尚未實作**：試跑範例值由後續任務補上。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
@@ -649,13 +757,14 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 #### 錯誤表二：補填節點核准時的驗證（`BadRequestException`）
 
-第 5 點的驗證只丟 `BadRequestException`，依序檢查，**前一類有問題就不檢查後一類**；成員與表格各類的
+第 5 點的驗證只丟 `BadRequestException`，依序檢查，**前一類有問題就不檢查後一類**；成員、組織與表格各類的
 多筆訊息以 `; ` 串接。訊息沿用送出時的那一套，host 靠自己呼叫的是哪一支 API 分辨來源。
 
 | 檢查 | 訊息 |
 | --- | --- |
 | 本節點 `fill: 'REQUIRED'` 的非表格補填欄位為空 | `Form data is missing required fields: <label or fieldKey>, …` |
 | 成員欄位的值形狀不對 | `formData.<fieldKey> must be a member id`（單選）／`formData.<fieldKey> must be an array of member ids`（多選） |
+| 組織欄位的值不是組織單位 id（非空白 uuid 字串） | `formData.<fieldKey> must be an organization unit id` |
 | 表格不是列的陣列 | `formData.<fieldKey> must be an array of rows` |
 | 列不是物件 | `formData.<fieldKey>[<i>] must be an object` |
 | 列裡有不存在的欄 | `formData.<fieldKey>[<i>].<columnKey> is not a table column` |

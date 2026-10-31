@@ -91,6 +91,7 @@ import { BPMFormField } from '../../../components/bpm-form-field';
 import { formatDateTime } from '../../../lib/format-date-time';
 import { useAuth } from '../../../lib/auth-provider';
 import { isBPMAdminMember } from '../../../lib/use-bpm-member';
+import { useOrgUnitNames } from '../../../lib/use-org-unit-names';
 import { readLatestTaskDecisionsByTaskId } from '../../../lib/task-decision';
 import { PDFPreview } from '../../../components/pdf-preview';
 import {
@@ -125,6 +126,7 @@ import {
   readFillDisplaySchema,
   readFillLabelMarkers,
   readFillChanges,
+  readFillOrgUnitIds,
   readFillPayload,
   readFillServerErrors,
   readFillSummary,
@@ -536,6 +538,14 @@ export function InstanceDetailView({
       new Map(memberProfiles.map((profile) => [profile.memberId, profile])),
     [memberProfiles],
   );
+  // The approve dialog names an org unit the approver filled in, so its id is
+  // looked up as soon as it is picked rather than when the dialog opens.
+  const fillOrgUnitIds = useMemo(
+    (): readonly string[] =>
+      schemaSnapshot ? readFillOrgUnitIds(schemaSnapshot, fillChanges) : [],
+    [fillChanges, schemaSnapshot],
+  );
+  const fillOrgUnitNames = useOrgUnitNames(fillOrgUnitIds);
   const tasksSectionFill = useMemo(
     (): InstanceTasksSectionFill | null =>
       fillNode && fillValues && schemaSnapshot && instance?.formDataFingerprint
@@ -552,12 +562,14 @@ export function InstanceDetailView({
                   readMemberDisplayText(memberId, memberProfilesById),
                 ]),
               ),
+              fillOrgUnitNames,
             ),
           }
         : null,
     [
       fillChanges,
       fillNode,
+      fillOrgUnitNames,
       fillValues,
       instance,
       memberProfilesById,

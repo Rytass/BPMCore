@@ -7,6 +7,7 @@ import {
   FormStaticOptionFieldDefinition,
   isFormStaticOptionFieldDefinition,
   isMemberFieldDefinition,
+  isOrgUnitFieldDefinition,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
@@ -2617,9 +2618,9 @@ function readFirstCaseTitleField(
     schema.fields.map((field) => [field.fieldKey, field]),
   );
   // A row count is a poor case title, so a table never becomes the title field
-  // — the first non-table field takes its place (ADR 16 §3.8). A member field
-  // holds raw member ids, which are no better, so it is skipped the same way. A
-  // hidden (store-only) field is never shown to people, so it cannot title a
+  // — the first non-table field takes its place (ADR 16 §3.8). A member or org
+  // unit field holds raw ids, which are no better, so it is skipped the same
+  // way. A hidden (store-only) field is never shown to people, so it cannot title a
   // case either.
   const firstLayoutField = uiSchema?.layout
     .map((layoutItem) => fieldsByKey.get(layoutItem.fieldKey) ?? null)
@@ -2635,6 +2636,7 @@ function isCaseTitleField(field: FormFieldDefinition): boolean {
   return (
     !isTableFieldDefinition(field) &&
     !isMemberFieldDefinition(field) &&
+    !isOrgUnitFieldDefinition(field) &&
     !field.hidden
   );
 }

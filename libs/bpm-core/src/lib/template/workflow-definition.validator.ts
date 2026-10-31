@@ -9,6 +9,9 @@ import {
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
+  isFallbackCapableApproverResolverType,
+  isNotifyRecipientResolverType,
+  readUnsupportedApproverResolverType,
 } from '@rytass/bpm-core-shared/workflow';
 import {
   readDefinitionFieldAccessIssues,
@@ -236,7 +239,7 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
       const data = node.data;
 
       return [
-        ...lintApproverResolver(data.approverResolver, node.id),
+        ...lintApproverResolver(data.approverResolver, node.id, nodes),
         ...(data.decisionPolicy?.type
           ? []
           : [`workflow.nodes.${node.id}.decisionPolicy is required`]),
@@ -371,9 +374,16 @@ function lintSlaWarnings(nodes: readonly WorkflowNode[]): readonly string[] {
 function lintApproverResolver(
   resolver: ApproverResolver,
   nodeId: string,
+  nodes: readonly WorkflowNode[],
 ): readonly string[] {
   if (!resolver?.type) {
     return [`workflow.nodes.${nodeId}.approverResolver is required`];
+  }
+
+  // A definition saved by a newer version: the engine refuses it at run time,
+  // so it is refused here too instead of being published and stranding cases.
+  if (readUnsupportedApproverResolverType(resolver) !== null) {
+    return [`workflow.nodes.${nodeId}.approverResolver.type is not supported`];
   }
 
   if (resolver.type === 'DIRECT' && resolver.memberIds.length === 0) {
@@ -415,9 +425,32 @@ function lintApproverResolver(
   }
 
   if (
-    (resolver.type === 'ORG_MANAGER' ||
-      resolver.type === 'ORG_UNIT_MANAGER' ||
-      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    (resolver.type === 'FORM_MEMBER_MANAGER' ||
+      resolver.type === 'FORM_ORG_UNIT_MANAGER') &&
+    !resolver.formPath?.trim()
+  ) {
+    return [`workflow.nodes.${nodeId}.approverResolver.formPath is required`];
+  }
+
+  if (
+    (resolver.type === 'FORM_MEMBER_MANAGER' ||
+      resolver.type === 'NODE_ACTOR_MANAGER') &&
+    !(Number.isInteger(resolver.levelsUp) && resolver.levelsUp >= 1)
+  ) {
+    return [`workflow.nodes.${nodeId}.approverResolver.levelsUp is invalid`];
+  }
+
+  if (resolver.type === 'NODE_ACTOR' || resolver.type === 'NODE_ACTOR_MANAGER') {
+    const nodeIdsErrors = lintNodeActorNodeIds(resolver.nodeIds, nodeId, nodes);
+
+    if (nodeIdsErrors.length) {
+      return nodeIdsErrors;
+    }
+  }
+
+  if (
+    isFallbackCapableApproverResolverType(resolver.type) &&
+    'fallback' in resolver &&
     resolver.fallback?.type === 'DIRECT' &&
     !resolver.fallback.memberId.trim()
   ) {
@@ -429,9 +462,8 @@ function lintApproverResolver(
   // Like the POSITION node itself, existence is not checked here: the lint has
   // no position directory, and a position may legitimately be empty today.
   if (
-    (resolver.type === 'ORG_MANAGER' ||
-      resolver.type === 'ORG_UNIT_MANAGER' ||
-      resolver.type === 'ORG_MANAGER_CHAIN') &&
+    isFallbackCapableApproverResolverType(resolver.type) &&
+    'fallback' in resolver &&
     resolver.fallback?.type === 'POSITION' &&
     !resolver.fallback.positionId.trim()
   ) {
@@ -449,6 +481,43 @@ function lintApproverResolver(
   }
 
   return [];
+}
+
+/**
+ * The local half of the NODE_ACTOR / NODE_ACTOR_MANAGER source checks: the ids
+ * exist and name user tasks. Whether the earlier signer is actually upstream,
+ * unskippable and unique needs the whole graph, so `TemplateService` runs the
+ * shared `readNodeActorSourceIssues` once the definition has passed this lint
+ * (which keeps the two from ever reporting the same node twice).
+ */
+function lintNodeActorNodeIds(
+  nodeIds: readonly string[],
+  nodeId: string,
+  nodes: readonly WorkflowNode[],
+): readonly string[] {
+  const path = `workflow.nodes.${nodeId}.approverResolver.nodeIds`;
+
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    return [`${path} is required`];
+  }
+
+  if (nodeIds.includes(nodeId)) {
+    return [`${path} must not include the node itself`];
+  }
+
+  const typeOf = (id: string): WorkflowNode['type'] | undefined =>
+    nodes.find((node) => node.id === id)?.type;
+  const missingId = nodeIds.find((id) => typeOf(id) === undefined);
+
+  if (missingId !== undefined) {
+    return [`${path} references a missing node: ${missingId}`];
+  }
+
+  const notUserTaskIds = nodeIds.filter((id) => typeOf(id) !== 'userTask');
+
+  return notUserTaskIds.length
+    ? [`${path} must reference userTask nodes: ${notUserTaskIds.join(', ')}`]
+    : [];
 }
 
 function lintServiceTaskNodes(
@@ -579,6 +648,12 @@ function lintNotifyRecipients(
     return [
       `workflow.nodes.${nodeId}.action.recipients.orgUnitId and positionId are required`,
     ];
+  }
+
+  // The sources that need a form pick or earlier signers have nothing to read
+  // on a NOTIFY node (and an unknown type has no resolver at all).
+  if (!isNotifyRecipientResolverType(recipients.type)) {
+    return [`workflow.nodes.${nodeId}.action.recipients.type is not supported`];
   }
 
   if (recipients.type === 'DYNAMIC_FORM' && !recipients.formPath.trim()) {

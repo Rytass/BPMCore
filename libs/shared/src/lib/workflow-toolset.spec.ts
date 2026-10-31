@@ -1,4 +1,8 @@
-import { readFallbackWorkflowDefinition } from './workflow-graph';
+import {
+  readApproverResolverIssue,
+  readFallbackWorkflowDefinition,
+} from './workflow-graph';
+import { ApproverResolver } from './workflow';
 import { WorkflowDesignerState } from './workflow-command';
 import {
   WORKFLOW_TOOLSET,
@@ -1212,5 +1216,361 @@ describe('field access tools', () => {
     );
 
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('set_user_task_approver — form / prior-node sources', () => {
+  async function runTool(
+    state: WorkflowDesignerState,
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      name,
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const state = await runTool(initialState(), 'add_node', {
+      nodeType: 'userTask',
+    });
+    const nodeId = state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state };
+  }
+
+  function readApproverResolver(
+    state: WorkflowDesignerState,
+  ): ApproverResolver {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return node.data.approverResolver;
+  }
+
+  const MANAGER_DEFAULT = {
+    baseFromInitiator: true,
+    levelsUp: 1,
+    type: 'ORG_MANAGER',
+  };
+
+  it('exposes the four new types in the schema enum', () => {
+    const tool = WORKFLOW_TOOLSET.find(
+      (candidate) => candidate.name === 'set_user_task_approver',
+    );
+    const resolverSchema = (
+      tool?.inputSchema['properties'] as Record<
+        string,
+        { properties: { type: { enum: readonly string[] } } }
+      >
+    )['approverResolver'];
+
+    expect(resolverSchema.properties.type.enum).toEqual(
+      expect.arrayContaining([
+        'FORM_MEMBER_MANAGER',
+        'FORM_ORG_UNIT_MANAGER',
+        'NODE_ACTOR',
+        'NODE_ACTOR_MANAGER',
+        'ORG_MANAGER',
+      ]),
+    );
+  });
+
+  it('keeps a complete FORM_MEMBER_MANAGER resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        formPath: 'form.owner',
+        levelsUp: 2,
+        preferClosestOrgUnit: true,
+        type: 'FORM_MEMBER_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      formPath: 'form.owner',
+      levelsUp: 2,
+      preferClosestOrgUnit: true,
+      type: 'FORM_MEMBER_MANAGER',
+    });
+  });
+
+  it('defaults levelsUp to 1 and the closest-org flag to false on FORM_MEMBER_MANAGER', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { formPath: 'form.owner', type: 'FORM_MEMBER_MANAGER' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toEqual({
+      formPath: 'form.owner',
+      levelsUp: 1,
+      preferClosestOrgUnit: false,
+      type: 'FORM_MEMBER_MANAGER',
+    });
+  });
+
+  it('keeps a complete FORM_ORG_UNIT_MANAGER resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { positionId: 'pos-1', type: 'POSITION' },
+        formPath: 'form.dept',
+        type: 'FORM_ORG_UNIT_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toEqual({
+      fallback: { positionId: 'pos-1', type: 'POSITION' },
+      formPath: 'form.dept',
+      preferClosestOrgUnit: false,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('keeps a complete NODE_ACTOR resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { nodeIds: ['a', 'b'], type: 'NODE_ACTOR' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toEqual({
+      nodeIds: ['a', 'b'],
+      type: 'NODE_ACTOR',
+    });
+  });
+
+  it('keeps a complete NODE_ACTOR_MANAGER resolver', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { type: 'NONE' },
+        levelsUp: 3,
+        nodeIds: ['a'],
+        type: 'NODE_ACTOR_MANAGER',
+      },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toEqual({
+      fallback: { type: 'NONE' },
+      levelsUp: 3,
+      nodeIds: ['a'],
+      preferClosestOrgUnit: false,
+      type: 'NODE_ACTOR_MANAGER',
+    });
+  });
+
+  it.each([
+    [
+      'FORM_MEMBER_MANAGER without formPath',
+      { type: 'FORM_MEMBER_MANAGER' },
+      'FORM_MEMBER_MANAGER',
+    ],
+    [
+      'FORM_MEMBER_MANAGER with a blank formPath',
+      { formPath: '  ', type: 'FORM_MEMBER_MANAGER' },
+      'FORM_MEMBER_MANAGER',
+    ],
+    [
+      'FORM_ORG_UNIT_MANAGER without formPath',
+      { type: 'FORM_ORG_UNIT_MANAGER' },
+      'FORM_ORG_UNIT_MANAGER',
+    ],
+    ['NODE_ACTOR without nodeIds', { type: 'NODE_ACTOR' }, 'NODE_ACTOR'],
+    [
+      'NODE_ACTOR with empty nodeIds',
+      { nodeIds: [], type: 'NODE_ACTOR' },
+      'NODE_ACTOR',
+    ],
+    [
+      'NODE_ACTOR with a non-array nodeIds',
+      { nodeIds: 'a', type: 'NODE_ACTOR' },
+      'NODE_ACTOR',
+    ],
+    [
+      'NODE_ACTOR_MANAGER with empty nodeIds',
+      { nodeIds: [], type: 'NODE_ACTOR_MANAGER' },
+      'NODE_ACTOR_MANAGER',
+    ],
+  ])(
+    'keeps the incomplete shape of the requested type for %s so the readiness check reports it',
+    async (_label, resolver, expectedType) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const next = await runTool(state, 'set_user_task_approver', {
+        approverResolver: resolver,
+        nodeId,
+      });
+      const stored = readApproverResolver(next);
+
+      expect(stored.type).toBe(expectedType);
+      expect(stored).not.toMatchObject(MANAGER_DEFAULT);
+      expect(readApproverResolverIssue(stored)).not.toBeNull();
+    },
+  );
+
+  it('validate_workflow reports an incomplete new source instead of passing it', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { type: 'NODE_ACTOR' },
+      nodeId,
+    });
+    const validation = await executeWorkflowTool(next, 'validate_workflow', {});
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: expect.stringContaining('需要指定前面的簽核關卡'),
+      });
+    }
+  });
+
+  it('still maps a type name the model invented to the manager default', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await runTool(state, 'set_user_task_approver', {
+      approverResolver: { formPath: 'form.dept', type: 'FORM_MANAGER_OF_SOMEONE' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(next)).toMatchObject(MANAGER_DEFAULT);
+  });
+
+  it('keeps the existing fallback when the rewrite switches to a new manager source', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+    const rewritten = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: { formPath: 'form.dept', type: 'FORM_ORG_UNIT_MANAGER' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(rewritten)).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      formPath: 'form.dept',
+      preferClosestOrgUnit: false,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('does not carry a fallback onto NODE_ACTOR, which has none', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withFallback = await runTool(state, 'set_user_task_approver', {
+      approverResolver: {
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        levelsUp: 1,
+        type: 'ORG_MANAGER',
+      },
+      nodeId,
+    });
+    const rewritten = await runTool(withFallback, 'set_user_task_approver', {
+      approverResolver: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+      nodeId,
+    });
+
+    expect(readApproverResolver(rewritten)).toEqual({
+      nodeIds: ['a'],
+      type: 'NODE_ACTOR',
+    });
+  });
+});
+
+describe('set_service_action — NOTIFY recipients', () => {
+  async function recipientsAfter(recipients: unknown): Promise<unknown> {
+    const state = initialState();
+    const withNotify: WorkflowDesignerState = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: [
+          ...state.definition.nodes,
+          {
+            data: {
+              action: {
+                channels: ['IN_APP'],
+                recipients: { memberIds: ['m1'], type: 'DIRECT' },
+                type: 'NOTIFY',
+              },
+              label: '通知',
+              triggerMode: 'AND',
+            },
+            id: 'notify',
+            position: { x: 300, y: 320 },
+            type: 'serviceTask',
+          },
+        ],
+      },
+    };
+    const result = await executeWorkflowTool(withNotify, 'set_service_action', {
+      action: { recipients, type: 'NOTIFY' },
+      nodeId: 'notify',
+    });
+    const node =
+      result.ok && result.kind === 'mutation'
+        ? result.result.state.definition.nodes.find(
+            (item) => item.id === 'notify',
+          )
+        : undefined;
+
+    return node?.type === 'serviceTask' && node.data.action.type === 'NOTIFY'
+      ? node.data.action.recipients
+      : undefined;
+  }
+
+  it.each([
+    ['NODE_ACTOR', { nodeIds: ['a'], type: 'NODE_ACTOR' }],
+    [
+      'NODE_ACTOR_MANAGER',
+      { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+    ],
+    ['FORM_MEMBER_MANAGER', { formPath: 'form.owner', type: 'FORM_MEMBER_MANAGER' }],
+    ['FORM_ORG_UNIT_MANAGER', { formPath: 'form.dept', type: 'FORM_ORG_UNIT_MANAGER' }],
+  ])('turns a %s recipient into the manager default', async (_label, input) => {
+    expect(await recipientsAfter(input)).toEqual({
+      baseFromInitiator: true,
+      levelsUp: 1,
+      type: 'ORG_MANAGER',
+    });
+  });
+
+  it('keeps a DYNAMIC_FORM recipient as written', async () => {
+    expect(
+      await recipientsAfter({ formPath: 'form.people', type: 'DYNAMIC_FORM' }),
+    ).toEqual({ formPath: 'form.people', type: 'DYNAMIC_FORM' });
   });
 });

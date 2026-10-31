@@ -91,14 +91,15 @@ interface MemberMetadata {
 
 ### 欄位類型
 
-| 類別 | 類型                                                 |
-| ---- | ---------------------------------------------------- |
-| 基本 | text、number、date、datetime、boolean                |
-| 選擇 | select / radio / checkbox（含動態資料源）            |
-| 人員 | member（人員選擇，值為成員 id，可複選）              |
-| 進階 | file_upload、signature_pad、table、sub_form、address |
-| 系統 | org_picker、user_picker、money（含幣別）             |
-| 動態 | calculated_field（公式）、reference_field（查主檔）  |
+| 類別 | 類型                                                            |
+| ---- | --------------------------------------------------------------- |
+| 基本 | text、number、date、datetime、boolean                           |
+| 選擇 | select / radio / checkbox（含動態資料源）                       |
+| 人員 | member（人員選擇，值為成員 id，可複選）                         |
+| 組織 | org_unit（組織選擇，值為單一組織 id；條件只支援「有填／沒填」） |
+| 進階 | file_upload、signature_pad、table、sub_form、address            |
+| 系統 | org_picker、user_picker、money（含幣別）                        |
+| 動態 | calculated_field（公式）、reference_field（查主檔）             |
 
 ### 條件邏輯
 

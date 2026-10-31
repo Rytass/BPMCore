@@ -9,6 +9,7 @@ import {
 } from '@rytass/bpm-core-shared';
 import {
   isFormStaticOptionFieldDefinition,
+  isOrgUnitFieldDefinition,
   isTableFieldDefinition,
   type FormDefinitionSchema,
   type FormFieldDefinition,
@@ -331,10 +332,34 @@ export interface FillSummaryItem {
   readonly text: string;
 }
 
+export const UNKNOWN_FILL_ORG_UNIT_TEXT = '未知組織';
+
+/**
+ * The org unit ids among `values`, once each and in form order, so the caller
+ * can look up their names before building the summary.
+ */
+export function readFillOrgUnitIds(
+  schema: FormDefinitionSchema,
+  values: WorkflowFormData,
+): readonly string[] {
+  return [
+    ...new Set(
+      schema.fields
+        .filter(isOrgUnitFieldDefinition)
+        .map((field) => values[field.fieldKey])
+        .filter(
+          (value): value is string =>
+            typeof value === 'string' && value.trim().length > 0,
+        ),
+    ),
+  ];
+}
+
 function readFillValueText(
   field: FormFieldDefinition,
   value: FormFieldValue | undefined,
   memberNames: ReadonlyMap<string, string>,
+  orgUnitNames: ReadonlyMap<string, string>,
 ): string {
   if (isTableFieldDefinition(field)) {
     const rows = readFormTableRows(value);
@@ -370,6 +395,13 @@ function readFillValueText(
     return value ? '是' : '否';
   }
 
+  if (isOrgUnitFieldDefinition(field)) {
+    // An id the lookup did not name is 「未知組織」, never the raw id.
+    return typeof value === 'string'
+      ? (orgUnitNames.get(value) ?? UNKNOWN_FILL_ORG_UNIT_TEXT)
+      : UNKNOWN_FILL_ORG_UNIT_TEXT;
+  }
+
   const items = Array.isArray(value) ? value : [value];
   const optionLabels = isFormStaticOptionFieldDefinition(field)
     ? new Map(field.options.map((option) => [option.value, option.label]))
@@ -387,13 +419,15 @@ function readFillValueText(
 /**
  * One line per field `node` lets its approver fill, in form order, for the
  * approve dialog: what will be sent along with the approval. A member field
- * names each member found in `memberNames` and shows the id otherwise.
+ * names each member found in `memberNames` and shows the id otherwise; an org
+ * unit field names its unit from `orgUnitNames` and shows 「未知組織」 otherwise.
  */
 export function readFillSummary(
   schema: FormDefinitionSchema,
   node: UserTaskNode,
   values: WorkflowFormData,
   memberNames: ReadonlyMap<string, string> = new Map(),
+  orgUnitNames: ReadonlyMap<string, string> = new Map(),
 ): readonly FillSummaryItem[] {
   const fillableKeys = readNodeFillableFieldKeys(node);
 
@@ -406,6 +440,11 @@ export function readFillSummary(
     .map((field) => ({
       fieldKey: field.fieldKey,
       label: field.label || field.fieldKey,
-      text: readFillValueText(field, values[field.fieldKey], memberNames),
+      text: readFillValueText(
+        field,
+        values[field.fieldKey],
+        memberNames,
+        orgUnitNames,
+      ),
     }));
 }

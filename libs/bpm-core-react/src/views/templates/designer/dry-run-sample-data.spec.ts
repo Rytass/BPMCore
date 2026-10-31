@@ -2,6 +2,24 @@ import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
 
 describe('readDryRunSampleFormData', () => {
+  it('samples an org_unit field with a placeholder the dry-run result can name', () => {
+    expect(
+      readDryRunSampleFormData({
+        fields: [
+          {
+            fieldKey: 'dept',
+            label: '申請部門',
+            placeholder: '搜尋組織名稱',
+            required: true,
+            type: 'org_unit',
+          },
+          { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        ],
+        schemaVersion: 1,
+      }),
+    ).toEqual({ dept: 'formOrgUnit:dept', note: '備註' });
+  });
+
   const schema: FormDefinitionSchema = {
     fields: [
       { fieldKey: 'reason', label: '事由', required: true, type: 'text' },

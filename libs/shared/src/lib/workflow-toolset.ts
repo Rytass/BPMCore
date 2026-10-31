@@ -13,6 +13,8 @@ import {
   WorkflowEdgeConditionOperator,
   WorkflowNode,
   WorkflowNodeTriggerMode,
+  isFallbackCapableApproverResolverType,
+  isNotifyRecipientResolverType,
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
@@ -110,7 +112,11 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
     'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
-    'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }。',
+    'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
+    'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
+    'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「人員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
+    'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id）；' +
+    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；這四種來源必填的 formPath／nodeIds 缺漏時不會被改成直屬主管，而是保留為未完成的設定，validate_workflow 會回報；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
   properties: {
     type: {
       enum: [
@@ -123,6 +129,10 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
         'ORG_UNIT_MANAGER',
         'DYNAMIC_FORM',
         'EXPRESSION',
+        'FORM_ORG_UNIT_MANAGER',
+        'FORM_MEMBER_MANAGER',
+        'NODE_ACTOR',
+        'NODE_ACTOR_MANAGER',
       ],
       type: 'string',
     },
@@ -197,7 +207,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'set_user_task_approver',
     description:
-      '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）。' +
+      '設定簽核節點的簽核人員。approverResolver 可省略或不完整 —— 此時預設為「直屬主管」（ORG_MANAGER，往上 1 層）；例外：FORM_MEMBER_MANAGER／FORM_ORG_UNIT_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER 缺 formPath／nodeIds 時會保留該類型、不會改成直屬主管，validate_workflow 會回報缺漏欄位（自行編造的類型名稱仍會變成直屬主管）。' +
       '原有的決策政策會保留；若新的 approverResolver 沒有 fallback 欄位，原有的無主管時備援也會保留（要清除請明確傳入 fallback.type 為 NONE）。' +
       '只有當新的簽核人員人數已撐不住原本的 QUORUM 門檻（那樣這一關將永遠無法通過）時，' +
       '才會自動重設為 SINGLE（單人簽核）。若發生重設，請主動告知使用者，並視需要用 ' +
@@ -424,7 +434,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   {
     name: 'insert_approval_step',
     description:
-      '高階：新增一個簽核關卡。approverResolver 可省略 —— 省略或資料不全時，預設為「直屬主管」（ORG_MANAGER，從申請人往上 1 層），不需要真實會員 id。畫初稿時建議直接省略簽核人、先把流程結構建出來。',
+      '高階：新增一個簽核關卡。approverResolver 可省略 —— 省略或資料不全時，預設為「直屬主管」（ORG_MANAGER，從申請人往上 1 層），不需要真實會員 id（例外：FORM_MEMBER_MANAGER／FORM_ORG_UNIT_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER 缺 formPath／nodeIds 時保留該類型，validate_workflow 會回報缺漏欄位；自行編造的類型名稱仍會變成直屬主管）。畫初稿時建議直接省略簽核人、先把流程結構建出來。',
     inputSchema: objectSchema(
       {
         approverResolver: APPROVER_RESOLVER_SCHEMA,
@@ -750,16 +760,15 @@ export async function executeWorkflowTool(
 
 type FallbackCapableApproverResolver = Extract<
   ApproverResolver,
-  { readonly type: 'ORG_MANAGER' | 'ORG_UNIT_MANAGER' | 'ORG_MANAGER_CHAIN' }
+  { readonly fallback?: ApproverResolverFallback }
 >;
 
 function isFallbackCapableApproverResolver(
   resolver: ApproverResolver | undefined,
 ): resolver is FallbackCapableApproverResolver {
   return (
-    resolver?.type === 'ORG_MANAGER' ||
-    resolver?.type === 'ORG_UNIT_MANAGER' ||
-    resolver?.type === 'ORG_MANAGER_CHAIN'
+    resolver !== undefined &&
+    isFallbackCapableApproverResolverType(resolver.type)
   );
 }
 
@@ -1255,9 +1264,13 @@ function readFieldAccessNodeIds(value: unknown): readonly string[] {
 
 /**
  * Coerce an LLM-supplied approver resolver into a valid one, **never throwing**.
- * When required ids are missing (the model can't know real member/org ids), we
- * fall back to {@link DEFAULT_MANAGER_RESOLVER} so the operation still succeeds;
- * `validate_workflow` surfaces anything that still needs the user's attention.
+ * When required ids are missing (the model can't know real member/org ids), the
+ * older sources fall back to {@link DEFAULT_MANAGER_RESOLVER} so the operation
+ * still succeeds; a type name this build does not know does the same. The four
+ * form / prior-node sources (`FORM_MEMBER_MANAGER`, `FORM_ORG_UNIT_MANAGER`,
+ * `NODE_ACTOR`, `NODE_ACTOR_MANAGER`) instead keep their type with an empty
+ * `formPath` / `nodeIds`, so `validate_workflow` and the publish lint report the
+ * gap instead of the node silently routing to the initiator's manager.
  */
 function parseApproverResolver(value: unknown): ApproverResolver {
   if (!isRecord(value)) {
@@ -1340,6 +1353,45 @@ function parseApproverResolver(value: unknown): ApproverResolver {
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
+    // The four sources below keep their own type even when a required id is
+    // missing (`formPath: ''`, `nodeIds: []`). Falling back to the initiator's
+    // manager would store a valid-looking ORG_MANAGER that passes every
+    // readiness check and routes somewhere the author never chose;
+    // `readApproverResolverIssue` reports the incomplete shape instead.
+    case 'FORM_MEMBER_MANAGER': {
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'FORM_MEMBER_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
+    }
+    case 'FORM_ORG_UNIT_MANAGER': {
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'FORM_ORG_UNIT_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
+    }
+    case 'NODE_ACTOR':
+      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
+    case 'NODE_ACTOR_MANAGER': {
+      const fallback = parseApproverResolverFallback(value['fallback']);
+
+      return {
+        levelsUp: readPositiveInteger(value['levelsUp'], 1),
+        nodeIds: readStringArray(value['nodeIds']),
+        preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
+        type: 'NODE_ACTOR_MANAGER',
+        ...(fallback ? { fallback } : {}),
+      };
+    }
     case 'DYNAMIC_FORM': {
       const formPath = readNonEmptyString(value['formPath']);
 
@@ -1357,6 +1409,21 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     default:
       return DEFAULT_MANAGER_RESOLVER;
   }
+}
+
+/**
+ * A notify node's recipients: {@link parseApproverResolver}, except that a
+ * source a notify node may not use (see `isNotifyRecipientResolverType`) is
+ * treated like any other shape this assistant does not know and becomes
+ * {@link DEFAULT_MANAGER_RESOLVER}. `validate_workflow` and the publish lint
+ * stay the gate for what a hand-written definition carries.
+ */
+function parseNotifyRecipients(value: unknown): ApproverResolver {
+  const resolver = parseApproverResolver(value);
+
+  return isNotifyRecipientResolverType(resolver.type)
+    ? resolver
+    : DEFAULT_MANAGER_RESOLVER;
 }
 
 /**
@@ -1495,7 +1562,7 @@ function parseServiceAction(value: unknown): ServiceAction {
   // NOTIFY (default for any other / missing type).
   return {
     channels: readNotifyChannels(value['channels']),
-    recipients: parseApproverResolver(value['recipients']),
+    recipients: parseNotifyRecipients(value['recipients']),
     type: 'NOTIFY',
     ...readOptionalString(value, 'template', 'template'),
   };

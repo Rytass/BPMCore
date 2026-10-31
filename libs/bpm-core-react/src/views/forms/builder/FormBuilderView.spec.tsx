@@ -591,6 +591,119 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('adds an org unit field from the palette as an optional field with no default', async (): Promise<void> => {
+    const harness = await mountBuilder(createSchema([]));
+
+    try {
+      clickButton(harness.container, '組織選擇');
+
+      expect(harness.readSchema().fields[0]).toEqual({
+        fieldKey: 'org_unit_1',
+        label: '組織選擇 1',
+        required: false,
+        type: 'org_unit',
+      });
+      expect(harness.readSchema().fields[0]).not.toHaveProperty('defaultValue');
+      expect(harness.readUiSchema().layout[0]?.width).toBe('HALF');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('offers no 可複選 or default value setting on an org unit field', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          fieldKey: 'department',
+          label: '申請部門',
+          required: false,
+          type: 'org_unit',
+        },
+        {
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: false,
+          type: 'member',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'department');
+
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="fieldMemberMultiple"]',
+        ),
+      ).toBeNull();
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="fieldDefaultValue"]',
+        ),
+      ).toBeNull();
+
+      // Reverse control: a member field still has its 可複選 setting.
+      selectField(harness.container, 'reviewer');
+
+      expect(
+        harness.container.querySelector(
+          '[data-mock-form-field="fieldMemberMultiple"]',
+        ),
+      ).not.toBeNull();
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('does not offer an org unit field as a condition source', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        {
+          fieldKey: 'department',
+          label: '申請部門',
+          required: false,
+          type: 'org_unit',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'note');
+
+      expect(harness.container.textContent).toContain(
+        '目前沒有其他欄位可作為條件來源',
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('still offers a text field as a condition source next to an org unit field', async (): Promise<void> => {
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+        { fieldKey: 'memo', label: '附註', required: false, type: 'text' },
+        {
+          fieldKey: 'department',
+          label: '申請部門',
+          required: false,
+          type: 'org_unit',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'note');
+
+      expect(harness.container.textContent).not.toContain(
+        '目前沒有其他欄位可作為條件來源',
+      );
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   it('adds a table field as a full-width field with one column', async (): Promise<void> => {
     const harness = await mountBuilder(createSchema([]));
 

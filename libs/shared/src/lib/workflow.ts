@@ -118,7 +118,28 @@ export type ApproverResolver =
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
-  | { readonly expression: string; readonly type: 'EXPRESSION' };
+  | { readonly expression: string; readonly type: 'EXPRESSION' }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string;
+      readonly levelsUp: number;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_MEMBER_MANAGER';
+    }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly formPath: string;
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'FORM_ORG_UNIT_MANAGER';
+    }
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+  | {
+      readonly fallback?: ApproverResolverFallback;
+      readonly levelsUp: number;
+      readonly nodeIds: readonly string[];
+      readonly preferClosestOrgUnit?: boolean;
+      readonly type: 'NODE_ACTOR_MANAGER';
+    };
 
 export type ApproverResolverFallback =
   | { readonly type: 'NONE' }
@@ -130,8 +151,10 @@ export type ApproverResolverFallback =
   | {
       /**
        * Members of this position, resolved the way a POSITION node resolves
-       * them at the moment the node starts. Only ORG_MANAGER, ORG_UNIT_MANAGER
-       * and ORG_MANAGER_CHAIN take it. Older engines reject it at run time.
+       * them at the moment the node starts. Only the manager resolvers take
+       * it: ORG_MANAGER, ORG_UNIT_MANAGER, ORG_MANAGER_CHAIN,
+       * FORM_MEMBER_MANAGER, FORM_ORG_UNIT_MANAGER and NODE_ACTOR_MANAGER.
+       * Older engines reject it at run time.
        */
       readonly allowInitiatorSelfApproval?: boolean;
       readonly positionId: string;
@@ -164,6 +187,95 @@ export function readUnsupportedApproverFallbackType(fallback: {
   )
     ? null
     : fallback.type;
+}
+
+// Keyed by the union so that adding a resolver type fails to compile until it
+// is listed here: the engine and the designer both read this one table.
+const KNOWN_APPROVER_RESOLVER_TYPES: Readonly<
+  Record<ApproverResolver['type'], true>
+> = {
+  DIRECT: true,
+  DYNAMIC_FORM: true,
+  EXPRESSION: true,
+  FORM_MEMBER_MANAGER: true,
+  FORM_ORG_UNIT_MANAGER: true,
+  NODE_ACTOR: true,
+  NODE_ACTOR_MANAGER: true,
+  ORG_MANAGER: true,
+  ORG_MANAGER_CHAIN: true,
+  ORG_UNIT_MANAGER: true,
+  ORG_UNIT_MEMBER: true,
+  ORG_UNIT_POSITION: true,
+  POSITION: true,
+};
+
+// A notify node's recipients are resolved without a running approval path, so
+// the sources that need a form pick or earlier signers are not offered there.
+const NOTIFY_RECIPIENT_RESOLVER_TYPES: Readonly<
+  Record<Exclude<ApproverResolver['type'], NewApproverResolverType>, true>
+> = {
+  DIRECT: true,
+  DYNAMIC_FORM: true,
+  EXPRESSION: true,
+  ORG_MANAGER: true,
+  ORG_MANAGER_CHAIN: true,
+  ORG_UNIT_MANAGER: true,
+  ORG_UNIT_MEMBER: true,
+  ORG_UNIT_POSITION: true,
+  POSITION: true,
+};
+
+type NewApproverResolverType =
+  | 'FORM_MEMBER_MANAGER'
+  | 'FORM_ORG_UNIT_MANAGER'
+  | 'NODE_ACTOR'
+  | 'NODE_ACTOR_MANAGER';
+
+// Resolvers that look a manager up, so "no manager" is a state they can reach.
+const FALLBACK_CAPABLE_RESOLVER_TYPES: Readonly<
+  Record<
+    Extract<
+      ApproverResolver,
+      { readonly fallback?: ApproverResolverFallback }
+    >['type'],
+    true
+  >
+> = {
+  FORM_MEMBER_MANAGER: true,
+  FORM_ORG_UNIT_MANAGER: true,
+  NODE_ACTOR_MANAGER: true,
+  ORG_MANAGER: true,
+  ORG_MANAGER_CHAIN: true,
+  ORG_UNIT_MANAGER: true,
+};
+
+function hasOwnKey(table: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(table, key);
+}
+
+/**
+ * The resolver's type when this build does not know it (a definition saved by
+ * a newer version), or `null` when it does. Takes a bare `type` so a newer
+ * definition can be checked without the compiler having narrowed it away.
+ * The engine refuses such a resolver at run time instead of guessing; the
+ * designer keeps it untouched and shows it read-only.
+ */
+export function readUnsupportedApproverResolverType(resolver: {
+  readonly type: string;
+}): string | null {
+  return hasOwnKey(KNOWN_APPROVER_RESOLVER_TYPES, resolver.type)
+    ? null
+    : resolver.type;
+}
+
+/** Whether a notify node may use this resolver type for its recipients. */
+export function isNotifyRecipientResolverType(type: string): boolean {
+  return hasOwnKey(NOTIFY_RECIPIENT_RESOLVER_TYPES, type);
+}
+
+/** Whether a resolver of this type may carry a "no manager" fallback. */
+export function isFallbackCapableApproverResolverType(type: string): boolean {
+  return hasOwnKey(FALLBACK_CAPABLE_RESOLVER_TYPES, type);
 }
 
 export type DecisionPolicy =

@@ -454,6 +454,7 @@ function readDefaultFieldLabel(
     member: '人員選擇',
     money: '金額',
     number: '數字',
+    org_unit: '組織選擇',
     radio: '單選',
     select: '下拉選單',
     table: '表格',

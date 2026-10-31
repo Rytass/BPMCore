@@ -18,6 +18,7 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
+  isFormOrgUnitValue,
   isFormTableCellValue,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -33,7 +34,9 @@ import {
   ServiceTaskNode,
   ApproverResolver,
   ApproverResolverFallback,
+  isNotifyRecipientResolverType,
   readUnsupportedApproverFallbackType,
+  readUnsupportedApproverResolverType,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -75,6 +78,7 @@ import {
   BPMFormDataSourceException,
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
+import { readSubmittedOrgUnitValueErrors } from '../form/form-org-unit-value.validator';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -393,6 +397,13 @@ export interface ExpireApprovalInstanceCommand {
 }
 
 export interface DecideTaskOptions {
+  /**
+   * Set when the engine itself, not a person, made this decision. An approval
+   * marked `'SLA_AUTO_APPROVE'` is written to the TASK_DECIDED activity
+   * payload as `automatic`, so a later `NODE_ACTOR` / `NODE_ACTOR_MANAGER`
+   * node can tell a timeout from someone who actually signed.
+   */
+  readonly automatic?: 'SLA_AUTO_APPROVE';
   /**
    * Reason stamped on the delegation-chain step when the decision is a
    * transfer. Defaults to {@link MANUAL_TRANSFER_DELEGATION_REASON}.
@@ -1388,6 +1399,9 @@ export class WorkflowEngineService {
               decisionId: decision.id,
               signatureId: signature.id,
               signedPayloadHash: signature.signedPayloadHash,
+              // Absent for a person's decision, so "who actually signed" can
+              // tell the engine's own timeout approvals apart.
+              ...(options.automatic ? { automatic: options.automatic } : {}),
               // Keys only: this payload is forwarded to hosts, and the values
               // can be tax IDs or amounts.
               ...(changedFieldKeys.length > 0 ? { changedFieldKeys } : {}),
@@ -3296,6 +3310,18 @@ export class WorkflowEngineService {
   ): DryRunAssignment {
     const resolver = node.data.approverResolver;
     const excludeInitiator = node.data.excludeInitiator;
+    const unsupportedType = readUnsupportedApproverResolverType(resolver);
+
+    // A source from a newer engine cannot be simulated. Say so and end the
+    // branch instead of showing its type name as if it were a person.
+    if (unsupportedType !== null) {
+      return {
+        assigneeMemberId: null,
+        message: `簽核節點「${readDryRunNodeName(node)}」此引擎版本不支援簽核人來源「${unsupportedType}」，請升級 BPMCore 後再試`,
+        outcome: 'STOPPED',
+      };
+    }
+
     const memberIds = this.readDryRunMemberIds(
       input,
       resolver,
@@ -3433,6 +3459,8 @@ export class WorkflowEngineService {
         : readDryRunFallbackMemberIds(input, resolver.fallback);
     }
 
+    // The form pick, the unit's rules and an earlier node's outcome are not
+    // known before the instance runs: these stand in as placeholders.
     return null;
   }
 
@@ -6683,16 +6711,320 @@ export class WorkflowEngineService {
       );
     }
 
-    return this.resolveInitiatorManagerCandidates(
+    if (resolver.type === 'ORG_MANAGER') {
+      return this.resolveInitiatorManagerCandidates(
+        manager,
+        instance,
+        resolver.levelsUp,
+        resolver.fallback,
+        label,
+        resolver.preferClosestOrgUnit === true,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'FORM_MEMBER_MANAGER') {
+      return this.resolveFormMemberManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'FORM_ORG_UNIT_MANAGER') {
+      return this.resolveFormOrgUnitManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'NODE_ACTOR') {
+      return this.resolveNodeActorCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'NODE_ACTOR_MANAGER') {
+      return this.resolveNodeActorManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    // A template saved by a newer engine can carry an approver source this
+    // engine does not know. Refuse it by name instead of quietly resolving it
+    // as the initiator's manager, which would route the task to the wrong
+    // person. A source this engine's shared package knows but does not route
+    // yet reports its own type name.
+    const unresolvedResolver = resolver as { readonly type: string };
+
+    throw new ConflictException(
+      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${
+        readUnsupportedApproverResolverType(unresolvedResolver) ??
+        unresolvedResolver.type
+      }」。請升級 BPMCore 後再發佈或執行此流程。`,
+    );
+  }
+
+  /**
+   * FORM_MEMBER_MANAGER: the manager of the one person picked on the form.
+   * The picked person is the starting point and is kept out of every level's
+   * result, so a unit head who is picked is handed to the tier above instead
+   * of coming back as his own manager.
+   */
+  private async resolveFormMemberManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'FORM_MEMBER_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const source = `依表單欄位「${resolver.formPath}」`;
+    const pickedMemberIds = readMemberIdsFromValue(
+      readValueAtPath(instance.formData, resolver.formPath),
+      label,
+      subject,
+      source,
+    );
+
+    // Picking one silently would route the document by accident.
+    if (pickedMemberIds.length > 1) {
+      throw new ConflictException(`${label} ${source}只能選一位人員`);
+    }
+
+    const levelsUp = Number.isFinite(resolver.levelsUp)
+      ? Math.max(Math.trunc(resolver.levelsUp), 1)
+      : 1;
+    const managerMemberIds = await this.resolveManagerMemberIdsExcludingSubject(
+      manager,
+      pickedMemberIds[0],
+      levelsUp,
+      resolver.preferClosestOrgUnit === true,
+    );
+
+    if (managerMemberIds.length > 0) {
+      return managerMemberIds;
+    }
+
+    return this.resolveFallbackAssignees(
       manager,
       instance,
-      resolver.levelsUp,
+      resolver.fallback,
+      label,
+      subject,
+      `找不到表單欄位「${resolver.formPath}」所選人員的第 ${levelsUp} 層主管`,
+    );
+  }
+
+  /**
+   * FORM_ORG_UNIT_MANAGER: the manager of the organisation unit picked on the
+   * form, through the same rules as a fixed ORG_UNIT_MANAGER. A deleted unit
+   * resolves to nobody and takes the "no manager" path.
+   */
+  private async resolveFormOrgUnitManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'FORM_ORG_UNIT_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const orgUnitValue = readValueAtPath(instance.formData, resolver.formPath);
+
+    // A value that is not a uuid would reach the uuid column of the org unit
+    // lookup and surface as a database error instead of this refusal.
+    if (
+      typeof orgUnitValue !== 'string' ||
+      !isFormOrgUnitValue(orgUnitValue) ||
+      !isUUID(orgUnitValue.trim())
+    ) {
+      throw new ConflictException(
+        `${label} 依表單欄位「${resolver.formPath}」找不到所選組織`,
+      );
+    }
+
+    return this.resolveOrgUnitManagerCandidates(
+      manager,
+      instance,
+      orgUnitValue.trim(),
       resolver.fallback,
       label,
       resolver.preferClosestOrgUnit === true,
       subject,
-    ).then((memberIds) =>
-      memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+    );
+  }
+
+  /**
+   * NODE_ACTOR: the people who actually approved the listed earlier nodes.
+   * A node nobody approved (never ran, cancelled, or approved only by the SLA
+   * timeout) is an error rather than an empty list: handing the task to
+   * nobody would stall the instance without saying why.
+   */
+  private async resolveNodeActorCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'NODE_ACTOR' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const actorMemberIds = await this.readNodeActorMemberIds(
+      manager,
+      instance,
+      resolver.nodeIds,
+    );
+
+    if (actorMemberIds.length === 0) {
+      throw new ConflictException(
+        `${label} 找不到${subject}：${readNodeActorNodeNames(instance, resolver.nodeIds)}沒有實際同意的簽核紀錄`,
+      );
+    }
+
+    return actorMemberIds;
+  }
+
+  /**
+   * NODE_ACTOR_MANAGER: the managers `levelsUp` tiers above each person who
+   * actually approved the listed nodes, as one set. An approver without a
+   * manager is skipped; the fallback runs only when nobody is left.
+   */
+  private async resolveNodeActorManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'NODE_ACTOR_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const levelsUp = Number.isFinite(resolver.levelsUp)
+      ? Math.max(Math.trunc(resolver.levelsUp), 1)
+      : 1;
+    const actorMemberIds = await this.readNodeActorMemberIds(
+      manager,
+      instance,
+      resolver.nodeIds,
+    );
+    const managerGroups = await Promise.all(
+      actorMemberIds.map((actorMemberId) =>
+        this.resolveManagerMemberIdsExcludingSubject(
+          manager,
+          actorMemberId,
+          levelsUp,
+          resolver.preferClosestOrgUnit === true,
+        ),
+      ),
+    );
+    const managerMemberIds = uniqueTexts(managerGroups.flat());
+
+    if (managerMemberIds.length > 0) {
+      return managerMemberIds;
+    }
+
+    return this.resolveFallbackAssignees(
+      manager,
+      instance,
+      resolver.fallback,
+      label,
+      subject,
+      actorMemberIds.length === 0
+        ? `${readNodeActorNodeNames(instance, resolver.nodeIds)}沒有實際同意的簽核紀錄`
+        : `找不到前面關卡實際簽核人的第 ${levelsUp} 層主管`,
+    );
+  }
+
+  /**
+   * The people who approved the most recent batch of tasks among `nodeIds`,
+   * earliest decision first, each once. Read through `manager` so an approval
+   * written earlier in the same transaction (the one that is advancing the
+   * instance right now) is visible.
+   *
+   * A batch is the non-ad-hoc tasks of one node on one token: a token never
+   * passes a node twice (a return opens a new token, a transfer's replacement
+   * task keeps the token), so a later round is a later batch. Tasks created in
+   * the same transaction share a `created_at`, so every (node, token) tied for
+   * newest counts as one batch. An older batch is never used in place of a
+   * newest one nobody approved. Ad-hoc approvals, approvals on cancelled
+   * tasks and approvals the SLA timeout made do not count.
+   */
+  private async readNodeActorMemberIds(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeIds: readonly string[],
+  ): Promise<readonly string[]> {
+    const tasks = await manager.getRepository(TaskEntity).find({
+      where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
+    });
+
+    if (tasks.length === 0) {
+      return [];
+    }
+
+    const newestCreatedAt = Math.max(
+      ...tasks.map((task) => task.createdAt.getTime()),
+    );
+    const newestTasks = tasks.filter(
+      (task) => task.createdAt.getTime() === newestCreatedAt,
+    );
+    const batchTaskIds = tasks
+      .filter(
+        (task) =>
+          task.status !== TaskStatusEnum.CANCELLED &&
+          newestTasks.some(
+            (newest) =>
+              newest.nodeId === task.nodeId && newest.tokenId === task.tokenId,
+          ),
+      )
+      .map((task) => task.id);
+
+    if (batchTaskIds.length === 0) {
+      return [];
+    }
+
+    const [decisions, decidedLogs] = await Promise.all([
+      manager.getRepository(TaskDecisionEntity).find({
+        where: { action: TaskDecisionActionEnum.APPROVED, taskId: In(batchTaskIds) },
+      }),
+      manager.getRepository(ActivityLogEntity).find({
+        where: {
+          eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+          instanceId: instance.id,
+          taskId: In(batchTaskIds),
+        },
+      }),
+    ]);
+    const automaticDecisionIds = new Set(
+      decidedLogs
+        .filter((log) => log.payload['automatic'] === SLA_AUTO_APPROVE_MARK)
+        .map((log) => log.payload['decisionId']),
+    );
+
+    return uniqueTexts(
+      [...decisions]
+        .filter((decision) => !automaticDecisionIds.has(decision.id))
+        .sort(
+          (first, second) =>
+            first.decidedAt.getTime() - second.decidedAt.getTime(),
+        )
+        .map((decision) => decision.decidedByMemberId),
     );
   }
 
@@ -7091,6 +7423,51 @@ export class WorkflowEngineService {
     );
 
     return uniqueTexts(nextLevelGroups.flat());
+  }
+
+  /**
+   * The managers `levelsUp` tiers above `startMemberId`. Every tier is looked
+   * up with the person it starts from excluded (as the manager chain does), so
+   * a unit head falls through to the tier above, and anyone already walked
+   * past — the starting person included — counts as nobody, so a pair of
+   * mutual managers cannot loop back. Nobody at any tier returns `[]`; the
+   * caller applies its own fallback.
+   */
+  private async resolveManagerMemberIdsExcludingSubject(
+    manager: EntityManager,
+    startMemberId: string,
+    levelsUp: number,
+    preferClosestOrgUnit: boolean,
+  ): Promise<readonly string[]> {
+    const date = this.readOrganizationToday();
+    let walkedMemberIds: readonly string[] = [startMemberId];
+    let currentMemberIds: readonly string[] = [startMemberId];
+
+    for (let level = 0; level < levelsUp; level += 1) {
+      const managerGroups = await Promise.all(
+        currentMemberIds.map((memberId) =>
+          this.resolveDirectManagerMemberIds(
+            manager,
+            memberId,
+            date,
+            preferClosestOrgUnit,
+            [memberId],
+          ),
+        ),
+      );
+      const nextMemberIds = uniqueTexts(managerGroups.flat()).filter(
+        (memberId) => !walkedMemberIds.includes(memberId),
+      );
+
+      if (nextMemberIds.length === 0) {
+        return [];
+      }
+
+      walkedMemberIds = [...walkedMemberIds, ...nextMemberIds];
+      currentMemberIds = nextMemberIds;
+    }
+
+    return currentMemberIds;
   }
 
   private async resolveDirectManagerMemberIds(
@@ -7520,6 +7897,19 @@ export class WorkflowEngineService {
       );
 
       return;
+    }
+
+    // The sources that read the form or an earlier node's outcome are not
+    // offered to a notify node (the publish lint refuses them); a definition
+    // that reaches here with one anyway is refused by name. A type this
+    // engine does not know is left to the resolver's own refusal below.
+    if (
+      readUnsupportedApproverResolverType(action.recipients) === null &&
+      !isNotifyRecipientResolverType(action.recipients.type)
+    ) {
+      throw new ConflictException(
+        `知會節點「${node.data.label}」不能使用簽核人來源「${action.recipients.type}」當收件人，請改用指定人員、職位、組織或主管`,
+      );
     }
 
     // A webhook-only NOTIFY node names nobody. Resolving its empty DIRECT
@@ -8485,6 +8875,22 @@ function readWorkflowNodeLabel(
     ?.data.label;
 
   return typeof label === 'string' && label.trim() ? label : null;
+}
+
+const SLA_AUTO_APPROVE_MARK: NonNullable<DecideTaskOptions['automatic']> =
+  'SLA_AUTO_APPROVE';
+
+/** 關卡「名稱」(、關卡「名稱」…) for an error line; a missing node shows its id. */
+function readNodeActorNodeNames(
+  instance: ApprovalInstanceEntity,
+  nodeIds: readonly string[],
+): string {
+  return nodeIds
+    .map(
+      (nodeId) =>
+        `關卡「${readWorkflowNodeLabel(instance.workflowSnapshot, nodeId) ?? nodeId}」`,
+    )
+    .join('、');
 }
 
 function readWorkflowNodeOrThrow(
@@ -9650,8 +10056,9 @@ function readCandidateStatusForClosedTask(
 /**
  * `deferredFieldKeys` are fields an approver fills in later: they are checked
  * for shape (a table is an array of well-formed rows, a member value is a
- * member id) but never for being present, so an empty one cannot block a
- * submission that has nobody to fill it yet.
+ * member id, an org unit value is an organization unit id) but never for
+ * being present, so an empty one cannot block a submission that has nobody to
+ * fill it yet.
  */
 function validateSubmittedFormData(
   schema: FormDefinitionSchema,
@@ -9712,6 +10119,17 @@ function validateSubmittedFormData(
         ),
         formData,
       ),
+    // A `FORM_ORG_UNIT_MANAGER` resolver reads the unit whether or not its
+    // field is visible, so a hidden field still holding a value is checked too.
+    readOrgUnitErrors: () =>
+      readSubmittedOrgUnitValueErrors(
+        schema.fields.filter(
+          (field) =>
+            visibleFields.includes(field) ||
+            isSubmittedFieldValuePresent(formData[field.fieldKey]),
+        ),
+        formData,
+      ),
     readTableErrors: () => [
       ...visibleFields
         .filter(isTableFieldDefinition)
@@ -9746,7 +10164,8 @@ function validateSubmittedFormData(
 /**
  * What an approval at a node has to leave behind: every field the node lets the
  * approver fill in is well-formed (a table is an array of well-formed rows with
- * its required columns and minimum rows, a member value is a member id) and
+ * its required columns and minimum rows, a member value is a member id, an
+ * org unit value is an organization unit id) and
  * every one the node marks `required` is present. The messages are the submit
  * ones: a host tells the two entry points apart by which call it made.
  */
@@ -9778,6 +10197,7 @@ function validateFilledFormFields(
         ),
       ),
     readMemberErrors: () => readSubmittedMemberValueErrors(fields, formData),
+    readOrgUnitErrors: () => readSubmittedOrgUnitValueErrors(fields, formData),
     readTableErrors: () =>
       fields
         .filter(isTableFieldDefinition)
@@ -9795,17 +10215,20 @@ function validateFilledFormFields(
 /**
  * The shared tail of submit and approver-fill validation: a missing required
  * field wins over a text value breaking its length or format rule, which wins
- * over a malformed member value, which wins over a table problem, and the
- * later checks are only evaluated when the earlier ones pass.
+ * over a malformed member value, which wins over a malformed org unit value,
+ * which wins over a table problem, and the later checks are only evaluated
+ * when the earlier ones pass.
  */
 function throwFirstFormDataFieldError({
   missingFields,
   readMemberErrors,
+  readOrgUnitErrors,
   readTableErrors,
   readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
   readonly readMemberErrors: () => readonly string[];
+  readonly readOrgUnitErrors: () => readonly string[];
   readonly readTableErrors: () => readonly string[];
   readonly readTextErrors: () => readonly string[];
 }): void {
@@ -9827,6 +10250,12 @@ function throwFirstFormDataFieldError({
 
   if (memberErrors.length > 0) {
     throw new BadRequestException(memberErrors.join('; '));
+  }
+
+  const orgUnitErrors = readOrgUnitErrors();
+
+  if (orgUnitErrors.length > 0) {
+    throw new BadRequestException(orgUnitErrors.join('; '));
   }
 
   const tableErrors = readTableErrors();
@@ -10415,6 +10844,22 @@ function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
     return `orgUnitManager:${resolver.orgUnitId}`;
+  }
+
+  if (resolver.type === 'FORM_MEMBER_MANAGER') {
+    return `formMemberManager:${resolver.formPath}:${resolver.levelsUp}`;
+  }
+
+  if (resolver.type === 'FORM_ORG_UNIT_MANAGER') {
+    return `formOrgUnitManager:${resolver.formPath}`;
+  }
+
+  if (resolver.type === 'NODE_ACTOR') {
+    return `nodeActor:${resolver.nodeIds.join(',')}`;
+  }
+
+  if (resolver.type === 'NODE_ACTOR_MANAGER') {
+    return `nodeActorManager:${resolver.nodeIds.join(',')}:${resolver.levelsUp}`;
   }
 
   return resolver.type === 'ORG_MANAGER_CHAIN'
