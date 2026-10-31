@@ -5222,19 +5222,6 @@ describe('WorkflowEngineService', () => {
     });
 
     describe('sources this engine does not route', (): void => {
-      it('names the real type, not "null", for a source the shared package knows but the engine does not route yet (NODE_ACTOR)', async (): Promise<void> => {
-        const fixture = createFormSourceFixture({
-          formData: {},
-          org: memberChainOrg,
-          resolver: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
-        });
-
-        // Task 2b replaces this with real NODE_ACTOR routing.
-        await expect(
-          fixture.service.processInstance('instance-1'),
-        ).rejects.toThrow('不支援簽核人來源「NODE_ACTOR」');
-      });
-
       it('control: an unknown type still reports its own name', async (): Promise<void> => {
         const fixture = createFormSourceFixture({
           formData: {},
@@ -5245,6 +5232,599 @@ describe('WorkflowEngineService', () => {
         await expect(
           fixture.service.processInstance('instance-1'),
         ).rejects.toThrow('不支援簽核人來源「FUTURE_TYPE」');
+      });
+    });
+
+    describe('NODE_ACTOR and NODE_ACTOR_MANAGER (the people who actually approved earlier nodes)', (): void => {
+      const at = (minute: number): Date =>
+        new Date(Date.UTC(2026, 4, 1, 0, minute));
+      const actorOrg = createManagerChainOrg({
+        grades: {
+          'member-emp': null,
+          'member-emp2': null,
+          'member-m1': null,
+          'member-m2': null,
+          'member-top': null,
+        },
+        links: [
+          ['member-emp', 'member-m1'],
+          ['member-emp2', 'member-m2'],
+          ['member-m1', 'member-top'],
+        ],
+      });
+      const finished = (
+        id: string,
+        nodeId: string,
+        tokenId: string,
+        minute: number,
+        extra: Partial<TaskEntity> = {},
+      ): TaskEntity =>
+        createTask({
+          createdAt: at(minute),
+          id,
+          nodeId,
+          status: TaskStatusEnum.COMPLETED,
+          tokenId,
+          ...extra,
+        });
+      const approved = (
+        id: string,
+        taskId: string,
+        memberId: string,
+        minute: number,
+        action: TaskDecisionActionEnum = TaskDecisionActionEnum.APPROVED,
+      ): TaskDecisionEntity =>
+        createTaskDecision({
+          action,
+          decidedAt: at(minute),
+          decidedByMemberId: memberId,
+          id,
+          taskId,
+        });
+      // The log row decideTask writes next to a decision it was told to mark.
+      const slaMark = (decisionId: string, taskId: string): ActivityLogEntity =>
+        createActivityLog({
+          eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+          id: `log-${decisionId}`,
+          payload: {
+            action: TaskDecisionActionEnum.APPROVED,
+            automatic: 'SLA_AUTO_APPROVE',
+            decisionId,
+          },
+          taskId,
+        });
+      const humanLog = (decisionId: string, taskId: string): ActivityLogEntity =>
+        createActivityLog({
+          eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+          id: `log-${decisionId}`,
+          payload: {
+            action: TaskDecisionActionEnum.APPROVED,
+            decisionId,
+          },
+          taskId,
+        });
+      const actorFixture = ({
+        activityLogs = [],
+        decisions,
+        resolver,
+        tasks,
+      }: {
+        readonly activityLogs?: readonly ActivityLogEntity[];
+        readonly decisions: readonly TaskDecisionEntity[];
+        readonly resolver: ApproverResolver;
+        readonly tasks: readonly TaskEntity[];
+      }): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          additionalProcessTasks: tasks,
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...actorOrg,
+          processActivityLogs: activityLogs,
+          processTaskDecisions: decisions,
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver: resolver,
+            decisionPolicy: { type: 'PARALLEL_ANY' },
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const assigneesOf = async (
+        options: Parameters<typeof actorFixture>[0],
+      ): Promise<readonly string[]> => {
+        const fixture = actorFixture(options);
+
+        await fixture.service.processInstance('instance-1');
+
+        return readAssignees(fixture);
+      };
+      const self = (...nodeIds: readonly string[]): ApproverResolver => ({
+        nodeIds,
+        type: 'NODE_ACTOR',
+      });
+      const managerOf = (
+        value: Partial<Extract<ApproverResolver, { type: 'NODE_ACTOR_MANAGER' }>> = {},
+      ): ApproverResolver => ({
+        levelsUp: 1,
+        nodeIds: ['ACT3'],
+        type: 'NODE_ACTOR_MANAGER',
+        ...value,
+      });
+      const noActorMessage = '沒有實際同意的簽核紀錄';
+
+      describe('NODE_ACTOR', (): void => {
+        it('assigns the one person who approved the node', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-emp', 1)],
+              resolver: self('ACT3'),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-emp']);
+        });
+
+        it('reads the claimer of a candidate-group task, not the people who never acted', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-claimer', 1)],
+              resolver: self('ACT3'),
+              tasks: [
+                finished('t1', 'ACT3', 'tok-1', 0, {
+                  assigneeMemberId: null,
+                  assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+                  candidateMemberIds: ['member-claimer', 'member-idle'],
+                }),
+              ],
+            }),
+          ).resolves.toEqual(['member-claimer']);
+        });
+
+        it('assigns every approver of a PARALLEL_ALL node, in the order they decided', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d2', 't1', 'member-b', 5),
+                approved('d1', 't1', 'member-a', 1),
+              ],
+              resolver: self('ACT3'),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-a', 'member-b']);
+        });
+
+        it('assigns every approver of a QUORUM node, once each', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d1', 't1', 'member-a', 1),
+                approved('d2', 't1', 'member-b', 2),
+                approved('d3', 't1', 'member-c', 3),
+                approved('d4', 't1', 'member-a', 4),
+              ],
+              resolver: self('ACT3'),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-a', 'member-b', 'member-c']);
+        });
+
+        it('counts the first approver and the person a later approver transferred to, not the transfer itself', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d1', 't1', 'member-first', 1),
+                approved(
+                  'd2',
+                  't1',
+                  'member-second',
+                  2,
+                  TaskDecisionActionEnum.TRANSFERRED,
+                ),
+                approved('d3', 't2', 'member-receiver', 3),
+              ],
+              resolver: self('ACT3'),
+              tasks: [
+                finished('t1', 'ACT3', 'tok-1', 0, {
+                  status: TaskStatusEnum.TRANSFERRED,
+                }),
+                finished('t2', 'ACT3', 'tok-1', 2),
+              ],
+            }),
+          ).resolves.toEqual(['member-first', 'member-receiver']);
+        });
+
+        it('assigns the delegate who actually approved, not the person the task was meant for', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-deputy', 1)],
+              resolver: self('ACT3'),
+              tasks: [
+                finished('t1', 'ACT3', 'tok-1', 0, {
+                  assigneeMemberId: 'member-deputy',
+                  originalAssigneeMemberId: 'member-boss',
+                }),
+              ],
+            }),
+          ).resolves.toEqual(['member-deputy']);
+        });
+
+        it('does not count an ad-hoc countersign approval, while the real approval still counts', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d1', 't1', 'member-real', 1),
+                approved('d2', 't-adhoc', 'member-countersigner', 2),
+              ],
+              resolver: self('ACT3'),
+              tasks: [
+                finished('t1', 'ACT3', 'tok-1', 0),
+                finished('t-adhoc', 'ACT3', 'tok-1', 1, {
+                  adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+                  isAdhoc: true,
+                }),
+              ],
+            }),
+          ).resolves.toEqual(['member-real']);
+        });
+
+        it('takes only the newest round after a return, even when the old round is listed after it', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d-old', 't-old', 'member-old', 1),
+                approved('d-new', 't-new', 'member-new', 31),
+              ],
+              resolver: self('ACT3'),
+              // The old round is listed last on purpose: createdAt decides.
+              tasks: [
+                finished('t-new', 'ACT3', 'tok-2', 30),
+                finished('t-old', 'ACT3', 'tok-1', 0),
+              ],
+            }),
+          ).resolves.toEqual(['member-new']);
+        });
+
+        it('reads only the node that ran when the other listed node did not', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d4', 't4', 'member-act4', 1)],
+              resolver: self('ACT3', 'ACT4'),
+              tasks: [finished('t4', 'ACT4', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-act4']);
+        });
+
+        it('reads only the most recent of the listed nodes, not both', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d3', 't3', 'member-act3', 1),
+                approved('d4', 't4', 'member-act4', 11),
+              ],
+              resolver: self('ACT3', 'ACT4'),
+              tasks: [
+                finished('t4', 'ACT4', 'tok-1', 10),
+                finished('t3', 'ACT3', 'tok-1', 0),
+              ],
+            }),
+          ).resolves.toEqual(['member-act4']);
+        });
+
+        it('refuses a node whose newest batch was cancelled, where the same graph with the task completed assigns the approver', async (): Promise<void> => {
+          const build = (
+            status: TaskStatusEnum,
+          ): Parameters<typeof actorFixture>[0] => ({
+            decisions: [approved('d1', 't1', 'member-emp', 1)],
+            resolver: self('ACT3'),
+            tasks: [finished('t1', 'ACT3', 'tok-1', 0, { status })],
+          });
+
+          await expect(
+            assigneesOf(build(TaskStatusEnum.COMPLETED)),
+          ).resolves.toEqual(['member-emp']);
+          await expect(
+            assigneesOf(build(TaskStatusEnum.CANCELLED)),
+          ).rejects.toThrow(noActorMessage);
+        });
+
+        it('does not fall back to an older batch when the newest one has no approval', async (): Promise<void> => {
+          const build = (
+            newestApprover: string | null,
+          ): Parameters<typeof actorFixture>[0] => ({
+            decisions: [
+              approved('d-old', 't-old', 'member-old', 1),
+              ...(newestApprover
+                ? [approved('d-new', 't-new', newestApprover, 31)]
+                : []),
+            ],
+            resolver: self('ACT3'),
+            tasks: [
+              finished('t-old', 'ACT3', 'tok-1', 0),
+              finished('t-new', 'ACT3', 'tok-2', 30),
+            ],
+          });
+
+          await expect(assigneesOf(build('member-new'))).resolves.toEqual([
+            'member-new',
+          ]);
+          await expect(assigneesOf(build(null))).rejects.toThrow(
+            noActorMessage,
+          );
+        });
+
+        it('refuses a node that has no task at all', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [],
+              resolver: self('ACT3'),
+              tasks: [],
+            }),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」 找不到簽核人：關卡「ACT3」沒有實際同意的簽核紀錄',
+          );
+        });
+
+        it('refuses a node whose only approval was the SLA timeout, where the same decision made by a person assigns them', async (): Promise<void> => {
+          const build = (
+            automatic: boolean,
+          ): Parameters<typeof actorFixture>[0] => ({
+            activityLogs: [
+              automatic ? slaMark('d1', 't1') : humanLog('d1', 't1'),
+            ],
+            decisions: [approved('d1', 't1', 'member-emp', 1)],
+            resolver: self('ACT3'),
+            tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+          });
+
+          await expect(assigneesOf(build(false))).resolves.toEqual([
+            'member-emp',
+          ]);
+          await expect(assigneesOf(build(true))).rejects.toThrow(
+            noActorMessage,
+          );
+        });
+
+        it('drops only the SLA approval when a person also approved the same node', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              activityLogs: [slaMark('d1', 't1'), humanLog('d2', 't1')],
+              decisions: [
+                approved('d1', 't1', 'member-auto', 1),
+                approved('d2', 't1', 'member-person', 2),
+              ],
+              resolver: self('ACT3'),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-person']);
+        });
+
+        it('names the node by its label when the workflow has one', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [],
+              resolver: self('task_finance'),
+              tasks: [],
+            }),
+          ).rejects.toThrow('關卡「財務簽核」');
+        });
+      });
+
+      describe('NODE_ACTOR_MANAGER', (): void => {
+        it('assigns the manager of the person who approved', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-emp', 1)],
+              resolver: managerOf(),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-m1']);
+        });
+
+        it('climbs levelsUp tiers above the approver', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-emp', 1)],
+              resolver: managerOf({ levelsUp: 2 }),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-top']);
+        });
+
+        it('assigns the union of two approvers managers', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d1', 't1', 'member-emp', 1),
+                approved('d2', 't1', 'member-emp2', 2),
+              ],
+              resolver: managerOf(),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-m1', 'member-m2']);
+        });
+
+        it('skips an approver who has no manager and keeps the other managers (fallback NONE must not throw)', async (): Promise<void> => {
+          // member-top has no manager; member-emp does.
+          await expect(
+            assigneesOf({
+              decisions: [
+                approved('d1', 't1', 'member-top', 1),
+                approved('d2', 't1', 'member-emp', 2),
+              ],
+              resolver: managerOf({ fallback: { type: 'NONE' } }),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-m1']);
+        });
+
+        it('takes the no-manager fallback when nobody approved has a manager', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-top', 1)],
+              resolver: managerOf({
+                fallback: { memberId: 'member-admin', type: 'DIRECT' },
+              }),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-admin']);
+          await expect(
+            assigneesOf({
+              decisions: [approved('d1', 't1', 'member-top', 1)],
+              resolver: managerOf(),
+              tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+            }),
+          ).rejects.toThrow('找不到前面關卡實際簽核人的第 1 層主管');
+        });
+
+        it('takes the no-manager fallback when the only approval was the SLA timeout, where a person approving assigns the manager', async (): Promise<void> => {
+          const build = (
+            automatic: boolean,
+          ): Parameters<typeof actorFixture>[0] => ({
+            activityLogs: [
+              automatic ? slaMark('d1', 't1') : humanLog('d1', 't1'),
+            ],
+            decisions: [approved('d1', 't1', 'member-emp', 1)],
+            resolver: managerOf({
+              fallback: { memberId: 'member-admin', type: 'DIRECT' },
+            }),
+            tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+          });
+
+          await expect(assigneesOf(build(false))).resolves.toEqual([
+            'member-m1',
+          ]);
+          await expect(assigneesOf(build(true))).resolves.toEqual([
+            'member-admin',
+          ]);
+        });
+
+        it('does not treat a task that never ran as an approval: no task takes the fallback', async (): Promise<void> => {
+          await expect(
+            assigneesOf({
+              decisions: [],
+              resolver: managerOf({
+                fallback: { memberId: 'member-admin', type: 'DIRECT' },
+              }),
+              tasks: [],
+            }),
+          ).resolves.toEqual(['member-admin']);
+        });
+      });
+
+      describe('through decideTask', (): void => {
+        // task_finance -> task_next, where task_next reads who signed task_finance.
+        const twoStep = (
+          resolver: ApproverResolver,
+        ): WorkflowDefinition => {
+          const base = createExcludeInitiatorTwoStepWorkflow({
+            whenEmpty: 'FAIL',
+          });
+
+          return {
+            ...base,
+            nodes: base.nodes.map((node) =>
+              node.id === 'task_next' && node.type === 'userTask'
+                ? { ...node, data: { ...node.data, approverResolver: resolver } }
+                : node.id === 'task_finance' && node.type === 'userTask'
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        approverResolver: {
+                          memberIds: ['member-finance'],
+                          type: 'DIRECT',
+                        },
+                        excludeInitiator: undefined,
+                      },
+                    }
+                  : node,
+            ),
+          } as WorkflowDefinition;
+        };
+        const decideFixture = (
+          resolver: ApproverResolver,
+        ): ReturnType<typeof createServiceFixture> =>
+          createServiceFixture({
+            currentVersionId: 'template-version-1',
+            decisionTask: createTask({
+              nodeId: 'task_finance',
+              status: TaskStatusEnum.PENDING,
+              tokenId: 'token-1',
+            }),
+            decisionToken: createWorkflowToken({
+              currentNodeId: 'task_finance',
+              status: WorkflowTokenStatusEnum.WAITING,
+            }),
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...actorOrg,
+            processWorkflowSnapshot: twoStep(resolver),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+        const approve = (
+          fixture: ReturnType<typeof createServiceFixture>,
+          options?: Parameters<WorkflowEngineService['decideTask']>[1],
+        ): Promise<TaskDecisionEntity> =>
+          fixture.service.decideTask(
+            {
+              action: TaskDecisionActionEnum.APPROVED,
+              decidedByMemberId: 'member-finance',
+              taskId: 'task-1',
+            },
+            options,
+          );
+
+        it('hands the next node to the person who approved the previous one', async (): Promise<void> => {
+          const fixture = decideFixture(self('task_finance'));
+
+          await approve(fixture);
+
+          expect(
+            fixture.savedTasks.find((task) => task.nodeId === 'task_next'),
+          ).toMatchObject({ assigneeMemberId: 'member-finance' });
+        });
+
+        it('refuses the next node when the previous approval was the SLA timeout', async (): Promise<void> => {
+          const fixture = decideFixture(self('task_finance'));
+
+          await expect(
+            approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }),
+          ).rejects.toThrow('關卡「財務簽核」沒有實際同意的簽核紀錄');
+          expect(
+            fixture.savedTasks.some((task) => task.nodeId === 'task_next'),
+          ).toBe(false);
+        });
+
+        describe('the TASK_DECIDED payload', (): void => {
+          const readPayload = (
+            fixture: ReturnType<typeof createServiceFixture>,
+          ): Readonly<Record<string, unknown>> | undefined =>
+            fixture.savedSingleActivityLogs.find(
+              (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+            )?.payload;
+          const plainNext: ApproverResolver = {
+            memberIds: ['member-next'],
+            type: 'DIRECT',
+          };
+
+          it('has no automatic key for an ordinary decision', async (): Promise<void> => {
+            const fixture = decideFixture(plainNext);
+
+            await approve(fixture);
+
+            const payload = readPayload(fixture);
+
+            expect(payload).toMatchObject({ action: 'APPROVED' });
+            expect(payload).not.toHaveProperty('automatic');
+          });
+
+          it('carries automatic when the engine is told the decision was an SLA auto-approval', async (): Promise<void> => {
+            const fixture = decideFixture(plainNext);
+
+            await approve(fixture, { automatic: 'SLA_AUTO_APPROVE' });
+
+            expect(readPayload(fixture)).toMatchObject({
+              action: 'APPROVED',
+              automatic: 'SLA_AUTO_APPROVE',
+            });
+          });
+        });
       });
     });
 
@@ -15633,6 +16213,7 @@ function createServiceFixture({
   processAdhocDirectives = [],
   processBusinessKey,
   processTaskCandidates = [],
+  processTaskDecisions = [],
   processFormData,
   processFormDefinitionSnapshot,
   processOptionSnapshot,
@@ -15671,6 +16252,10 @@ function createServiceFixture({
   readonly processAdhocDirectives?: readonly AdhocDirectiveEntity[];
   readonly processBusinessKey?: string;
   readonly processTaskCandidates?: readonly TaskCandidateEntity[];
+  // Decisions already on file. Decisions saved inside the transaction join
+  // them, so a later read in the same transaction sees what an earlier step
+  // wrote, as the database would.
+  readonly processTaskDecisions?: readonly TaskDecisionEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
@@ -15723,6 +16308,9 @@ function createServiceFixture({
     ...processTaskCandidates,
   ];
   let taskCandidateSequence = 0;
+  let processTaskDecisionRows: readonly TaskDecisionEntity[] = [
+    ...processTaskDecisions,
+  ];
   const template = createTemplate(currentVersionId, templateIsActive);
   const templateVersion = createTemplateVersion(
     templateVersionStatus,
@@ -16193,7 +16781,8 @@ function createServiceFixture({
           assignmentType:
             entity.assignmentType ?? TaskAssignmentTypeEnum.DIRECT_MEMBER,
           completedAt: entity.completedAt ?? null,
-          createdAt: new Date('2026-05-04T09:00:00.000Z'),
+          createdAt:
+            entity.createdAt ?? new Date('2026-05-04T09:00:00.000Z'),
           delegationChain: entity.delegationChain ?? [],
           id: entity.id ?? `task-${(taskSequence += 1)}`,
           instanceId: entity.instanceId ?? 'instance-1',
@@ -16351,11 +16940,21 @@ function createServiceFixture({
             transferToMemberId: entity.transferToMemberId ?? null,
           }),
       ),
-      // Saved decisions are not kept for reads here. The reassignment check on
-      // the target sees none, and the COMPLETED-row case covers the refusal.
-      find: jest.fn(() => Promise.resolve([])),
+      // Reads answer from the seeded decisions plus the ones saved in this
+      // transaction, filtered by `where` (`In` included).
+      find: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+        ): Promise<readonly TaskDecisionEntity[]> =>
+          Promise.resolve(
+            processTaskDecisionRows.filter((decision) =>
+              matchesFindWhere(decision, options?.where),
+            ),
+          ),
+      ),
       save: jest.fn((entity: TaskDecisionEntity) => {
         savedDecision = entity;
+        processTaskDecisionRows = [...processTaskDecisionRows, entity];
 
         return Promise.resolve(entity);
       }),
@@ -17289,6 +17888,22 @@ function createActivityLog(
     nodeId: value.nodeId ?? null,
     payload: value.payload ?? {},
     taskId: value.taskId ?? null,
+  });
+}
+
+function createTaskDecision(
+  value: Partial<TaskDecisionEntity>,
+): TaskDecisionEntity {
+  return Object.assign(new TaskDecisionEntity(), {
+    action: value.action ?? TaskDecisionActionEnum.APPROVED,
+    comment: value.comment ?? null,
+    decidedAt: value.decidedAt ?? new Date('2026-05-04T09:00:00.000Z'),
+    decidedByMemberId: value.decidedByMemberId ?? 'member-finance',
+    id: value.id ?? 'decision-seed-1',
+    returnToNodeId: value.returnToNodeId ?? null,
+    signatureId: value.signatureId ?? null,
+    taskId: value.taskId ?? 'task-1',
+    transferToMemberId: value.transferToMemberId ?? null,
   });
 }
 

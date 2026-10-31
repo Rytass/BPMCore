@@ -397,6 +397,13 @@ export interface ExpireApprovalInstanceCommand {
 
 export interface DecideTaskOptions {
   /**
+   * Set when the engine itself, not a person, made this decision. An approval
+   * marked `'SLA_AUTO_APPROVE'` is written to the TASK_DECIDED activity
+   * payload as `automatic`, so a later `NODE_ACTOR` / `NODE_ACTOR_MANAGER`
+   * node can tell a timeout from someone who actually signed.
+   */
+  readonly automatic?: 'SLA_AUTO_APPROVE';
+  /**
    * Reason stamped on the delegation-chain step when the decision is a
    * transfer. Defaults to {@link MANUAL_TRANSFER_DELEGATION_REASON}.
    */
@@ -1391,6 +1398,9 @@ export class WorkflowEngineService {
               decisionId: decision.id,
               signatureId: signature.id,
               signedPayloadHash: signature.signedPayloadHash,
+              // Absent for a person's decision, so "who actually signed" can
+              // tell the engine's own timeout approvals apart.
+              ...(options.automatic ? { automatic: options.automatic } : {}),
               // Keys only: this payload is forwarded to hosts, and the values
               // can be tax IDs or amounts.
               ...(changedFieldKeys.length > 0 ? { changedFieldKeys } : {}),
@@ -6738,6 +6748,30 @@ export class WorkflowEngineService {
       );
     }
 
+    if (resolver.type === 'NODE_ACTOR') {
+      return this.resolveNodeActorCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    if (resolver.type === 'NODE_ACTOR_MANAGER') {
+      return this.resolveNodeActorManagerCandidates(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
     // A template saved by a newer engine can carry an approver source this
     // engine does not know. Refuse it by name instead of quietly resolving it
     // as the initiator's manager, which would route the task to the wrong
@@ -6831,6 +6865,159 @@ export class WorkflowEngineService {
       label,
       resolver.preferClosestOrgUnit === true,
       subject,
+    );
+  }
+
+  /**
+   * NODE_ACTOR: the people who actually approved the listed earlier nodes.
+   * A node nobody approved (never ran, cancelled, or approved only by the SLA
+   * timeout) is an error rather than an empty list: handing the task to
+   * nobody would stall the instance without saying why.
+   */
+  private async resolveNodeActorCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'NODE_ACTOR' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const actorMemberIds = await this.readNodeActorMemberIds(
+      manager,
+      instance,
+      resolver.nodeIds,
+    );
+
+    if (actorMemberIds.length === 0) {
+      throw new ConflictException(
+        `${label} 找不到${subject}：${readNodeActorNodeNames(instance, resolver.nodeIds)}沒有實際同意的簽核紀錄`,
+      );
+    }
+
+    return actorMemberIds;
+  }
+
+  /**
+   * NODE_ACTOR_MANAGER: the managers `levelsUp` tiers above each person who
+   * actually approved the listed nodes, as one set. An approver without a
+   * manager is skipped; the fallback runs only when nobody is left.
+   */
+  private async resolveNodeActorManagerCandidates(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'NODE_ACTOR_MANAGER' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<readonly string[]> {
+    const levelsUp = Number.isFinite(resolver.levelsUp)
+      ? Math.max(Math.trunc(resolver.levelsUp), 1)
+      : 1;
+    const actorMemberIds = await this.readNodeActorMemberIds(
+      manager,
+      instance,
+      resolver.nodeIds,
+    );
+    const managerGroups = await Promise.all(
+      actorMemberIds.map((actorMemberId) =>
+        this.resolveManagerMemberIdsExcludingSubject(
+          manager,
+          actorMemberId,
+          levelsUp,
+          resolver.preferClosestOrgUnit === true,
+        ),
+      ),
+    );
+    const managerMemberIds = uniqueTexts(managerGroups.flat());
+
+    if (managerMemberIds.length > 0) {
+      return managerMemberIds;
+    }
+
+    return this.resolveFallbackAssignees(
+      manager,
+      instance,
+      resolver.fallback,
+      label,
+      subject,
+      actorMemberIds.length === 0
+        ? `${readNodeActorNodeNames(instance, resolver.nodeIds)}沒有實際同意的簽核紀錄`
+        : `找不到前面關卡實際簽核人的第 ${levelsUp} 層主管`,
+    );
+  }
+
+  /**
+   * The people who approved the most recent batch of tasks among `nodeIds`,
+   * earliest decision first, each once. Read through `manager` so an approval
+   * written earlier in the same transaction (the one that is advancing the
+   * instance right now) is visible.
+   *
+   * A batch is the non-ad-hoc tasks of one node on one token: a token never
+   * passes a node twice (a return opens a new token, a transfer's replacement
+   * task keeps the token), so a later round is a later batch. Tasks created in
+   * the same transaction share a `created_at`, so every (node, token) tied for
+   * newest counts as one batch. An older batch is never used in place of a
+   * newest one nobody approved. Ad-hoc approvals, approvals on cancelled
+   * tasks and approvals the SLA timeout made do not count.
+   */
+  private async readNodeActorMemberIds(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeIds: readonly string[],
+  ): Promise<readonly string[]> {
+    const tasks = await manager.getRepository(TaskEntity).find({
+      where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
+    });
+
+    if (tasks.length === 0) {
+      return [];
+    }
+
+    const newestCreatedAt = Math.max(
+      ...tasks.map((task) => task.createdAt.getTime()),
+    );
+    const newestTasks = tasks.filter(
+      (task) => task.createdAt.getTime() === newestCreatedAt,
+    );
+    const batchTaskIds = tasks
+      .filter(
+        (task) =>
+          task.status !== TaskStatusEnum.CANCELLED &&
+          newestTasks.some(
+            (newest) =>
+              newest.nodeId === task.nodeId && newest.tokenId === task.tokenId,
+          ),
+      )
+      .map((task) => task.id);
+
+    if (batchTaskIds.length === 0) {
+      return [];
+    }
+
+    const [decisions, decidedLogs] = await Promise.all([
+      manager.getRepository(TaskDecisionEntity).find({
+        where: { action: TaskDecisionActionEnum.APPROVED, taskId: In(batchTaskIds) },
+      }),
+      manager.getRepository(ActivityLogEntity).find({
+        where: {
+          eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+          instanceId: instance.id,
+          taskId: In(batchTaskIds),
+        },
+      }),
+    ]);
+    const automaticDecisionIds = new Set(
+      decidedLogs
+        .filter((log) => log.payload['automatic'] === SLA_AUTO_APPROVE_MARK)
+        .map((log) => log.payload['decisionId']),
+    );
+
+    return uniqueTexts(
+      [...decisions]
+        .filter((decision) => !automaticDecisionIds.has(decision.id))
+        .sort(
+          (first, second) =>
+            first.decidedAt.getTime() - second.decidedAt.getTime(),
+        )
+        .map((decision) => decision.decidedByMemberId),
     );
   }
 
@@ -8681,6 +8868,22 @@ function readWorkflowNodeLabel(
     ?.data.label;
 
   return typeof label === 'string' && label.trim() ? label : null;
+}
+
+const SLA_AUTO_APPROVE_MARK: NonNullable<DecideTaskOptions['automatic']> =
+  'SLA_AUTO_APPROVE';
+
+/** 關卡「名稱」(、關卡「名稱」…) for an error line; a missing node shows its id. */
+function readNodeActorNodeNames(
+  instance: ApprovalInstanceEntity,
+  nodeIds: readonly string[],
+): string {
+  return nodeIds
+    .map(
+      (nodeId) =>
+        `關卡「${readWorkflowNodeLabel(instance.workflowSnapshot, nodeId) ?? nodeId}」`,
+    )
+    .join('、');
 }
 
 function readWorkflowNodeOrThrow(
