@@ -4670,6 +4670,26 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('refuses an approver resolver type this engine does not know instead of treating it as ORG_MANAGER', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        // A definition saved by a newer engine: this engine has no such type.
+        approverResolver: { type: 'FUTURE_TYPE' } as unknown as {
+          readonly memberIds: readonly string[];
+          readonly type: 'DIRECT';
+        },
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      /不支援.*FUTURE_TYPE/,
+    );
+    expect(fixture.savedTasks).toHaveLength(0);
+  });
+
   it('allows self fallback only when the workflow explicitly allows initiator self approval', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

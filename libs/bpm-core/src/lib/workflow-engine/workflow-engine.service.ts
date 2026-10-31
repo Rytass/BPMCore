@@ -34,6 +34,7 @@ import {
   ApproverResolver,
   ApproverResolverFallback,
   readUnsupportedApproverFallbackType,
+  readUnsupportedApproverResolverType,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -6683,16 +6684,28 @@ export class WorkflowEngineService {
       );
     }
 
-    return this.resolveInitiatorManagerCandidates(
-      manager,
-      instance,
-      resolver.levelsUp,
-      resolver.fallback,
-      label,
-      resolver.preferClosestOrgUnit === true,
-      subject,
-    ).then((memberIds) =>
-      memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+    if (resolver.type === 'ORG_MANAGER') {
+      return this.resolveInitiatorManagerCandidates(
+        manager,
+        instance,
+        resolver.levelsUp,
+        resolver.fallback,
+        label,
+        resolver.preferClosestOrgUnit === true,
+        subject,
+      ).then((memberIds) =>
+        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
+      );
+    }
+
+    // A template saved by a newer engine can carry an approver source this
+    // engine does not know. Refuse it by name instead of quietly resolving it
+    // as the initiator's manager, which would route the task to the wrong
+    // person.
+    throw new ConflictException(
+      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${readUnsupportedApproverResolverType(
+        resolver as { readonly type: string },
+      )}」。請升級 BPMCore 後再發佈或執行此流程。`,
     );
   }
 

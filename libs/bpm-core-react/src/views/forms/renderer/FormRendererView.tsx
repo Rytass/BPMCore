@@ -1396,6 +1396,7 @@ function readInputPlaceholder(type: FormFieldDefinition['type']): string {
     member: '搜尋姓名或信箱',
     money: '請輸入金額',
     number: '請輸入數字',
+    org_unit: '搜尋組織名稱',
     radio: '請選擇一個選項',
     select: '請選擇一個選項',
     table: '',
