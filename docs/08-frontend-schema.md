@@ -283,6 +283,13 @@ position / org id 是否真實存在。
 **知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`
 會擋，AI 工具組寫入知會收件人時一律退回預設的直屬主管。
 
+後端 publish validation 對這四種來源另有檢查（`lintWorkflowDefinition`／`TemplateService`）：
+結構規則同上（`formPath`、`levelsUp`、`nodeIds` 存在且是簽核關卡、不含自己、fallback 欄位），
+認不得的 resolver `type` 與知會收件人用這四種來源都直接擋；`FORM_MEMBER_MANAGER` 的 `formPath`
+須指向**單選**、必填、不會被 `visibleWhen`／`hidden` 藏起來的 `member` 欄位，
+`FORM_ORG_UNIT_MANAGER` 須指向必填且不會被藏的 `org_unit` 欄位（判準與 `DYNAMIC_FORM` 同一套）；
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查（`readNodeActorSourceIssues`）在結構檢查通過後執行。
+
 AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種來源；必要欄位
 （`formPath`、`nodeIds`）缺漏時照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
 既有主管型一樣沿用節點原本的 `fallback`。
@@ -335,7 +342,7 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 - **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——組織
   id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
 - **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
-  的欄位須是 `org_unit`、必填且不會被隱藏（驗證與試跑由後續任務補上）。
+  的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查；試跑由後續任務補上）。
 - **未發佈／尚未實作**：後端表單 schema 對 `org_unit` 欄位的接受與送出驗證、Builder 的欄位
   庫與設定項、Renderer 的組織搜尋控制項、試跑範例值與案件頁的部門名稱顯示，都由後續任務
   補上；目前只有型別、`isOrgUnitFieldDefinition`／`isFormOrgUnitValue`、條件與 webhook

@@ -820,6 +820,204 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('FORM_MEMBER_MANAGER / FORM_ORG_UNIT_MANAGER references', (): void => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'boss', label: '主管', required: true, type: 'member' },
+        {
+          fieldKey: 'bosses',
+          label: '多位主管',
+          multiple: true,
+          required: true,
+          type: 'member',
+        },
+        { fieldKey: 'optionalBoss', label: '選填', required: false, type: 'member' },
+        {
+          fieldKey: 'shownBoss',
+          label: '條件顯示',
+          required: true,
+          type: 'member',
+          visibleWhen: 'form.note == "x"',
+        },
+        {
+          fieldKey: 'storedBoss',
+          hidden: true,
+          label: '外部',
+          required: false,
+          type: 'member',
+        },
+        { fieldKey: 'unit', label: '部門', required: true, type: 'org_unit' },
+        { fieldKey: 'optionalUnit', label: '選填部門', required: false, type: 'org_unit' },
+        {
+          fieldKey: 'shownUnit',
+          label: '條件部門',
+          required: true,
+          type: 'org_unit',
+          visibleWhen: 'form.note == "x"',
+        },
+        {
+          fieldKey: 'storedUnit',
+          hidden: true,
+          label: '外部部門',
+          required: false,
+          type: 'org_unit',
+        },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+    const memberManager = (formPath: string): ApproverResolver => ({
+      formPath,
+      levelsUp: 1,
+      type: 'FORM_MEMBER_MANAGER',
+    });
+    const orgManager = (formPath: string): ApproverResolver => ({
+      formPath,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    });
+    const publish = (approverResolver: ApproverResolver): Promise<unknown> =>
+      createTableConditionPublishService({
+        schema,
+        workflowDefinition: createDynamicFormWorkflow(approverResolver),
+      }).publishApprovalTemplateVersion('template-version-1');
+    const path = 'workflow.nodes.task_manager.approverResolver.formPath';
+
+    it('publishes FORM_MEMBER_MANAGER on a required, single, always-visible member field', async (): Promise<void> => {
+      await expect(publish(memberManager('boss'))).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it.each(['missing', 'note', 'unit'])(
+      'rejects FORM_MEMBER_MANAGER on %s, which is not a member field',
+      async (formPath): Promise<void> => {
+        await expect(publish(memberManager(formPath))).rejects.toThrow(
+          `${path} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+        );
+      },
+    );
+
+    it('rejects FORM_MEMBER_MANAGER on a multiple member field', async (): Promise<void> => {
+      await expect(publish(memberManager('bosses'))).rejects.toThrow(
+        `${path} must reference a single-person member field, not a multiple one: bosses`,
+      );
+    });
+
+    it.each(['optionalBoss', 'shownBoss', 'storedBoss'])(
+      'rejects FORM_MEMBER_MANAGER on %s, which can be left empty',
+      async (formPath): Promise<void> => {
+        await expect(publish(memberManager(formPath))).rejects.toThrow(
+          `${path} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+      },
+    );
+
+    it('publishes FORM_ORG_UNIT_MANAGER on a required, always-visible org_unit field', async (): Promise<void> => {
+      await expect(publish(orgManager('unit'))).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it.each(['missing', 'note', 'boss'])(
+      'rejects FORM_ORG_UNIT_MANAGER on %s, which is not an org_unit field',
+      async (formPath): Promise<void> => {
+        await expect(publish(orgManager(formPath))).rejects.toThrow(
+          `${path} must reference an org unit (組織選擇) field of the bound form: ${formPath}`,
+        );
+      },
+    );
+
+    it.each(['optionalUnit', 'shownUnit', 'storedUnit'])(
+      'rejects FORM_ORG_UNIT_MANAGER on %s, which can be left empty',
+      async (formPath): Promise<void> => {
+        await expect(publish(orgManager(formPath))).rejects.toThrow(
+          `${path} must reference a required org unit field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+      },
+    );
+
+    it('still lets DYNAMIC_FORM read a multiple member field (反向控制)', async (): Promise<void> => {
+      await expect(
+        publish({ formPath: 'bosses', type: 'DYNAMIC_FORM' }),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+  });
+
+  describe('NODE_ACTOR / NODE_ACTOR_MANAGER source graph rules', (): void => {
+    const withSecondNode = (
+      approverResolver: ApproverResolver,
+      firstNodeData: Readonly<Record<string, unknown>> = {},
+    ): WorkflowDefinition => {
+      const base = createFieldAccessWorkflow([[], []]);
+
+      return {
+        ...base,
+        nodes: base.nodes.map((node) => {
+          if (node.id === 'task_1' && node.type === 'userTask') {
+            return { ...node, data: { ...node.data, ...firstNodeData } };
+          }
+
+          return node.id === 'task_2' && node.type === 'userTask'
+            ? { ...node, data: { ...node.data, approverResolver } }
+            : node;
+        }),
+      } as WorkflowDefinition;
+    };
+    const publish = (workflowDefinition: WorkflowDefinition): Promise<unknown> =>
+      createTableConditionPublishService({
+        workflowDefinition,
+      }).publishApprovalTemplateVersion('template-version-1');
+
+    it.each([
+      { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+      { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+    ] as const)(
+      'publishes %j when the earlier node is unskippable and upstream',
+      async (resolver): Promise<void> => {
+        await expect(
+          publish(withSecondNode(resolver as ApproverResolver)),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      },
+    );
+
+    it.each([
+      { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+      { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+    ] as const)(
+      'rejects %j when the earlier node can be skipped by an entry condition',
+      async (resolver): Promise<void> => {
+        await expect(
+          publish(
+            withSecondNode(resolver as ApproverResolver, {
+              entryCondition: 'form.amount > 10',
+            }),
+          ),
+        ).rejects.toThrow(/設有進入條件，可能被跳過/);
+      },
+    );
+
+    it('rejects a source that is not upstream of the node', async (): Promise<void> => {
+      // task_2 listing itself downstream: task_1 reading task_2 is not upstream.
+      const base = withSecondNode({ nodeIds: ['task_1'], type: 'NODE_ACTOR' });
+      const reversed = {
+        ...base,
+        nodes: base.nodes.map((node) =>
+          node.id === 'task_1' && node.type === 'userTask'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  approverResolver: { nodeIds: ['task_2'], type: 'NODE_ACTOR' },
+                },
+              }
+            : node,
+        ),
+      } as WorkflowDefinition;
+
+      await expect(publish(reversed)).rejects.toThrow(/不在 .* 的上游/);
+    });
+  });
+
   describe('approver-filled fields against the bound form', (): void => {
     const dataSource = { bindings: [], key: 'invoice_kinds', version: 1 };
     const fillSchema: FormDefinitionSchema = {

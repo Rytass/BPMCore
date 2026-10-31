@@ -1086,6 +1086,264 @@ describe('workflow definition validator', () => {
   });
 });
 
+describe('workflow definition validator: the form and earlier-signer approver sources', (): void => {
+  const FORM_MEMBER = (
+    overrides: Record<string, unknown> = {},
+  ): ApproverResolver =>
+    ({
+      formPath: 'applicantBoss',
+      levelsUp: 1,
+      type: 'FORM_MEMBER_MANAGER',
+      ...overrides,
+    }) as ApproverResolver;
+  const FORM_ORG = (overrides: Record<string, unknown> = {}): ApproverResolver =>
+    ({
+      formPath: 'ownerUnit',
+      type: 'FORM_ORG_UNIT_MANAGER',
+      ...overrides,
+    }) as ApproverResolver;
+  const NODE_ACTOR = (
+    nodeIds: readonly string[],
+    overrides: Record<string, unknown> = {},
+  ): ApproverResolver =>
+    ({ nodeIds, type: 'NODE_ACTOR', ...overrides }) as ApproverResolver;
+  const NODE_ACTOR_MANAGER = (
+    nodeIds: readonly string[],
+    overrides: Record<string, unknown> = {},
+  ): ApproverResolver =>
+    ({
+      levelsUp: 1,
+      nodeIds,
+      type: 'NODE_ACTOR_MANAGER',
+      ...overrides,
+    }) as ApproverResolver;
+
+  const lintResolver = (
+    approverResolver: ApproverResolver,
+  ): readonly string[] =>
+    lintWorkflowDefinition(createUserTaskWorkflow({ approverResolver })).errors;
+
+  it('accepts a well-formed resolver of each new type (反向控制)', (): void => {
+    expect(lintResolver(FORM_MEMBER())).toEqual([]);
+    expect(lintResolver(FORM_ORG())).toEqual([]);
+    expect(
+      lintWorkflowDefinition(
+        createTwoStepWorkflow(NODE_ACTOR(['task_first'])),
+      ).errors,
+    ).toEqual([]);
+    expect(
+      lintWorkflowDefinition(
+        createTwoStepWorkflow(NODE_ACTOR_MANAGER(['task_first'])),
+      ).errors,
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['FORM_MEMBER_MANAGER', FORM_MEMBER({ formPath: '  ' })],
+    ['FORM_ORG_UNIT_MANAGER', FORM_ORG({ formPath: '' })],
+  ])('requires a formPath on %s', (_type, approverResolver): void => {
+    expect(lintResolver(approverResolver)).toEqual([
+      'workflow.nodes.task_manager.approverResolver.formPath is required',
+    ]);
+  });
+
+  it.each([0, 1.5, Number.NaN, -1])(
+    'rejects levelsUp %s on the manager sources that take a level',
+    (levelsUp): void => {
+      expect(lintResolver(FORM_MEMBER({ levelsUp }))).toEqual([
+        'workflow.nodes.task_manager.approverResolver.levelsUp is invalid',
+      ]);
+      expect(
+        lintWorkflowDefinition(
+          createTwoStepWorkflow(NODE_ACTOR_MANAGER(['task_first'], { levelsUp })),
+        ).errors,
+      ).toEqual([
+        'workflow.nodes.task_manager.approverResolver.levelsUp is invalid',
+      ]);
+    },
+  );
+
+  it.each([
+    ['empty', [], 'nodeIds is required'],
+    [
+      'the node itself',
+      ['task_manager'],
+      'nodeIds must not include the node itself',
+    ],
+    [
+      'a node that does not exist',
+      ['ghost'],
+      'nodeIds references a missing node: ghost',
+    ],
+    [
+      'a node that is not a user task',
+      ['start'],
+      'nodeIds must reference userTask nodes: start',
+    ],
+  ])(
+    'rejects NODE_ACTOR / NODE_ACTOR_MANAGER nodeIds that are %s',
+    (_kind, nodeIds, message): void => {
+      for (const make of [NODE_ACTOR, NODE_ACTOR_MANAGER]) {
+        expect(
+          lintWorkflowDefinition(createTwoStepWorkflow(make(nodeIds))).errors,
+        ).toEqual([`workflow.nodes.task_manager.approverResolver.${message}`]);
+      }
+    },
+  );
+
+  it('rejects nodeIds that is not an array', (): void => {
+    expect(
+      lintWorkflowDefinition(
+        createTwoStepWorkflow(NODE_ACTOR('task_first' as unknown as string[])),
+      ).errors,
+    ).toEqual(['workflow.nodes.task_manager.approverResolver.nodeIds is required']);
+  });
+
+  it.each([
+    ['FORM_MEMBER_MANAGER', FORM_MEMBER],
+    ['FORM_ORG_UNIT_MANAGER', FORM_ORG],
+  ])(
+    'rejects a blank DIRECT / POSITION fallback on %s',
+    (_type, make): void => {
+      expect(
+        lintResolver(make({ fallback: { memberId: ' ', type: 'DIRECT' } })),
+      ).toEqual([
+        'workflow.nodes.task_manager.approverResolver.fallback.memberId is required',
+      ]);
+      expect(
+        lintResolver(make({ fallback: { positionId: ' ', type: 'POSITION' } })),
+      ).toEqual([
+        'workflow.nodes.task_manager.approverResolver.fallback.positionId is required',
+      ]);
+      expect(
+        lintResolver(make({ fallback: { memberId: 'member-1', type: 'DIRECT' } })),
+      ).toEqual([]);
+    },
+  );
+
+  it('rejects a blank DIRECT fallback on NODE_ACTOR_MANAGER', (): void => {
+    expect(
+      lintWorkflowDefinition(
+        createTwoStepWorkflow(
+          NODE_ACTOR_MANAGER(['task_first'], {
+            fallback: { memberId: ' ', type: 'DIRECT' },
+          }),
+        ),
+      ).errors,
+    ).toEqual([
+      'workflow.nodes.task_manager.approverResolver.fallback.memberId is required',
+    ]);
+  });
+
+  it('rejects a resolver type this build does not know', (): void => {
+    expect(
+      lintResolver({ type: 'FUTURE_TYPE' } as unknown as ApproverResolver),
+    ).toEqual(['workflow.nodes.task_manager.approverResolver.type is not supported']);
+  });
+
+  describe('NOTIFY recipients', (): void => {
+    const lintRecipients = (recipients: ApproverResolver): readonly string[] =>
+      lintWorkflowDefinition({
+        ...EMPTY_WORKFLOW_DEFINITION,
+        edges: [
+          {
+            data: {},
+            id: 'edge_start_end',
+            source: 'start',
+            target: 'end',
+            type: 'smoothstep',
+          },
+          {
+            data: {},
+            id: 'edge_start_notify',
+            source: 'start',
+            target: 'notify_peer',
+            type: 'smoothstep',
+          },
+        ],
+        nodes: [
+          ...EMPTY_WORKFLOW_DEFINITION.nodes,
+          {
+            data: {
+              action: { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+              label: '通知',
+            },
+            id: 'notify_peer',
+            position: { x: 300, y: 300 },
+            type: 'serviceTask',
+          },
+        ],
+      }).errors;
+
+    it.each([
+      ['FORM_MEMBER_MANAGER', FORM_MEMBER()],
+      ['FORM_ORG_UNIT_MANAGER', FORM_ORG()],
+      ['NODE_ACTOR', NODE_ACTOR(['task_first'])],
+      ['NODE_ACTOR_MANAGER', NODE_ACTOR_MANAGER(['task_first'])],
+    ])('refuses %s as a recipient source', (_type, recipients): void => {
+      expect(lintRecipients(recipients)).toEqual([
+        'workflow.nodes.notify_peer.action.recipients.type is not supported',
+      ]);
+    });
+
+    it('still accepts DYNAMIC_FORM recipients (反向控制)', (): void => {
+      expect(
+        lintRecipients({ formPath: 'reviewer', type: 'DYNAMIC_FORM' }),
+      ).toEqual([]);
+    });
+  });
+});
+
+function createTwoStepWorkflow(
+  approverResolver: ApproverResolver,
+): WorkflowDefinition {
+  const base = createUserTaskWorkflow({ approverResolver });
+
+  return {
+    ...base,
+    edges: [
+      {
+        data: {},
+        id: 'edge_start_task',
+        source: 'start',
+        target: 'task_first',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_first_second',
+        source: 'task_first',
+        target: 'task_manager',
+        type: 'smoothstep',
+      },
+      {
+        data: {},
+        id: 'edge_task_end',
+        source: 'task_manager',
+        target: 'end',
+        type: 'smoothstep',
+      },
+    ],
+    nodes: [
+      ...base.nodes,
+      {
+        data: {
+          allowAddSigner: false,
+          allowReject: true,
+          allowTransfer: true,
+          approverResolver: { memberIds: ['member-001'], type: 'DIRECT' },
+          decisionPolicy: { type: 'SINGLE' },
+          label: '第一關',
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+        },
+        id: 'task_first',
+        position: { x: 190, y: 160 },
+        type: 'userTask',
+      },
+    ],
+  };
+}
+
 function createUserTaskWorkflow({
   approverResolver = { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
   decisionPolicy = { type: 'SINGLE' },

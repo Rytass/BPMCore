@@ -1068,6 +1068,27 @@ task or notification is created; on a node past the first one that throw lands
 inside the previous approver's decision, which could then never commit. The
 designer still lists such fields, marked with the reason publishing refuses them.
 
+**Publish-time checks of the form and earlier-signer sources.** The same
+publish also checks the four newer resolver types. Structure:
+`FORM_MEMBER_MANAGER` / `FORM_ORG_UNIT_MANAGER` need a `formPath`;
+`FORM_MEMBER_MANAGER` / `NODE_ACTOR_MANAGER` need an integer `levelsUp >= 1`;
+`NODE_ACTOR` / `NODE_ACTOR_MANAGER` need `nodeIds` that is non-empty, does not
+list the node itself, and names existing `userTask` nodes; the three manager
+types take the same `fallback` rules as `ORG_MANAGER`; a resolver `type` this
+build does not know is refused (`...approverResolver.type is not supported`),
+and so is any of the four as a NOTIFY recipient source
+(`...action.recipients.type is not supported`). Bound form:
+`FORM_MEMBER_MANAGER` follows the `DYNAMIC_FORM` rules above and the member
+field must also not be `multiple` (`<path> must reference a single-person
+member field, not a multiple one: <fieldKey>`); `FORM_ORG_UNIT_MANAGER` needs
+an `org_unit` field under the same required / always-visible rule
+(`<path> must reference an org unit (組織選擇) field of the bound form: <path>`,
+`<path> must reference a required org unit field that no visibility rule or
+hidden flag can leave empty: <fieldKey>`). Graph: once the definition has
+passed the structural lint, `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes run the
+shared `readNodeActorSourceIssues`, each line prefixed
+`workflow.nodes.<id>.approverResolver.nodeIds: `.
+
 > **Compatibility change.** This check is new: a `DYNAMIC_FORM` resolver whose
 > `formPath` points at a non-member field can no longer be published. Such a
 > draft could only be written through the API or the AI assistant before the
