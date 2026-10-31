@@ -14,10 +14,19 @@ import {
   NODE_ACTOR_SUBJECT_OPTIONS,
   ORG_UNIT_SOURCE_OPTIONS,
   buildApproverResolver,
+  isApproverSourceReadOnly,
+  readApproverManagerRule,
   readApproverResolverDetail,
   readApproverResolverEditorState,
+  readApproverSourceModeId,
+  readApproverSourcePick,
+  readApproverSourceReadOnlyText,
+  readApproverSubjectChoice,
   readApproverSubjectOption,
+  readApproverSubjectPick,
+  readStoredManagerLevelOption,
   withApproverSubject,
+  withPreferClosestOrgUnit,
   withOrgUnitSource,
   readApproverResolverMemberIds,
   readApproverResolverMode,
@@ -878,5 +887,272 @@ describe('readApproverResolverDetail (new types)', () => {
     [FUTURE_RESOLVER, '簽核人'],
   ] as const)('labels %j as %s', (resolver, label) => {
     expect(readApproverResolverDetail(resolver)).toBe(label);
+  });
+});
+
+describe('approver source gating (6b)', () => {
+  const stateOf = readApproverResolverEditorState;
+
+  it('treats only an unknown type as read-only, and says which type', () => {
+    expect(isApproverSourceReadOnly(stateOf(FUTURE_RESOLVER))).toBe(true);
+    expect(readApproverSourceReadOnlyText(stateOf(FUTURE_RESOLVER))).toBe(
+      '不支援的簽核來源（FUTURE_TYPE）',
+    );
+    [
+      ...EXISTING_RESOLVERS,
+      FORM_MEMBER_MANAGER,
+      FORM_ORG_UNIT_MANAGER,
+      NODE_ACTOR,
+      NODE_ACTOR_MANAGER,
+    ].forEach((resolver) => {
+      expect(isApproverSourceReadOnly(stateOf(resolver))).toBe(false);
+      expect(readApproverSourceReadOnlyText(stateOf(resolver))).toBeNull();
+    });
+  });
+
+  it('has no 簽核來源 option for an unknown type (not 指定會員)', () => {
+    expect(readApproverSourceModeId(stateOf(FUTURE_RESOLVER))).toBeNull();
+    expect(
+      readApproverSourceModeId(stateOf({ memberIds: [], type: 'DIRECT' })),
+    ).toBe('DIRECT');
+    expect(readApproverSourceModeId(stateOf(FORM_MEMBER_MANAGER))).toBe(
+      'DYNAMIC_FORM',
+    );
+    expect(readApproverSourceModeId(stateOf(FORM_ORG_UNIT_MANAGER))).toBe(
+      'ORG_UNIT_MANAGER',
+    );
+    expect(readApproverSourceModeId(stateOf(NODE_ACTOR_MANAGER))).toBe(
+      'NODE_ACTOR',
+    );
+  });
+
+  it('a 簽核來源 pick on an unknown type changes nothing, whatever is picked', () => {
+    ['DIRECT', 'NODE_ACTOR', 'POSITION', null].forEach((id) => {
+      expect(readApproverSourcePick(FUTURE_RESOLVER, id, POSITIONS)).toBeNull();
+    });
+  });
+
+  it('re-picking the shown 簽核來源 is a no-op for every shared option', () => {
+    expect(
+      readApproverSourcePick(FORM_MEMBER_MANAGER, 'DYNAMIC_FORM', POSITIONS),
+    ).toBeNull();
+    expect(
+      readApproverSourcePick(
+        FORM_ORG_UNIT_MANAGER,
+        'ORG_UNIT_MANAGER',
+        POSITIONS,
+      ),
+    ).toBeNull();
+    expect(
+      readApproverSourcePick(NODE_ACTOR_MANAGER, 'NODE_ACTOR', POSITIONS),
+    ).toBeNull();
+    expect(
+      readApproverSourcePick(
+        { memberIds: ['m1'], type: 'DIRECT' },
+        'DIRECT',
+        POSITIONS,
+      ),
+    ).toBeNull();
+  });
+
+  it('picking another 簽核來源 starts it clean, an id that is not an option is ignored', () => {
+    expect(
+      readApproverSourcePick(FORM_MEMBER_MANAGER, 'NODE_ACTOR', POSITIONS),
+    ).toStrictEqual({
+      nodeIds: [],
+      type: 'NODE_ACTOR',
+    });
+    expect(
+      readApproverSourcePick(NODE_ACTOR_MANAGER, 'DYNAMIC_FORM', POSITIONS),
+    ).toStrictEqual({
+      formPath: '',
+      type: 'DYNAMIC_FORM',
+    });
+    expect(
+      readApproverSourcePick(NODE_ACTOR, 'not-an-option', POSITIONS),
+    ).toBeNull();
+    expect(readApproverSourcePick(NODE_ACTOR, null, POSITIONS)).toBeNull();
+  });
+
+  it('shows a stored manager level below 1 as invalid, never as 本人 (M3)', () => {
+    const zero: ApproverResolver = {
+      formPath: 'owner',
+      levelsUp: 0,
+      type: 'FORM_MEMBER_MANAGER',
+    };
+    const negative: ApproverResolver = {
+      levelsUp: -1,
+      nodeIds: ['a'],
+      type: 'NODE_ACTOR_MANAGER',
+    };
+    const zeroChoice = readApproverSubjectChoice(stateOf(zero));
+    const negativeChoice = readApproverSubjectChoice(stateOf(negative));
+
+    expect(zeroChoice?.invalid).toBe(true);
+    expect(zeroChoice?.selected.name).toBe('第 0 層主管（無效）');
+    expect(zeroChoice?.selected.name).not.toBe('欄位裡的人');
+    expect(
+      zeroChoice?.options.some((o) => o.id === zeroChoice.selected.id),
+    ).toBe(true);
+    expect(negativeChoice?.invalid).toBe(true);
+    expect(negativeChoice?.selected.name).toBe('第 -1 層主管（無效）');
+    expect(negativeChoice?.selected.name).not.toBe('關卡的簽核者');
+    // The stored JSON is untouched by showing it.
+    expect(buildApproverResolver(stateOf(zero))).toStrictEqual(zero);
+    expect(buildApproverResolver(stateOf(negative))).toStrictEqual(negative);
+    // Control: a real 本人 and a real level are not flagged.
+    expect(
+      readApproverSubjectChoice(
+        stateOf({ formPath: 'owner', type: 'DYNAMIC_FORM' }),
+      ),
+    ).toMatchObject({
+      invalid: false,
+      selected: { name: '欄位裡的人', value: 0 },
+    });
+    expect(
+      readApproverSubjectChoice(stateOf(NODE_ACTOR_MANAGER)),
+    ).toMatchObject({
+      invalid: false,
+      selected: { name: '第三層主管', value: 3 },
+    });
+  });
+
+  it('describes a broken stored level as invalid in the canvas summary too', () => {
+    const nodes = [{ id: 'a', name: '主管審核' }];
+
+    expect(
+      readApproverResolverSummary(
+        { levelsUp: 0, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+        MEMBERS,
+        ORG_UNITS,
+        POSITIONS,
+        null,
+        nodes,
+      ),
+    ).toBe('前面關卡簽核者的第 0 層主管（無效）：主管審核');
+    expect(
+      readApproverResolverSummary(
+        { formPath: 'owner', levelsUp: 0, type: 'FORM_MEMBER_MANAGER' },
+        MEMBERS,
+        ORG_UNITS,
+        POSITIONS,
+        FORM_SCHEMA,
+      ),
+    ).toBe('依表單欄位：負責人的第 0 層主管（無效）');
+    expect(
+      readStoredManagerLevelOption(FORM_MEMBER_SUBJECT_OPTIONS, 1).name,
+    ).toBe('直屬主管');
+    expect(
+      readStoredManagerLevelOption(FORM_MEMBER_SUBJECT_OPTIONS, 1.5).name,
+    ).toBe('第 1.5 層主管（無效）');
+  });
+
+  it('keeps a level above 3 visible and re-picking an invalid level is a no-op', () => {
+    const five = stateOf({
+      levelsUp: 5,
+      nodeIds: ['a'],
+      type: 'NODE_ACTOR_MANAGER',
+    });
+    const zero = stateOf({
+      formPath: 'owner',
+      levelsUp: 0,
+      type: 'FORM_MEMBER_MANAGER',
+    });
+
+    expect(readApproverSubjectChoice(five)?.selected.name).toBe('第 5 層主管');
+    expect(readApproverSubjectChoice(five)?.invalid).toBe(false);
+    expect(readApproverSubjectPick(zero, 'invalid:0')).toBeNull();
+    expect(readApproverSubjectPick(five, '5')).toBeNull();
+  });
+
+  it('a 簽核人 pick applies the level, and the shown choice or a non-option is a no-op', () => {
+    const state = stateOf(NODE_ACTOR_MANAGER);
+
+    expect(readApproverSubjectPick(state, '3')).toBeNull();
+    expect(readApproverSubjectPick(state, 'x')).toBeNull();
+    expect(readApproverSubjectPick(state, null)).toBeNull();
+    const toSelf = readApproverSubjectPick(state, '0');
+
+    expect(toSelf).not.toBeNull();
+    expect(
+      buildApproverResolver(toSelf as ReturnType<typeof stateOf>),
+    ).toStrictEqual({
+      nodeIds: ['a'],
+      type: 'NODE_ACTOR',
+    });
+    const fromSelf = readApproverSubjectPick(stateOf(NODE_ACTOR), '2');
+
+    expect(
+      buildApproverResolver(fromSelf as ReturnType<typeof stateOf>),
+    ).toStrictEqual({
+      levelsUp: 2,
+      nodeIds: ['a', 'b'],
+      type: 'NODE_ACTOR_MANAGER',
+    });
+    // 本人 shown, 本人 picked again.
+    expect(readApproverSubjectPick(stateOf(NODE_ACTOR), '0')).toBeNull();
+    // A source without a 簽核人 choice has none.
+    expect(
+      readApproverSubjectChoice(stateOf({ memberIds: [], type: 'DIRECT' })),
+    ).toBeNull();
+    expect(
+      readApproverSubjectPick(stateOf({ memberIds: [], type: 'DIRECT' }), '1'),
+    ).toBeNull();
+  });
+
+  it('offers 只取最近一層主管 / 無主管時 only on a resolver that looks a manager up', () => {
+    expect(
+      readApproverManagerRule({ formPath: 'owner', type: 'DYNAMIC_FORM' }),
+    ).toBeNull();
+    expect(readApproverManagerRule(NODE_ACTOR)).toBeNull();
+    expect(readApproverManagerRule(FUTURE_RESOLVER)).toBeNull();
+    expect(
+      readApproverManagerRule({ memberIds: [], type: 'DIRECT' }),
+    ).toBeNull();
+    expect(readApproverManagerRule(FORM_MEMBER_MANAGER)).toStrictEqual({
+      fallback: { positionId: 'pos-head', type: 'POSITION' },
+      preferClosestOrgUnit: true,
+      showPreferClosestOrgUnit: true,
+    });
+    expect(
+      readApproverManagerRule({
+        levelsUp: 1,
+        nodeIds: ['a'],
+        type: 'NODE_ACTOR_MANAGER',
+      }),
+    ).toStrictEqual({
+      fallback: { type: 'NONE' },
+      preferClosestOrgUnit: false,
+      showPreferClosestOrgUnit: true,
+    });
+    expect(
+      readApproverManagerRule({
+        minPositionLevel: 3,
+        type: 'ORG_MANAGER_CHAIN',
+      })?.showPreferClosestOrgUnit,
+    ).toBe(false);
+  });
+
+  it('toggles 只取最近一層主管 on the new manager types and leaves the others alone', () => {
+    expect(withPreferClosestOrgUnit(NODE_ACTOR_MANAGER, true)).toStrictEqual({
+      ...NODE_ACTOR_MANAGER,
+      preferClosestOrgUnit: true,
+    });
+    expect(
+      withPreferClosestOrgUnit(FORM_ORG_UNIT_MANAGER, false),
+    ).toStrictEqual({
+      ...FORM_ORG_UNIT_MANAGER,
+      preferClosestOrgUnit: false,
+    });
+    const chain: ApproverResolver = {
+      minPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    };
+
+    expect(withPreferClosestOrgUnit(chain, true)).toBe(chain);
+    expect(withPreferClosestOrgUnit(NODE_ACTOR, true)).toBe(NODE_ACTOR);
+    expect(withPreferClosestOrgUnit(FUTURE_RESOLVER, true)).toBe(
+      FUTURE_RESOLVER,
+    );
   });
 });

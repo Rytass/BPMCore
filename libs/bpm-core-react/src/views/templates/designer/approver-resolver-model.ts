@@ -125,6 +125,28 @@ export function readApproverSubjectOption(
   );
 }
 
+/**
+ * The option for the manager level a FORM_MEMBER_MANAGER / NODE_ACTOR_MANAGER
+ * definition stores. Those types always name a manager, so a level below 1 (or
+ * not a whole number) is a broken definition: it is shown as an invalid level
+ * rather than as the option whose `value` happens to be 0 (本人). The stored
+ * JSON is never touched by this read; the publish lint is what blocks it.
+ */
+export function readStoredManagerLevelOption(
+  options: readonly ManagerLevelOption[],
+  levelsUp: number,
+): ManagerLevelOption {
+  if (!Number.isInteger(levelsUp) || levelsUp < 1) {
+    return {
+      id: `invalid:${levelsUp}`,
+      name: `第 ${levelsUp} 層主管（無效）`,
+      value: levelsUp,
+    };
+  }
+
+  return readApproverSubjectOption(options, levelsUp);
+}
+
 export function readApproverResolverMode(value: string): ApproverResolverMode {
   // The new sources share a screen option with the source they extend: 依表單
   // 欄位指定 holds the person's manager, 指定組織主管 the form-field org, and
@@ -323,8 +345,10 @@ export function readApproverResolverSummary(
     return readFormMemberManagerSummary(
       formSchema,
       resolver.formPath,
-      readApproverSubjectOption(FORM_MEMBER_SUBJECT_OPTIONS, resolver.levelsUp)
-        .name,
+      readStoredManagerLevelOption(
+        FORM_MEMBER_SUBJECT_OPTIONS,
+        resolver.levelsUp,
+      ).name,
     );
   }
 
@@ -338,8 +362,10 @@ export function readApproverResolverSummary(
 
   if (resolver.type === 'NODE_ACTOR_MANAGER') {
     return `前面關卡簽核者的${
-      readApproverSubjectOption(NODE_ACTOR_SUBJECT_OPTIONS, resolver.levelsUp)
-        .name
+      readStoredManagerLevelOption(
+        NODE_ACTOR_SUBJECT_OPTIONS,
+        resolver.levelsUp,
+      ).name
     }：${readStageSummary(resolver.nodeIds, nodes)}`;
   }
 
@@ -676,4 +702,172 @@ export function withOrgUnitSource(
       ? { preferClosestOrgUnit: true }
       : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Screen gating: what the 簽核來源 panel may show and write.
+// ---------------------------------------------------------------------------
+
+/**
+ * A resolver type this build does not know is shown, never edited: the panel
+ * renders no 簽核來源 select and no editor, so nothing can replace the stored
+ * JSON (which is saved back as it is).
+ */
+export function isApproverSourceReadOnly(
+  state: ApproverResolverEditorState,
+): boolean {
+  return state.mode === 'UNSUPPORTED';
+}
+
+export function readApproverSourceReadOnlyText(
+  state: ApproverResolverEditorState,
+): string | null {
+  return state.mode === 'UNSUPPORTED'
+    ? `不支援的簽核來源（${state.type}）`
+    : null;
+}
+
+/**
+ * The 簽核來源 option the state is under, `null` for a read-only state (which
+ * has no option; `readApproverResolverMode` would call it 指定會員).
+ */
+export function readApproverSourceModeId(
+  state: ApproverResolverEditorState,
+): ApproverResolverMode | null {
+  if (state.mode === 'UNSUPPORTED') {
+    return null;
+  }
+
+  return state.mode === 'AS_STORED'
+    ? readApproverResolverMode(state.resolver.type)
+    : state.mode;
+}
+
+/**
+ * The resolver a 簽核來源 pick produces, or `null` when the pick must change
+ * nothing: a read-only state, no option, an id that is not an option, or the
+ * option already shown. Re-picking the shown option used to rebuild a clean
+ * default and wipe what the author had filled in.
+ */
+export function readApproverSourcePick(
+  resolver: ApproverResolver,
+  optionId: string | null,
+  positions: readonly PositionRecord[],
+): ApproverResolver | null {
+  const state = readApproverResolverEditorState(resolver);
+
+  if (
+    isApproverSourceReadOnly(state) ||
+    optionId === null ||
+    !APPROVER_RESOLVER_MODE_OPTIONS.some((option) => option.id === optionId)
+  ) {
+    return null;
+  }
+
+  return readApproverResolverMode(optionId) === readApproverSourceModeId(state)
+    ? null
+    : readDefaultApproverResolver(optionId, positions);
+}
+
+export type ApproverSubjectChoice = Readonly<{
+  /** The stored level is below 1 (or fractional): shown, not offered again. */
+  invalid: boolean;
+  options: readonly ManagerLevelOption[];
+  selected: ManagerLevelOption;
+}>;
+
+/**
+ * The 簽核人 select of ② and ③. A stored manager level the list has no option
+ * for (invalid, or a level above 3) is appended so the select can show it.
+ */
+export function readApproverSubjectChoice(
+  state: ApproverResolverEditorState,
+): ApproverSubjectChoice | null {
+  if (state.mode !== 'DYNAMIC_FORM' && state.mode !== 'NODE_ACTOR') {
+    return null;
+  }
+
+  const options =
+    state.mode === 'DYNAMIC_FORM'
+      ? FORM_MEMBER_SUBJECT_OPTIONS
+      : NODE_ACTOR_SUBJECT_OPTIONS;
+
+  if (state.levelsUp === null) {
+    return { invalid: false, options, selected: options[0] };
+  }
+
+  const selected = readStoredManagerLevelOption(options, state.levelsUp);
+
+  return {
+    invalid: selected.id.startsWith('invalid:'),
+    options: options.some((option) => option.id === selected.id)
+      ? options
+      : [...options, selected],
+    selected,
+  };
+}
+
+/**
+ * The state a 簽核人 pick produces, or `null` for a no-op (the shown choice
+ * picked again, the invalid-level entry, an id that is not an option).
+ */
+export function readApproverSubjectPick(
+  state: ApproverResolverEditorState,
+  optionId: string | null,
+): ApproverResolverEditorState | null {
+  const choice = readApproverSubjectChoice(state);
+  const picked = choice?.options.find((option) => option.id === optionId);
+
+  if (
+    !choice ||
+    !picked ||
+    picked.id.startsWith('invalid:') ||
+    picked.id === choice.selected.id
+  ) {
+    return null;
+  }
+
+  return withApproverSubject(state, picked.value);
+}
+
+export type ApproverManagerRuleView = Readonly<{
+  fallback: ApproverResolverFallback;
+  preferClosestOrgUnit: boolean;
+  /** 主管鏈 has no 只取最近一層主管. */
+  showPreferClosestOrgUnit: boolean;
+}>;
+
+/**
+ * The 只取最近一層主管 / 無主管時 pair of a resolver that looks a manager up,
+ * `null` for one that does not (so 本人 shows neither).
+ */
+export function readApproverManagerRule(
+  resolver: ApproverResolver,
+): ApproverManagerRuleView | null {
+  if (!isFallbackCapableResolver(resolver)) {
+    return null;
+  }
+
+  return {
+    fallback: resolver.fallback ?? { type: 'NONE' },
+    preferClosestOrgUnit:
+      'preferClosestOrgUnit' in resolver
+        ? Boolean(resolver.preferClosestOrgUnit)
+        : false,
+    showPreferClosestOrgUnit: resolver.type !== 'ORG_MANAGER_CHAIN',
+  };
+}
+
+export function withPreferClosestOrgUnit(
+  resolver: ApproverResolver,
+  preferClosestOrgUnit: boolean,
+): ApproverResolver {
+  if (
+    !isFallbackCapableResolver(resolver) ||
+    resolver.type === 'ORG_MANAGER_CHAIN'
+  ) {
+    return resolver;
+  }
+
+  return { ...resolver, preferClosestOrgUnit };
 }

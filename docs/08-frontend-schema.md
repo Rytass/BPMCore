@@ -264,8 +264,10 @@ type ApproverResolverFallback =
 `readUnsupportedApproverFallbackType(fallback)`（未發佈，v0.16.2 之後）回傳本版本不認得的 fallback `type`
 （例如由較新版本存下的定義），否則為 `null`；Designer 遇到時以唯讀顯示，引擎則在節點啟動時拒絕。
 
-Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`）、發起人主管、主管鏈、
-指定組織主管、組織任一人、組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
+Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC_FORM`／`FORM_MEMBER_MANAGER`）、
+「依前面關卡的簽核者」（`NODE_ACTOR`／`NODE_ACTOR_MANAGER`）、發起人主管、主管鏈、
+指定組織主管（固定組織＝`ORG_UNIT_MANAGER`、表單欄位＝`FORM_ORG_UNIT_MANAGER`）、組織任一人、
+組織特定職位、指定職位等模式；`EXPRESSION` 不開放給一般使用者，
 只由 API／AI 建立並照常顯示。「依表單欄位指定」只列出綁定表單中的 `member` 欄位
 （`formPath` = 欄位的 `fieldKey`）；表單沒有人員選擇欄位時會提示先到表單設計加入，儲存值
 已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
@@ -289,6 +291,14 @@ position / org id 是否真實存在。
 須指向**單選**、必填、不會被 `visibleWhen`／`hidden` 藏起來的 `member` 欄位，
 `FORM_ORG_UNIT_MANAGER` 須指向必填且不會被藏的 `org_unit` 欄位（判準與 `DYNAMIC_FORM` 同一套）；
 `NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查（`readNodeActorSourceIssues`）在結構檢查通過後執行。
+
+設計器的「簽核來源」面板依畫面選擇編輯，而不是 JSON 的 `type`：「依表單欄位指定」與
+「依前面關卡的簽核者」各有一個「簽核人」下拉（欄位裡的人／關卡的簽核者＝本人，或直屬／第二層／第三層主管），
+選主管時才出現「只取最近一層主管」「無主管時」；「指定組織主管」的「組織」可選固定組織或表單欄位。
+儲存的主管層級 < 1 時（手寫或 API 寫入）顯示為「第 N 層主管（無效）」而不是本人，JSON 照原樣保留，
+發布檢查會擋。本版本不認得的 resolver `type` 在設計器內**唯讀**顯示「不支援的簽核來源（type）」，
+沒有來源下拉也沒有任何編輯器，儲存時原樣寫回；重新選取畫面上已顯示的來源不會重置設定。
+「關卡」複選的提示即時顯示 `readNodeActorSourceIssues` 的整組問題（涵蓋、跨平行分支、可被跳過的關卡等）。
 
 設計器對這兩種來源的圖檢查是**只擋發布、不擋儲存草稿**（與欄位權限矩陣的問題清單同一道：
 側欄顯示「發布前需修正：簽核節點「<名稱>」：…」，發布按鈕停用）；實作是 designer 端的

@@ -138,7 +138,10 @@ import {
   PositionPicker,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
-import { readNodeActorGraphIssues } from './node-actor-resolver-options';
+import {
+  readNodeActorGraphIssues,
+  readNodeActorStageChoice,
+} from './node-actor-resolver-options';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
   OrgUnitRecord,
@@ -173,10 +176,18 @@ import {
   APPROVER_RESOLVER_MODE_OPTIONS,
   MANAGER_LEVEL_OPTIONS,
   MemberSelectOption,
+  NodeNameRecord,
+  ORG_UNIT_SOURCE_OPTIONS,
+  buildApproverResolver,
+  readApproverManagerRule,
+  readApproverResolverEditorState,
   readApproverResolverMemberIds,
-  readApproverResolverMode,
   readApproverResolverSummary,
-  readDefaultApproverResolver,
+  readApproverSourceModeId,
+  readApproverSourcePick,
+  readApproverSourceReadOnlyText,
+  readApproverSubjectChoice,
+  readApproverSubjectPick,
   readFallbackMemberSelectOption,
   readManagerLevelOption,
   readManagerLevelOptionById,
@@ -186,13 +197,19 @@ import {
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
   updateApproverResolverFallback,
+  withOrgUnitSource,
+  withPreferClosestOrgUnit,
 } from './approver-resolver-model';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
 import {
   DryRunAssigneeDirectory,
   readDryRunAssigneeLabel,
 } from './dry-run-assignee-label';
-import { readDynamicFormFieldChoice } from './dynamic-form-resolver-options';
+import {
+  readDynamicFormFieldChoice,
+  readFormMemberManagerFieldChoice,
+  readFormOrgUnitFieldChoice,
+} from './dynamic-form-resolver-options';
 import {
   readFormVersionLabel,
   readTemplateVersionDescription,
@@ -1214,6 +1231,11 @@ export function TemplateDesignerView({
           node.id === selectedNodeId,
           initiatorPolicyDraft,
           webhookFormSchema,
+          // Stage names for the 依前面關卡的簽核者 cards, instead of a count.
+          workflowDefinition.nodes.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.data.label || candidate.id,
+          })),
         ),
       ),
     [
@@ -2656,7 +2678,13 @@ export function TemplateDesignerView({
     node: Extract<WorkflowNode, { type: 'userTask' }>,
   ): ReactElement {
     const resolver = node.data.approverResolver;
-    const resolverMode = readApproverResolverMode(resolver.type);
+    // The panel edits the screen state, not the JSON type: ②本人／主管 and
+    // ①固定組織／表單欄位 are one option each, and a type this build does not
+    // know is held read-only (its JSON is saved back exactly as stored).
+    const editorState = readApproverResolverEditorState(resolver);
+    const sourceReadOnlyText = readApproverSourceReadOnlyText(editorState);
+    const subjectChoice = readApproverSubjectChoice(editorState);
+    const managerRule = readApproverManagerRule(resolver);
     const selectedMembers =
       resolver.type === 'DIRECT'
         ? resolver.memberIds.map((memberId) =>
@@ -2664,7 +2692,6 @@ export function TemplateDesignerView({
           )
         : [];
     const selectedOrgUnit =
-      resolver.type === 'ORG_UNIT_MANAGER' ||
       resolver.type === 'ORG_UNIT_MEMBER' ||
       resolver.type === 'ORG_UNIT_POSITION'
         ? readSelectedOrgUnitOption(orgUnits, resolver.orgUnitId)
@@ -2684,19 +2711,37 @@ export function TemplateDesignerView({
           })
         : [];
     const dynamicFormChoice =
-      resolver.type === 'DYNAMIC_FORM'
-        ? readDynamicFormFieldChoice(webhookFormSchema, resolver.formPath)
+      editorState.mode === 'DYNAMIC_FORM'
+        ? editorState.levelsUp === null
+          ? readDynamicFormFieldChoice(webhookFormSchema, editorState.formPath)
+          : readFormMemberManagerFieldChoice(
+              webhookFormSchema,
+              editorState.formPath,
+            )
+        : null;
+    const orgFieldChoice =
+      editorState.mode === 'ORG_UNIT_MANAGER' &&
+      editorState.orgSource === 'FORM_FIELD'
+        ? readFormOrgUnitFieldChoice(webhookFormSchema, editorState.formPath)
+        : null;
+    const selectedManagerOrgUnit =
+      editorState.mode === 'ORG_UNIT_MANAGER' &&
+      editorState.orgSource === 'FIXED'
+        ? readSelectedOrgUnitOption(orgUnits, editorState.orgUnitId)
+        : null;
+    const nodeActorChoice =
+      editorState.mode === 'NODE_ACTOR'
+        ? readNodeActorStageChoice(
+            workflowDefinition,
+            node.id,
+            editorState.nodeIds,
+          )
         : null;
     const selectedManagerLevel =
       resolver.type === 'ORG_MANAGER'
         ? readManagerLevelOption(resolver.levelsUp)
         : MANAGER_LEVEL_OPTIONS[0];
-    const fallback =
-      resolver.type === 'ORG_MANAGER' ||
-      resolver.type === 'ORG_MANAGER_CHAIN' ||
-      resolver.type === 'ORG_UNIT_MANAGER'
-        ? (resolver.fallback ?? { type: 'NONE' as const })
-        : { type: 'NONE' as const };
+    const fallback = managerRule?.fallback ?? { type: 'NONE' as const };
     const unsupportedFallbackType =
       readUnsupportedApproverFallbackType(fallback);
     const approverFallbackModeOptions =
@@ -2742,23 +2787,78 @@ export function TemplateDesignerView({
     const decisionPolicyType = readDecisionPolicyType(node.data.decisionPolicy);
     const quorum = readQuorumParts(node.data.decisionPolicy);
 
-    return (
-      <>
-        <BPMFormField label="簽核來源" name="approverResolverType" required>
+    function renderApproverSubjectField(): ReactElement | null {
+      if (!subjectChoice) {
+        return null;
+      }
+
+      return (
+        <BPMFormField
+          hintText={
+            subjectChoice.invalid
+              ? '原本儲存的主管層級無效（需為第 1 層以上），請重新選擇；發布前必須修正。'
+              : editorState.mode === 'NODE_ACTOR'
+                ? '選「關卡的簽核者」就是簽核者本人；選主管則往上找他的主管，不會是簽核者自己。'
+                : '選「欄位裡的人」就是欄位選的人；選主管則往上找他的主管，不會是欄位裡的人自己。'
+          }
+          label="簽核人"
+          name="approverSubject"
+          required
+        >
           <Select
             clearable={false}
-            onChange={(option): void =>
-              updateUserTaskResolver(
-                readDefaultApproverResolver(option?.id ?? null, positions),
-              )
-            }
-            options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
-            value={readSelectOption(
-              APPROVER_RESOLVER_MODE_OPTIONS,
-              resolverMode,
-            )}
+            onChange={(option): void => {
+              const next = readApproverSubjectPick(
+                editorState,
+                option?.id ?? null,
+              );
+
+              if (next) {
+                updateUserTaskResolver(buildApproverResolver(next));
+              }
+            }}
+            options={[...subjectChoice.options]}
+            value={subjectChoice.selected}
           />
         </BPMFormField>
+      );
+    }
+
+    return (
+      <>
+        {sourceReadOnlyText !== null ? (
+          <BPMFormField
+            hintText="此簽核來源來自較新版本的 BPMCore，本版本無法編輯，儲存時會原樣保留；請升級後再編輯。"
+            label="簽核來源"
+            name="approverResolverType"
+          >
+            <Input disabled value={sourceReadOnlyText} variant="base" />
+          </BPMFormField>
+        ) : (
+          <BPMFormField label="簽核來源" name="approverResolverType" required>
+            <Select
+              clearable={false}
+              onChange={(option): void => {
+                // Re-picking the option already shown must not rebuild a clean
+                // default over what the author filled in.
+                const next = readApproverSourcePick(
+                  resolver,
+                  option?.id ?? null,
+                  positions,
+                );
+
+                if (next) {
+                  updateUserTaskResolver(next);
+                }
+              }}
+              options={[...APPROVER_RESOLVER_MODE_OPTIONS]}
+              value={readSelectOption(
+                APPROVER_RESOLVER_MODE_OPTIONS,
+                readApproverSourceModeId(editorState),
+              )}
+            />
+          </BPMFormField>
+        )}
         {resolver.type === 'DIRECT' ? (
           <BPMFormField
             hintText={readDecisionPolicyHint(node.data.decisionPolicy)}
@@ -2809,29 +2909,36 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
-        {resolver.type === 'DYNAMIC_FORM' ? (
-          <BPMFormField
-            hintText={
-              dynamicFormChoice?.problem ??
-              '簽核人取自申請人送出表單時在該欄位選的人員。'
-            }
-            label="表單欄位"
-            name="approverFormPath"
-            required
-          >
-            <Select
-              clearable={false}
-              onChange={(option): void =>
-                updateUserTaskResolver({
-                  formPath: option?.id ?? '',
-                  type: 'DYNAMIC_FORM',
-                })
+        {editorState.mode === 'DYNAMIC_FORM' ? (
+          <>
+            <BPMFormField
+              hintText={
+                dynamicFormChoice?.problem ??
+                (editorState.levelsUp === null
+                  ? '簽核人取自申請人送出表單時在該欄位選的人員。'
+                  : '依申請人送出表單時在該欄位選的人員，往上找他的主管。')
               }
-              options={[...(dynamicFormChoice?.options ?? [])]}
-              placeholder="選擇人員選擇欄位"
-              value={dynamicFormChoice?.selected ?? undefined}
-            />
-          </BPMFormField>
+              label="表單欄位"
+              name="approverFormPath"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskResolver(
+                    buildApproverResolver({
+                      ...editorState,
+                      formPath: option?.id ?? '',
+                    }),
+                  )
+                }
+                options={[...(dynamicFormChoice?.options ?? [])]}
+                placeholder="選擇人員選擇欄位"
+                value={dynamicFormChoice?.selected ?? undefined}
+              />
+            </BPMFormField>
+            {renderApproverSubjectField()}
+          </>
         ) : null}
         {resolver.type === 'ORG_MANAGER' ? (
           <BPMFormField
@@ -2883,15 +2990,123 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
-        {resolver.type === 'ORG_UNIT_MANAGER' ||
-        resolver.type === 'ORG_UNIT_MEMBER' ||
+        {editorState.mode === 'ORG_UNIT_MANAGER' ? (
+          <>
+            <BPMFormField
+              hintText="固定組織：每張單都找同一個組織的主管；表單欄位：找申請人在表單上選的組織的主管。"
+              label="組織"
+              name="orgUnitSource"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void => {
+                  if (!option || option.id === editorState.orgSource) {
+                    return;
+                  }
+
+                  updateUserTaskResolver(
+                    buildApproverResolver(
+                      withOrgUnitSource(
+                        editorState,
+                        option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
+                      ),
+                    ),
+                  );
+                }}
+                options={[...ORG_UNIT_SOURCE_OPTIONS]}
+                value={readSelectOption(
+                  ORG_UNIT_SOURCE_OPTIONS,
+                  editorState.orgSource,
+                )}
+              />
+            </BPMFormField>
+            {editorState.orgSource === 'FIXED' ? (
+              <BPMFormField
+                hintText="依指定組織或其上層的主管解析規則決定簽核人。"
+                label="指定組織"
+                name="orgUnitId"
+                required
+              >
+                <OrgUnitPicker
+                  name="orgUnitId"
+                  onChange={(option): void =>
+                    updateUserTaskResolver(
+                      buildApproverResolver({
+                        ...editorState,
+                        orgUnitId: option?.id ?? '',
+                      }),
+                    )
+                  }
+                  orgUnits={orgUnits}
+                  placeholder="選擇組織"
+                  value={selectedManagerOrgUnit}
+                />
+              </BPMFormField>
+            ) : (
+              <BPMFormField
+                hintText={
+                  orgFieldChoice?.problem ??
+                  '依申請人送出表單時在該欄位選的組織，找該組織的主管。'
+                }
+                label="表單欄位"
+                name="approverOrgFormPath"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void =>
+                    updateUserTaskResolver(
+                      buildApproverResolver({
+                        ...editorState,
+                        formPath: option?.id ?? '',
+                      }),
+                    )
+                  }
+                  options={[...(orgFieldChoice?.options ?? [])]}
+                  placeholder="選擇組織選擇欄位"
+                  value={orgFieldChoice?.selected ?? undefined}
+                />
+              </BPMFormField>
+            )}
+          </>
+        ) : null}
+        {editorState.mode === 'NODE_ACTOR' ? (
+          <>
+            <BPMFormField
+              hintText={
+                nodeActorChoice && nodeActorChoice.problems.length > 0
+                  ? nodeActorChoice.problems.join('；')
+                  : '簽核人取自你選的前面關卡實際簽核的人；可複選，整組要涵蓋每條路徑。'
+              }
+              label="關卡"
+              name="approverNodeIds"
+              required
+            >
+              <Select
+                clearable
+                mode="multiple"
+                onChange={(options): void =>
+                  updateUserTaskResolver(
+                    buildApproverResolver({
+                      ...editorState,
+                      nodeIds: options.map((option) => option.id),
+                    }),
+                  )
+                }
+                options={[...(nodeActorChoice?.options ?? [])]}
+                overflowStrategy="wrap"
+                placeholder="選擇前面的簽核關卡"
+                value={[...(nodeActorChoice?.selected ?? [])]}
+              />
+            </BPMFormField>
+            {renderApproverSubjectField()}
+          </>
+        ) : null}
+        {resolver.type === 'ORG_UNIT_MEMBER' ||
         resolver.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText={
-              resolver.type === 'ORG_UNIT_MANAGER'
-                ? '依指定組織或其上層的主管解析規則決定簽核人。'
-                : '依指定組織目前有效會員歸屬建立候選簽核人。'
-            }
+            hintText="依指定組織目前有效會員歸屬建立候選簽核人。"
             label="組織"
             name="orgUnitId"
             required
@@ -2906,18 +3121,12 @@ export function TemplateDesignerView({
                         orgUnitId: option?.id ?? '',
                         type: 'ORG_UNIT_MEMBER',
                       }
-                    : resolver.type === 'ORG_UNIT_POSITION'
-                      ? {
-                          includeDescendants: resolver.includeDescendants,
-                          orgUnitId: option?.id ?? '',
-                          positionId: '',
-                          type: 'ORG_UNIT_POSITION',
-                        }
-                      : {
-                          fallback: resolver.fallback,
-                          orgUnitId: option?.id ?? '',
-                          type: 'ORG_UNIT_MANAGER',
-                        },
+                    : {
+                        includeDescendants: resolver.includeDescendants,
+                        orgUnitId: option?.id ?? '',
+                        positionId: '',
+                        type: 'ORG_UNIT_POSITION',
+                      },
                 )
               }
               orgUnits={orgUnits}
@@ -2926,27 +3135,24 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
-        {resolver.type === 'ORG_MANAGER' ||
-        resolver.type === 'ORG_MANAGER_CHAIN' ||
-        resolver.type === 'ORG_UNIT_MANAGER' ? (
+        {managerRule !== null ? (
           <>
-            {resolver.type !== 'ORG_MANAGER_CHAIN' ? (
+            {managerRule.showPreferClosestOrgUnit ? (
               <BPMFormField
                 hintText="開啟後只取離該員最近一層的主管規則；掛在上層單位、涵蓋範圍較大的規則不會再一併加入簽核人。"
                 label="只取最近一層主管"
                 name="preferClosestOrgUnit"
               >
                 <Toggle
-                  checked={Boolean(resolver.preferClosestOrgUnit)}
+                  checked={managerRule.preferClosestOrgUnit}
                   inputProps={{
                     id: 'preferClosestOrgUnit',
                     name: 'preferClosestOrgUnit',
                   }}
                   onChange={(event: ChangeEvent<HTMLInputElement>): void =>
-                    updateUserTaskResolver({
-                      ...resolver,
-                      preferClosestOrgUnit: event.target.checked,
-                    })
+                    updateUserTaskResolver(
+                      withPreferClosestOrgUnit(resolver, event.target.checked),
+                    )
                   }
                 />
               </BPMFormField>
@@ -4107,6 +4313,7 @@ function readFlowNode(
   selected: boolean,
   initiatorPolicyDraft: InitiatorPolicyDraft,
   formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[],
 ): FlowNode {
   const dimensions = readWorkflowNodeDimensions(node);
 
@@ -4125,6 +4332,7 @@ function readFlowNode(
         orgUnits,
         positions,
         formSchema,
+        nodes,
       ),
       fieldAccessTag:
         node.type === 'userTask' ? readFieldAccessNodeTag(node) : null,
@@ -5230,6 +5438,7 @@ function readNodeApproverSummary(
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
   formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[],
 ): string | null {
   if (node.type === 'userTask') {
     return readApproverResolverSummary(
@@ -5238,6 +5447,7 @@ function readNodeApproverSummary(
       orgUnits,
       positions,
       formSchema,
+      nodes,
     );
   }
 
