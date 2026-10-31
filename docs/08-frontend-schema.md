@@ -290,6 +290,12 @@ position / org id 是否真實存在。
 `FORM_ORG_UNIT_MANAGER` 須指向必填且不會被藏的 `org_unit` 欄位（判準與 `DYNAMIC_FORM` 同一套）；
 `NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查（`readNodeActorSourceIssues`）在結構檢查通過後執行。
 
+設計器對這兩種來源的圖檢查是**只擋發布、不擋儲存草稿**（與欄位權限矩陣的問題清單同一道：
+側欄顯示「發布前需修正：簽核節點「<名稱>」：…」，發布按鈕停用）；實作是 designer 端的
+`readNodeActorGraphIssues(definition)`（`designer/node-actor-resolver-options.ts`），逐一對每個
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 簽核節點呼叫 `readNodeActorSourceIssues`。shared 的
+`readWorkflowDefinitionIssue`（AI 工具組、`workflow-command` 用）不含這項檢查。
+
 AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種來源；必要欄位
 （`formPath`、`nodeIds`）缺漏時照既有慣例退回預設的直屬主管。換簽核來源時，新的三個主管型與
 既有主管型一樣沿用節點原本的 `fallback`。
@@ -298,9 +304,12 @@ AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種
 
 試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
 `assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
-`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`）；
-designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」），真實成員 id
-顯示姓名，不認得的字串原樣顯示。試跑的範例表單資料中，`member` 欄位預設填入占位值
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`，以及
+四種新來源的 `formMemberManager:<formPath>:<levelsUp>`、`formOrgUnitManager:<formPath>`、
+`nodeActor:<nodeId,nodeId…>`、`nodeActorManager:<nodeId,nodeId…>:<levelsUp>`）；
+designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」；
+`nodeActor:` 系列顯示前面關卡的名稱，已刪除的關卡顯示 id），真實成員 id
+顯示姓名，不認得的字串原樣顯示。`org_unit` 欄位的試跑樣本值是占位字串 `formOrgUnit:<fieldKey>`。試跑的範例表單資料中，`member` 欄位預設填入占位值
 `formMember:<fieldKey>`（可複選則為單元素陣列），讓「依表單欄位指定」的節點能解析出人，
 試跑結果顯示為「表單欄位「<欄位名稱>」選的人（送出時依填寫內容決定）」（欄位沒有名稱或已刪除時顯示 `fieldKey`）。刻意不填試跑發起人：
 真實送出時通常選的是別人，填發起人會讓設了「排除申請人」的節點在試跑中被略過或停住。

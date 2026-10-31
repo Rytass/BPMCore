@@ -138,6 +138,7 @@ import {
   PositionPicker,
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
+import { readNodeActorGraphIssues } from './node-actor-resolver-options';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
   OrgUnitRecord,
@@ -1193,7 +1194,15 @@ export function TemplateDesignerView({
       ? readWorkflowLintMessage(issue.message, workflowDefinition, language)
       : null;
   }, [language, webhookFormSchema, workflowDefinition]);
-  const publishIssue = webhookPublishIssue ?? fieldAccessPublishIssue;
+  // Publish-only too: the backend publish lint refuses a 依前面關卡的簽核者 node
+  // whose stages can be skipped, sit after it, or straddle a parallel split,
+  // while the draft can still be saved with that unfinished.
+  const nodeActorPublishIssue = useMemo(
+    (): string | null => readNodeActorGraphIssues(workflowDefinition)[0] ?? null,
+    [workflowDefinition],
+  );
+  const publishIssue =
+    webhookPublishIssue ?? fieldAccessPublishIssue ?? nodeActorPublishIssue;
   const flowNodes = useMemo(
     (): FlowNode[] =>
       workflowDefinition.nodes.map((node) =>
@@ -2331,6 +2340,10 @@ export function TemplateDesignerView({
         memberOptions.find(
           (option) => option.memberId === memberId && !option.unresolved,
         )?.displayName ?? null,
+      nodes: workflowDefinition.nodes.map((node) => ({
+        id: node.id,
+        name: node.data.label || node.id,
+      })),
       orgUnits,
       positions,
     };
