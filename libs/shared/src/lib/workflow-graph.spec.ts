@@ -1399,7 +1399,7 @@ describe('approver sources — form, organization and prior nodes', () => {
       readApproverResolverIssue({
         type: 'FUTURE_TYPE',
       } as unknown as ApproverResolver),
-    ).toEqual(expect.any(String));
+    ).toBe('簽核節點的簽核來源不在這個版本支援的範圍內，請改選其他簽核來源。');
   });
 });
 
@@ -1410,8 +1410,8 @@ describe('readNotifyRecipientsIssue — new approver sources', () => {
     ['NODE_ACTOR', { nodeIds: ['a'], type: 'NODE_ACTOR' }],
     ['NODE_ACTOR_MANAGER', { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' }],
   ] as const)('refuses %s as a notify recipient even when complete', (_n, recipients) => {
-    expect(readNotifyRecipientsIssue(recipients as ApproverResolver)).toEqual(
-      expect.any(String),
+    expect(readNotifyRecipientsIssue(recipients as ApproverResolver)).toBe(
+      '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。',
     );
   });
 
@@ -1428,7 +1428,9 @@ describe('readNotifyRecipientsIssue — new approver sources', () => {
           notifyAction({ nodeIds: ['a'], type: 'NODE_ACTOR' }),
         ).nodes.find((node) => node.id === 'notify') as WorkflowNode,
       ),
-    ).toEqual(expect.any(String));
+    ).toBe(
+      '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。',
+    );
   });
 });
 
@@ -1541,17 +1543,21 @@ describe('readNodeActorSourceIssues', () => {
     });
 
     it('refuses an empty list', () => {
-      expect(readNodeActorSourceIssues(LINE, 'me', [])).toHaveLength(1);
+      expect(readNodeActorSourceIssues(LINE, 'me', [])).toEqual([
+        '簽核節點需要指定前面的簽核關卡。',
+      ]);
     });
 
     it('refuses a repeated node', () => {
-      expect(readNodeActorSourceIssues(LINE, 'me', ['a', 'a'])).toHaveLength(1);
+      expect(readNodeActorSourceIssues(LINE, 'me', ['a', 'a'])).toEqual([
+        '簽核來源的前面關卡不可重複。',
+      ]);
     });
 
     it('refuses the node itself', () => {
-      expect(readNodeActorSourceIssues(LINE, 'me', ['a', 'me'])).toHaveLength(
-        1,
-      );
+      expect(readNodeActorSourceIssues(LINE, 'me', ['a', 'me'])).toEqual([
+        '簽核來源的前面關卡不可以是自己。',
+      ]);
     });
   });
 
@@ -1670,9 +1676,35 @@ describe('readNodeActorSourceIssues', () => {
     });
 
     it('refuses a source that comes after the node (never reached first)', () => {
+      // Rule 4 (not covered) and rule 6 (not upstream) both fire.
       expect(readNodeActorSourceIssues(LINE, 'a', ['b'])).toEqual([
         expect.stringContaining('不會經過'),
+        expect.stringContaining('不在 「a」 的上游'),
       ]);
+    });
+  });
+
+  describe('rule 6: every source is upstream of the node', () => {
+    const withIsolated = graph(
+      [...LINE.nodes, taskNode('iso')],
+      LINE.edges,
+    );
+
+    it('refuses a downstream node listed next to an upstream one', () => {
+      // 'a' alone covers every path to 'b', so rule 4 stays quiet.
+      expect(readNodeActorSourceIssues(LINE, 'b', ['a', 'me'])).toEqual([
+        '前面關卡 「me」 不在 「b」 的上游，走不到這個節點，不能當簽核來源。',
+      ]);
+    });
+
+    it('refuses a node that is not connected to the graph', () => {
+      expect(readNodeActorSourceIssues(withIsolated, 'me', ['a', 'iso'])).toEqual([
+        '前面關卡 「iso」 不在 「me」 的上游，走不到這個節點，不能當簽核來源。',
+      ]);
+    });
+
+    it('passes two upstream sources (control)', () => {
+      expect(readNodeActorSourceIssues(LINE, 'me', ['a', 'b'])).toEqual([]);
     });
   });
 
@@ -1703,7 +1735,9 @@ describe('readNodeActorSourceIssues', () => {
       ]);
     });
 
-    it('passes one source from a parallel branch alone only when every path covers it (control: rule 4 still applies)', () => {
+    // Conservative limitation: coverage walks a parallel gateway like an
+    // exclusive one, so a node after the join is "uncovered" by one branch.
+    it('refuses one source from a parallel branch alone for a node after the join (control: rule 4 still applies)', () => {
       expect(readNodeActorSourceIssues(parallel(), 'me', ['a'])).toEqual([
         expect.stringContaining('不會經過'),
       ]);

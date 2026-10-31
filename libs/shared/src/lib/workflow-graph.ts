@@ -1276,6 +1276,9 @@ export function readApproverResolverIssue(
  *    reach `nodeId` (else some case never passes a source);
  * 5. no two sources on different branches of one parallel split (they would
  *    both run, and "the earlier signer" would not be one person).
+ * 6. every source is upstream of `nodeId`: some path leads from it to the
+ *    node (rule 4 alone passes a source that sits after the node or off the
+ *    graph whenever another listed source already covers every path).
  *
  * The graph is a DAG: the publish lint refuses cycles before this runs.
  */
@@ -1353,6 +1356,15 @@ export function readNodeActorSourceIssues(
           .join('、')}）就走到 ${labelOf(nodeId)}，那一趟沒有人可以當簽核人。`,
       ]
     : [];
+  const notUpstreamIssues = sourceNodeIds
+    .filter(
+      (id) =>
+        !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
+    )
+    .map(
+      (id) =>
+        `前面關卡 ${labelOf(id)} 不在 ${labelOf(nodeId)} 的上游，走不到這個節點，不能當簽核來源。`,
+    );
   const parallelBranches = readWorkflowParallelBranchSets(definition);
   const parallelIssues = sourceNodeIds.flatMap((id, index) =>
     sourceNodeIds
@@ -1368,7 +1380,12 @@ export function readNodeActorSourceIssues(
       ),
   );
 
-  return [...skippableIssues, ...coverageIssues, ...parallelIssues];
+  return [
+    ...skippableIssues,
+    ...coverageIssues,
+    ...notUpstreamIssues,
+    ...parallelIssues,
+  ];
 }
 
 export function hasConfiguredConditionEdges(
