@@ -6619,10 +6619,32 @@ export class WorkflowEngineService {
     subject: ResolvedSubject = '簽核人',
     skippedChainMemberIds: readonly string[] = [],
   ): Promise<readonly ResolvedApproverCandidate[]> {
+    const memberIds = await this.resolveApproverMemberIds(
+      manager,
+      instance,
+      resolver,
+      label,
+      subject,
+      skippedChainMemberIds,
+    );
+
+    return memberIds.map((memberId) => ({
+      memberId,
+      sourceType: resolver.type,
+    }));
+  }
+
+  /** The member ids `resolver` routes to; every source type, one branch each. */
+  private async resolveApproverMemberIds(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: ApproverResolver,
+    label: string,
+    subject: ResolvedSubject,
+    skippedChainMemberIds: readonly string[],
+  ): Promise<readonly string[]> {
     if (resolver.type === 'DIRECT') {
-      return readMemberIdsFromValue(resolver.memberIds, label, subject).map(
-        (memberId) => ({ memberId, sourceType: resolver.type }),
-      );
+      return readMemberIdsFromValue(resolver.memberIds, label, subject);
     }
 
     if (resolver.type === 'DYNAMIC_FORM') {
@@ -6631,7 +6653,7 @@ export class WorkflowEngineService {
         label,
         subject,
         `依表單欄位「${resolver.formPath}」`,
-      ).map((memberId) => ({ memberId, sourceType: resolver.type }));
+      );
     }
 
     if (resolver.type === 'EXPRESSION') {
@@ -6644,7 +6666,7 @@ export class WorkflowEngineService {
         label,
         subject,
         '依運算式',
-      ).map((memberId) => ({ memberId, sourceType: resolver.type }));
+      );
     }
 
     if (resolver.type === 'POSITION') {
@@ -6653,8 +6675,6 @@ export class WorkflowEngineService {
         resolver.positionId,
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6665,8 +6685,6 @@ export class WorkflowEngineService {
         Boolean(resolver.includeDescendants),
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6678,8 +6696,6 @@ export class WorkflowEngineService {
         Boolean(resolver.includeDescendants),
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6692,8 +6708,6 @@ export class WorkflowEngineService {
         label,
         resolver.preferClosestOrgUnit === true,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6706,8 +6720,6 @@ export class WorkflowEngineService {
         label,
         subject,
         skippedChainMemberIds,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6720,8 +6732,6 @@ export class WorkflowEngineService {
         label,
         resolver.preferClosestOrgUnit === true,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6732,8 +6742,6 @@ export class WorkflowEngineService {
         resolver,
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6744,8 +6752,6 @@ export class WorkflowEngineService {
         resolver,
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6756,8 +6762,6 @@ export class WorkflowEngineService {
         resolver,
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
@@ -6768,23 +6772,18 @@ export class WorkflowEngineService {
         resolver,
         label,
         subject,
-      ).then((memberIds) =>
-        memberIds.map((memberId) => ({ memberId, sourceType: resolver.type })),
       );
     }
 
     // A template saved by a newer engine can carry an approver source this
     // engine does not know. Refuse it by name instead of quietly resolving it
     // as the initiator's manager, which would route the task to the wrong
-    // person. A source this engine's shared package knows but does not route
-    // yet reports its own type name.
-    const unresolvedResolver = resolver as { readonly type: string };
+    // person. That holds as well for a source a newer shared package knows
+    // and this engine does not route yet, so the type is named either way.
+    const unresolvedType = (resolver as { readonly type: string }).type;
 
     throw new ConflictException(
-      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${
-        readUnsupportedApproverResolverType(unresolvedResolver) ??
-        unresolvedResolver.type
-      }」。請升級 BPMCore 後再發佈或執行此流程。`,
+      `${label} 無法建立${subject === '通知對象' ? '通知' : '待簽任務'}：此引擎版本不支援簽核人來源「${unresolvedType}」。請升級 BPMCore 後再發佈或執行此流程。`,
     );
   }
 
@@ -6814,9 +6813,7 @@ export class WorkflowEngineService {
       throw new ConflictException(`${label} ${source}只能選一位人員`);
     }
 
-    const levelsUp = Number.isFinite(resolver.levelsUp)
-      ? Math.max(Math.trunc(resolver.levelsUp), 1)
-      : 1;
+    const levelsUp = readManagerLevelsUp(resolver.levelsUp);
     const managerMemberIds = await this.resolveManagerMemberIdsExcludingSubject(
       manager,
       pickedMemberIds[0],
@@ -6915,9 +6912,7 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
   ): Promise<readonly string[]> {
-    const levelsUp = Number.isFinite(resolver.levelsUp)
-      ? Math.max(Math.trunc(resolver.levelsUp), 1)
-      : 1;
+    const levelsUp = readManagerLevelsUp(resolver.levelsUp);
     const actorMemberIds = await this.readNodeActorMemberIds(
       manager,
       instance,
@@ -8875,6 +8870,11 @@ function readWorkflowNodeLabel(
     ?.data.label;
 
   return typeof label === 'string' && label.trim() ? label : null;
+}
+
+/** A stored `levelsUp` as a whole number of tiers, at least one. */
+function readManagerLevelsUp(levelsUp: number): number {
+  return Number.isFinite(levelsUp) ? Math.max(Math.trunc(levelsUp), 1) : 1;
 }
 
 const SLA_AUTO_APPROVE_MARK: NonNullable<DecideTaskOptions['automatic']> =
