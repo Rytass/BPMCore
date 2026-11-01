@@ -44,10 +44,14 @@ function readStoredOrgUnitId(value: FormFieldValue | undefined): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+// The server lowercases the ids it is given and answers with the lowercase
+// form, so a stored id is matched without regard to case.
+function readOrgUnitIdKey(orgUnitId: string): string {
+  return orgUnitId.toLowerCase();
+}
+
 function isSameOrgUnitId(left: string, right: string): boolean {
-  // The server lowercases the ids it is given and answers with the lowercase
-  // form, so a stored id is matched without regard to case.
-  return left.toLowerCase() === right.toLowerCase();
+  return readOrgUnitIdKey(left) === readOrgUnitIdKey(right);
 }
 
 /**
@@ -90,7 +94,8 @@ export function readUnresolvedOrgUnitId(
 
 /**
  * Adds `nextOptions` to `currentOptions`. A named option replaces an unresolved
- * placeholder with the same id; otherwise the first one seen wins. Returns
+ * placeholder with the same id, compared without regard to case like every
+ * other id match here; otherwise the first one seen wins. Returns
  * `currentOptions` itself when nothing changed, so state setters can bail out
  * of a re-render.
  */
@@ -101,18 +106,23 @@ export function mergeOrgUnitFieldOptions(
   const namedById = new Map(
     nextOptions
       .filter((option) => !option.unresolved)
-      .map((option) => [option.id, option] as const),
+      .map((option) => [readOrgUnitIdKey(option.id), option] as const),
   );
-  const currentIds = new Set(currentOptions.map((option) => option.id));
+  const currentIds = new Set(
+    currentOptions.map((option) => readOrgUnitIdKey(option.id)),
+  );
   const addedOptions = nextOptions.filter(
     (option, index) =>
-      !currentIds.has(option.id) &&
-      nextOptions.findIndex((candidate) => candidate.id === option.id) ===
-        index,
+      !currentIds.has(readOrgUnitIdKey(option.id)) &&
+      nextOptions.findIndex((candidate) =>
+        isSameOrgUnitId(candidate.id, option.id),
+      ) === index,
   );
   const upgradedOptions = currentOptions.map(
     (option) =>
-      (option.unresolved ? namedById.get(option.id) : undefined) ?? option,
+      (option.unresolved
+        ? namedById.get(readOrgUnitIdKey(option.id))
+        : undefined) ?? option,
   );
   const changed =
     addedOptions.length > 0 ||

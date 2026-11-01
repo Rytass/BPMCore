@@ -128,6 +128,23 @@ describe('mergeOrgUnitFieldOptions', () => {
     ).toEqual([SALES, FINANCE]);
   });
 
+  it('matches a placeholder to its named option without regard to case', () => {
+    // A stored id written in upper case comes back from the server in lower
+    // case; the placeholder must still give way, and no second option appear.
+    const storedId = 'AB12CD34-0000-4000-8000-00000000ABCD';
+    const named = { id: storedId.toLowerCase(), name: '研發部' };
+
+    expect(
+      mergeOrgUnitFieldOptions([readPendingOrgUnitFieldOption(storedId)], [named]),
+    ).toEqual([named]);
+    expect(
+      readSelectedOrgUnitFieldOption(
+        storedId,
+        mergeOrgUnitFieldOptions([readPendingOrgUnitFieldOption(storedId)], [named]),
+      ),
+    ).toEqual(named);
+  });
+
   it('never lets a placeholder replace anything', () => {
     expect(
       mergeOrgUnitFieldOptions(
