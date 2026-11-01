@@ -20,6 +20,7 @@ import {
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
+  UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
@@ -1262,6 +1263,50 @@ export function readApproverResolverIssue(
 }
 
 /**
+ * Why a user task may finish with nobody having approved it, which rules it
+ * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source:
+ *
+ * - `entryCondition`: the node can be skipped outright;
+ * - `skipNode`: `excludeInitiator.whenEmpty: 'SKIP_NODE'` skips it when
+ *   removing the initiator leaves nobody;
+ * - `autoApprove`: `sla.onTimeout: 'AUTO_APPROVE'` lets the timeout approve
+ *   it, and the engine does not count an SLA approval as anyone's signature.
+ *
+ * `[]` means the node always has a real signer once it has run. The designer's
+ * stage picker and `readNodeActorSourceIssues` both read this list, so the
+ * two cannot disagree on which stages qualify.
+ */
+export type NodeActorSourceSkipReason =
+  | 'autoApprove'
+  | 'entryCondition'
+  | 'skipNode';
+
+export function readNodeActorSourceSkipReasons(
+  node: UserTaskNode,
+): readonly NodeActorSourceSkipReason[] {
+  return [
+    ...(node.data.entryCondition?.trim() ? (['entryCondition'] as const) : []),
+    ...(node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
+      ? (['skipNode'] as const)
+      : []),
+    ...(node.data.sla?.onTimeout === 'AUTO_APPROVE'
+      ? (['autoApprove'] as const)
+      : []),
+  ];
+}
+
+const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
+  Record<NodeActorSourceSkipReason, (label: string) => string>
+> = {
+  autoApprove: (label) =>
+    `簽核來源的前面關卡 ${label} 設有逾時自動核准，可能沒有人實際簽核。`,
+  entryCondition: (label) =>
+    `簽核來源的前面關卡 ${label} 設有進入條件，可能被跳過、沒有人簽核。`,
+  skipNode: (label) =>
+    `簽核來源的前面關卡 ${label} 在排除發起人後沒人時會跳過此關，可能沒有人簽核。`,
+};
+
+/**
  * The graph checks behind a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` node: the
  * "who signed earlier" source only works when every case reaches `nodeId`
  * through one of `sourceNodeIds`, and that source actually signed. Returns
@@ -1270,8 +1315,8 @@ export function readApproverResolverIssue(
  *
  * 1. at least one source, no repeats, never the node itself;
  * 2. every source exists and is a `userTask`;
- * 3. no source may be skipped: no `entryCondition`, and its
- *    `excludeInitiator` must not skip the whole node when it ends up empty;
+ * 3. no source may be skipped or pass without a signer: see
+ *    {@link readNodeActorSourceSkipReasons};
  * 4. coverage: walking from the start without entering any source must not
  *    reach `nodeId` (else some case never passes a source);
  * 5. no two sources on different branches of one parallel split (they would
@@ -1323,24 +1368,13 @@ export function readNodeActorSourceIssues(
     return [`簽核來源的前面關卡 ${labelOf(notUserTaskId)} 不是簽核關卡。`];
   }
 
-  const skippableIssues = sourceNodes.flatMap((node): readonly string[] => {
-    if (node?.type !== 'userTask') {
-      return [];
-    }
-
-    return [
-      ...(node.data.entryCondition?.trim()
-        ? [
-            `簽核來源的前面關卡 ${labelOf(node.id)} 設有進入條件，可能被跳過、沒有人簽核。`,
-          ]
-        : []),
-      ...(node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
-        ? [
-            `簽核來源的前面關卡 ${labelOf(node.id)} 在排除發起人後沒人時會跳過此關，可能沒有人簽核。`,
-          ]
-        : []),
-    ];
-  });
+  const skippableIssues = sourceNodes.flatMap((node): readonly string[] =>
+    node?.type === 'userTask'
+      ? readNodeActorSourceSkipReasons(node).map((reason) =>
+          NODE_ACTOR_SOURCE_SKIP_ISSUES[reason](labelOf(node.id)),
+        )
+      : [],
+  );
   const startNodeIds = definition.nodes
     .filter((node) => node.type === 'startEvent')
     .map((node) => node.id);

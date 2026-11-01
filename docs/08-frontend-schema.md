@@ -279,7 +279,9 @@ position / org id 是否真實存在。
 `FORM_MEMBER_MANAGER`／`NODE_ACTOR_MANAGER` 的 `levelsUp` 須為 ≥ 1 的整數，三個主管型的
 `fallback` 與既有主管型同規則（`DIRECT` 要有 `memberId`、`POSITION` 要有 `positionId`）。
 `NODE_ACTOR`／`NODE_ACTOR_MANAGER` 另有圖檢查 `readNodeActorSourceIssues(definition, nodeId, sourceNodeIds)`：
-來源關卡必須是存在的簽核關卡、不得有進入條件或「排除發起人後沒人時跳過此關」、不得重複或指到自己；
+來源關卡必須是存在的簽核關卡、不得有進入條件、「排除發起人後沒人時跳過此關」或「逾時自動核准」
+（引擎不把 SLA 自動核准算成任何人的簽核；三種原因由 `readNodeActorSourceSkipReasons` 統一判斷，
+設計器的「關卡」選單與發布檢查共用）、不得重複或指到自己；
 從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上；
 每個來源都必須在本節點的上游（從該來源出發走得到本節點）——排在本節點之後或沒接上流程的關卡不能當來源。
 **知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`

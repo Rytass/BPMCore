@@ -1609,6 +1609,35 @@ describe('readNodeActorSourceIssues', () => {
       ).toEqual([expect.stringContaining('跳過')]);
     });
 
+    it('refuses a source the SLA timeout may approve on its own', () => {
+      // The engine does not count an SLA approval as anyone's signature, so
+      // a timed-out source leaves the node with nobody to hand the task to.
+      expect(
+        readNodeActorSourceIssues(
+          withData({
+            sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'AUTO_APPROVE' },
+          }),
+          'me',
+          ['a'],
+        ),
+      ).toEqual([expect.stringContaining('逾時自動核准')]);
+    });
+
+    it.each(['REMIND', 'ESCALATE'] as const)(
+      'passes sla.onTimeout %s (control)',
+      (onTimeout) => {
+        expect(
+          readNodeActorSourceIssues(
+            withData({
+              sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout },
+            }),
+            'me',
+            ['a'],
+          ),
+        ).toEqual([]);
+      },
+    );
+
     it.each(['FAIL', 'INITIATOR_MANAGER'] as const)(
       'passes excludeInitiator.whenEmpty %s (control)',
       (whenEmpty) => {
