@@ -4,7 +4,10 @@ import {
   resolveOrgUnitOptions,
   type OrgUnitOptionRecord,
 } from '@rytass/bpm-core-client/organization';
-import { useOrgUnitNames } from './use-org-unit-names';
+import {
+  ORG_UNIT_NAME_PENDING_TEXT,
+  useOrgUnitNames,
+} from './use-org-unit-names';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -86,7 +89,7 @@ describe('useOrgUnitNames', () => {
     }
   });
 
-  it('shows the id until the names come back', async (): Promise<void> => {
+  it('shows a loading text, never the id, until the names come back', async (): Promise<void> => {
     let finish: (records: readonly OrgUnitOptionRecord[]) => void = () =>
       undefined;
 
@@ -98,7 +101,7 @@ describe('useOrgUnitNames', () => {
     const harness = await mount(['u1']);
 
     try {
-      expect([...latestNames]).toEqual([['u1', 'u1']]);
+      expect([...latestNames]).toEqual([['u1', ORG_UNIT_NAME_PENDING_TEXT]]);
 
       await act(async (): Promise<void> => {
         finish([FINANCE]);

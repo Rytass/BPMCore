@@ -4,11 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { resolveOrgUnitOptions } from '@rytass/bpm-core-client/organization';
 import { readOrgUnitFieldOption } from '../views/forms/renderer/org-unit-field-options';
 
+/** What an id whose lookup has not finished maps to: never the raw id. */
+export const ORG_UNIT_NAME_PENDING_TEXT = '讀取中…';
+
 /**
  * Display names for stored organization unit ids (a deleted unit gets
  * 「（已刪除）」 after its name). An id whose lookup has not finished maps to
- * itself; an id the server does not know, or whose lookup failed, is left out
- * of the map so the caller can show 「未知組織」. An id is asked for once.
+ * {@link ORG_UNIT_NAME_PENDING_TEXT}; an id the server does not know, or whose
+ * lookup failed, is left out of the map so the caller can show 「未知組織」. An
+ * id is asked for once.
  */
 export function useOrgUnitNames(
   ids: readonly string[],
@@ -70,7 +74,7 @@ export function useOrgUnitNames(
               return [];
             }
 
-            return [[id, name ?? id]];
+            return [[id, name ?? ORG_UNIT_NAME_PENDING_TEXT]];
           },
         ),
       ),

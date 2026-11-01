@@ -396,7 +396,9 @@ function readFillValueText(
   }
 
   if (isOrgUnitFieldDefinition(field)) {
-    // An id the lookup did not name is 「未知組織」, never the raw id.
+    // `orgUnitNames` (`useOrgUnitNames`) maps an id still being looked up to
+    // a loading text; an id the lookup did not name is 「未知組織」. Never the
+    // raw id.
     return typeof value === 'string'
       ? (orgUnitNames.get(value) ?? UNKNOWN_FILL_ORG_UNIT_TEXT)
       : UNKNOWN_FILL_ORG_UNIT_TEXT;
