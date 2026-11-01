@@ -18,6 +18,7 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
   isMemberFieldDefinition,
+  isOrgUnitFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -28,6 +29,7 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  readNodeActorSourceIssues,
   WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -1003,6 +1005,16 @@ export class TemplateService {
       version.workflowDefinition,
       formVersion.schema,
     );
+    const orgUnitReferenceErrors = lintWorkflowOrgUnitReferences(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
+    // The graph checks read a sound graph (the publish lint refuses cycles
+    // first), and only run once the structural lint passed, so a node whose
+    // `nodeIds` it already refused is not reported a second time.
+    const nodeActorSourceErrors = workflowResult.valid
+      ? lintWorkflowNodeActorSources(version.workflowDefinition)
+      : [];
     const approverFilledFieldErrors = readFormFieldAccessIssues(
       version.workflowDefinition,
       formVersion.schema,
@@ -1019,6 +1031,8 @@ export class TemplateService {
       ...conditionErrors,
       ...tableReferenceErrors,
       ...memberReferenceErrors,
+      ...orgUnitReferenceErrors,
+      ...nodeActorSourceErrors,
       ...approverFilledFieldErrors,
       ...approverFilledReadErrors,
       ...webhookErrors,
@@ -1397,14 +1411,16 @@ function lintWorkflowTableReferences(
 
 /**
  * A `DYNAMIC_FORM` approver resolver (user task) or recipient resolver (NOTIFY)
- * reads member ids from the form data at `formPath`. A path that names no
+ * reads member ids from the form data at `formPath`; a `FORM_MEMBER_MANAGER`
+ * approver resolver reads one member id there. A path that names no
  * member field of the bound form version resolves to nothing at runtime, which
  * throws while the task is created and can strand the case — so it is caught
  * here instead. The same throw happens when the field is merely empty, and on a
  * node past the first one it lands inside the previous approver's decision,
  * which then can never commit. So the field must also be one the submit
  * validation guarantees a value for: required, with no `visibleWhen` that can
- * hide it and not a store-only `hidden` field.
+ * hide it and not a store-only `hidden` field. `FORM_MEMBER_MANAGER` looks one
+ * person's manager up, so its field must not be `multiple` either.
  */
 function lintWorkflowMemberReferences(
   definition: WorkflowDefinition,
@@ -1420,12 +1436,14 @@ function lintWorkflowMemberReferences(
     .flatMap((node) => {
       if (
         node.type === 'userTask' &&
-        node.data.approverResolver?.type === 'DYNAMIC_FORM'
+        (node.data.approverResolver?.type === 'DYNAMIC_FORM' ||
+          node.data.approverResolver?.type === 'FORM_MEMBER_MANAGER')
       ) {
         return [
           {
             formPath: node.data.approverResolver.formPath,
             label: `workflow.nodes.${node.id}.approverResolver.formPath`,
+            single: node.data.approverResolver.type === 'FORM_MEMBER_MANAGER',
           },
         ];
       }
@@ -1439,13 +1457,14 @@ function lintWorkflowMemberReferences(
           {
             formPath: node.data.action.recipients.formPath,
             label: `workflow.nodes.${node.id}.action.recipients.formPath`,
+            single: false,
           },
         ];
       }
 
       return [];
     })
-    .flatMap(({ formPath, label }) => {
+    .flatMap(({ formPath, label, single }) => {
       // A blank path is reported by the workflow definition lint already.
       if (typeof formPath !== 'string' || formPath.trim() === '') {
         return [];
@@ -1459,12 +1478,87 @@ function lintWorkflowMemberReferences(
         ];
       }
 
+      if (single && field.multiple === true) {
+        return [
+          `${label} must reference a single-person member field, not a multiple one: ${formPath}`,
+        ];
+      }
+
       return isMemberFieldAlwaysFilled(field)
         ? []
         : [
             `${label} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
           ];
     });
+}
+
+/**
+ * A `FORM_ORG_UNIT_MANAGER` approver resolver reads one organization unit id
+ * from the form data at `formPath`. Same reasoning as the member references:
+ * the field must exist, be an `org_unit` field, and be one the submit
+ * validation guarantees a value for.
+ */
+function lintWorkflowOrgUnitReferences(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  const orgUnitFields = new Map(
+    (schema?.fields ?? [])
+      .filter(isOrgUnitFieldDefinition)
+      .map((field) => [field.fieldKey, field]),
+  );
+
+  return definition.nodes.flatMap((node): readonly string[] => {
+    if (
+      node.type !== 'userTask' ||
+      node.data.approverResolver?.type !== 'FORM_ORG_UNIT_MANAGER'
+    ) {
+      return [];
+    }
+
+    const formPath = node.data.approverResolver.formPath;
+    const label = `workflow.nodes.${node.id}.approverResolver.formPath`;
+
+    // A blank path is reported by the workflow definition lint already.
+    if (typeof formPath !== 'string' || formPath.trim() === '') {
+      return [];
+    }
+
+    const field = orgUnitFields.get(formPath);
+
+    if (!field) {
+      return [
+        `${label} must reference an org unit (組織選擇) field of the bound form: ${formPath}`,
+      ];
+    }
+
+    return isMemberFieldAlwaysFilled(field)
+      ? []
+      : [
+          `${label} must reference a required org unit field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        ];
+  });
+}
+
+/**
+ * The graph checks behind `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes (shared
+ * with the designer): every source is an unskippable, upstream, non-parallel
+ * user task and every path to the node passes one.
+ */
+function lintWorkflowNodeActorSources(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  return definition.nodes.flatMap((node): readonly string[] => {
+    const resolver = node.type === 'userTask' ? node.data.approverResolver : null;
+
+    if (resolver?.type !== 'NODE_ACTOR' && resolver?.type !== 'NODE_ACTOR_MANAGER') {
+      return [];
+    }
+
+    return readNodeActorSourceIssues(definition, node.id, resolver.nodeIds).map(
+      (issue) => `workflow.nodes.${node.id}.approverResolver.nodeIds: ${issue}`,
+    );
+  });
 }
 
 /**
@@ -1618,6 +1712,8 @@ function readNotifyRecipientsExpressions(
     : [];
 }
 
+// Used for member and org_unit fields alike: a field an approver resolver reads
+// must be one the submit validation guarantees a value for.
 function isMemberFieldAlwaysFilled(field: FormFieldDefinition): boolean {
   return (
     field.required === true &&

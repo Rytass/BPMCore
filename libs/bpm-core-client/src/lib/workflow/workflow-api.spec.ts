@@ -739,6 +739,55 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ).toBe('事由：汰換');
     });
 
+    // An org unit field stores a raw organization id, the same problem.
+    it('skips an org unit field and titles the case with the next field', (): void => {
+      const orgUnitField: FormFieldDefinition = {
+        fieldKey: 'department',
+        label: '組織選擇',
+        required: true,
+        type: 'org_unit',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: {
+            department: '3f2b1c4e-0000-4000-8000-000000000001',
+            reason: '汰換',
+          },
+          schema: { fields: [orgUnitField, textField], schemaVersion: 1 },
+          uiSchema: {
+            layout: [
+              { fieldKey: 'department', width: 'FULL' },
+              { fieldKey: 'reason', width: 'FULL' },
+            ],
+            schemaVersion: 1,
+          },
+        }),
+      ).toBe('事由：汰換');
+    });
+
+    it('falls back when an org unit field is the only field', (): void => {
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { department: '3f2b1c4e-0000-4000-8000-000000000001' },
+          schema: {
+            fields: [
+              {
+                fieldKey: 'department',
+                label: '組織選擇',
+                required: true,
+                type: 'org_unit',
+              },
+            ],
+            schemaVersion: 1,
+          },
+          uiSchema: null,
+        }),
+      ).toBe('fallback');
+    });
+
     it('falls back when a member field is the only field', (): void => {
       expect(
         readFormDataCaseTitle({

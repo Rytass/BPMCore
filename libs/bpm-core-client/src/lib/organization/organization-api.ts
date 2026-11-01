@@ -36,6 +36,18 @@ export interface OrgUnitRetirementImpactRecord {
   readonly openMembershipCount: number;
 }
 
+/**
+ * One organization unit as the 組織選擇 form field shows it. `deleted` is true
+ * for a unit retired after it was picked; {@link searchOrgUnitOptions} never
+ * returns such a unit, {@link resolveOrgUnitOptions} does.
+ */
+export interface OrgUnitOptionRecord {
+  readonly code: string;
+  readonly deleted: boolean;
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface PositionRecord {
   readonly code: string;
   readonly createdAt: string;
@@ -838,4 +850,82 @@ export async function deleteManagerResolution(id: string): Promise<boolean> {
   );
 
   return data.deleteManagerResolution;
+}
+
+interface SearchOrgUnitOptionsQueryData {
+  readonly searchOrgUnitOptions: readonly OrgUnitOptionRecord[];
+}
+
+interface OrgUnitOptionsByIdsQueryData {
+  readonly orgUnitOptionsByIds: readonly OrgUnitOptionRecord[];
+}
+
+/**
+ * Searches live organization units by code or name for the 組織選擇 form
+ * field. Open to any signed-in member, unlike {@link readOrganizationDirectory}.
+ *
+ * A blank `searchText` lists the first units in tree order. The server returns
+ * 20 matches by default (50 at most).
+ */
+export async function searchOrgUnitOptions(
+  searchText: string,
+): Promise<readonly OrgUnitOptionRecord[]> {
+  const data = await requestGraphQl<SearchOrgUnitOptionsQueryData>(
+    `query SearchOrgUnitOptions($searchText: String) {
+      searchOrgUnitOptions(searchText: $searchText) {
+        code
+        deleted
+        id
+        name
+      }
+    }`,
+    { searchText },
+  );
+
+  return data.searchOrgUnitOptions;
+}
+
+/** The most ids the server takes in one `orgUnitOptionsByIds` request. */
+const ORG_UNIT_OPTIONS_BY_IDS_LIMIT = 100;
+
+/**
+ * Looks up the units behind already-stored 組織選擇 values, retired ones
+ * included (`deleted: true`), so a submitted form can still show their names.
+ *
+ * Duplicate ids are asked for once, and a long list is split into requests of
+ * at most 100 ids (the server refuses more in one call); the order of the
+ * results is not guaranteed (the server returns tree order within a chunk), so
+ * match them to your ids by `id`. Makes no request for an empty list.
+ */
+export async function resolveOrgUnitOptions(
+  ids: readonly string[],
+): Promise<readonly OrgUnitOptionRecord[]> {
+  const distinctIds = [...new Set(ids)];
+  const chunks = Array.from(
+    { length: Math.ceil(distinctIds.length / ORG_UNIT_OPTIONS_BY_IDS_LIMIT) },
+    (_, index) =>
+      distinctIds.slice(
+        index * ORG_UNIT_OPTIONS_BY_IDS_LIMIT,
+        (index + 1) * ORG_UNIT_OPTIONS_BY_IDS_LIMIT,
+      ),
+  );
+  const results = await Promise.all(
+    chunks.map(async (chunk): Promise<readonly OrgUnitOptionRecord[]> => {
+      const data = await requestGraphQl<OrgUnitOptionsByIdsQueryData>(
+        `query OrgUnitOptionsByIds($ids: [ID!]!) {
+      orgUnitOptionsByIds(ids: $ids) {
+        code
+        deleted
+        id
+        name
+      }
+    }`,
+        { ids: chunk },
+      );
+
+      return data.orgUnitOptionsByIds;
+    }),
+  );
+
+  return results.flat();
 }

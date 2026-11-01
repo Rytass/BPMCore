@@ -13,6 +13,7 @@ import {
   TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
   TEXT_FIELD_PATTERN_MAX_LENGTH,
 } from '@rytass/bpm-core-shared/form';
+import { isSubmittableOrgUnitValue } from './form-org-unit-value.validator';
 import { referencesTableInternals } from './form-table-reference';
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
@@ -24,6 +25,7 @@ const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'member',
   'money',
   'number',
+  'org_unit',
   'autocomplete',
   'radio',
   'select',
@@ -311,6 +313,10 @@ function lintFieldTypeSpecifics(
 
   if (type === 'member') {
     return lintMemberField(field, path);
+  }
+
+  if (type === 'org_unit') {
+    return lintOrgUnitField(field, path);
   }
 
   if (type === 'table') {
@@ -761,6 +767,26 @@ function lintMemberField(
       field.defaultValue,
       path,
       (value) => value === null || isFormMemberValue(value, field.multiple === true),
+    ),
+  ];
+}
+
+function lintOrgUnitField(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+): readonly string[] {
+  return [
+    // One field holds one organization unit id: `FORM_ORG_UNIT_MANAGER` reads
+    // a single value. `multiple: false` is what an editor writes for "off".
+    ...(field.multiple === true
+      ? [`${path}.multiple is not supported for org_unit fields`]
+      : []),
+    // Submit refuses anything that is not a unit id (a uuid), so a default
+    // that is not one would make every untouched form unsubmittable.
+    ...lintOptionalDefaultValue(
+      field.defaultValue,
+      path,
+      (value) => value === null || isSubmittableOrgUnitValue(value),
     ),
   ];
 }

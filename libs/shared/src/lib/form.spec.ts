@@ -7,6 +7,8 @@ import {
   isFormTableRowValue,
   isFormTableRowValues,
   isMemberFieldDefinition,
+  isOrgUnitFieldDefinition,
+  isFormOrgUnitValue,
   isTableColumnFieldType,
   isTableFieldDefinition,
   normalizeFormDefinitionSchema,
@@ -400,5 +402,36 @@ describe('readTextFieldValueIssue', () => {
     expect(compileTextFieldPattern('a)|(?:b')).toBe(
       compileTextFieldPattern('a)|(?:b'),
     );
+  });
+});
+
+describe('org unit field contracts', () => {
+  it('recognises an org unit field and keeps it out of table columns', () => {
+    expect(
+      isOrgUnitFieldDefinition({
+        fieldKey: 'dept',
+        label: 'Dept',
+        required: false,
+        type: 'org_unit',
+      }),
+    ).toBe(true);
+    expect(
+      isOrgUnitFieldDefinition({
+        fieldKey: 'reviewer',
+        label: 'Reviewer',
+        required: false,
+        type: 'member',
+      }),
+    ).toBe(false);
+    expect(isTableColumnFieldType('org_unit')).toBe(false);
+  });
+
+  it('accepts only a non-blank string as a stored org unit value', () => {
+    expect(isFormOrgUnitValue('ou-1')).toBe(true);
+    expect(isFormOrgUnitValue('')).toBe(false);
+    expect(isFormOrgUnitValue(' ')).toBe(false);
+    expect(isFormOrgUnitValue(['a'])).toBe(false);
+    expect(isFormOrgUnitValue(1)).toBe(false);
+    expect(isFormOrgUnitValue(null)).toBe(false);
   });
 });

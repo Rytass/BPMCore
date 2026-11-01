@@ -8,20 +8,23 @@ import type {
   PositionRecord,
 } from '@rytass/bpm-core-client/organization';
 import { formatMemberLabel } from '../lib/format-member-label';
+import {
+  type OrgUnitOption,
+  type PositionOption,
+  readOrgUnitOption,
+  readPositionOption,
+} from './admin-picker-options';
 import styles from './admin-pickers.module.scss';
+
+export {
+  type OrgUnitOption,
+  type PositionOption,
+  readOrgUnitOption,
+  readPositionOption,
+};
 
 export type MemberOption = Readonly<{
   email: string;
-  id: string;
-  name: string;
-}>;
-
-export type OrgUnitOption = Readonly<{
-  id: string;
-  name: string;
-}>;
-
-export type PositionOption = Readonly<{
   id: string;
   name: string;
 }>;
@@ -203,14 +206,6 @@ export function readMemberOption(member: {
     id: member.memberId,
     name: formatMemberLabel(member.name, member.email, 'dot'),
   };
-}
-
-export function readOrgUnitOption(orgUnit: OrgUnitRecord): OrgUnitOption {
-  return { id: orgUnit.id, name: `${orgUnit.name} · ${orgUnit.code}` };
-}
-
-export function readPositionOption(position: PositionRecord): PositionOption {
-  return { id: position.id, name: `${position.name} · ${position.code}` };
 }
 
 function readMemberOptionFromValue(value: unknown): MemberOption | null {

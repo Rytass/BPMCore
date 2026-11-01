@@ -84,6 +84,15 @@ describe('@rytass/bpm-core-client/form', () => {
   });
 
   describe('createFieldDefinition', () => {
+    it('creates a labelled, optional org unit field', (): void => {
+      expect(createFieldDefinition('org_unit', 2)).toEqual({
+        fieldKey: 'org_unit_2',
+        label: '組織選擇 2',
+        required: false,
+        type: 'org_unit',
+      });
+    });
+
     it('creates a labelled, optional, single-select member field', (): void => {
       expect(createFieldDefinition('member', 3)).toEqual({
         fieldKey: 'member_3',

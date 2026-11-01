@@ -72,6 +72,7 @@ import {
 } from './form-data-source-field';
 import { resolveFormFieldLink } from './form-field-link';
 import { MemberFieldControl } from './member-field';
+import { OrgUnitFieldControl } from './org-unit-field';
 
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
@@ -1072,6 +1073,19 @@ function renderStaticControl(
     );
   }
 
+  if (field.type === 'org_unit') {
+    return (
+      <OrgUnitFieldControl
+        name={field.fieldKey}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        placeholder={field.placeholder ?? readInputPlaceholder(field.type)}
+        readonly={readonly}
+        size={size}
+        value={value}
+      />
+    );
+  }
+
   if (field.type === 'file_upload') {
     return (
       <Upload
@@ -1396,6 +1410,7 @@ function readInputPlaceholder(type: FormFieldDefinition['type']): string {
     member: '搜尋姓名或信箱',
     money: '請輸入金額',
     number: '請輸入數字',
+    org_unit: '搜尋組織名稱',
     radio: '請選擇一個選項',
     select: '請選擇一個選項',
     table: '',

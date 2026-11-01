@@ -28,6 +28,15 @@ export function readDryRunFormMemberPlaceholder(fieldKey: string): string {
   return `formMember:${fieldKey}`;
 }
 
+/**
+ * Sample value of an org_unit field: a placeholder, since the dry run has no
+ * way to know which organization a submitter would pick. The engine reports
+ * 依表單欄位的組織主管 by field key, not by this value.
+ */
+export function readDryRunFormOrgUnitPlaceholder(fieldKey: string): string {
+  return `formOrgUnit:${fieldKey}`;
+}
+
 function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
   // `money` is numeric too: edge conditions compare it with a number literal
   // (`readConditionExpressionValue`), so a text sample fails CEL with
@@ -46,6 +55,10 @@ function readDryRunSampleFieldValue(field: FormFieldDefinition): unknown {
     const placeholder = readDryRunFormMemberPlaceholder(field.fieldKey);
 
     return field.multiple ? [placeholder] : placeholder;
+  }
+
+  if (field.type === 'org_unit') {
+    return readDryRunFormOrgUnitPlaceholder(field.fieldKey);
   }
 
   // The sample must have the shape a real submission stores: an array for any

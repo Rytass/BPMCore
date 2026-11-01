@@ -1882,3 +1882,200 @@ describe('OrganizationService.deleteOrgUnit', () => {
     });
   });
 });
+
+describe('OrganizationService org unit options', () => {
+  const liveUnit = {
+    code: 'FIN',
+    deletedAt: null,
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Finance',
+  } as unknown as OrgUnitEntity;
+  const retiredUnit = {
+    code: 'OLD',
+    deletedAt: new Date('2026-05-01T00:00:00.000Z'),
+    id: '22222222-2222-4222-8222-222222222222',
+    name: 'Old Unit',
+  } as unknown as OrgUnitEntity;
+
+  function createService(rows: readonly OrgUnitEntity[] = []): {
+    readonly find: jest.Mock;
+    readonly service: OrganizationService;
+  } {
+    const find = jest.fn<Promise<readonly OrgUnitEntity[]>, [unknown]>(() =>
+      Promise.resolve(rows),
+    );
+    const service = new OrganizationService(
+      {} as DataSource,
+      { find } as unknown as Repository<OrgUnitEntity>,
+      {} as Repository<PositionEntity>,
+      {} as Repository<MembershipEntity>,
+      {} as Repository<ManagerResolutionEntity>,
+    );
+
+    return { find, service };
+  }
+
+  describe('searchOrgUnitOptions', () => {
+    it('matches code or name case-insensitively and only among live units', async (): Promise<void> => {
+      const { find, service } = createService([liveUnit]);
+
+      const result = await service.searchOrgUnitOptions({
+        searchText: ' fin ',
+      });
+
+      expect(result).toEqual([
+        { code: 'FIN', deleted: false, id: liveUnit.id, name: 'Finance' },
+      ]);
+
+      const options = find.mock.calls[0][0] as {
+        readonly withDeleted?: boolean;
+        readonly where: readonly Record<string, unknown>[];
+      };
+
+      expect(options.withDeleted).toBeUndefined();
+      expect(options.where).toHaveLength(2);
+
+      for (const clause of options.where) {
+        expect(clause.deletedAt).toEqual(expect.any(FindOperator));
+        expect((clause.deletedAt as FindOperator<Date>).type).toBe('isNull');
+      }
+
+      expect((options.where[0].code as FindOperator<string>).type).toBe(
+        'ilike',
+      );
+      expect((options.where[1].name as FindOperator<string>).type).toBe(
+        'ilike',
+      );
+      expect((options.where[0].code as FindOperator<string>).value).toBe(
+        '%fin%',
+      );
+      expect((options.where[1].name as FindOperator<string>).value).toBe(
+        '%fin%',
+      );
+    });
+
+    it('treats LIKE wildcards in the search text literally', async (): Promise<void> => {
+      const { find, service } = createService();
+
+      await service.searchOrgUnitOptions({ searchText: '100%_a\\b' });
+
+      const options = find.mock.calls[0][0] as {
+        readonly where: readonly Record<string, FindOperator<string>>[];
+      };
+
+      expect(options.where[0].code.value).toBe('%100\\%\\_a\\\\b%');
+    });
+
+    it('lists the first live units when the search text is blank', async (): Promise<void> => {
+      for (const searchText of [undefined, null, '', '   ']) {
+        const { find, service } = createService();
+
+        await service.searchOrgUnitOptions({ searchText });
+
+        const options = find.mock.calls[0][0] as {
+          readonly where: Record<string, unknown>;
+        };
+
+        expect(Array.isArray(options.where)).toBe(false);
+        expect(options.where.deletedAt).toEqual(expect.any(FindOperator));
+        expect(options.where).not.toHaveProperty('code');
+      }
+    });
+
+    it.each([
+      [undefined, 20],
+      [null, 20],
+      [Number.NaN, 20],
+      [5, 5],
+      [5.9, 5],
+      [50, 50],
+      [51, 50],
+      [100000, 50],
+      [0, 1],
+      [-3, 1],
+    ])('takes %s as limit %s', async (limit, expected): Promise<void> => {
+      const { find, service } = createService();
+
+      await service.searchOrgUnitOptions({ limit });
+
+      expect((find.mock.calls[0][0] as { readonly take: number }).take).toBe(
+        expected,
+      );
+    });
+
+    it('orders by path so the list follows the tree', async (): Promise<void> => {
+      const { find, service } = createService();
+
+      await service.searchOrgUnitOptions({});
+
+      expect(find.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ order: { path: 'ASC' } }),
+      );
+    });
+  });
+
+  describe('listOrgUnitOptionsByIds', () => {
+    it('includes retired units and flags them deleted', async (): Promise<void> => {
+      const { find, service } = createService([liveUnit, retiredUnit]);
+
+      const result = await service.listOrgUnitOptionsByIds([
+        liveUnit.id,
+        retiredUnit.id,
+      ]);
+
+      expect(result).toEqual([
+        { code: 'FIN', deleted: false, id: liveUnit.id, name: 'Finance' },
+        { code: 'OLD', deleted: true, id: retiredUnit.id, name: 'Old Unit' },
+      ]);
+      expect(find.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ withDeleted: true }),
+      );
+    });
+
+    it('does not query for an empty list', async (): Promise<void> => {
+      const { find, service } = createService();
+
+      await expect(service.listOrgUnitOptionsByIds([])).resolves.toEqual([]);
+      expect(find).not.toHaveBeenCalled();
+    });
+
+    it('does not send an id that is not a uuid to the uuid column', async (): Promise<void> => {
+      const { find, service } = createService([liveUnit]);
+
+      await service.listOrgUnitOptionsByIds([
+        'not-a-uuid',
+        liveUnit.id.toUpperCase(),
+        liveUnit.id,
+      ]);
+
+      const options = find.mock.calls[0][0] as {
+        readonly where: { readonly id: FindOperator<readonly string[]> };
+      };
+
+      expect(options.where.id.value).toEqual([liveUnit.id]);
+
+      find.mockClear();
+      await service.listOrgUnitOptionsByIds(['not-a-uuid']);
+      expect(find).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly 100 ids and rejects 101', async (): Promise<void> => {
+      const ids = Array.from(
+        { length: 101 },
+        (_, index) =>
+          `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      );
+      const { find, service } = createService();
+
+      await expect(
+        service.listOrgUnitOptionsByIds(ids.slice(0, 100)),
+      ).resolves.toEqual([]);
+      expect(find).toHaveBeenCalledTimes(1);
+
+      await expect(service.listOrgUnitOptionsByIds(ids)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(find).toHaveBeenCalledTimes(1);
+    });
+  });
+});

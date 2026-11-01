@@ -1551,6 +1551,58 @@ describe('NotificationService', () => {
     expect(fixture.decideTask).toHaveBeenCalledTimes(1);
   });
 
+  describe('marking an SLA decision on the engine call', (): void => {
+    const overdueAt = new Date('2026-05-10T09:01:00.000Z');
+
+    it('tells the engine an auto-approval was the SLA timeout, so the decision log can say so', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await fixture.service.runSlaScan(overdueAt);
+
+      expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+      expect(fixture.decideTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: TaskDecisionActionEnum.APPROVED,
+          taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+        }),
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+    });
+
+    it('does not mark an escalation transfer as automatic', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        delegationChain: [],
+        onTimeout: 'ESCALATE',
+      });
+
+      await fixture.service.runSlaScan(overdueAt);
+
+      expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+      expect(fixture.decideTask.mock.calls[0]?.[1]).toEqual({
+        transferReason: SLA_ESCALATION_DELEGATION_REASON,
+      });
+      expect(fixture.decideTask.mock.calls[0]?.[1]).not.toHaveProperty(
+        'automatic',
+      );
+    });
+
+    it('does not decide anything on a reminder', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        delegationChain: [],
+        onTimeout: 'REMIND',
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 1,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).not.toHaveBeenCalled();
+    });
+  });
+
   it('expires the instance instead of cancelling it in the initiator name', async (): Promise<void> => {
     const fixture = createEscalationFixture({
       delegationChain: [],
@@ -1670,6 +1722,7 @@ function createEscalationFixture({
     } as unknown as ModuleRef,
     {
       ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+      slaTimeoutAutoApproveEnabled: true,
       slaTimeoutEscalateEnabled: true,
       slaTimeoutTerminateInstanceEnabled: true,
     },

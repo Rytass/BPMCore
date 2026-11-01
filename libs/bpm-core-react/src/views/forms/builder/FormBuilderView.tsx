@@ -49,6 +49,7 @@ import {
   DotGridIcon,
   FileAttachmentIcon,
   FileIcon,
+  FolderIcon,
   ListIcon,
   PlusIcon,
   TrashIcon,
@@ -82,6 +83,7 @@ import {
   isFormStaticOptionFieldDefinition,
   isFormOptionFieldDefinition,
   isMemberFieldDefinition,
+  isOrgUnitFieldDefinition,
   isTableColumnFieldType,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -305,6 +307,12 @@ const FIELD_TYPE_OPTIONS: readonly FieldTypeOption[] = [
     icon: UserIcon,
     label: '人員選擇',
     type: 'member',
+  },
+  {
+    description: '從組織圖挑選一個組織',
+    icon: FolderIcon,
+    label: '組織選擇',
+    type: 'org_unit',
   },
   {
     description: '多列多欄明細',
@@ -3025,12 +3033,14 @@ export function FormBuilderView({
   }
 
   function renderConditionSettings(field: FormFieldDefinition): ReactElement {
-    // A member id is an opaque directory key — there is nothing sensible to
-    // compare it with in a form-level rule, so member fields are not offered.
+    // A member or organization id is an opaque directory key — there is
+    // nothing sensible to compare it with in a form-level rule, so member and
+    // org unit fields are not offered.
     const conditionFieldOptions = schema.fields.filter(
       (schemaField) =>
         schemaField.fieldKey !== field.fieldKey &&
-        !isMemberFieldDefinition(schemaField),
+        !isMemberFieldDefinition(schemaField) &&
+        !isOrgUnitFieldDefinition(schemaField),
     );
 
     if (!conditionFieldOptions.length) {

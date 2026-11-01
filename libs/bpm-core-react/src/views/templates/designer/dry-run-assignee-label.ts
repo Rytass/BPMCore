@@ -1,5 +1,15 @@
 type NamedRecord = Readonly<{ id: string; name: string }>;
 
+const MANAGER_LEVEL_NAMES: Readonly<Record<number, string>> = {
+  1: '直屬主管',
+  2: '第二層主管',
+  3: '第三層主管',
+};
+
+function managerLevelName(level: number): string {
+  return MANAGER_LEVEL_NAMES[level] ?? `第 ${level} 層主管`;
+}
+
 type FormFieldRecord = Readonly<{ fieldKey: string; label: string }>;
 
 export type DryRunAssigneeDirectory = Readonly<{
@@ -7,6 +17,8 @@ export type DryRunAssigneeDirectory = Readonly<{
   formFields: readonly FormFieldRecord[];
   /** Display name of a real member id, or `null` when it is not known. */
   memberName: (memberId: string) => string | null;
+  /** Nodes of the workflow, to name the stages a `nodeActor:` placeholder lists. */
+  nodes: readonly NamedRecord[];
   orgUnits: readonly NamedRecord[];
   positions: readonly NamedRecord[];
 }>;
@@ -33,6 +45,11 @@ export function readDryRunAssigneeLabel(
   const formFieldName = (fieldKey: string): string =>
     directory.formFields.find((field) => field.fieldKey === fieldKey)?.label ||
     fieldKey;
+  const nodeNames = (idList: string): string =>
+    idList
+      .split(',')
+      .map((id) => directory.nodes.find((node) => node.id === id)?.name ?? id)
+      .join('、');
 
   if (kind === 'position' && ids.length === 1 && ids[0]) {
     return `職位：${positionName(ids[0])}（送出時依當下人員決定）`;
@@ -57,6 +74,33 @@ export function readDryRunAssigneeLabel(
 
   if (kind === 'orgManagerChain' && ids.length === 1 && ids[0]) {
     return `主管鏈：簽到職等 ${ids[0]}（送出時依組織決定實際主管）`;
+  }
+
+  // The four placeholders of the form-field and prior-stage sources
+  // (`readDryRunPlaceholderAssignee` in the engine). A form key or node id may
+  // itself hold a colon, so the level is the last segment and the rest is the
+  // key / id list.
+  const rest = ids.join(':');
+  const levelSplit = rest.lastIndexOf(':');
+  const leading = levelSplit > 0 ? rest.slice(0, levelSplit) : '';
+  const level =
+    levelSplit > 0 ? Number(rest.slice(levelSplit + 1)) : Number.NaN;
+  const hasLevel = leading !== '' && Number.isInteger(level) && level >= 1;
+
+  if (kind === 'formMemberManager' && hasLevel) {
+    return `表單欄位「${formFieldName(leading)}」選的人的${managerLevelName(level)}（送出時依填寫內容與組織決定）`;
+  }
+
+  if (kind === 'formOrgUnitManager' && rest) {
+    return `表單欄位「${formFieldName(rest)}」所選組織的主管（送出時依填寫內容決定）`;
+  }
+
+  if (kind === 'nodeActor' && rest) {
+    return `前面關卡「${nodeNames(rest)}」的簽核者（送出時依實際簽核者決定）`;
+  }
+
+  if (kind === 'nodeActorManager' && hasLevel) {
+    return `前面關卡「${nodeNames(leading)}」簽核者的${managerLevelName(level)}（送出時依實際簽核者決定）`;
   }
 
   return directory.memberName(assignee) ?? assignee;

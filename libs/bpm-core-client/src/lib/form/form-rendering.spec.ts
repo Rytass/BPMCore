@@ -490,6 +490,48 @@ describe('member fields in the renderer', () => {
   });
 });
 
+describe('org unit fields in the renderer', () => {
+  const field: FormFieldDefinition = {
+    fieldKey: 'department',
+    label: '申請部門',
+    required: true,
+    type: 'org_unit',
+  };
+  const schema: FormDefinitionSchema = { fields: [field], schemaVersion: 1 };
+  const uiSchema: FormUiSchema = {
+    layout: [{ fieldKey: 'department', width: 'HALF' }],
+    schemaVersion: 1,
+  };
+  const UNIT_ID = '3f2b1c4e-0000-4000-8000-000000000001';
+
+  it('starts empty and keeps a stored org unit id', (): void => {
+    expect(buildFormRendererValues(schema.fields, {}).department).toBeUndefined();
+    expect(
+      buildFormRendererValues(schema.fields, { department: UNIT_ID }),
+    ).toEqual({ department: UNIT_ID });
+  });
+
+  it('reports a required org unit field nobody picked', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: buildFormRendererValues(schema.fields, {}),
+      }).errors,
+    ).toEqual({ department: '申請部門為必填欄位。' });
+  });
+
+  it('accepts a required org unit field once a unit is picked', (): void => {
+    expect(
+      validateFormRendererValues({
+        schema,
+        uiSchema,
+        values: { department: UNIT_ID },
+      }).valid,
+    ).toBe(true);
+  });
+});
+
 describe('text length and format in the renderer', () => {
   const schema: FormDefinitionSchema = {
     fields: [

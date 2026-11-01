@@ -1338,12 +1338,17 @@ export class NotificationService {
     if (timeoutAction === 'AUTO_APPROVE') {
       const actorMemberId = await this.resolveTaskActorMemberId(task);
 
-      await workflowEngine.decideTask({
-        action: TaskDecisionActionEnum.APPROVED,
-        comment: 'SLA timeout auto-approved this task.',
-        decidedByMemberId: actorMemberId,
-        taskId: task.id,
-      });
+      // Marked so a later "who actually signed" node does not count a
+      // timeout as someone's approval.
+      await workflowEngine.decideTask(
+        {
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: 'SLA timeout auto-approved this task.',
+          decidedByMemberId: actorMemberId,
+          taskId: task.id,
+        },
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
 
       return;
     }

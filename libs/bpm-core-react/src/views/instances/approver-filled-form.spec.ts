@@ -11,6 +11,7 @@ import {
   readFillDisplaySchema,
   readFillLabelMarkers,
   readFillChanges,
+  readFillOrgUnitIds,
   readFillPayload,
   readFillServerErrors,
   readFillSummary,
@@ -452,10 +453,101 @@ describe('approver-filled form helpers', () => {
       ).toEqual([{ fieldKey: 'note', label: '經辦', text: '吳採購專員' }]);
     });
 
+    describe('org unit fields', () => {
+      const orgSchema: FormDefinitionSchema = {
+        fields: [
+          { fieldKey: 'note', label: '部門', required: false, type: 'org_unit' },
+        ],
+        schemaVersion: 1,
+      } as FormDefinitionSchema;
+
+      it('names the unit it knows', () => {
+        expect(
+          readFillSummary(
+            orgSchema,
+            fillNode,
+            { note: 'unit-1' },
+            new Map(),
+            new Map([['unit-1', '財務部']]),
+          ),
+        ).toEqual([{ fieldKey: 'note', label: '部門', text: '財務部' }]);
+      });
+
+      it('shows 未知組織, not the id, for a unit it cannot name', () => {
+        expect(
+          readFillSummary(orgSchema, fillNode, { note: 'unit-9' }),
+        ).toEqual([{ fieldKey: 'note', label: '部門', text: '未知組織' }]);
+        expect(
+          readFillSummary(
+            orgSchema,
+            fillNode,
+            { note: 'unit-9' },
+            new Map([['unit-9', '不相干的成員名字']]),
+            new Map([['unit-1', '財務部']]),
+          ),
+        ).toEqual([{ fieldKey: 'note', label: '部門', text: '未知組織' }]);
+      });
+
+      it('does not read member names for an org unit field, nor org names for a member field', () => {
+        const memberSchema: FormDefinitionSchema = {
+          fields: [
+            { fieldKey: 'note', label: '經辦', required: false, type: 'member' },
+          ],
+          schemaVersion: 1,
+        } as FormDefinitionSchema;
+
+        expect(
+          readFillSummary(
+            memberSchema,
+            fillNode,
+            { note: 'id-1' },
+            new Map([['id-1', '吳採購專員']]),
+            new Map([['id-1', '財務部']]),
+          ),
+        ).toEqual([{ fieldKey: 'note', label: '經辦', text: '吳採購專員' }]);
+        // A member id nobody named stays an id, unchanged by the new rule.
+        expect(
+          readFillSummary(memberSchema, fillNode, { note: 'id-2' }),
+        ).toEqual([{ fieldKey: 'note', label: '經辦', text: 'id-2' }]);
+      });
+    });
+
     it('leaves out fields the approver did not touch', () => {
       expect(readFillSummary(SCHEMA, fillNode, { note: 'n' })).toEqual([
         { fieldKey: 'note', label: '備註', text: 'n' },
       ]);
     });
+  });
+});
+
+describe('readFillOrgUnitIds', () => {
+  const schema: FormDefinitionSchema = {
+    fields: [
+      { fieldKey: 'a', label: 'A', required: false, type: 'org_unit' },
+      { fieldKey: 'b', label: 'B', required: false, type: 'org_unit' },
+      { fieldKey: 'm', label: 'M', required: false, type: 'member' },
+      { fieldKey: 't', label: 'T', required: false, type: 'text' },
+    ],
+    schemaVersion: 1,
+  } as FormDefinitionSchema;
+
+  it('lists each org unit id once, in form order, and nothing else', () => {
+    expect(
+      readFillOrgUnitIds(schema, {
+        a: 'unit-1',
+        b: 'unit-1',
+        m: 'member-1',
+        t: 'unit-2',
+      }),
+    ).toEqual(['unit-1']);
+    expect(readFillOrgUnitIds(schema, { a: 'unit-1', b: 'unit-2' })).toEqual([
+      'unit-1',
+      'unit-2',
+    ]);
+  });
+
+  it('skips blank and non-string values', () => {
+    expect(readFillOrgUnitIds(schema, { a: '', b: undefined })).toEqual([]);
+    expect(readFillOrgUnitIds(schema, {})).toEqual([]);
   });
 });
