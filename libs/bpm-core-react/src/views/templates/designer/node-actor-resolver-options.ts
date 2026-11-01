@@ -1,8 +1,12 @@
+import { readReachableWorkflowNodeIds } from '@rytass/bpm-core-shared';
 import {
   WorkflowDefinition,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
-import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-graph';
+import {
+  readNodeActorSourceIssues,
+  readNodeActorSourceSkipReasons,
+} from '@rytass/bpm-core-shared/workflow-graph';
 
 export type NodeActorOption = Readonly<{
   id: string;
@@ -21,7 +25,7 @@ export type NodeActorStageChoice = Readonly<{
 }>;
 
 export const NO_UPSTREAM_USER_TASK_HINT =
-  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（沒有進入條件、也沒設跳過此關）';
+  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（沒有進入條件、沒設跳過此關，也沒設逾時自動核准）';
 
 /** The 關卡 picker's hint while the selection has no problem to report. */
 export const NODE_ACTOR_STAGE_HINT =
@@ -36,47 +40,14 @@ function isUserTaskNode(node: WorkflowNode): node is UserTaskNode {
   return node.type === 'userTask';
 }
 
-// A node that is skipped (an entry condition or 跳過此關) may leave nobody
-// who signed it, so it cannot be the source of "who signed".
-function isSkippableUserTask(node: UserTaskNode): boolean {
-  return (
-    Boolean(node.data.entryCondition?.trim()) ||
-    node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
-  );
-}
-
-// Every node a path from `startNodeId` can reach, the start itself excluded
-// unless a cycle leads back to it.
-function readReachableNodeIds(
-  definition: WorkflowDefinition,
-  startNodeId: string,
-): ReadonlySet<string> {
-  const reached = new Set<string>();
-  const pending = [startNodeId];
-
-  while (pending.length > 0) {
-    const current = pending.pop() as string;
-
-    definition.edges
-      .filter((edge) => edge.source === current)
-      .forEach((edge) => {
-        if (!reached.has(edge.target)) {
-          reached.add(edge.target);
-          pending.push(edge.target);
-        }
-      });
-  }
-
-  return reached;
-}
-
 function readNodeName(node: WorkflowNode): string {
   return node.data.label || node.id;
 }
 
 /**
  * The 關卡 picker of 依前面關卡的簽核者: the user tasks upstream of `nodeId`
- * that carry no entry condition and no 跳過此關. Whether the whole group
+ * that always end with a real signer (`readNodeActorSourceSkipReasons` is
+ * empty: no entry condition, no 跳過此關, no 逾時自動核准). Whether the whole group
  * covers every path, or straddles a parallel split, is a property of the
  * selection, not of one stage, so it is reported as `problems` and never used
  * to filter the list (SPEC 5.2: the 154 CF_HR_0002 cases rest on two mutually
@@ -95,8 +66,8 @@ export function readNodeActorStageChoice(
     .filter(
       (node) =>
         node.id !== nodeId &&
-        !isSkippableUserTask(node) &&
-        readReachableNodeIds(definition, node.id).has(nodeId),
+        readNodeActorSourceSkipReasons(node).length === 0 &&
+        readReachableWorkflowNodeIds(definition.edges, [node.id]).has(nodeId),
     )
     .map((node) => ({ id: node.id, name: readNodeName(node) }));
   const stale: readonly NodeActorOption[] = selectedIds

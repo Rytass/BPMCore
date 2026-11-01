@@ -104,7 +104,7 @@ describe('readNodeActorStageChoice', () => {
     expect(ids).not.toContain('start');
   });
 
-  it('leaves out a stage with an entry condition or 跳過此關', () => {
+  it('leaves out a stage with an entry condition, 跳過此關 or 逾時自動核准', () => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -117,6 +117,12 @@ describe('readNodeActorStageChoice', () => {
           excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
         }),
         taskNode('blankCondition', { entryCondition: '   ' }),
+        taskNode('autoApproves', {
+          sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'AUTO_APPROVE' },
+        }),
+        taskNode('reminds', {
+          sla: { calendar: 'BUSINESS_DAY', duration: 'P2D', onTimeout: 'REMIND' },
+        }),
         taskNode('me'),
         plainNode('end', 'endEvent'),
       ],
@@ -126,7 +132,9 @@ describe('readNodeActorStageChoice', () => {
         link('conditional', 'skippable'),
         link('skippable', 'fallsBack'),
         link('fallsBack', 'blankCondition'),
-        link('blankCondition', 'me'),
+        link('blankCondition', 'autoApproves'),
+        link('autoApproves', 'reminds'),
+        link('reminds', 'me'),
         link('me', 'end'),
       ],
     );
@@ -135,7 +143,7 @@ describe('readNodeActorStageChoice', () => {
       readNodeActorStageChoice(definition, 'me', []).options.map(
         (option) => option.id,
       ),
-    ).toEqual(['plain', 'fallsBack', 'blankCondition']);
+    ).toEqual(['plain', 'fallsBack', 'blankCondition', 'reminds']);
   });
 
   it('offers both mutually exclusive branches (整組問題不逐一過濾)', () => {
