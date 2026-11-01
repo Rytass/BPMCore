@@ -115,7 +115,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
     'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「人員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
-    'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id）；' +
+    'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id；複選多個關卡時只取最近實際走到的那一關的簽核人，不是全部關卡的簽核人）；' +
     'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；這四種來源必填的 formPath／nodeIds 缺漏時不會被改成直屬主管，而是保留為未完成的設定，validate_workflow 會回報；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
   properties: {
     type: {

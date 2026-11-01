@@ -371,7 +371,8 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 - **條件**：只提供「已填寫／未填寫」（`IS_FILLED`／`IS_EMPTY`），不提供等於／不等於——組織
   id 不是人能手打的值；也可以餵給 webhook 的 `string` 參數（`json` 亦可）。
 - **與簽核來源的關係**：`FORM_ORG_UNIT_MANAGER` 簽該欄位所選組織的主管；`formPath` 指向
-  的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查；試跑由後續任務補上）。
+  的欄位須是 `org_unit`、必填且不會被隱藏（publish 時檢查）。試跑不解析實際組織，節點顯示占位
+  `formOrgUnitManager:<formPath>`，範例表單資料裡的 `org_unit` 欄位填 `formOrgUnit:<fieldKey>`（見上方試跑說明）。
 - **表單 schema**：後端接受 `org_unit` 欄位；`multiple: true` 不支援（`schema.fields[i].multiple is not supported for org_unit fields`，`false` 照常接受），
   `defaultValue` 只能是 `null` 或 uuid 字串（和送出驗證同一條，否則每張沒動過的表單都送不出去），放進表格欄位會被擋（和 `member` 一樣不是表格欄類型）。
 - **送出驗證**：必填沿用既有檢查；有值時必須是非空白、且是 uuid 的字串（和引擎在 `FORM_ORG_UNIT_MANAGER`
@@ -385,10 +386,10 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
   輸入文字即搜尋；搜尋失敗會在欄位下方顯示「搜尋組織失敗，請稍後再試。」，已選的組織不會被清掉。
   已存的 id 在名稱回來前先顯示 id，回來後換成名稱；已刪除的組織名稱後面加「（已刪除）」；查不到
   的 id（或查詢失敗）顯示「未知組織」，送單頁與案件頁一致。
-- **簽核者補填摘要**：核准對話框的補填摘要同樣顯示組織名稱，查不到顯示「未知組織」。
+- **簽核者補填摘要**：核准對話框的補填摘要同樣顯示組織名稱；名稱查詢中顯示「讀取中…」（不顯示 id），
+  查不到顯示「未知組織」。
 - **案件標題**：組織選擇欄位不會被選作待辦匣／案件列表的標題（它存的是組織 id），和人員選擇
   欄位一樣會被跳過。
-- **未發佈／尚未實作**：試跑範例值由後續任務補上。
 
 `ORG_MANAGER_CHAIN`（沿主管鏈簽到職等門檻，規則見
 [07-workflow-execution.md](07-workflow-execution.md) §4.1.1）另有兩條 publish 檢查：
