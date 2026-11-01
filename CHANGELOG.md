@@ -1,3 +1,28 @@
+## 0.18.1 (2026-11-01)
+
+### 🚀 Features
+
+- add form-field and prior-node approver sources ([#132](https://github.com/Rytass/BPMCore/pull/132))
+
+### 🩹 Fixes
+
+- **bpm-core-react:** stop repeating the last comment on silent signers ([45c74b2](https://github.com/Rytass/BPMCore/commit/45c74b2))
+- **bpm-core-react:** show the signer's own decision in inbox history ([4b07a1f](https://github.com/Rytass/BPMCore/commit/4b07a1f))
+- **bpm-core-react:** raise the timeline metadata line to body text ([b62ae00](https://github.com/Rytass/BPMCore/commit/b62ae00))
+- **bpm-core-react:** render the timeline metadata line as a div ([fa228bb](https://github.com/Rytass/BPMCore/commit/fa228bb))
+- **bpm-core-react:** leave the sign time blank without an own decision ([85b5281](https://github.com/Rytass/BPMCore/commit/85b5281))
+- **bpm-core-react:** fill timeline rows only from their own decision ([f336c1d](https://github.com/Rytass/BPMCore/commit/f336c1d))
+- **bpm-core-react:** keep the decision comparator defined for bad times ([58b01d6](https://github.com/Rytass/BPMCore/commit/58b01d6))
+
+### 🔥 Performance
+
+- **bpm-core-react:** search each timeline row only within its own task ([0ddbe46](https://github.com/Rytass/BPMCore/commit/0ddbe46))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang @coollugi
+
 ## 0.18.0 (2026-10-28)
 
 ### 🚀 Features

@@ -1,3 +1,18 @@
+## 0.18.1 (2026-11-01)
+
+### 🚀 Features
+
+- add form-field and prior-node approver sources ([#132](https://github.com/Rytass/BPMCore/pull/132))
+
+### 🩹 Fixes
+
+- **bpm-core-react:** fill timeline rows only from their own decision ([f336c1d](https://github.com/Rytass/BPMCore/commit/f336c1d))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang @coollugi
+
 ## 0.18.0 (2026-10-28)
 
 ### 🚀 Features
