@@ -18,7 +18,6 @@ import {
   TableColumnDefinition,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
-  isFormOrgUnitValue,
   isFormTableCellValue,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -78,7 +77,10 @@ import {
   BPMFormDataSourceException,
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
-import { readSubmittedOrgUnitValueErrors } from '../form/form-org-unit-value.validator';
+import {
+  isSubmittableOrgUnitValue,
+  readSubmittedOrgUnitValueErrors,
+} from '../form/form-org-unit-value.validator';
 import { BPM_FORM_DATA_SOURCE_VALUE_RESOLVER } from '../form-data-source/form-data-source.types';
 import type { BPMFormDataSourceValueResolver } from '../form-data-source/form-data-source.types';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
@@ -6853,8 +6855,7 @@ export class WorkflowEngineService {
     // lookup and surface as a database error instead of this refusal.
     if (
       typeof orgUnitValue !== 'string' ||
-      !isFormOrgUnitValue(orgUnitValue) ||
-      !isUUID(orgUnitValue.trim())
+      !isSubmittableOrgUnitValue(orgUnitValue)
     ) {
       throw new ConflictException(
         `${label} 依表單欄位「${resolver.formPath}」找不到所選組織`,
