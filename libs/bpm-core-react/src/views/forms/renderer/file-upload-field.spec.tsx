@@ -73,6 +73,30 @@ async function selectFile(
   await settle();
 }
 
+async function removeFile(container: HTMLElement, name: string): Promise<void> {
+  // The trash icon of the list item that shows `name`.
+  const trash = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-icon-name="TrashIcon"]'),
+  ).find((icon) => {
+    let item = icon.parentElement;
+
+    while (item && !item.textContent?.includes(name)) {
+      item = item.parentElement;
+    }
+
+    return item?.querySelectorAll('[data-icon-name="TrashIcon"]').length === 1;
+  });
+
+  if (!trash) {
+    throw new Error(`no delete control for ${name}`);
+  }
+
+  await act(async () => {
+    trash.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await settle();
+}
+
 describe('FileUploadFieldControl', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -94,6 +118,7 @@ describe('FileUploadFieldControl', () => {
   function renderControl(
     initialValue: FormFieldValue | undefined,
     onUploadAttachment: (file: File) => Promise<{ readonly id: string }>,
+    controlField: FileUploadFieldDefinition = field,
   ): { readonly values: (FormFieldValue | undefined)[] } {
     const values: (FormFieldValue | undefined)[] = [];
 
@@ -104,7 +129,7 @@ describe('FileUploadFieldControl', () => {
 
       return (
         <FileUploadFieldControl
-          field={field}
+          field={controlField}
           onChange={(nextValue): void => {
             values.push(nextValue);
             setValue(nextValue);
@@ -164,6 +189,7 @@ describe('FileUploadFieldControl', () => {
 
     await selectFile(container);
 
+    expect(values.length).toBeGreaterThan(0);
     expect(values.at(-1)).toBeUndefined();
     consoleError.mockRestore();
   });
@@ -178,6 +204,60 @@ describe('FileUploadFieldControl', () => {
     await selectFile(container);
 
     expect(values.at(-1)).toEqual([EXISTING_ID, UPLOADED_ID]);
+  });
+
+  it('empties the value when the uploaded file is removed', async () => {
+    const { values } = renderControl(undefined, async () => {
+      await delay(20);
+
+      return { id: UPLOADED_ID };
+    });
+
+    await selectFile(container);
+    expect(values.at(-1)).toEqual([UPLOADED_ID]);
+
+    await removeFile(container, 'evidence.jpg');
+
+    expect(values.at(-1)).toBeUndefined();
+    expect(container.textContent).not.toContain('evidence.jpg');
+  });
+
+  it('keeps a file removed while another upload runs out of the value', async () => {
+    // `Upload` reports the second upload through the change handler of the
+    // render the file was picked in, which still saw the first file.
+    const ids: Readonly<Record<string, string>> = {
+      'first.jpg': UPLOADED_ID,
+      'second.jpg': EXISTING_ID,
+    };
+    let finishSecond: () => void = (): void => undefined;
+    const { values } = renderControl(
+      undefined,
+      async (file) => {
+        if (file.name === 'second.jpg') {
+          await new Promise<void>((resolve) => {
+            finishSecond = resolve;
+          });
+        }
+
+        return { id: ids[file.name] };
+      },
+      { ...field, maxFiles: 3 },
+    );
+
+    await selectFile(container, 'first.jpg');
+    expect(values.at(-1)).toEqual([UPLOADED_ID]);
+
+    await selectFile(container, 'second.jpg');
+    await removeFile(container, 'first.jpg');
+    expect(values.at(-1)).toBeUndefined();
+
+    await act(async () => {
+      finishSecond();
+    });
+    await settle();
+
+    expect(values.at(-1)).toEqual([EXISTING_ID]);
+    expect(container.textContent).not.toContain('first.jpg');
   });
 });
 

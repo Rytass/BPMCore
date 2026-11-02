@@ -35,7 +35,18 @@ export interface FileUploadFieldControlProps {
  * by the UUIDs it finds in the form data). Ids already in the value that were
  * not uploaded through this control — a resubmitted instance, a default — have
  * no `File` to show, so they are carried through unchanged rather than dropped
- * when a new file is added.
+ * when a new file is added. Such ids are not shown, cannot be removed here and
+ * do not count towards `maxFiles`; showing them needs attachment metadata the
+ * value does not hold.
+ *
+ * `Upload` reports a finished upload through the `onChange` it captured when
+ * the file was picked, i.e. a `handleChange` from an older render. So the
+ * current value is read from a ref, never from this render's `value`: a stale
+ * value would re-add an attachment the filler removed while the upload ran.
+ *
+ * The file list is local state and does not follow the value when the host
+ * replaces it from outside (for example reloading the instance under an open
+ * resubmit form); the next change in this field re-emits the list as shown.
  */
 export function FileUploadFieldControl({
   field,
@@ -45,8 +56,11 @@ export function FileUploadFieldControl({
   value,
 }: FileUploadFieldControlProps): ReactElement {
   const [files, setFiles] = useState<UploadFile[]>([]);
-  // Ids this control produced. Anything else in `value` was there before.
+  // Ids this control produced. Anything else in the value was there before.
   const ownIdsRef = useRef<ReadonlySet<string>>(new Set());
+  const valueRef = useRef(value);
+
+  valueRef.current = value;
 
   function handleChange(nextFiles: UploadFile[]): void {
     setFiles(nextFiles);
@@ -56,15 +70,18 @@ export function FileUploadFieldControl({
     const uploadedIds = nextFiles
       .filter((file) => file.status === 'done')
       .map((file) => file.id);
-    const carriedIds = readStringIds(value).filter(
+    const carriedIds = readStringIds(valueRef.current).filter(
       (id) => !ownIdsRef.current.has(id),
     );
 
     ownIdsRef.current = new Set(nextFiles.map((file) => file.id));
 
     const nextIds = [...carriedIds, ...uploadedIds];
+    const nextValue = nextIds.length ? nextIds : undefined;
 
-    onChange(nextIds.length ? nextIds : undefined);
+    // Two changes can land before the host re-renders with the first one.
+    valueRef.current = nextValue;
+    onChange(nextValue);
   }
 
   return (
