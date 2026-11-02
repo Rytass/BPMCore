@@ -22,9 +22,7 @@ import {
   Textarea,
   Toggle,
   Typography,
-  Upload,
 } from '@mezzanine-ui/react';
-import type { UploadFile } from '@mezzanine-ui/react/Upload';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import {
@@ -70,6 +68,7 @@ import {
   readFormDataSourceFieldStatusMessage,
   useFormDataSourceField,
 } from './form-data-source-field';
+import { FileUploadFieldControl } from './file-upload-field';
 import { resolveFormFieldLink } from './form-field-link';
 import { MemberFieldControl } from './member-field';
 import { OrgUnitFieldControl } from './org-unit-field';
@@ -1088,35 +1087,12 @@ function renderStaticControl(
 
   if (field.type === 'file_upload') {
     return (
-      <Upload
-        accept={field.acceptedMimeTypes?.join(',')}
-        disabled={readonly}
-        maxFiles={field.maxFiles}
-        mode="button-list"
-        {...((field.maxFiles ?? 1) > 1 ? { multiple: true } : {})}
-        onChange={(files): void =>
-          onChange(
-            field.fieldKey,
-            files.length ? files.map((file) => file.id) : undefined,
-          )
-        }
-        onUpload={async (files): Promise<UploadFile[]> =>
-          Promise.all(
-            files.map(async (file): Promise<UploadFile> => {
-              const uploadedFile = onUploadAttachment
-                ? await onUploadAttachment(field, file)
-                : { id: `${file.name}-${file.lastModified}` };
-
-              return {
-                file,
-                id: uploadedFile.id,
-                progress: 100,
-                status: 'done',
-              };
-            }),
-          )
-        }
-        size="sub"
+      <FileUploadFieldControl
+        field={field}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        onUploadAttachment={onUploadAttachment}
+        readonly={readonly}
+        value={value}
       />
     );
   }
