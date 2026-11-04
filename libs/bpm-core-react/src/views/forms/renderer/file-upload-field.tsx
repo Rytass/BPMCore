@@ -35,8 +35,6 @@ export interface FormRendererAttachment {
 export interface FileUploadFieldState {
   /** Files that failed to upload. They are listed, but not in the value. */
   readonly failedCount: number;
-  /** Display name of every attachment the value holds, by attachment id. */
-  readonly fileNames: Readonly<Record<string, string>>;
   /** Files still uploading. They are listed, but not in the value yet. */
   readonly pendingCount: number;
 }
@@ -66,8 +64,6 @@ export function readFileUploadSubmissionBlockMessage(
 export interface FileUploadFieldStates {
   /** `readFileUploadSubmissionBlockMessage` over every field reported so far. */
   readonly blockMessage: string | null;
-  /** Display name of every attachment the fields hold, by attachment id. */
-  readonly fileNames: Readonly<Record<string, string>>;
   /** Pass to `FormRenderer`'s `onFileUploadStateChange`. */
   readonly onFileUploadStateChange: (
     fieldKey: string,
@@ -93,20 +89,8 @@ export function useFileUploadFieldStates(): FileUploadFieldStates {
       ),
     [],
   );
-  const fileNames = useMemo(
-    (): Readonly<Record<string, string>> =>
-      Object.assign(
-        {},
-        ...Object.values(states).map(
-          (state): Readonly<Record<string, string>> => state.fileNames,
-        ),
-      ) as Readonly<Record<string, string>>,
-    [states],
-  );
-
   return {
     blockMessage: readFileUploadSubmissionBlockMessage(Object.values(states)),
-    fileNames,
     onFileUploadStateChange,
   };
 }
@@ -115,6 +99,10 @@ export interface FileUploadFieldControlProps {
   /** Metadata for listing attachments this control did not upload. */
   readonly attachments?: readonly FormRendererAttachment[];
   readonly field: FileUploadFieldDefinition;
+  /**
+   * Receives the attachment ids the field now holds. Like a controlled input,
+   * the host renders the value back: the list shows the value it is given.
+   */
   readonly onChange: (value: FormFieldValue | undefined) => void;
   /** Opens an attachment the value holds. Without it, only files picked here download. */
   readonly onDownloadAttachment?: (attachmentId: string) => void;
@@ -133,23 +121,22 @@ const UPLOAD_UNAVAILABLE_HINT = '此處無法上傳附件';
 /**
  * The `file_upload` control.
  *
- * Mezzanine's `Upload` is fully controlled: it renders `files` and, on every
- * render, resets its working list to that prop, so the list is built here.
+ * Mezzanine's `Upload` is fully controlled: it renders `files` and resets its
+ * working list to that prop after every render, so the list is built here.
  *
- * The field value — attachment ids — is the source of truth for what is
- * attached. The list shows, in value order, every id the value holds: a file
- * picked here by its own `File`, any other id from `attachments` (or as an
- * unnamed attachment when the host has no metadata for it). Uploads still
- * running and uploads that failed follow; they are not in the value, and the
- * host learns about them through `onStateChange` so it can refuse to submit.
- * Because every attachment is listed, each one can be removed and counts
- * towards `maxFiles`, and a value replaced by the host is what the list shows.
+ * What is attached is the host's value, and only that: every id it holds is
+ * listed — a file picked here by its own `File`, any other id by the name and
+ * size in `attachments` (or as an unnamed attachment without them) — so each
+ * one can be removed and counts towards `maxFiles`. Uploads still running and
+ * uploads that failed are listed too, in the order `Upload` keeps, but are not
+ * in the value; `onStateChange` reports them so the host can refuse a submit.
  *
- * `Upload` reports a finished upload through the `onChange` it captured when
- * the file was picked, i.e. a handler from an older render, so the handler
- * reads refs only. The ids it emits are the ids attached so far (`attachedIds`)
- * minus the ones the filler removed, plus the uploads that just finished —
- * never the stale render's list as a whole.
+ * The value emitted on a change is read off the list `Upload` hands back —
+ * the finished files in it, in order — never off this control's state. That
+ * list is `Upload`'s own working copy, which it updates the moment it emits,
+ * so it is current even when two uploads finish before the host re-renders.
+ * `Upload` calls the `onChange` it captured when a file was picked, so it is
+ * given a stable function that forwards to the latest handler.
  *
  * Without `onUploadAttachment` nothing can be uploaded, so the control is
  * disabled and says so rather than listing a file no attachment stands behind.
@@ -164,72 +151,64 @@ export function FileUploadFieldControl({
   readonly,
   value,
 }: FileUploadFieldControlProps): ReactElement {
-  // Files picked here: uploads running or failed, and finished ones by id.
+  // Uploads running or failed; they are listed but not attached.
   const [pendingFiles, setPendingFiles] = useState<readonly UploadFile[]>([]);
-  const [ownFiles, setOwnFiles] = useState<
-    ReadonlyMap<string, UploadFile>
-  >(() => new Map());
+  // Files picked here that finished, by attachment id: they keep their bytes.
+  const [ownFiles, setOwnFiles] = useState<ReadonlyMap<string, UploadFile>>(
+    () => new Map(),
+  );
+  // The order `Upload` keeps its list in (picked order), by id.
+  const [listOrder, setListOrder] = useState<readonly string[]>([]);
   const valueIds = readStringArrayValue(value);
   const valueKey = valueIds.join('\n');
-  // What is attached: the host's value, until this control emits a newer one
-  // the host has not rendered back yet.
-  const attachedIdsRef = useRef<readonly string[]>(valueIds);
-  const seenValueKeyRef = useRef(valueKey);
-
-  if (seenValueKeyRef.current !== valueKey) {
-    seenValueKeyRef.current = valueKey;
-    attachedIdsRef.current = valueIds;
-  }
-
-  const attachedIds = attachedIdsRef.current;
   const attachmentsById = useMemo(
     (): ReadonlyMap<string, FormRendererAttachment> =>
       new Map(
-        (attachments ?? []).map((attachment): [string, FormRendererAttachment] => [
-          attachment.id,
-          attachment,
-        ]),
+        (attachments ?? []).map(
+          (attachment): [string, FormRendererAttachment] => [
+            attachment.id,
+            attachment,
+          ],
+        ),
       ),
     [attachments],
   );
-  const listedFileCache = useRef(new Map<string, UploadFile>());
-  const files = useMemo(
-    (): UploadFile[] => [
-      ...attachedIds.map(
+  const files = useMemo((): UploadFile[] => {
+    const position = new Map(
+      listOrder.map((id, index): [string, number] => [id, index]),
+    );
+    const listed = [
+      ...valueIds.map(
         (id): UploadFile =>
-          ownFiles.get(id) ??
-          readListedFile(listedFileCache.current, id, attachmentsById.get(id)),
+          ownFiles.get(id) ?? createListedFile(id, attachmentsById.get(id)),
       ),
       ...pendingFiles,
-    ],
-    [attachedIds, attachmentsById, ownFiles, pendingFiles],
+    ];
+
+    // Stable: what `Upload` has never listed keeps its place at the front.
+    return [...listed].sort(
+      (left, right): number =>
+        (position.get(left.id) ?? -1) - (position.get(right.id) ?? -1),
+    );
+    // `valueKey` stands for `valueIds`, a new array on every render.
+  }, [attachmentsById, listOrder, ownFiles, pendingFiles, valueKey]);
+  // `Upload`'s working list as of now: what it last emitted, or `files` once
+  // it has taken them in. Only a retry, which `Upload` does not run itself,
+  // needs it.
+  const uploadListRef = useRef<readonly UploadFile[]>(files);
+  const mountedRef = useRef(true);
+  const handleChangeRef = useRef(handleChange);
+
+  handleChangeRef.current = handleChange;
+
+  useEffect((): void => {
+    uploadListRef.current = files;
+  }, [files]);
+
+  const stableOnChange = useCallback(
+    (nextFiles: UploadFile[]): void => handleChangeRef.current(nextFiles),
+    [],
   );
-  // The list `Upload` works from; it changes between renders when `Upload`
-  // emits, so removals are read against it rather than against `files`.
-  const listRef = useRef<readonly UploadFile[]>(files);
-
-  listRef.current = files;
-
-  const canUpload = Boolean(onUploadAttachment) && !readonly;
-  // `Upload` shows a file's `errorMessage` on picture cards only; in a list a
-  // failed file would look like an uploaded one but for its retry icon.
-  const hints = [
-    ...(!readonly && !onUploadAttachment
-      ? [{ label: UPLOAD_UNAVAILABLE_HINT, type: 'info' as const }]
-      : []),
-    ...pendingFiles
-      .filter((file): boolean => file.status === 'error')
-      .map((file): { label: string; type: 'error' } => ({
-        label: `${file.file?.name ?? '檔案'}：${
-          file.errorMessage ?? '上傳失敗'
-        }，未附加。請重試或刪除。`,
-        type: 'error',
-      })),
-  ];
-  const fileNamesKey = files
-    .filter((file): boolean => file.status === 'done')
-    .map((file): string => `${file.id}\t${readListedFileName(file)}`)
-    .join('\n');
   const pendingCount = pendingFiles.filter(
     (file): boolean => file.status === 'loading',
   ).length;
@@ -241,72 +220,46 @@ export function FileUploadFieldControl({
   onStateChangeRef.current = onStateChange;
 
   useEffect((): void => {
-    onStateChangeRef.current?.({
-      failedCount,
-      fileNames: Object.fromEntries(
-        fileNamesKey
-          ? fileNamesKey
-              .split('\n')
-              .map((line): [string, string] => {
-                const [id = '', name = ''] = line.split('\t');
+    onStateChangeRef.current?.({ failedCount, pendingCount });
+  }, [failedCount, pendingCount]);
 
-                return [id, name];
-              })
-          : [],
-      ),
-      pendingCount,
-    });
-  }, [failedCount, fileNamesKey, pendingCount]);
+  // A field that unmounts (hidden by a condition) stops blocking a submit and
+  // ignores uploads that finish afterwards: the field is no longer the form's.
+  useEffect((): (() => void) => {
+    mountedRef.current = true;
 
-  // A field that unmounts (hidden by a condition) must stop blocking a submit.
-  useEffect(
-    (): (() => void) => (): void =>
-      onStateChangeRef.current?.({
-        failedCount: 0,
-        fileNames: {},
-        pendingCount: 0,
-      }),
-    [],
-  );
+    return (): void => {
+      mountedRef.current = false;
+      onStateChangeRef.current?.({ failedCount: 0, pendingCount: 0 });
+    };
+  }, []);
 
   function handleChange(nextFiles: readonly UploadFile[]): void {
-    const nextIds = new Set(nextFiles.map((file): string => file.id));
-    const removedIds = new Set(
-      listRef.current
-        .filter(
-          (file): boolean => file.status === 'done' && !nextIds.has(file.id),
-        )
-        .map((file): string => file.id),
-    );
-    const previousAttachedIds = attachedIdsRef.current;
-    const keptIds = previousAttachedIds.filter(
-      (id): boolean => !removedIds.has(id),
-    );
-    const keptIdSet = new Set(keptIds);
-    const finishedFiles = nextFiles.filter(
-      (file): boolean =>
-        file.status === 'done' &&
-        file.file !== undefined &&
-        !keptIdSet.has(file.id) &&
-        !isListedFile(file),
-    );
-    const nextAttachedIds = [
-      ...keptIds,
-      ...finishedFiles.map((file): string => file.id),
-    ];
+    if (!mountedRef.current) {
+      return;
+    }
 
-    listRef.current = nextFiles;
-    attachedIdsRef.current = nextAttachedIds;
+    const finished = nextFiles.filter(
+      (file): boolean => file.status === 'done',
+    );
+    const nextIds = finished.map((file): string => file.id);
+    const attachedIds = new Set(valueIds);
+    const justUploaded = finished.filter(
+      (file): boolean => file.file !== undefined && !attachedIds.has(file.id),
+    );
+
+    uploadListRef.current = nextFiles;
+    setListOrder(nextFiles.map((file): string => file.id));
     setPendingFiles(
       nextFiles.filter((file): boolean => file.status !== 'done'),
     );
 
-    if (finishedFiles.length > 0) {
+    if (justUploaded.length > 0) {
       setOwnFiles(
         (current): ReadonlyMap<string, UploadFile> =>
           new Map([
             ...current,
-            ...finishedFiles.map((file): [string, UploadFile] => [
+            ...justUploaded.map((file): [string, UploadFile] => [
               file.id,
               file,
             ]),
@@ -315,8 +268,8 @@ export function FileUploadFieldControl({
     }
 
     // A file picked but still uploading changes the list, not the value.
-    if (nextAttachedIds.join('\n') !== previousAttachedIds.join('\n')) {
-      onChange(nextAttachedIds.length ? nextAttachedIds : undefined);
+    if (nextIds.join('\n') !== valueKey) {
+      onChange(nextIds.length ? nextIds : undefined);
     }
   }
 
@@ -341,8 +294,8 @@ export function FileUploadFieldControl({
       }),
     );
 
-    handleChange(
-      listRef.current.map(
+    handleChangeRef.current(
+      uploadListRef.current.map(
         (entry): UploadFile => (entry.id === fileId ? replacement : entry),
       ),
     );
@@ -361,6 +314,23 @@ export function FileUploadFieldControl({
     onDownloadAttachment?.(fileId);
   }
 
+  const canUpload = Boolean(onUploadAttachment) && !readonly;
+  // `Upload` shows a file's `errorMessage` on picture cards only; in a list a
+  // failed file would look like an uploaded one but for its retry icon.
+  const hints = [
+    ...(!readonly && !onUploadAttachment
+      ? [{ label: UPLOAD_UNAVAILABLE_HINT, type: 'info' as const }]
+      : []),
+    ...pendingFiles
+      .filter((file): boolean => file.status === 'error')
+      .map((file): { label: string; type: 'error' } => ({
+        label: `${file.file?.name ?? '檔案'}：${
+          file.errorMessage ?? '上傳失敗'
+        }，未附加。請重試或刪除。`,
+        type: 'error',
+      })),
+  ];
+
   return (
     <Upload
       accept={field.acceptedMimeTypes?.join(',')}
@@ -370,7 +340,7 @@ export function FileUploadFieldControl({
       maxFiles={field.maxFiles}
       mode="button-list"
       {...((field.maxFiles ?? 1) > 1 ? { multiple: true } : {})}
-      onChange={handleChange}
+      onChange={stableOnChange}
       onDownload={handleDownload}
       onReload={(fileId, file): void => {
         void handleReload(fileId, file);
@@ -397,33 +367,17 @@ export function FileUploadFieldControl({
   );
 }
 
-// Files that stand for an attachment the value holds but this control did not
-// upload. Their `File` carries a name and size only, never content.
-const listedFiles = new WeakSet<UploadFile>();
-
-function isListedFile(file: UploadFile | undefined): boolean {
-  return file !== undefined && listedFiles.has(file);
-}
-
-function readListedFile(
-  cache: Map<string, UploadFile>,
+/**
+ * An attachment the value holds but this control did not upload. With
+ * metadata it is listed by name and size through a content-less `File`;
+ * without, by a placeholder name only.
+ */
+function createListedFile(
   id: string,
   attachment: FormRendererAttachment | undefined,
 ): UploadFile {
-  const name = attachment?.filename ?? null;
-  const cached = cache.get(id);
-
-  if (cached && readListedFileName(cached) === (name ?? UNKNOWN_ATTACHMENT_NAME)) {
-    return cached;
-  }
-
-  const listed: UploadFile = attachment
-    ? {
-        file: createDisplayFile(attachment),
-        id,
-        progress: 100,
-        status: 'done',
-      }
+  return attachment
+    ? { file: createDisplayFile(attachment), id, progress: 100, status: 'done' }
     : {
         // Listed by name only: a `url` with no size or content behind it.
         id,
@@ -431,11 +385,6 @@ function readListedFile(
         status: 'done',
         url: UNKNOWN_ATTACHMENT_NAME,
       };
-
-  listedFiles.add(listed);
-  cache.set(id, listed);
-
-  return listed;
 }
 
 /**
@@ -454,10 +403,6 @@ function createDisplayFile(attachment: FormRendererAttachment): File {
   return file;
 }
 
-function readListedFileName(file: UploadFile): string {
-  return file.file?.name ?? file.url ?? '';
-}
-
 function readUploadErrorMessage(error: unknown): string {
   return error instanceof Error && error.message
     ? `上傳失敗：${error.message}`
@@ -470,6 +415,11 @@ function downloadLocalFile(file: File): void {
 
   anchor.href = url;
   anchor.download = file.name;
+  anchor.style.display = 'none';
+  // Some browsers only download through an anchor in the document, and start
+  // the download after `click` returns, so the URL outlives the click.
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  setTimeout((): void => URL.revokeObjectURL(url), 30_000);
 }

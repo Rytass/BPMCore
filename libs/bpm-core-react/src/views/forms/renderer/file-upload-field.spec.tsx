@@ -300,12 +300,16 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     readonly initialValue?: FormFieldValue;
     /** Renders the host's value back one tick late, as a slow host would. */
     readonly lagging?: boolean;
+    /** Never renders a change back, against the controlled contract. */
+    readonly ignoreChanges?: boolean;
     readonly onDownloadAttachment?: (attachmentId: string) => void;
     readonly upload?: ((file: File) => Promise<{ readonly id: string }>) | null;
   }
 
   interface HostHandle {
     readonly setHostValue: (value: FormFieldValue | undefined) => void;
+    /** Mounts or unmounts the control, as a field hidden by a condition. */
+    readonly setShown: (shown: boolean) => void;
     readonly states: FileUploadFieldState[];
     readonly values: (FormFieldValue | undefined)[];
   }
@@ -315,6 +319,7 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     const states: FileUploadFieldState[] = [];
     let setHostValue: (value: FormFieldValue | undefined) => void = (): void =>
       undefined;
+    let setShownState: (shown: boolean) => void = (): void => undefined;
     const upload =
       options.upload === undefined
         ? async (): Promise<{ id: string }> => {
@@ -329,14 +334,23 @@ describe('FileUploadFieldControl, as the user sees it', () => {
         options.initialValue,
       );
 
-      setHostValue = (next): void => setValue(next);
+      const [shown, setShown] = useState(true);
 
-      return (
+      setHostValue = (next): void => setValue(next);
+      setShownState = setShown;
+
+      return !shown ? (
+        <></>
+      ) : (
         <FileUploadFieldControl
           attachments={options.attachments}
           field={options.field ?? field}
           onChange={(nextValue): void => {
             values.push(nextValue);
+
+            if (options.ignoreChanges) {
+              return;
+            }
 
             if (options.lagging) {
               setTimeout((): void => setValue(nextValue), 30);
@@ -368,6 +382,7 @@ describe('FileUploadFieldControl, as the user sees it', () => {
 
     return {
       setHostValue: (value): void => act(() => setHostValue(value)),
+      setShown: (shown): void => act(() => setShownState(shown)),
       states,
       values,
     };
@@ -549,6 +564,90 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     expect(container.textContent).toContain('second.jpg');
   });
 
+  it('lists only what the host holds when the host does not take a change', async () => {
+    const { values } = renderHost({ ignoreChanges: true });
+
+    await selectFile(container);
+
+    // The change was offered, but the value the host renders is the truth:
+    // the field must not show a file the form will not submit.
+    expect(values.at(-1)).toEqual([UPLOADED_ID]);
+    expect(container.textContent).not.toContain('evidence.jpg');
+  });
+
+  it('ignores an upload that finishes after the field was hidden', async () => {
+    let finish: () => void = (): void => undefined;
+    const { setShown, states, values } = renderHost({
+      upload: async (): Promise<{ id: string }> => {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+
+        return { id: UPLOADED_ID };
+      },
+    });
+
+    await selectFile(container);
+    expect(states.at(-1)).toEqual({ failedCount: 0, pendingCount: 1 });
+
+    setShown(false);
+    // Hidden, the field stops blocking the submit…
+    expect(states.at(-1)).toEqual({ failedCount: 0, pendingCount: 0 });
+
+    await act(async () => {
+      finish();
+    });
+    await settle();
+
+    // …and its late upload never writes into a field that is not shown.
+    expect(values).toEqual([]);
+  });
+
+  it('lists files in the order they were picked while an earlier one still uploads', async () => {
+    const ids: Readonly<Record<string, string>> = {
+      'fast.jpg': EXISTING_ID,
+      'slow.jpg': UPLOADED_ID,
+    };
+    let finishSlow: () => void = (): void => undefined;
+    const { values } = renderHost({
+      field: { ...field, maxFiles: 3 },
+      upload: async (file): Promise<{ id: string }> => {
+        if (file.name === 'slow.jpg') {
+          await new Promise<void>((resolve) => {
+            finishSlow = resolve;
+          });
+        } else {
+          await delay(10);
+        }
+
+        return { id: ids[file.name] ?? '' };
+      },
+    });
+    const listedNames = (): readonly string[] =>
+      ['slow.jpg', 'fast.jpg']
+        .map((name): [string, number] => [
+          name,
+          container.textContent?.indexOf(name) ?? -1,
+        ])
+        .filter(([, index]): boolean => index >= 0)
+        .sort(([, left], [, right]): number => left - right)
+        .map(([name]): string => name);
+
+    await selectFile(container, 'slow.jpg');
+    await selectFile(container, 'fast.jpg');
+
+    // The later file finished first; it does not jump ahead of the earlier one.
+    expect(listedNames()).toEqual(['slow.jpg', 'fast.jpg']);
+
+    await act(async () => {
+      finishSlow();
+    });
+    await settle();
+
+    expect(listedNames()).toEqual(['slow.jpg', 'fast.jpg']);
+    expect(values.at(-1)).toEqual([UPLOADED_ID, EXISTING_ID]);
+  });
+
   it('downloads a listed attachment from the host, never as an empty local file', async () => {
     const createObjectUrl = jest.fn((): string => 'blob:test');
     const downloads: string[] = [];
@@ -593,11 +692,31 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     });
     await selectFile(container);
     URL.createObjectURL = createObjectUrl;
+    const revokeObjectUrl = jest.fn();
+    const clicks: (HTMLAnchorElement | null)[] = [];
+    const click = jest
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement): void {
+        // Some browsers ignore a click on an anchor outside the document.
+        clicks.push(this.isConnected ? this : null);
+      });
 
-    await clickIcon('DownloadIcon');
+    URL.revokeObjectURL = revokeObjectUrl;
 
-    expect(createObjectUrl).toHaveBeenCalledTimes(1);
-    expect(downloads).toEqual([]);
+    try {
+      await clickIcon('DownloadIcon');
+
+      expect(createObjectUrl).toHaveBeenCalledTimes(1);
+      expect(clicks).toHaveLength(1);
+      expect(clicks[0]?.download).toBe('evidence.jpg');
+      // The download starts after `click` returns, so the URL must outlive
+      // it — well past the rounds `clickIcon` waited through.
+      expect(revokeObjectUrl).not.toHaveBeenCalled();
+      expect(document.querySelector('a[download]')).toBeNull();
+      expect(downloads).toEqual([]);
+    } finally {
+      click.mockRestore();
+    }
   });
 
   it('reports an upload in flight, then the attachment it produced', async () => {
@@ -608,7 +727,6 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     expect(states.some((state) => state.pendingCount === 1)).toBe(true);
     expect(states.at(-1)).toEqual({
       failedCount: 0,
-      fileNames: { [UPLOADED_ID]: 'evidence.jpg' },
       pendingCount: 0,
     });
   });
@@ -637,7 +755,6 @@ describe('FileUploadFieldControl, as the user sees it', () => {
     expect(values.at(-1)).toEqual([UPLOADED_ID]);
     expect(states.at(-1)).toEqual({
       failedCount: 0,
-      fileNames: { [UPLOADED_ID]: 'evidence.jpg' },
       pendingCount: 0,
     });
     expect(container.textContent).not.toContain('上傳失敗');
