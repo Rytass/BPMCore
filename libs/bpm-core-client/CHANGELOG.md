@@ -1,18 +1,3 @@
-## 0.18.2 (2026-11-04)
-
-### 🩹 Fixes
-
-- **bpm-core:** read form attachments from file_upload fields only ([e9cd71a](https://github.com/Rytass/BPMCore/commit/e9cd71a))
-- **bpm-core-react:** list file_upload files as the host holds them, in pick order ([20bf634](https://github.com/Rytass/BPMCore/commit/20bf634))
-- **bpm-core:** refuse a form attachment the case may not take ([4710a23](https://github.com/Rytass/BPMCore/commit/4710a23))
-- **bpm-core:** bind a free attachment only for the members who file the case ([ecd9d76](https://github.com/Rytass/BPMCore/commit/ecd9d76))
-- **bpm-core-react:** list every attachment a file_upload value holds ([da7ee9b](https://github.com/Rytass/BPMCore/commit/da7ee9b))
-- **bpm-core:** release form attachments a resubmit no longer refers to ([2580381](https://github.com/Rytass/BPMCore/commit/2580381))
-
-### ❤️ Thank You
-
-- Chia Yu Pai @fantasywind
-
 ## 0.18.1 (2026-11-01)
 
 ### 🚀 Features
