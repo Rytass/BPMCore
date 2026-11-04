@@ -18,6 +18,10 @@ import { BPMFormField } from '../../../../components/bpm-form-field';
 import { readApplicantFormSchema } from '../../approver-filled-form';
 import { FormRenderer } from '../../../forms/renderer/FormRendererView';
 import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
+import type {
+  FileUploadFieldState,
+  FormRendererAttachment,
+} from '../../../forms/renderer/file-upload-field';
 
 const SECTION_BODY_STYLE: CSSProperties = {
   display: 'grid',
@@ -117,7 +121,26 @@ export interface InstanceFormSectionProps {
   readonly resubmitComment?: string;
   /** Called when the applicant edits the resubmission comment. */
   readonly onResubmitCommentChange?: ((value: string) => void) | null;
-  /** Called when an attachment upload is requested via the form field. */
+  /**
+   * The instance's attachments, so a `file_upload` field lists the files its
+   * value holds by name.
+   */
+  readonly attachments?: readonly FormRendererAttachment[];
+  /** Opens an attachment a `file_upload` field lists. */
+  readonly onDownloadAttachment?: (attachmentId: string) => void;
+  /**
+   * Called when a `file_upload` field starts or settles an upload, so the
+   * container can refuse to resubmit while one is unsettled.
+   */
+  readonly onFileUploadStateChange?: (
+    fieldKey: string,
+    state: FileUploadFieldState,
+  ) => void;
+  /**
+   * Uploads a file picked in a `file_upload` field while resubmitting. A fill
+   * node never edits one: an approver cannot fill in a `file_upload` field
+   * (ADR 20, refused at publish).
+   */
   readonly onUploadAttachment: (
     field: FormFieldDefinition,
     file: File,
@@ -130,6 +153,7 @@ export interface InstanceFormSectionProps {
  * instance has been returned and the current member can resubmit it.
  */
 export function InstanceFormSection({
+  attachments,
   canResubmitInstance,
   deciding,
   error,
@@ -139,6 +163,8 @@ export function InstanceFormSection({
   instance,
   loading,
   onDataSourceStateChange,
+  onDownloadAttachment,
+  onFileUploadStateChange,
   onResubmitFormChange,
   onReloadAfterConflict = null,
   onResubmitCommentChange = null,
@@ -203,6 +229,7 @@ export function InstanceFormSection({
       {displayedSchema && instance?.formDefinitionSnapshot.uiSchema ? (
         <>
           <FormRenderer
+            attachments={attachments}
             dataSourceContext={
               canResubmitInstance
                 ? {
@@ -231,6 +258,8 @@ export function InstanceFormSection({
               onResubmitFormChange(values);
             }}
             onDataSourceStateChange={onDataSourceStateChange}
+            onDownloadAttachment={onDownloadAttachment}
+            onFileUploadStateChange={onFileUploadStateChange}
             onUploadAttachment={
               canResubmitInstance ? onUploadAttachment : undefined
             }

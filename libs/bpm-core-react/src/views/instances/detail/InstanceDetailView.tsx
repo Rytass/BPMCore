@@ -137,6 +137,7 @@ import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
+import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
 
 /** Counts fields, not cells: a table with three bad cells is one field. */
 function readFillIncompleteMessage(
@@ -466,6 +467,9 @@ export function InstanceDetailView({
     [currentTask, currentTaskNode],
   );
   const fillTaskId = fillNode ? (currentTask?.id ?? null) : null;
+  // Only the resubmit form uploads (an approver cannot fill in a
+  // `file_upload` field), and it is the one form on the page then.
+  const fileUploads = useFileUploadFieldStates();
   const [fillDraft, setFillDraft] = useState<WorkflowFormData>({});
   const [fillErrors, setFillErrors] = useState<
     Readonly<Record<string, string>>
@@ -598,6 +602,7 @@ export function InstanceDetailView({
   // Checked before the approve dialog opens, against the same rules the
   // server applies, so the approver fixes fields instead of reading an error.
   async function handleApproveClick(): Promise<void> {
+
     // Without the fingerprint the server would read any fill as a conflict,
     // and reloading could not fix it.
     if (fillNode && !instance?.formDataFingerprint) {
@@ -840,6 +845,22 @@ export function InstanceDetailView({
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
+  async function handleDownloadAttachmentById(
+    attachmentId: string,
+  ): Promise<void> {
+    if (!currentMemberId) {
+      return;
+    }
+
+    try {
+      const url = await readAttachmentDownloadUrl({ id: attachmentId });
+
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (requestError: unknown) {
+      Message.error(readErrorMessage(requestError));
+    }
+  }
+
   async function handlePreviewAttachment(
     attachment: AttachmentRecord,
   ): Promise<void> {
@@ -898,6 +919,13 @@ export function InstanceDetailView({
 
     if (dataSourceBlockMessage) {
       setError(dataSourceBlockMessage);
+      setDeciding(false);
+
+      return;
+    }
+
+    if (fileUploads.blockMessage) {
+      setError(fileUploads.blockMessage);
       setDeciding(false);
 
       return;
@@ -1111,6 +1139,7 @@ export function InstanceDetailView({
         {showForm ? (
           <Section>
             <InstanceFormSection
+              attachments={attachments}
               canResubmitInstance={canResubmitInstance}
               deciding={deciding}
               error={error}
@@ -1130,6 +1159,10 @@ export function InstanceDetailView({
               instance={instance}
               loading={loading}
               onDataSourceStateChange={handleResubmitDataSourceStateChange}
+              onDownloadAttachment={(attachmentId): void => {
+                void handleDownloadAttachmentById(attachmentId);
+              }}
+              onFileUploadStateChange={fileUploads.onFileUploadStateChange}
               onReloadAfterConflict={
                 fillConflict
                   ? (): void => void handleReloadAfterConflict()

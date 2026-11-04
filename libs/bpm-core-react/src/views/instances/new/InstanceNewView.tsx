@@ -50,6 +50,7 @@ import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
+import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
 
 const FORM_SECTION_STYLE: CSSProperties = {
   display: 'grid',
@@ -114,6 +115,7 @@ function NewApprovalInstanceContent({
       Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
     >
   >({});
+  const fileUploads = useFileUploadFieldStates();
 
   // The form the applicant sees: approver-filled fields are not theirs to fill
   // (the server drops them), so they are left out of everything below.
@@ -264,6 +266,15 @@ function NewApprovalInstanceContent({
       return;
     }
 
+    // A file still uploading, or one that failed, is listed in its field but
+    // is not in the value; submitting now would leave it off the case.
+    if (fileUploads.blockMessage) {
+      setError(fileUploads.blockMessage);
+      setSubmitting(false);
+
+      return;
+    }
+
     // What the renderer shows, not just what has been touched: a table seeds
     // its `minRows` rows and a field can carry a `defaultValue`, and neither
     // reaches this state until the filler edits something. Validating and
@@ -384,6 +395,7 @@ function NewApprovalInstanceContent({
                     setFormErrors({});
                   }}
                   onDataSourceStateChange={handleDataSourceStateChange}
+                  onFileUploadStateChange={fileUploads.onFileUploadStateChange}
                   onUploadAttachment={handleUploadAttachment}
                   schema={applicantSchema}
                   singleColumn
