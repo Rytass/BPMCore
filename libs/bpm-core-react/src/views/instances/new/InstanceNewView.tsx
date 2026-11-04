@@ -25,7 +25,6 @@ import {
   buildFormRendererValues,
   focusFormRendererField,
   FormRendererValues,
-  readFormDataSourceErrorMessage,
   validateFormRendererValuesInWorker,
 } from '@rytass/bpm-core-client/form';
 import {
@@ -51,6 +50,7 @@ import {
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
+import { readErrorMessage } from '../detail/sections/shared';
 
 const FORM_SECTION_STYLE: CSSProperties = {
   display: 'grid',
@@ -446,14 +446,3 @@ function NewApprovalInstanceLoading(): ReactElement {
   );
 }
 
-function readErrorMessage(error: unknown): string {
-  // DataSource failures arrive as stable codes so the backend never leaks
-  // upstream transport detail; translate them instead of showing the raw code.
-  const dataSourceMessage = readFormDataSourceErrorMessage(error);
-
-  if (dataSourceMessage) {
-    return dataSourceMessage;
-  }
-
-  return error instanceof Error ? error.message : '發生未知錯誤';
-}

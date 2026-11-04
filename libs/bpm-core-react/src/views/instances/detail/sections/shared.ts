@@ -3,7 +3,10 @@
  * InstanceDetailView section components.
  */
 
-import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
+import {
+  ATTACHMENT_NOT_BINDABLE_ERROR_CODE,
+  type FormDefinitionSchema,
+} from '@rytass/bpm-core-shared/form';
 import {
   ActivityLogRecord,
   ApprovalInstanceRecord,
@@ -213,8 +216,18 @@ export function readErrorMessage(error: unknown): string {
     return dataSourceMessage;
   }
 
-  return error instanceof Error ? error.message : '發生未知錯誤';
+  const message = error instanceof Error ? error.message : null;
+
+  // Names the problem, not the attachment ids the server lists.
+  if (message?.includes(ATTACHMENT_NOT_BINDABLE_ERROR_CODE)) {
+    return ATTACHMENT_NOT_BINDABLE_MESSAGE;
+  }
+
+  return message ?? '發生未知錯誤';
 }
+
+const ATTACHMENT_NOT_BINDABLE_MESSAGE =
+  '表單中有附件無法附加到這個案件（只能附加申請人為本案上傳的檔案），請移除後重新上傳再送出。';
 
 export function formatFileSize(sizeBytes: number): string {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
