@@ -831,21 +831,9 @@ export function InstanceDetailView({
     return { id: attachment.id };
   }
 
+  // The attachments section, the preview and a form's file_upload field all
+  // download through here, so a failed request is reported in one place.
   async function handleDownloadAttachment(
-    attachment: AttachmentRecord,
-  ): Promise<void> {
-    if (!currentMemberId) {
-      return;
-    }
-
-    const url = await readAttachmentDownloadUrl({
-      id: attachment.id,
-    });
-
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }
-
-  async function handleDownloadAttachmentById(
     attachmentId: string,
   ): Promise<void> {
     if (!currentMemberId) {
@@ -1160,7 +1148,7 @@ export function InstanceDetailView({
               loading={loading}
               onDataSourceStateChange={handleResubmitDataSourceStateChange}
               onDownloadAttachment={(attachmentId): void => {
-                void handleDownloadAttachmentById(attachmentId);
+                void handleDownloadAttachment(attachmentId);
               }}
               onFileUploadStateChange={fileUploads.onFileUploadStateChange}
               onReloadAfterConflict={
@@ -1187,7 +1175,7 @@ export function InstanceDetailView({
             <InstanceAttachmentsSection
               attachments={attachments}
               onDownload={(attachment): void => {
-                void handleDownloadAttachment(attachment);
+                void handleDownloadAttachment(attachment.id);
               }}
               onPreview={(attachment): void => {
                 void handlePreviewAttachment(attachment);
@@ -1317,7 +1305,7 @@ export function InstanceDetailView({
             fileUrl={previewUrl}
             onDownload={
               previewAttachment
-                ? (): void => void handleDownloadAttachment(previewAttachment)
+                ? (): void => void handleDownloadAttachment(previewAttachment.id)
                 : undefined
             }
           />
