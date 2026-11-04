@@ -81,12 +81,10 @@ export function useFileUploadFieldStates(): FileUploadFieldStates {
   >({});
   const onFileUploadStateChange = useCallback(
     (fieldKey: string, state: FileUploadFieldState): void =>
-      setStates(
-        (current): Readonly<Record<string, FileUploadFieldState>> => ({
-          ...current,
-          [fieldKey]: state,
-        }),
-      ),
+      setStates((current): Readonly<Record<string, FileUploadFieldState>> => ({
+        ...current,
+        [fieldKey]: state,
+      })),
     [],
   );
   return {
@@ -295,8 +293,8 @@ export function FileUploadFieldControl({
     );
 
     handleChangeRef.current(
-      uploadListRef.current.map(
-        (entry): UploadFile => (entry.id === fileId ? replacement : entry),
+      uploadListRef.current.map((entry): UploadFile =>
+        entry.id === fileId ? replacement : entry,
       ),
     );
   }
@@ -347,18 +345,15 @@ export function FileUploadFieldControl({
       }}
       onUpload={async (selectedFiles): Promise<UploadFile[]> =>
         Promise.all(
-          selectedFiles.map(
-            async (file): Promise<UploadFile> =>
-              uploadFile(file).catch(
-                (error: unknown): UploadFile => ({
-                  errorMessage: readUploadErrorMessage(error),
-                  file,
-                  // `Upload` maps results by position, so the id only has to
-                  // be unique within this list.
-                  id: `failed-${file.name}-${file.lastModified}-${Math.random()}`,
-                  status: 'error',
-                }),
-              ),
+          selectedFiles.map(async (file): Promise<UploadFile> =>
+            uploadFile(file).catch((error: unknown): UploadFile => ({
+              errorMessage: readUploadErrorMessage(error),
+              file,
+              // `Upload` maps results by position, so the id only has to
+              // be unique within this list.
+              id: `failed-${file.name}-${file.lastModified}-${Math.random()}`,
+              status: 'error',
+            })),
           ),
         )
       }

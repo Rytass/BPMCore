@@ -602,7 +602,6 @@ export function InstanceDetailView({
   // Checked before the approve dialog opens, against the same rules the
   // server applies, so the approver fixes fields instead of reading an error.
   async function handleApproveClick(): Promise<void> {
-
     // Without the fingerprint the server would read any fill as a conflict,
     // and reloading could not fix it.
     if (fillNode && !instance?.formDataFingerprint) {
