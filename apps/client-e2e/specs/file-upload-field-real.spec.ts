@@ -304,6 +304,61 @@ test.describe('file_upload fields (real backend)', () => {
     ]);
   });
 
+  test('refuses a case that names a file someone else uploaded, instead of dropping it', async (): Promise<void> => {
+    const content = Buffer.from('not yours');
+    const { createHash } = await import('crypto');
+    const uploaded = await gql<{
+      readonly uploadAttachment: { readonly id: string };
+    }>(
+      admin,
+      `mutation($input: UploadAttachmentInput!) { uploadAttachment(input: $input) { id } }`,
+      {
+        input: {
+          checksumSha256: createHash('sha256').update(content).digest('hex'),
+          contentBase64: content.toString('base64'),
+          filename: '別人的檔案.pdf',
+          formFieldPath: 'form.evidence',
+          instanceId: null,
+          mimeType: 'application/pdf',
+          sizeBytes: content.length,
+          taskId: null,
+        },
+      },
+    );
+    const attempt = gql(
+      requester,
+      `mutation($input: SubmitApprovalInstanceInput!) { submitApprovalInstance(input: $input) { id } }`,
+      {
+        input: {
+          formDataJson: JSON.stringify({
+            evidence: [uploaded.uploadAttachment.id],
+            subject: `E2E 他人附件 ${runId}`,
+          }),
+          initiatorMemberId: REQUESTER,
+          initiatorMetadataSnapshotJson: null,
+          templateId,
+          title: `E2E 他人附件 ${runId}`,
+        },
+      },
+    );
+
+    await expect(attempt).rejects.toThrow(/ATTACHMENT_NOT_BINDABLE/);
+    // Nothing was saved, so the requester's cases gained no such title.
+    const sent = await gql<{
+      readonly approvalInstances: readonly { readonly title: string }[];
+    }>(
+      requester,
+      `query($view: ApprovalInstanceListView!) { approvalInstances(view: $view, page: 1, pageSize: 50) { title } }`,
+      { view: 'SENT' },
+    );
+
+    expect(
+      sent.approvalInstances.some(
+        (instance) => instance.title === `E2E 他人附件 ${runId}`,
+      ),
+    ).toBe(false);
+  });
+
   test('a reader sees the attached file by name, and cannot change it', async (): Promise<void> => {
     // The approver reads the resubmitted case; the field is read-only for them.
     await admin.goto(`/instances/${instanceId}`);
