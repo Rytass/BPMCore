@@ -214,13 +214,41 @@ three features resolved to `patch` — verified against
 commit touching the project's files counts, and the same set correctly resolved
 to `minor`.
 
-Still read the resolved version in the dry run, and override when needed:
+Still read the resolved version in the dry run, and override when needed —
+**with the exact version, not a keyword**:
 
 ```bash
-npx nx release minor --skip-publish   # or patch / an exact version
+npx nx release 0.19.0 --skip-publish --dry-run < /dev/null   # read "New version"
+npx nx release 0.19.0 --skip-publish < /dev/null
 ```
 
 Then build and publish as above.
+
+**A keyword is shifted down too.** `adjustSemverBumpsForZeroMajorVersion`
+(below) applies to an explicit `minor` / `patch` as well as to commit-derived
+bumps: on 2026-11-04 `npx nx release minor --skip-publish` logged
+`Applied semver relative bump "minor" … to get new version 0.18.2`, then
+committed, tagged, pushed and created the GitHub release before anyone saw it.
+Only npm was spared, because `--skip-publish` stops there. An exact value is
+applied as given (`Applied explicit semver value "0.19.0"`). Dry-run the very
+command you will run, specifier included — a dry run without it says nothing
+about the specifier.
+
+Recovery, as done for 0.18.2 → 0.19.0 while npm did not yet have the wrong
+version:
+
+```bash
+gh release delete v<wrong> --yes
+git push origin :refs/tags/v<wrong> && git tag -d v<wrong>
+git revert <release commit>   # a new commit on main; never force-push main
+npx nx release <right> --skip-publish --dry-run < /dev/null
+```
+
+The changelog then skips the release commit and its revert.
+
+`--yes` and `--skip-publish` are mutually exclusive: nx prints its usage and
+exits 1 without doing anything. `--skip-publish` alone answers the publish
+prompt; give it `< /dev/null` so no other prompt can wait on a terminal.
 
 **`release.version.adjustSemverBumpsForZeroMajorVersion` is `true` — the 0.x
 convention.** Without it a `BREAKING CHANGE:` footer resolves to a major bump,
@@ -232,9 +260,12 @@ reason. With it on, every level shifts down one while the major is still 0:
 | `fix:`                          | patch       |
 | `feat:`                         | patch       |
 | `BREAKING CHANGE:` footer       | minor       |
+| `nx release minor` (keyword)    | patch       |
+| `nx release 0.19.0` (exact)     | 0.19.0      |
 
-Both rows were verified against the v0.13.0 tag on a throwaway branch: a
+The commit rows were verified against the v0.13.0 tag on a throwaway branch: a
 breaking commit resolved to 0.14.0 (not 1.0.0) and a `feat:` commit to 0.13.1.
+The two specifier rows are from the v0.19.0 release (see above).
 
 The cost is real and was accepted deliberately: `feat:` no longer earns a minor
 bump. That does **not** make `useCommitScope: false` pointless — it still
