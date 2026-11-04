@@ -22,6 +22,7 @@ import {
   BPMResolvedAttachmentOptions,
   resolveBPMAttachmentOptions,
 } from './attachment-options';
+import { ATTACHMENT_NOT_BINDABLE_ERROR_CODE } from '@rytass/bpm-core-shared/form';
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
 
@@ -164,40 +165,47 @@ export class AttachmentService {
     }
 
     const attachmentRepository = manager.getRepository(AttachmentEntity);
-    const instance = await manager
-      .getRepository(ApprovalInstanceEntity)
-      .findOne({ where: { id: instanceId } });
+    const attachments = await attachmentRepository.find({
+      where: { id: In(ids) },
+    });
+    const freeAttachments = attachments.filter(
+      (attachment): boolean => attachment.instanceId === null,
+    );
     // Only the people who file the instance may bring a free attachment into
     // it. An id is no secret — everyone who reads a form sees the ids in it,
     // and an attachment a resubmit released is free again — so without this
     // anyone who had seen one could bind it to a case of their own and read it.
-    const filerMemberIds = new Set(
-      instance
-        ? [
-            instance.initiatorMemberId,
-            ...(instance.submittedByMemberId
-              ? [instance.submittedByMemberId]
-              : []),
-          ]
-        : [],
+    // Read only when there is a free attachment to judge.
+    const filerMemberIds = await this.readInstanceFilerMemberIds(
+      manager,
+      freeAttachments.length > 0 ? instanceId : null,
     );
-    const attachments = await attachmentRepository.find({
-      where: { id: In(ids) },
-    });
+    // Refused rather than skipped: a case that saves while leaving out a file
+    // its form lists is the silent loss this binding exists to prevent.
+    const unbindable = attachments.filter(
+      (attachment): boolean =>
+        attachment.instanceId === null
+          ? !filerMemberIds.has(attachment.uploaderMemberId)
+          : attachment.instanceId !== instanceId,
+    );
+
+    if (unbindable.length > 0) {
+      throw new BadRequestException(
+        `${ATTACHMENT_NOT_BINDABLE_ERROR_CODE}: attachments ${unbindable
+          .map((attachment): string => attachment.id)
+          .join(', ')} cannot be attached to this case: only files its applicant uploaded for it can be`,
+      );
+    }
+
     const refsById = new Map(attachmentRefs.map((ref) => [ref.id, ref]));
-    const nextAttachments = attachments
-      .filter(
-        (attachment): boolean =>
-          attachment.instanceId === instanceId ||
-          (attachment.instanceId === null &&
-            filerMemberIds.has(attachment.uploaderMemberId)),
-      )
-      .map((attachment) => ({
+    const nextAttachments = attachments.map(
+      (attachment): AttachmentEntity => ({
         ...attachment,
         formFieldPath:
           attachment.formFieldPath ?? refsById.get(attachment.id)?.path ?? null,
         instanceId,
-      }));
+      }),
+    );
 
     if (nextAttachments.length > 0) {
       await attachmentRepository.save(nextAttachments);
@@ -233,10 +241,9 @@ export class AttachmentService {
       where: { instanceId, taskId: IsNull() },
     });
     const released = attachments
+      // `instanceId` and `taskId` are settled by the query.
       .filter(
         (attachment): boolean =>
-          attachment.instanceId === instanceId &&
-          attachment.taskId === null &&
           (attachment.formFieldPath?.startsWith('form.') ?? false) &&
           !referencedIds.has(attachment.id),
       )
@@ -247,6 +254,28 @@ export class AttachmentService {
     if (released.length > 0) {
       await attachmentRepository.save(released);
     }
+  }
+
+  private async readInstanceFilerMemberIds(
+    manager: EntityManager,
+    instanceId: string | null,
+  ): Promise<ReadonlySet<string>> {
+    const instance = instanceId
+      ? await manager
+          .getRepository(ApprovalInstanceEntity)
+          .findOne({ where: { id: instanceId } })
+      : null;
+
+    return new Set(
+      instance
+        ? [
+            instance.initiatorMemberId,
+            ...(instance.submittedByMemberId
+              ? [instance.submittedByMemberId]
+              : []),
+          ]
+        : [],
+    );
   }
 
   async createSignedUrl({

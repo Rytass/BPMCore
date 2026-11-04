@@ -1,4 +1,10 @@
-import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
+import { BadRequestException } from '@nestjs/common';
+import {
+  EntityManager,
+  FindOperator,
+  ObjectLiteral,
+  Repository,
+} from 'typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
@@ -122,54 +128,120 @@ describe('AttachmentService', () => {
     });
   });
 
-  it.each([
-    ['the initiator', { initiatorMemberId: 'member-001', submittedByMemberId: null }, true],
-    [
-      'the member who filed on the initiator\'s behalf',
-      { initiatorMemberId: 'member-777', submittedByMemberId: 'member-001' },
-      true,
-    ],
-    [
-      'anyone else, even with the id in hand',
-      { initiatorMemberId: 'member-777', submittedByMemberId: null },
-      false,
-    ],
-  ])(
-    'binds a free attachment uploaded by %s: %s',
-    async (
-      _who: string,
-      filers: Partial<ApprovalInstanceEntity>,
-      bound: boolean,
-    ): Promise<void> => {
-      const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
-      const attachmentId = '11111111-2222-4333-8444-555555555555';
-      const attachments: AttachmentEntity[] = [
-        Object.assign(new AttachmentEntity(), {
-          formFieldPath: 'form.file',
-          id: attachmentId,
-          instanceId: null,
-          taskId: null,
-          uploaderMemberId: 'member-001',
-        }),
-      ];
-      const repository = createAttachmentRepository(attachments);
-      const service = new AttachmentService(
+  const BIND_INSTANCE_ID = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
+  const BIND_ATTACHMENT_ID = '11111111-2222-4333-8444-555555555555';
+
+  function createBindFixture(attachment: Partial<AttachmentEntity>): {
+    readonly attachments: AttachmentEntity[];
+    readonly service: AttachmentService;
+    readonly repository: Repository<AttachmentEntity>;
+  } {
+    const attachments: AttachmentEntity[] = [
+      Object.assign(new AttachmentEntity(), {
+        formFieldPath: 'form.file',
+        id: BIND_ATTACHMENT_ID,
+        instanceId: null,
+        taskId: null,
+        uploaderMemberId: 'member-001',
+        ...attachment,
+      }),
+    ];
+    const repository = createAttachmentRepository(attachments);
+
+    return {
+      attachments,
+      repository,
+      service: new AttachmentService(
         repository,
         createRepository<ApprovalInstanceEntity>({}),
         createRepository<TaskEntity>({}),
         createRepository<TaskCandidateEntity>({}),
         createRepository<TaskDecisionEntity>({}),
         createStorage(),
-      );
+      ),
+    };
+  }
+
+  it.each([
+    ['the initiator', { initiatorMemberId: 'member-001', submittedByMemberId: null }],
+    [
+      'the member who filed on the initiator\'s behalf',
+      { initiatorMemberId: 'member-777', submittedByMemberId: 'member-001' },
+    ],
+  ])(
+    'binds a free attachment uploaded by %s',
+    async (_who: string, filers: Partial<ApprovalInstanceEntity>): Promise<void> => {
+      const { attachments, repository, service } = createBindFixture({});
 
       await service.bindFormDataAttachmentsToInstance(
-        createManager(repository, { id: instanceId, ...filers }),
-        { formData: { file: [attachmentId] }, instanceId },
+        createManager(repository, { id: BIND_INSTANCE_ID, ...filers }),
+        { formData: { file: [BIND_ATTACHMENT_ID] }, instanceId: BIND_INSTANCE_ID },
       );
 
-      expect(attachments[0]?.instanceId).toBe(bound ? instanceId : null);
+      expect(attachments[0]?.instanceId).toBe(BIND_INSTANCE_ID);
     },
   );
+
+  it.each([
+    [
+      'a free attachment someone else uploaded, even with its id in hand',
+      {},
+      { initiatorMemberId: 'member-777', submittedByMemberId: null },
+    ],
+    [
+      'an attachment that belongs to another case',
+      { instanceId: '9e3fd0fc-cc1e-43f5-9601-017dd26ad8ce' },
+      { initiatorMemberId: 'member-001', submittedByMemberId: null },
+    ],
+  ])(
+    'refuses %s instead of saving the case without it',
+    async (
+      _what: string,
+      attachment: Partial<AttachmentEntity>,
+      filers: Partial<ApprovalInstanceEntity>,
+    ): Promise<void> => {
+      const { attachments, repository, service } = createBindFixture(attachment);
+      const before = attachments[0]?.instanceId;
+      const error = await service
+        .bindFormDataAttachmentsToInstance(
+          createManager(repository, { id: BIND_INSTANCE_ID, ...filers }),
+          {
+            formData: { file: [BIND_ATTACHMENT_ID] },
+            instanceId: BIND_INSTANCE_ID,
+          },
+        )
+        .then(
+          (): unknown => undefined,
+          (rejection: unknown): unknown => rejection,
+        );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as Error).message).toContain(BIND_ATTACHMENT_ID);
+      expect(attachments[0]?.instanceId).toBe(before);
+    },
+  );
+
+  it('reads the case only when a free attachment needs judging', async (): Promise<void> => {
+    const { repository, service } = createBindFixture({
+      instanceId: BIND_INSTANCE_ID,
+    });
+    const instanceFindOne = jest.fn(
+      (): Promise<null> => Promise.resolve(null),
+    );
+    const manager = {
+      getRepository: (entity: unknown): unknown =>
+        entity === ApprovalInstanceEntity
+          ? { findOne: instanceFindOne }
+          : repository,
+    } as unknown as EntityManager;
+
+    await service.bindFormDataAttachmentsToInstance(manager, {
+      formData: { file: [BIND_ATTACHMENT_ID] },
+      instanceId: BIND_INSTANCE_ID,
+    });
+
+    expect(instanceFindOne).not.toHaveBeenCalled();
+  });
 
   it('releases only the form attachments the form data no longer refers to', async (): Promise<void> => {
     const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
@@ -177,10 +249,13 @@ describe('AttachmentService', () => {
     const removed = '22222222-2222-4333-8444-555555555555';
     const taskFile = '33333333-2222-4333-8444-555555555555';
     const otherInstance = '44444444-2222-4333-8444-555555555555';
+    // Attached to the case directly, not through a form field.
+    const caseFile = '55555555-2222-4333-8444-555555555555';
     const attachments: AttachmentEntity[] = [
       { formFieldPath: 'form.file', id: kept, instanceId, taskId: null },
       { formFieldPath: 'form.file', id: removed, instanceId, taskId: null },
       { formFieldPath: null, id: taskFile, instanceId, taskId: 'task-1' },
+      { formFieldPath: null, id: caseFile, instanceId, taskId: null },
       {
         formFieldPath: 'form.file',
         id: otherInstance,
@@ -214,6 +289,7 @@ describe('AttachmentService', () => {
       [kept, instanceId],
       [removed, null],
       [taskFile, instanceId],
+      [caseFile, instanceId],
       [otherInstance, '9e3fd0fc-cc1e-43f5-9601-017dd26ad8ce'],
     ]);
   });
@@ -544,14 +620,44 @@ function createStorage(): AttachmentStorage & {
   };
 }
 
+function matchesCondition(value: unknown, condition: unknown): boolean {
+  if (condition instanceof FindOperator) {
+    if (condition.type === 'isNull') {
+      return value === null || value === undefined;
+    }
+
+    if (condition.type === 'in') {
+      return (condition.value as readonly unknown[]).includes(value);
+    }
+
+    throw new Error(`unsupported operator ${condition.type}`);
+  }
+
+  return value === condition;
+}
+
 function createAttachmentRepository(
   attachments: AttachmentEntity[],
 ): Repository<AttachmentEntity> {
   const repository = {
     create: (entity: Partial<AttachmentEntity>): AttachmentEntity =>
       Object.assign(new AttachmentEntity(), entity),
-    find: (): Promise<readonly AttachmentEntity[]> =>
-      Promise.resolve(attachments),
+    // Honours the `where` the service sends (`In`, `IsNull`, plain values),
+    // so a test notices when the service stops narrowing its query.
+    find: (
+      options: { readonly where?: Readonly<Record<string, unknown>> } = {},
+    ): Promise<readonly AttachmentEntity[]> =>
+      Promise.resolve(
+        attachments.filter((attachment): boolean =>
+          Object.entries(options.where ?? {}).every(
+            ([key, condition]): boolean =>
+              matchesCondition(
+                (attachment as unknown as Record<string, unknown>)[key],
+                condition,
+              ),
+          ),
+        ),
+      ),
     findOne: ({
       where,
     }: {
