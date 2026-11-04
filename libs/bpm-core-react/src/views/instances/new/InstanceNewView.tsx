@@ -50,7 +50,7 @@ import {
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
-import { readErrorMessage } from '../detail/sections/shared';
+import { readErrorMessage } from '../instance-error-message';
 
 const FORM_SECTION_STYLE: CSSProperties = {
   display: 'grid',

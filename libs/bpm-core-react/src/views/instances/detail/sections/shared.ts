@@ -3,10 +3,7 @@
  * InstanceDetailView section components.
  */
 
-import {
-  ATTACHMENT_NOT_BINDABLE_ERROR_CODE,
-  type FormDefinitionSchema,
-} from '@rytass/bpm-core-shared/form';
+import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
   ActivityLogRecord,
   ApprovalInstanceRecord,
@@ -18,7 +15,6 @@ import {
   TaskRecord,
   WorkflowTokenRecord,
 } from '@rytass/bpm-core-client/workflow';
-import { readFormDataSourceErrorMessage } from '@rytass/bpm-core-client/form';
 import { WorkflowDefinition, WorkflowNode } from '@rytass/bpm-core-shared/workflow';
 import { readSelectableReturnTargetNodeIds } from '@rytass/bpm-core-shared/workflow-graph';
 import { formatDateTime } from '../../../../lib/format-date-time';
@@ -207,27 +203,8 @@ export function isPendingTask(task: TaskRecord): boolean {
 // Label helpers
 // ---------------------------------------------------------------------------
 
-export function readErrorMessage(error: unknown): string {
-  // DataSource failures arrive as stable codes so the backend never leaks
-  // upstream transport detail; translate them instead of showing the raw code.
-  const dataSourceMessage = readFormDataSourceErrorMessage(error);
-
-  if (dataSourceMessage) {
-    return dataSourceMessage;
-  }
-
-  const message = error instanceof Error ? error.message : null;
-
-  // Names the problem, not the attachment ids the server lists.
-  if (message?.includes(ATTACHMENT_NOT_BINDABLE_ERROR_CODE)) {
-    return ATTACHMENT_NOT_BINDABLE_MESSAGE;
-  }
-
-  return message ?? '發生未知錯誤';
-}
-
-const ATTACHMENT_NOT_BINDABLE_MESSAGE =
-  '表單中有附件無法附加到這個案件（只能附加申請人為本案上傳的檔案），請移除後重新上傳再送出。';
+// Lives beside both case pages; re-exported for the detail sections.
+export { readErrorMessage } from '../../instance-error-message';
 
 export function formatFileSize(sizeBytes: number): string {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
