@@ -1,3 +1,23 @@
+## 0.19.0 (2026-11-04)
+
+### 🩹 Fixes
+
+- **bpm-core:** read form attachments from file_upload fields only ([e9cd71a](https://github.com/Rytass/BPMCore/commit/e9cd71a))
+- **bpm-core-react:** list file_upload files as the host holds them, in pick order ([20bf634](https://github.com/Rytass/BPMCore/commit/20bf634))
+- **bpm-core-react:** explain a refused attachment instead of the raw server message ([c90fe0a](https://github.com/Rytass/BPMCore/commit/c90fe0a))
+- **bpm-core:** refuse a form attachment the case may not take ([4710a23](https://github.com/Rytass/BPMCore/commit/4710a23))
+- **bpm-core:** bind a free attachment only for the members who file the case ([ecd9d76](https://github.com/Rytass/BPMCore/commit/ecd9d76))
+- **bpm-core-react:** refuse to submit a case while an upload is unsettled ([7eadb94](https://github.com/Rytass/BPMCore/commit/7eadb94))
+- **bpm-core-react:** list every attachment a file_upload value holds ([da7ee9b](https://github.com/Rytass/BPMCore/commit/da7ee9b))
+- **bpm-core:** release form attachments a resubmit no longer refers to ([2580381](https://github.com/Rytass/BPMCore/commit/2580381))
+- **bpm-core-react:** read the latest value when an upload finishes ([cdd8867](https://github.com/Rytass/BPMCore/commit/cdd8867))
+- **bpm-core-react:** keep uploaded files in the file_upload field ([1108ae4](https://github.com/Rytass/BPMCore/commit/1108ae4))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.18.1 (2026-11-01)
 
 ### 🚀 Features
