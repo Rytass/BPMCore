@@ -164,15 +164,33 @@ export class AttachmentService {
     }
 
     const attachmentRepository = manager.getRepository(AttachmentEntity);
+    const instance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .findOne({ where: { id: instanceId } });
+    // Only the people who file the instance may bring a free attachment into
+    // it. An id is no secret — everyone who reads a form sees the ids in it,
+    // and an attachment a resubmit released is free again — so without this
+    // anyone who had seen one could bind it to a case of their own and read it.
+    const filerMemberIds = new Set(
+      instance
+        ? [
+            instance.initiatorMemberId,
+            ...(instance.submittedByMemberId
+              ? [instance.submittedByMemberId]
+              : []),
+          ]
+        : [],
+    );
     const attachments = await attachmentRepository.find({
       where: { id: In(ids) },
     });
     const refsById = new Map(attachmentRefs.map((ref) => [ref.id, ref]));
     const nextAttachments = attachments
       .filter(
-        (attachment) =>
-          attachment.instanceId === null ||
-          attachment.instanceId === instanceId,
+        (attachment): boolean =>
+          attachment.instanceId === instanceId ||
+          (attachment.instanceId === null &&
+            filerMemberIds.has(attachment.uploaderMemberId)),
       )
       .map((attachment) => ({
         ...attachment,

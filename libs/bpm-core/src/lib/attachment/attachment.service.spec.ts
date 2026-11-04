@@ -122,6 +122,55 @@ describe('AttachmentService', () => {
     });
   });
 
+  it.each([
+    ['the initiator', { initiatorMemberId: 'member-001', submittedByMemberId: null }, true],
+    [
+      'the member who filed on the initiator\'s behalf',
+      { initiatorMemberId: 'member-777', submittedByMemberId: 'member-001' },
+      true,
+    ],
+    [
+      'anyone else, even with the id in hand',
+      { initiatorMemberId: 'member-777', submittedByMemberId: null },
+      false,
+    ],
+  ])(
+    'binds a free attachment uploaded by %s: %s',
+    async (
+      _who: string,
+      filers: Partial<ApprovalInstanceEntity>,
+      bound: boolean,
+    ): Promise<void> => {
+      const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
+      const attachmentId = '11111111-2222-4333-8444-555555555555';
+      const attachments: AttachmentEntity[] = [
+        Object.assign(new AttachmentEntity(), {
+          formFieldPath: 'form.file',
+          id: attachmentId,
+          instanceId: null,
+          taskId: null,
+          uploaderMemberId: 'member-001',
+        }),
+      ];
+      const repository = createAttachmentRepository(attachments);
+      const service = new AttachmentService(
+        repository,
+        createRepository<ApprovalInstanceEntity>({}),
+        createRepository<TaskEntity>({}),
+        createRepository<TaskCandidateEntity>({}),
+        createRepository<TaskDecisionEntity>({}),
+        createStorage(),
+      );
+
+      await service.bindFormDataAttachmentsToInstance(
+        createManager(repository, { id: instanceId, ...filers }),
+        { formData: { file: [attachmentId] }, instanceId },
+      );
+
+      expect(attachments[0]?.instanceId).toBe(bound ? instanceId : null);
+    },
+  );
+
   it('releases only the form attachments the form data no longer refers to', async (): Promise<void> => {
     const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
     const kept = '11111111-2222-4333-8444-555555555555';
@@ -564,8 +613,19 @@ function createRepository<TEntity extends ObjectLiteral>(
 
 function createManager(
   repository: Repository<AttachmentEntity>,
+  instance: Partial<ApprovalInstanceEntity> | null = {
+    id: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+    initiatorMemberId: 'member-001',
+    submittedByMemberId: null,
+  },
 ): EntityManager {
   return {
-    getRepository: (): Repository<AttachmentEntity> => repository,
+    getRepository: (entity: unknown): unknown =>
+      entity === ApprovalInstanceEntity
+        ? {
+            findOne: (): Promise<Partial<ApprovalInstanceEntity> | null> =>
+              Promise.resolve(instance),
+          }
+        : repository,
   } as unknown as EntityManager;
 }
