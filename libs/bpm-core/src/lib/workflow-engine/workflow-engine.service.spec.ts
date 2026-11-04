@@ -602,6 +602,26 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance?.businessKey).toBe('PO-2026-001');
     });
 
+    it('releases the form attachments a resubmit no longer refers to', async (): Promise<void> => {
+      const fixture = createPublishedFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { amount: 1000 },
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":2000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(
+        fixture.releaseUnreferencedFormAttachments.mock.calls.map(
+          (call: readonly unknown[]): unknown => call[1],
+        ),
+      ).toEqual([{ formData: { amount: 2000 }, instanceId: 'instance-1' }]);
+    });
+
     it('keeps the business key when an instance is cancelled', async (): Promise<void> => {
       const fixture = createPublishedFixture({
         processBusinessKey: 'PO-2026-001',
@@ -16326,6 +16346,8 @@ interface ServiceFixture {
   >;
   readonly savedDecision: TaskDecisionEntity | null;
   readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
+  // `AttachmentService.releaseUnreferencedFormAttachments`, one call per release.
+  readonly releaseUnreferencedFormAttachments: jest.Mock;
   // `formData` as `signTaskDecision` saw it, one entry per call: the signature
   // covers whatever the instance held at that moment.
   readonly signTaskDecisionFormDataSnapshots: readonly Readonly<
@@ -16775,6 +16797,7 @@ function createServiceFixture({
   };
   const attachmentService = {
     bindFormDataAttachmentsToInstance: jest.fn(() => Promise.resolve()),
+    releaseUnreferencedFormAttachments: jest.fn(() => Promise.resolve()),
   };
   let signTaskDecisionFormDataSnapshots: readonly Readonly<
     Record<string, unknown>
@@ -17386,6 +17409,8 @@ function createServiceFixture({
     templateFind,
     templateFindOne,
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
+    releaseUnreferencedFormAttachments:
+      attachmentService.releaseUnreferencedFormAttachments as jest.Mock,
     get signTaskDecisionFormDataSnapshots(): readonly Readonly<
       Record<string, unknown>
     >[] {

@@ -122,6 +122,53 @@ describe('AttachmentService', () => {
     });
   });
 
+  it('releases only the form attachments the form data no longer refers to', async (): Promise<void> => {
+    const instanceId = '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce';
+    const kept = '11111111-2222-4333-8444-555555555555';
+    const removed = '22222222-2222-4333-8444-555555555555';
+    const taskFile = '33333333-2222-4333-8444-555555555555';
+    const otherInstance = '44444444-2222-4333-8444-555555555555';
+    const attachments: AttachmentEntity[] = [
+      { formFieldPath: 'form.file', id: kept, instanceId, taskId: null },
+      { formFieldPath: 'form.file', id: removed, instanceId, taskId: null },
+      { formFieldPath: null, id: taskFile, instanceId, taskId: 'task-1' },
+      {
+        formFieldPath: 'form.file',
+        id: otherInstance,
+        instanceId: '9e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+        taskId: null,
+      },
+    ].map((entity): AttachmentEntity =>
+      Object.assign(new AttachmentEntity(), entity),
+    );
+    const repository = createAttachmentRepository(attachments);
+    const service = new AttachmentService(
+      repository,
+      createRepository<ApprovalInstanceEntity>({}),
+      createRepository<TaskEntity>({}),
+      createRepository<TaskCandidateEntity>({}),
+      createRepository<TaskDecisionEntity>({}),
+      createStorage(),
+    );
+
+    await service.releaseUnreferencedFormAttachments(
+      createManager(repository),
+      { formData: { file: [kept] }, instanceId },
+    );
+
+    expect(
+      attachments.map((attachment): [string, string | null] => [
+        attachment.id,
+        attachment.instanceId,
+      ]),
+    ).toEqual([
+      [kept, instanceId],
+      [removed, null],
+      [taskFile, instanceId],
+      [otherInstance, '9e3fd0fc-cc1e-43f5-9601-017dd26ad8ce'],
+    ]);
+  });
+
   it.each([
     [
       'the requesting origin',

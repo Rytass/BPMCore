@@ -1812,6 +1812,15 @@ export class WorkflowEngineService {
             instanceId: instance.id,
           },
         );
+        // A file the applicant removed from a field leaves the instance too,
+        // so its attachment list matches the form it was resubmitted with.
+        await this.attachmentService.releaseUnreferencedFormAttachments(
+          manager,
+          {
+            formData,
+            instanceId: instance.id,
+          },
+        );
         const returnedContext = await this.readLatestReturnedInstanceContext(
           manager,
           instance.id,

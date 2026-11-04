@@ -6,7 +6,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { EntityManager, In, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { readDistinctSubmitterMemberId } from '../workflow-engine/instance-submitter';
@@ -183,6 +183,51 @@ export class AttachmentService {
 
     if (nextAttachments.length > 0) {
       await attachmentRepository.save(nextAttachments);
+    }
+  }
+
+  /**
+   * Releases the form attachments of an instance that its form data no
+   * longer refers to — a file the applicant removed from a `file_upload`
+   * field before resubmitting. Without it the instance's attachment list
+   * would keep showing a file the form no longer holds.
+   *
+   * Only attachments uploaded through a form field (`formFieldPath` under
+   * `form.`) and not tied to a task are considered; a released attachment
+   * keeps its row and its uploader, and returns to `instanceId` null, the
+   * state it was in before the form first referred to it.
+   */
+  async releaseUnreferencedFormAttachments(
+    manager: EntityManager,
+    {
+      formData,
+      instanceId,
+    }: {
+      readonly formData: Readonly<Record<string, unknown>>;
+      readonly instanceId: string;
+    },
+  ): Promise<void> {
+    const referencedIds = new Set(
+      readAttachmentRefsFromFormData(formData).map((ref): string => ref.id),
+    );
+    const attachmentRepository = manager.getRepository(AttachmentEntity);
+    const attachments = await attachmentRepository.find({
+      where: { instanceId, taskId: IsNull() },
+    });
+    const released = attachments
+      .filter(
+        (attachment): boolean =>
+          attachment.instanceId === instanceId &&
+          attachment.taskId === null &&
+          (attachment.formFieldPath?.startsWith('form.') ?? false) &&
+          !referencedIds.has(attachment.id),
+      )
+      .map(
+        (attachment): AttachmentEntity => ({ ...attachment, instanceId: null }),
+      );
+
+    if (released.length > 0) {
+      await attachmentRepository.save(released);
     }
   }
 
