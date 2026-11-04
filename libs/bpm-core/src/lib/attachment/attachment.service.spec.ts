@@ -5,6 +5,7 @@ import {
   ObjectLiteral,
   Repository,
 } from 'typeorm';
+import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskDecisionEntity } from '../workflow-engine/task-decision.entity';
@@ -12,6 +13,17 @@ import { TaskEntity } from '../workflow-engine/task.entity';
 import { AttachmentStorage } from './attachment-storage.token';
 import { AttachmentEntity } from './attachment.entity';
 import { AttachmentService } from './attachment.service';
+
+// Only `fieldKey` and `type` decide which values name attachments.
+const FILE_SCHEMA = {
+  fields: [
+    { fieldKey: 'file', type: 'file_upload' },
+    { fieldKey: 'receipt', type: 'file_upload' },
+    { fieldKey: 'items', type: 'table' },
+    { fieldKey: 'unit', type: 'org_unit' },
+  ],
+  schemaVersion: 1,
+} as unknown as FormDefinitionSchema;
 
 describe('AttachmentService', () => {
   afterEach((): void => {
@@ -52,6 +64,7 @@ describe('AttachmentService', () => {
     await service.bindFormDataAttachmentsToInstance(createManager(repository), {
       formData: { file: [attachment.id] },
       instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+      schema: FILE_SCHEMA,
     });
 
     expect(attachments[0]).toMatchObject({
@@ -60,10 +73,9 @@ describe('AttachmentService', () => {
     });
   });
 
-  // Table rows are plain records, so the generic scan walks them without
-  // special-casing. V1 has no `file_upload` column, so ordinary cell values
-  // must not be mistaken for attachment references (ADR 16 §3.2).
-  it('walks table rows without binding ordinary cell values as attachments', async (): Promise<void> => {
+  // V1 has no `file_upload` column (ADR 16 §3.2), so a table's cells are
+  // never read as attachment references.
+  it('leaves table rows alone when looking for attachments', async (): Promise<void> => {
     const attachments: AttachmentEntity[] = [];
     const repository = createAttachmentRepository(attachments);
     const find = jest.spyOn(repository, 'find');
@@ -84,6 +96,7 @@ describe('AttachmentService', () => {
         ],
       },
       instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+      schema: FILE_SCHEMA,
     });
 
     expect(find).not.toHaveBeenCalled();
@@ -121,6 +134,7 @@ describe('AttachmentService', () => {
         items: [{ name: 'Bolt', qty: 3 }],
       },
       instanceId: '8e3fd0fc-cc1e-43f5-9601-017dd26ad8ce',
+      schema: FILE_SCHEMA,
     });
 
     expect(attachments[0]).toMatchObject({
@@ -163,19 +177,29 @@ describe('AttachmentService', () => {
   }
 
   it.each([
-    ['the initiator', { initiatorMemberId: 'member-001', submittedByMemberId: null }],
     [
-      'the member who filed on the initiator\'s behalf',
+      'the initiator',
+      { initiatorMemberId: 'member-001', submittedByMemberId: null },
+    ],
+    [
+      "the member who filed on the initiator's behalf",
       { initiatorMemberId: 'member-777', submittedByMemberId: 'member-001' },
     ],
   ])(
     'binds a free attachment uploaded by %s',
-    async (_who: string, filers: Partial<ApprovalInstanceEntity>): Promise<void> => {
+    async (
+      _who: string,
+      filers: Partial<ApprovalInstanceEntity>,
+    ): Promise<void> => {
       const { attachments, repository, service } = createBindFixture({});
 
       await service.bindFormDataAttachmentsToInstance(
         createManager(repository, { id: BIND_INSTANCE_ID, ...filers }),
-        { formData: { file: [BIND_ATTACHMENT_ID] }, instanceId: BIND_INSTANCE_ID },
+        {
+          formData: { file: [BIND_ATTACHMENT_ID] },
+          instanceId: BIND_INSTANCE_ID,
+          schema: FILE_SCHEMA,
+        },
       );
 
       expect(attachments[0]?.instanceId).toBe(BIND_INSTANCE_ID);
@@ -200,7 +224,8 @@ describe('AttachmentService', () => {
       attachment: Partial<AttachmentEntity>,
       filers: Partial<ApprovalInstanceEntity>,
     ): Promise<void> => {
-      const { attachments, repository, service } = createBindFixture(attachment);
+      const { attachments, repository, service } =
+        createBindFixture(attachment);
       const before = attachments[0]?.instanceId;
       const error = await service
         .bindFormDataAttachmentsToInstance(
@@ -208,6 +233,7 @@ describe('AttachmentService', () => {
           {
             formData: { file: [BIND_ATTACHMENT_ID] },
             instanceId: BIND_INSTANCE_ID,
+            schema: FILE_SCHEMA,
           },
         )
         .then(
@@ -225,9 +251,7 @@ describe('AttachmentService', () => {
     const { repository, service } = createBindFixture({
       instanceId: BIND_INSTANCE_ID,
     });
-    const instanceFindOne = jest.fn(
-      (): Promise<null> => Promise.resolve(null),
-    );
+    const instanceFindOne = jest.fn((): Promise<null> => Promise.resolve(null));
     const manager = {
       getRepository: (entity: unknown): unknown =>
         entity === ApprovalInstanceEntity
@@ -238,9 +262,73 @@ describe('AttachmentService', () => {
     await service.bindFormDataAttachmentsToInstance(manager, {
       formData: { file: [BIND_ATTACHMENT_ID] },
       instanceId: BIND_INSTANCE_ID,
+      schema: FILE_SCHEMA,
     });
 
     expect(instanceFindOne).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'an attachment id with no row, such as a deleted file',
+      '66666666-2222-4333-8444-555555555555',
+    ],
+    ['a value that is no attachment id', 'not-an-attachment'],
+  ])(
+    'refuses %s instead of saving the case with it',
+    async (_what: string, value: string): Promise<void> => {
+      const { attachments, repository, service } = createBindFixture({});
+      const error = await service
+        .bindFormDataAttachmentsToInstance(createManager(repository), {
+          formData: { file: [BIND_ATTACHMENT_ID, value] },
+          instanceId: BIND_INSTANCE_ID,
+          schema: FILE_SCHEMA,
+        })
+        .then(
+          (): unknown => undefined,
+          (rejection: unknown): unknown => rejection,
+        );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as Error).message).toContain(value);
+      expect((error as Error).message).not.toContain(BIND_ATTACHMENT_ID);
+      // Nothing is bound when one of the values is refused.
+      expect(attachments[0]?.instanceId).toBeNull();
+    },
+  );
+
+  // An org unit, a DataSource option or a text value can be a UUID that
+  // happens to match an attachment; it does not name one.
+  it('reads attachment ids from file_upload fields only', async (): Promise<void> => {
+    const { attachments, repository, service } = createBindFixture({
+      uploaderMemberId: 'member-777',
+    });
+    const find = jest.spyOn(repository, 'find');
+
+    await service.bindFormDataAttachmentsToInstance(createManager(repository), {
+      formData: {
+        items: [{ ref: BIND_ATTACHMENT_ID }],
+        note: BIND_ATTACHMENT_ID,
+        unit: BIND_ATTACHMENT_ID,
+      },
+      instanceId: BIND_INSTANCE_ID,
+      schema: FILE_SCHEMA,
+    });
+
+    expect(find).not.toHaveBeenCalled();
+    expect(attachments[0]?.instanceId).toBeNull();
+  });
+
+  it('takes an empty file_upload entry for no file', async (): Promise<void> => {
+    const { attachments, repository, service } = createBindFixture({});
+
+    await service.bindFormDataAttachmentsToInstance(createManager(repository), {
+      formData: { file: [BIND_ATTACHMENT_ID, ''], receipt: '' },
+      instanceId: BIND_INSTANCE_ID,
+      schema: FILE_SCHEMA,
+    });
+
+    expect(attachments[0]?.instanceId).toBe(BIND_INSTANCE_ID);
   });
 
   it('releases only the form attachments the form data no longer refers to', async (): Promise<void> => {
@@ -277,7 +365,7 @@ describe('AttachmentService', () => {
 
     await service.releaseUnreferencedFormAttachments(
       createManager(repository),
-      { formData: { file: [kept] }, instanceId },
+      { formData: { file: [kept] }, instanceId, schema: FILE_SCHEMA },
     );
 
     expect(
@@ -293,6 +381,56 @@ describe('AttachmentService', () => {
       [otherInstance, '9e3fd0fc-cc1e-43f5-9601-017dd26ad8ce'],
     ]);
   });
+
+  it.each([
+    [
+      'keeps the files of a field the submission leaves out',
+      { receipt: [] },
+      ['instance', 'instance'],
+    ],
+    [
+      'releases every file of a field sent back empty',
+      { file: [] },
+      [null, null],
+    ],
+  ])(
+    '%s',
+    async (
+      _what: string,
+      formData: Readonly<Record<string, unknown>>,
+      expected: readonly (string | null)[],
+    ): Promise<void> => {
+      const attachments: AttachmentEntity[] = [
+        '11111111-2222-4333-8444-555555555555',
+        '22222222-2222-4333-8444-555555555555',
+      ].map((id): AttachmentEntity =>
+        Object.assign(new AttachmentEntity(), {
+          formFieldPath: 'form.file',
+          id,
+          instanceId: 'instance',
+          taskId: null,
+        }),
+      );
+      const repository = createAttachmentRepository(attachments);
+      const service = new AttachmentService(
+        repository,
+        createRepository<ApprovalInstanceEntity>({}),
+        createRepository<TaskEntity>({}),
+        createRepository<TaskCandidateEntity>({}),
+        createRepository<TaskDecisionEntity>({}),
+        createStorage(),
+      );
+
+      await service.releaseUnreferencedFormAttachments(
+        createManager(repository),
+        { formData, instanceId: 'instance', schema: FILE_SCHEMA },
+      );
+
+      expect(
+        attachments.map((attachment): string | null => attachment.instanceId),
+      ).toEqual(expected);
+    },
+  );
 
   it.each([
     [

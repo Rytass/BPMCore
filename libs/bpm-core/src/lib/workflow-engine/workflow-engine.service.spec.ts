@@ -619,7 +619,14 @@ describe('WorkflowEngineService', () => {
         fixture.releaseUnreferencedFormAttachments.mock.calls.map(
           (call: readonly unknown[]): unknown => call[1],
         ),
-      ).toEqual([{ formData: { amount: 2000 }, instanceId: 'instance-1' }]);
+      ).toEqual([
+        {
+          formData: { amount: 2000 },
+          instanceId: 'instance-1',
+          // The snapshot's schema, which tells file_upload fields apart.
+          schema: { fields: [], schemaVersion: 1 },
+        },
+      ]);
     });
 
     it('keeps the business key when an instance is cancelled', async (): Promise<void> => {
