@@ -733,6 +733,7 @@ export class WorkflowEngineService {
           {
             formData,
             instanceId: instance.id,
+            schema: formDefinitionVersion.schema,
           },
         );
         const token = await tokenRepository.save(
@@ -1810,6 +1811,17 @@ export class WorkflowEngineService {
           {
             formData,
             instanceId: instance.id,
+            schema: resubmitSchema,
+          },
+        );
+        // A file the applicant removed from a field leaves the instance too,
+        // so its attachment list matches the form it was resubmitted with.
+        await this.attachmentService.releaseUnreferencedFormAttachments(
+          manager,
+          {
+            formData,
+            instanceId: instance.id,
+            schema: resubmitSchema,
           },
         );
         const returnedContext = await this.readLatestReturnedInstanceContext(

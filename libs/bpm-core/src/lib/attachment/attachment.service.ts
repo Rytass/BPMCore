@@ -6,7 +6,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { EntityManager, In, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { readDistinctSubmitterMemberId } from '../workflow-engine/instance-submitter';
@@ -22,6 +22,10 @@ import {
   BPMResolvedAttachmentOptions,
   resolveBPMAttachmentOptions,
 } from './attachment-options';
+import {
+  ATTACHMENT_NOT_BINDABLE_ERROR_CODE,
+  type FormDefinitionSchema,
+} from '@rytass/bpm-core-shared/form';
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
 
@@ -151,39 +155,172 @@ export class AttachmentService {
     {
       formData,
       instanceId,
+      schema,
     }: {
       readonly formData: Readonly<Record<string, unknown>>;
       readonly instanceId: string;
+      readonly schema: FormDefinitionSchema;
     },
   ): Promise<void> {
-    const attachmentRefs = readAttachmentRefsFromFormData(formData);
-    const ids = [...new Set(attachmentRefs.map((ref) => ref.id))];
+    // Only `file_upload` values name attachments. Any other field may hold an
+    // id-shaped string — an org unit, a DataSource option — that is no file.
+    const attachmentRefs = readFileUploadAttachmentRefs(schema, formData);
+    const ids = [...new Set(attachmentRefs.map((ref): string => ref.id))];
 
     if (ids.length === 0) {
       return;
     }
 
     const attachmentRepository = manager.getRepository(AttachmentEntity);
-    const attachments = await attachmentRepository.find({
-      where: { id: In(ids) },
-    });
-    const refsById = new Map(attachmentRefs.map((ref) => [ref.id, ref]));
-    const nextAttachments = attachments
-      .filter(
-        (attachment) =>
-          attachment.instanceId === null ||
-          attachment.instanceId === instanceId,
-      )
-      .map((attachment) => ({
-        ...attachment,
-        formFieldPath:
-          attachment.formFieldPath ?? refsById.get(attachment.id)?.path ?? null,
-        instanceId,
-      }));
+    // A value that is not a UUID cannot name a row, and the column would
+    // reject it in the query.
+    const lookupIds = ids.filter((id): boolean => UUID_PATTERN.test(id));
+    const attachments =
+      lookupIds.length > 0
+        ? await attachmentRepository.find({ where: { id: In(lookupIds) } })
+        : [];
+    const foundIds = new Set(
+      attachments.map((attachment): string => attachment.id),
+    );
+    const freeAttachments = attachments.filter(
+      (attachment): boolean => attachment.instanceId === null,
+    );
+    // Only the people who file the instance may bring a free attachment into
+    // it. An id is no secret — everyone who reads a form sees the ids in it,
+    // and an attachment a resubmit released is free again — so without this
+    // anyone who had seen one could bind it to a case of their own and read it.
+    // Read only when there is a free attachment to judge.
+    const filerMemberIds = await this.readInstanceFilerMemberIds(
+      manager,
+      freeAttachments.length > 0 ? instanceId : null,
+    );
+    // Refused rather than skipped: a case that saves while leaving out a file
+    // its form lists is the silent loss this binding exists to prevent.
+    // An id with no row — a deleted file, a mistyped value — is refused the
+    // same way: the form would list a file the case does not hold.
+    const unbindableIds = [
+      ...ids.filter((id): boolean => !foundIds.has(id)),
+      ...attachments
+        .filter((attachment): boolean =>
+          attachment.instanceId === null
+            ? !filerMemberIds.has(attachment.uploaderMemberId)
+            : attachment.instanceId !== instanceId,
+        )
+        .map((attachment): string => attachment.id),
+    ];
+
+    if (unbindableIds.length > 0) {
+      throw new BadRequestException(
+        `${ATTACHMENT_NOT_BINDABLE_ERROR_CODE}: attachments ${unbindableIds.join(
+          ', ',
+        )} cannot be attached to this case: only files its applicant uploaded for it can be`,
+      );
+    }
+
+    const refsById = new Map(
+      attachmentRefs.map((ref): readonly [string, FormAttachmentRef] => [
+        ref.id,
+        ref,
+      ]),
+    );
+    // The field that holds the file now, not the one it was first uploaded
+    // for: a release only looks at the fields a resubmit carries, so a stale
+    // path would keep a file the form no longer refers to.
+    const nextAttachments = attachments.map((attachment): AttachmentEntity => ({
+      ...attachment,
+      formFieldPath:
+        refsById.get(attachment.id)?.path ?? attachment.formFieldPath,
+      instanceId,
+    }));
 
     if (nextAttachments.length > 0) {
       await attachmentRepository.save(nextAttachments);
     }
+  }
+
+  /**
+   * Releases the form attachments of an instance that its form data no
+   * longer refers to — a file the applicant removed from a `file_upload`
+   * field before resubmitting. Without it the instance's attachment list
+   * would keep showing a file the form no longer holds.
+   *
+   * Only attachments uploaded through a `file_upload` field
+   * (`formFieldPath` `form.<fieldKey>`) whose key the form data carries, and
+   * not tied to a task, are considered: a field the submission leaves out
+   * says nothing about its files, so they stay. A cleared field arrives as
+   * `[]` and does release them. A released attachment keeps its row and its
+   * uploader, and returns to `instanceId` null, the state it was in before
+   * the form first referred to it.
+   */
+  async releaseUnreferencedFormAttachments(
+    manager: EntityManager,
+    {
+      formData,
+      instanceId,
+      schema,
+    }: {
+      readonly formData: Readonly<Record<string, unknown>>;
+      readonly instanceId: string;
+      readonly schema: FormDefinitionSchema;
+    },
+  ): Promise<void> {
+    const submittedFieldPaths = new Set(
+      readSubmittedFileUploadFieldKeys(schema, formData).map(
+        (fieldKey): string => `form.${fieldKey}`,
+      ),
+    );
+
+    if (submittedFieldPaths.size === 0) {
+      return;
+    }
+
+    const referencedIds = new Set(
+      readFileUploadAttachmentRefs(schema, formData).map(
+        (ref): string => ref.id,
+      ),
+    );
+    const attachmentRepository = manager.getRepository(AttachmentEntity);
+    const attachments = await attachmentRepository.find({
+      where: { instanceId, taskId: IsNull() },
+    });
+    const released = attachments
+      // `instanceId` and `taskId` are settled by the query.
+      .filter(
+        (attachment): boolean =>
+          attachment.formFieldPath !== null &&
+          submittedFieldPaths.has(attachment.formFieldPath) &&
+          !referencedIds.has(attachment.id),
+      )
+      .map((attachment): AttachmentEntity => ({
+        ...attachment,
+        instanceId: null,
+      }));
+
+    if (released.length > 0) {
+      await attachmentRepository.save(released);
+    }
+  }
+
+  private async readInstanceFilerMemberIds(
+    manager: EntityManager,
+    instanceId: string | null,
+  ): Promise<ReadonlySet<string>> {
+    const instance = instanceId
+      ? await manager
+          .getRepository(ApprovalInstanceEntity)
+          .findOne({ where: { id: instanceId } })
+      : null;
+
+    return new Set(
+      instance
+        ? [
+            instance.initiatorMemberId,
+            ...(instance.submittedByMemberId
+              ? [instance.submittedByMemberId]
+              : []),
+          ]
+        : [],
+    );
   }
 
   async createSignedUrl({
@@ -414,33 +551,46 @@ function normalizeOptionalText(
   return trimmedValue ? trimmedValue : null;
 }
 
-function readAttachmentRefsFromFormData(
+function readSubmittedFileUploadFieldKeys(
+  schema: FormDefinitionSchema,
   formData: Readonly<Record<string, unknown>>,
-): readonly { readonly id: string; readonly path: string }[] {
-  return Object.entries(formData).flatMap(([fieldKey, value]) =>
-    readAttachmentRefsFromValue(value, `form.${fieldKey}`),
-  );
+): readonly string[] {
+  return schema.fields
+    .filter(
+      (field): boolean =>
+        field.type === 'file_upload' &&
+        Object.prototype.hasOwnProperty.call(formData, field.fieldKey),
+    )
+    .map((field): string => field.fieldKey);
 }
 
-function readAttachmentRefsFromValue(
-  value: unknown,
-  path: string,
-): readonly { readonly id: string; readonly path: string }[] {
-  if (typeof value === 'string') {
-    return UUID_PATTERN.test(value) ? [{ id: value, path }] : [];
-  }
+interface FormAttachmentRef {
+  readonly id: string;
+  readonly path: string;
+}
 
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => readAttachmentRefsFromValue(entry, path));
-  }
+function readFileUploadAttachmentRefs(
+  schema: FormDefinitionSchema,
+  formData: Readonly<Record<string, unknown>>,
+): readonly FormAttachmentRef[] {
+  return readSubmittedFileUploadFieldKeys(schema, formData).flatMap(
+    (fieldKey): readonly FormAttachmentRef[] => {
+      const value = formData[fieldKey];
+      const entries: readonly unknown[] = Array.isArray(value)
+        ? value
+        : [value];
 
-  if (isRecord(value)) {
-    return Object.entries(value).flatMap(([key, entry]) =>
-      readAttachmentRefsFromValue(entry, `${path}.${key}`),
-    );
-  }
-
-  return [];
+      return (
+        entries
+          // An empty value holds no file.
+          .filter(
+            (entry): entry is string =>
+              typeof entry === 'string' && entry !== '',
+          )
+          .map((id): FormAttachmentRef => ({ id, path: `form.${fieldKey}` }))
+      );
+    },
+  );
 }
 
 function signAttachmentToken(

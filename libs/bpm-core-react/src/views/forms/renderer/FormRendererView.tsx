@@ -22,9 +22,7 @@ import {
   Textarea,
   Toggle,
   Typography,
-  Upload,
 } from '@mezzanine-ui/react';
-import type { UploadFile } from '@mezzanine-ui/react/Upload';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import {
@@ -70,6 +68,12 @@ import {
   readFormDataSourceFieldStatusMessage,
   useFormDataSourceField,
 } from './form-data-source-field';
+import {
+  FileUploadFieldControl,
+  type FileUploadFieldState,
+  type FormRendererAttachment,
+} from './file-upload-field';
+import { readStringArrayValue } from './form-value-readers';
 import { resolveFormFieldLink } from './form-field-link';
 import { MemberFieldControl } from './member-field';
 import { OrgUnitFieldControl } from './org-unit-field';
@@ -77,6 +81,12 @@ import { OrgUnitFieldControl } from './org-unit-field';
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
   readonly dataSourceInitialValues?: FormRendererValues;
+  /**
+   * Attachments the form's `file_upload` values may refer to (for example the
+   * instance's `listAttachments`). A field lists each id it holds by the name
+   * and size found here.
+   */
+  readonly attachments?: readonly FormRendererAttachment[];
   readonly emptyText?: string;
   readonly errors?: Readonly<Record<string, string>>;
   /**
@@ -102,6 +112,25 @@ export interface FormRendererProps {
       'hasValue' | 'invalidValues' | 'status'
     >,
   ) => void;
+  /**
+   * Called when a `file_upload` field starts or settles an upload. A host
+   * that submits the form refuses to while any field reports a pending or
+   * failed upload (`readFileUploadSubmissionBlockMessage`): those files are
+   * listed but not in the value.
+   */
+  readonly onFileUploadStateChange?: (
+    fieldKey: string,
+    state: FileUploadFieldState,
+  ) => void;
+  /**
+   * Opens an attachment a `file_upload` field lists. Without it, only files
+   * picked in this form can be downloaded from the field.
+   */
+  readonly onDownloadAttachment?: (attachmentId: string) => void;
+  /**
+   * Uploads a file picked in a `file_upload` field and returns the attachment
+   * id the value then holds. Without it a `file_upload` field cannot upload.
+   */
   readonly onUploadAttachment?: (
     field: FormFieldDefinition,
     file: File,
@@ -153,7 +182,23 @@ function applyFullWidthTextareaHost(element: HTMLDivElement | null): void {
   element.style.width = '100%';
 }
 
+/** What a `file_upload` control needs from the form it renders in. */
+interface FormRendererFileUpload {
+  readonly attachments: readonly FormRendererAttachment[] | undefined;
+  readonly onDownloadAttachment: ((attachmentId: string) => void) | undefined;
+  readonly onStateChange:
+    | ((fieldKey: string, state: FileUploadFieldState) => void)
+    | undefined;
+  readonly onUploadAttachment:
+    | ((
+        field: FormFieldDefinition,
+        file: File,
+      ) => Promise<{ readonly id: string }>)
+    | undefined;
+}
+
 export function FormRenderer({
+  attachments,
   dataSourceContext,
   dataSourceInitialValues,
   emptyText = '尚未建立欄位。',
@@ -163,6 +208,8 @@ export function FormRenderer({
   maxWidth,
   onChange,
   onDataSourceStateChange,
+  onDownloadAttachment,
+  onFileUploadStateChange,
   onUploadAttachment,
   optionSnapshots,
   readonly = false,
@@ -171,6 +218,20 @@ export function FormRenderer({
   uiSchema,
   value,
 }: FormRendererProps): ReactElement {
+  const fileUpload = useMemo(
+    (): FormRendererFileUpload => ({
+      attachments,
+      onDownloadAttachment,
+      onStateChange: onFileUploadStateChange,
+      onUploadAttachment,
+    }),
+    [
+      attachments,
+      onDownloadAttachment,
+      onFileUploadStateChange,
+      onUploadAttachment,
+    ],
+  );
   const [internalValues, setInternalValues] = useState<FormRendererValues>(() =>
     buildFormRendererValues(schema.fields, value ?? {}),
   );
@@ -259,8 +320,8 @@ export function FormRenderer({
               : undefined
           }
           onChange={updateValue}
+          fileUpload={fileUpload}
           onDataSourceStateChange={onDataSourceStateChange}
-          onUploadAttachment={onUploadAttachment}
           optionSnapshots={optionSnapshots}
           readonly={readFieldAccessReadonly(
             readOwnFieldAccess(fieldAccess, field.fieldKey),
@@ -310,10 +371,10 @@ function FormRendererField({
   errors,
   field,
   fields,
+  fileUpload,
   labelMarker,
   onChange,
   onDataSourceStateChange,
-  onUploadAttachment,
   optionSnapshots,
   readonly,
   schema,
@@ -345,12 +406,7 @@ function FormRendererField({
       'hasValue' | 'invalidValues' | 'status'
     >,
   ) => void;
-  readonly onUploadAttachment?:
-    | ((
-        field: FormFieldDefinition,
-        file: File,
-      ) => Promise<{ readonly id: string }>)
-    | undefined;
+  readonly fileUpload: FormRendererFileUpload;
   readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly: boolean;
   readonly schema: FormDefinitionSchema;
@@ -427,7 +483,7 @@ function FormRendererField({
             value,
             fieldReadonly,
             onChange,
-            onUploadAttachment,
+            fileUpload,
             dataSourceContext,
             dataSourceState,
           )
@@ -903,12 +959,7 @@ function renderControl(
   value: FormFieldValue | undefined,
   readonly: boolean,
   onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
-  onUploadAttachment:
-    | ((
-        field: FormFieldDefinition,
-        file: File,
-      ) => Promise<{ readonly id: string }>)
-    | undefined,
+  fileUpload: FormRendererFileUpload | undefined,
   dataSourceContext: FormRendererDataSourceContext | undefined,
   dataSourceState: FormDataSourceFieldState,
   size: ControlSize = 'main',
@@ -930,7 +981,7 @@ function renderControl(
     value,
     readonly,
     onChange,
-    onUploadAttachment,
+    fileUpload,
     size,
   );
 }
@@ -945,12 +996,7 @@ function renderStaticControl(
   value: FormFieldValue | undefined,
   readonly: boolean,
   onChange: (fieldKey: string, value: FormFieldValue | undefined) => void,
-  onUploadAttachment:
-    | ((
-        field: FormFieldDefinition,
-        file: File,
-      ) => Promise<{ readonly id: string }>)
-    | undefined,
+  fileUpload: FormRendererFileUpload | undefined,
   size: ControlSize = 'main',
 ): ReactElement {
   const link =
@@ -1088,35 +1134,17 @@ function renderStaticControl(
 
   if (field.type === 'file_upload') {
     return (
-      <Upload
-        accept={field.acceptedMimeTypes?.join(',')}
-        disabled={readonly}
-        maxFiles={field.maxFiles}
-        mode="button-list"
-        {...((field.maxFiles ?? 1) > 1 ? { multiple: true } : {})}
-        onChange={(files): void =>
-          onChange(
-            field.fieldKey,
-            files.length ? files.map((file) => file.id) : undefined,
-          )
+      <FileUploadFieldControl
+        attachments={fileUpload?.attachments}
+        field={field}
+        onChange={(nextValue): void => onChange(field.fieldKey, nextValue)}
+        onDownloadAttachment={fileUpload?.onDownloadAttachment}
+        onStateChange={(state): void =>
+          fileUpload?.onStateChange?.(field.fieldKey, state)
         }
-        onUpload={async (files): Promise<UploadFile[]> =>
-          Promise.all(
-            files.map(async (file): Promise<UploadFile> => {
-              const uploadedFile = onUploadAttachment
-                ? await onUploadAttachment(field, file)
-                : { id: `${file.name}-${file.lastModified}` };
-
-              return {
-                file,
-                id: uploadedFile.id,
-                progress: 100,
-                status: 'done',
-              };
-            }),
-          )
-        }
-        size="sub"
+        onUploadAttachment={fileUpload?.onUploadAttachment}
+        readonly={readonly}
+        value={value}
       />
     );
   }
@@ -1383,16 +1411,6 @@ function readFieldColumnSpan(
 
 function readStringValue(value: FormFieldValue | undefined): string {
   return typeof value === 'string' ? value : '';
-}
-
-function readStringArrayValue(
-  value: FormFieldValue | undefined,
-): readonly string[] {
-  // A table value is also an array, so the element check is what separates a
-  // multi-select value from table rows here.
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-    ? value
-    : [];
 }
 
 function readNumberInputValue(value: FormFieldValue | undefined): string {

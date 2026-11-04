@@ -174,6 +174,14 @@ export type FormDataSourceValueSnapshots = Readonly<
 
 export type BooleanFieldDefinition = BaseFormFieldDefinition<'boolean'>;
 
+/**
+ * Leads the message of a submission the server refuses because a
+ * `file_upload` value names an attachment the case may not take: one uploaded
+ * by someone other than its applicant, or one that belongs to another case.
+ * A client matches it to show its own copy instead of the server's text.
+ */
+export const ATTACHMENT_NOT_BINDABLE_ERROR_CODE = 'ATTACHMENT_NOT_BINDABLE';
+
 export type FileUploadFieldDefinition =
   BaseFormFieldDefinition<'file_upload'> & {
     readonly acceptedMimeTypes?: readonly string[];

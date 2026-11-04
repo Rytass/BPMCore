@@ -3,8 +3,19 @@ module.exports = {
   preset: '../../jest.preset.js',
   testEnvironment: 'jsdom',
   transform: {
+    // `@mezzanine-ui/*` ships ESM only. Most specs mock it, but a spec that has
+    // to exercise a real control (the controlled `Upload`, whose contract a
+    // mock would only restate) needs it compiled to CommonJS.
+    '/node_modules/.*@mezzanine-ui/.+\\.js$': [
+      'ts-jest',
+      {
+        isolatedModules: true,
+        tsconfig: { allowJs: true, jsx: 'react-jsx', module: 'commonjs' },
+      },
+    ],
     '^.+\\.[tj]sx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }],
   },
+  transformIgnorePatterns: ['/node_modules/(?!(\\.pnpm/)?@mezzanine-ui)'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'html'],
   moduleNameMapper: {
     // ESM-only package; see the stub for why the test environment cannot load
