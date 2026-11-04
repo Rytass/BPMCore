@@ -165,7 +165,7 @@ export class AttachmentService {
     // Only `file_upload` values name attachments. Any other field may hold an
     // id-shaped string — an org unit, a DataSource option — that is no file.
     const attachmentRefs = readFileUploadAttachmentRefs(schema, formData);
-    const ids = [...new Set(attachmentRefs.map((ref) => ref.id))];
+    const ids = [...new Set(attachmentRefs.map((ref): string => ref.id))];
 
     if (ids.length === 0) {
       return;
@@ -217,11 +217,19 @@ export class AttachmentService {
       );
     }
 
-    const refsById = new Map(attachmentRefs.map((ref) => [ref.id, ref]));
+    const refsById = new Map(
+      attachmentRefs.map((ref): readonly [string, FormAttachmentRef] => [
+        ref.id,
+        ref,
+      ]),
+    );
+    // The field that holds the file now, not the one it was first uploaded
+    // for: a release only looks at the fields a resubmit carries, so a stale
+    // path would keep a file the form no longer refers to.
     const nextAttachments = attachments.map((attachment): AttachmentEntity => ({
       ...attachment,
       formFieldPath:
-        attachment.formFieldPath ?? refsById.get(attachment.id)?.path ?? null,
+        refsById.get(attachment.id)?.path ?? attachment.formFieldPath,
       instanceId,
     }));
 
@@ -556,12 +564,17 @@ function readSubmittedFileUploadFieldKeys(
     .map((field): string => field.fieldKey);
 }
 
+interface FormAttachmentRef {
+  readonly id: string;
+  readonly path: string;
+}
+
 function readFileUploadAttachmentRefs(
   schema: FormDefinitionSchema,
   formData: Readonly<Record<string, unknown>>,
-): readonly { readonly id: string; readonly path: string }[] {
+): readonly FormAttachmentRef[] {
   return readSubmittedFileUploadFieldKeys(schema, formData).flatMap(
-    (fieldKey) => {
+    (fieldKey): readonly FormAttachmentRef[] => {
       const value = formData[fieldKey];
       const entries: readonly unknown[] = Array.isArray(value)
         ? value
@@ -574,7 +587,7 @@ function readFileUploadAttachmentRefs(
             (entry): entry is string =>
               typeof entry === 'string' && entry !== '',
           )
-          .map((id) => ({ id, path: `form.${fieldKey}` }))
+          .map((id): FormAttachmentRef => ({ id, path: `form.${fieldKey}` }))
       );
     },
   );

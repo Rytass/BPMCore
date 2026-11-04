@@ -319,6 +319,25 @@ describe('AttachmentService', () => {
     expect(attachments[0]?.instanceId).toBeNull();
   });
 
+  // A file released from one field and named again by another now belongs to
+  // the second; the release on the next resubmit looks it up by that field.
+  it('records the field that holds the file now', async (): Promise<void> => {
+    const { attachments, repository, service } = createBindFixture({
+      formFieldPath: 'form.file',
+    });
+
+    await service.bindFormDataAttachmentsToInstance(createManager(repository), {
+      formData: { file: [], receipt: [BIND_ATTACHMENT_ID] },
+      instanceId: BIND_INSTANCE_ID,
+      schema: FILE_SCHEMA,
+    });
+
+    expect(attachments[0]).toMatchObject({
+      formFieldPath: 'form.receipt',
+      instanceId: BIND_INSTANCE_ID,
+    });
+  });
+
   it('takes an empty file_upload entry for no file', async (): Promise<void> => {
     const { attachments, repository, service } = createBindFixture({});
 
