@@ -16,7 +16,7 @@
 | --- | --- | --- | --- | --- |
 | P0 | 安全修補：錯誤淨化、評估預算、輸出正規化 | 獨立安全修補 | — | IMPLEMENTED（實機 gate 通過） |
 | P1 | 方言欄位與候選引擎差異測試 | P0 | 引擎去留 | IMPLEMENTED（實機 gate 通過） |
-| P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | PLANNED |
+| P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | IMPLEMENTED（實機 gate 未跑） |
 | P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTING（registry、內建函式、兩方言接線完成；ConditionService 接線與發布 lint 待 P2 整合） |
 | P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | PLANNED |
 | P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | PLANNED |
@@ -191,6 +191,56 @@
 - 測試：`form["sec"+"ret"]`、`string(form)`、`__proto__` 路徑都在發布時被擋下。
 - 測試：既有已發布版本不被重新 lint。
 - 前後端 lint 訊息對應完整（`workflow-lint-errors.ts`）。
+
+**狀態（2026-11-07）**：IMPLEMENTED。程式與測試完成；**實機 gate 未跑**（未在 dev server 上實際發布 cel-v2 模板），
+所以不是 VERIFIED。`pnpm nx run-many -t typecheck lint test -p shared bpm-core bpm-core-client bpm-core-react api` 通過
+（修正獨立驗證發現的那一輪：第一次因 `workflow-engine.service.spec.ts` 的時間預算測試 `accepts a full table of valid values within the budget`
+在並行負載下逾時而失敗，該檔本輪未動；同一指令重跑全數通過）。
+
+| Gate | 結果 |
+| --- | --- |
+| `form["sec"+"ret"]`、`string(form)`、`__proto__` 在發布時被擋下 | 真引擎：`template.service.expression-lint.real-engine.spec.ts` 的 `Phase 23 P2 gate (cel-v2)` 以真 `ConditionService` 走 `publishApprovalTemplateVersion`，分別得到 `EXPR_COMPUTED_KEY`、`EXPR_WHOLE_FORM_REFERENCE form`、`EXPR_RESERVED_PATH_SEGMENT __proto__`；`SET_FORM_FIELD` 的 `fieldPath: "__proto__.polluted"` 同樣被擋，cel-legacy 定義也擋（`__proto__.polluted`、`items[0].constructor`） |
+| 既有已發布版本不被重新 lint | 真引擎：rollback 一個發布時會被擋下的版本（computed key）照樣回到 PUBLISHED，`lintExpression`／`lintExpressions` 都沒有被呼叫。rollback 只檢查版本呼叫的宿主函式仍已註冊（`EXPR_FUNCTION_NOT_REGISTERED`），不重新 lint |
+| 前後端訊息對應完整 | `workflow-lint-errors.expression.spec.ts`：每個 `EXPR_*` 碼（錯誤 12、警告 6）在 en 與 zh-TW 都翻譯成指名畫布位置的句子，有無 subject 皆然，譯文不含 `'; '` 也不含錯誤碼；未知方言那一行有翻譯 |
+| 實機 | **未跑**：本輪不得啟動 dev server。待補：在 develop 發布一份 cel-v2 模板（含巨集綁定名稱、`lastDecision`、`fieldPath`），確認通過；再發布含 computed key 與未知方言的定義，確認設計器顯示中文訊息 |
+
+**實作摘要**：
+
+- 共用契約：`libs/shared/src/lib/expression-usage-point.ts`，九個使用點與各自的 root 清單（docs/24 §2.3）、錯誤碼 12 個、警告碼 6 個
+  （docs/24 §2.2 的 5 個，加上 P35 要的 `EXPR_DIVISOR_IS_FIELD`）、`<label>: <code>[ <subject>]` 行格式與解析；subject 只收識別字，
+  所以使用者自訂的鍵帶不進 `'; '`。
+- AST：`condition/expression-ast.ts` 讀兩種方言（cel-v2 走 `@marcbachmann/cel-js` 的 AST；cel-legacy 走 chevrotain CST），
+  輸出 root、欄位路徑、computed key、保留片段、巨集巢狀深度、函式呼叫、`has()` 守衛、`||` 運算元與除數欄位。
+  巨集綁定名稱只在該巨集內有效，`[1].exists(lastDecision, true) && lastDecision.d != ""` 在 `ENTRY_CONDITION` 回
+  `EXPR_ROOT_NOT_ALLOWED lastDecision`。`cel.bind` **不**視為作用域：評估時的文字 root 掃描會拒絕 `cel`，lint 跟著拒絕，
+  發布與評估一致。
+- cel-v2 lint（`lintCelV2Expression`）：先做結構檢查（root、整體引用、computed key 含非字面值 map 鍵、保留鍵含 map 字面值、
+  巢狀深度；200 節點上限交給 parse 期的 `limit_exceeded`），再查未知欄位與函式（宿主函式經
+  `BPMExpressionFunctionRegistry.assertPublishable`，沒注入 registry 時退回 `BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES`；
+  binding 使用點呼叫宿主函式是 `EXPR_FUNCTION_NOT_ALLOWED`），沒有錯誤時才用表單 schema 宣告的型別跑 `env.check()`。
+  設計器常寫的 `== null`、`== ""`、`== []` 比較在型別檢查下會被拒，對應欄位降為 `dyn` 後重查（最多欄位數輪）。
+  呼叫 env 尚未註冊之宿主函式的式子不跑型別檢查，交給 `EXPR_FUNCTION_NOT_REGISTERED`。
+- 警告（只經 `ConditionService.lintExpressionIssues` 回傳，不擋發布）：除數是欄位（P35）、`has()` 巢狀路徑缺父層守衛（D20）、
+  `||` 吸收錯誤（D21／P41／P42）、選填欄位未經 `has()`、隱藏欄位複製到可見欄位、簽核人表達式讀 `form`。
+- 發布：`template.service.ts` 傳入定義的方言；`workflow-definition.validator.ts` 拒絕未知方言
+  （`workflow.expressionDialect must be cel-legacy or cel-v2`）。cel-v2 的 `referencesFormField`／表格內部引用改走 AST，
+  cel-legacy 保留 regex 與原本的 lint 行。NOTIFY 收件人表達式在 cel-v2 以 `APPROVER_RESOLVER` 使用點檢查。
+- `SET_FORM_FIELD.fieldPath`：保留片段（`__proto__`、`constructor`、`prototype`）兩種方言都擋（ADR 22 §5 不變式 #5 不分方言，
+  路徑也不是 CEL，docs/24 §1「舊方言沒有 AST」的理由套不上）；「指向已宣告欄位」只對 cel-v2，cel-legacy 是否也要擋待整合者決定
+  （舊版 fork 後重新發布可能寫到表單已移除的欄位）。執行期寫入建立的是自有屬性，不會污染全域原型。
+- cel-v2 的發布行與 preview 共用同一組錯誤碼：空白回 `EXPR_PARSE_FAILED`、超長回 `EXPR_COMPLEXITY_EXCEEDED`。cel-legacy 仍回
+  `<label> must not be blank`／`must be N characters or fewer`；未知方言在 `lintExpression` 仍回 `<label>: EXPRESSION_SYNTAX_ERROR`
+  （發布時已先被 validator 以 `workflow.expressionDialect must be cel-legacy or cel-v2` 擋下）。
+- 使用點不是九個之一時（含 `toString`、`__proto__` 等原型鍵）不拿去索引：兩種方言都視為不允許任何 root、cel-v2 也不允許宿主函式，
+  回 lint 結果而不丟 `TypeError`。P4 的 previewExpression 若從客戶端帶入使用點可直接依賴。
+- 雙變數 comprehension（`form.items.all(i, v, v.qty > 0)`）的 `v` 會被報成 `EXPR_ROOT_NOT_ALLOWED v`：訊息不精確，但評估本來就拒絕
+  這種寫法（`EXPRESSION_SYNTAX_ERROR`），lint 放行反而會發布每次都失敗的定義，所以維持 fail closed。
+- 已知限制：評估時的 root 白名單仍是文字掃描（P0／P1 範圍）。
+- **P3 必讀（硬性時序）**：`@marcbachmann/cel-js` 的 `clone()` 會把來源 env 的 registry 鎖住（`registry.js` 的 `#locked`），
+  lint 的型別檢查第一次 clone 共用 env（`loadCelV2Environment()`）之後，再對它 `registerFunction` 會丟
+  `Cannot modify frozen registry`；只做 parse 或評估不會凍結。所以 P3 的函式必須在建立共用 env 時（adapter 的
+  `createEnvironment`）就註冊，或由 adapter 另外匯出 env factory 讓 lint 自建 base env。`expression-ast.shared-environment.real-engine.spec.ts`
+  釘住了這個行為。
 
 ## P3 — 宿主函式
 
