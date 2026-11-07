@@ -19,8 +19,8 @@
 | P1 | 方言欄位與候選引擎差異測試 | P0 | 引擎去留 | IMPLEMENTED（實機 gate 通過） |
 | P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | IMPLEMENTED（實機 gate 通過） |
 | P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTED（P2 整合完成；實機 gate 通過） |
-| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | IMPLEMENTED（P5 整合完成；實機 gate 待主線執行） |
-| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | IMPLEMENTED（P4 整合完成；實機 gate 待主線執行） |
+| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | VERIFIED（2026-11-08 實機 gate 與 E2E 通過） |
+| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | VERIFIED（2026-11-08 實機 gate 與 E2E 通過） |
 
 ## 獨立安全修補（不依賴本功能，建議先做）
 
@@ -581,8 +581,8 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 ## E2E matrix
 
 E2E 都在 `apps/client-e2e/specs/`，需要 `pnpm dev`（api＋client）且不是 production；每支 spec 自己以 API 建立表單與模板
-（名稱帶各自的前綴），不依賴 `pnpm demo:reset`。**全部尚未執行**：只以
-`npx playwright test --list` 確認四支 spec 能載入，共 8 個測試。
+（名稱帶各自的前綴），不依賴 `pnpm demo:reset`。2026-11-08 對 develop schema 實跑：四支 8/8 通過，其中
+`expression-designer-real` 與 `expression-data-source-real` 以 `--repeat-each=3` 連跑 12 次全過。
 
 | Phase | E2E 情境 | spec | 狀態 |
 | --- | --- | --- | --- |
@@ -590,12 +590,18 @@ E2E 都在 `apps/client-e2e/specs/`，需要 `pnpm dev`（api＋client）且不�
 | P1 | 無 E2E；以差異語料真引擎測試與實機 gate 代替 | — | 實機 gate 通過 |
 | P2 | 無專屬 E2E；設計器上的 lint 顯示由 P4 的設計器 spec 涵蓋 | — | 實機 gate 通過 |
 | P3 | 無專屬 E2E；宿主函式 `demo_costBand_v1` 的發布與路由由 P4 的設計器 spec 涵蓋 | — | 實機 gate 通過 |
-| P4 | 在設計器以「進階：自訂運算式」寫 `contains` 與 `demo_costBand_v1` 的邊條件：通過檢查、顯示函式說明、側欄不超出 1600 px、樣本試算、儲存並發布；再以 API 送三張案件，確認依運算式路由 | `expression-designer-real.spec.ts`（`[e2e-expr-designer]`，2 個測試；需 `apps/api` 的示範函式） | 未執行 |
-| P4 | 申請人在 `note` 填 HTML payload，cel-v2 `SET_FORM_FIELD` 寫進 `copy`：案件詳情以文字顯示、不產生元素、不執行；通知抽屜以文字顯示案件標題裡的另一段 payload | `expression-xss-real.spec.ts`（`[e2e-expr-xss]`，3 個測試；本輪補上 review 節點的 `returnBehavior` 與名稱前綴） | 未執行 |
-| P5 | 新案件頁的 `chargedCostCenter` 以運算式綁定 `demo.cost-centers`：改 `chargeTo` 後重查選項、重新 resolve 舊值、顯示失效提示、重選後送出成功；送出後的詳情頁不出現「選項需要重新載入或驗證。」（D5、D6） | `expression-data-source-real.spec.ts`（`[e2e-expr-datasource]`，2 個測試） | 未執行 |
-| P5 | NOTIFY webhook 參數以運算式綁定，簽核後 `demo.purchase-approved@1` 的 demo sink 收到的參數就是運算式的值 | `expression-notify-webhook-real.spec.ts`（`[e2e-expr-webhook]`，1 個測試） | 未執行 |
+| P4 | 在設計器以「進階：自訂運算式」寫 `contains` 與 `demo_costBand_v1` 的邊條件：通過檢查、顯示函式說明、側欄不超出 1600 px、樣本試算、儲存並發布；再以 API 送三張案件，確認依運算式路由 | `expression-designer-real.spec.ts`（`[e2e-expr-designer]`，2 個測試；需 `apps/api` 的示範函式） | 通過（2026-11-08） |
+| P4 | 申請人在 `note` 填 HTML payload，cel-v2 `SET_FORM_FIELD` 寫進 `copy`：案件詳情以文字顯示、不產生元素、不執行；通知抽屜以文字顯示案件標題裡的另一段 payload | `expression-xss-real.spec.ts`（`[e2e-expr-xss]`，3 個測試；本輪補上 review 節點的 `returnBehavior` 與名稱前綴） | 通過（2026-11-08） |
+| P5 | 新案件頁的 `chargedCostCenter` 以運算式綁定 `demo.cost-centers`：改 `chargeTo` 後重查選項、重新 resolve 舊值、顯示失效提示、重選後送出成功；送出後的詳情頁不出現「選項需要重新載入或驗證。」（D5、D6） | `expression-data-source-real.spec.ts`（`[e2e-expr-datasource]`，2 個測試） | 通過（2026-11-08） |
+| P5 | NOTIFY webhook 參數以運算式綁定，簽核後 `demo.purchase-approved@1` 的 demo sink 收到的參數就是運算式的值 | `expression-notify-webhook-real.spec.ts`（`[e2e-expr-webhook]`，1 個測試） | 通過（2026-11-08） |
 
 既有的 `form-data-source-real.spec.ts` 與 `notify-webhook-real.spec.ts` 不涵蓋運算式，不列入。
+
+**全套 E2E（2026-11-08，`pnpm e2e:client --workers=1`）**：96 個中 90 過。失敗的 5 個都不是 app 回歸：
+
+- `notify-webhook-real.spec.ts:515` 預期來源選單只有「表單欄位／固定值」，P5 刻意為 number 參數加上「運算式」→ 更新 spec。
+- `template-designer-w3.spec.ts:471`、`:640`：P4 在節點面板加了進入條件與「以運算式指定」，把底部的 select 推出可視範圍，Mezzanine Select 預設不往上翻 → spec 改為先把 select 捲到畫面中央再點；修正後該檔全過。
+- `skill-matrix-real.spec.ts:185`、`:407`：依賴 `demo:reset` 的乾淨 seed。develop 累積的通知把 seed 通知擠出抽屜第一頁（每頁 50 筆），本 branch 沒有改動通知程式；下次 `demo:reset` 後應恢復。spec 在載入更多上的處理也不夠穩，另列待辦。
 
 ## demo seed 場景
 
