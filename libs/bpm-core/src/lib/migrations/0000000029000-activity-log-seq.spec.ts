@@ -78,11 +78,11 @@ describe('ActivityLogSeq0000000029000', () => {
     expect(statements[1]).toContain('DROP COLUMN IF EXISTS "seq"');
   });
 
-  it('is registered last in the migration list', (): void => {
+  it('is registered in the migration list', (): void => {
     const names = BPM_CORE_MIGRATIONS.map(
       (migration): string => migration.name,
     );
 
-    expect(names[names.length - 1]).toBe('ActivityLogSeq0000000029000');
+    expect(names).toContain('ActivityLogSeq0000000029000');
   });
 });

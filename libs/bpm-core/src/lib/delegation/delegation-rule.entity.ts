@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { ExpressionDialect } from '../condition/expression-dialect';
 import {
   DelegationRuleStatusEnum,
   DelegationScopeTypeEnum,
@@ -41,6 +42,21 @@ export class DelegationRuleEntity {
   @Column('text', { name: 'scope_condition_cel', nullable: true })
   @Field(() => String, { nullable: true })
   scopeConditionCel!: string | null;
+
+  /**
+   * The engine `scopeConditionCel` is evaluated with (ADR 22 §3.3). Rows
+   * written before the column existed are `cel-legacy` (migration
+   * `DelegationScopeConditionDialect0000000030000`).
+   */
+  @Column('text', {
+    default: 'cel-legacy',
+    name: 'scope_condition_dialect',
+  })
+  @Field(() => String, {
+    description:
+      'Expression dialect of scopeConditionCel: cel-legacy or cel-v2.',
+  })
+  scopeConditionDialect!: ExpressionDialect;
 
   @Column('int', { default: 100 })
   @Field({

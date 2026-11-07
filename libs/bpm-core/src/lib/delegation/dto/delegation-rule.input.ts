@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -10,6 +11,8 @@ import {
   Matches,
   Min,
 } from 'class-validator';
+import { EXPRESSION_DIALECTS } from '../../condition/expression-dialect';
+import type { ExpressionDialect } from '../../condition/expression-dialect';
 import { DelegationScopeTypeEnum } from '../delegation.enums';
 
 const PRIORITY_DESCRIPTION =
@@ -42,6 +45,15 @@ export class CreateDelegationRuleInput {
   @IsOptional()
   @IsString()
   scopeConditionCel?: string | null;
+
+  @Field(() => String, {
+    description:
+      'Expression dialect of scopeConditionCel: cel-legacy (default) or cel-v2. Fixed once the rule exists; updating a rule keeps it.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsIn(EXPRESSION_DIALECTS)
+  scopeConditionDialect?: ExpressionDialect | null;
 
   @Field(() => Int, {
     description: `${PRIORITY_DESCRIPTION} Defaults to 100.`,

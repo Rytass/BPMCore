@@ -17,6 +17,7 @@ import {
   Repository,
 } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import { readExpressionDialect } from '../condition/expression-dialect';
 import { IdentityService } from '../identity/identity.service';
 import {
   CreateDelegationRuleInput,
@@ -192,6 +193,12 @@ export class DelegationService {
       ...input,
       principalMemberId: currentRule.principalMemberId,
       createdByMemberId: currentRule.createdByMemberId,
+      // An update cannot change the dialect: the condition keeps being read
+      // by the engine it was written and tested for (ADR 22 §3.3).
+      scopeConditionDialect: readExpressionDialect(
+        currentRule.scopeConditionDialect,
+        `delegationRules.${currentRule.id}.scopeConditionDialect`,
+      ),
     });
 
     await this.assertNoActiveCycle(
@@ -492,6 +499,12 @@ export class DelegationService {
       rule.scopeConditionCel,
       buildDelegationExpressionContext(rule.principalMemberId, context),
       `delegationRules.${rule.id}.scopeConditionCel`,
+      {
+        dialect: readExpressionDialect(
+          rule.scopeConditionDialect,
+          `delegationRules.${rule.id}.scopeConditionDialect`,
+        ),
+      },
     );
   }
 
@@ -575,6 +588,10 @@ export class DelegationService {
 
     const scopeTemplateIds = input.scopeTemplateIds ?? [];
     const scopeConditionCel = input.scopeConditionCel?.trim() || null;
+    const scopeConditionDialect = readExpressionDialect(
+      input.scopeConditionDialect,
+      'scopeConditionDialect',
+    );
 
     if (
       input.scopeType === DelegationScopeTypeEnum.TEMPLATE_LIST &&
@@ -595,7 +612,10 @@ export class DelegationService {
     const lintErrors = this.conditionService.lintExpression(
       scopeConditionCel,
       'scopeConditionCel',
-      { allowedRootIdentifiers: DELEGATION_EXPRESSION_ROOT_IDENTIFIERS },
+      {
+        allowedRootIdentifiers: DELEGATION_EXPRESSION_ROOT_IDENTIFIERS,
+        dialect: scopeConditionDialect,
+      },
     );
 
     if (lintErrors.length > 0) {
@@ -612,6 +632,7 @@ export class DelegationService {
         input.scopeType === DelegationScopeTypeEnum.CONDITION_BASED
           ? scopeConditionCel
           : null,
+      scopeConditionDialect,
       scopeTemplateIds:
         input.scopeType === DelegationScopeTypeEnum.TEMPLATE_LIST
           ? scopeTemplateIds
