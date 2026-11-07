@@ -68,7 +68,7 @@ lastDecision != null && lastDecision.action == 'RETURNED'
 `!= null` 只擋 `null`，擋不了缺 key。手寫表達式請用 `has(form.x)` 防護。
 
 流程設計器（`readConditionExpression`）為識別字 key（`form.x`）編出的條件已內建守衛：缺 key、`null`
-都視為「未填」，已填寫／等於／大小比較回 `false`，未填寫／不等於回 `true`，不會丟例外。例：
+都視為「未填」，已填寫／等於／大小比較回 `false`，未填寫／不等於回 `true`，不會因為缺 key 而丟例外。例：
 
 ```cel
 has(form.agent) && (form.agent != null && form.agent != "")              // 已填寫
@@ -85,6 +85,10 @@ has(form.amount) && (form.amount != null && (form.amount != "" && form.amount > 
 
 `has()` 只接受欄位選取，不能守衛非識別字 key（`form["a-b"]`），這類 key 維持不加守衛的原本輸出。
 
+一個例外：缺的 key 若與繼承來的成員同名（例如 `constructor`），`cel-js` 的 `has(form.constructor)` 讀到的是原型上的成員，
+對 `{}` 回 `true`，守衛放行後下一個運算元丟 `Unknown type: function`。引擎不受影響，因為下面的後備只讀 `formData`
+自身的 key、會先攔截；直接用 `ConditionService` 求值才會遇到。
+
 設計器編出的「大小比較」另外把清空後的 `""` 也視為未填（在比較前多一道 `form.x != ""`）。這會翻轉舊結果：
 日期欄位的 `"" < "2026-01-01"` 以前為 `true`、現在為 `false`；數字欄位的 `"" > 5` 以前會丟例外（字串比數字）、
 現在為 `false`。等於／不等於／已填寫／未填寫對 `""` 的結果與舊版相同。
@@ -92,7 +96,13 @@ has(form.amount) && (form.amount != null && (form.amount != "" && form.amount > 
 已儲存的流程定義不會重編，仍帶著舊的 CEL。引擎在 edge 同時帶有設計器的結構化欄位（`conditionFieldKey`
 ＋ `conditionOperator`）、且該欄位的值是缺 key、`undefined`、`null`、剛好是 `""`（不去頭尾空白）或陣列時，
 改由結構化欄位求值，語意與上面的守衛一致（只讀 `formData` 自身的 key，不讀繼承來的成員）；實際執行與
-設計器試跑都走同一條規則。其他情況與手寫 CEL 一律照儲存的表達式求值，手寫表達式讀到缺 key 仍會失敗。
+設計器試跑都走同一條規則。唯一不一致的是多選欄位的值剛好是 `""`（不是陣列）：守衛編出的「已填寫」因
+`"" != []` 為 `true`，評估器則視為空而回 `false`。其他情況與手寫 CEL 一律照儲存的表達式求值，手寫表達式讀到缺 key 仍會失敗。
+
+新的失敗形狀：進行中的案件在日期欄位剛好存著 `""`，且該節點有一組大小比較的出口（`< X` ／ `>= X`）而沒有預設 edge 時，
+以前會走 `<` 那條，現在兩條都是 `false`，引擎丟 `ConflictException`（`has no matching outgoing edge`，409）。
+只影響用 API 建立或較舊的定義，或非互斥節點；設計器要求互斥閘道一定有預設 edge。這種成對出口遇到缺 key 的數字欄位仍會失敗，
+只是現在是這個 409，不再是識別字錯誤。
 
 ---
 
@@ -134,6 +144,11 @@ export type ConditionContextType = 'INITIATOR_POLICY' | 'ENTRY_CONDITION' | 'FLO
   根識別字不在 `allowedRootIdentifiers` 內）。`has`、`size` 等 CEL 巨集與 `true`／`false`／`null`／`in` 不會被當成根識別字。
 - `evaluateBoolean(expression, context, label)`：空白表達式視為 `true`；結果不是 boolean 時丟 `BadRequestException`。
 - `evaluateValue(expression, context, label)`：回傳任意值；語法錯誤或執行期錯誤丟 `BadRequestException`（訊息前綴 `label`）。
+  執行期錯誤的訊息只剩 `label` 加上錯誤類別名稱（`CelTypeError`、`CelEvaluationError`、`Error`）；缺識別字時，
+  名稱若是表達式自己寫出來的文字才會帶上（`Identifier "x" not found`），否則為 `Identifier not found`。`cel-js` 原本把整個
+  求值 context 與出錯的值寫進訊息，所以這些一律不再外送。**取捨**：運算子層級的細節，例如
+  `CelTypeError: greaterThan operation cannot be applied to (string, uint)`，現在只剩 `CelTypeError`。刻意不把原始錯誤掛成
+  `cause`：主機的例外過濾器可能序列化或記錄它，而 ADR 22 要求 log 不含 context 值。更細的診斷屬於 `docs/23` P0 規劃的完整錯誤碼機制。
 
 目前尚未提供：
 

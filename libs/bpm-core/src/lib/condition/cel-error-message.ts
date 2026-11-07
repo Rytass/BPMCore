@@ -25,7 +25,9 @@
  * hold a context value. A value is never an authored token of the expression,
  * with one limit that cannot be closed: a value that happens to equal a name
  * the expression also writes (`form.currency` holding `"currency"`) is
- * indistinguishable from the name itself.
+ * indistinguishable from the name itself. Likewise `INDEX_LITERAL_PATTERN`
+ * scans the raw expression, so a bracketed string literal inside another string
+ * literal (`"x['TWD']"`) also counts as authored: the same class of limit.
  *
  * Deliberately not exported from the package entry point: it is shared by
  * {@link ConditionService} and the workflow engine's dry run only.
