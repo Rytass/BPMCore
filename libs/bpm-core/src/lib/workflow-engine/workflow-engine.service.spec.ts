@@ -19,6 +19,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { FindOperator, In, ObjectLiteral } from 'typeorm';
@@ -27,7 +28,10 @@ import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
+import { celLegacyAdapter } from '../condition/adapters/cel-legacy.adapter';
+import { celV2Adapter } from '../condition/adapters/cel-v2.adapter';
 import { ConditionService } from '../condition/condition.service';
+import { ExpressionRuntimeError } from '../condition/expression-errors';
 import {
   DelegationResolution,
   DelegationService,
@@ -70,6 +74,7 @@ import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
 import * as textFieldPatternTest from './text-field-pattern-test';
+import * as timeBudget from './time-budget';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
@@ -3501,6 +3506,7 @@ describe('WorkflowEngineService', () => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
       formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
       processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
@@ -3633,6 +3639,574 @@ describe('WorkflowEngineService', () => {
       'rolled back',
     );
     expect(serviceTaskDispatcher.dispatchWebhook).not.toHaveBeenCalled();
+  });
+
+  // ADR 22 §3.3 / Phase 23 P1: every evaluation point reads the dialect of
+  // the definition it belongs to; a snapshot without one is cel-legacy.
+  describe('expression dialect', (): void => {
+    const SECRET_VALUE = 'TOPSECRET-VALUE-42';
+    // 60^4 ≈ 1.3 × 10^7 elements: several 100 ms budgets on cel-v2.
+    const NESTED_MAP_CONDITION =
+      'size(form.l.map(a, form.l.map(b, form.l.map(c, form.l.map(d, a))))) > 0';
+    const withDialect = (
+      definition: WorkflowDefinition,
+      dialect: WorkflowDefinition['expressionDialect'] | null,
+    ): WorkflowDefinition =>
+      dialect === null ? definition : { ...definition, expressionDialect: dialect };
+    const recordTransactionOutcomes = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly string[] => {
+      const { transaction } = (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager;
+      const runTransaction = transaction.getMockImplementation() as (
+        work: unknown,
+      ) => Promise<unknown>;
+      const outcomes: string[] = [];
+
+      transaction.mockImplementation(
+        async (work: unknown): Promise<unknown> => {
+          try {
+            const result = await runTransaction(work);
+
+            outcomes.push('commit');
+
+            return result;
+          } catch (error: unknown) {
+            outcomes.push('rollback');
+
+            throw error;
+          }
+        },
+      );
+
+      return outcomes;
+    };
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    // Phase 23 P1 gate: a case started before dialects existed routes as it
+    // did before the upgrade.
+    it.each([
+      [1500, 'task_high'],
+      [500, 'task_default'],
+    ])(
+      'routes a snapshot without a dialect through cel-legacy, as before (amount %d)',
+      async (amount, expectedNodeId): Promise<void> => {
+        const routeWith = async (
+          dialect: WorkflowDefinition['expressionDialect'] | null,
+        ): Promise<readonly string[]> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            processFormData: { amount },
+            processWorkflowSnapshot: withDialect(
+              createExclusiveGatewayWorkflow({
+                highCondition: 'form.amount > 1000',
+                includeStructuredCondition: false,
+              }),
+              dialect,
+            ),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          await fixture.service.processInstance('instance-1');
+
+          return fixture.savedTasks.map((task) => task.nodeId);
+        };
+        const legacyEvaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+        const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+
+        const withoutDialect = await routeWith(null);
+
+        expect(legacyEvaluate).toHaveBeenCalledTimes(1);
+        expect(v2Evaluate).not.toHaveBeenCalled();
+        expect(withoutDialect).toEqual([expectedNodeId]);
+        expect(await routeWith('cel-legacy')).toEqual(withoutDialect);
+        expect(v2Evaluate).not.toHaveBeenCalled();
+      },
+    );
+
+    it('evaluates a cel-v2 snapshot with cel-v2', async (): Promise<void> => {
+      const legacyEvaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1500, email: 'a@example.com' },
+        processWorkflowSnapshot: withDialect(
+          createExclusiveGatewayWorkflow({
+            // `contains` exists only in cel-v2; the mixed `*` needs its overloads.
+            highCondition:
+              'form.email.contains("@example.com") && form.amount * 2 > 1000',
+            includeStructuredCondition: false,
+          }),
+          'cel-v2',
+        ),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(legacyEvaluate).not.toHaveBeenCalled();
+      expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+        'task_high',
+      ]);
+    });
+
+    it('refuses a snapshot whose dialect it does not know, and rolls back', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1500 },
+        processWorkflowSnapshot: {
+          ...createExclusiveGatewayWorkflow({ includeStructuredCondition: false }),
+          expressionDialect: 'cel-v3',
+        } as unknown as WorkflowDefinition,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const outcomes = recordTransactionOutcomes(fixture);
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).code).toBe(
+        'EXPRESSION_SYNTAX_ERROR',
+      );
+      expect(outcomes).toEqual(['rollback']);
+      expect(fixture.savedTasks).toEqual([]);
+    });
+
+    // An unknown dialect is refused only where there is an expression to
+    // evaluate with it. Publishing does not check the field yet (P2), and
+    // before dialects existed an extra field was simply ignored.
+    describe('an unknown dialect with nothing to evaluate', (): void => {
+      const UNKNOWN_DIALECT_WORKFLOW = {
+        ...createStartEndWorkflow(),
+        expressionDialect: 'cel-v3',
+      } as unknown as WorkflowDefinition;
+      const startWith = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): Promise<unknown> =>
+        fixture.service
+          .submitApprovalInstance({
+            formDataJson: '{"amount":1000}',
+            initiatorMemberId: 'member-001',
+            initiatorMetadataSnapshotJson:
+              '{"memberId":"member-001","roles":["IT"]}',
+            templateId: 'template-1',
+            title: null,
+          })
+          .then(
+            (instance: unknown): unknown => instance,
+            (thrown: unknown): unknown => thrown,
+          );
+
+      it('starts a case when the version has no initiator policy', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const result = await startWith(fixture);
+
+        expect(result).not.toBeInstanceOf(Error);
+        expect(fixture.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.APPROVED,
+        );
+      });
+
+      it('still refuses to start a case whose initiator policy it cannot evaluate', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel: '"IT" in subject.roles',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const result = await startWith(fixture);
+
+        expect(result).toBeInstanceOf(ExpressionRuntimeError);
+        expect((result as ExpressionRuntimeError).code).toBe(
+          'EXPRESSION_SYNTAX_ERROR',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lists the template as launchable when the version has no initiator policy', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const launchable =
+          await fixture.service.listLaunchableApprovalTemplates('member-001');
+
+        expect(launchable.map((template) => template.id)).toEqual([
+          'template-1',
+        ]);
+      });
+
+      // Fail closed for that template only: one hand-edited version must not
+      // break the list for every member.
+      it('leaves out only that template when its initiator policy cannot be evaluated', async (): Promise<void> => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel: '"IT" in subject.roles',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        await expect(
+          fixture.service.listLaunchableApprovalTemplates('member-001'),
+        ).resolves.toEqual([]);
+      });
+
+      it('advances a case past a user task without an entry condition', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processFormData: { amount: 1200 },
+          processWorkflowSnapshot: {
+            ...createLinearUserTaskWorkflow(),
+            expressionDialect: 'cel-v3',
+          } as unknown as WorkflowDefinition,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks).toHaveLength(1);
+      });
+    });
+
+    // Phase 23 P1 gate (moved from P0): a nested `map` on the real cel-v2
+    // engine, interrupted inside the engine transaction.
+    it('interrupts a nested map on cel-v2 with a stable code, rolls back and leaves the case as it was', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const formData = {
+        amount: 5000,
+        l: Array.from({ length: 60 }, (_item, index) => index),
+        secret: SECRET_VALUE,
+      };
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: withDialect(
+          createExclusiveGatewayWorkflow({
+            highCondition: NESTED_MAP_CONDITION,
+            includeStructuredCondition: false,
+          }),
+          'cel-v2',
+        ),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const outcomes = recordTransactionOutcomes(fixture);
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const startedAt = performance.now();
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).message).toBe(
+        'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect(
+        JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+      ).not.toContain(SECRET_VALUE);
+      // 100 ms per expression; the rest is slack for a loaded runner.
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(outcomes).toEqual(['rollback']);
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedInstance).toBeNull();
+      expect(formData.secret).toBe(SECRET_VALUE);
+      expect(formData.l).toHaveLength(60);
+    });
+
+    it('dry-runs a cel-v2 draft with cel-v2, loading it before the budget', (): void => {
+      const prepareEngine = jest.spyOn(ConditionService.prototype, 'prepareEngine');
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const result = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.dryRunApprovalWorkflow({
+        formDataJson: JSON.stringify({ amount: 5000, items: [{ qty: 3 }] }),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(
+          withDialect(
+            createExclusiveGatewayWorkflow({
+              // A macro with a bound name passes the dry run's root check.
+              highCondition: 'form.items.exists(row, row.qty * 2 > 5)',
+              includeStructuredCondition: false,
+            }),
+            'cel-v2',
+          ),
+        ),
+      });
+
+      expect(prepareEngine).toHaveBeenCalledWith('cel-v2');
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // ADR 22 §3.2 / Phase 23 P0 gate: an expression that runs out of budget
+  // inside the engine transaction. The slow engine is a stand-in: the jest
+  // `cel-js` here is a shim. The real cel-legacy engine is interrupted the
+  // same way in condition.service.real-engine.spec.ts, and a real nested `map`
+  // on cel-v2 in the 'expression dialect' tests above (Phase 23 P1).
+  describe('when an expression runs out of time', (): void => {
+    const SECRET_VALUE = 'TOPSECRET-VALUE-42';
+    // Spins until interrupted. Bounded on its own so a broken interrupt fails
+    // the test instead of hanging it.
+    const spinUntilInterrupted = (): never => {
+      const startedAt = performance.now();
+
+      while (performance.now() - startedAt < 10_000) {
+        // Busy on purpose: only the `vm` timeout can stop this.
+      }
+
+      throw new Error('The time budget never interrupted the evaluation');
+    };
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    it('raises a stable code, rolls the transaction back and leaves the case as it was', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const formData = { amount: 5000, secret: SECRET_VALUE };
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: createExclusiveGatewayWorkflow({
+          highCondition: 'form.amount > 1000',
+          includeStructuredCondition: false,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const { transaction } = (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager;
+      const runTransaction = transaction.getMockImplementation() as (
+        work: unknown,
+      ) => Promise<unknown>;
+      const outcomes: string[] = [];
+
+      // TypeORM rolls back exactly when the callback rejects; record which
+      // way this transaction ended.
+      transaction.mockImplementation(
+        async (work: unknown): Promise<unknown> => {
+          try {
+            const result = await runTransaction(work);
+
+            outcomes.push('commit');
+
+            return result;
+          } catch (error: unknown) {
+            outcomes.push('rollback');
+
+            throw error;
+          }
+        },
+      );
+      const evaluate = jest
+        .spyOn(celLegacyAdapter, 'evaluate')
+        .mockImplementation(spinUntilInterrupted);
+      const startedAt = performance.now();
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).code).toBe(
+        'EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect((error as ExpressionRuntimeError).message).toBe(
+        'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect(
+        JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+      ).not.toContain(SECRET_VALUE);
+      // 100 ms per expression; the rest is slack for a loaded runner.
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(outcomes).toEqual(['rollback']);
+      // Nothing about the case moved past the condition: no task, the
+      // instance row (state included) was never written, and its form data is
+      // untouched. The mock keeps rows written inside the transaction, which
+      // the database discards on rollback, so a token saved on its way into
+      // the gateway is still listed here; none of them got beyond it.
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedInstance).toBeNull();
+      expect(
+        fixture.savedWorkflowTokens.map((token) => token.currentNodeId),
+      ).not.toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^(task_high|task_default|end)$/u),
+        ]),
+      );
+      expect(formData).toEqual({ amount: 5000, secret: SECRET_VALUE });
+    });
+
+    describe('in a dry run', (): void => {
+      const dryRunWithCondition = (
+        highCondition: string,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson: JSON.stringify({ amount: 5000, secret: SECRET_VALUE }),
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(
+            createExclusiveGatewayWorkflow({
+              highCondition,
+              includeStructuredCondition: false,
+            }),
+          ),
+        });
+
+      it('answers valid: false with only the code when the budget runs out', (): void => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        jest
+          .spyOn(celLegacyAdapter, 'evaluate')
+          .mockImplementation(spinUntilInterrupted);
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+        ]);
+      });
+
+      // p0-p1-runtime §4.3 / §12.2: the dry run's own budget (2000 ms) running
+      // out while an expression budget (100 ms) is still running inside it.
+      // The outer budget is shortened here so it fires first; the interrupt
+      // must reach the dry run as its own timeout, not as an EXPRESSION_* code.
+      it('answers the fixed timeout text when its own budget runs out during an expression', (): void => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        const runWithinTimeBudget = timeBudget.runWithinTimeBudget;
+        const outerTimeouts: number[] = [];
+
+        jest
+          .spyOn(timeBudget, 'runWithinTimeBudget')
+          .mockImplementation(
+            <TResult>(work: () => TResult, timeoutMs: number): TResult => {
+              if (timeoutMs === 2_000) {
+                outerTimeouts.push(timeoutMs);
+
+                return runWithinTimeBudget(work, 30);
+              }
+
+              return runWithinTimeBudget(work, timeoutMs);
+            },
+          );
+        const evaluate = jest
+          .spyOn(celLegacyAdapter, 'evaluate')
+          .mockImplementation(spinUntilInterrupted);
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(outerTimeouts).toEqual([2_000]);
+        expect(evaluate).toHaveBeenCalledTimes(1);
+        // Had the 100 ms inner budget fired first, the error would be the
+        // expression's EXPRESSION_BUDGET_EXCEEDED, not the dry run's own text.
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          '流程或條件的運算量過大，無法完成試跑，請減少連續的閘道分支或簡化條件',
+        ]);
+
+        // The engine still evaluates once the interrupt has unwound.
+        evaluate.mockRestore();
+        expect(dryRunWithCondition('form.amount > 1000').valid).toBe(true);
+      });
+
+      it('does not pass engine text on to the caller', (): void => {
+        jest.spyOn(Logger.prototype, 'debug').mockReturnValue(undefined);
+        // The shape cel-js 0.8.2 really throws: the whole context after the
+        // colon.
+        jest.spyOn(celLegacyAdapter, 'evaluate').mockImplementation(() => {
+          throw new Error(
+            `Identifier "missing" not found in context: {"form":{"secret":"${SECRET_VALUE}"}}`,
+          );
+        });
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(false);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain('EXPRESSION_MISSING_KEY');
+        expect(result.errors[0]).not.toContain(SECRET_VALUE);
+        expect(result.errors[0]).not.toContain('not found in context');
+      });
+
+      it('refuses a root the edge condition may not read', (): void => {
+        const evaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+
+        const result = dryRunWithCondition('secretRoot.amount > 1');
+
+        expect(evaluate).not.toHaveBeenCalled();
+        expect(result.valid).toBe(false);
+        expect(result.errors).toEqual([
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_SYNTAX_ERROR',
+        ]);
+      });
+
+      it('control: an allowed root still evaluates', (): void => {
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(true);
+        expect(result.steps).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ edgeMatched: true, nodeId: 'task_high' }),
+          ]),
+        );
+      });
+    });
   });
 
   it('keeps a committed decision when a webhook result cannot be recorded', async (): Promise<void> => {
@@ -16625,6 +17199,7 @@ function createServiceFixture({
   rootOptions,
   serviceTaskDispatcher,
   submittedByMemberId,
+  templateInitiatorPolicyCel = null,
   templateIsActive = true,
   templateVersionStatus,
   templateWorkflowDefinition,
@@ -16670,6 +17245,8 @@ function createServiceFixture({
   // The person who filed the processed instance; unset reads like a row
   // written before the column existed (the initiator submitted it).
   readonly submittedByMemberId?: string | null;
+  // The published template version's initiator policy; defaults to none.
+  readonly templateInitiatorPolicyCel?: string | null;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
   // The published template version's workflow; defaults to start -> end.
@@ -16713,6 +17290,7 @@ function createServiceFixture({
   const templateVersion = createTemplateVersion(
     templateVersionStatus,
     templateWorkflowDefinition,
+    templateInitiatorPolicyCel,
   );
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
@@ -17035,6 +17613,7 @@ function createServiceFixture({
   });
   const templateVersionRepository =
     createRepository<ApprovalTemplateVersionEntity>({
+      find: jest.fn(() => Promise.resolve([templateVersion])),
       findOne: jest.fn(() => Promise.resolve(templateVersion)),
     });
   const formVersionRepository = createRepository<FormDefinitionVersionEntity>({
@@ -17772,13 +18351,14 @@ function createTemplate(
 function createTemplateVersion(
   status: ApprovalTemplateVersionStatusEnum,
   workflowDefinition: WorkflowDefinition = createStartEndWorkflow(),
+  initiatorPolicyCel: string | null = null,
 ): ApprovalTemplateVersionEntity {
   return {
     archivedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formDefinitionVersionId: 'form-version-1',
     id: 'template-version-1',
-    initiatorPolicyCel: null,
+    initiatorPolicyCel,
     notificationConfig: null,
     notificationConfigJson: null,
     publishedAt: new Date('2026-05-04T09:00:00.000Z'),

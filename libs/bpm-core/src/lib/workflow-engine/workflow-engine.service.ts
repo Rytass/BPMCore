@@ -49,6 +49,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -92,7 +93,10 @@ import {
   NotificationResolutionEnum,
 } from '../notification/notification.enums';
 import { SignatureService } from '../signature/signature.service';
-import { ConditionService } from '../condition/condition.service';
+import {
+  ConditionService,
+  type ExpressionCallOptions,
+} from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
@@ -152,6 +156,12 @@ import {
   WorkflowDryRunStepObject,
 } from './workflow-dry-run.object';
 import { runWithinTimeBudget, TimeBudgetExceededError } from './time-budget';
+import { runExpressionOperation } from '../condition/expression-budget';
+import { ExpressionRuntimeError } from '../condition/expression-errors';
+import {
+  isExpressionDialect,
+  readWorkflowExpressionDialect,
+} from '../condition/expression-dialect';
 import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
@@ -211,6 +221,58 @@ const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
+// The dry run checks each expression against the roots its use point may read,
+// as publish does. Keep these in step with `WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS`
+// in template.service.ts; P2 moves both to one place.
+const DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS: readonly string[] = [
+  'env',
+  'form',
+  'formData',
+  'initiator',
+  'instance',
+];
+const DRY_RUN_EDGE_ROOT_IDENTIFIERS: readonly string[] = [
+  ...DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+  'lastDecision',
+];
+
+type ExpressionDialectSource =
+  { readonly expressionDialect?: unknown } | null | undefined;
+
+const hasExpressionText = (
+  expression: string | null | undefined,
+): expression is string =>
+  typeof expression === 'string' && expression.trim() !== '';
+
+/**
+ * Whether a definition's dialect can be read: missing (`cel-legacy`) or one
+ * this version knows. Never throws, unlike `readWorkflowExpressionDialect`.
+ */
+const isReadableExpressionDialect = (
+  definition: ExpressionDialectSource,
+): boolean => {
+  const dialect = definition?.expressionDialect;
+
+  return (
+    dialect === undefined || dialect === null || isExpressionDialect(dialect)
+  );
+};
+
+/**
+ * Options for evaluating an expression that may be blank. The dialect is read
+ * only when there is an expression: an unknown dialect is refused because the
+ * expression cannot be evaluated as its author tested it, and a blank one is
+ * never evaluated at all. Publishing does not check the field yet (Phase 23
+ * P2), so reading it eagerly would turn a stray field on a version with no
+ * expressions into an error, where before dialects existed it was ignored.
+ */
+const readExpressionDialectOptions = (
+  expression: string | null | undefined,
+  definition: ExpressionDialectSource,
+): ExpressionCallOptions =>
+  hasExpressionText(expression)
+    ? { dialect: readWorkflowExpressionDialect(definition) }
+    : {};
 
 /** A webhook whose payload is settled and which waits for its transaction. */
 interface DeferredWebhookDispatch {
@@ -633,12 +695,15 @@ export class WorkflowEngineService {
     // Mutable on purpose: every step of the transaction appends to it, and
     // threading it through each of them would change a dozen signatures.
     const dispatches: DeferredWebhookDispatch[] = [];
-    const result = await this.approvalInstanceRepository.manager.transaction(
-      (manager): Promise<TResult> => {
-        this.deferredWebhookDispatches.set(manager, dispatches);
+    // One transaction is one operation: its evaluations share one budget.
+    const result = await runExpressionOperation(() =>
+      this.approvalInstanceRepository.manager.transaction(
+        (manager): Promise<TResult> => {
+          this.deferredWebhookDispatches.set(manager, dispatches);
 
-        return work(manager);
-      },
+          return work(manager);
+        },
+      ),
     );
 
     await dispatches.reduce<Promise<void>>(async (previous, dispatch) => {
@@ -774,6 +839,11 @@ export class WorkflowEngineService {
         templateVersion.initiatorPolicyCel,
         buildInitiatorPolicyContext(initiatorMetadataSnapshot),
         'initiatorPolicyCel',
+        // The policy is written in its version's dialect (ADR 22 §3.3).
+        readExpressionDialectOptions(
+          templateVersion.initiatorPolicyCel,
+          templateVersion.workflowDefinition,
+        ),
       )
     ) {
       throw new ConflictException(
@@ -3201,32 +3271,32 @@ export class WorkflowEngineService {
       : readDefaultInitiatorMetadataSnapshot(input.initiatorMemberId);
 
     try {
-      // The CEL engine loads on its first evaluation. Do that outside the budget
-      // so an interrupt can never land halfway through loading a module.
-      this.conditionService.evaluateBoolean('true', {}, 'dryRun.engine');
+      // The CEL engine loads outside the budget so an interrupt can never land
+      // halfway through loading a module.
+      this.conditionService.prepareEngine(
+        readWorkflowExpressionDialect(workflowDefinition),
+      );
 
+      // The outer budget bounds the whole walk, and the operation budget
+      // bounds the expressions inside it. Both are charged to this dry run only.
       return Object.assign(new WorkflowDryRunResultObject(), {
         errors: [],
-        steps: runWithinTimeBudget(
-          () =>
-            this.simulateWorkflow({
-              formData,
-              initiatorMemberId: input.initiatorMemberId,
-              initiatorMetadataSnapshot,
-              workflowDefinition,
-            }),
-          DRY_RUN_TIME_BUDGET_MS,
+        steps: runExpressionOperation(() =>
+          runWithinTimeBudget(
+            () =>
+              this.simulateWorkflow({
+                formData,
+                initiatorMemberId: input.initiatorMemberId,
+                initiatorMetadataSnapshot,
+                workflowDefinition,
+              }),
+            DRY_RUN_TIME_BUDGET_MS,
+          ),
         ),
         valid: true,
       });
     } catch (error: unknown) {
-      return createFailedDryRunResult(
-        error instanceof TimeBudgetExceededError
-          ? DRY_RUN_TOO_COMPLEX_MESSAGE
-          : error instanceof Error
-            ? error.message
-            : 'Dry run failed',
-      );
+      return createFailedDryRunResult(readDryRunFailureMessage(error));
     }
   }
 
@@ -3303,6 +3373,10 @@ export class WorkflowEngineService {
       entryCondition,
       buildDryRunExpressionContext(input, input.lastDecision),
       `workflow.nodes.${node.id}.data.entryCondition`,
+      {
+        allowedRootIdentifiers: DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+        dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+      },
     );
     const assignment =
       entryConditionMet && node.type === 'userTask'
@@ -3449,6 +3523,10 @@ export class WorkflowEngineService {
         expression,
         buildDryRunExpressionContext(input, lastDecision),
         `workflow.edges.${edge.id}.data.condition`,
+        {
+          allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
+          dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+        },
       );
     }
 
@@ -3599,6 +3677,10 @@ export class WorkflowEngineService {
           resolver.expression,
           buildDryRunExpressionContext(input, null),
           `${label}.expression`,
+          {
+            allowedRootIdentifiers: DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+            dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+          },
         ),
       );
     }
@@ -3941,10 +4023,33 @@ export class WorkflowEngineService {
         return false;
       }
 
-      return this.conditionService.evaluateBoolean(
-        currentVersion.initiatorPolicyCel,
-        buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-        'initiatorPolicyCel',
+      // A policy in a dialect this version does not know cannot be evaluated,
+      // so the template is not launchable (fail closed), but only that one:
+      // publishing does not check the field yet (Phase 23 P2), and one such
+      // version must not break the list for every member.
+      if (
+        hasExpressionText(currentVersion.initiatorPolicyCel) &&
+        !isReadableExpressionDialect(currentVersion.workflowDefinition)
+      ) {
+        this.logger.warn(
+          `template=${template.id} version=${currentVersion.id} left out of launchable templates: unknown expression dialect`,
+        );
+
+        return false;
+      }
+
+      // Each template is its own operation, so one slow template cannot use
+      // up the allowance of the rest of the list.
+      return runExpressionOperation(() =>
+        this.conditionService.evaluateBoolean(
+          currentVersion.initiatorPolicyCel,
+          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+          'initiatorPolicyCel',
+          readExpressionDialectOptions(
+            currentVersion.initiatorPolicyCel,
+            currentVersion.workflowDefinition,
+          ),
+        ),
       );
     });
   }
@@ -4656,6 +4761,7 @@ export class WorkflowEngineService {
       entryCondition,
       buildWorkflowExpressionContext(instance),
       `workflow.nodes.${node.id}.data.entryCondition`,
+      readExpressionDialectOptions(entryCondition, instance.workflowSnapshot),
     );
   }
 
@@ -4800,6 +4906,7 @@ export class WorkflowEngineService {
           ),
         },
         `workflow.edges.${edge.id}.data.condition`,
+        { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
     }
 
@@ -6819,6 +6926,7 @@ export class WorkflowEngineService {
           resolver.expression,
           buildWorkflowExpressionContext(instance),
           `${label}.expression`,
+          { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
         ),
         label,
         subject,
@@ -7948,6 +8056,11 @@ export class WorkflowEngineService {
               action.payload,
               buildWorkflowExpressionContext(instance),
               `workflow.nodes.${node.id}.data.action.payload`,
+              {
+                dialect: readWorkflowExpressionDialect(
+                  instance.workflowSnapshot,
+                ),
+              },
             )
           : {
               instance: buildWorkflowExpressionContext(instance).instance,
@@ -7989,6 +8102,7 @@ export class WorkflowEngineService {
         action.value,
         buildWorkflowExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
+        { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
 
       assertServiceTaskTextValue(
@@ -9780,6 +9894,30 @@ function normalizeFormFieldPath(path: string): readonly string[] {
   }
 
   return segments;
+}
+
+/**
+ * The message a failed dry run shows its caller. Only the fixed budget text, an
+ * HTTP exception's own message, or an expression error's label and code reach
+ * this point. Any other error is replaced with a generic message, since its text
+ * may carry engine or context details.
+ */
+function readDryRunFailureMessage(error: unknown): string {
+  if (error instanceof TimeBudgetExceededError) {
+    return DRY_RUN_TOO_COMPLEX_MESSAGE;
+  }
+
+  if (error instanceof ExpressionRuntimeError) {
+    return error.keyName
+      ? `${error.message}（找不到「${error.keyName}」）`
+      : error.message;
+  }
+
+  if (error instanceof HttpException) {
+    return error.message;
+  }
+
+  return 'Dry run failed';
 }
 
 function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {
