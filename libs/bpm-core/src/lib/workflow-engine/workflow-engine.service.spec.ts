@@ -44,7 +44,11 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
-import { BPMFormDataSourceValueResolver } from '../form-data-source';
+import {
+  BPM_FORM_DATA_SOURCE_ERROR_CODES,
+  BPMFormDataSourceException,
+  BPMFormDataSourceValueResolver,
+} from '../form-data-source';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationResolutionEnum,
@@ -204,6 +208,43 @@ describe('WorkflowEngineService', () => {
         title: null,
       }),
     ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_MISSING' });
+  });
+
+  it('writes no instance when the expression budget runs out while options resolve', async (): Promise<void> => {
+    // Phase 23 P5 gate: an EXPRESSION binding that exhausts the operation
+    // budget surfaces as the existing UNAVAILABLE code (TIMEOUT); the real
+    // resolver raising it is covered by
+    // form-data-source.expression.real-engine.spec.ts.
+    const resolver: BPMFormDataSourceValueResolver = {
+      resolveFormDataOptionSnapshots: jest.fn(() =>
+        Promise.reject(
+          new BPMFormDataSourceException(
+            BPM_FORM_DATA_SOURCE_ERROR_CODES.TIMEOUT,
+          ),
+        ),
+      ),
+      resolveFormFieldOptions: jest.fn(() =>
+        Promise.resolve([] as readonly FormFieldOption[]),
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createDynamicOptionFormSchema(),
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"costCenter":"CC-001","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      }),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_TIMEOUT' });
+    expect(fixture.savedInstance).toBeNull();
   });
 
   it('still accepts a static submission when the host registered no resolver', async (): Promise<void> => {

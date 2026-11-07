@@ -439,6 +439,21 @@ export type NotifyWebhookBindingSource =
     }
   | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath };
 
+/**
+ * A webhook parameter computed by a cel-v2 expression over `form` (ADR 22
+ * §3.7; NOTIFY has no row). Always cel-v2, built-in functions only, evaluated
+ * by the backend inside the engine transaction with its own budget.
+ *
+ * Not yet a member of {@link NotifyWebhookBindingSource}: the shared
+ * structural and catalog lint (`workflow-graph`) must accept it first, and
+ * until it does a definition carrying one cannot be published. The backend
+ * already evaluates and lints it.
+ */
+export interface NotifyWebhookExpressionBindingSource {
+  readonly expression: string;
+  readonly kind: 'EXPRESSION';
+}
+
 export type NotifyWebhookContextPath =
   | 'initiator.memberId'
   | 'instance.id'

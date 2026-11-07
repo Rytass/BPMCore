@@ -362,7 +362,8 @@ Form-schema definitions.
 | `FormSelectionMode` | type | `single` or `multiple` option selection |
 | `FormDataSourceReference` | interface | Registered source key, version, and bindings |
 | `FormDataSourceBinding` | interface | One parameter bound to a source |
-| `FormDataSourceBindingSource` | type | Top-level field, primitive constant, or same-row column |
+| `FormDataSourceBindingSource` | type | Top-level field (`FIELD`), primitive constant (`CONSTANT`), same-row column (`ROW_FIELD`), or a cel-v2 expression (`EXPRESSION`, `{ expression }`; roots `form` and, in a table column, `row`; built-in functions only; evaluated by the backend from the stored schema, never by the browser — ADR 22 §3.7, Phase 23 P5) |
+| `FORM_DATA_SOURCE_BINDING_KINDS` / `FormDataSourceBindingKind` / `isFormDataSourceBindingKind()` | const / type / function | Every binding source kind this version knows (`CONSTANT`, `EXPRESSION`, `FIELD`, `ROW_FIELD`), for exhaustive handling: a kind outside the list is refused (backend) or shown as unsupported (builder), never read as another kind (Phase 23 P5) |
 | `FormFieldOptionSource` | type | Static options / DataSource XOR union |
 | `SelectFieldDefinition` | type | Select option field with single / multiple mode |
 | `AutoCompleteFieldDefinition` | type | AutoComplete option field with single / multiple mode |
@@ -457,6 +458,7 @@ Form-schema definitions.
 | `NotifyWebhookTarget` / `NotifyWebhookEndpointReference` | interface | One host-registered webhook endpoint (`key` + exact `version`) a NOTIFY node calls, with a stable node-local `id` |
 | `NotifyWebhookBinding` / `NotifyWebhookBindingSource` | interface/type | Parameter binding from a form field (`FIELD`), a constant (`CONSTANT`) or case context (`CONTEXT`) |
 | `NotifyWebhookContextPath` | type | Case/node values a `CONTEXT` binding may read |
+| `NotifyWebhookExpressionBindingSource` | interface | `{ expression, kind: 'EXPRESSION' }`: a NOTIFY webhook parameter computed by a cel-v2 expression over `form` only, evaluated in the engine transaction with its own budget; a failure records the delivery `FAILED` (`WEBHOOK_PARAMETER_INVALID`) without rolling back the approval. Not yet part of the `NotifyWebhookBindingSource` union (Phase 23 P5; the shared structural lint joins it in the integration step) |
 | `NotifyWebhookParameterType` | type | `'boolean' \| 'json' \| 'number' \| 'string' \| 'stringArray'` |
 | `GatewayDirection` | type | `'split' \| 'join'` |
 | `WorkflowEdge` / `WorkflowEdgeData` | interface | Edge with optional condition |
@@ -656,7 +658,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readSelectedFormDataSourceOptions()` | function | Hydrate only selected options with authoritative labels |
 | `readFormDataSourceSelectedValues()` | function | Read the selected option values carried by a field value, dropping blanks |
 | `readMissingFormDataSourceOptionValues()` | function | Find selected values without an authoritative option |
-| `readMissingFormDataSourceDependencies()` | function | Find FIELD (and, with row values, ROW_FIELD) bindings that are not yet present — advisory only; runtime callers must take `waitingForFieldKeys` from the server result |
+| `readMissingFormDataSourceDependencies()` | function | Find FIELD (and, with row values, ROW_FIELD) bindings that are not yet present — advisory only; runtime callers must take `waitingForFieldKeys` from the server result. `EXPRESSION` and unknown kinds report nothing: only the backend knows what an expression reads |
 | `readFormDataSourceValueSignature()` | function | Stable value signature for change detection |
 
 ### Form DataSource error helpers
@@ -674,7 +676,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Name | Kind | Purpose |
 |---|---|---|
 | `FormDataSourceBindingFieldOption` | interface | Type-compatible form-field choice for a parameter binding |
-| `FormDataSourceBindingValueKind` | type | `'CONSTANT' \| 'FIELD' \| 'ROW_FIELD'` binding discriminator |
+| `FormDataSourceBindingValueKind` | type | `'CONSTANT' \| 'EXPRESSION' \| 'FIELD' \| 'ROW_FIELD'` binding discriminator |
 | `isFormDataSourceDescriptorCompatible()` | function | Enforce descriptor capability requirements for a control |
 | `readCompatibleFormDataSourceDescriptors()` | function | Filter catalog descriptors for a control |
 | `readFormDataSourceParameterType()` | function | Map a form field to a DataSource parameter type |
@@ -685,7 +687,8 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `renameFormTableColumnBindings()` | function | Keep a table's ROW_FIELD bindings valid when a column key changes |
 | `readFormDataSourceFieldDependencyKeys()` | function | List fields referenced by dynamic bindings |
 | `readFormDataSourceBindingValue()` | function | Read a constant binding value |
-| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator (`CONSTANT` / `FIELD` / `ROW_FIELD`) |
+| `readFormDataSourceBindingValueKind()` | function | Read the binding source discriminator (`CONSTANT` / `EXPRESSION` / `FIELD` / `ROW_FIELD`); `null` for no binding or a kind this version does not know |
+| `readFormDataSourceBindingExpression()` | function | The expression text of an `EXPRESSION` binding, as written (never parsed or evaluated in the browser) |
 | `readCompatibleFormTableColumnBindingFields()` | function | List type-compatible sibling columns for a ROW_FIELD binding |
 
 ### Form Rendering Helpers (pure functions, no GraphQL)
@@ -1402,13 +1405,13 @@ NOTIFY webhook endpoints (ADR 18): the host-facing catalog, the designer query, 
 | Endpoint administration GraphQL (P6) | `WorkflowWebhookEndpointAdminResolver` (administrator-only: `workflowWebhookEndpointManagement`, `workflowWebhookManagedEndpoints`, `workflowWebhookEndpointAudits(endpointId)`, `createWorkflowWebhookEndpoint(input)`, `updateWorkflowWebhookEndpoint(input)`, `setWorkflowWebhookEndpointActive(id, active)`, `rotateWorkflowWebhookEndpointSecret(id, signingSecret)`, `testWorkflowWebhookEndpoint(id)`), inputs `CreateWorkflowWebhookEndpointInput` / `UpdateWorkflowWebhookEndpointInput` / `WorkflowWebhookEndpointHeaderInput` / `WorkflowWebhookEndpointParameterInput`, objects `WorkflowWebhookManagedEndpointObject` (header names and `hasSigningSecret` only), `WorkflowWebhookEndpointAuditObject`, `WorkflowWebhookEndpointTestResultObject`, `WorkflowWebhookEndpointManagementObject` |
 | Options | `BPMRootWorkflowWebhookOptions`, `BPMResolvedWorkflowWebhookOptions`, `BPM_WORKFLOW_WEBHOOK_OPTIONS`, `DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS`, `resolveBPMWorkflowWebhookOptions`, `readDisabledWorkflowWebhookSourceReason`, `resolveAndReportWorkflowWebhookOptions` (resolves and logs why a requested `DATABASE` source was dropped; used by `WorkflowWebhookOptionsModule`) |
 | Allowlist | `parseWorkflowWebhookUrlPattern`, `parseWorkflowWebhookUrlPatterns`, `isWorkflowWebhookUrlAllowed`, `isInternalHostname`, `ParsedWorkflowWebhookUrlPattern`, `WorkflowWebhookUrlPatternParseResult`, `WorkflowWebhookUrlScheme` |
-| Publish lint | `lintWorkflowWebhookTargets`, `LintWorkflowWebhookTargetsInput` (P6 adds optional `isEndpointUrlAllowed`, reported as `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`) |
+| Publish lint | `lintWorkflowWebhookTargets`, `LintWorkflowWebhookTargetsInput` (P6 adds optional `isEndpointUrlAllowed`, reported as `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`; Phase 23 P5 adds optional `conditionService`, which lints `EXPRESSION` bindings as `NOTIFY_WEBHOOK_BINDING` — without it such a binding cannot be published) |
 | Errors | `BPM_WORKFLOW_WEBHOOK_ERROR_CODES` (P6 adds `DATABASE_SOURCE_DISABLED`, `ENDPOINT_DISABLED`, `ENDPOINT_KEY_CONFLICT`, `ENDPOINT_INVALID`, `ENDPOINT_CONTRACT_CHANGED`, `TEST_RATE_LIMITED`), `BPMWorkflowWebhookErrorCode`, `BPMWorkflowWebhookException` |
 | GraphQL | `WorkflowWebhookQueries` (`workflowWebhookEndpoints(includeDeprecated)`, designer-only), `WorkflowWebhookEndpointObject` (P6 adds `disabled`), `WorkflowWebhookParameterObject`, `WorkflowWebhookEndpointSourceEnum` (GraphQL enum `BPMWorkflowWebhookEndpointSource`), `WorkflowWebhookParameterTypeEnum` (GraphQL enum `BPMWorkflowWebhookParameterType`) |
 | Delivery | `WorkflowWebhookDeliveryService` (`enqueueNotifyWebhooks` inside the engine transaction, `deliverDue` for the scheduler, `deliverByIds` after commit, `listInstanceDeliveries`, `retryFailedDelivery` (an attempted `FAILED` row → `PENDING` with `attemptCount` 0; a row that failed while being queued is refused, a `WEBHOOK_DELIVERY_RETRIED` activity log in the same transaction, then an immediate attempt after commit), `readEndpointLabel`, `sendTestEvent` (P6: one event through the normal checks without a delivery row), `readRetryDelay`, `readCurrentTime`), `WorkflowWebhookTestOutcome`, `WorkflowWebhookDeliverySubscriber` (TypeORM subscriber that releases queued ids on commit and drops them on rollback), `WorkflowWebhookDeliverySchedulerService`, `BPM_WORKFLOW_WEBHOOK_FETCH` / `WorkflowWebhookFetch` (HTTP client, defaults to global `fetch`) |
 | Observability | `WorkflowWebhookDeliveryResolver` (administrator-only `workflowWebhookDeliveries(instanceId)` and `retryWorkflowWebhookDelivery(id)`), `WorkflowWebhookDeliveryObject` (GraphQL `BPMWorkflowWebhookDelivery`; no frozen event, parameters or token id) |
 | Outbox record | `WorkflowWebhookDeliveryEntity` (table `workflow_webhook_deliveries`, not a GraphQL type), `WorkflowWebhookFrozenEvent`, `WorkflowWebhookDeliveryStatusEnum` (GraphQL enum `BPMWorkflowWebhookDeliveryStatus`), `WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES` (P6 adds `ENDPOINT_DISABLED` → `WEBHOOK_ENDPOINT_DISABLED`), `WorkflowWebhookDeliveryErrorCode` |
-| Enqueue | `buildWorkflowWebhookDeliveryDrafts`, `WorkflowWebhookEnqueueContext`, `WorkflowWebhookDeliveryDraft` |
+| Enqueue | `buildWorkflowWebhookDeliveryDrafts` (Phase 23 P5: optional `expressions` evaluator for `EXPRESSION` bindings; without one such a binding fails its delivery), `WorkflowWebhookEnqueueContext`, `WorkflowWebhookDeliveryDraft` |
 | Delivery options | `BPMResolvedWorkflowWebhookDeliveryOptions`, `WORKFLOW_WEBHOOK_MAX_TIMEOUT_MS` (30 s cap on any single request) |
 | Module | `WorkflowWebhookModule`, `WorkflowWebhookModuleOptions`, `WorkflowWebhookOptionsModule`, `WorkflowWebhookOptionsModuleAsyncOptions` |
 

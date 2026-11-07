@@ -11,6 +11,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, MoreThan, Repository } from 'typeorm';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
+import { ConditionService } from '../condition/condition.service';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ActivityLogEventTypeEnum } from '../workflow-engine/workflow-engine.enums';
 import { readNotifyWebhookStructureIssues } from '@rytass/bpm-core-shared/workflow-graph';
@@ -24,6 +25,10 @@ import {
   buildWorkflowWebhookDeliveryDrafts,
   WorkflowWebhookEnqueueContext,
 } from './workflow-webhook-enqueue';
+import {
+  createNotifyWebhookExpressionEvaluator,
+  maskNotifyWebhookExpressionSources,
+} from './workflow-webhook-expression';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,
@@ -116,6 +121,11 @@ export class WorkflowWebhookDeliveryService {
     @Optional()
     @Inject(BPM_WORKFLOW_WEBHOOK_FETCH)
     fetchImpl?: WorkflowWebhookFetch,
+    // Evaluates `EXPRESSION` bindings with the host's function registry
+    // (ADR 22 §3.7). Optional so a hand-built service keeps working; without
+    // it an `EXPRESSION` binding records its delivery `FAILED`.
+    @Optional()
+    private readonly conditionService?: ConditionService | null,
   ) {
     this.fetchImpl =
       fetchImpl ??
@@ -139,9 +149,9 @@ export class WorkflowWebhookDeliveryService {
     context: WorkflowWebhookEnqueueContext,
     targets: unknown,
   ): Promise<readonly string[]> {
-    const listIssues = readNotifyWebhookStructureIssues(targets).filter(
-      (issue) => issue.targetIndex === null,
-    );
+    const listIssues = readNotifyWebhookStructureIssues(
+      maskNotifyWebhookExpressionSources(targets),
+    ).filter((issue) => issue.targetIndex === null);
 
     // Publish refuses these, so reaching one means the snapshot was written
     // around the lint. Nothing can be queued, but it must not pass silently.
@@ -155,6 +165,12 @@ export class WorkflowWebhookDeliveryService {
 
     const drafts = await buildWorkflowWebhookDeliveryDrafts({
       context,
+      // Evaluated here, inside the engine transaction and before the outbox
+      // rows are written, with one budget for this node's bindings that is
+      // separate from the transaction's own (ADR 22 §3.7).
+      expressions: createNotifyWebhookExpressionEvaluator(
+        this.conditionService,
+      ),
       resolveEndpoint: (key, version) =>
         this.webhookService.getEndpoint(key, version, manager),
       targets,

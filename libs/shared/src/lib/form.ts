@@ -107,7 +107,38 @@ export type FormDataSourceBindingSource =
   | {
       readonly columnKey: string;
       readonly kind: 'ROW_FIELD';
+    }
+  | {
+      /**
+       * A cel-v2 expression over `form` (and `row` inside a table column)
+       * whose result fills the parameter (ADR 22 §3.7). Always cel-v2, built-in
+       * functions only; evaluated only by the backend, from the stored schema.
+       */
+      readonly expression: string;
+      readonly kind: 'EXPRESSION';
     };
+
+/** Every `FormDataSourceBindingSource` kind this version understands. */
+export const FORM_DATA_SOURCE_BINDING_KINDS = [
+  'CONSTANT',
+  'EXPRESSION',
+  'FIELD',
+  'ROW_FIELD',
+] as const satisfies readonly FormDataSourceBindingSource['kind'][];
+
+export type FormDataSourceBindingKind =
+  (typeof FORM_DATA_SOURCE_BINDING_KINDS)[number];
+
+/**
+ * Whether `kind` is a binding source this version understands. A schema
+ * written by a newer version may carry one it does not; readers must treat
+ * that binding as unusable instead of guessing (docs/24 §2.8).
+ */
+export const isFormDataSourceBindingKind = (
+  kind: unknown,
+): kind is FormDataSourceBindingKind =>
+  typeof kind === 'string' &&
+  (FORM_DATA_SOURCE_BINDING_KINDS as readonly string[]).includes(kind);
 
 export interface FormDataSourceBinding {
   readonly from: FormDataSourceBindingSource;

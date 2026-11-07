@@ -8,6 +8,8 @@ import {
   readCompatibleFormDataSourceBindingFields,
   readCompatibleFormDataSourceDescriptors,
   readFormDataSourceBinding,
+  readFormDataSourceBindingExpression,
+  readFormDataSourceBindingValueKind,
   readFormDataSourceParameterType,
   renameFormDataSourceFieldBindings,
   upsertFormDataSourceFieldBinding,
@@ -193,3 +195,43 @@ function createDynamicField(): FormDataSourceOptionFieldDefinition {
     type: 'select',
   };
 }
+
+describe('EXPRESSION bindings in the builder helpers', () => {
+  const withSource = (from: unknown): FormDataSourceOptionFieldDefinition =>
+    ({
+      dataSource: {
+        bindings: [{ from, parameter: 'plant' }],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'costCenter',
+      label: 'Cost center',
+      required: false,
+      type: 'select',
+    }) as FormDataSourceOptionFieldDefinition;
+
+  it('reads the kind and the expression text, never evaluating it', (): void => {
+    const field = withSource({ expression: 'form.plant', kind: 'EXPRESSION' });
+
+    expect(
+      readFormDataSourceBindingValueKind(readFormDataSourceBinding(field, 'plant')),
+    ).toBe('EXPRESSION');
+    expect(readFormDataSourceBindingExpression(field, 'plant')).toBe(
+      'form.plant',
+    );
+    expect(
+      readFormDataSourceBindingExpression(
+        withSource({ fieldKey: 'plant', kind: 'FIELD' }),
+        'plant',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('reads a source kind it does not know as no kind at all', (): void => {
+    expect(
+      readFormDataSourceBindingValueKind(
+        readFormDataSourceBinding(withSource({ kind: 'LOOKUP' }), 'plant'),
+      ),
+    ).toBeNull();
+  });
+});

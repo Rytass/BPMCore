@@ -101,3 +101,41 @@ function createDynamicField(): FormDataSourceOptionFieldDefinition {
 
   return schema.fields[1] as FormDataSourceOptionFieldDefinition;
 }
+
+describe('readMissingFormDataSourceDependencies with other source kinds', () => {
+  const withSource = (
+    from: FormDataSourceOptionFieldDefinition['dataSource']['bindings'][number]['from'],
+  ): FormDataSourceOptionFieldDefinition => ({
+    dataSource: {
+      bindings: [{ from, parameter: 'plant' }],
+      key: 'demo.cost-centers',
+      version: 1,
+    },
+    fieldKey: 'costCenter',
+    label: 'Cost center',
+    required: false,
+    type: 'select',
+  });
+
+  it('leaves an EXPRESSION binding to the backend, which knows its dependencies', (): void => {
+    // The browser never parses an expression (docs/24 §2.5); the backend
+    // answers WAITING with the fields to fill.
+    expect(
+      readMissingFormDataSourceDependencies(
+        withSource({ expression: 'form.plant', kind: 'EXPRESSION' }),
+        {},
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not crash on a source kind it does not know', (): void => {
+    expect(
+      readMissingFormDataSourceDependencies(
+        withSource({ kind: 'LOOKUP' } as unknown as Parameters<
+          typeof withSource
+        >[0]),
+        {},
+      ),
+    ).toEqual([]);
+  });
+});
