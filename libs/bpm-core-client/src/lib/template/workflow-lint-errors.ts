@@ -186,6 +186,8 @@ const WORKFLOW_LINT_COPY: Readonly<
         'has() fails outright when the level above is missing. Check the level above first (warning).',
       EXPR_HIDDEN_FIELD_COPIED: (subject): string =>
         `it copies the store-only field "${subject ?? ''}" into a field people can see (warning).`,
+      EXPR_LAST_DECISION_UNAVAILABLE: (): string =>
+        'it reads lastDecision, but this connection leaves a node without an approval, so lastDecision is always empty here (warning). Read it on a connection leaving an approval node instead.',
       EXPR_OPTIONAL_FIELD_WITHOUT_HAS: (subject): string =>
         `it reads the optional field "${subject ?? ''}" without checking it with has() first, so it fails when the field is left empty (warning).`,
       EXPR_OR_ABSORBS_ERROR: (): string =>
@@ -322,6 +324,8 @@ const WORKFLOW_LINT_COPY: Readonly<
         'has() 檢查的上一層不存在時會直接失敗，請先檢查上一層（提醒）。',
       EXPR_HIDDEN_FIELD_COPIED: (subject): string =>
         `把只存不顯示的欄位「${subject ?? ''}」複製到看得見的欄位（提醒）。`,
+      EXPR_LAST_DECISION_UNAVAILABLE: (): string =>
+        '讀取了 lastDecision，但這條連線的起點不是簽核關卡，這裡永遠沒有決策可讀，lastDecision 恆為空值（提醒）。請改在簽核關卡出去的連線上判斷。',
       EXPR_OPTIONAL_FIELD_WITHOUT_HAS: (subject): string =>
         `讀取選填欄位「${subject ?? ''}」前沒有先用 has() 確認，欄位沒填時會失敗（提醒）。`,
       EXPR_OR_ABSORBS_ERROR: (): string =>
@@ -443,6 +447,72 @@ export function readWorkflowLintMessage(
       .join('; ');
   } catch {
     return message;
+  }
+}
+
+/**
+ * One structured expression finding (`ExpressionLintIssue`, from
+ * `previewExpression`, `analyzeWorkflowExpressions` or the dialect upgrade
+ * check) as a designer sentence. With a definition whose expression the label
+ * names, the sentence starts with where it sits, as the publish lint lines
+ * do; without one (an expression field showing its own findings) it is the
+ * sentence alone. The code itself is never shown.
+ */
+export function readExpressionIssueMessage(
+  issue: Readonly<{
+    code: ExpressionLintCode;
+    label: string;
+    subject?: string | null;
+  }>,
+  definition: WorkflowDefinition | null | undefined = null,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+  const sentenceFor = copy.expressionLint[issue.code] as
+    | ((subject: string | null) => string)
+    | undefined;
+  const sentence = sentenceFor
+    ? sentenceFor(issue.subject ?? null)
+    : copy.expressionLint.EXPR_PARSE_FAILED(null);
+
+  try {
+    const location = definition
+      ? readFirstWins(readExpressionLintLocations(definition, copy)).get(
+          issue.label,
+        )
+      : undefined;
+
+    return location === undefined
+      ? sentence
+      : copy.expressionLintLine(location, sentence);
+  } catch {
+    return sentence;
+  }
+}
+
+/**
+ * Where an expression label sits in this definition, in designer copy
+ * (`發起權限條件`, `「分流」出去的連線`…), or `null` for a label the definition
+ * does not hold.
+ */
+export function readExpressionLabelLocation(
+  label: string,
+  definition: WorkflowDefinition | null | undefined,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string | null {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+
+  try {
+    return (
+      readFirstWins(readExpressionLintLocations(definition, copy)).get(label) ??
+      null
+    );
+  } catch {
+    return null;
   }
 }
 

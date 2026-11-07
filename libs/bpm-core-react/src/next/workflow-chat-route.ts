@@ -10,6 +10,7 @@ import {
 } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { WORKFLOW_TOOLSET } from '@rytass/bpm-core-shared';
+import { WORKFLOW_CHAT_SYSTEM_PROMPT } from '../views/templates/designer/workflow-chat-prompt';
 
 /**
  * Next.js route handler for the workflow designer LLM assistant.
@@ -23,6 +24,12 @@ import { WORKFLOW_TOOLSET } from '@rytass/bpm-core-shared';
  * Host usage (apps/client/src/app/api/chat/route.ts):
  *   export const runtime = 'nodejs';
  *   export const POST = createWorkflowChatPOST();
+ *
+ * The route answers 404 unless the assistant is enabled
+ * (`BPM_AI_ASSISTANT_ENABLED=true`, read per request, or `options.enabled`),
+ * runs the host's optional `authorize` hook (401 when it says no), bounds the
+ * request (bytes and messages) and the model output (tokens), and drops any
+ * `system` message the client sent (Phase 23 P4).
  */
 
 /** Default OpenAI model id (overridable via BPM_LLM_MODEL). */
@@ -39,28 +46,11 @@ function resolveModel(setting: string): LanguageModel {
 
 /**
  * Strict guardrail: the assistant may ONLY design this approval flow, using the
- * provided tools. Anything else is declined. Lives server-side so it cannot be
- * overridden by client-supplied messages.
+ * provided tools. Lives server-side so it cannot be overridden by
+ * client-supplied messages (the route drops every `system` message a client
+ * sends). Shared with the offline Chrome model through `workflow-chat-prompt`.
  */
-export const WORKFLOW_CHAT_SYSTEM_PROMPT = `你是「簽核流程設計器」頁面內建的 AI 助理，唯一職責是協助使用者在這個畫布上設計／修改一個簽核審批流程（workflow）。
-
-你只能透過系統提供的工具（tools）來操作流程：新增/重命名/刪除節點、連線、設定簽核人、設定條件分流、設定系統節點動作、自動排版、查詢現況與驗證等。除了這些工具，你沒有其他能力。
-
-工作守則：
-1. 動作前，先呼叫 get_workflow_snapshot 了解目前畫布的節點與連線，再規劃要呼叫哪些工具。
-2. 盡量用高階工具（insert_approval_step / insert_notification / insert_conditional_branch）一次完成多步；需要細修時再用細顆粒工具。
-3. **重要：要果斷、先把流程畫出來。** 使用者只給一兩句話時，直接依常見公司慣例建立初稿，不要反覆追問細節。簽核人若使用者沒指定，就省略 approverResolver（系統會自動用「直屬主管」為預設，不需要真實會員 id）；通知節點同理可省略 action（預設站內通知）。先把結構建好、再請使用者調整。
-4. 工具呼叫不會因為「缺簽核人/缺資料」而失敗；缺的部分會以合理預設補上，並由 validate_workflow 標示。所以放心連續呼叫工具把流程建完，不要因為怕缺欄位就停下來問。
-5. 當使用者「點名」某個人或部門當簽核人/收件者時，先用 search_members（依姓名關鍵字）、list_org_units、list_positions 查到真實 id，再用 set_user_task_approver / set_service_action 指定（如 DIRECT memberIds、ORG_UNIT_MANAGER orgUnitId、POSITION positionId）。查不到就回報並請使用者確認，不要編造 id。
-6. 節點 id 可從 snapshot 取得；連線條件需要先綁定表單欄位（若 list_form_fields 為空，提醒使用者先綁定表單版本）。
-7. **條件分流務必主動補上「其他情況」**：設計 exclusiveGateway（條件分流）時，除了符合條件的分支，一定要保留一條未設條件、標記為預設（isDefault）的「其他情況」路徑當 else（通常指向後續節點或完成）。不要把所有輸出連線都設成條件而沒有預設出口；缺預設出口時，用 set_edge_default 把其中一條設為預設。
-8. 完成後，呼叫 validate_workflow，並用一兩句話說明你建了什麼流程、哪些地方（如簽核人、條件門檻）建議使用者再確認或指定。
-9. 全程使用繁體中文（台灣用語）回覆。
-10. 欄位在各關的顯示與補填用 set_field_access_matrix 設定：nodeIds 只列這次要改的簽核節點，它們的設定會整個換掉，呼叫前先從 get_workflow_snapshot 讀出這些節點既有的「欄位設定」一併傳入。「隱藏」只影響畫面、不是權限，不能用來保密；使用者要求保密時要說明這一點。節點含舊欄位權限設定時，用 remove_legacy_field_permissions 移除（不會自動轉換）。
-
-嚴格界線：
-- 只做「設計這個簽核流程」相關的事。任何與此無關的請求（閒聊、寫詩、寫程式、查天氣／新聞、操作其他系統或頁面、回答一般知識問題等）一律婉拒，並簡短引導使用者回到流程設計，例如：「我只能協助你設計這個簽核流程，需要我幫你新增關卡或設定條件嗎？」
-- 不要假裝執行你工具以外的動作，也不要編造結果。`;
+export { WORKFLOW_CHAT_SYSTEM_PROMPT };
 
 /** Build AI SDK tools from WORKFLOW_TOOLSET — no `execute`, so the browser runs them. */
 export function buildWorkflowAiSdkTools(): ToolSet {
@@ -80,15 +70,182 @@ export function buildWorkflowAiSdkTools(): ToolSet {
   return Object.fromEntries(entries) as ToolSet;
 }
 
+/** Upper bound on the request body, in bytes. Tool results carry snapshots. */
+export const DEFAULT_WORKFLOW_CHAT_MAX_REQUEST_BYTES = 1_048_576;
+/** Upper bound on the messages in one request. */
+export const DEFAULT_WORKFLOW_CHAT_MAX_MESSAGES = 200;
+/** Upper bound on the tokens the model may write per response. */
+export const DEFAULT_WORKFLOW_CHAT_MAX_OUTPUT_TOKENS = 4_096;
+
 export interface WorkflowChatRouteOptions {
+  /**
+   * Whether the route serves at all. Absent: `BPM_AI_ASSISTANT_ENABLED` is
+   * read on every request and must be `'true'`. A disabled route answers 404.
+   */
+  readonly enabled?: boolean | (() => boolean);
+  /**
+   * The host's check that the caller may use the assistant (a session, a
+   * designer permission). Called before the body is read; `false` (or a
+   * throw) answers 401. Absent: no check, so put the route behind the host's
+   * own authentication.
+   */
+  readonly authorize?: (request: Request) => boolean | Promise<boolean>;
+  /** Request body ceiling in bytes (413 above it). */
+  readonly maxRequestBytes?: number;
+  /** Message count ceiling (413 above it). */
+  readonly maxMessages?: number;
+  /** Output token ceiling passed to the model. */
+  readonly maxOutputTokens?: number;
   /** Override the OpenAI model id (else BPM_LLM_MODEL env, else the default). */
   readonly model?: string;
   /** Override the system prompt (else the strict design-only guardrail). */
   readonly system?: string;
 }
 
-interface WorkflowChatRequestBody {
-  readonly messages: readonly UIMessage[];
+const plainResponse = (status: number, text: string): Response =>
+  new Response(text, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    status,
+  });
+
+function isEnabled(enabled: WorkflowChatRouteOptions['enabled']): boolean {
+  if (typeof enabled === 'function') {
+    return enabled();
+  }
+
+  return enabled ?? process.env.BPM_AI_ASSISTANT_ENABLED === 'true';
+}
+
+async function isAuthorized(
+  request: Request,
+  authorize: WorkflowChatRouteOptions['authorize'],
+): Promise<boolean> {
+  if (!authorize) {
+    return true;
+  }
+
+  try {
+    return (await authorize(request)) === true;
+  } catch {
+    return false;
+  }
+}
+
+function isUIMessage(value: unknown): value is UIMessage {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { readonly role?: unknown }).role === 'string' &&
+    Array.isArray((value as { readonly parts?: unknown }).parts)
+  );
+}
+
+type ReadMessagesResult =
+  | { readonly messages: readonly UIMessage[]; readonly ok: true }
+  | { readonly ok: false; readonly response: Response };
+
+/**
+ * The request body as text, or `null` once it grows past `maxBytes`; reading
+ * stops (and the stream is cancelled) at that point.
+ */
+async function readBodyWithinLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<string | null> {
+  if (request.body === null) {
+    return '';
+  }
+
+  const reader = request.body.getReader();
+  // Local to this read and appended in place: copying the list per chunk
+  // would make a body of many tiny chunks quadratic.
+  const chunks: Uint8Array[] = [];
+
+  const readWithin = async (total: number): Promise<number | null> => {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      return total;
+    }
+
+    const nextTotal = total + value.byteLength;
+
+    if (nextTotal > maxBytes) {
+      await reader.cancel().catch((): void => undefined);
+
+      return null;
+    }
+
+    chunks.push(value);
+
+    return readWithin(nextTotal);
+  };
+
+  const total = await readWithin(0);
+
+  if (total === null) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(total);
+
+  chunks.reduce((offset, chunk): number => {
+    bytes.set(chunk, offset);
+
+    return offset + chunk.byteLength;
+  }, 0);
+
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * The client's messages, bounded and without any `system` message: the
+ * system prompt is the route's alone. The body is read as text first so its
+ * size is checked before anything is parsed.
+ */
+export async function readWorkflowChatMessages(
+  request: Request,
+  limits: Readonly<{ maxMessages: number; maxRequestBytes: number }>,
+): Promise<ReadMessagesResult> {
+  const declaredLength = Number(request.headers.get('content-length') ?? '0');
+
+  if (declaredLength > limits.maxRequestBytes) {
+    return { ok: false, response: plainResponse(413, 'Request too large') };
+  }
+
+  // A chunked request declares no length: read it with the limit applied as
+  // it arrives, so an oversized body is cut off instead of buffered whole.
+  const text = await readBodyWithinLimit(request, limits.maxRequestBytes);
+
+  if (text === null) {
+    return { ok: false, response: plainResponse(413, 'Request too large') };
+  }
+
+  let body: unknown;
+
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { ok: false, response: plainResponse(400, 'Invalid request') };
+  }
+
+  const messages: unknown =
+    typeof body === 'object' && body !== null
+      ? (body as { readonly messages?: unknown }).messages
+      : undefined;
+
+  if (!Array.isArray(messages) || !messages.every(isUIMessage)) {
+    return { ok: false, response: plainResponse(400, 'Invalid request') };
+  }
+
+  if (messages.length > limits.maxMessages) {
+    return { ok: false, response: plainResponse(413, 'Too many messages') };
+  }
+
+  return {
+    messages: messages.filter((message) => message.role !== 'system'),
+    ok: true,
+  };
 }
 
 /** Create the `POST` handler for the workflow chat route. */
@@ -98,9 +255,28 @@ export function createWorkflowChatPOST(
   const tools = buildWorkflowAiSdkTools();
 
   return async function POST(request: Request): Promise<Response> {
-    const body = (await request.json()) as WorkflowChatRequestBody;
+    if (!isEnabled(options.enabled)) {
+      return plainResponse(404, 'Not Found');
+    }
+
+    if (!(await isAuthorized(request, options.authorize))) {
+      return plainResponse(401, 'Unauthorized');
+    }
+
+    const read = await readWorkflowChatMessages(request, {
+      maxMessages: options.maxMessages ?? DEFAULT_WORKFLOW_CHAT_MAX_MESSAGES,
+      maxRequestBytes:
+        options.maxRequestBytes ?? DEFAULT_WORKFLOW_CHAT_MAX_REQUEST_BYTES,
+    });
+
+    if (!read.ok) {
+      return read.response;
+    }
+
     const result = streamText({
-      messages: await convertToModelMessages([...body.messages]),
+      maxOutputTokens:
+        options.maxOutputTokens ?? DEFAULT_WORKFLOW_CHAT_MAX_OUTPUT_TOKENS,
+      messages: await convertToModelMessages([...read.messages]),
       model: resolveModel(
         options.model ?? process.env.BPM_LLM_MODEL ?? DEFAULT_MODEL,
       ),

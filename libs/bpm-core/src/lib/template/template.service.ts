@@ -103,6 +103,7 @@ import {
 } from './template.enums';
 import {
   EMPTY_WORKFLOW_DEFINITION,
+  NEW_TEMPLATE_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
   parseWorkflowDefinitionJson,
 } from './workflow-definition.validator';
@@ -233,7 +234,7 @@ export class TemplateService {
         status: ApprovalTemplateVersionStatusEnum.DRAFT,
         templateId: template.id,
         version: 1,
-        workflowDefinition: EMPTY_WORKFLOW_DEFINITION,
+        workflowDefinition: NEW_TEMPLATE_WORKFLOW_DEFINITION,
       }),
     );
 
@@ -1949,7 +1950,7 @@ function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
   return [];
 }
 
-interface ExpressionSource {
+export interface ExpressionSource {
   readonly expression: string | null | undefined;
   readonly label: string;
 }
@@ -2027,7 +2028,7 @@ function createExpressionFieldReader(
   };
 }
 
-interface UsagePointExpression extends ExpressionSource {
+export interface UsagePointExpression extends ExpressionSource {
   /** The top-level field a `SET_FORM_FIELD` value is written to. */
   readonly targetFieldKey: string | null;
   readonly usagePoint: ExpressionUsagePoint;
@@ -2037,9 +2038,10 @@ interface UsagePointExpression extends ExpressionSource {
  * Every expression of a version with its use point (docs/24 §2.3). Unlike
  * the cel-legacy readers this includes the NOTIFY recipients expression,
  * which is evaluated like an approver expression. A draft is not
- * shape-checked, so every read is guarded.
+ * shape-checked, so every read is guarded. Also read by the designer's
+ * expression analysis and dialect upgrade check (Phase 23 P4).
  */
-function readUsagePointExpressions(
+export function readUsagePointExpressions(
   definition: WorkflowDefinition,
   initiatorPolicyCel: string | null,
 ): readonly UsagePointExpression[] {

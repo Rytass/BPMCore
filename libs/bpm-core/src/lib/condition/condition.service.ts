@@ -1,4 +1,10 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  Optional,
+} from '@nestjs/common';
 import {
   EXPRESSION_ROOT_IDENTIFIERS_BY_USAGE_POINT,
   ExpressionLintIssue,
@@ -82,6 +88,25 @@ export interface ExpressionCallOptions {
 
 export type CelEvaluationContext = Readonly<Record<string, unknown>>;
 
+/** How long each dialect's warm-up took, in milliseconds; `null` if it failed. */
+export type ExpressionWarmUpResult = Readonly<
+  Record<ExpressionDialect, number | null>
+>;
+
+/**
+ * The warm-up expression: a root read, a comparison and arithmetic, so the
+ * engine's parser, interpreter, member access and the budget's `vm` timeout
+ * all run once. It calls no function, so a host registry is only read (to
+ * build the environment), never invoked.
+ */
+const WARM_UP_EXPRESSION = 'form.warmUp + 1 == 2';
+const WARM_UP_CONTEXT: CelEvaluationContext = { form: { warmUp: 1 } };
+const WARM_UP_LABEL = 'warmUp';
+// Generous on purpose: the cold first evaluation is exactly what is slow
+// (Phase 23 P3 measured about 90 ms against the 100 ms budget).
+const WARM_UP_BUDGET = { cumulativeMs: 5_000, perExpressionMs: 5_000 };
+const WARM_UP_DIALECTS: readonly ExpressionDialect[] = ['cel-legacy', 'cel-v2'];
+
 const DEFAULT_MAX_EXPRESSION_LENGTH = 2000;
 // `has` and `size` are CEL macros, not context identifiers; the root-identifier
 // lint must not report them as unknown. `size` is required by the table field
@@ -89,7 +114,8 @@ const DEFAULT_MAX_EXPRESSION_LENGTH = 2000;
 const CEL_KEYWORDS = new Set(['false', 'has', 'in', 'null', 'size', 'true']);
 
 @Injectable()
-export class ConditionService {
+export class ConditionService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(ConditionService.name);
   private readonly functionRegistry: BPMExpressionFunctionRegistry;
   private readonly runtime: ExpressionRuntime;
 
@@ -109,6 +135,53 @@ export class ConditionService {
       functionRegistry ?? BUILT_IN_EXPRESSION_FUNCTION_REGISTRY;
     // The built-ins-only registry gets the shared default adapters.
     this.runtime = ExpressionRuntime.withFunctions(this.functionRegistry);
+  }
+
+  /**
+   * Warms both engines at boot so the first case does not pay for it (Phase 23
+   * P3 live finding: the first evaluation after a restart took about 90 ms of
+   * its 100 ms budget, against about 1 ms warm).
+   */
+  onApplicationBootstrap(): void {
+    this.warmUp();
+  }
+
+  /**
+   * Loads each dialect's engine and this registry's environment, then parses,
+   * lints and evaluates one expression per dialect under a generous budget of
+   * its own, so module loading, the cel-v2 environment clone and the `vm`
+   * context are paid here. Never throws: a dialect that fails (a host
+   * registry that cannot be read, say) is logged with a fixed code and left
+   * cold, and the evaluations it serves fail closed as before.
+   */
+  warmUp(): ExpressionWarmUpResult {
+    const entries = WARM_UP_DIALECTS.map(
+      (dialect): readonly [ExpressionDialect, number | null] => {
+        const startedAt = performance.now();
+
+        try {
+          this.prepareEngine(dialect);
+          this.lintExpressionIssues(WARM_UP_EXPRESSION, WARM_UP_LABEL, {
+            dialect,
+          });
+          this.evaluateValue(WARM_UP_EXPRESSION, WARM_UP_CONTEXT, WARM_UP_LABEL, {
+            budget: createExpressionBudget(WARM_UP_BUDGET),
+            dialect,
+          });
+
+          return [dialect, performance.now() - startedAt];
+        } catch {
+          // The error may carry host text; only a fixed code is written.
+          this.logger.warn(
+            `code=EXPRESSION_WARM_UP_FAILED dialect=${dialect}`,
+          );
+
+          return [dialect, null];
+        }
+      },
+    );
+
+    return Object.fromEntries(entries) as ExpressionWarmUpResult;
   }
 
   /**

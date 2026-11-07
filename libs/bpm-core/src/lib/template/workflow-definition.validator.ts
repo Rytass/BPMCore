@@ -74,6 +74,17 @@ export const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
   ],
 };
 
+/**
+ * The first draft of a template created from scratch. New templates are
+ * written in `cel-v2` (ADR 22 §3.3); existing definitions keep the dialect
+ * they have, and `EMPTY_WORKFLOW_DEFINITION` (the fallback for a missing
+ * definition) keeps naming none.
+ */
+export const NEW_TEMPLATE_WORKFLOW_DEFINITION: WorkflowDefinition = {
+  ...EMPTY_WORKFLOW_DEFINITION,
+  expressionDialect: 'cel-v2',
+};
+
 export function parseWorkflowDefinitionJson(
   value: string | null | undefined,
 ): WorkflowDefinition {

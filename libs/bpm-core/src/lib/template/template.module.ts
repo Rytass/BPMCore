@@ -7,6 +7,8 @@ import { ApprovalTemplateCategoryEntity } from './approval-template-category.ent
 import { ApprovalTemplateEntity } from './approval-template.entity';
 import { ApprovalTemplateVersionEntity } from './approval-template-version.entity';
 import { ComposeTemplateMutations } from './compose-template.mutations';
+import { ExpressionDesignerQueries } from './expression-designer.queries';
+import { ExpressionDesignerService } from './expression-designer.service';
 import { TemplateMutations } from './template.mutations';
 import { TemplateQueries } from './template.queries';
 import { TemplateService } from './template.service';
@@ -24,6 +26,8 @@ import { TemplateService } from './template.service';
   ],
   providers: [
     ComposeTemplateMutations,
+    ExpressionDesignerQueries,
+    ExpressionDesignerService,
     TemplateMutations,
     TemplateQueries,
     TemplateService,
