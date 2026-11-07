@@ -1890,7 +1890,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 
-Server route handler for the template-designer LLM assistant. The host wires it in one line (`apps/client/src/app/api/chat/route.ts` → `export const POST = createWorkflowChatPOST()`). Holds the OpenAI key, runs `streamText`, declares `WORKFLOW_TOOLSET` as tools with **no `execute`** (forwarded to the browser). Talks to OpenAI directly via `@ai-sdk/openai` (no AI Gateway); reads `OPENAI_API_KEY` (server-only) and `BPM_LLM_MODEL` (optional OpenAI model id, default `gpt-5.4-mini`).
+Server route handler for the template-designer LLM assistant. The host wires it in one line (`apps/client/src/app/api/chat/route.ts` → `export const POST = createWorkflowChatPOST({ authorize: createBPMApiSessionAuthorize() })`). Holds the OpenAI key, runs `streamText`, declares `WORKFLOW_TOOLSET` as tools with **no `execute`** (forwarded to the browser). Talks to OpenAI directly via `@ai-sdk/openai` (no AI Gateway); reads `OPENAI_API_KEY` (server-only) and `BPM_LLM_MODEL` (optional OpenAI model id, default `gpt-5.4-mini`).
 
 | Name | Kind | Purpose |
 |---|---|---|
@@ -1900,6 +1900,10 @@ Server route handler for the template-designer LLM assistant. The host wires it 
 | `buildWorkflowAiSdkTools` | function | Convert `WORKFLOW_TOOLSET` (JSON Schema) → AI SDK `ToolSet` (no execute) |
 | `WORKFLOW_CHAT_SYSTEM_PROMPT` | const | Strict design-only guardrail prompt (zh-TW); Phase 23 P4 adds the expression rules (catalog first, `preview_expression` before any write, `lastDecision` only after a user task, never publish), shared with the offline Chrome model |
 | `WorkflowChatRouteOptions` | interface | `{ model?, system? }`, plus (Phase 23 P4, not yet released) `enabled?`, `authorize?`, `maxRequestBytes?`, `maxMessages?`, `maxOutputTokens?` |
+| `createBPMApiSessionAuthorize` | function | Not yet released: an `authorize` hook for `createWorkflowChatPOST`. Forwards only the request's `Cookie` header to the BPM API session endpoint (default `GET /auth/me`) and lets the caller in on a `200` whose JSON names a non-empty `memberId` (redirects are not followed); no cookie (no request is made), any other status, another body shape, a network error or the timeout refuses (401). `apps/client` wires it: `createWorkflowChatPOST({ authorize: createBPMApiSessionAuthorize() })` |
+| `resolveBPMApiSessionBaseUrl` | function | Not yet released: `resolveBPMApiSessionBaseUrl(apiBaseUrl?)` — the API origin that hook asks, read from configuration only, never from the request (a `Host` or forwarded header must not pick the server that decides who is signed in): `apiBaseUrl` → `BPM_API_INTERNAL_URL` (server-only, e.g. the in-cluster API URL) → `NEXT_PUBLIC_API_AUTH_URL` → origin of `NEXT_PUBLIC_API_URL` → `http://localhost:17603` outside `NODE_ENV=production`. Only absolute http(s) URLs count; a relative setting is ignored. `null` when nothing applies, and the hook then refuses every request (401) |
+| `BPMApiSessionAuthorizeOptions` | interface | Not yet released: `{ apiBaseUrl?, fetch?, sessionPath?, timeoutMs? }` |
+| `DEFAULT_BPM_API_SESSION_PATH` / `DEFAULT_BPM_API_SESSION_TIMEOUT_MS` | const | Not yet released: `'/auth/me'`, 5 000 ms |
 
 > The chat UI itself (`WorkflowChatDrawer`, `useWorkflowChat`, `useWorkflowDesignerController`) is internal to the isolated `views/templates/designer` entry and not separately exported. So are the Phase 23 P4 designer pieces under `views/templates/designer/expression/` (`ExpressionField`, `DialectUpgradeModal`, `createWorkflowExpressionTools`, `useWorkflowExpressionReferences`, the entry-condition / edge-expression edits): `useWorkflowDesignerController` takes an `expressionTools` option, and the designer injects the backend-backed tools so the assistant's expression writes are linted.
 

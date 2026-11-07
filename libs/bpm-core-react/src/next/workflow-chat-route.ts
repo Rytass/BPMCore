@@ -23,7 +23,9 @@ import { WORKFLOW_CHAT_SYSTEM_PROMPT } from '../views/templates/designer/workflo
  *
  * Host usage (apps/client/src/app/api/chat/route.ts):
  *   export const runtime = 'nodejs';
- *   export const POST = createWorkflowChatPOST();
+ *   export const POST = createWorkflowChatPOST({
+ *     authorize: createBPMApiSessionAuthorize(),
+ *   });
  *
  * The route answers 404 unless the assistant is enabled
  * (`BPM_AI_ASSISTANT_ENABLED=true`, read per request, or `options.enabled`),
@@ -245,6 +247,138 @@ export async function readWorkflowChatMessages(
   return {
     messages: messages.filter((message) => message.role !== 'system'),
     ok: true,
+  };
+}
+
+/** Where the BPM API listens in local development (`@rytass/bpm-core-client`). */
+const LOCAL_BPM_API_ORIGIN = 'http://localhost:17603';
+/** The API's "who is signed in" endpoint (`apps/api` `GET /auth/me`). */
+export const DEFAULT_BPM_API_SESSION_PATH = '/auth/me';
+/** How long the session check may take before the route answers 401. */
+export const DEFAULT_BPM_API_SESSION_TIMEOUT_MS = 5_000;
+
+export interface BPMApiSessionAuthorizeOptions {
+  /**
+   * The absolute API origin to ask, e.g. an internal service URL. Absent:
+   * read from configuration by {@link resolveBPMApiSessionBaseUrl}.
+   */
+  readonly apiBaseUrl?: string;
+  /** The fetch to use (tests, instrumented hosts). Default: global `fetch`. */
+  readonly fetch?: typeof fetch;
+  /** The session endpoint path. Default `/auth/me`. */
+  readonly sessionPath?: string;
+  /** Milliseconds before the check gives up and refuses. Default 5 000. */
+  readonly timeoutMs?: number;
+}
+
+/** An absolute http(s) URL without its trailing slash, or `null`. */
+const readAbsoluteUrl = (value: string | undefined): string | null => {
+  const configured = value?.trim();
+
+  if (!configured) {
+    return null;
+  }
+
+  try {
+    const url = new URL(configured);
+
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? url.toString().replace(/\/$/u, '')
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const readAbsoluteOrigin = (value: string | undefined): string | null => {
+  const configured = readAbsoluteUrl(value);
+
+  return configured === null ? null : new URL(configured).origin;
+};
+
+/**
+ * The API origin the session check asks. It comes only from configuration,
+ * never from the request: a `Host` or forwarded header the caller controls
+ * must not choose the server that decides whether the caller is signed in.
+ *
+ * 1. `apiBaseUrl` when given;
+ * 2. `BPM_API_INTERNAL_URL` (server-only, e.g. the API's in-cluster URL);
+ * 3. `NEXT_PUBLIC_API_AUTH_URL` (the `/auth/*` base);
+ * 4. the origin of `NEXT_PUBLIC_API_URL` (the GraphQL endpoint);
+ * 5. `http://localhost:17603` outside `NODE_ENV=production`.
+ *
+ * Only absolute http(s) URLs count; a relative setting is ignored. `null`
+ * when nothing applies, and the session check then refuses every request.
+ */
+export function resolveBPMApiSessionBaseUrl(
+  apiBaseUrl?: string,
+): string | null {
+  return (
+    readAbsoluteUrl(apiBaseUrl) ??
+    readAbsoluteUrl(process.env.BPM_API_INTERNAL_URL) ??
+    readAbsoluteUrl(process.env.NEXT_PUBLIC_API_AUTH_URL) ??
+    readAbsoluteOrigin(process.env.NEXT_PUBLIC_API_URL) ??
+    (process.env.NODE_ENV === 'production' ? null : LOCAL_BPM_API_ORIGIN)
+  );
+}
+
+const isSignedInMember = (value: unknown): boolean =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { readonly memberId?: unknown }).memberId === 'string' &&
+  (value as { readonly memberId: string }).memberId.length > 0;
+
+/**
+ * An `authorize` hook for {@link createWorkflowChatPOST} that lets in only a
+ * caller the BPM API recognises as signed in: it forwards the request's
+ * `Cookie` header (nothing else) to the API's session endpoint and accepts a
+ * `200` whose JSON names a `memberId`. No cookie, any other status, a body
+ * of another shape, a network error or a timeout refuses, so the route
+ * answers 401. The session itself is never read or kept here.
+ *
+ * Host usage (apps/client/src/app/api/chat/route.ts):
+ *   export const POST = createWorkflowChatPOST({
+ *     authorize: createBPMApiSessionAuthorize(),
+ *   });
+ */
+export function createBPMApiSessionAuthorize(
+  options: BPMApiSessionAuthorizeOptions = {},
+): (request: Request) => Promise<boolean> {
+  return async function authorize(request: Request): Promise<boolean> {
+    const cookie = request.headers.get('cookie');
+
+    if (!cookie) {
+      return false;
+    }
+
+    const baseUrl = resolveBPMApiSessionBaseUrl(options.apiBaseUrl);
+
+    if (baseUrl === null) {
+      return false;
+    }
+
+    const fetchImpl = options.fetch ?? fetch;
+    const url = `${baseUrl}${options.sessionPath ?? DEFAULT_BPM_API_SESSION_PATH}`;
+
+    try {
+      const response = await fetchImpl(url, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json', Cookie: cookie },
+        method: 'GET',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(
+          options.timeoutMs ?? DEFAULT_BPM_API_SESSION_TIMEOUT_MS,
+        ),
+      });
+
+      if (response.status !== 200) {
+        return false;
+      }
+
+      return isSignedInMember(await response.json());
+    } catch {
+      return false;
+    }
   };
 }
 
