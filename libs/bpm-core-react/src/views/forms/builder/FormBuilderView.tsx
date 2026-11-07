@@ -131,6 +131,10 @@ import {
   readFormTableRowBounds,
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
+import {
+  parseFormBindingExpressionLintLine,
+  readFormBindingExpressionLintMessage,
+} from '@rytass/bpm-core-client/template';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
@@ -384,9 +388,6 @@ const LINT_MISSING_PARAMETER_PATTERN =
  * A cel-v2 lint line of an `EXPRESSION` binding
  * (`<path>.dataSource.bindings[<i>].from.expression: <code>[ <subject>]`).
  */
-const LINT_EXPRESSION_PATTERN =
-  /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings\[(\d+)\]\.from\.expression: EXPR_[A-Z_]+(?: ([A-Za-z_][A-Za-z0-9_]*))?$/u;
-
 const LINT_UNKNOWN_PARAMETER_PATTERN =
   /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings unknown parameter: (.+)$/u;
 
@@ -1364,15 +1365,36 @@ export function FormBuilderView({
       return `${readLintTargetLabel(missing[1], missing[2])}尚未指定必要參數「${readLintParameterLabel(missing[1], missing[2], missing[3])}」的來源`;
     }
 
-    const expression = LINT_EXPRESSION_PATTERN.exec(line);
+    // `EXPR_*` lines get the shared per-code copy (the template designer's
+    // wording), placed by the labels this panel shows.
+    const expression = parseFormBindingExpressionLintLine(line);
 
-    if (expression?.[1] && expression[3]) {
+    if (expression) {
+      const fieldIndex = String(expression.fieldIndex);
+      const columnIndex =
+        expression.columnIndex === null
+          ? undefined
+          : String(expression.columnIndex);
+      const field = schema.fields[expression.fieldIndex];
+      const column = field ? readLintColumn(field, columnIndex) : undefined;
       const parameterKey =
-        readLintBindingParameter(expression[1], expression[2], expression[3]) ??
-        '';
-      const subject = expression[4] ? `（${expression[4]}）` : '';
+        readLintBindingParameter(
+          fieldIndex,
+          columnIndex,
+          String(expression.bindingIndex),
+        ) ?? '';
 
-      return `${readLintTargetLabel(expression[1], expression[2])}條件「${readLintParameterLabel(expression[1], expression[2], parameterKey)}」的表達式未通過檢查${subject}，請確認引用的欄位、型別與只使用內建函式`;
+      return readFormBindingExpressionLintMessage({
+        code: expression.code,
+        columnLabel: column ? column.label || column.fieldKey : null,
+        fieldLabel: field ? field.label || field.fieldKey : '',
+        parameterLabel: readLintParameterLabel(
+          fieldIndex,
+          columnIndex,
+          parameterKey,
+        ),
+        subject: expression.subject,
+      });
     }
 
     const unknown = LINT_UNKNOWN_PARAMETER_PATTERN.exec(line);
@@ -2611,7 +2633,7 @@ export function FormBuilderView({
 
           return (
             <Typography color="text-neutral" variant="caption">
-              {kind === 'EXPRESSION' ? '見下方表達式' : '—'}
+              {kind === 'EXPRESSION' ? '見下方運算式' : '—'}
             </Typography>
           );
         },
@@ -2675,7 +2697,7 @@ export function FormBuilderView({
     return (
       <div style={DATA_SOURCE_PARAMETERS_STYLE}>
         {parameters.map((parameter) => {
-          const name = `${parameter.label ?? parameter.key} 的表達式`;
+          const name = `${parameter.label ?? parameter.key} 的運算式`;
 
           return (
             <div
@@ -2770,7 +2792,7 @@ export function FormBuilderView({
         : [
             { id: CONSTANT_BINDING_ID, name: '固定常數' },
             // An expression yields one value, never a list (ADR 22 §3.7).
-            { id: EXPRESSION_BINDING_ID, name: '表達式' },
+            { id: EXPRESSION_BINDING_ID, name: '運算式' },
           ]),
       // Kept selectable only so the current choice can be shown; picking
       // anything else replaces it.
@@ -2845,7 +2867,7 @@ export function FormBuilderView({
     }
 
     if (kind === 'EXPRESSION') {
-      return '由表達式計算，隨引用的欄位變動';
+      return '由運算式計算，隨引用的欄位變動';
     }
 
     if (binding) {

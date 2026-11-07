@@ -32,9 +32,11 @@ import {
 } from './form-data-source.types';
 import { FormDataSourceValueResolverService } from './form-data-source-value-resolver.service';
 import {
+  createTableColumnBindingPosition,
   readBindingHash,
   readBindingValues,
   readWaitingForFieldKeys,
+  TOP_LEVEL_BINDING_POSITION,
 } from './form-data-source.validation';
 
 /**
@@ -291,7 +293,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField(PLANT_EXPRESSION),
         DESCRIPTOR,
         { chargeTo: 'OTHER', plant: 'TW01' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       ),
     ).toEqual({ missingParameters: [], values: { plant: 'TW02' } });
@@ -307,7 +309,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         field,
         DESCRIPTOR,
         formData,
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       );
 
@@ -331,12 +333,18 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         field,
         DESCRIPTOR,
         { defaultPlant: 'TW01' },
-        { plant: 'TW02' },
+        createTableColumnBindingPosition({ plant: 'TW02' }),
         evaluator(),
       ).values,
     ).toEqual({ plant: 'TW02' });
     expect(
-      readBindingValues(field, DESCRIPTOR, { defaultPlant: 'TW01' }, {}, evaluator())
+      readBindingValues(
+        field,
+        DESCRIPTOR,
+        { defaultPlant: 'TW01' },
+        createTableColumnBindingPosition({}),
+        evaluator(),
+      )
         .missingParameters,
     ).toEqual(['plant']);
     expect(
@@ -358,11 +366,52 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
           expressionField('row.plant'),
           DESCRIPTOR,
           { plant: 'TW01' },
-          undefined,
+          TOP_LEVEL_BINDING_POSITION,
           evaluator(),
         ),
       ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
       expect(evaluateValue).not.toHaveBeenCalled();
+    } finally {
+      evaluateValue.mockRestore();
+    }
+  });
+
+  it('takes its roots from the position it is given, not from whether a row arrived', (): void => {
+    // docs/24 §2.8, made explicit (Phase 23 P4／P5 integration): the caller
+    // says where the field sits. A table column with no row values yet still
+    // has `row` as a root (it waits), and its `form` reads work as usual.
+    const evaluateValue = jest.spyOn(conditionService, 'evaluateValue');
+
+    try {
+      expect(
+        readBindingValues(
+          expressionField('row.plant'),
+          DESCRIPTOR,
+          { plant: 'TW01' },
+          createTableColumnBindingPosition(undefined),
+          evaluator(),
+        ),
+      ).toEqual({ missingParameters: ['plant'], values: {} });
+      expect(evaluateValue).not.toHaveBeenCalled();
+      expect(
+        readBindingValues(
+          expressionField('form.plant'),
+          DESCRIPTOR,
+          { plant: 'TW01' },
+          createTableColumnBindingPosition({}),
+          evaluator(),
+        ).values,
+      ).toEqual({ plant: 'TW01' });
+      // The same top-level expression reading `row` is refused outright.
+      expect(() =>
+        readBindingValues(
+          expressionField('row.plant'),
+          DESCRIPTOR,
+          { plant: 'TW01' },
+          TOP_LEVEL_BINDING_POSITION,
+          evaluator(),
+        ),
+      ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
     } finally {
       evaluateValue.mockRestore();
     }
@@ -374,7 +423,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField('size(form.plant)'),
         DESCRIPTOR,
         { plant: 'TW01' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       ),
     ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
@@ -386,7 +435,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField('[form.plant]'),
         DESCRIPTOR,
         { plant: 'TW01' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       ),
     ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
@@ -401,7 +450,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
           expressionField('erp_plant_v1(form.plant)'),
           DESCRIPTOR,
           { plant: 'north' },
-          undefined,
+          TOP_LEVEL_BINDING_POSITION,
           evaluator(),
         ),
       ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
@@ -417,7 +466,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField('upper(trim(form.plant))'),
         DESCRIPTOR,
         { plant: ' tw01 ' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       ).values,
     ).toEqual({ plant: 'TW01' });
@@ -431,7 +480,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
             expressionField(expression),
             DESCRIPTOR,
             { plant: 'TW01' },
-            undefined,
+            TOP_LEVEL_BINDING_POSITION,
             evaluator(),
           ),
         ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
@@ -449,7 +498,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField(PLANT_EXPRESSION),
         DESCRIPTOR,
         { chargeTo: 'SELF', plant: 'TW01' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(budget),
       ),
     ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.TIMEOUT));
@@ -461,7 +510,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField('form.plant + 1'),
         DESCRIPTOR,
         { plant: 'SECRET_PLANT_42' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         evaluator(),
       );
       throw new Error('expected a failure');
@@ -483,7 +532,7 @@ describe('readBindingValues with an EXPRESSION source', (): void => {
         expressionField(PLANT_EXPRESSION),
         DESCRIPTOR,
         { chargeTo: 'SELF', plant: 'TW01' },
-        undefined,
+        TOP_LEVEL_BINDING_POSITION,
         createFormDataSourceExpressionEvaluator({ conditionService: null }),
       ),
     ).toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING));
@@ -644,6 +693,29 @@ describe('the browser cannot send an expression (Phase 23 P5 gate)', (): void =>
     ).rejects.toMatchObject({
       code: BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
     });
+    expect(recording.searchRequests).toEqual([]);
+  });
+
+  it('treats a table column as a column even when the browser sent no row', async (): Promise<void> => {
+    const recording = createRecordingSource();
+    const service = createRuntimeService(
+      recording.source,
+      createTableSchema('row.plant'),
+    );
+
+    // The position comes from the schema: `items.costCenter` is a column, so
+    // `row` is a root and the missing cell is a dependency to fill in, not a
+    // broken binding.
+    await expect(
+      service.formFieldOptions(
+        {
+          fieldKey: 'items.costCenter',
+          formDataJson: JSON.stringify({ defaultPlant: 'TW01', items: [] }),
+          templateId: 'template-1',
+        },
+        authContext,
+      ),
+    ).resolves.toMatchObject({ waitingForFieldKeys: ['plant'] });
     expect(recording.searchRequests).toEqual([]);
   });
 

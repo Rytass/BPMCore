@@ -5,9 +5,11 @@ import type {
 import { BPM_FORM_DATA_SOURCE_ERROR_CODES } from './form-data-source.errors';
 import type { BPMFormDataSourceDescriptor } from './form-data-source.types';
 import {
+  createTableColumnBindingPosition,
   readBindingHash,
   readBindingValues,
   readWaitingForFieldKeys,
+  TOP_LEVEL_BINDING_POSITION,
 } from './form-data-source.validation';
 
 /**
@@ -112,7 +114,7 @@ describe('binding sources fail closed (docs/24 §2.8)', (): void => {
         fieldWith(UNKNOWN_SOURCE),
         PLANT_DESCRIPTOR,
         { plant: 'TW01' },
-        { plant: 'TW02' },
+        createTableColumnBindingPosition({ plant: 'TW02' }),
       ),
     ).toThrow(
       expect.objectContaining({
@@ -137,6 +139,7 @@ describe('binding sources fail closed (docs/24 §2.8)', (): void => {
         fieldWith({ expression: 'form.plant', kind: 'EXPRESSION' }),
         PLANT_DESCRIPTOR,
         { plant: 'TW01' },
+        TOP_LEVEL_BINDING_POSITION,
       ),
     ).toThrow(
       expect.objectContaining({
@@ -151,6 +154,7 @@ describe('binding sources fail closed (docs/24 §2.8)', (): void => {
         fieldWith({ fieldKey: 'plant', kind: 'FIELD' }),
         PLANT_DESCRIPTOR,
         { plant: 'TW01' },
+        TOP_LEVEL_BINDING_POSITION,
       ),
     ).toEqual({ missingParameters: [], values: { plant: 'TW01' } });
     expect(
@@ -158,6 +162,7 @@ describe('binding sources fail closed (docs/24 §2.8)', (): void => {
         fieldWith({ columnKey: 'plant', kind: 'ROW_FIELD' }),
         PLANT_DESCRIPTOR,
         {},
+        TOP_LEVEL_BINDING_POSITION,
       ),
     ).toEqual({ missingParameters: ['plant'], values: {} });
     expect(

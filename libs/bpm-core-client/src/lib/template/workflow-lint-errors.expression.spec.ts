@@ -8,6 +8,8 @@ import {
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { WORKFLOW_EXPRESSION_LABELS } from '@rytass/bpm-core-shared/workflow-graph';
 import {
+  parseFormBindingExpressionLintLine,
+  readFormBindingExpressionLintMessage,
   readWorkflowLintMessage,
   WORKFLOW_LINT_LANGUAGES,
 } from './workflow-lint-errors';
@@ -156,4 +158,164 @@ describe('formatExpressionLintIssue', (): void => {
       }),
     ).toBe('x: EXPR_FIELD_UNKNOWN');
   });
+});
+
+/**
+ * Phase 23 P4／P5 integration: the `EXPRESSION` binding lines of a NOTIFY
+ * webhook (publish lint) and of a form DataSource (form-schema lint) get the
+ * same per-code copy, placed by name.
+ */
+describe('EXPRESSION binding lint lines', (): void => {
+  const webhookLabel =
+    'workflow.nodes.notify.action.webhooks[0].bindings[1].from.expression';
+  const notifyDefinition = {
+    edges: [],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: {
+          action: {
+            channels: ['IN_APP'],
+            recipients: { memberIds: [], type: 'DIRECT' },
+            type: 'NOTIFY',
+            webhooks: [
+              {
+                bindings: [
+                  {
+                    from: { fieldKey: 'amount', kind: 'FIELD' },
+                    parameter: 'amount',
+                  },
+                  {
+                    from: { expression: 'form.missing', kind: 'EXPRESSION' },
+                    parameter: 'summary',
+                  },
+                ],
+                endpoint: { key: 'erp.po', version: 1 },
+                id: 'webhook_erp',
+              },
+            ],
+          },
+          label: '通知 ERP',
+        },
+        id: 'notify',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      },
+    ],
+  } as unknown as WorkflowDefinition;
+
+  it('names a NOTIFY webhook parameter in both languages', (): void => {
+    expect(
+      readWorkflowLintMessage(
+        `${webhookLabel}: EXPR_FIELD_UNKNOWN missing`,
+        notifyDefinition,
+      ),
+    ).toBe(
+      '知會節點「通知 ERP」第 1 個 Webhook 參數「summary」的運算式：讀取了表單沒有的欄位「missing」。',
+    );
+    expect(
+      readWorkflowLintMessage(
+        `${webhookLabel}: EXPR_RESULT_TYPE_MISMATCH`,
+        notifyDefinition,
+        'en',
+      ),
+    ).toMatch(
+      /^The expression for the parameter "summary" of webhook 1 on the notify node "通知 ERP": /u,
+    );
+  });
+
+  it('leaves a webhook line whose binding is not an EXPRESSION as written', (): void => {
+    const fieldLine =
+      'workflow.nodes.notify.action.webhooks[0].bindings[0].from.expression: EXPR_PARSE_FAILED';
+
+    expect(readWorkflowLintMessage(fieldLine, notifyDefinition)).toBe(fieldLine);
+  });
+
+  it('parses a form binding line for a field and for a table column', (): void => {
+    expect(
+      parseFormBindingExpressionLintLine(
+        'schema.fields[2].dataSource.bindings[0].from.expression: EXPR_FUNCTION_NOT_ALLOWED erp_band_v1',
+      ),
+    ).toEqual({
+      bindingIndex: 0,
+      code: 'EXPR_FUNCTION_NOT_ALLOWED',
+      columnIndex: null,
+      fieldIndex: 2,
+      subject: 'erp_band_v1',
+    });
+    expect(
+      parseFormBindingExpressionLintLine(
+        'schema.fields[1].columns[3].dataSource.bindings[2].from.expression: EXPR_ROOT_NOT_ALLOWED instance',
+      ),
+    ).toEqual({
+      bindingIndex: 2,
+      code: 'EXPR_ROOT_NOT_ALLOWED',
+      columnIndex: 3,
+      fieldIndex: 1,
+      subject: 'instance',
+    });
+    expect(
+      parseFormBindingExpressionLintLine(
+        'schema.fields[1].dataSource.bindings missing required parameter: plant',
+      ),
+    ).toBeNull();
+    expect(
+      parseFormBindingExpressionLintLine(
+        `${webhookLabel}: EXPR_FIELD_UNKNOWN missing`,
+      ),
+    ).toBeNull();
+  });
+
+  it('words a form binding finding by the labels the builder shows', (): void => {
+    expect(
+      readFormBindingExpressionLintMessage({
+        code: 'EXPR_FIELD_UNKNOWN',
+        columnLabel: null,
+        fieldLabel: '成本中心',
+        parameterLabel: '廠別',
+        subject: 'missing',
+      }),
+    ).toBe('「成本中心」欄位查詢條件「廠別」的運算式：讀取了表單沒有的欄位「missing」。');
+    expect(
+      readFormBindingExpressionLintMessage({
+        code: 'EXPR_ROOT_NOT_ALLOWED',
+        columnLabel: '成本中心',
+        fieldLabel: '明細',
+        parameterLabel: '廠別',
+        subject: 'instance',
+      }),
+    ).toBe('「明細」表格「成本中心」欄查詢條件「廠別」的運算式：讀取了這裡不能使用的「instance」。');
+  });
+
+  it.each(WORKFLOW_LINT_LANGUAGES)(
+    'has copy for every code with no separator in it (%s)',
+    (language): void => {
+      ALL_CODES.forEach((code): void => {
+        [
+          readFormBindingExpressionLintMessage(
+            {
+              code,
+              columnLabel: 'C',
+              fieldLabel: 'F',
+              parameterLabel: 'P',
+              subject: 'x',
+            },
+            language,
+          ),
+          readFormBindingExpressionLintMessage(
+            { code, columnLabel: null, fieldLabel: 'F', parameterLabel: 'P' },
+            language,
+          ),
+          readWorkflowLintMessage(
+            `${webhookLabel}: ${code}`,
+            notifyDefinition,
+            language,
+          ),
+        ].forEach((message): void => {
+          expect(message).not.toContain('; ');
+          expect(message).not.toContain(code);
+        });
+      });
+    },
+  );
 });

@@ -178,6 +178,110 @@ describe('useFormDataSourceField', () => {
     expect(previewOptionsMock).toHaveBeenCalledTimes(2);
   });
 
+  it('debounces an EXPRESSION re-query: a burst of edits makes one request with the last values', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    previewOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    const input: UseFormDataSourceFieldInput = {
+      context: { kind: 'preview' },
+      field,
+      formData: { plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    // The first paint still loads at once.
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(previewOptionsMock).toHaveBeenCalledTimes(1);
+
+    await harness.rerender({ ...input, formData: { plant: 'TW0' } });
+    await harness.rerender({ ...input, formData: { plant: 'TW02' } });
+    await harness.rerender({ ...input, formData: { plant: 'TW03' } });
+    await flushAsync();
+
+    // Settling: nothing sent yet, and the field does not claim to be valid.
+    expect(previewOptionsMock).toHaveBeenCalledTimes(1);
+    expect(harness.current().status).toBe('LOADING');
+
+    await waitForState(
+      harness,
+      (state) =>
+        state.status === 'VALID' && previewOptionsMock.mock.calls.length === 2,
+    );
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+    expect(previewOptionsMock.mock.calls[1]?.[0].formData).toEqual({
+      plant: 'TW03',
+    });
+  });
+
+  it('blocks the submission of a held value while its EXPRESSION re-query settles', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    previewOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    const input: UseFormDataSourceFieldInput = {
+      context: { kind: 'preview' },
+      field,
+      formData: { choice: 'A', plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(false);
+
+    await harness.rerender({
+      ...input,
+      formData: { choice: 'A', plant: 'TW02' },
+    });
+
+    // The options describe the old plant until the re-query answers.
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(true);
+
+    await waitForState(
+      harness,
+      (state) =>
+        state.status === 'VALID' && previewOptionsMock.mock.calls.length === 2,
+    );
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(false);
+  });
+
+  it('re-queries a FIELD binding at once, without the EXPRESSION debounce', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { fieldKey: 'plant', kind: 'FIELD' },
+        parameter: 'plant',
+      },
+    ]);
+    previewOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    const input: UseFormDataSourceFieldInput = {
+      context: { kind: 'preview' },
+      field,
+      formData: { plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    await harness.rerender({ ...input, formData: { plant: 'TW02' } });
+    await flushAsync();
+
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+  });
+
   it('supersedes an older search response', async (): Promise<void> => {
     const field = createField('autocomplete');
     let resolveFirst: ((result: FormDataSourceOptionsResultRecord) => void) | null =

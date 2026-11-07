@@ -172,11 +172,57 @@ export function assertParameterValue(
  */
 export type RowFieldValues = Readonly<Record<string, unknown>>;
 
+/**
+ * Where the field whose bindings are read sits in the schema. Decides which
+ * roots an `EXPRESSION` binding may read (docs/24 §2.3, §2.8: `form` at the
+ * top level, `form` and `row` in a table column) and whether a `ROW_FIELD`
+ * binding has a row at all. Passed explicitly by every caller, from the
+ * schema, never inferred from whether the browser sent row values.
+ */
+export type FormDataSourceBindingPosition =
+  | { readonly kind: 'TOP_LEVEL' }
+  | {
+      readonly kind: 'TABLE_COLUMN';
+      /** The row's cells; empty when the caller sent none (ADR 16 §3.5). */
+      readonly rowValues: RowFieldValues;
+    };
+
+export const TOP_LEVEL_BINDING_POSITION: FormDataSourceBindingPosition =
+  Object.freeze({ kind: 'TOP_LEVEL' });
+
+/** A table column's position; a row the caller did not send reads as empty. */
+export function createTableColumnBindingPosition(
+  rowValues: RowFieldValues | undefined,
+): FormDataSourceBindingPosition {
+  return { kind: 'TABLE_COLUMN', rowValues: rowValues ?? {} };
+}
+
+/** The row a position carries: only a table column has one. */
+export function readBindingPositionRowValues(
+  position: FormDataSourceBindingPosition,
+): RowFieldValues | undefined {
+  switch (position.kind) {
+    case 'TOP_LEVEL':
+      return undefined;
+    case 'TABLE_COLUMN':
+      return position.rowValues;
+    default:
+      return rejectUnknownBindingPosition(position);
+  }
+}
+
+function rejectUnknownBindingPosition(position: never): never {
+  void position;
+  throw new BPMFormDataSourceException(
+    BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+  );
+}
+
 export function readBindingValues(
   field: FormDataSourceOptionFieldDefinition,
   descriptor: BPMFormDataSourceDescriptor,
   formData: Readonly<Record<string, unknown>>,
-  rowValues?: RowFieldValues,
+  position: FormDataSourceBindingPosition,
   expressions?: FormDataSourceExpressionEvaluator,
 ): ResolvedBindingValues {
   const parameterByKey = new Map(
@@ -201,7 +247,7 @@ export function readBindingValues(
     const nextValue = readBindingSourceValue(
       binding.from,
       formData,
-      rowValues,
+      position,
       expressions,
     );
 
@@ -246,18 +292,21 @@ export function readBindingValues(
 function readBindingSourceValue(
   from: FormDataSourceBindingSource,
   formData: Readonly<Record<string, unknown>>,
-  rowValues: RowFieldValues | undefined,
+  position: FormDataSourceBindingPosition,
   expressions: FormDataSourceExpressionEvaluator | undefined,
 ): FormFieldValue | undefined {
+  const rowValues = readBindingPositionRowValues(position);
+
   switch (from.kind) {
     case 'FIELD':
       return readFormDataValue(readOwnProperty(formData, from.fieldKey));
     case 'CONSTANT':
       return from.value;
     // A `ROW_FIELD` source reads the sibling cell of the row this query
-    // belongs to. Without row values it reads as absent, which lands it in
-    // the "missing parameter" branch and is reported as a dependency to fill
-    // in — never as an error (ADR 16 §3.5).
+    // belongs to. A top-level field has no row, and a cell the caller sent
+    // no row for reads as absent; either lands it in the "missing parameter"
+    // branch and is reported as a dependency to fill in — never as an error
+    // (ADR 16 §3.5).
     case 'ROW_FIELD':
       return readFormDataValue(
         rowValues ? readOwnProperty(rowValues, from.columnKey) : undefined,
@@ -276,7 +325,7 @@ function readBindingSourceValue(
         formData,
         isPresent: (value: unknown): boolean =>
           isPresentFormDataValue(readFormDataValue(value)),
-        rowValues,
+        position,
       });
     default:
       return rejectUnknownBindingSource(from);

@@ -632,13 +632,15 @@ function formatNotifyWebhookIssue(
     case 'BINDING_PARAMETER_DUPLICATE':
       return `${bindingPath}.parameter "${issue.parameter ?? ''}" is bound more than once`;
     case 'BINDING_SOURCE_INVALID':
-      return `${bindingPath}.from.kind must be FIELD, CONSTANT or CONTEXT`;
+      return `${bindingPath}.from.kind must be FIELD, CONSTANT, CONTEXT or EXPRESSION`;
     case 'BINDING_FIELD_KEY_REQUIRED':
       return `${bindingPath}.from.fieldKey is required`;
     case 'BINDING_CONTEXT_PATH_INVALID':
       return `${bindingPath}.from.path is not a supported context path`;
     case 'BINDING_CONSTANT_INVALID':
       return `${bindingPath}.from.value must be a string, finite number, boolean or null`;
+    case 'BINDING_EXPRESSION_REQUIRED':
+      return `${bindingPath}.from.expression is required`;
     case 'UNKNOWN_PROPERTY':
       return `${issue.bindingIndex === null ? targetPath : bindingPath}.${issue.property ?? ''} is not allowed`;
   }

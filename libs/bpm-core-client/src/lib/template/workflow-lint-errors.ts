@@ -101,7 +101,23 @@ interface WorkflowLintCopy {
 // expressions `readEarlyLocations` already names.
 interface ExpressionLocationCopy {
   readonly fieldPath: (name: string) => string;
+  /**
+   * A DataSource binding of a form field (`schema.fields[i].dataSource
+   * .bindings[k].from.expression`) or of a table column
+   * (`schema.fields[i].columns[j]…`); `column` is `null` for a field.
+   */
+  readonly formBinding: (
+    field: string,
+    column: string | null,
+    parameter: string,
+  ) => string;
   readonly initiatorPolicy: string;
+  /** A NOTIFY webhook parameter; `targetIndex` counts from 0. */
+  readonly notifyWebhookParameter: (
+    name: string,
+    targetIndex: number,
+    parameter: string,
+  ) => string;
 }
 
 // Where a condition that reads an approver-filled field too early sits, named
@@ -210,7 +226,13 @@ const WORKFLOW_LINT_COPY: Readonly<
     expressionLocations: {
       fieldPath: (name): string =>
         `The field the system node "${name}" writes`,
+      formBinding: (field, column, parameter): string =>
+        column === null
+          ? `The expression for the query parameter "${parameter}" of the field "${field}"`
+          : `The expression for the query parameter "${parameter}" of the column "${column}" in the table "${field}"`,
       initiatorPolicy: 'The initiator rule (發起權限)',
+      notifyWebhookParameter: (name, targetIndex, parameter): string =>
+        `The expression for the parameter "${parameter}" of webhook ${targetIndex + 1} on the notify node "${name}"`,
     },
     fieldAccessAutoApprove: (name): string =>
       `The approval node "${name}" has fields to fill in, so its timeout action cannot be "Auto approve" (自動核准); auto approval would not fill them in.`,
@@ -346,7 +368,13 @@ const WORKFLOW_LINT_COPY: Readonly<
       `${location}：${sentence}`,
     expressionLocations: {
       fieldPath: (name): string => `系統節點「${name}」寫入的欄位`,
+      formBinding: (field, column, parameter): string =>
+        column === null
+          ? `「${field}」欄位查詢條件「${parameter}」的運算式`
+          : `「${field}」表格「${column}」欄查詢條件「${parameter}」的運算式`,
       initiatorPolicy: '發起權限條件',
+      notifyWebhookParameter: (name, targetIndex, parameter): string =>
+        `知會節點「${name}」第 ${targetIndex + 1} 個 Webhook 參數「${parameter}」的運算式`,
     },
     fieldAccessAutoApprove: (name): string =>
       `簽核節點「${name}」有補填欄位，逾時處理不能選「自動核准」，自動核准不會補填。`,
@@ -490,6 +518,77 @@ export function readExpressionIssueMessage(
   } catch {
     return sentence;
   }
+}
+
+/** Where a DataSource binding expression sits in a form schema. */
+export interface FormBindingExpressionLintLine {
+  readonly bindingIndex: number;
+  readonly code: ExpressionLintCode;
+  /** `null` for a top-level field. */
+  readonly columnIndex: number | null;
+  readonly fieldIndex: number;
+  readonly subject: string | null;
+}
+
+const FORM_BINDING_EXPRESSION_LABEL_PATTERN =
+  /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings\[(\d+)\]\.from\.expression$/u;
+
+/**
+ * The parts of a form-schema lint line for a DataSource `EXPRESSION` binding
+ * (`schema.fields[i](.columns[j]).dataSource.bindings[k].from.expression:
+ * EXPR_*[ <subject>]`, docs/24 §2.2), or `null` for any other line.
+ */
+export function parseFormBindingExpressionLintLine(
+  line: string,
+): FormBindingExpressionLintLine | null {
+  const parsed = parseExpressionLintLine(line);
+  const location = parsed
+    ? FORM_BINDING_EXPRESSION_LABEL_PATTERN.exec(parsed.label)
+    : null;
+
+  return parsed && location
+    ? {
+        bindingIndex: Number(location[3]),
+        code: parsed.code,
+        columnIndex: location[2] === undefined ? null : Number(location[2]),
+        fieldIndex: Number(location[1]),
+        subject: parsed.subject,
+      }
+    : null;
+}
+
+/**
+ * A DataSource binding expression finding as a builder sentence: where it
+ * sits (named by the labels the builder shows) and what is wrong, in the
+ * same wording as the template designer. The code itself is never shown.
+ */
+export function readFormBindingExpressionLintMessage(
+  issue: Readonly<{
+    code: ExpressionLintCode;
+    columnLabel: string | null;
+    fieldLabel: string;
+    parameterLabel: string;
+    subject?: string | null;
+  }>,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+  const sentenceFor = copy.expressionLint[issue.code] as
+    | ((subject: string | null) => string)
+    | undefined;
+
+  return copy.expressionLintLine(
+    copy.expressionLocations.formBinding(
+      issue.fieldLabel,
+      issue.columnLabel,
+      issue.parameterLabel,
+    ),
+    sentenceFor
+      ? sentenceFor(issue.subject ?? null)
+      : copy.expressionLint.EXPR_PARSE_FAILED(null),
+  );
 }
 
 /**
@@ -928,6 +1027,7 @@ function readExpressionLintLocations(
           `workflow.nodes.${node.id}.action.fieldPath`,
           copy.expressionLocations.fieldPath(readNodeName(node, copy)),
         ],
+        ...readNotifyWebhookExpressionLocations(node, copy),
       ],
     ),
     ...edges.flatMap((edge): readonly (readonly [string, string])[] => {
@@ -943,6 +1043,66 @@ function readExpressionLintLocations(
         : [];
     }),
   ];
+}
+
+/**
+ * [label, where it sits] for each `EXPRESSION` binding of a NOTIFY node's
+ * webhooks, as `lintWorkflowWebhookTargets` labels them. A target or binding
+ * that cannot be read adds none.
+ */
+function readNotifyWebhookExpressionLocations(
+  node: WorkflowNode,
+  copy: WorkflowLintCopy,
+): readonly (readonly [string, string])[] {
+  const action: unknown =
+    node.type === 'serviceTask' && isRecord(node.data)
+      ? node.data['action']
+      : undefined;
+  const webhooks: unknown =
+    isRecord(action) && action['type'] === 'NOTIFY'
+      ? action['webhooks']
+      : undefined;
+
+  if (!Array.isArray(webhooks)) {
+    return [];
+  }
+
+  const name = readNodeName(node, copy);
+
+  return webhooks.flatMap(
+    (target: unknown, targetIndex): readonly (readonly [string, string])[] => {
+      const bindings: unknown = isRecord(target) ? target['bindings'] : null;
+
+      return Array.isArray(bindings)
+        ? bindings.flatMap(
+            (
+              binding: unknown,
+              bindingIndex,
+            ): readonly (readonly [string, string])[] => {
+              const from: unknown = isRecord(binding) ? binding['from'] : null;
+              const parameter: unknown = isRecord(binding)
+                ? binding['parameter']
+                : null;
+
+              return isRecord(from) &&
+                from['kind'] === 'EXPRESSION' &&
+                typeof parameter === 'string'
+                ? [
+                    [
+                      `workflow.nodes.${node.id}.action.webhooks[${targetIndex}].bindings[${bindingIndex}].from.expression`,
+                      copy.expressionLocations.notifyWebhookParameter(
+                        name,
+                        targetIndex,
+                        parameter,
+                      ),
+                    ],
+                  ]
+                : [];
+            },
+          )
+        : [];
+    },
+  );
 }
 
 function readNodeTranslations(

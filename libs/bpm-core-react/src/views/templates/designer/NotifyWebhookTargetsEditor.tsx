@@ -7,7 +7,7 @@ import {
   useEffect,
   useState,
 } from 'react';
-import { Button, Input, Select, Typography } from '@mezzanine-ui/react';
+import { Button, Input, Select, Textarea, Typography } from '@mezzanine-ui/react';
 import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
@@ -26,6 +26,7 @@ import {
   NOTIFY_WEBHOOK_PARAMETER_TYPE_LABELS,
   NotifyWebhookBindingKind,
   NotifyWebhookDesignerEndpoint,
+  canBindNotifyWebhookExpression,
   createNotifyWebhookBindingSource,
   findNotifyWebhookEndpoint,
   readCompatibleFormFields,
@@ -75,6 +76,7 @@ const BINDING_KIND_OPTIONS: Readonly<
 > = {
   CONSTANT: { id: 'CONSTANT', name: '固定值' },
   CONTEXT: { id: 'CONTEXT', name: '案件資訊' },
+  EXPRESSION: { id: 'EXPRESSION', name: '運算式' },
   FIELD: { id: 'FIELD', name: '表單欄位' },
 };
 
@@ -370,6 +372,12 @@ function NotifyWebhookBindingEditor({
     ...readNotifyWebhookBindingKinds(parameter.type)
       .filter((kind) => kind !== 'FIELD' || canBindField)
       .map((kind) => BINDING_KIND_OPTIONS[kind]),
+    // A stored expression stays selectable even where a new one would not be
+    // offered, so the Select never looks unset over it.
+    ...(source?.kind === 'EXPRESSION' ||
+    canBindNotifyWebhookExpression(parameter.type, formFields)
+      ? [BINDING_KIND_OPTIONS.EXPRESSION]
+      : []),
   ];
   const typeLabel = NOTIFY_WEBHOOK_PARAMETER_TYPE_LABELS[parameter.type];
 
@@ -497,6 +505,23 @@ function NotifyWebhookBindingValue({
     );
   }
 
+  if (source.kind === 'EXPRESSION') {
+    // Text only: the backend parses and lints it at publish (cel-v2, `form`
+    // only, built-in functions only); the browser never parses CEL.
+    return (
+      <Textarea
+        aria-label={`${parameter.label}運算式`}
+        onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+          onChange({ expression: event.target.value, kind: 'EXPRESSION' })
+        }
+        placeholder="例如 form.amount * 2（只能讀 form，只能用內建函式）"
+        resize="vertical"
+        rows={2}
+        value={source.expression}
+      />
+    );
+  }
+
   if (parameter.type === 'boolean') {
     return (
       <Select
@@ -584,5 +609,10 @@ function readEndpointOptionName(
 }
 
 function readBindingKind(id: string | null): NotifyWebhookBindingKind | null {
-  return id === 'FIELD' || id === 'CONSTANT' || id === 'CONTEXT' ? id : null;
+  return id === 'FIELD' ||
+    id === 'CONSTANT' ||
+    id === 'CONTEXT' ||
+    id === 'EXPRESSION'
+    ? id
+    : null;
 }

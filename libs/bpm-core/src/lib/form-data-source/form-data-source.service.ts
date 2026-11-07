@@ -50,11 +50,13 @@ import {
   BPMFormDataSourceSearchResult,
 } from './form-data-source.types';
 import {
-  RowFieldValues,
   assertControlSupported,
   callProvider,
+  createTableColumnBindingPosition,
+  FormDataSourceBindingPosition,
   isRecord,
   isStringArray,
+  readBindingPositionRowValues,
   readBindingValues,
   readDescriptorErrors,
   readDynamicOptionField,
@@ -64,8 +66,20 @@ import {
   readSourceOrThrow,
   readUnresolvedValues,
   readWaitingForFieldKeys,
+  TOP_LEVEL_BINDING_POSITION,
   validateOptions,
   validateRequestedValues,
+} from './form-data-source.validation';
+
+/*
+ * `searchFormFieldOptions` takes the field's position explicitly (top level or
+ * table column), so a host calling it can build one without reaching into the
+ * validation module.
+ */
+export type { FormDataSourceBindingPosition } from './form-data-source.validation';
+export {
+  createTableColumnBindingPosition,
+  TOP_LEVEL_BINDING_POSITION,
 } from './form-data-source.validation';
 
 export interface BPMFormDataSourcePreviewInput {
@@ -127,7 +141,11 @@ export class FormDataSourceService {
     // bindings are linted and evaluated against the host's function registry
     // (docs/23 P4／P5 交接). Optional so a hand-built service keeps working;
     // without it an `EXPRESSION` binding cannot publish and fails closed.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
     @Optional()
+    @Inject(ConditionService)
     private readonly conditionService?: ConditionService | null,
   ) {}
 
@@ -231,7 +249,7 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
-      rowValues: this.readColumnRowValues(
+      position: this.readBindingPosition(
         schema,
         input.fieldKey,
         input.rowValuesJson,
@@ -253,7 +271,7 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
-      rowValues: this.readColumnRowValues(
+      position: this.readBindingPosition(
         context.schema,
         input.fieldKey,
         input.rowValuesJson,
@@ -274,7 +292,7 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
-      rowValues: this.readColumnRowValues(
+      position: this.readBindingPosition(
         schema,
         input.fieldKey,
         input.rowValuesJson,
@@ -294,7 +312,7 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
-      rowValues: this.readColumnRowValues(
+      position: this.readBindingPosition(
         context.schema,
         input.fieldKey,
         input.rowValuesJson,
@@ -312,7 +330,7 @@ export class FormDataSourceService {
     readonly cursor: string | null;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
     readonly searchText: string;
   }): Promise<BPMFormDataSourceOptionResult> {
     return runExpressionOperation(() => this.searchInOperation(input));
@@ -323,7 +341,7 @@ export class FormDataSourceService {
     readonly cursor: string | null;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
     readonly searchText: string;
   }): Promise<BPMFormDataSourceOptionResult> {
     const field = readDynamicOptionField(input.field);
@@ -333,7 +351,7 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      input.position,
       createFormDataSourceExpressionEvaluator({
         conditionService: this.conditionService,
       }),
@@ -350,7 +368,10 @@ export class FormDataSourceService {
         waitingForFieldKeys: readWaitingForFieldKeys(
           field,
           bindings.missingParameters,
-          { formData: input.formData, rowValues: input.rowValues },
+          {
+            formData: input.formData,
+            rowValues: readBindingPositionRowValues(input.position),
+          },
         ),
       };
     }
@@ -391,7 +412,7 @@ export class FormDataSourceService {
     readonly authContext: BPMAuthContext;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
     readonly values: readonly string[];
   }): Promise<BPMFormDataSourceResolveResult> {
     return runExpressionOperation(() => this.reportInOperation(input));
@@ -401,7 +422,7 @@ export class FormDataSourceService {
     readonly authContext: BPMAuthContext;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
     readonly values: readonly string[];
   }): Promise<BPMFormDataSourceResolveResult> {
     const field = readDynamicOptionField(input.field);
@@ -428,7 +449,7 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      input.position,
       createFormDataSourceExpressionEvaluator({
         conditionService: this.conditionService,
       }),
@@ -443,7 +464,10 @@ export class FormDataSourceService {
         waitingForFieldKeys: readWaitingForFieldKeys(
           field,
           bindings.missingParameters,
-          { formData: input.formData, rowValues: input.rowValues },
+          {
+            formData: input.formData,
+            rowValues: readBindingPositionRowValues(input.position),
+          },
         ),
       };
     }
@@ -683,28 +707,25 @@ export class FormDataSourceService {
   }
 
   /**
-   * The row values a query may read: only a table column's query has a row.
+   * Where the queried field sits, read from the schema: a table column
+   * carries its row (empty when the caller sent none), a top-level field none.
    * For a top-level field whatever the browser sent is dropped, so neither a
    * `ROW_FIELD` nor an `EXPRESSION` binding's `row` root can read it there even
    * if a schema got past the publish lint (ADR 22 §3.7: roots by position).
    * Matches `readOptionField`, which prefers a top-level field of that key.
    */
-  private readColumnRowValues(
+  private readBindingPosition(
     schema: FormDefinitionSchema,
     fieldKey: string,
     rowValuesJson: string | null | undefined,
-  ): Readonly<Record<string, unknown>> | undefined {
+  ): FormDataSourceBindingPosition {
     const isTopLevelField = schema.fields.some(
       (candidate) => candidate.fieldKey === fieldKey,
     );
 
-    // A column always carries a row, empty when the caller sent none, so an
-    // `EXPRESSION` binding can tell a column (`form` and `row`) from a
-    // top-level field (`form` only); a top-level field never reads the row
-    // the browser sent (docs/24 §2.8).
     return isTopLevelField
-      ? undefined
-      : (this.parseRowValues(rowValuesJson) ?? {});
+      ? TOP_LEVEL_BINDING_POSITION
+      : createTableColumnBindingPosition(this.parseRowValues(rowValuesJson));
   }
 
   /**

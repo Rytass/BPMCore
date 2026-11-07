@@ -114,6 +114,15 @@ const NO_INVALID_VALUES: readonly string[] = [];
 const MIN_SCROLLABLE_OPTION_COUNT = 10;
 
 /**
+ * How long an `EXPRESSION` binding's re-query waits for the form to settle.
+ * Its refresh input is the whole form (the browser cannot tell what the
+ * expression reads), so without this every keystroke anywhere would query
+ * the host. Aligned with the 300 ms `searchDebounceTime` of the renderer's
+ * searchable DataSource controls.
+ */
+const FORM_DATA_SOURCE_EXPRESSION_REFRESH_DEBOUNCE_MS = 300;
+
+/**
  * Failures the filler can clear on their own by typing differently. They are
  * reported as an inline hint and never turn the field unavailable, because a
  * short search string says nothing about the validity of an existing value.
@@ -253,9 +262,9 @@ export function useFormDataSourceField(
     [currentValueSignature],
   );
   const hasValue = selectedValues.length > 0;
-  const dataSourceRefreshSignature = dynamicField
-    ? JSON.stringify({
-        bindings: dynamicField.dataSource.bindings.map((binding) =>
+  const bindingsRefreshSignature = dynamicField
+    ? JSON.stringify(
+        dynamicField.dataSource.bindings.map((binding) =>
           readBindingRefreshInput(binding, {
             formData: input.formData,
             ownFormKey: readOwnFormKey(dynamicField.fieldKey, input),
@@ -263,13 +272,37 @@ export function useFormDataSourceField(
             rowValues: input.row?.values,
           }),
         ),
-        value:
-          typeof input.initialFormData !== 'undefined' ||
-          typeof input.initialValue !== 'undefined'
-            ? currentValue
-            : undefined,
-      })
+      )
     : '';
+  const valueRefreshSignature = dynamicField
+    ? JSON.stringify(
+        typeof input.initialFormData !== 'undefined' ||
+          typeof input.initialValue !== 'undefined'
+          ? (currentValue ?? null)
+          : null,
+      )
+    : '';
+  // Every answer is tagged with this one, so a response to an older form
+  // state is never taken for the current one.
+  const dataSourceRefreshSignature = dynamicField
+    ? `${bindingsRefreshSignature}\u0000${valueRefreshSignature}`
+    : '';
+  // Only a field with an `EXPRESSION` binding waits; every other binding
+  // re-queries at once, as before.
+  const settledBindingsRefreshSignature = useSettledSignature(
+    bindingsRefreshSignature,
+    dynamicField?.dataSource.bindings.some(
+      (binding) => binding.from.kind === 'EXPRESSION',
+    )
+      ? FORM_DATA_SOURCE_EXPRESSION_REFRESH_DEBOUNCE_MS
+      : 0,
+  );
+  // While the form settles the options and any earlier answer describe an
+  // older form: the field reports itself pending, so a value in it blocks
+  // the submission until the re-query answers (and the host re-resolves
+  // every dynamic value on submit regardless).
+  const refreshSettling =
+    settledBindingsRefreshSignature !== bindingsRefreshSignature;
   const effectiveContext = useMemo(
     (): FormRendererDataSourceContext | undefined => {
       if (contextKind === 'preview') {
@@ -681,7 +714,8 @@ export function useFormDataSourceField(
     autoQueries,
     dynamicFieldSignature,
     effectiveContext,
-    dataSourceRefreshSignature,
+    settledBindingsRefreshSignature,
+    valueRefreshSignature,
     initialFormDataSignature,
     initialRowValuesSignature,
     input.readonly,
@@ -696,7 +730,12 @@ export function useFormDataSourceField(
     }
 
     runResolveRef.current();
-  }, [dataSourceRefreshSignature, effectiveContext, needsResolve]);
+  }, [
+    effectiveContext,
+    needsResolve,
+    settledBindingsRefreshSignature,
+    valueRefreshSignature,
+  ]);
 
   useEffect((): (() => void) => {
     return (): void => {
@@ -747,12 +786,42 @@ export function useFormDataSourceField(
     onSearch,
     options: mergedOptions,
     retry,
-    status: readFormDataSourceExposedStatus({
-      invalidValues,
-      resolvePending,
-      status,
-    }),
+    status:
+      refreshSettling && effectiveContext && (autoQueries || hasValue)
+        ? autoQueries
+          ? pendingQueryStatus
+          : 'STALE'
+        : readFormDataSourceExposedStatus({
+            invalidValues,
+            resolvePending,
+            status,
+          }),
   };
+}
+
+/**
+ * `signature` once it has stayed the same for `delayMs`; with no delay, the
+ * signature itself. The first value is taken at once, so a field still loads
+ * on its first paint.
+ */
+function useSettledSignature(signature: string, delayMs: number): string {
+  const [settled, setSettled] = useState(signature);
+
+  useEffect((): (() => void) | undefined => {
+    if (delayMs <= 0) {
+      return undefined;
+    }
+
+    const timer = setTimeout((): void => {
+      setSettled(signature);
+    }, delayMs);
+
+    return (): void => {
+      clearTimeout(timer);
+    };
+  }, [delayMs, signature]);
+
+  return delayMs > 0 ? settled : signature;
 }
 
 export function readFormDataSourceFieldStatusMessage(

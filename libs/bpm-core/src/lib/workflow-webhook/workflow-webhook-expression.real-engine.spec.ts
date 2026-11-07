@@ -18,10 +18,8 @@ import {
   buildWorkflowWebhookDeliveryDrafts,
   WorkflowWebhookEnqueueContext,
 } from './workflow-webhook-enqueue';
-import {
-  createNotifyWebhookExpressionEvaluator,
-  maskNotifyWebhookExpressionSources,
-} from './workflow-webhook-expression';
+import { readNotifyWebhookStructureIssues } from '@rytass/bpm-core-shared/workflow-graph';
+import { createNotifyWebhookExpressionEvaluator } from './workflow-webhook-expression';
 import {
   BPMWorkflowWebhookEndpointEntry,
   BPMWorkflowWebhookParameter,
@@ -85,15 +83,14 @@ const entry = (): BPMWorkflowWebhookEndpointEntry => ({
   source: 'REGISTRY',
 });
 
-/** An `EXPRESSION` binding; the shared type does not list the kind yet. */
+/** An `EXPRESSION` binding. */
 const expressionBinding = (
   parameter: string,
   expression: string,
-): NotifyWebhookBinding =>
-  ({
-    from: { expression, kind: 'EXPRESSION' },
-    parameter,
-  }) as unknown as NotifyWebhookBinding;
+): NotifyWebhookBinding => ({
+  from: { expression, kind: 'EXPRESSION' },
+  parameter,
+});
 
 const AMOUNT_FIELD: NotifyWebhookBinding = {
   from: { fieldKey: 'amount', kind: 'FIELD' },
@@ -304,16 +301,23 @@ describe('NOTIFY EXPRESSION bindings at publish', (): void => {
   });
 
   it('still reports a malformed EXPRESSION source structurally', (): void => {
-    const masked = maskNotifyWebhookExpressionSources([
-      target([
-        expressionBinding('summary', '   '),
-        expressionBinding('payload', 'form.subject'),
-      ]),
-    ]) as readonly NotifyWebhookTarget[];
+    // The shared structural lint knows the kind (Phase 23 P4／P5 integration):
+    // a blank expression is its own code, a well-formed one passes.
+    expect(
+      readNotifyWebhookStructureIssues([
+        target([
+          expressionBinding('summary', '   '),
+          expressionBinding('payload', 'form.subject'),
+        ]),
+      ]).map((issue) => [issue.bindingIndex, issue.code]),
+    ).toEqual([[0, 'BINDING_EXPRESSION_REQUIRED']]);
+  });
 
-    expect(masked[0].bindings.map((binding) => binding.from)).toEqual([
-      { expression: '   ', kind: 'EXPRESSION' },
-      { kind: 'CONSTANT', value: null },
+  it('reports an EXPRESSION bound to a parameter the endpoint does not declare', async (): Promise<void> => {
+    expect(
+      await lint([AMOUNT_FIELD, expressionBinding('unknown', 'form.subject')]),
+    ).toEqual([
+      'workflow.nodes.notify_erp.action.webhooks[0].bindings[1].parameter "unknown" is not declared by the endpoint (WORKFLOW_WEBHOOK_PARAMETER_UNKNOWN)',
     ]);
   });
 });

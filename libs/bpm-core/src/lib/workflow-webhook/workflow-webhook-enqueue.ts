@@ -12,11 +12,7 @@ import {
   WorkflowWebhookDeliveryStatusEnum,
 } from './workflow-webhook-delivery.enums';
 import { WorkflowWebhookFrozenEvent } from './workflow-webhook-delivery.entity';
-import {
-  maskNotifyWebhookExpressionSources,
-  NotifyWebhookAnyBindingSource,
-  NotifyWebhookExpressionEvaluator,
-} from './workflow-webhook-expression';
+import { NotifyWebhookExpressionEvaluator } from './workflow-webhook-expression';
 import {
   BPMWorkflowWebhookEndpointEntry,
   BPMWorkflowWebhookParameter,
@@ -81,11 +77,7 @@ export async function buildWorkflowWebhookDeliveryDrafts({
   ) => Promise<BPMWorkflowWebhookEndpointEntry | null>;
   readonly targets: unknown;
 }): Promise<readonly WorkflowWebhookDeliveryDraft[]> {
-  // The shared structural lint does not know `EXPRESSION` sources yet; they
-  // are checked here and by the evaluator, everything else by the lint.
-  const issues = readNotifyWebhookStructureIssues(
-    maskNotifyWebhookExpressionSources(targets),
-  );
+  const issues = readNotifyWebhookStructureIssues(targets);
 
   // The snapshot passed publish, so this only guards against a definition
   // written around the lint. A malformed list has nothing safe to deliver.
@@ -176,17 +168,12 @@ export async function buildWorkflowWebhookDeliveryDrafts({
   );
 }
 
-/** A binding as stored: its source may be an `EXPRESSION` too. */
-type StoredNotifyWebhookBinding = Omit<NotifyWebhookBinding, 'from'> & {
-  readonly from: NotifyWebhookAnyBindingSource;
-};
-
 type BindingValueOutcome =
   | { readonly issue: null; readonly value: unknown }
   | { readonly issue: string; readonly value: null };
 
 function resolveParameters(
-  bindings: readonly StoredNotifyWebhookBinding[],
+  bindings: readonly NotifyWebhookBinding[],
   declared: readonly BPMWorkflowWebhookParameter[],
   context: WorkflowWebhookEnqueueContext,
   expressions: NotifyWebhookExpressionEvaluator | undefined,
@@ -250,7 +237,7 @@ function resolveParameters(
  * know fails the delivery rather than being read as another kind.
  */
 function readBindingValue(
-  binding: StoredNotifyWebhookBinding,
+  binding: NotifyWebhookBinding,
   context: WorkflowWebhookEnqueueContext,
   expressions: NotifyWebhookExpressionEvaluator | undefined,
 ): BindingValueOutcome {

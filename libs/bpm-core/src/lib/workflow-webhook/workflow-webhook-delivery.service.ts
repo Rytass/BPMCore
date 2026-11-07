@@ -25,10 +25,7 @@ import {
   buildWorkflowWebhookDeliveryDrafts,
   WorkflowWebhookEnqueueContext,
 } from './workflow-webhook-enqueue';
-import {
-  createNotifyWebhookExpressionEvaluator,
-  maskNotifyWebhookExpressionSources,
-} from './workflow-webhook-expression';
+import { createNotifyWebhookExpressionEvaluator } from './workflow-webhook-expression';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,
@@ -124,7 +121,11 @@ export class WorkflowWebhookDeliveryService {
     // Evaluates `EXPRESSION` bindings with the host's function registry
     // (ADR 22 §3.7). Optional so a hand-built service keeps working; without
     // it an `EXPRESSION` binding records its delivery `FAILED`.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
     @Optional()
+    @Inject(ConditionService)
     private readonly conditionService?: ConditionService | null,
   ) {
     this.fetchImpl =
@@ -149,9 +150,9 @@ export class WorkflowWebhookDeliveryService {
     context: WorkflowWebhookEnqueueContext,
     targets: unknown,
   ): Promise<readonly string[]> {
-    const listIssues = readNotifyWebhookStructureIssues(
-      maskNotifyWebhookExpressionSources(targets),
-    ).filter((issue) => issue.targetIndex === null);
+    const listIssues = readNotifyWebhookStructureIssues(targets).filter(
+      (issue) => issue.targetIndex === null,
+    );
 
     // Publish refuses these, so reaching one means the snapshot was written
     // around the lint. Nothing can be queued, but it must not pass silently.

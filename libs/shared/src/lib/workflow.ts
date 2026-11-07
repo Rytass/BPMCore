@@ -437,17 +437,18 @@ export type NotifyWebhookBindingSource =
       readonly kind: 'CONSTANT';
       readonly value: boolean | number | string | null;
     }
-  | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath };
+  | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath }
+  | NotifyWebhookExpressionBindingSource;
 
 /**
  * A webhook parameter computed by a cel-v2 expression over `form` (ADR 22
  * §3.7; NOTIFY has no row). Always cel-v2, built-in functions only, evaluated
  * by the backend inside the engine transaction with its own budget.
  *
- * Not yet a member of {@link NotifyWebhookBindingSource}: the shared
- * structural and catalog lint (`workflow-graph`) must accept it first, and
- * until it does a definition carrying one cannot be published. The backend
- * already evaluates and lints it.
+ * The shared structural lint (`workflow-graph`) only checks that the
+ * expression is a non-blank string: the browser never parses CEL. The
+ * backend publish lint checks roots, fields, functions and the result type
+ * against the endpoint parameter.
  */
 export interface NotifyWebhookExpressionBindingSource {
   readonly expression: string;

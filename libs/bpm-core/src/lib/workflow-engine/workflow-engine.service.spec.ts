@@ -26,8 +26,26 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { FormService } from '../form/form.service';
+import { ApprovalTemplateCategoryEntity } from '../template/approval-template-category.entity';
+import { TemplateService } from '../template/template.service';
+import {
+  WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES,
+  WorkflowWebhookDeliveryStatusEnum,
+} from '../workflow-webhook/workflow-webhook-delivery.enums';
+import { WorkflowWebhookDeliveryEntity } from '../workflow-webhook/workflow-webhook-delivery.entity';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
-import { FindOperator, In, ObjectLiteral } from 'typeorm';
+import { DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS } from '../workflow-webhook/workflow-webhook-options';
+import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
+import type { BPMWorkflowWebhookEndpoint } from '../workflow-webhook/workflow-webhook.types';
+import {
+  EntityManager,
+  FindOperator,
+  In,
+  ObjectLiteral,
+  Repository,
+} from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
@@ -3227,6 +3245,340 @@ describe('WorkflowEngineService', () => {
         action: 'NOTIFY',
         webhookDeliveryIds: ['delivery-1'],
       }),
+    });
+  });
+
+  // Phase 23 P4／P5 integration, end to end: one definition carrying NOTIFY
+  // webhook `EXPRESSION` bindings is published through `TemplateService`, then
+  // an approval reaches the NOTIFY node through the engine with the real
+  // `WorkflowWebhookDeliveryService`. Publish lint and evaluation are handed
+  // the same `ConditionService` (one function registry), as `BPMRootModule`
+  // injects it. The real cel-v2 adapter runs here; only `cel-js` is shimmed.
+  describe('NOTIFY webhook EXPRESSION bindings end to end (Phase 23 P4／P5)', (): void => {
+    const formSchema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'amount', label: '金額', required: true, type: 'money' },
+        { fieldKey: 'title', label: '標題', required: true, type: 'text' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+    const band: BPMExpressionFunction = {
+      description: 'Band of an amount',
+      handler: (...args: readonly BPMExpressionValue[]): BPMExpressionValue =>
+        (args[0] as number) > 1000 ? 'HIGH' : 'LOW',
+      label: 'band',
+      name: 'erp_band_v1',
+      parameters: [{ name: 'amount', type: 'double' }],
+      returnType: 'string',
+    };
+    const endpoint: BPMWorkflowWebhookEndpoint = {
+      buildRequest: async () => ({ url: 'https://erp.example.test/hooks' }),
+      descriptor: {
+        key: 'erp.po',
+        label: 'ERP 採購',
+        parameters: [
+          { key: 'amount', label: '金額', required: true, type: 'number' },
+          { key: 'summary', label: '摘要', required: false, type: 'string' },
+        ],
+        version: 1,
+      },
+    };
+    const webhookService = new WorkflowWebhookService({
+      get: (key, version) =>
+        key === 'erp.po' && version === 1 ? endpoint : null,
+      list: () => [endpoint],
+    });
+    const edge = (
+      id: string,
+      source: string,
+      target: string,
+    ): WorkflowDefinition['edges'][number] => ({
+      data: {},
+      id,
+      source,
+      target,
+      type: 'smoothstep',
+    });
+    // start → 財務簽核 → parallel split → { NOTIFY 通知 ERP, 完成 }
+    const definition = (summary: string): WorkflowDefinition => ({
+      edges: [
+        edge('edge_start_task', 'start', 'task_finance'),
+        edge('edge_task_split', 'task_finance', 'split'),
+        edge('edge_split_notify', 'split', 'notify_erp'),
+        edge('edge_split_end', 'split', 'end'),
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 0, y: 160 },
+          type: 'startEvent',
+        },
+        createUserTaskNode('task_finance', '財務簽核', 'member-finance', 160, 160),
+        {
+          data: { direction: 'split', label: '分流' },
+          id: 'split',
+          position: { x: 320, y: 160 },
+          type: 'parallelGateway',
+        },
+        {
+          data: {
+            action: {
+              channels: ['IN_APP'],
+              recipients: { memberIds: [], type: 'DIRECT' },
+              type: 'NOTIFY',
+              webhooks: [
+                {
+                  bindings: [
+                    {
+                      from: { expression: 'form.amount * 2.0', kind: 'EXPRESSION' },
+                      parameter: 'amount',
+                    },
+                    {
+                      from: { expression: summary, kind: 'EXPRESSION' },
+                      parameter: 'summary',
+                    },
+                  ],
+                  endpoint: { key: 'erp.po', version: 1 },
+                  id: 'webhook_erp',
+                },
+              ],
+            },
+            label: '通知 ERP',
+          },
+          id: 'notify_erp',
+          position: { x: 480, y: 80 },
+          type: 'serviceTask',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 480, y: 240 },
+          type: 'endEvent',
+        },
+      ],
+    });
+    const publish = async (
+      conditionService: ConditionService,
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<string> => {
+      const version = Object.assign(new ApprovalTemplateVersionEntity(), {
+        archivedAt: null,
+        formDefinitionVersionId: 'form-version-1',
+        id: 'template-version-1',
+        initiatorPolicyCel: null,
+        status: ApprovalTemplateVersionStatusEnum.DRAFT,
+        templateId: 'template-1',
+        version: 1,
+        workflowDefinition,
+      });
+      const formVersion = Object.assign(new FormDefinitionVersionEntity(), {
+        id: 'form-version-1',
+        schema: formSchema,
+        status: FormDefinitionVersionStatusEnum.PUBLISHED,
+      });
+      const template = Object.assign(new ApprovalTemplateEntity(), {
+        currentVersionId: null,
+        id: 'template-1',
+        isActive: true,
+      });
+      const passThrough = {
+        merge: <T extends ObjectLiteral>(entity: T, patch: Partial<T>): T =>
+          Object.assign(entity, patch),
+        save: <T,>(entity: T): Promise<T> => Promise.resolve(entity),
+        update: (): Promise<void> => Promise.resolve(),
+      };
+      const manager = {
+        getRepository: (target: unknown): ObjectLiteral =>
+          target === ApprovalTemplateEntity
+            ? { ...passThrough, findOne: () => Promise.resolve(template) }
+            : passThrough,
+      } as unknown as EntityManager;
+      const service = new TemplateService(
+        {
+          manager: {
+            transaction: <T,>(
+              operation: (txManager: EntityManager) => Promise<T>,
+            ): Promise<T> => operation(manager),
+          },
+        } as unknown as Repository<ApprovalTemplateEntity>,
+        {} as Repository<ApprovalTemplateCategoryEntity>,
+        {
+          findOne: () => Promise.resolve(version),
+        } as unknown as Repository<ApprovalTemplateVersionEntity>,
+        {
+          findOne: () => Promise.resolve(formVersion),
+        } as unknown as Repository<FormDefinitionVersionEntity>,
+        conditionService,
+        {} as FormService,
+        {
+          get: (token: unknown): unknown => {
+            if (token === WorkflowWebhookService) {
+              return webhookService;
+            }
+
+            throw new Error('no host module');
+          },
+        } as unknown as ModuleRef,
+        registry(),
+      );
+
+      try {
+        return (await service.publishApprovalTemplateVersion('template-version-1'))
+          .status;
+      } catch (error: unknown) {
+        if (error instanceof BadRequestException) {
+          return error.message;
+        }
+
+        throw error;
+      }
+    };
+    const registry = (): StaticBPMExpressionFunctionRegistry =>
+      new StaticBPMExpressionFunctionRegistry([band]);
+    const approve = async (
+      conditionService: ConditionService,
+      workflowDefinition: WorkflowDefinition,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<ServiceFixture> => {
+      const fixture = createServiceFixture({
+        conditionService,
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          assigneeMemberId: 'member-finance',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processWorkflowSnapshot: workflowDefinition,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        webhookDeliveryService: new WorkflowWebhookDeliveryService(
+          {} as Repository<WorkflowWebhookDeliveryEntity>,
+          {} as Repository<ActivityLogEntity>,
+          webhookService,
+          DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS,
+          // Nothing is sent inside the engine transaction (ADR 18 §3.5).
+          (): Promise<Response> => {
+            throw new Error('a delivery was attempted inside the transaction');
+          },
+          conditionService,
+        ),
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      return fixture;
+    };
+    const SUMMARY = 'form.title + "：" + form.note';
+
+    it('publishes, then freezes the evaluated parameters once the approval reaches NOTIFY', async (): Promise<void> => {
+      const conditionService = new ConditionService(registry());
+      const lint = jest.spyOn(conditionService, 'lintExpression');
+
+      expect(await publish(conditionService, definition(SUMMARY))).toBe(
+        ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      );
+      // Linted by the injected service, as the NOTIFY binding use point.
+      expect(lint).toHaveBeenCalledWith(
+        SUMMARY,
+        'workflow.nodes.notify_erp.action.webhooks[0].bindings[1].from.expression',
+        expect.objectContaining({
+          dialect: 'cel-v2',
+          usagePoint: 'NOTIFY_WEBHOOK_BINDING',
+        }),
+      );
+
+      const fixture = await approve(conditionService, definition(SUMMARY), {
+        amount: 1200,
+        note: '急件',
+        title: '筆電採購',
+      });
+
+      expect(fixture.savedWebhookDeliveries).toEqual([
+        expect.objectContaining({
+          endpointKey: 'erp.po',
+          event: expect.objectContaining({
+            node: { id: 'notify_erp', label: '通知 ERP' },
+            parameters: { amount: 2400, summary: '筆電採購：急件' },
+          }),
+          lastErrorCode: null,
+          nodeId: 'notify_erp',
+          status: WorkflowWebhookDeliveryStatusEnum.PENDING,
+          targetId: 'webhook_erp',
+        }),
+      ]);
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    it('records a failing binding FAILED (WEBHOOK_PARAMETER_INVALID) without rolling the approval back', async (): Promise<void> => {
+      const conditionService = new ConditionService(registry());
+
+      // `note` is optional: publish only warns (no `has()`), and a case that
+      // leaves it empty makes the expression fail at the NOTIFY node.
+      expect(await publish(conditionService, definition(SUMMARY))).toBe(
+        ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      );
+
+      const fixture = await approve(conditionService, definition(SUMMARY), {
+        amount: 1200,
+        title: '筆電採購',
+      });
+
+      expect(fixture.savedWebhookDeliveries).toEqual([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            parameters: { amount: 2400, summary: null },
+          }),
+          lastErrorCode: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.PARAMETER_INVALID,
+          lastErrorDetail:
+            'parameter "summary" expression failed (EXPRESSION_MISSING_KEY)',
+          status: WorkflowWebhookDeliveryStatusEnum.FAILED,
+        }),
+      ]);
+      expect(fixture.savedActivityLogs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+          }),
+        ]),
+      );
+      // The decision and the rest of the case went through.
+      expect(fixture.savedDecision).toMatchObject({
+        action: TaskDecisionActionEnum.APPROVED,
+      });
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    it('lints with the host registry: a registered host function is refused as not allowed', async (): Promise<void> => {
+      // A NOT_REGISTERED answer would mean the lint ran without the injected
+      // registry; NOT_ALLOWED means it knows the function and still refuses
+      // it, since bindings take built-in functions only (docs/24 §1).
+      expect(
+        await publish(
+          new ConditionService(registry()),
+          definition('erp_band_v1(form.amount)'),
+        ),
+      ).toBe(
+        'workflow.nodes.notify_erp.action.webhooks[0].bindings[1].from.expression: EXPR_FUNCTION_NOT_ALLOWED erp_band_v1',
+      );
     });
   });
 
@@ -17334,6 +17686,9 @@ interface ServiceFixture {
   readonly savedTaskCandidates: readonly TaskCandidateEntity[];
   readonly savedTasks: readonly TaskEntity[];
   readonly savedWorkflowTokens: readonly WorkflowTokenEntity[];
+  // Outbox rows a real `WorkflowWebhookDeliveryService` wrote through the
+  // transaction manager, in save order.
+  readonly savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[];
   readonly savedToken: WorkflowTokenEntity | null;
   readonly service: WorkflowEngineService;
   readonly templateFind: jest.Mock<
@@ -18303,6 +18658,31 @@ function createServiceFixture({
   const managerQuery = jest.fn<Promise<unknown>, [string, readonly unknown[]]>(
     () => Promise.resolve([]),
   );
+  let savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[] =
+    [];
+  const transactionalWebhookDeliveryRepository = createRepository<ObjectLiteral>(
+    {
+      create: jest.fn(
+        (value: Readonly<Record<string, unknown>>): Readonly<
+          Record<string, unknown>
+        > => ({ ...value }),
+      ),
+      save: jest.fn(
+        (
+          rows: readonly Readonly<Record<string, unknown>>[],
+        ): Promise<readonly Readonly<Record<string, unknown>>[]> => {
+          const withIds = rows.map((row, index) => ({
+            ...row,
+            id: `delivery-${savedWebhookDeliveries.length + index + 1}`,
+          }));
+
+          savedWebhookDeliveries = [...savedWebhookDeliveries, ...withIds];
+
+          return Promise.resolve(withIds);
+        },
+      ),
+    },
+  );
   const transactionManager = {
     getRepository: jest.fn((target: unknown): unknown => {
       if (target === ApprovalInstanceEntity) {
@@ -18351,6 +18731,10 @@ function createServiceFixture({
 
       if (target === AdhocDirectiveEntity) {
         return transactionalAdhocDirectiveRepository;
+      }
+
+      if (target === WorkflowWebhookDeliveryEntity) {
+        return transactionalWebhookDeliveryRepository;
       }
 
       return createRepository<ObjectLiteral>({});
@@ -18403,6 +18787,9 @@ function createServiceFixture({
       transactionalTaskRepository.findOne as unknown as jest.Mock,
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
       return processAdhocDirectiveRows;
+    },
+    get savedWebhookDeliveries(): readonly Readonly<Record<string, unknown>>[] {
+      return savedWebhookDeliveries;
     },
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;

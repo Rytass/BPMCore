@@ -15,7 +15,6 @@ import { BPM_WORKFLOW_WEBHOOK_ERROR_CODES } from './workflow-webhook.errors';
 import {
   isNotifyWebhookExpressionSource,
   lintNotifyWebhookExpressionBinding,
-  maskNotifyWebhookExpressionSources,
 } from './workflow-webhook-expression';
 import { BPMWorkflowWebhookEndpointEntry } from './workflow-webhook.types';
 
@@ -71,11 +70,7 @@ export async function lintWorkflowWebhookTargets(
     nodes.flatMap((node) => {
       const webhooks =
         node.data.action.type === 'NOTIFY' ? node.data.action.webhooks : [];
-      // `EXPRESSION` sources are linted below; the shared structural lint
-      // does not know them yet.
-      const issues = readNotifyWebhookStructureIssues(
-        maskNotifyWebhookExpressionSources(webhooks),
-      );
+      const issues = readNotifyWebhookStructureIssues(webhooks);
 
       // A list-level problem (not an array, over the limit) leaves no target
       // worth resolving. Otherwise only the malformed targets are skipped:
@@ -135,25 +130,19 @@ async function lintTarget({
 
   const path = `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`;
   const endpoint = entry?.endpoint.descriptor ?? null;
-  const isExpressionBinding = (bindingIndex: number | null): boolean =>
-    bindingIndex !== null &&
-    isNotifyWebhookExpressionSource(target.bindings[bindingIndex]?.from);
   const catalogIssues = [
-    // The shared catalog rules read an `EXPRESSION` source as some other kind;
-    // its issues are this module's own, below.
+    // The shared rules check everything but the expression itself (an unknown
+    // or missing parameter included); the expression is linted below.
     ...readNotifyWebhookTargetCatalogIssues({
       endpoint,
       formFields: formSchema.fields,
       target,
-    })
-      .filter((issue) => !isExpressionBinding(issue.bindingIndex))
-      .map((issue) => readCatalogIssueMessage(issue, target, path)),
+    }).map((issue) => readCatalogIssueMessage(issue, target, path)),
     // Only against an endpoint that is there and in use: a missing,
     // disabled or deprecated one is the only issue its target reports.
     ...(endpoint && !endpoint.disabled && !endpoint.deprecated
       ? target.bindings.flatMap((binding, bindingIndex): readonly string[] => {
-          // Stored JSON: the declared type does not list this kind yet.
-          const from: unknown = binding.from;
+          const from = binding.from;
 
           return isNotifyWebhookExpressionSource(from)
             ? lintNotifyWebhookExpressionBinding({

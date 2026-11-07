@@ -1203,6 +1203,9 @@ export class TemplateService {
     })();
 
     return lintWorkflowWebhookTargets({
+      // The injected service: the NOTIFY `EXPRESSION` lint sees the same
+      // function registry the engine evaluates with (docs/23 P4／P5 交接).
+      conditionService: this.conditionService,
       definition,
       formSchema,
       hasEndpointSources: Boolean(webhookService?.hasEndpointSources()),

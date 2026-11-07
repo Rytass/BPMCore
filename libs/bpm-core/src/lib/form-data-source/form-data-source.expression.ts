@@ -18,6 +18,8 @@ import {
   RESERVED_PATH_SEGMENTS,
 } from '../condition/expression-ast';
 import type { ExpressionBudget } from '../condition/expression-budget';
+// Type only: the validation module imports this one for its values.
+import type { FormDataSourceBindingPosition } from './form-data-source.validation';
 import { ExpressionRuntimeError } from '../condition/expression-errors';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
@@ -151,11 +153,10 @@ export interface FormDataSourceExpressionEvaluator {
     readonly formData: Readonly<Record<string, unknown>>;
     readonly isPresent: (value: unknown) => boolean;
     /**
-     * Present exactly when the field is a table column (an empty object when
-     * the row has no values yet); absent for a top-level field, whose
-     * expression may then read `form` only.
+     * Where the field sits: a top-level field's expression may read `form`
+     * only, a table column's `form` and `row` (docs/24 §2.3, §2.8).
      */
-    readonly rowValues: Readonly<Record<string, unknown>> | undefined;
+    readonly position: FormDataSourceBindingPosition;
   }): ExpressionBindingValue | undefined;
 }
 
@@ -204,7 +205,7 @@ export function createFormDataSourceExpressionEvaluator(
       expression,
       formData,
       isPresent,
-      rowValues,
+      position,
     }): ExpressionBindingValue | undefined {
       const conditionService = options.conditionService;
 
@@ -222,14 +223,17 @@ export function createFormDataSourceExpressionEvaluator(
       }
 
       // Roots by position (docs/24 §2.8), mirroring the publish lint: only a
-      // table column carries row values, so without them `row` is not a root
-      // at all. A top-level field whose stored expression reads `row` was
+      // table column has a row, so at the top level `row` is not a root at
+      // all. A top-level field whose stored expression reads `row` was
       // written around the lint and fails closed instead of waiting forever.
-      const allowedRootIdentifiers = rowValues
-        ? DATA_SOURCE_BINDING_ROOTS
-        : TOP_LEVEL_BINDING_ROOTS;
+      const rowValues =
+        position.kind === 'TABLE_COLUMN' ? position.rowValues : undefined;
+      const allowedRootIdentifiers =
+        position.kind === 'TABLE_COLUMN'
+          ? DATA_SOURCE_BINDING_ROOTS
+          : TOP_LEVEL_BINDING_ROOTS;
 
-      if (!rowValues && dependencies.rowColumnKeys.length > 0) {
+      if (position.kind === 'TOP_LEVEL' && dependencies.rowColumnKeys.length > 0) {
         throw invalidBinding();
       }
 

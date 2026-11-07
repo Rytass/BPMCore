@@ -1,6 +1,5 @@
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import type {
-  NotifyWebhookBindingSource,
   NotifyWebhookExpressionBindingSource,
   NotifyWebhookParameterType,
 } from '@rytass/bpm-core-shared/workflow';
@@ -33,11 +32,6 @@ const NOTIFY_WEBHOOK_BINDING_ROOTS: readonly string[] =
 
 const EXPRESSION_SOURCE_PROPERTIES: readonly string[] = ['expression', 'kind'];
 
-/** A NOTIFY binding source, the `EXPRESSION` kind included. */
-export type NotifyWebhookAnyBindingSource =
-  | NotifyWebhookBindingSource
-  | NotifyWebhookExpressionBindingSource;
-
 const isRecord = (
   value: unknown,
 ): value is Readonly<Record<string, unknown>> =>
@@ -55,32 +49,6 @@ export function isNotifyWebhookExpressionSource(
     Object.keys(value)
       .filter((key) => value[key] !== undefined)
       .every((key) => EXPRESSION_SOURCE_PROPERTIES.includes(key))
-  );
-}
-
-/**
- * `targets` with every well-formed `EXPRESSION` source swapped for a neutral
- * constant, for the shared structural lint only. That lint (`workflow-graph`)
- * does not know the kind yet and would call the whole target malformed; this
- * lets the backend check everything else about the target while it catches
- * up. A malformed `EXPRESSION` source is left alone, so it is still reported.
- */
-export function maskNotifyWebhookExpressionSources(targets: unknown): unknown {
-  if (!Array.isArray(targets)) {
-    return targets;
-  }
-
-  return targets.map((target: unknown): unknown =>
-    isRecord(target) && Array.isArray(target.bindings)
-      ? {
-          ...target,
-          bindings: target.bindings.map((binding: unknown): unknown =>
-            isRecord(binding) && isNotifyWebhookExpressionSource(binding.from)
-              ? { ...binding, from: { kind: 'CONSTANT', value: null } }
-              : binding,
-          ),
-        }
-      : target,
   );
 }
 

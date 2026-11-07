@@ -1134,7 +1134,14 @@ describe('FormBuilderView field settings', () => {
         clickButton(harness.container, '檢查全部動態選項設定');
       });
 
-      expect(harness.container.textContent).toContain('的表達式未通過檢查（missing）');
+      // The shared per-code copy (workflow-lint-errors.ts), placed by the
+      // labels the panel shows; no builder-only sentence any more.
+      expect(harness.container.textContent).toContain(
+        '「成本中心」欄位查詢條件「',
+      );
+      expect(harness.container.textContent).toContain(
+        '的運算式：讀取了表單沒有的欄位「missing」。',
+      );
       expect(harness.container.textContent).not.toContain('EXPR_FIELD_UNKNOWN');
     } finally {
       await unmount(harness);

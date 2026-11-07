@@ -27,6 +27,8 @@ import {
   assertControlSupported,
   assertDescriptor,
   callProvider,
+  createTableColumnBindingPosition,
+  FormDataSourceBindingPosition,
   isRecord,
   readBindingHash,
   readBindingValues,
@@ -34,6 +36,7 @@ import {
   readMissingSourceCode,
   readOrderedResolvedOptions,
   readSourceOrThrow,
+  TOP_LEVEL_BINDING_POSITION,
   validateRequestedValues,
   validateResolveResult,
 } from './form-data-source.validation';
@@ -58,7 +61,11 @@ export class FormDataSourceValueResolverService
     // same service the publish lint uses. Optional so a host that builds this
     // resolver by hand keeps working; without it an `EXPRESSION` binding
     // fails closed as `INVALID_BINDING`.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
     @Optional()
+    @Inject(ConditionService)
     private readonly conditionService?: ConditionService | null,
   ) {}
 
@@ -92,7 +99,7 @@ export class FormDataSourceValueResolverService
       async (
         target,
       ): Promise<readonly [string, FormDataSourceValueSnapshot] | null> => {
-        const { field, rowValues, snapshotKey } = target;
+        const { field, position, snapshotKey } = target;
         const values = readDynamicFieldValues(field, target.value);
 
         if (values.length === 0) {
@@ -139,7 +146,7 @@ export class FormDataSourceValueResolverService
           field,
           descriptor,
           input.formData,
-          rowValues,
+          position,
           expressions,
         );
 
@@ -171,13 +178,15 @@ export class FormDataSourceValueResolverService
           ];
         }
 
-        const options = await this.resolveFormFieldOptions({
-          authContext: input.authContext,
-          field,
-          formData: input.formData,
-          rowValues,
-          values,
-        });
+        const options = await this.resolveFieldOptionsAt(
+          {
+            authContext: input.authContext,
+            field,
+            formData: input.formData,
+            values,
+          },
+          position,
+        );
         const snapshot: FormDataSourceValueSnapshot = {
           bindingHash,
           dataSourceKey: descriptor.key,
@@ -208,15 +217,31 @@ export class FormDataSourceValueResolverService
   resolveFormFieldOptions(
     input: BPMFormDataSourceResolveFieldInput,
   ): Promise<readonly FormFieldOption[]> {
+    // The public contract (`BPMFormDataSourceResolveFieldInput`): only a table
+    // cell carries `rowValues`. This is the one place that reads the position
+    // from it; the submit path above passes the schema's own position.
+    return this.resolveFieldOptionsAt(
+      input,
+      input.rowValues
+        ? createTableColumnBindingPosition(input.rowValues)
+        : TOP_LEVEL_BINDING_POSITION,
+    );
+  }
+
+  private resolveFieldOptionsAt(
+    input: Omit<BPMFormDataSourceResolveFieldInput, 'rowValues'>,
+    position: FormDataSourceBindingPosition,
+  ): Promise<readonly FormFieldOption[]> {
     // Joins the submit's operation when called from it, so a field's
     // expressions are not given a second budget.
     return runExpressionOperation(() =>
-      this.resolveFormFieldOptionsInOperation(input),
+      this.resolveFormFieldOptionsInOperation(input, position),
     );
   }
 
   private async resolveFormFieldOptionsInOperation(
-    input: BPMFormDataSourceResolveFieldInput,
+    input: Omit<BPMFormDataSourceResolveFieldInput, 'rowValues'>,
+    position: FormDataSourceBindingPosition,
   ): Promise<readonly FormFieldOption[]> {
     const field = readDynamicOptionField(input.field);
     const source = readSourceOrThrow(this.registry, field.dataSource);
@@ -229,7 +254,7 @@ export class FormDataSourceValueResolverService
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      position,
       createFormDataSourceExpressionEvaluator({
         conditionService: this.conditionService,
       }),
@@ -269,8 +294,9 @@ export class FormDataSourceValueResolverService
  */
 interface DynamicResolutionTarget {
   readonly field: FormDataSourceOptionFieldDefinition;
+  /** From the schema walk: a table cell carries its row, a field none. */
+  readonly position: FormDataSourceBindingPosition;
   readonly previousValue: unknown;
-  readonly rowValues?: Readonly<Record<string, unknown>>;
   readonly snapshotKey: string;
   readonly value: unknown;
 }
@@ -301,6 +327,7 @@ function readDynamicResolutionTargets(
         ? [
             {
               field,
+              position: TOP_LEVEL_BINDING_POSITION,
               previousValue: input.previousFormData?.[field.fieldKey],
               snapshotKey: field.fieldKey,
               value: input.formData[field.fieldKey],
@@ -334,11 +361,11 @@ function readTableResolutionTargets(
     row
       ? dynamicColumns.map((column): DynamicResolutionTarget => ({
           field: column,
+          position: createTableColumnBindingPosition(row),
           previousValue: readOwnProperty(
             previousRows[rowIndex] ?? {},
             column.fieldKey,
           ),
-          rowValues: row,
           snapshotKey: `${field.fieldKey}[${rowIndex}].${column.fieldKey}`,
           value: readOwnProperty(row, column.fieldKey),
         }))
