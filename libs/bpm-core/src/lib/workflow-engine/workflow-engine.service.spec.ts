@@ -27,6 +27,7 @@ import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
+import { CelEngineUnavailableError } from '../condition/cel-error-message';
 import { ConditionService } from '../condition/condition.service';
 import {
   DelegationResolution,
@@ -11114,7 +11115,7 @@ describe('WorkflowEngineService', () => {
           includeStructuredCondition: false,
         });
 
-      it('keeps the context of a raw cel-js identifier error out of the message', (): void => {
+      it('keeps the context and the name of a raw cel-js identifier error out of the message', (): void => {
         // The exact shape cel-js 0.8.2 throws: the whole context follows the
         // identifier. A raw Error stands for one that bypassed ConditionService.
         throwOnEdge(
@@ -11128,9 +11129,7 @@ describe('WorkflowEngineService', () => {
 
         const errors = dryRunErrors(handWrittenWorkflow());
 
-        expect(errors).toEqual([
-          'Dry run failed: Identifier "agent" not found',
-        ]);
+        expect(errors).toEqual(['Dry run failed: Identifier not found']);
         errors.forEach((message) => {
           expect(message).not.toContain(FORM_MARKER);
           expect(message).not.toContain(INITIATOR_MARKER);
@@ -11149,6 +11148,18 @@ describe('WorkflowEngineService', () => {
 
         expect(dryRunErrors(handWrittenWorkflow())).toEqual([
           'Dry run failed: CelTypeError',
+        ]);
+      });
+
+      it('names the engine-load failure without exposing its message', (): void => {
+        throwOnEdge(
+          new CelEngineUnavailableError(
+            `cannot load cel-js (${FORM_MARKER})`,
+          ),
+        );
+
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
+          'Dry run failed: CelEngineUnavailableError',
         ]);
       });
 

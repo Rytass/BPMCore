@@ -1,7 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Failure, ParseResult } from 'cel-js';
 
-import { describeCelEvaluationError } from './cel-error-message';
+import {
+  CelEngineUnavailableError,
+  describeCelEvaluationError,
+} from './cel-error-message';
 
 /**
  * The slice of `cel-js` this service uses.
@@ -42,7 +45,7 @@ function loadCelEngine(): CelEngine {
       // whichever request first evaluated a condition. Name the cause where it
       // is thrown.
       if (isRequireEsmError(error)) {
-        throw new Error(
+        throw new CelEngineUnavailableError(
           `[@rytass/bpm-core-nestjs-module] This Node version cannot require the ESM-only 'cel-js'. BPM needs Node >=20.19 or >=22.12 to evaluate CEL conditions. Original error: ${
             error instanceof Error ? error.message : String(error)
           }`,
@@ -169,7 +172,7 @@ export class ConditionService {
       // cel-js puts the evaluation context and offending values in its
       // messages; only an allowlisted description may reach the caller.
       throw new BadRequestException(
-        `${label}: ${describeCelEvaluationError(error)}`,
+        `${label}: ${describeCelEvaluationError(error, trimmedExpression)}`,
       );
     }
   }

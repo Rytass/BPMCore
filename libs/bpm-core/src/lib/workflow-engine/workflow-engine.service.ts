@@ -9807,8 +9807,10 @@ function normalizeFormFieldPath(path: string): readonly string[] {
  * already reduced to a label plus a safe description), so those stay readable.
  * Anything else is not a message anyone wrote for the designer: a raw cel-js
  * error carries the evaluation context (form values, initiator metadata) in
- * its text, so it is cut down to the error class and, for a missing
- * identifier, its name.
+ * its text, so it is cut down to the error class (`Identifier not found` for a
+ * missing identifier). No expression is at hand here, so the identifier name
+ * is not echoed either; a name can only be vouched for against the expression
+ * it came from, which `ConditionService` does before the error gets this far.
  */
 function describeDryRunFailure(error: unknown): string {
   if (error instanceof TimeBudgetExceededError) {

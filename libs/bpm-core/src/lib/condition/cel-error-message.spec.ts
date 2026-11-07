@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { BadRequestException } from '@nestjs/common';
-import { describeCelEvaluationError } from './cel-error-message';
+import {
+  CelEngineUnavailableError,
+  describeCelEvaluationError,
+} from './cel-error-message';
 import { ConditionService } from './condition.service';
 
 /**
@@ -26,6 +29,8 @@ const CONTEXT = {
   form: {
     count: Number(NUMBER_MARKER),
     index: Number(INDEX_MARKER),
+    items: [1, 2],
+    map: { known: 1 },
     nothing: null,
     other: FORM_MARKER,
   },
@@ -43,6 +48,26 @@ const PROBES: readonly Probe[] = [
     expected: 'Identifier "agent" not found',
     expression: 'form.agent != null',
     name: 'absent identifier (context embedded)',
+  },
+  {
+    expected: 'Identifier "a-b" not found',
+    expression: 'form["a-b"] != null',
+    name: 'absent key that is not an identifier',
+  },
+  {
+    expected: 'Identifier not found',
+    expression: 'form[form.other] == 1',
+    name: 'form indexed by a string form value',
+  },
+  {
+    expected: 'Identifier not found',
+    expression: 'form.map[initiator.name] == 1',
+    name: 'map indexed by an initiator value',
+  },
+  {
+    expected: 'Identifier not found',
+    expression: 'form.items[form.index] == 1',
+    name: 'list indexed by a number form value',
   },
   {
     expected: 'Error',
@@ -96,6 +121,18 @@ describe('CEL evaluation error sanitising', () => {
     expect(
       readCaptured('non-object access on a string value').message,
     ).toContain(FORM_MARKER);
+    expect(
+      readCaptured('form indexed by a string form value').message,
+    ).toContain(FORM_MARKER);
+    expect(readCaptured('map indexed by an initiator value').message).toContain(
+      INITIATOR_MARKER,
+    );
+    expect(
+      readCaptured('list indexed by a number form value').message,
+    ).toContain(INDEX_MARKER);
+    expect(
+      readCaptured('absent key that is not an identifier').message,
+    ).toContain('Identifier "a-b" not found');
     expect(readCaptured('size() on a non-list value').message).toContain(
       NUMBER_MARKER,
     );
@@ -107,9 +144,10 @@ describe('CEL evaluation error sanitising', () => {
 
   it.each(PROBES)(
     'describeCelEvaluationError keeps only the allowlisted part: $name',
-    ({ expected, name }): void => {
+    ({ expected, expression, name }): void => {
       const description = describeCelEvaluationError(
         toError(readCaptured(name)),
+        expression,
       );
 
       expect(description).toBe(expected);
@@ -141,24 +179,59 @@ describe('CEL evaluation error sanitising', () => {
   );
 
   it('names the identifier only for the identifier error', (): void => {
-    const messages = PROBES.map(({ name }) =>
-      describeCelEvaluationError(toError(readCaptured(name))),
+    const messages = PROBES.map(({ expression, name }) =>
+      describeCelEvaluationError(toError(readCaptured(name)), expression),
     );
 
-    expect(messages.filter((message) => message.includes('"agent"'))).toEqual([
+    expect(
+      messages.filter((message) => message.startsWith('Identifier "')),
+    ).toEqual(['Identifier "agent" not found', 'Identifier "a-b" not found']);
+  });
+
+  it('names the engine-load failure by its class, not its message', (): void => {
+    expect(
+      describeCelEvaluationError(
+        new CelEngineUnavailableError(`cannot load (${FORM_MARKER})`),
+      ),
+    ).toBe('CelEngineUnavailableError');
+  });
+
+  it('drops the name when there is no expression to vouch for it', (): void => {
+    expect(
+      describeCelEvaluationError(
+        toError(readCaptured('absent identifier (context embedded)')),
+      ),
+    ).toBe('Identifier not found');
+  });
+
+  it('does not take a name from inside a string literal', (): void => {
+    const error = new Error('Identifier "agent" not found, no context passed');
+
+    expect(describeCelEvaluationError(error, 'form.x == "agent"')).toBe(
+      'Identifier not found',
+    );
+    expect(describeCelEvaluationError(error, 'form.agent == "x"')).toBe(
       'Identifier "agent" not found',
-    ]);
+    );
+    expect(describeCelEvaluationError(error, 'form["agent"] == "x"')).toBe(
+      'Identifier "agent" not found',
+    );
+    expect(describeCelEvaluationError(error, "form['agent'] == 'x'")).toBe(
+      'Identifier "agent" not found',
+    );
   });
 
   it('accepts the no-context variant and refuses a look-alike prefix', (): void => {
     expect(
       describeCelEvaluationError(
         new Error('Identifier "agent" not found, no context passed'),
+        'form.agent != null',
       ),
     ).toBe('Identifier "agent" not found');
     expect(
       describeCelEvaluationError(
         new Error(`Identifier "agent" not found; leaked ${FORM_MARKER}`),
+        'form.agent != null',
       ),
     ).toBe('Error');
     expect(
