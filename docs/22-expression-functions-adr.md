@@ -2,7 +2,7 @@
 
 - **狀態**：Accepted（2026-11-07 與產品擁有者確認，P5 的 `EXPRESSION` binding 納入範圍）
 - **決策日期**：2026-11-07
-- **實作狀態**：未開工；獨立安全修補與 P0 先行
+- **實作狀態**：實作中；決定與契約見 [24 — 細部設計](./24-expression-functions-detailed-design.md)
 - **適用範圍**：`ConditionService`、Workflow Engine、發布 lint、委派規則、表單 DataSource binding、
   知會 webhook binding、Template Designer、AI 助理、宿主函式註冊
 - **交付規劃**：[23 — 流程表達式開發 Phase](./23-expression-functions-phases.md)
@@ -22,7 +22,7 @@
 
 ### 1.1 實測（2026-11-07，本機 Node）
 
-以下都是直接呼叫引擎的結果，尚未透過實際 API 端到端驗證。
+以下都是直接呼叫引擎的結果，尚未透過實際 API 端到端驗證。耗時隨機器負載變動很大，2026-11-07 另一次量測巢狀 `map` 為 18,313 ms 與 2,715 ms，只能看相對差距。
 
 | 項目 | `cel-js` 0.8.2（現行） | `@marcbachmann/cel-js` 8.0.0（候選） |
 | --- | --- | --- |
@@ -115,8 +115,8 @@ timeout 管不住回傳值的大小：候選引擎在 1 ms 內就產生序列化
 - 兩個方言都走 §3.2 的 Runtime，舊方言也得到預算、輸出正規化與錯誤淨化。
 
 `cel-v2` 註冊 `double` 與 `int` 的混合 `+ - * / %`（雙向），讓 `form.amount * 2` 符合設計者預期。
-差異測試必須覆蓋 repo 內所有既有表達式樣式。候選引擎是否採用，以 P1 的差異測試結果為準；
-不通過時保留 `cel-js`，只做防護與函式層。
+差異測試必須覆蓋 repo 內所有既有表達式樣式。2026-11-07 的 136 筆實測決定採用候選引擎，理由與
+`||`／`has()` 語意差異的處理見 [24](./24-expression-functions-detailed-design.md) §1；P1 仍要以實作後的差異測試確認。
 
 ### 3.4 發布 lint 改以 AST 判斷
 
@@ -191,15 +191,17 @@ Core 內建函式僅限純計算：`round`、`floor`、`ceil`、`abs`、`min`、
 
 限制與理由：
 
-- **Root 只允許 `form`、`row`。** 不提供 `env`、`initiator`、`instance`：search、resolve、submit
+- **Root 只允許 `form`、`row`**（知會 webhook 沒有列的概念，只允許 `form`）。 不提供 `env`、`initiator`、`instance`：search、resolve、submit
   必須算出相同結果，否則 `bindingHash` 會無故變動。身分由 `BPMAuthContext` 傳給 provider。
 - **依賴由 AST 靜態取得**：循環檢查、刪欄影響分析與 `waitingForFieldKeys` 沿用現有機制。
 - **只在後端評估**：瀏覽器送 values，後端依 snapshot 內的 binding 計算。瀏覽器不得送 expression。
-- **結果型別**：只接受 `boolean | number | string | null`，並核對 parameter 型別。
+- **結果型別**：只接受 `boolean | number | string | null`，並核對 parameter 型別，不符視為 binding 無效。
 - **不擴大授權**：瀏覽器控制的 values 會進入 expression，provider 仍必須把參數當不可信輸入，並自行做
   row-level authorization（ADR 14 §3.4）。
 - **預算**：runtime query 每個欄位共用同一個操作預算，現有 `MAX_PARAMETER_BYTES` 照舊適用。
-- **Webhook**：評估在 outbox 寫入前。失敗時記為該次投遞 `FAILED`，**不回滾簽核交易**，符合 ADR 18 §2。
+- **Webhook**：評估在 outbox 寫入前，仍在引擎交易內，靠預算限制持鎖時間。失敗時記為該次投遞 `FAILED`，
+  **不回滾簽核交易**，符合 ADR 18 §2。
+- **函式**：v1 只允許內建函式，不開放宿主函式。
 
 **不做 provider 結果轉換。** `label` 會進入不可變的 snapshot，`value` 又是 resolve 的比對鍵，
 由表達式轉換會讓 search 與 resolve 分歧。需要轉換時由宿主在 provider 內處理。
@@ -264,14 +266,15 @@ ADR 20），任何案件可讀者都能經由 `formDataJson`、`initiatorMetadat
 
 **殘餘風險**：
 
-- `vm` timeout 只涵蓋表達式評估，不涵蓋宿主 JS（例如流程遍歷），也不限制記憶體；只靠輸入、AST 與輸出上限間接控制。
+- `vm` timeout 只保護包進預算的同步工作，不限制記憶體；記憶體只靠輸入、AST 與輸出上限間接控制。
 - 大量併發請求仍可能佔滿事件迴圈，rate limiting 由宿主負責。
 - 宿主函式的安全性取決於宿主程式碼。
 - 候選引擎的 AST 直譯器是外部相依，需持續追蹤安全公告。
 
 ## 5. 發布前驗證不變式
 
-發布、發布版本與 rollback 都必須通過：
+發布與發布版本都必須通過下列檢查。rollback 不重新跑表達式 lint（舊版本可能過不了後來收緊的規則，
+而 rollback 是復原路徑），只檢查第 3 點的函式是否仍已註冊：
 
 1. 所有表達式通過語法、複雜度與 root 白名單檢查。
 2. `cel-v2` 表達式沒有 computed key 與整體引用。
