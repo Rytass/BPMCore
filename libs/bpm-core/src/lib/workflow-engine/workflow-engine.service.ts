@@ -3444,7 +3444,7 @@ export class WorkflowEngineService {
   ): boolean {
     const expression = edge.data.condition?.trim();
 
-    if (expression && !isListValuedStructuredCondition(edge, input.formData)) {
+    if (expression && !shouldEvaluateStructuredCondition(edge, input.formData)) {
       return this.conditionService.evaluateBoolean(
         expression,
         buildDryRunExpressionContext(input, lastDecision),
@@ -4787,7 +4787,7 @@ export class WorkflowEngineService {
 
     if (
       expression &&
-      !isListValuedStructuredCondition(edge, instance.formData)
+      !shouldEvaluateStructuredCondition(edge, instance.formData)
     ) {
       return this.conditionService.evaluateBoolean(
         expression,
@@ -9250,28 +9250,49 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
 }
 
 /**
- * A designer-built condition on a multiple-selection field (checkbox, or a
- * select / autocomplete in `multiple` mode), whose submitted value is a list.
- * Definitions saved before the designer compiled such fields with list
- * semantics carry a single-value CEL (`form.tags == "A"`), which is false for
- * `["A"]` — `!=` is always true and `!= ""` counts `[]` as filled — so those
- * edges never routed as designed. The structured fields the designer stores
- * beside the CEL are evaluated instead: `evaluateWorkflowEdgeCondition`
- * already reads a list as contains / does not contain and an empty list as
- * empty, the meaning the current designer compiles too. A hand-written CEL
- * carries no structured fields and is never overridden.
+ * Whether a designer-built edge (it carries `conditionFieldKey` and
+ * `conditionOperator` beside its CEL) is routed by those structured fields
+ * instead of by the stored CEL. Two cases, both decided by the submitted value
+ * of the edge's field:
+ *
+ * 1. A list. A multiple-selection field (checkbox, or a select / autocomplete
+ *    in `multiple` mode) submits a list. Definitions saved before the designer
+ *    compiled such fields with list semantics carry a single-value CEL
+ *    (`form.tags == "A"`), which is false for `["A"]` — `!=` is always true
+ *    and `!= ""` counts `[]` as filled — so those edges never routed as
+ *    designed. `evaluateWorkflowEdgeCondition` already reads a list as
+ *    contains / does not contain and an empty list as empty, the meaning the
+ *    current designer compiles too.
+ * 2. No value: the key is absent from the form data or its value is `null` /
+ *    `undefined`. An untouched optional field has no key at all (the client's
+ *    JSON drops `undefined`), and cel-js throws `Identifier "agent" not found`
+ *    for `form.agent != null && form.agent != ""` — the CEL the designer used
+ *    to store for "is filled" — and for `form["a-b"]`, which no compile-time
+ *    guard can wrap; `form.amount > 5` throws on `null`. That failed the whole
+ *    submit or decision. A published definition and an in-flight instance keep
+ *    their stored CEL for good, so the engine answers from the structured
+ *    fields instead; the evaluator treats an unfilled value as not matching a
+ *    value or ordering comparison.
+ *
+ * A hand-written CEL carries no structured fields and is never overridden: it
+ * keeps evaluating as written, including failing on a key it reads that is
+ * absent.
  */
-function isListValuedStructuredCondition(
+function shouldEvaluateStructuredCondition(
   edge: WorkflowEdge,
   formData: Readonly<Record<string, unknown>>,
 ): boolean {
   const fieldKey = edge.data.conditionFieldKey;
 
-  return Boolean(
-    fieldKey &&
-    edge.data.conditionOperator &&
-    Array.isArray(formData[fieldKey]),
-  );
+  if (!fieldKey || !edge.data.conditionOperator) {
+    return false;
+  }
+
+  const value = Object.prototype.hasOwnProperty.call(formData, fieldKey)
+    ? formData[fieldKey]
+    : undefined;
+
+  return Array.isArray(value) || value === undefined || value === null;
 }
 
 function edgeHasCondition(edge: WorkflowEdge): boolean {

@@ -42,6 +42,15 @@ function compareWorkflowValues(
   operator: WorkflowEdgeConditionOperator,
   expectedValue: string,
 ): boolean {
+  // An unfilled field (absent, null, "", whitespace only or an empty list — the
+  // same set IS_EMPTY reports) holds no value to compare. Normalising it to ""
+  // would make `"" < "5"` true for an untouched number or date and would let
+  // `EQUALS ""` match, so every value and ordering comparison is false except
+  // NOT_EQUALS, which is true: nothing was filled, so it is not that value.
+  if (isEmptyWorkflowValue(actualValue)) {
+    return operator === 'NOT_EQUALS';
+  }
+
   // A table value is a list of rows. Only IS_FILLED / IS_EMPTY (handled above,
   // by row count) are defined for it; the designer offers nothing else, but a
   // hand-written or imported definition can still carry a value comparison.
