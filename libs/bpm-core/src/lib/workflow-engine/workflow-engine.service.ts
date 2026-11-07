@@ -151,6 +151,7 @@ import {
   WorkflowDryRunStepObject,
 } from './workflow-dry-run.object';
 import {
+import { runWithinTimeBudget, TimeBudgetExceededError } from './time-budget';
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
   BPMWorkflowWebhookDispatchResult,
@@ -197,6 +198,11 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
 };
 
 const MAX_PROCESSING_STEPS = 500;
+const MAX_DRY_RUN_INPUT_LENGTH = 1_048_576;
+const MAX_DRY_RUN_VISITS = 10_000;
+const DRY_RUN_TIME_BUDGET_MS = 2_000;
+const DRY_RUN_TOO_COMPLEX_MESSAGE =
+  '流程或條件的運算量過大，無法完成試跑，請減少連續的閘道分支或簡化條件';
 export const MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH = 200;
 const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
   'approval_instances_business_key_key';
@@ -240,6 +246,7 @@ interface DryRunPathInput extends DryRunSimulationInput {
 
 /**
  * Delegation-chain reason recorded for an approver-initiated transfer, as
+  readonly chargeVisit: () => void;
  * opposed to {@link SLA_ESCALATION_DELEGATION_REASON}.
  */
 export const MANUAL_TRANSFER_DELEGATION_REASON = 'MANUAL_TRANSFER';
@@ -3084,20 +3091,26 @@ export class WorkflowEngineService {
     try {
       return Object.assign(new WorkflowDryRunResultObject(), {
         errors: [],
-        steps: this.simulateWorkflow({
-          formData,
-          initiatorMemberId: input.initiatorMemberId,
-          initiatorMetadataSnapshot,
-          workflowDefinition,
-        }),
+        steps: runWithinTimeBudget(
+          () =>
+            this.simulateWorkflow({
+              formData,
+              initiatorMemberId: input.initiatorMemberId,
+              initiatorMetadataSnapshot,
+              workflowDefinition,
+            }),
+          DRY_RUN_TIME_BUDGET_MS,
+        ),
         valid: true,
       });
     } catch (error: unknown) {
-      return Object.assign(new WorkflowDryRunResultObject(), {
-        errors: [error instanceof Error ? error.message : 'Dry run failed'],
-        steps: [],
-        valid: false,
-      });
+      return createFailedDryRunResult(
+        error instanceof TimeBudgetExceededError
+          ? DRY_RUN_TOO_COMPLEX_MESSAGE
+          : error instanceof Error
+            ? error.message
+            : 'Dry run failed',
+      );
     }
   }
 
@@ -3169,6 +3182,19 @@ export class WorkflowEngineService {
     const skippedByExclusion = assignment?.outcome === 'SKIPPED';
     const stoppedByAssignment = assignment?.outcome === 'STOPPED';
     const nextLastDecision =
+    // Checked first: parsing happens outside the time budget below.
+    if (
+      [
+        input.workflowDefinitionJson,
+        input.formDataJson,
+        input.initiatorMetadataSnapshotJson ?? '',
+      ].some((json) => json.length > MAX_DRY_RUN_INPUT_LENGTH)
+    ) {
+      return createFailedDryRunResult(
+        '試跑資料過大，請縮小流程或測試資料後再試',
+      );
+    }
+
       entryConditionMet && node.type === 'userTask' && !skippedByExclusion
         ? {
             action: TaskDecisionActionEnum.APPROVED,
@@ -3215,8 +3241,20 @@ export class WorkflowEngineService {
         stepIndex: input.steps.length,
       }),
     ];
+    // Every branch re-walks whatever follows it, so a chain of gateways doubles
+    // the work at each one while the depth limit never trips. Closure state
+    // because all the branches of one dry run share this one count.
+    let visits = 0;
+
 
     return outgoing.edges.reduce(
+      chargeVisit: (): void => {
+        visits += 1;
+
+        if (visits > MAX_DRY_RUN_VISITS) {
+          throw new ConflictException(DRY_RUN_TOO_COMPLEX_MESSAGE);
+        }
+      },
       (steps, edge) =>
         this.simulateWorkflowPath({
           ...input,
@@ -3233,6 +3271,8 @@ export class WorkflowEngineService {
 
   /**
    * The edges a dry-run step continues along. A node a designer has left
+    input.chargeVisit();
+
    * unfinished (nothing drawn out of it, or no branch of a gateway taken) ends
    * its branch with a readable message instead of failing the whole dry run.
    */
@@ -9742,6 +9782,14 @@ function buildAdhocTargetValue(input: AdhocTargetInput): AdhocTargetValue {
     webhookUrl,
   };
 }
+function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {
+  return Object.assign(new WorkflowDryRunResultObject(), {
+    errors: [message],
+    steps: [],
+    valid: false,
+  });
+}
+
 
 function parseAdhocWebhookHeaders(
   json: string,

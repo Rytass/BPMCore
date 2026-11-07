@@ -6134,6 +6134,96 @@ describe('WorkflowEngineService', () => {
       });
     });
 
+    describe('dry run budget', (): void => {
+      const chainedDiamonds = (count: number): string => {
+        const indexes = Array.from({ length: count }, (_, index) => index);
+        const edge = (source: string, target: string): unknown => ({
+          data: {},
+          id: `${source}-${target}`,
+          source,
+          target,
+        });
+        const task = (id: string): unknown => ({
+          data: { label: id },
+          id,
+          position: { x: 0, y: 0 },
+          type: 'exclusiveGateway',
+        });
+
+        return JSON.stringify({
+          meta: { schemaVersion: 1 },
+          edges: [
+            edge('start', 'g0'),
+            ...indexes.flatMap((index) => [
+              edge(`g${index}`, `a${index}`),
+              edge(`g${index}`, `b${index}`),
+              edge(`a${index}`, `g${index + 1}`),
+              edge(`b${index}`, `g${index + 1}`),
+            ]),
+            edge(`g${count}`, 'end'),
+          ],
+          nodes: [
+            {
+              data: { label: 'start' },
+              id: 'start',
+              position: { x: 0, y: 0 },
+              type: 'startEvent',
+            },
+            ...indexes.flatMap((index) => [
+              task(`g${index}`),
+              task(`a${index}`),
+              task(`b${index}`),
+            ]),
+            task(`g${count}`),
+            {
+              data: { label: 'end' },
+              id: 'end',
+              position: { x: 0, y: 0 },
+              type: 'endEvent',
+            },
+          ],
+        });
+      };
+      const dryRunJson = (
+        workflowDefinitionJson: string,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-1',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson,
+        });
+
+      it('stops a chain of branching gateways instead of walking every path', (): void => {
+        const startedAt = performance.now();
+        const result = dryRunJson(chainedDiamonds(30));
+
+        expect(performance.now() - startedAt).toBeLessThan(3000);
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          expect.stringContaining('運算量過大'),
+        ]);
+      });
+
+      it('still walks an ordinary branching workflow', (): void => {
+        expect(dryRunJson(chainedDiamonds(3)).valid).toBe(true);
+      });
+
+      it('refuses oversized input before parsing it', (): void => {
+        const result = dryRunJson(' '.repeat(1_048_577));
+
+        expect(result.valid).toBe(false);
+        expect(result.errors).toEqual([
+          expect.stringContaining('試跑資料過大'),
+        ]);
+      });
+    });
+
     describe('as notify recipients', (): void => {
       const notifyFixture = (
         recipients: ApproverResolver,
