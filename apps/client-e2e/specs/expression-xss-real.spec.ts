@@ -30,6 +30,9 @@ const PAYLOAD = `<img src=x onerror="window.${MARKER}=1">`;
 const TITLE_MARKER = '__bpmNotificationXss';
 // A different string from PAYLOAD, so the case page cannot pass on the title.
 const TITLE_PAYLOAD = `<img src=y onerror="window.${TITLE_MARKER}=1">`;
+// Every form, template and case this suite creates starts with this, so the
+// leftovers of a run are easy to find and clean up.
+const NAME_PREFIX = '[e2e-expr-xss]';
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -88,6 +91,8 @@ const WORKFLOW: Json = {
         approverResolver: { memberIds: [ADMIN], type: 'DIRECT' },
         decisionPolicy: { type: 'SINGLE' },
         label: '審核',
+        // Required on every user task; publishing rejects the node without it.
+        returnBehavior: { allowReturn: false, allowedTargets: 'PREVIOUS' },
       },
       id: 'review',
       position: { x: 520, y: 0 },
@@ -121,7 +126,7 @@ test.describe('expression output is text (real backend)', () => {
     instanceId = await submit(
       requester,
       templateId,
-      `E2E 運算式 XSS ${runId} ${TITLE_PAYLOAD}`,
+      `${NAME_PREFIX} E2E 運算式 XSS ${runId} ${TITLE_PAYLOAD}`,
     );
   });
 
@@ -304,7 +309,7 @@ async function createPublishedForm(page: Page, runId: string): Promise<string> {
       input: {
         createdByMemberId: ADMIN,
         description: 'E2E expression XSS form',
-        name: `E2E 運算式 XSS 表單 ${runId}`,
+        name: `${NAME_PREFIX} E2E 運算式 XSS 表單 ${runId}`,
         schemaJson: JSON.stringify(FORM_SCHEMA),
         uiSchemaJson: JSON.stringify(FORM_UI_SCHEMA),
       },
@@ -350,7 +355,7 @@ async function createPublishedTemplate(
         createdByMemberId: ADMIN,
         description: 'E2E expression XSS journey',
         formDefinitionVersionId: formVersionId,
-        name: `E2E 運算式 XSS 流程 ${runId}`,
+        name: `${NAME_PREFIX} E2E 運算式 XSS 流程 ${runId}`,
       },
     },
   );
