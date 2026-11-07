@@ -10,7 +10,6 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
-  BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
   ExpressionUsagePoint,
   formatExpressionLintIssue,
   readApproverFilledFieldKeys,
@@ -57,6 +56,7 @@ import {
   ExpressionReferences,
   readExpressionHostFunctionNames,
   readExpressionReferences,
+  readUnavailableExpressionFunctions,
   readsFormField,
   readsTableInternals,
   RESERVED_PATH_SEGMENTS,
@@ -168,9 +168,9 @@ export class TemplateService {
     private readonly conditionService: ConditionService,
     private readonly formService: FormService,
     private readonly moduleRef: ModuleRef,
-    // P3 provides the registry. Without one only the nine built-in functions
-    // exist (`BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES`), so a template calling a
-    // host function cannot be published or rolled back to.
+    // The same registry `ConditionService` evaluates and lints with. Without
+    // one only the nine built-in functions exist, so a template calling a host
+    // function cannot be published or rolled back to.
     @Optional()
     @Inject(BPM_EXPRESSION_FUNCTION_REGISTRY)
     private readonly expressionFunctionRegistry?: BPMExpressionFunctionRegistry | null,
@@ -1159,7 +1159,6 @@ export class TemplateService {
     }
 
     const registry = this.expressionFunctionRegistry ?? null;
-    const builtIns: readonly string[] = BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES;
 
     return readUsagePointExpressions(definition, initiatorPolicyCel).flatMap(
       ({ expression, label }): readonly string[] => {
@@ -1167,9 +1166,8 @@ export class TemplateService {
           typeof expression === 'string'
             ? (readExpressionHostFunctionNames(expression.trim(), 'cel-v2') ?? [])
             : [];
-        const missing = registry
-          ? registry.assertPublishable(names)
-          : names.filter((name) => !builtIns.includes(name));
+        // Same name rule and registry isolation as the publish lint.
+        const missing = readUnavailableExpressionFunctions(names, registry);
 
         return missing.map((name) =>
           formatExpressionLintIssue({

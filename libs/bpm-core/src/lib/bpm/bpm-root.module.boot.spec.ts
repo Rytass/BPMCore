@@ -4,6 +4,7 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { ATTACHMENT_STORAGE } from '../attachment/attachment-storage.token';
 import { BPM_BUSINESS_CALENDAR } from '../calendar/business-calendar.token';
 import { BPM_FORM_DATA_SOURCE_REGISTRY } from '../form-data-source/form-data-source.types';
+import { ConditionService } from '../condition/condition.service';
 import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
 import {
   BPM_EXPRESSION_FUNCTION_REGISTRY,
@@ -414,6 +415,81 @@ describe('BPMRootModule expression functions', (): void => {
           imports: [FakeDataSourceModule, createModule()],
         }).compile(),
       ).rejects.toThrow(message);
+    },
+  );
+
+  // Phase 23 integration (2026-11-07): `ConditionService` injects the
+  // registry optionally, so a token it cannot see would still boot, silently
+  // with the built-ins only. Every copy Nest builds must hold the registry
+  // and call the host function with it.
+  it.each([
+    [
+      'forRoot',
+      (): ReturnType<typeof BPMRootModule.forRoot> =>
+        BPMRootModule.forRoot({
+          expressionFunctions: [expressionFunction('erp_band_v1')],
+        }),
+    ],
+    [
+      'forRootAsync',
+      (): ReturnType<typeof BPMRootModule.forRootAsync> =>
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({
+            expressionFunctions: [expressionFunction('erp_band_v1')],
+          }),
+        }),
+    ],
+  ])(
+    'hands the registry to every ConditionService copy (%s)',
+    async (_case: string, createModule): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [FakeDataSourceModule, createModule()],
+      }).compile();
+
+      try {
+        const registry = moduleRef.get<BPMExpressionFunctionRegistry>(
+          BPM_EXPRESSION_FUNCTION_REGISTRY,
+        );
+        const container = (
+          moduleRef as unknown as {
+            readonly container: {
+              getModules(): Map<
+                string,
+                {
+                  readonly providers: Map<
+                    unknown,
+                    { readonly instance: unknown }
+                  >;
+                }
+              >;
+            };
+          }
+        ).container;
+        const services = [...container.getModules().values()].flatMap(
+          (module) => {
+            const wrapper = module.providers.get(ConditionService);
+
+            return wrapper?.instance instanceof ConditionService
+              ? [wrapper.instance]
+              : [];
+          },
+        );
+
+        expect(services.length).toBeGreaterThanOrEqual(1);
+        services.forEach((service): void => {
+          expect(Reflect.get(service, 'functionRegistry')).toBe(registry);
+          expect(
+            service.evaluateValue(
+              'erp_band_v1(form.amount)',
+              { form: { amount: 1 } },
+              'entry',
+              { allowedRootIdentifiers: ['form'], dialect: 'cel-v2' },
+            ),
+          ).toBe('LOW');
+        });
+      } finally {
+        await moduleRef.close();
+      }
     },
   );
 

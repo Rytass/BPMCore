@@ -4,7 +4,12 @@ import {
   FormFieldOption,
   TableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { MemberMetadata } from '@rytass/bpm-core-shared';
+import {
+  type BPMExpressionValue,
+  MemberMetadata,
+} from '@rytass/bpm-core-shared';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
+import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import {
   ApproverResolver,
   DecisionPolicy,
@@ -3947,6 +3952,163 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance).toBeNull();
       expect(formData.secret).toBe(SECRET_VALUE);
       expect(formData.l).toHaveLength(60);
+    });
+
+    // Phase 23 P3 gate, end to end through the engine (integration of P2 and
+    // P3, 2026-11-07). The real cel-v2 adapter runs here: only `cel-js`
+    // (cel-legacy) is shimmed in this jest project. No adapter is spied on:
+    // a registry's runtime builds adapters of its own.
+    describe('host functions (Phase 23 P3 gate)', (): void => {
+      const HANDLER_SECRET = 'HANDLER-SECRET-ENGINE-13';
+      const band: BPMExpressionFunction = {
+        description: 'Band of an amount',
+        handler: (
+          ...args: readonly BPMExpressionValue[]
+        ): BPMExpressionValue => ((args[0] as number) > 1000 ? 'HIGH' : 'LOW'),
+        label: 'band',
+        name: 'erp_band_v1',
+        parameters: [{ name: 'amount', type: 'double' }],
+        returnType: 'string',
+      };
+      const leaky: BPMExpressionFunction = {
+        ...band,
+        handler: (): never => {
+          throw new Error(`${HANDLER_SECRET} while reading ${SECRET_VALUE}`);
+        },
+        name: 'erp_leaky_v1',
+      };
+      const fixtureWith = (
+        registry: StaticBPMExpressionFunctionRegistry,
+        highCondition: string,
+        formData: Readonly<Record<string, unknown>>,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          conditionService: new ConditionService(registry),
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processFormData: formData,
+          processWorkflowSnapshot: withDialect(
+            createExclusiveGatewayWorkflow({
+              highCondition,
+              includeStructuredCondition: false,
+            }),
+            'cel-v2',
+          ),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const captureLogs = (): readonly string[] => {
+        const logged: string[] = [];
+
+        (['debug', 'log', 'warn', 'error', 'verbose'] as const).forEach(
+          (level): void => {
+            jest
+              .spyOn(Logger.prototype, level)
+              .mockImplementation((...messages: unknown[]): void => {
+                logged.push(messages.map(String).join(' '));
+              });
+          },
+        );
+
+        return logged;
+      };
+      const expectFailedAndUnmoved = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        error: unknown,
+        outcomes: readonly string[],
+      ): void => {
+        expect(error).toBeInstanceOf(ExpressionRuntimeError);
+        expect((error as ExpressionRuntimeError).code).toBe(
+          'EXPRESSION_FUNCTION_FAILED',
+        );
+        expect((error as ExpressionRuntimeError).message).toBe(
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_FUNCTION_FAILED',
+        );
+        expect(outcomes).toEqual(['rollback']);
+        expect(fixture.savedTasks).toEqual([]);
+        expect(fixture.savedInstance).toBeNull();
+      };
+
+      it('routes with a registered host function', async (): Promise<void> => {
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([band]),
+          'erp_band_v1(form.amount) == "HIGH"',
+          { amount: 5000 },
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+          'task_high',
+        ]);
+      });
+
+      it('keeps a handler’s message out of the error, its response and every log, and rolls back', async (): Promise<void> => {
+        const logged = captureLogs();
+        const formData = { amount: 5000, secret: SECRET_VALUE };
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([band, leaky]),
+          // `|| true` would absorb the failure under plain CEL rules: it must
+          // not (docs/24 §1, decided 2026-11-07).
+          'erp_leaky_v1(form.amount) == "HIGH" || true',
+          formData,
+        );
+        const outcomes = recordTransactionOutcomes(fixture);
+
+        const error: unknown = await fixture.service
+          .processInstance('instance-1')
+          .then(
+            (): null => null,
+            (thrown: unknown): unknown => thrown,
+          );
+
+        expectFailedAndUnmoved(fixture, error, outcomes);
+
+        const visible = [
+          (error as ExpressionRuntimeError).message,
+          JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+          ...logged,
+        ].join('\n');
+
+        expect(visible).not.toContain(HANDLER_SECRET);
+        expect(visible).not.toContain(SECRET_VALUE);
+        expect(logged).toContainEqual(
+          expect.stringContaining(
+            'function=erp_leaky_v1 code=EXPRESSION_FUNCTION_FAILED reason=threw',
+          ),
+        );
+        expect(formData).toEqual({ amount: 5000, secret: SECRET_VALUE });
+      });
+
+      it('fails a case on a published version closed once the function is withdrawn', async (): Promise<void> => {
+        captureLogs();
+        const formData = { amount: 5000 };
+        // The published version calls `erp_band_v1`; the host no longer
+        // registers it. Even behind `true ||`, where the engine would never
+        // reach the call, the evaluation fails before the engine runs.
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([leaky]),
+          'true || erp_band_v1(form.amount) == "HIGH"',
+          formData,
+        );
+        const outcomes = recordTransactionOutcomes(fixture);
+
+        const error: unknown = await fixture.service
+          .processInstance('instance-1')
+          .then(
+            (): null => null,
+            (thrown: unknown): unknown => thrown,
+          );
+
+        expectFailedAndUnmoved(fixture, error, outcomes);
+        expect(
+          fixture.savedWorkflowTokens.map((token) => token.currentNodeId),
+        ).not.toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^(task_high|task_default|end)$/u),
+          ]),
+        );
+        expect(formData).toEqual({ amount: 5000 });
+      });
     });
 
     it('dry-runs a cel-v2 draft with cel-v2, loading it before the budget', (): void => {
@@ -17170,6 +17332,7 @@ interface OrgUnitQueryBuilderMock {
 
 function createServiceFixture({
   additionalProcessTasks = [],
+  conditionService = new ConditionService(),
   currentVersionId,
   delegationResolution,
   delegationResolutionByMember = {},
@@ -17207,6 +17370,9 @@ function createServiceFixture({
   webhookDeliveryService,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
+  // Defaults to the built-ins-only service; a test hands in one built with a
+  // function registry, as `ConditionModule` injects it.
+  readonly conditionService?: ConditionService;
   readonly currentVersionId: string | null;
   readonly delegationResolution?: DelegationResolution;
   // Per-member delegation, taking precedence over `delegationResolution`.
@@ -18242,7 +18408,7 @@ function createServiceFixture({
       templateVersionRepository,
       formVersionRepository,
       attachmentService as unknown as AttachmentService,
-      new ConditionService(),
+      conditionService,
       delegationService as unknown as DelegationService,
       notificationService as unknown as NotificationService,
       signatureService as unknown as SignatureService,

@@ -5,6 +5,7 @@ import {
   toExpressionRuntimeError,
 } from './expression-errors';
 import type { ExpressionBudget } from './expression-budget';
+import { ExpressionEngineFailure } from './expression-engine-failure';
 import {
   DEFAULT_EXPRESSION_RESULT_LIMITS,
   type JsonValue,
@@ -121,7 +122,22 @@ export class ExpressionRuntime {
     label: string,
     dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT,
   ): ExpressionHandle {
-    const handle = this.readAdapter(dialect, label).compile(expression);
+    const adapter = this.readAdapter(dialect, label);
+    let handle: ExpressionHandle | null;
+
+    try {
+      handle = adapter.compile(expression);
+    } catch (error: unknown) {
+      // A classified failure (the function registry could not be read while
+      // the cel-v2 environment was built) is mapped like one at evaluation.
+      // Anything else — the engine failing to load — is a configuration
+      // error and passes through.
+      if (error instanceof ExpressionEngineFailure) {
+        throw toExpressionRuntimeError(error, label, expression);
+      }
+
+      throw error;
+    }
 
     if (handle === null) {
       throw new ExpressionRuntimeError('EXPRESSION_SYNTAX_ERROR', label);

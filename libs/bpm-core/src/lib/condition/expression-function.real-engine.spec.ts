@@ -579,27 +579,78 @@ describe('expression functions on the real engines', (): void => {
     });
   });
 
-  describe('through ConditionService (built-ins only until P2 wires the registry)', (): void => {
-    const service = new ConditionService();
-    const evaluate = (
-      expression: string,
-      dialect: ExpressionDialect,
-    ): unknown =>
-      service.evaluateValue(expression, { form: { x: 2.4 } }, 'entry', {
-        allowedRootIdentifiers: ['form'],
-        dialect,
-      });
+  // Rewritten 2026-11-07 (integration of P2 and P3), a deliberate change: this
+  // group used to pin that `ConditionService` called the built-ins only,
+  // until it was given the registry. It now injects one; without it,
+  // `new ConditionService()` still has only the built-ins.
+  describe('through ConditionService', (): void => {
+    const evaluateThrough =
+      (service: ConditionService) =>
+      (expression: string, dialect: ExpressionDialect): unknown =>
+        service.evaluateValue(expression, { form: { x: 2.4 } }, 'entry', {
+          allowedRootIdentifiers: ['form'],
+          dialect,
+        });
+    const builtInsOnly = evaluateThrough(new ConditionService());
+    const withRegistry = evaluateThrough(new ConditionService(registry));
+    const withWithdrawn = evaluateThrough(
+      new ConditionService(withdrawnRegistry),
+    );
 
-    it('calls a built-in in cel-v2', (): void => {
-      expect(evaluate('round(form.x)', 'cel-v2')).toBe(2);
+    it('calls a built-in in cel-v2, with or without a registry', (): void => {
+      expect(builtInsOnly('round(form.x)', 'cel-v2')).toBe(2);
+      expect(withRegistry('round(form.x)', 'cel-v2')).toBe(2);
+    });
+
+    it('calls the injected registry’s host function in cel-v2', (): void => {
+      expect(withRegistry('erp_costBand_v1(form.x * 100000.0)', 'cel-v2')).toBe(
+        'HIGH',
+      );
+    });
+
+    it.each([
+      ['without a registry', builtInsOnly],
+      ['after the function was withdrawn', withWithdrawn],
+    ])(
+      'fails a host function call %s with EXPRESSION_FUNCTION_FAILED',
+      (_case, evaluate): void => {
+        expect(
+          captureRuntimeError(() =>
+            evaluate('erp_costBand_v1(form.x) == "LOW"', 'cel-v2'),
+          ).code,
+        ).toBe('EXPRESSION_FUNCTION_FAILED');
+      },
+    );
+
+    it('keeps an unknown name that is not shaped like a host function a type error (docs/24 §2.1)', (): void => {
+      expect(
+        captureRuntimeError(() => withRegistry('nope(form.x)', 'cel-v2')).code,
+      ).toBe('EXPRESSION_TYPE_ERROR');
+    });
+
+    it('keeps the handler’s message out of the error and the logs', (): void => {
+      const error = captureRuntimeError(() =>
+        withRegistry('throws_v1(1) || true', 'cel-v2'),
+      );
+
+      expect(error.code).toBe('EXPRESSION_FUNCTION_FAILED');
+      expect(error.message).toBe('entry: EXPRESSION_FUNCTION_FAILED');
+      expect(JSON.stringify(error.getResponse())).not.toContain(SECRET);
+      expect(logged.join('\n')).not.toContain(SECRET);
     });
 
     it('still refuses a call in cel-legacy: its textual root check reads the name as a root', (): void => {
       // Unchanged behaviour, pinned: the cel-legacy root lint in
-      // condition.service.ts (P2's) treats `round` as an unknown root, so the
-      // call never reaches the engine when the use point has an allowlist.
+      // condition.service.ts treats `round` as an unknown root, so the call
+      // never reaches the engine when the use point has an allowlist.
       expect(
-        captureRuntimeError(() => evaluate('round(form.x)', 'cel-legacy')).code,
+        captureRuntimeError(() => builtInsOnly('round(form.x)', 'cel-legacy'))
+          .code,
+      ).toBe('EXPRESSION_SYNTAX_ERROR');
+      expect(
+        captureRuntimeError(() =>
+          withRegistry('erp_costBand_v1(form.x)', 'cel-legacy'),
+        ).code,
       ).toBe('EXPRESSION_SYNTAX_ERROR');
     });
   });

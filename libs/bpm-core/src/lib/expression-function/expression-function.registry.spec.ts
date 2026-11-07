@@ -112,6 +112,90 @@ describe('validateExpressionFunctions', (): void => {
     );
   });
 
+  // An own `Symbol.toStringTag` changes what `Object.prototype.toString`
+  // reports, but not the prototype chain the check reads (2026-11-07).
+  it.each([
+    [
+      'an async function',
+      async (): Promise<BPMExpressionValue> => Promise.resolve('LOW'),
+    ],
+    [
+      'a generator function',
+      function* generator(): Generator<BPMExpressionValue> {
+        yield 'LOW';
+      },
+    ],
+    [
+      'an async generator function',
+      async function* asyncGenerator(): AsyncGenerator<BPMExpressionValue> {
+        yield 'LOW';
+      },
+    ],
+  ])(
+    'refuses %s disguised by an own Symbol.toStringTag',
+    (_case: string, handler: object): void => {
+      const disguised = Object.defineProperty(handler, Symbol.toStringTag, {
+        value: 'Function',
+      });
+
+      expect(Object.prototype.toString.call(disguised)).toBe(
+        '[object Function]',
+      );
+      expect(readRefusal([hostFunction({ handler: disguised })])).toContain(
+        '"erp_costBand_v1" has an async or generator handler',
+      );
+    },
+  );
+
+  // Integration review (2026-11-07): moving the prototype to
+  // `Function.prototype` as well as setting the tag used to pass both checks.
+  // The engine's own function kind (`util.types`) cannot be changed that way.
+  it.each([
+    [
+      'an async function',
+      async (): Promise<BPMExpressionValue> => Promise.resolve('LOW'),
+    ],
+    [
+      'a generator function',
+      function* generator(): Generator<BPMExpressionValue> {
+        yield 'LOW';
+      },
+    ],
+    [
+      'an async generator function',
+      async function* asyncGenerator(): AsyncGenerator<BPMExpressionValue> {
+        yield 'LOW';
+      },
+    ],
+  ])(
+    'refuses %s re-parented to Function.prototype and re-tagged',
+    (_case: string, handler: object): void => {
+      const disguised = Object.defineProperty(
+        Object.setPrototypeOf(handler, Function.prototype) as object,
+        Symbol.toStringTag,
+        { value: 'Function' },
+      );
+
+      expect(Object.getPrototypeOf(disguised)).toBe(Function.prototype);
+      expect(Object.prototype.toString.call(disguised)).toBe(
+        '[object Function]',
+      );
+      expect(readRefusal([hostFunction({ handler: disguised })])).toContain(
+        '"erp_costBand_v1" has an async or generator handler',
+      );
+    },
+  );
+
+  it('refuses a bound async function', (): void => {
+    const bound = (async (): Promise<BPMExpressionValue> => 'LOW').bind(
+      undefined,
+    );
+
+    expect(readRefusal([hostFunction({ handler: bound })])).toContain(
+      'has an async or generator handler',
+    );
+  });
+
   it('refuses a missing handler', (): void => {
     expect(
       readRefusal([hostFunction({ handler: 'not a function' })]),

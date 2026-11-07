@@ -9,7 +9,11 @@ import type {
 } from '@rytass/bpm-core-shared/workflow';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
-import type { BPMExpressionFunctionRegistry } from '../expression-function/expression-function.types';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
+import type {
+  BPMExpressionFunction,
+  BPMExpressionFunctionRegistry,
+} from '../expression-function/expression-function.types';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { FormService } from '../form/form.service';
@@ -562,5 +566,105 @@ describe('TemplateService rollback (docs/24 §1)', (): void => {
     ).resolves.toMatchObject({
       status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
+  });
+});
+
+/**
+ * Phase 23 P3 gate, after the integration (2026-11-07): one real registry,
+ * handed to both `TemplateService` and `ConditionService` as Nest does, before
+ * and after the host withdrew `erp_band_v1`.
+ */
+describe('Phase 23 P3 gate: a withdrawn function (real registry)', (): void => {
+  const band: BPMExpressionFunction = {
+    description: 'Band of an amount',
+    handler: (): string => 'A',
+    label: 'band',
+    name: 'erp_band_v1',
+    parameters: [{ name: 'amount', type: 'double' }],
+    returnType: 'string',
+  };
+  const other: BPMExpressionFunction = {
+    ...band,
+    name: 'erp_other_v1',
+  };
+  const published = new StaticBPMExpressionFunctionRegistry([band, other]);
+  const withdrawn = new StaticBPMExpressionFunctionRegistry([other]);
+  const definition = edgeConditionDefinition(
+    'erp_band_v1(form.amount) == "A"',
+    'cel-v2',
+  );
+  const wired = (
+    registry: BPMExpressionFunctionRegistry,
+    status: ApprovalTemplateVersionStatusEnum,
+  ): TemplateService =>
+    createService({
+      conditionService: new ConditionService(registry),
+      definition,
+      registry,
+      status,
+    });
+
+  it('publishes a version that calls it while it is registered', async (): Promise<void> => {
+    await expect(
+      wired(
+        published,
+        ApprovalTemplateVersionStatusEnum.DRAFT,
+      ).publishApprovalTemplateVersion('template-version-1'),
+    ).resolves.toMatchObject({
+      status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+  });
+
+  it('refuses to publish a new version that calls it after the withdrawal', async (): Promise<void> => {
+    expect(
+      await readPublishError(
+        wired(withdrawn, ApprovalTemplateVersionStatusEnum.DRAFT),
+      ),
+    ).toBe(`${EDGE}: EXPR_FUNCTION_NOT_REGISTERED erp_band_v1`);
+  });
+
+  it('refuses to roll back to a version that calls it after the withdrawal', async (): Promise<void> => {
+    await expect(
+      wired(
+        withdrawn,
+        ApprovalTemplateVersionStatusEnum.ARCHIVED,
+      ).rollbackApprovalTemplateVersion('template-version-1', 'member-1'),
+    ).rejects.toThrow(`${EDGE}: EXPR_FUNCTION_NOT_REGISTERED erp_band_v1`);
+    await expect(
+      wired(
+        published,
+        ApprovalTemplateVersionStatusEnum.ARCHIVED,
+      ).rollbackApprovalTemplateVersion('template-version-1', 'member-1'),
+    ).resolves.toMatchObject({
+      status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+  });
+
+  it('isolates a registry that throws during rollback', async (): Promise<void> => {
+    const secret = 'ROLLBACK_SECRET_5';
+    const broken: BPMExpressionFunctionRegistry = {
+      assertPublishable: (): never => {
+        throw new Error(secret);
+      },
+      get: (name) => published.get(name),
+      list: () => published.list(),
+    };
+    const error: unknown = await wired(
+      broken,
+      ApprovalTemplateVersionStatusEnum.ARCHIVED,
+    )
+      .rollbackApprovalTemplateVersion('template-version-1', 'member-1')
+      .then(
+        (): null => null,
+        (thrown: unknown): unknown => thrown,
+      );
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).message).toBe(
+      `${EDGE}: EXPR_FUNCTION_NOT_REGISTERED erp_band_v1`,
+    );
+    expect(
+      JSON.stringify((error as BadRequestException).getResponse()),
+    ).not.toContain(secret);
   });
 });

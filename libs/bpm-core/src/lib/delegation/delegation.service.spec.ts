@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { celLegacyAdapter } from '../condition/adapters/cel-legacy.adapter';
 import { celV2Adapter } from '../condition/adapters/cel-v2.adapter';
 import { ConditionService } from '../condition/condition.service';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
 import { CreateDelegationRuleInput } from './dto/delegation-rule.input';
 import { DelegationRuleEntity } from './delegation-rule.entity';
 import {
@@ -947,6 +948,60 @@ describe('DelegationService', () => {
         scopeConditionCel: V2_ONLY_CONDITION,
         scopeConditionDialect: 'cel-v2',
       });
+    });
+
+    // Phase 23 integration (2026-11-07): the scope condition is linted at
+    // its use point, `DELEGATION_CONDITION`: a boolean result, and host
+    // functions the injected registry has.
+    it('lints a cel-v2 rule at the DELEGATION_CONDITION use point', async (): Promise<void> => {
+      const lint = jest.spyOn(ConditionService.prototype, 'lintExpression');
+      const service = new DelegationService(
+        createRepository(),
+        new ConditionService(
+          new StaticBPMExpressionFunctionRegistry([
+            {
+              description: 'Band',
+              handler: (): string => 'LOW',
+              label: 'band',
+              name: 'erp_band_v1',
+              parameters: [{ name: 'amount', type: 'double' }],
+              returnType: 'string',
+            },
+          ]),
+        ),
+      );
+
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_band_v1(form.amount)',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).rejects.toThrow('scopeConditionCel: EXPR_RESULT_TYPE_MISMATCH');
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_band_v1(form.amount) == "LOW"',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).resolves.toMatchObject({ scopeConditionDialect: 'cel-v2' });
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_gone_v1(form.amount) == "LOW"',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).rejects.toThrow(
+        'scopeConditionCel: EXPR_FUNCTION_NOT_REGISTERED erp_gone_v1',
+      );
+      expect(lint).toHaveBeenCalledWith(
+        expect.any(String),
+        'scopeConditionCel',
+        expect.objectContaining({ usagePoint: 'DELEGATION_CONDITION' }),
+      );
     });
 
     it('keeps the dialect of the rule it updates', async (): Promise<void> => {

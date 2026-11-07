@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
 import { ConditionService } from './condition.service';
 import {
   readExpressionOutcome,
@@ -113,4 +114,79 @@ describe('cel-legacy and cel-v2 on the repo corpus', (): void => {
       ).toBe(entry.expected.legacy);
     },
   );
+});
+
+/**
+ * The dialect upgrade check (P4) can run with the host's functions: hand
+ * `runExpressionDifferential` the `ConditionService` that holds the registry
+ * (integration of P2 and P3, 2026-11-07). Wiring a registry must not change
+ * any corpus outcome, and a host function then evaluates in both dialects'
+ * runtimes the same way.
+ */
+describe('the differential with a host function registry', (): void => {
+  const service = new ConditionService(
+    new StaticBPMExpressionFunctionRegistry([
+      {
+        description: 'Doubles a number',
+        handler: (...args): number => (args[0] as number) * 2,
+        label: 'double',
+        name: 'erp_twice_v1',
+        parameters: [{ name: 'value', type: 'double' }],
+        returnType: 'double',
+      },
+    ]),
+  );
+
+  beforeAll((): void => {
+    service.prepareEngine('cel-legacy');
+    service.prepareEngine('cel-v2');
+  });
+
+  beforeEach((): void => {
+    jest.spyOn(Logger.prototype, 'debug').mockReturnValue(undefined);
+    jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+  });
+
+  afterEach((): void => {
+    jest.restoreAllMocks();
+  });
+
+  it.each(DIFFERENTIAL_CORPUS.map((entry) => [entry.id, entry] as const))(
+    '%s keeps its pinned outcome',
+    (_id, entry): void => {
+      const result = runExpressionDifferential(
+        {
+          context: readDifferentialContext(entry),
+          expression: entry.expression,
+        },
+        service,
+      );
+
+      expect({ legacy: result.legacy, v2: result.v2 }).toEqual(entry.expected);
+    },
+  );
+
+  it('evaluates a host function in both dialects, and fails it closed without the registry', (): void => {
+    // cel-legacy's textual root check is skipped here (no allowlist), so
+    // both runtimes reach the function.
+    expect(
+      runExpressionDifferential(
+        {
+          context: { form: { amount: 2 } },
+          expression: 'erp_twice_v1(form.amount)',
+        },
+        service,
+      ),
+    ).toEqual({ legacy: 'ok:4', same: true, v2: 'ok:4' });
+    expect(
+      runExpressionDifferential({
+        context: { form: { amount: 2 } },
+        expression: 'erp_twice_v1(form.amount)',
+      }),
+    ).toEqual({
+      legacy: 'err:EXPRESSION_FUNCTION_FAILED',
+      same: true,
+      v2: 'err:EXPRESSION_FUNCTION_FAILED',
+    });
+  });
 });

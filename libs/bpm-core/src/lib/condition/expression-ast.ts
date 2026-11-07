@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { ASTNode, Environment } from '@marcbachmann/cel-js';
 import {
   allowsHostExpressionFunctions,
@@ -15,9 +16,11 @@ import {
   isFormOptionFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
 import type { BPMExpressionFunctionRegistry } from '../expression-function/expression-function.types';
 import { parseCelLegacy } from './adapters/cel-legacy.adapter';
 import { loadCelV2Environment } from './adapters/cel-v2.adapter';
+import { isRegistryFunctionName } from './expression-function-invocation';
 import {
   DEFAULT_EXPRESSION_DIALECT,
   ExpressionDialect,
@@ -246,9 +249,10 @@ type CelV2ParseOutcome =
  * told apart here so the lint can call it complexity rather than syntax. The
  * error's message is never read: it can echo the expression.
  */
-const parseCelV2Ast = (expression: string): CelV2ParseOutcome => {
-  const environment = loadCelV2Environment();
-
+const parseCelV2Ast = (
+  expression: string,
+  environment: Environment = loadCelV2Environment(),
+): CelV2ParseOutcome => {
   try {
     return { ast: environment.parse(expression).ast, status: 'OK' };
   } catch (error: unknown) {
@@ -262,8 +266,11 @@ const parseCelV2Ast = (expression: string): CelV2ParseOutcome => {
   }
 };
 
-function readCelV2References(expression: string): ExpressionReferencesResult {
-  const parsed = parseCelV2Ast(expression);
+function readCelV2References(
+  expression: string,
+  environment?: Environment,
+): ExpressionReferencesResult {
+  const parsed = parseCelV2Ast(expression, environment);
 
   if (parsed.status !== 'OK') {
     return parsed;
@@ -1196,8 +1203,11 @@ export interface ExpressionLintContext {
    */
   readonly formSchema?: FormDefinitionSchema | null;
   /**
-   * The function registry. Absent means only the nine built-ins exist
-   * (`BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES`): P3 provides the registry.
+   * The registry that answers which functions are available. Absent means
+   * only the nine built-ins exist (`BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES`);
+   * `ConditionService` fills it with the registry it was given. Host code:
+   * a throw or a malformed answer is isolated and refuses the names asked
+   * about (`EXPR_FUNCTION_NOT_REGISTERED`), never its message.
    */
   readonly functionRegistry?: ExpressionFunctionAvailability | null;
   /** The field a `SET_FORM_FIELD` writes; decides its result type. */
@@ -1407,9 +1417,141 @@ const lintFields = (
     .map((fieldKey) => issue('EXPR_FIELD_UNKNOWN', label, fieldKey));
 };
 
+const lintLogger = new Logger('ExpressionLint');
+
+/**
+ * Logs that the host's function registry failed the lint. Only a fixed
+ * reason: the registry's own message is host text and is never kept
+ * (docs/24 §2.6).
+ */
+const logRegistryFailure = (reason: string): void => {
+  lintLogger.warn(`code=EXPR_FUNCTION_NOT_REGISTERED reason=${reason}`);
+};
+
+const isStringList = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
+/**
+ * The called function names the registry cannot vouch for, in first-seen
+ * order and without duplicates (ADR 22 §5.3; publish and rollback share it).
+ *
+ * Only names {@link isRegistryFunctionName} accepts — `…_vN` and the nine
+ * built-ins — are put to `assertPublishable`; any other name can never be
+ * registered and is always reported. Without a registry only the built-ins
+ * exist.
+ *
+ * The registry is host code and is isolated: an `assertPublishable` that
+ * throws or answers something other than a list of strings makes every name
+ * asked about unavailable. The result only ever holds names the expression
+ * itself called, never a value the registry returned.
+ */
+export function readUnavailableExpressionFunctions(
+  names: readonly string[],
+  registry: ExpressionFunctionAvailability | null | undefined,
+): readonly string[] {
+  const unique = [...new Set(names)];
+  const asked = unique.filter(isRegistryFunctionName);
+  const builtIns: ReadonlySet<string> = new Set(
+    BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
+  );
+  const answered = ((): ReadonlySet<string> => {
+    if (!registry) {
+      return new Set(asked.filter((name) => !builtIns.has(name)));
+    }
+
+    if (asked.length === 0) {
+      return new Set();
+    }
+
+    try {
+      const result: unknown = registry.assertPublishable(asked);
+
+      if (isStringList(result)) {
+        return new Set(result);
+      }
+
+      logRegistryFailure('assert-publishable-shape');
+    } catch {
+      logRegistryFailure('assert-publishable-threw');
+    }
+
+    return new Set(asked);
+  })();
+
+  return unique.filter(
+    (name) => !isRegistryFunctionName(name) || answered.has(name),
+  );
+}
+
+/**
+ * The parameter count the registry declares for `name`: `ABSENT` when `get`
+ * answers `null` (`assertPublishable` already decided availability), `BROKEN`
+ * when it throws or returns something without a parameter list. Isolated like
+ * {@link readUnavailableExpressionFunctions}.
+ */
+const readRegisteredParameterCount = (
+  registry: ExpressionFunctionAvailability,
+  name: string,
+): number | 'ABSENT' | 'BROKEN' => {
+  try {
+    const registered: unknown = registry.get(name);
+
+    if (registered === null) {
+      return 'ABSENT';
+    }
+
+    const parameters =
+      typeof registered === 'object'
+        ? (registered as { readonly parameters?: unknown }).parameters
+        : undefined;
+
+    if (Array.isArray(parameters)) {
+      return parameters.length;
+    }
+
+    logRegistryFailure('get-shape');
+  } catch {
+    logRegistryFailure('get-threw');
+  }
+
+  return 'BROKEN';
+};
+
+/**
+ * The cel-v2 environment the lint parses and type-checks with: the one of the
+ * registry the evaluation will use, so host functions are type-checked too
+ * (docs/24 §2.5). Building it reads the registry's `list` and `get`; when
+ * that fails the built-ins-only environment is used and `failed` is set, and
+ * the lint refuses the expression (evaluation could not build it either).
+ */
+interface LintEnvironment {
+  readonly environment: Environment;
+  readonly failed: boolean;
+}
+
+const readLintEnvironment = (
+  registry: BPMExpressionFunctionRegistry | null | undefined,
+): LintEnvironment => {
+  if (!registry || registry === BUILT_IN_EXPRESSION_FUNCTION_REGISTRY) {
+    return { environment: loadCelV2Environment(), failed: false };
+  }
+
+  // Loaded first and outside the `try`: a failure to load the engine is a
+  // configuration error, not the registry's.
+  const builtInEnvironment = loadCelV2Environment();
+
+  try {
+    return { environment: loadCelV2Environment(registry), failed: false };
+  } catch {
+    logRegistryFailure('environment');
+
+    return { environment: builtInEnvironment, failed: true };
+  }
+};
+
 interface FunctionLintResult {
   readonly issues: readonly ExpressionLintIssue[];
-  /** Global functions the shared environment cannot type-check yet. */
+  /** Global functions the lint environment cannot type-check. */
   readonly uncheckable: boolean;
 }
 
@@ -1417,6 +1559,7 @@ const lintFunctions = (
   references: ExpressionReferences,
   label: string,
   context: ExpressionLintContext,
+  lintEnvironment: LintEnvironment,
 ): FunctionLintResult => {
   const engine = readEngineFunctionNames();
   const unknownMethods = [
@@ -1435,9 +1578,9 @@ const lintFunctions = (
     BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
   );
   const missing = new Set(
-    registry
-      ? registry.assertPublishable(hostNames)
-      : hostNames.filter((name) => !builtIns.has(name)),
+    lintEnvironment.failed
+      ? hostNames
+      : readUnavailableExpressionFunctions(hostNames, registry),
   );
   // A call whose argument count matches no registered parameter list names
   // no registered function either (ADR 22 §5.3: "the function and version").
@@ -1445,12 +1588,9 @@ const lintFunctions = (
     ? hostCalls
         .filter((call) => !missing.has(call.name))
         .filter((call) => {
-          const registered = registry.get(call.name);
+          const count = readRegisteredParameterCount(registry, call.name);
 
-          return (
-            registered !== null &&
-            registered.parameters.length !== call.argumentCount
-          );
+          return count !== 'ABSENT' && count !== call.argumentCount;
         })
         .map((call) => call.name)
     : [];
@@ -1463,18 +1603,24 @@ const lintFunctions = (
   const notAllowed = hostFunctionsAllowed
     ? []
     : hostNames.filter((name) => !missing.has(name) && !builtIns.has(name));
-  const checkable = readCheckableGlobalNames(loadCelV2Environment());
+  const checkable = readCheckableGlobalNames(lintEnvironment.environment);
 
   return {
     issues: [
       ...notRegistered.map((name) =>
         issue('EXPR_FUNCTION_NOT_REGISTERED', label, name),
       ),
+      // A registry that cannot be read refuses even an expression that
+      // calls nothing: evaluation builds its environment from the same list.
+      ...(lintEnvironment.failed && notRegistered.length === 0
+        ? [issue('EXPR_FUNCTION_NOT_REGISTERED', label)]
+        : []),
       ...notAllowed.map((name) =>
         issue('EXPR_FUNCTION_NOT_ALLOWED', label, name),
       ),
     ],
     uncheckable:
+      lintEnvironment.failed ||
       unknownMethods.length > 0 ||
       hostNames.some((name) => !checkable.has(name)),
   };
@@ -1565,11 +1711,15 @@ const isTolerated = (node: ASTNode): boolean =>
 
 const createLintEnvironment = (
   fieldTypes: ReadonlyMap<string, string> | null,
+  base: Environment,
 ): Environment => {
-  // `clone` copies the shared environment's registrations (the mixed
-  // int/double operators, and the host functions once P3 registers them)
-  // without touching it.
-  const environment = loadCelV2Environment().clone();
+  // `clone` copies the registry environment's registrations (the mixed
+  // int/double operators, the built-ins and the host's functions) without
+  // touching it. That environment is frozen when it is built (cel-v2
+  // adapter), before anyone can clone it, so cloning here never stops a
+  // registration that is still to come, whichever of boot, lint and
+  // evaluation runs first.
+  const environment = base.clone();
 
   if (fieldTypes !== null) {
     const schema = Object.fromEntries(fieldTypes);
@@ -1590,12 +1740,13 @@ const createLintEnvironment = (
 const runTypeCheck = (
   expression: string,
   fieldTypes: ReadonlyMap<string, string> | null,
+  base: Environment,
 ): TypeCheckOutcome => {
   const check = (
     types: ReadonlyMap<string, string> | null,
     rounds: number,
   ): TypeCheckOutcome => {
-    const result = createLintEnvironment(types).parse(expression).check();
+    const result = createLintEnvironment(types, base).parse(expression).check();
 
     if (result.valid) {
       return { status: 'OK', type: result.type };
@@ -1648,6 +1799,7 @@ const lintTypes = (
   expression: string,
   label: string,
   context: ExpressionLintContext,
+  base: Environment,
 ): readonly ExpressionLintIssue[] => {
   const fields = readSchemaFields(context.formSchema);
   const fieldTypes = context.formSchema
@@ -1658,7 +1810,7 @@ const lintTypes = (
         ]),
       )
     : null;
-  const outcome = runTypeCheck(expression, fieldTypes);
+  const outcome = runTypeCheck(expression, fieldTypes, base);
 
   if (outcome.status === 'FAILED') {
     return [issue(outcome.code, label, outcome.fieldKey ?? undefined)];
@@ -1739,17 +1891,25 @@ const lintWarnings = (
  * expected trimmed and within the length limit (`ConditionService` checks
  * both first).
  *
+ * `environmentRegistry` is the registry evaluation will run with (the one
+ * `ConditionService` was given): the expression is parsed and type-checked in
+ * its cel-v2 environment, so the built-ins and the host's functions are
+ * type-checked like the engine's own. Absent means the built-ins only. It is
+ * separate from `context.functionRegistry`, which only answers availability
+ * (`assertPublishable`, `get`) and need not be able to build an environment.
+ *
  * The type check (`env.check()`) runs only when nothing structural is wrong
- * and every function called is one the shared environment knows: until P3
- * registers the built-in and host functions there, an expression calling one
- * is covered by `EXPR_FUNCTION_NOT_REGISTERED` instead.
+ * and every function called is one that environment knows; a call to one it
+ * does not know is covered by `EXPR_FUNCTION_NOT_REGISTERED` instead.
  */
 export function lintCelV2Expression(
   expression: string,
   label: string,
   context: ExpressionLintContext = {},
+  environmentRegistry?: BPMExpressionFunctionRegistry | null,
 ): readonly ExpressionLintIssue[] {
-  const parsed = readCelV2References(expression);
+  const lintEnvironment = readLintEnvironment(environmentRegistry);
+  const parsed = readCelV2References(expression, lintEnvironment.environment);
 
   if (parsed.status !== 'OK') {
     return [
@@ -1765,11 +1925,11 @@ export function lintCelV2Expression(
   const { references } = parsed;
   const structural = lintStructure(references, label, context);
   const fieldIssues = lintFields(references, label, context.formSchema);
-  const functions = lintFunctions(references, label, context);
+  const functions = lintFunctions(references, label, context, lintEnvironment);
   const errors = [...structural, ...fieldIssues, ...functions.issues];
   const typeIssues =
     errors.length === 0 && !functions.uncheckable
-      ? lintTypes(expression, label, context)
+      ? lintTypes(expression, label, context, lintEnvironment.environment)
       : [];
 
   return [
@@ -1782,7 +1942,9 @@ export function lintCelV2Expression(
 /**
  * The global function names an expression calls that cel-v2 does not provide
  * itself: the built-ins and host functions a rollback must find registered
- * (docs/24 §1). `null` when the expression cannot be read.
+ * (docs/24 §1). `null` when the expression cannot be read. Hand the result to
+ * {@link readUnavailableExpressionFunctions}, which applies the same name
+ * rule and registry isolation as the publish lint.
  */
 export function readExpressionHostFunctionNames(
   expression: string,

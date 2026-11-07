@@ -1,9 +1,11 @@
 import { Logger } from '@nestjs/common';
 import {
+  BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
   BPM_EXPRESSION_FUNCTION_NAME_PATTERN,
   type BPMExpressionValue,
   type BPMExpressionValueType,
 } from '@rytass/bpm-core-shared';
+import { BPM_EXPRESSION_VALUE_TYPES } from '../expression-function/expression-function.registry';
 import type {
   BPMExpressionFunction,
   BPMExpressionFunctionRegistry,
@@ -263,9 +265,96 @@ const tables = new WeakMap<
   ExpressionFunctionTable
 >();
 
+type RegistryFailureReason = 'registry-shape' | 'registry-threw';
+
+/** Thrown inside the table read when the registry answered out of shape. */
+class RegistryShapeError extends Error {}
+
+const VALUE_TYPES: ReadonlySet<string> = new Set(BPM_EXPRESSION_VALUE_TYPES);
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const refuseShape = (): never => {
+  throw new RegistryShapeError();
+};
+
+const readValueType = (value: unknown): BPMExpressionValueType =>
+  typeof value === 'string' && VALUE_TYPES.has(value)
+    ? (value as BPMExpressionValueType)
+    : refuseShape();
+
+/**
+ * A frozen copy of what `get` returned for `name`, or a shape refusal. The
+ * copy is what the wrappers read, so a registry that changes the object it
+ * returned later changes nothing here.
+ */
+const readRegisteredFunction = (
+  candidate: unknown,
+  name: string,
+): BPMExpressionFunction => {
+  if (!isRecord(candidate) || candidate.name !== name) {
+    return refuseShape();
+  }
+
+  const { description, handler, label, parameters, returnType } = candidate;
+
+  if (typeof handler !== 'function' || !Array.isArray(parameters)) {
+    return refuseShape();
+  }
+
+  return Object.freeze({
+    description: typeof description === 'string' ? description : '',
+    handler: handler as BPMExpressionFunction['handler'],
+    label: typeof label === 'string' ? label : name,
+    name,
+    parameters: Object.freeze(
+      (parameters as readonly unknown[]).map((parameter: unknown) =>
+        isRecord(parameter) && typeof parameter.name === 'string'
+          ? Object.freeze({
+              name: parameter.name,
+              type: readValueType(parameter.type),
+            })
+          : refuseShape(),
+      ),
+    ),
+    returnType: readValueType(returnType),
+  });
+};
+
+const failRegistry = (reason: RegistryFailureReason): never => {
+  logger.warn(`code=EXPRESSION_FUNCTION_FAILED reason=${reason}`);
+
+  throw new ExpressionEngineFailure('EXPRESSION_FUNCTION_FAILED');
+};
+
+const readListedNames = (listed: unknown): readonly string[] => {
+  if (!Array.isArray(listed)) {
+    return refuseShape();
+  }
+
+  const names = (listed as readonly unknown[]).map((descriptor: unknown) =>
+    isRecord(descriptor) &&
+    typeof descriptor.name === 'string' &&
+    isRegistryFunctionName(descriptor.name)
+      ? descriptor.name
+      : refuseShape(),
+  );
+
+  // A name listed twice would register two overloads of one signature.
+  return new Set(names).size === names.length ? names : refuseShape();
+};
+
 /**
  * Reads every function a registry lists, through `get`, once per registry.
- * A registry that lists a name it cannot return is a host configuration error.
+ *
+ * The registry is host code (a host may provide its own under
+ * `BPM_EXPRESSION_FUNCTION_REGISTRY`). If `list` or `get` throws, or answers
+ * out of shape — not a list, a name that is not a function name or is listed
+ * twice, `null` for a listed name, an object without a handler or with an
+ * unknown type — the evaluation fails with `EXPRESSION_FUNCTION_FAILED`. The
+ * host's message is never kept: only a fixed reason is logged. A failure is
+ * not cached, so the next evaluation asks the registry again.
  */
 export const readExpressionFunctionTable = (
   registry: BPMExpressionFunctionRegistry,
@@ -276,19 +365,20 @@ export const readExpressionFunctionTable = (
     return cached;
   }
 
-  const functions = Object.freeze(
-    registry.list().map((descriptor): BPMExpressionFunction => {
-      const fn = registry.get(descriptor.name);
+  let functions: readonly BPMExpressionFunction[];
 
-      if (fn === null) {
-        throw new Error(
-          `[@rytass/bpm-core-nestjs-module] The expression function registry lists "${descriptor.name}" but returns no function for it.`,
-        );
-      }
+  try {
+    functions = Object.freeze(
+      readListedNames(registry.list()).map((name) =>
+        readRegisteredFunction(registry.get(name), name),
+      ),
+    );
+  } catch (error: unknown) {
+    return failRegistry(
+      error instanceof RegistryShapeError ? 'registry-shape' : 'registry-threw',
+    );
+  }
 
-      return fn;
-    }),
-  );
   const table: ExpressionFunctionTable = Object.freeze({
     functions,
     names: new Set(functions.map((fn) => fn.name)),
@@ -299,19 +389,36 @@ export const readExpressionFunctionTable = (
   return table;
 };
 
+const BUILT_IN_NAMES: ReadonlySet<string> = new Set(
+  BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
+);
+
 /**
- * Whether an expression calls a host function the registry does not have —
- * one that was withdrawn after the version was published. Only names shaped
- * like a host function (`…_vN`) count: any other unknown name keeps the
- * engine's own error, as before functions existed. The caller fails the
- * evaluation with `EXPRESSION_FUNCTION_FAILED` before the engine runs, so the
- * outcome does not depend on which branch the engine would have reached.
+ * Whether a called name is one a registry decides: shaped like a host function
+ * (`…_vN`) or one of the nine built-ins. The engine's own functions (`size`,
+ * `int`, `matches`, …) never are, and neither is any other unknown name, which
+ * keeps the engine's own error (`EXPRESSION_TYPE_ERROR`) at evaluation and is
+ * refused outright by the publish lint (docs/24 §2.1, 2026-11-07).
+ *
+ * The publish lint, the rollback check and {@link callsUnavailableFunction}
+ * all read this one rule.
+ */
+export const isRegistryFunctionName = (name: string): boolean =>
+  BUILT_IN_NAMES.has(name) || BPM_EXPRESSION_FUNCTION_NAME_PATTERN.test(name);
+
+/**
+ * Whether an expression calls a function the registry does not have — a host
+ * function withdrawn after the version was published, or a built-in a custom
+ * registry left out. Only names {@link isRegistryFunctionName} accepts count:
+ * any other unknown name keeps the engine's own error, as before functions
+ * existed. The caller fails the evaluation with `EXPRESSION_FUNCTION_FAILED`
+ * before the engine runs, so the outcome does not depend on which branch the
+ * engine would have reached.
  */
 export const callsUnavailableFunction = (
   calledNames: readonly string[],
   table: ExpressionFunctionTable,
 ): boolean =>
   calledNames.some(
-    (name) =>
-      BPM_EXPRESSION_FUNCTION_NAME_PATTERN.test(name) && !table.names.has(name),
+    (name) => isRegistryFunctionName(name) && !table.names.has(name),
   );

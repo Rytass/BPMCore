@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import {
   EXPRESSION_ROOT_IDENTIFIERS_BY_USAGE_POINT,
   ExpressionLintIssue,
@@ -6,17 +6,30 @@ import {
   isExpressionUsagePoint,
   readExpressionLintSeverity,
 } from '@rytass/bpm-core-shared';
-import { ExpressionRuntimeError } from './expression-errors';
+import {
+  ExpressionRuntimeError,
+  toExpressionRuntimeError,
+} from './expression-errors';
 import {
   createExpressionBudget,
   currentExpressionBudget,
   DEFAULT_EXPRESSION_BUDGET,
   ExpressionBudget,
 } from './expression-budget';
+import { ExpressionEngineFailure } from './expression-engine-failure';
 import { ExpressionRuntime } from './expression-runtime';
 import { JsonValue } from './expression-result.walker';
-import { loadCelEngine, parseCelLegacy } from './adapters/cel-legacy.adapter';
+import {
+  loadCelEngine,
+  parseCelLegacy,
+  readCelLegacyFunctions,
+} from './adapters/cel-legacy.adapter';
 import { loadCelV2Environment } from './adapters/cel-v2.adapter';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
+import {
+  BPM_EXPRESSION_FUNCTION_REGISTRY,
+  type BPMExpressionFunctionRegistry,
+} from '../expression-function/expression-function.types';
 import {
   DEFAULT_EXPRESSION_DIALECT,
   ExpressionDialect,
@@ -77,23 +90,55 @@ const CEL_KEYWORDS = new Set(['false', 'has', 'in', 'null', 'size', 'true']);
 
 @Injectable()
 export class ConditionService {
-  // Not a Nest provider: `ConditionService` is constructed with `new` in hosts
-  // and tests, so its constructor must stay argument-free.
-  private readonly runtime = new ExpressionRuntime();
+  private readonly functionRegistry: BPMExpressionFunctionRegistry;
+  private readonly runtime: ExpressionRuntime;
 
   /**
-   * Loads the dialect's engine now, outside any budget. Callers that are about to start a
+   * Evaluates and lints with the expression function registry
+   * (`BPM_EXPRESSION_FUNCTION_REGISTRY`, ADR 22 §3.5): both dialects call its
+   * functions and the cel-v2 lint checks against it. The injection is
+   * optional and `ConditionService` is also built with `new` in hosts and
+   * tests, so `new ConditionService()` still works: only the nine built-ins.
+   */
+  constructor(
+    @Optional()
+    @Inject(BPM_EXPRESSION_FUNCTION_REGISTRY)
+    functionRegistry?: BPMExpressionFunctionRegistry | null,
+  ) {
+    this.functionRegistry =
+      functionRegistry ?? BUILT_IN_EXPRESSION_FUNCTION_REGISTRY;
+    // The built-ins-only registry gets the shared default adapters.
+    this.runtime = ExpressionRuntime.withFunctions(this.functionRegistry);
+  }
+
+  /**
+   * Loads the dialect's engine and builds this registry's function
+   * environment now, outside any budget. Callers that are about to start a
    * budgeted run (the dry run) call this first so an interrupt cannot land
-   * halfway through module loading.
+   * halfway through module loading or function registration.
    */
   prepareEngine(dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT): void {
-    if (readExpressionDialect(dialect, 'expressionDialect') === 'cel-v2') {
-      loadCelV2Environment();
+    const readDialect = readExpressionDialect(dialect, 'expressionDialect');
 
-      return;
+    try {
+      if (readDialect === 'cel-v2') {
+        loadCelV2Environment(this.functionRegistry);
+
+        return;
+      }
+
+      loadCelEngine();
+      readCelLegacyFunctions(this.functionRegistry);
+    } catch (error: unknown) {
+      // A registry that throws or answers out of shape is
+      // `EXPRESSION_FUNCTION_FAILED`, never the host's own error. An engine
+      // that fails to load is a configuration error and passes through.
+      if (error instanceof ExpressionEngineFailure) {
+        throw toExpressionRuntimeError(error, 'expressionFunctions');
+      }
+
+      throw error;
     }
-
-    loadCelEngine();
   }
 
   lintExpressions(
@@ -139,7 +184,15 @@ export class ConditionService {
     }
 
     if (options.dialect === 'cel-v2') {
-      return lintCelV2Expression(trimmedExpression, label, options);
+      return lintCelV2Expression(
+        trimmedExpression,
+        label,
+        {
+          ...options,
+          functionRegistry: options.functionRegistry ?? this.functionRegistry,
+        },
+        this.functionRegistry,
+      );
     }
 
     if (parseCelLegacy(trimmedExpression) === null) {

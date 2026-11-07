@@ -615,6 +615,10 @@ export class DelegationService {
       {
         allowedRootIdentifiers: DELEGATION_EXPRESSION_ROOT_IDENTIFIERS,
         dialect: scopeConditionDialect,
+        // The use point brings the cel-v2 result type (bool) and the function
+        // rules (host functions allowed); its roots equal the list above, so
+        // cel-legacy reads the same roots as before.
+        usagePoint: 'DELEGATION_CONDITION',
       },
     );
 

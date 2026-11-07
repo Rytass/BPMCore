@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import {
   BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES,
   BPM_EXPRESSION_FUNCTION_NAME_PATTERN,
@@ -41,14 +42,48 @@ const CEL_LEGACY_KEYWORD_PREFIX = /^(?:true|false|null)/u;
 
 /*
  * `async function`, `function*` and `async function*` all return something a
- * synchronous evaluation cannot use. The tag is what the engine sets on the
- * function object itself, so it holds even for a handler from another realm.
+ * synchronous evaluation cannot use.
+ *
+ * The primary check is the engine's own function kind (`util.types`): it is
+ * fixed when the function is created, so neither `Object.setPrototypeOf` nor
+ * an own `Symbol.toStringTag` changes it, and it holds across realms. It does
+ * not see through `bind`, so the prototype chain is checked too: every such
+ * function inherits from the intrinsic `AsyncFunction.prototype`,
+ * `GeneratorFunction.prototype` or `AsyncGeneratorFunction.prototype` of this
+ * realm, and a bound copy keeps that prototype. The tag is a last check for a
+ * bound handler from another realm.
+ *
+ * A bound copy whose prototype was also moved to `Function.prototype` and
+ * re-tagged still passes all three; such a handler returns a promise, which
+ * the call wrapper refuses as `EXPRESSION_FUNCTION_FAILED` (fail closed).
  */
+const REFUSED_FUNCTION_PROTOTYPES: readonly object[] = [
+  Object.getPrototypeOf(async (): Promise<void> => undefined) as object,
+  Object.getPrototypeOf(function* refusedGenerator(): Generator<never> {
+    // Never called: only its prototype is read.
+  }) as object,
+  Object.getPrototypeOf(
+    async function* refusedAsyncGenerator(): AsyncGenerator<never> {
+      // Never called: only its prototype is read.
+    },
+  ) as object,
+  // A build that compiled these down to plain functions would yield
+  // `Function.prototype`, which every handler inherits from: never compare to it.
+].filter((prototype) => prototype !== Function.prototype);
+
 const REFUSED_FUNCTION_TAGS: ReadonlySet<string> = new Set([
   '[object AsyncFunction]',
   '[object AsyncGeneratorFunction]',
   '[object GeneratorFunction]',
 ]);
+
+const isAsyncOrGenerator = (handler: object): boolean =>
+  types.isAsyncFunction(handler) ||
+  types.isGeneratorFunction(handler) ||
+  REFUSED_FUNCTION_PROTOTYPES.some((prototype) =>
+    Object.prototype.isPrototypeOf.call(prototype, handler),
+  ) ||
+  REFUSED_FUNCTION_TAGS.has(Object.prototype.toString.call(handler));
 
 const PREFIX = '[@rytass/bpm-core-nestjs-module]';
 
@@ -149,7 +184,7 @@ const validateExpressionFunction = (
     return refuse(name, 'has no handler function');
   }
 
-  if (REFUSED_FUNCTION_TAGS.has(Object.prototype.toString.call(handler))) {
+  if (isAsyncOrGenerator(handler)) {
     return refuse(
       name,
       'has an async or generator handler; handlers must be synchronous',

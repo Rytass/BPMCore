@@ -158,8 +158,11 @@ const celLegacyFunctionTables = new WeakMap<
  * The function table handed to `cel-js` for a registry, built once: every
  * function the registry lists, wrapped for cel-legacy. Verified on the real
  * engine (2026-11-07): `cel-js` 0.8.2 accepts the table and calls it.
+ *
+ * Exported so `ConditionService.prepareEngine` can build it before a budget
+ * starts; otherwise the first evaluation builds it inside its budget.
  */
-const readCelLegacyFunctions = (
+export const readCelLegacyFunctions = (
   registry: BPMExpressionFunctionRegistry,
 ): Readonly<Record<string, CelLegacyFunction>> => {
   const cached = celLegacyFunctionTables.get(registry);
