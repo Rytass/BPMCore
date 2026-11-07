@@ -158,3 +158,21 @@ describe('workflow service task dispatcher resolution', (): void => {
     });
   });
 });
+
+describe('DefaultWorkflowServiceTaskDispatcher', (): void => {
+  it('gives a webhook request a time limit', async (): Promise<void> => {
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 202 }));
+
+    await expect(
+      new DefaultWorkflowServiceTaskDispatcher().dispatchWebhook({
+        payload: {},
+        url: 'https://example.test/hook',
+      }),
+    ).resolves.toEqual({ ok: true, status: 202 });
+    expect(fetchSpy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+
+    fetchSpy.mockRestore();
+  });
+});

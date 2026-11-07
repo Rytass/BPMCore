@@ -1,3 +1,4 @@
+import { EntityManager } from 'typeorm';
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
@@ -14,6 +15,33 @@ import {
 import { DelegationService } from './delegation.service';
 
 describe('DelegationService', () => {
+  it('reads rules through the transaction it is given, not a second connection', async (): Promise<void> => {
+    const rootFind = jest.fn(() => Promise.resolve([]));
+    const transactionFind = jest.fn(() => Promise.resolve([]));
+    const service = new DelegationService(
+      createDelegationRuleRepository({ find: rootFind }),
+      new ConditionService(),
+    );
+
+    await service.resolveAssignee('member-001', {
+      formData: {},
+      initiatorMemberId: 'member-000',
+      initiatorMetadataSnapshot: {},
+      instanceId: 'instance-1',
+      manager: {
+        getRepository: () => ({ find: transactionFind }),
+      } as unknown as EntityManager,
+      nodeId: 'task-1',
+      state: 'RUNNING',
+      templateId: 'template-1',
+      templateVersionId: 'template-version-1',
+      title: '費用申請',
+    });
+
+    expect(transactionFind).toHaveBeenCalledTimes(1);
+    expect(rootFind).not.toHaveBeenCalled();
+  });
+
   it('applies pagination and counts rules with matching filters', async (): Promise<void> => {
     const rules = Array.from({ length: 12 }, (_, index) =>
       createDelegationRule({ id: `rule-${index + 1}` }),
