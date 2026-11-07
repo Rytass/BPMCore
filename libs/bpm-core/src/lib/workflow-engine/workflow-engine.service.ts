@@ -6494,7 +6494,7 @@ export class WorkflowEngineService {
     // candidate's delegation agents rather than once per candidate.
     const resolutions = await this.delegationService.resolveAssignees(
       resolvedCandidates.map((candidate) => candidate.memberId),
-      this.buildDelegationContext(instance, nodeId),
+      { ...this.buildDelegationContext(instance, nodeId), manager },
     );
     const resolved = resolvedCandidates.map((candidate, index) => ({
       candidate,
@@ -6538,7 +6538,7 @@ export class WorkflowEngineService {
   ): Promise<GradeGatedDelegation> {
     const resolution = await this.delegationService.resolveAssignee(
       principalMemberId,
-      context,
+      { ...context, manager },
     );
     const memberIds = gradeGated
       ? readGradeGateMemberIds(principalMemberId, resolution)

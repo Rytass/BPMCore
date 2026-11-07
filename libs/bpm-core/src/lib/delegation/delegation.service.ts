@@ -10,7 +10,12 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, LessThanOrEqual, Repository } from 'typeorm';
+import {
+  EntityManager,
+  FindOptionsWhere,
+  LessThanOrEqual,
+  Repository,
+} from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
 import { IdentityService } from '../identity/identity.service';
 import {
@@ -28,6 +33,12 @@ export interface DelegationResolutionContext {
   readonly initiatorMemberId: string;
   readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>>;
   readonly instanceId: string;
+  /**
+   * The open transaction to read rules through. A caller inside one must pass
+   * it: reading on a second pooled connection while holding the first lets
+   * concurrent transactions wait on each other until the pool never recovers.
+   */
+  readonly manager?: EntityManager;
   readonly nodeId: string;
   readonly state: string;
   readonly templateId: string;
@@ -344,7 +355,11 @@ export class DelegationService {
     context: DelegationResolutionContext,
     at: Date,
   ): Promise<readonly ScopedDelegationRule[]> {
-    const rules = await this.readCurrentRules(principalMemberId, at);
+    const rules = await this.readCurrentRules(
+      principalMemberId,
+      at,
+      context.manager,
+    );
 
     return rules.flatMap((rule): readonly ScopedDelegationRule[] => {
       try {
@@ -361,9 +376,14 @@ export class DelegationService {
   private async readCurrentRules(
     principalMemberId: string,
     at: Date,
+    manager?: EntityManager,
   ): Promise<readonly DelegationRuleEntity[]> {
+    const repository =
+      manager?.getRepository(DelegationRuleEntity) ??
+      this.delegationRuleRepository;
+
     return (
-      await this.delegationRuleRepository.find({
+      await repository.find({
         // Higher priority wins, as with manager rules; among equal priorities
         // the rule created first wins. TypeORM sorts by key order, so
         // `priority` has to be the first key — it used to come second and

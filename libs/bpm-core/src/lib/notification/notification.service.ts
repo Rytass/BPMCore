@@ -555,11 +555,18 @@ export class NotificationService {
     return result.affected ?? 0;
   }
 
-  async getPreference(memberId: string): Promise<NotificationPreferenceEntity> {
-    const existingPreference =
-      await this.notificationPreferenceRepository.findOne({
-        where: { memberId },
-      });
+  async getPreference(
+    memberId: string,
+    manager?: EntityManager,
+  ): Promise<NotificationPreferenceEntity> {
+    // Inside a transaction this must not take a second pooled connection:
+    // concurrent transactions would wait on each other until the pool jams.
+    const repository =
+      manager?.getRepository(NotificationPreferenceEntity) ??
+      this.notificationPreferenceRepository;
+    const existingPreference = await repository.findOne({
+      where: { memberId },
+    });
 
     return (
       existingPreference ??
@@ -1084,7 +1091,10 @@ export class NotificationService {
     manager?: EntityManager,
     now: Date = new Date(),
   ): Promise<readonly NotificationEntity[]> {
-    const preference = await this.getPreference(input.recipientMemberId);
+    const preference = await this.getPreference(
+      input.recipientMemberId,
+      manager,
+    );
     const repository = manager
       ? manager.getRepository(NotificationEntity)
       : this.notificationRepository;

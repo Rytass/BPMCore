@@ -54,6 +54,30 @@ interface FindArgs {
 }
 
 describe('NotificationService', () => {
+  it('reads a preference through the transaction it is given, not a second connection', async (): Promise<void> => {
+    const rootFindOne = jest.fn(() => Promise.resolve(null));
+    const transactionFindOne = jest.fn(() => Promise.resolve(null));
+    const service = new NotificationService(
+      createRepository<NotificationEntity>(),
+      {
+        findOne: rootFindOne,
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+    );
+
+    await service.getPreference('member-001', {
+      getRepository: () => ({ findOne: transactionFindOne }),
+    } as unknown as EntityManager);
+
+    expect(transactionFindOne).toHaveBeenCalledTimes(1);
+    expect(rootFindOne).not.toHaveBeenCalled();
+  });
+
   it('validates quiet hours as time-only values', (): void => {
     const input = Object.assign(new UpdateNotificationPreferenceInput(), {
       emailDigestMode: 'INSTANT',
@@ -1292,6 +1316,7 @@ describe('NotificationService', () => {
         getRepository: (): unknown => ({
           create: (entity: Partial<NotificationEntity>): NotificationEntity =>
             Object.assign(new NotificationEntity(), entity),
+          findOne: (): Promise<null> => Promise.resolve(null),
           save: (
             entityOrEntities: NotificationEntity | NotificationEntity[],
           ): Promise<NotificationEntity | NotificationEntity[]> =>
