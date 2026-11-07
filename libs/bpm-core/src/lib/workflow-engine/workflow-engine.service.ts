@@ -49,6 +49,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -92,6 +93,7 @@ import {
   NotificationResolutionEnum,
 } from '../notification/notification.enums';
 import { SignatureService } from '../signature/signature.service';
+import { describeCelEvaluationError } from '../condition/cel-error-message';
 import { ConditionService } from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
@@ -3220,13 +3222,7 @@ export class WorkflowEngineService {
         valid: true,
       });
     } catch (error: unknown) {
-      return createFailedDryRunResult(
-        error instanceof TimeBudgetExceededError
-          ? DRY_RUN_TOO_COMPLEX_MESSAGE
-          : error instanceof Error
-            ? error.message
-            : 'Dry run failed',
-      );
+      return createFailedDryRunResult(describeDryRunFailure(error));
     }
   }
 
@@ -9801,6 +9797,31 @@ function normalizeFormFieldPath(path: string): readonly string[] {
   }
 
   return segments;
+}
+
+/**
+ * What the designer is told when a dry run throws.
+ *
+ * The messages the engine writes for the designer are all `HttpException`s
+ * (the stop messages, the visit cap, and the ones `ConditionService` has
+ * already reduced to a label plus a safe description), so those stay readable.
+ * Anything else is not a message anyone wrote for the designer: a raw cel-js
+ * error carries the evaluation context (form values, initiator metadata) in
+ * its text, so it is cut down to the error class and, for a missing
+ * identifier, its name.
+ */
+function describeDryRunFailure(error: unknown): string {
+  if (error instanceof TimeBudgetExceededError) {
+    return DRY_RUN_TOO_COMPLEX_MESSAGE;
+  }
+
+  if (error instanceof HttpException) {
+    return error.message;
+  }
+
+  return error instanceof Error
+    ? `Dry run failed: ${describeCelEvaluationError(error)}`
+    : 'Dry run failed';
 }
 
 function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {

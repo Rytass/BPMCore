@@ -11075,6 +11075,107 @@ describe('WorkflowEngineService', () => {
       expect(edgeCalls()).toHaveLength(1);
       expect(result.valid).toBe(false);
     });
+
+    describe('dry run failure messages', (): void => {
+      const FORM_MARKER = 'secret-form-value';
+      const INITIATOR_MARKER = 'secret-initiator-value';
+      const dryRunErrors = (
+        workflow: WorkflowDefinition,
+      ): readonly string[] => {
+        const result = createFixture(
+          workflow,
+          {},
+        ).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(workflow),
+        });
+
+        expect(result.valid).toBe(false);
+
+        return result.errors;
+      };
+      const throwOnEdge = (error: Error): void => {
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw error;
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+      };
+      const handWrittenWorkflow = (): WorkflowDefinition =>
+        createExclusiveGatewayWorkflow({
+          highCondition: 'form.agent != null && form.agent != ""',
+          includeStructuredCondition: false,
+        });
+
+      it('keeps the context of a raw cel-js identifier error out of the message', (): void => {
+        // The exact shape cel-js 0.8.2 throws: the whole context follows the
+        // identifier. A raw Error stands for one that bypassed ConditionService.
+        throwOnEdge(
+          new Error(
+            `Identifier "agent" not found in context: ${JSON.stringify({
+              form: { other: FORM_MARKER },
+              initiator: { name: INITIATOR_MARKER },
+            })}`,
+          ),
+        );
+
+        const errors = dryRunErrors(handWrittenWorkflow());
+
+        expect(errors).toEqual([
+          'Dry run failed: Identifier "agent" not found',
+        ]);
+        errors.forEach((message) => {
+          expect(message).not.toContain(FORM_MARKER);
+          expect(message).not.toContain(INITIATOR_MARKER);
+        });
+      });
+
+      it('reduces any other raw evaluation error to its class', (): void => {
+        throwOnEdge(
+          Object.assign(
+            new Error(
+              `CelTypeError: greaterThan operation cannot be applied to (${FORM_MARKER}, uint)`,
+            ),
+            { name: 'CelTypeError' },
+          ),
+        );
+
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
+          'Dry run failed: CelTypeError',
+        ]);
+      });
+
+      it('keeps the engine own message readable', (): void => {
+        const workflow = handWrittenWorkflow();
+        const withoutStart: WorkflowDefinition = {
+          ...workflow,
+          nodes: workflow.nodes.filter((node) => node.type !== 'startEvent'),
+        };
+
+        expect(dryRunErrors(withoutStart)).toEqual([
+          'Workflow does not include a startEvent',
+        ]);
+      });
+
+      it('keeps a message ConditionService already sanitised readable', (): void => {
+        throwOnEdge(
+          new BadRequestException(
+            'workflow.edges.e1.condition: Identifier "agent" not found',
+          ),
+        );
+
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
+          'workflow.edges.e1.condition: Identifier "agent" not found',
+        ]);
+      });
+    });
   });
 
   it('reports dry run edge labels, default routing, and entry condition results', (): void => {

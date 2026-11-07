@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Failure, ParseResult } from 'cel-js';
 
+import { describeCelEvaluationError } from './cel-error-message';
+
 /**
  * The slice of `cel-js` this service uses.
  */
@@ -164,8 +166,10 @@ export class ConditionService {
     try {
       return engine.evaluate(parseResult.cst, { ...context });
     } catch (error: unknown) {
+      // cel-js puts the evaluation context and offending values in its
+      // messages; only an allowlisted description may reach the caller.
       throw new BadRequestException(
-        error instanceof Error ? `${label}: ${error.message}` : label,
+        `${label}: ${describeCelEvaluationError(error)}`,
       );
     }
   }
