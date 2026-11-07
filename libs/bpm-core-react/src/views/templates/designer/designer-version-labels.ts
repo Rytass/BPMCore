@@ -22,6 +22,19 @@ export function readTemplateVersionDescription(input: {
   return `${draftPart} · ${publishedPart}`;
 }
 
+/**
+ * The designer header's description line: the version line plus the
+ * definition's expression dialect. `ContentHeader` drops any child that is not
+ * a button, filter or back link, so a dialect `Tag` there never rendered; its
+ * `description` string is the slot it does show.
+ */
+export function readTemplateHeaderDescription(
+  versionDescription: string,
+  expressionDialect: string,
+): string {
+  return `${versionDescription} · 運算式方言 ${expressionDialect}`;
+}
+
 /** The bound form's version, labelled so it is not mistaken for the template's. */
 export function readFormVersionLabel(
   formName: string,

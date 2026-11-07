@@ -226,6 +226,7 @@ import {
 } from './dynamic-form-resolver-options';
 import {
   readFormVersionLabel,
+  readTemplateHeaderDescription,
   readTemplateVersionDescription,
 } from './designer-version-labels';
 import {
@@ -415,14 +416,22 @@ const FLOW_CANVAS_GLOBAL_STYLE = `
 
 `;
 
+// The side panel sits in a fixed 420px grid column. A grid item's automatic
+// minimum width is its widest content, so without `minWidth: 0` and a
+// shrinkable track a long line in the edge condition form (the expression
+// field and its catalog) widened the panel past the viewport's right edge.
 const PANEL_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
 };
 
 const FORM_STACK_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
 };
 
 const DRY_RUN_RESULT_STYLE: CSSProperties = {
@@ -982,6 +991,12 @@ export function TemplateDesignerView({
   // response for a more recent search. `memberOptions` accumulation is
   // order-insensitive (it only ever adds), so it does not need this guard.
   const memberSearchSequenceRef = useRef(0);
+  // Guards a designer load the same way: only the latest `refreshDesigner()`
+  // may seed the controller. Two loads overlap whenever the mount effect runs
+  // twice (React's development double-invoke) or a save lands while an earlier
+  // load is still out; the older answer arriving last used to reset the
+  // selection to the start node — dropping the edge the user had just opened.
+  const designerLoadSequenceRef = useRef(0);
   // Member ids the directory could not resolve, even asked for on their own.
   // They keep their 「未知會員」 placeholder and are not requested again for
   // the rest of the session, a transient failure included, unless a later
@@ -1361,6 +1376,8 @@ export function TemplateDesignerView({
    * then seed the controller with the draft / latest version.
    */
   async function refreshDesigner(): Promise<void> {
+    const loadSequence = ++designerLoadSequenceRef.current;
+
     setLoading(true);
     setError(null);
     // The notice describes an unsaved edit to the definition being replaced.
@@ -1375,6 +1392,11 @@ export function TemplateDesignerView({
         readTemplateDesigner(templateId as string),
         readOrganizationDirectory(),
       ]);
+
+      if (loadSequence !== designerLoadSequenceRef.current) {
+        return;
+      }
+
       const nextDraft =
         nextRecord.versions.find((version) => version.status === 'DRAFT') ??
         null;
@@ -1427,9 +1449,13 @@ export function TemplateDesignerView({
       setFormDraft(null);
       setAppliedFormDraft(null);
     } catch (requestError: unknown) {
-      setError(readTemplateErrorMessage(requestError, language));
+      if (loadSequence === designerLoadSequenceRef.current) {
+        setError(readTemplateErrorMessage(requestError, language));
+      }
     } finally {
-      setLoading(false);
+      if (loadSequence === designerLoadSequenceRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -2085,26 +2111,27 @@ export function TemplateDesignerView({
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
         {!embedded ? (
           <PageHeader>
+            {/* ContentHeader renders only buttons, filters and a back link
+                as children and drops anything else (a Tag included), so the
+                dialect rides on its `description` line instead. */}
             <ContentHeader
-              description={readTemplateVersionDescription({
-                draftVersion: draft?.version ?? null,
-                hasPublishedVersion: Boolean(
-                  record?.template.currentVersionId,
-                ),
-                publishedVersion:
-                  record?.versions.find(
-                    (version) =>
-                      version.id === record.template.currentVersionId,
-                  )?.version ?? null,
-              })}
+              description={readTemplateHeaderDescription(
+                readTemplateVersionDescription({
+                  draftVersion: draft?.version ?? null,
+                  hasPublishedVersion: Boolean(
+                    record?.template.currentVersionId,
+                  ),
+                  publishedVersion:
+                    record?.versions.find(
+                      (version) =>
+                        version.id === record.template.currentVersionId,
+                    )?.version ?? null,
+                }),
+                expressionDialect,
+              )}
               onBackClick={handleBackToTemplates}
               title={record?.template.name ?? '流程設計器'}
             >
-              <Tag
-                label={`運算式 ${expressionDialect}`}
-                readOnly
-                size="minor"
-              />
               {expressionDialect === 'cel-legacy' ? (
                 <Button
                   disabled={loading || saving}
@@ -4329,6 +4356,7 @@ export function TemplateDesignerView({
         </Typography>
         <Toggle
           checked={Boolean(edge.data.isDefault)}
+          inputProps={{ 'aria-label': '其他情況走這條' }}
           label="其他情況走這條"
           onChange={(event: ChangeEvent<HTMLInputElement>): void =>
             updateSelectedEdgeDefault(edge.id, event.target.checked)
@@ -4337,6 +4365,9 @@ export function TemplateDesignerView({
         {edge.data.isDefault ? null : (
           <Toggle
             checked={expressionCondition}
+            // Mezzanine renders the label beside the switch, not as its
+            // <label>, so the input needs its own accessible name.
+            inputProps={{ 'aria-label': '進階：自訂運算式' }}
             label="進階：自訂運算式"
             onChange={(event: ChangeEvent<HTMLInputElement>): void => {
               if (event.target.checked) {

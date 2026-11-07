@@ -10,6 +10,7 @@ import {
   type ExpressionFieldApi,
   type ExpressionFieldLint,
   appendExpressionSnippet,
+  readExpressionCatalogFunctionNotes,
   readExpressionCatalogOptions,
   readExpressionEvaluationText,
   readExpressionSample,
@@ -35,6 +36,10 @@ const CATALOG: ExpressionCatalogRecord = {
   roots: ['form'],
   usagePoint: 'ENTRY_CONDITION',
 };
+
+const [COST_BAND_FUNCTION] = CATALOG.functions as readonly [
+  ExpressionCatalogRecord['functions'][number],
+];
 
 interface Harness {
   readonly api: ExpressionFieldApi;
@@ -145,6 +150,49 @@ describe('ExpressionField (Phase 23 P4)', (): void => {
     expect(container.textContent).toContain('無法向後端檢查這個運算式');
   });
 
+  it('shows each catalog function description as text under the picker', async (): Promise<void> => {
+    const catalog: ExpressionCatalogRecord = {
+      ...CATALOG,
+      functions: [
+        {
+          ...COST_BAND_FUNCTION,
+          description: '依金額回傳 <b>成本級距</b>',
+        },
+      ],
+    };
+    const api: ExpressionFieldApi = {
+      preview: async (): Promise<ExpressionPreviewRecord> => ({
+        evaluation: null,
+        issues: [],
+        valid: true,
+      }),
+      readCatalog: async (): Promise<ExpressionCatalogRecord> => catalog,
+    };
+
+    await act(async (): Promise<void> => {
+      root.render(
+        <ExpressionField
+          api={api}
+          dialect="cel-v2"
+          label="進入條件"
+          name="entryCondition"
+          onChange={(): void => undefined}
+          usagePoint="ENTRY_CONDITION"
+          value=""
+        />,
+      );
+    });
+    await act(async (): Promise<void> => undefined);
+
+    const notes = container.querySelector('[aria-label="函式說明"]');
+
+    expect(notes?.textContent).toBe(
+      'erp_costBand_v1（成本級距）：依金額回傳 <b>成本級距</b>',
+    );
+    // Text, never markup.
+    expect(notes?.querySelector('b')).toBeNull();
+  });
+
   it('shows a trial-run result as text, never as markup', async (): Promise<void> => {
     const harness = createApi({
       evaluation: {
@@ -184,6 +232,30 @@ describe('ExpressionField helpers', (): void => {
       'erp_costBand_v1(',
     ]);
     expect(readExpressionCatalogOptions(null)).toEqual([]);
+  });
+
+  it('lists only the functions that carry a description', (): void => {
+    expect(readExpressionCatalogFunctionNotes(CATALOG)).toEqual([]);
+    expect(readExpressionCatalogFunctionNotes(null)).toEqual([]);
+    expect(
+      readExpressionCatalogFunctionNotes({
+        ...CATALOG,
+        functions: [
+          { ...COST_BAND_FUNCTION, description: '  依金額回傳成本級距  ' },
+          {
+            builtIn: true,
+            description: '字串是否包含子字串',
+            label: '',
+            name: 'contains',
+            parameters: [],
+            returnType: 'bool',
+          },
+        ],
+      }),
+    ).toEqual([
+      { id: 'erp_costBand_v1', text: 'erp_costBand_v1（成本級距）：依金額回傳成本級距' },
+      { id: 'contains', text: 'contains：字串是否包含子字串' },
+    ]);
   });
 
   it('appends snippets with a single separating space', (): void => {

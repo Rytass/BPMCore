@@ -93,9 +93,22 @@ const DEFAULT_API: ExpressionFieldApi = {
   readCatalog: readExpressionCatalog,
 };
 
+// `minmax(0, 1fr)` and `minWidth: 0` let the field shrink to the column it
+// sits in: the designer's side panel is a fixed-width grid column, and a grid
+// item's automatic minimum (its widest content) pushed it past the viewport.
 const STACK_STYLE: CSSProperties = {
   display: 'grid',
   gap: 'var(--mzn-spacing-gap-base)',
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
+};
+
+const NOTE_LIST_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: 'var(--mzn-spacing-gap-tight)',
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
 };
 
 const ROW_STYLE: CSSProperties = {
@@ -103,6 +116,7 @@ const ROW_STYLE: CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: 'var(--mzn-spacing-gap-base)',
+  minWidth: 0,
 };
 
 interface CatalogOption {
@@ -129,6 +143,32 @@ export function readExpressionCatalogOptions(
       name: `${fn.name}(${fn.parameters.map((parameter) => parameter.name).join(', ')})${fn.label ? `（${fn.label}）` : ''}`,
     })),
   ];
+}
+
+export interface ExpressionCatalogFunctionNote {
+  readonly id: string;
+  readonly text: string;
+}
+
+/**
+ * What each catalog function does, as plain lines under the picker. The
+ * picker's options carry only a name (Mezzanine `DropdownOption` has no
+ * secondary text), so a function's `description` was never shown. Functions
+ * without one are left out; the text is rendered as text, never as HTML.
+ */
+export function readExpressionCatalogFunctionNotes(
+  catalog: ExpressionCatalogRecord | null,
+): readonly ExpressionCatalogFunctionNote[] {
+  if (!catalog) {
+    return [];
+  }
+
+  return catalog.functions
+    .filter((fn) => fn.description.trim().length > 0)
+    .map((fn) => ({
+      id: fn.name,
+      text: `${fn.name}${fn.label ? `（${fn.label}）` : ''}：${fn.description.trim()}`,
+    }));
 }
 
 /** Appends a snippet, separated by a space unless the text already ends in one. */
@@ -308,6 +348,11 @@ export function ExpressionField({
     (): readonly CatalogOption[] => readExpressionCatalogOptions(catalog),
     [catalog],
   );
+  const functionNotes = useMemo(
+    (): readonly ExpressionCatalogFunctionNote[] =>
+      readExpressionCatalogFunctionNotes(catalog),
+    [catalog],
+  );
   const statusText = readExpressionFieldStatusText(lint.status);
   const runEvaluation = async (): Promise<void> => {
     const sample = readExpressionSample(sampleJson);
@@ -370,25 +415,43 @@ export function ExpressionField({
               variant={STATUS_BADGE_VARIANT[lint.status]}
             />
           ) : null}
-          {catalogOptions.length > 0 && !disabled ? (
-            <Select
-              clearable={false}
-              onChange={(option): void => {
-                if (option) {
-                  onChange(appendExpressionSnippet(value, option.id));
-                }
-              }}
-              options={[...catalogOptions]}
-              placeholder="插入欄位或函式"
-              value={null}
-            />
-          ) : null}
           {catalog && !catalog.functionsAvailable ? (
             <Typography variant="caption">
               宿主函式目錄暫時讀不到，只列出欄位。
             </Typography>
           ) : null}
         </div>
+        {catalogOptions.length > 0 && !disabled ? (
+          // Full width on its own line: the dropdown takes the trigger's
+          // width, so it stays inside the column instead of growing with
+          // the longest option.
+          <Select
+            clearable={false}
+            fullWidth
+            onChange={(option): void => {
+              if (option) {
+                onChange(appendExpressionSnippet(value, option.id));
+              }
+            }}
+            options={[...catalogOptions]}
+            placeholder="插入欄位或函式"
+            value={null}
+          />
+        ) : null}
+        {functionNotes.length > 0 && !disabled ? (
+          <div aria-label="函式說明" role="list" style={NOTE_LIST_STYLE}>
+            {functionNotes.map((note) => (
+              <Typography
+                color="text-neutral"
+                key={note.id}
+                role="listitem"
+                variant="caption"
+              >
+                {note.text}
+              </Typography>
+            ))}
+          </div>
+        ) : null}
         {lint.status === 'UNAVAILABLE' ? (
           <InlineMessage
             content="無法向後端檢查這個運算式，發布時仍會再檢查。"
