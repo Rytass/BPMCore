@@ -57,6 +57,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  DeepPartial,
   EntityManager,
   In,
   IsNull,
@@ -150,8 +151,8 @@ import {
   WorkflowDryRunResultObject,
   WorkflowDryRunStepObject,
 } from './workflow-dry-run.object';
-import {
 import { runWithinTimeBudget, TimeBudgetExceededError } from './time-budget';
+import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
   BPMWorkflowWebhookDispatchResult,
@@ -197,12 +198,12 @@ type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
   readonly endUserSubmission?: boolean;
 };
 
-const MAX_PROCESSING_STEPS = 500;
 const MAX_DRY_RUN_INPUT_LENGTH = 1_048_576;
 const MAX_DRY_RUN_VISITS = 10_000;
 const DRY_RUN_TIME_BUDGET_MS = 2_000;
 const DRY_RUN_TOO_COMPLEX_MESSAGE =
   '流程或條件的運算量過大，無法完成試跑，請減少連續的閘道分支或簡化條件';
+const MAX_PROCESSING_STEPS = 500;
 export const MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH = 200;
 const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
   'approval_instances_business_key_key';
@@ -210,6 +211,15 @@ const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
+
+/** A webhook whose payload is settled and which waits for its transaction. */
+interface DeferredWebhookDispatch {
+  readonly instanceId: string;
+  readonly readActivityLog: (
+    result: BPMWorkflowWebhookDispatchResult,
+  ) => DeepPartial<ActivityLogEntity>;
+  readonly send: () => Promise<BPMWorkflowWebhookDispatchResult>;
+}
 
 interface DryRunSimulationInput {
   readonly formData: Readonly<Record<string, unknown>>;
@@ -236,6 +246,7 @@ interface DryRunOutgoing {
 }
 
 interface DryRunPathInput extends DryRunSimulationInput {
+  readonly chargeVisit: () => void;
   readonly depth: number;
   readonly incomingEdge: WorkflowEdge | null;
   readonly lastDecision: Readonly<Record<string, unknown>> | null;
@@ -246,7 +257,6 @@ interface DryRunPathInput extends DryRunSimulationInput {
 
 /**
  * Delegation-chain reason recorded for an approver-initiated transfer, as
-  readonly chargeVisit: () => void;
  * opposed to {@link SLA_ESCALATION_DELEGATION_REASON}.
  */
 export const MANUAL_TRANSFER_DELEGATION_REASON = 'MANUAL_TRANSFER';
@@ -588,6 +598,13 @@ export class WorkflowEngineService {
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
+  /** Webhooks each open engine transaction will send once it has committed. */
+  private readonly deferredWebhookDispatches = new WeakMap<
+    EntityManager,
+    DeferredWebhookDispatch[]
+  >();
+
+
   private readonly organizationTimeZone: string;
 
   /**
@@ -598,6 +615,85 @@ export class WorkflowEngineService {
    */
   private readOrganizationToday(): string {
     return formatDateOnlyInTimeZone(new Date(), this.organizationTimeZone);
+  }
+
+  /**
+   * Opens an engine transaction whose webhooks wait for its commit. A webhook
+   * sent from inside would hold the case lock and a pooled connection for as
+   * long as the far end takes to answer, so a slow endpoint could stall the
+   * case and then, a connection at a time, the whole API. A transaction that
+   * rolls back sends nothing.
+   *
+   * The caller still waits for the sends, so the outcome is in the activity log
+   * by the time a mutation returns, as it always has been.
+   */
+  private async runEngineTransaction<TResult>(
+    work: (manager: EntityManager) => Promise<TResult>,
+  ): Promise<TResult> {
+    // Mutable on purpose: every step of the transaction appends to it, and
+    // threading it through each of them would change a dozen signatures.
+    const dispatches: DeferredWebhookDispatch[] = [];
+    const result = await this.approvalInstanceRepository.manager.transaction(
+      (manager): Promise<TResult> => {
+        this.deferredWebhookDispatches.set(manager, dispatches);
+
+        return work(manager);
+      },
+    );
+
+    await dispatches.reduce<Promise<void>>(async (previous, dispatch) => {
+      await previous;
+      await this.sendCommittedWebhook(dispatch);
+    }, Promise.resolve());
+
+    return result;
+  }
+
+  /**
+   * Queues a webhook for after the commit. A manager this service did not open
+   * has no queue and no commit it can see, so that webhook goes out on the spot
+   * rather than being dropped.
+   */
+  private async dispatchWebhookAfterCommit(
+    manager: EntityManager,
+    dispatch: DeferredWebhookDispatch,
+  ): Promise<void> {
+    const queue = this.deferredWebhookDispatches.get(manager);
+
+    if (queue) {
+      queue.push(dispatch);
+
+      return;
+    }
+
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const result = await dispatch.send();
+
+    await activityRepository.save(
+      activityRepository.create(dispatch.readActivityLog(result)),
+    );
+  }
+
+  /**
+   * The transaction has committed and the mutation has succeeded, so nothing
+   * here may fail it: a result that cannot be recorded is only logged.
+   */
+  private async sendCommittedWebhook(
+    dispatch: DeferredWebhookDispatch,
+  ): Promise<void> {
+    try {
+      const result = await dispatch.send();
+
+      await this.activityLogRepository.save(
+        this.activityLogRepository.create(dispatch.readActivityLog(result)),
+      );
+    } catch (error: unknown) {
+      this.logger.error(
+        `Could not record a webhook result for instance ${dispatch.instanceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   async submitApprovalInstance(
@@ -705,7 +801,7 @@ export class WorkflowEngineService {
       );
     }
 
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
@@ -910,7 +1006,7 @@ export class WorkflowEngineService {
   }
 
   async processInstance(instanceId: string): Promise<void> {
-    await this.approvalInstanceRepository.manager.transaction(
+    await this.runEngineTransaction(
       async (manager): Promise<void> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           instanceId,
@@ -952,7 +1048,7 @@ export class WorkflowEngineService {
     input: DecideTaskInput,
     options: DecideTaskOptions = {},
   ): Promise<TaskDecisionEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<TaskDecisionEntity> => {
         const taskRepository = manager.getRepository(TaskEntity);
         const taskCandidateRepository =
@@ -1548,7 +1644,7 @@ export class WorkflowEngineService {
   async cancelApprovalInstance(
     input: CancelApprovalInstanceInput,
   ): Promise<ApprovalInstanceEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           input.instanceId,
@@ -1617,7 +1713,7 @@ export class WorkflowEngineService {
   async expireApprovalInstance(
     input: ExpireApprovalInstanceCommand,
   ): Promise<ApprovalInstanceEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           input.instanceId,
@@ -1725,7 +1821,7 @@ export class WorkflowEngineService {
         )
       : null;
 
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           input.instanceId,
@@ -1886,7 +1982,7 @@ export class WorkflowEngineService {
     readonly target: AdhocTargetInput;
     readonly taskId: string;
   }): Promise<AdhocDirectiveEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<AdhocDirectiveEntity> => {
         const { instance, node, task } = await this.loadAdhocOperationContext(
           manager,
@@ -1957,7 +2053,7 @@ export class WorkflowEngineService {
     readonly target: AdhocTargetInput;
     readonly taskId: string;
   }): Promise<TaskEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<TaskEntity> => {
         const { instance, node, task } = await this.loadAdhocOperationContext(
           manager,
@@ -2025,7 +2121,7 @@ export class WorkflowEngineService {
       | AdhocDirectiveTypeEnum.COMPLETION_NOTIFY
       | AdhocDirectiveTypeEnum.STAGE_NOTIFY;
   }): Promise<AdhocDirectiveEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<AdhocDirectiveEntity> => {
         const { instance, node, task } = await this.loadAdhocOperationContext(
           manager,
@@ -2072,7 +2168,7 @@ export class WorkflowEngineService {
     readonly cancelledByMemberId: string;
     readonly directiveId: string;
   }): Promise<AdhocDirectiveEntity> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<AdhocDirectiveEntity> => {
         const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
         const directive = await directiveRepository.findOne({
@@ -2973,20 +3069,17 @@ export class WorkflowEngineService {
     const activityRepository = manager.getRepository(ActivityLogEntity);
 
     if (targetValue.kind === AdhocTargetKindEnum.WEBHOOK) {
-      const result = await executeAdhocWebhookDispatch(
-        this.serviceTaskDispatcher,
-        targetValue,
-        {
-          ...payload,
-          instanceId: instance.id,
-          instanceTitle: instance.title,
-          message,
-          triggeredAt: new Date().toISOString(),
-        },
-      );
+      const webhookPayload = {
+        ...payload,
+        instanceId: instance.id,
+        instanceTitle: instance.title,
+        message,
+        triggeredAt: new Date().toISOString(),
+      };
 
-      await activityRepository.save(
-        activityRepository.create({
+      await this.dispatchWebhookAfterCommit(manager, {
+        instanceId: instance.id,
+        readActivityLog: (result) => ({
           actorMemberId: null,
           eventType: result.ok
             ? ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED
@@ -3003,7 +3096,13 @@ export class WorkflowEngineService {
           },
           taskId: null,
         }),
-      );
+        send: () =>
+          executeAdhocWebhookDispatch(
+            this.serviceTaskDispatcher,
+            targetValue,
+            webhookPayload,
+          ),
+      });
 
       return;
     }
@@ -3077,6 +3176,19 @@ export class WorkflowEngineService {
   dryRunApprovalWorkflow(
     input: DryRunApprovalWorkflowInput,
   ): WorkflowDryRunResultObject {
+    // Checked first: parsing happens outside the time budget below.
+    if (
+      [
+        input.workflowDefinitionJson,
+        input.formDataJson,
+        input.initiatorMetadataSnapshotJson ?? '',
+      ].some((json) => json.length > MAX_DRY_RUN_INPUT_LENGTH)
+    ) {
+      return createFailedDryRunResult(
+        '試跑資料過大，請縮小流程或測試資料後再試',
+      );
+    }
+
     const workflowDefinition = parseWorkflowDefinition(
       input.workflowDefinitionJson,
     );
@@ -3089,6 +3201,10 @@ export class WorkflowEngineService {
       : readDefaultInitiatorMetadataSnapshot(input.initiatorMemberId);
 
     try {
+      // The CEL engine loads on its first evaluation. Do that outside the budget
+      // so an interrupt can never land halfway through loading a module.
+      this.conditionService.evaluateBoolean('true', {}, 'dryRun.engine');
+
       return Object.assign(new WorkflowDryRunResultObject(), {
         errors: [],
         steps: runWithinTimeBudget(
@@ -3125,8 +3241,20 @@ export class WorkflowEngineService {
       throw new BadRequestException('Workflow does not include a startEvent');
     }
 
+    // Every branch re-walks whatever follows it, so a chain of gateways doubles
+    // the work at each one while the depth limit never trips. Closure state
+    // because all the branches of one dry run share this one count.
+    let visits = 0;
+
     return this.simulateWorkflowPath({
       ...input,
+      chargeVisit: (): void => {
+        visits += 1;
+
+        if (visits > MAX_DRY_RUN_VISITS) {
+          throw new ConflictException(DRY_RUN_TOO_COMPLEX_MESSAGE);
+        }
+      },
       depth: 0,
       incomingEdge: null,
       lastDecision: null,
@@ -3142,6 +3270,8 @@ export class WorkflowEngineService {
     if (input.depth > MAX_PROCESSING_STEPS) {
       throw new ConflictException('Dry run exceeded maximum processing steps');
     }
+
+    input.chargeVisit();
 
     const node = readWorkflowNodeOrThrow(
       input.workflowDefinition,
@@ -3182,19 +3312,6 @@ export class WorkflowEngineService {
     const skippedByExclusion = assignment?.outcome === 'SKIPPED';
     const stoppedByAssignment = assignment?.outcome === 'STOPPED';
     const nextLastDecision =
-    // Checked first: parsing happens outside the time budget below.
-    if (
-      [
-        input.workflowDefinitionJson,
-        input.formDataJson,
-        input.initiatorMetadataSnapshotJson ?? '',
-      ].some((json) => json.length > MAX_DRY_RUN_INPUT_LENGTH)
-    ) {
-      return createFailedDryRunResult(
-        '試跑資料過大，請縮小流程或測試資料後再試',
-      );
-    }
-
       entryConditionMet && node.type === 'userTask' && !skippedByExclusion
         ? {
             action: TaskDecisionActionEnum.APPROVED,
@@ -3241,20 +3358,8 @@ export class WorkflowEngineService {
         stepIndex: input.steps.length,
       }),
     ];
-    // Every branch re-walks whatever follows it, so a chain of gateways doubles
-    // the work at each one while the depth limit never trips. Closure state
-    // because all the branches of one dry run share this one count.
-    let visits = 0;
-
 
     return outgoing.edges.reduce(
-      chargeVisit: (): void => {
-        visits += 1;
-
-        if (visits > MAX_DRY_RUN_VISITS) {
-          throw new ConflictException(DRY_RUN_TOO_COMPLEX_MESSAGE);
-        }
-      },
       (steps, edge) =>
         this.simulateWorkflowPath({
           ...input,
@@ -3271,8 +3376,6 @@ export class WorkflowEngineService {
 
   /**
    * The edges a dry-run step continues along. A node a designer has left
-    input.chargeVisit();
-
    * unfinished (nothing drawn out of it, or no branch of a gateway taken) ends
    * its branch with a readable message instead of failing the whole dry run.
    */
@@ -5880,7 +5983,7 @@ export class WorkflowEngineService {
     preRead: TaskEntity,
     options: ReassignTaskOptions,
   ): Promise<TaskReassignmentResult> {
-    return this.approvalInstanceRepository.manager.transaction(
+    return this.runEngineTransaction(
       async (manager): Promise<TaskReassignmentResult> => {
         try {
           const plan = await this.planTaskReassignment(
@@ -7850,14 +7953,9 @@ export class WorkflowEngineService {
               instance: buildWorkflowExpressionContext(instance).instance,
               triggeredAt: new Date().toISOString(),
             };
-      const result = await executeWebhookServiceAction(
-        this.serviceTaskDispatcher,
-        action,
-        payload,
-      );
-
-      await activityRepository.save(
-        activityRepository.create({
+      await this.dispatchWebhookAfterCommit(manager, {
+        instanceId: instance.id,
+        readActivityLog: (result) => ({
           actorMemberId: null,
           eventType: result.ok
             ? ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED
@@ -7874,7 +7972,13 @@ export class WorkflowEngineService {
           },
           taskId: null,
         }),
-      );
+        send: () =>
+          executeWebhookServiceAction(
+            this.serviceTaskDispatcher,
+            action,
+            payload,
+          ),
+      });
       await this.advanceTokenToOutgoingNodes(manager, instance, token, node);
 
       return;
@@ -9678,6 +9782,14 @@ function normalizeFormFieldPath(path: string): readonly string[] {
   return segments;
 }
 
+function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {
+  return Object.assign(new WorkflowDryRunResultObject(), {
+    errors: [message],
+    steps: [],
+    valid: false,
+  });
+}
+
 async function executeWebhookServiceAction(
   serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher,
   action: Extract<
@@ -9782,14 +9894,6 @@ function buildAdhocTargetValue(input: AdhocTargetInput): AdhocTargetValue {
     webhookUrl,
   };
 }
-function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {
-  return Object.assign(new WorkflowDryRunResultObject(), {
-    errors: [message],
-    steps: [],
-    valid: false,
-  });
-}
-
 
 function parseAdhocWebhookHeaders(
   json: string,

@@ -21,6 +21,10 @@ export interface BPMWorkflowServiceTaskDispatcher {
 export const BPM_WORKFLOW_SERVICE_TASK_DISPATCHER: InjectionToken<BPMWorkflowServiceTaskDispatcher> =
   Symbol('BPM_WORKFLOW_SERVICE_TASK_DISPATCHER');
 
+// Covers reading an error body too. A host whose endpoint needs longer binds its
+// own dispatcher under BPM_WORKFLOW_SERVICE_TASK_DISPATCHER.
+const WEBHOOK_TIMEOUT_MS = 30_000;
+
 export class DefaultWorkflowServiceTaskDispatcher implements BPMWorkflowServiceTaskDispatcher {
   async dispatchWebhook(
     input: BPMWorkflowWebhookDispatchInput,
@@ -34,6 +38,7 @@ export class DefaultWorkflowServiceTaskDispatcher implements BPMWorkflowServiceT
           : { 'content-type': 'application/json' }),
       },
       method: 'POST',
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
 
     if (response.ok) {

@@ -1009,6 +1009,33 @@ async function checkInstanceCompletion(instanceId) {
 
 ---
 
+### 9.1 Dry run 預算與 webhook 派送時機（升級注意）
+
+**Dry run**：`dryRunApprovalWorkflow` 的權限與 GraphQL schema 都沒有變。單一輸入超過 1 MiB、遍歷超過 10,000 次、
+或模擬超過 2 秒時回 `valid: false` 與一則 `errors` 訊息。流程若連續多個會同時走全部分支的閘道，路徑數會逐層加倍，
+這類設計現在會得到上述結果。2 秒的時間上限保護事件迴圈，不限制記憶體。
+
+**Webhook**：`WEBHOOK` 服務節點與 ad-hoc webhook 目標改在交易 commit 後才送出。`BPMWorkflowServiceTaskDispatcher`
+介面與 mutation 回傳都沒有變，mutation 仍會等送出完成，回傳時活動紀錄已寫入。知會節點的 outbox 路徑（ADR 18）本來就在 commit 後投遞。
+
+| 項目 | 之前 | 現在 |
+| --- | --- | --- |
+| 派送時機 | 交易內，持有案件鎖與資料庫連線 | commit 後，不持有兩者 |
+| 交易 rollback | webhook 已送出，無法收回 | 不送 |
+| 端點回呼 BPM API | 讀到舊狀態，或等待案件鎖 | 讀到已 commit 的狀態 |
+| 活動紀錄順序（`seq`） | 結果排在後續節點的事件之前 | 結果排在同一交易所有事件之後 |
+| commit 後程序崩潰 | 不會發生 | webhook 不會送出，也沒有結果紀錄；ad-hoc directive 已是 `CONSUMED` |
+| 內建 dispatcher 逾時 | 無（undici 預設約 300 秒） | 30 秒，逾時記 `SERVICE_TASK_FAILED` |
+| 同時約 10 個以上決策 | 交易內再要第二條連線，連線池死結，API 需重啟才恢復 | 交易內的委派規則與通知偏好都走同一條連線 |
+
+宿主需要檢查的事：
+
+- 以活動紀錄相鄰順序判斷流程的程式，改用 `action`、`tokenId`、`directiveId` 比對。
+- 回應超過 30 秒的端點，改為 `202` 後非同步處理，或綁定自己的 dispatcher。
+- 自訂 dispatcher 不受 30 秒限制，請自行設定逾時，否則 mutation 會一直等待端點回應。
+- 內建案件歷程本來就不顯示這類服務節點紀錄，不受順序變動影響。
+- 不能遺失的 webhook 請改用知會節點，它有 outbox 與重試；`WEBHOOK` 服務節點與 ad-hoc 目標沒有。
+
 ## 10. 並發策略
 
 - 一個 instance 的處理用 **transaction 層級的 PostgreSQL advisory lock**：`SELECT pg_advisory_xact_lock(hashtext(instance_id))`，

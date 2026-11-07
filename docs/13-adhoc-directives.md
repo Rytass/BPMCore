@@ -254,7 +254,7 @@ Ad-hoc 指令是**執行期（runtime）**能力，不在模板設計階段定�
   NotificationModule（見 `docs/07`、`docs/10`）。
 - 目標為**成員 / 職位 / 組織成員**時：先以 `resolveApproverResolver` 解析出
   收件成員，再建立 in-app（及依偏好的 email）通知。
-- 目標為 **Webhook**（僅通知型可用）時：透過 ad-hoc webhook 投遞，成功 / 失敗
+- 目標為 **Webhook**（僅通知型可用）時：交易 commit 後透過 ad-hoc webhook 投遞（見 `docs/07` §9.1），成功 / 失敗
   各記錄 `SERVICE_TASK_EXECUTED` / `SERVICE_TASK_FAILED` activity log，payload
   含 `{ action: 'ADHOC_WEBHOOK', directiveId, ok, status, url }`（失敗時另帶 `error`）。
 - 目標為**成員 / 職位 / 組織**時，若收件人解析失敗，亦記 `SERVICE_TASK_FAILED`，但

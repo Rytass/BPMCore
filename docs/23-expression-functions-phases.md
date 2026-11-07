@@ -29,11 +29,14 @@
 | --- | --- | --- |
 | Dry run 指數遍歷阻塞事件迴圈 | `workflow-engine.service.ts:3070` | 整次模擬加時間預算與 visit 上限；超過回 `valid: false`，權限與 schema 不變 |
 | 交易內同步 webhook，可佔住案件鎖並耗盡連線池 | `workflow-engine.service.ts:2969`、`:7813`；`workflow-service-task-dispatcher.token.ts:28` | 派送移到交易 commit 之後；預設 dispatcher 加逾時；dispatcher 介面不變 |
+| 交易內的委派規則與通知偏好另取連線，約 10 個併發決策就會讓連線池永久死結 | `delegation.service.ts`、`notification.service.ts` | 改走交易的 `EntityManager`；實機以 12 個併發案件驗證 |
 | 先取鎖才檢查參與者；資料庫沒有逾時設定 | `workflow-engine.service.ts:968`、`:2188`；`database/typeorm.config.ts:44` | webhook 移出後不再有長時間持鎖，暫不改動；連線與鎖逾時建議由宿主設定 |
 | 路徑 C ad-hoc webhook SSRF | `workflow-engine.service.ts:9729` | 套用 `isWorkflowWebhookUrlAllowed`；不接受呼叫者指定 headers；不回寫回應本文 |
 | `/api/chat` 未驗證（信心 7/10，取決於 repo 外的部署設定） | `next/workflow-chat-route.ts:100` | 未啟用回 404；驗證 session；過濾 client 的 `system` 訊息；限制長度與輸出 token |
 
 **Gate**：實機以慢速端點驗證案件操作不再被 webhook 卡住，其他案件與登入不受影響。
+
+**狀態（2026-11-07）**：dry run、webhook、連線池三項已實作並通過實機 gate；SSRF 與 `/api/chat` 尚未處理。
 
 ## P0 — 安全修補
 

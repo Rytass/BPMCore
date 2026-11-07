@@ -3566,6 +3566,101 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('sends a webhook node only after its transaction has committed', async (): Promise<void> => {
+    const callOrder: string[] = [];
+    const serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = {
+      dispatchWebhook: jest.fn(() => {
+        callOrder.push('dispatch');
+
+        return Promise.resolve({ ok: true, status: 202 });
+      }),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
+      processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
+      serviceTaskDispatcher,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const { transaction } = (
+      fixture.service as unknown as {
+        readonly approvalInstanceRepository: {
+          readonly manager: { readonly transaction: jest.Mock };
+        };
+      }
+    ).approvalInstanceRepository.manager;
+    const runTransaction = transaction.getMockImplementation() as (
+      work: unknown,
+    ) => Promise<unknown>;
+
+    transaction.mockImplementation(async (work: unknown): Promise<unknown> => {
+      const result = await runTransaction(work);
+
+      callOrder.push('commit');
+
+      return result;
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(callOrder).toEqual(['commit', 'dispatch']);
+  });
+
+  it('sends no webhook when the transaction rolls back', async (): Promise<void> => {
+    const serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher = {
+      dispatchWebhook: jest.fn(() =>
+        Promise.resolve({ ok: true, status: 202 }),
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
+      processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
+      serviceTaskDispatcher,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const service = fixture.service as unknown as {
+      advanceTokenToOutgoingNodes: () => Promise<void>;
+    };
+
+    jest
+      .spyOn(service, 'advanceTokenToOutgoingNodes')
+      .mockRejectedValue(new Error('rolled back'));
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      'rolled back',
+    );
+    expect(serviceTaskDispatcher.dispatchWebhook).not.toHaveBeenCalled();
+  });
+
+  it('keeps a committed decision when a webhook result cannot be recorded', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
+      processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
+      serviceTaskDispatcher: {
+        dispatchWebhook: jest.fn(() =>
+          Promise.resolve({ ok: true, status: 202 }),
+        ),
+      },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+    const service = fixture.service as unknown as {
+      readonly activityLogRepository: { save: () => Promise<never> };
+    };
+
+    jest
+      .spyOn(service.activityLogRepository, 'save')
+      .mockRejectedValue(new Error('database went away'));
+
+    await expect(
+      fixture.service.processInstance('instance-1'),
+    ).resolves.toBeUndefined();
+  });
+
   it('updates form data from set-form-field service tasks', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -6039,6 +6134,96 @@ describe('WorkflowEngineService', () => {
       });
     });
 
+    describe('dry run budget', (): void => {
+      const chainedDiamonds = (count: number): string => {
+        const indexes = Array.from({ length: count }, (_, index) => index);
+        const edge = (source: string, target: string): unknown => ({
+          data: {},
+          id: `${source}-${target}`,
+          source,
+          target,
+        });
+        const task = (id: string): unknown => ({
+          data: { label: id },
+          id,
+          position: { x: 0, y: 0 },
+          type: 'exclusiveGateway',
+        });
+
+        return JSON.stringify({
+          meta: { schemaVersion: 1 },
+          edges: [
+            edge('start', 'g0'),
+            ...indexes.flatMap((index) => [
+              edge(`g${index}`, `a${index}`),
+              edge(`g${index}`, `b${index}`),
+              edge(`a${index}`, `g${index + 1}`),
+              edge(`b${index}`, `g${index + 1}`),
+            ]),
+            edge(`g${count}`, 'end'),
+          ],
+          nodes: [
+            {
+              data: { label: 'start' },
+              id: 'start',
+              position: { x: 0, y: 0 },
+              type: 'startEvent',
+            },
+            ...indexes.flatMap((index) => [
+              task(`g${index}`),
+              task(`a${index}`),
+              task(`b${index}`),
+            ]),
+            task(`g${count}`),
+            {
+              data: { label: 'end' },
+              id: 'end',
+              position: { x: 0, y: 0 },
+              type: 'endEvent',
+            },
+          ],
+        });
+      };
+      const dryRunJson = (
+        workflowDefinitionJson: string,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-1',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson,
+        });
+
+      it('stops a chain of branching gateways instead of walking every path', (): void => {
+        const startedAt = performance.now();
+        const result = dryRunJson(chainedDiamonds(30));
+
+        expect(performance.now() - startedAt).toBeLessThan(3000);
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          expect.stringContaining('運算量過大'),
+        ]);
+      });
+
+      it('still walks an ordinary branching workflow', (): void => {
+        expect(dryRunJson(chainedDiamonds(3)).valid).toBe(true);
+      });
+
+      it('refuses oversized input before parsing it', (): void => {
+        const result = dryRunJson(' '.repeat(1_048_577));
+
+        expect(result.valid).toBe(false);
+        expect(result.errors).toEqual([
+          expect.stringContaining('試跑資料過大'),
+        ]);
+      });
+    });
+
     describe('dry run', (): void => {
       const dryRun = (
         approverResolver: ApproverResolver,
@@ -6131,96 +6316,6 @@ describe('WorkflowEngineService', () => {
             }),
           ]),
         );
-      });
-    });
-
-    describe('dry run budget', (): void => {
-      const chainedDiamonds = (count: number): string => {
-        const indexes = Array.from({ length: count }, (_, index) => index);
-        const edge = (source: string, target: string): unknown => ({
-          data: {},
-          id: `${source}-${target}`,
-          source,
-          target,
-        });
-        const task = (id: string): unknown => ({
-          data: { label: id },
-          id,
-          position: { x: 0, y: 0 },
-          type: 'exclusiveGateway',
-        });
-
-        return JSON.stringify({
-          meta: { schemaVersion: 1 },
-          edges: [
-            edge('start', 'g0'),
-            ...indexes.flatMap((index) => [
-              edge(`g${index}`, `a${index}`),
-              edge(`g${index}`, `b${index}`),
-              edge(`a${index}`, `g${index + 1}`),
-              edge(`b${index}`, `g${index + 1}`),
-            ]),
-            edge(`g${count}`, 'end'),
-          ],
-          nodes: [
-            {
-              data: { label: 'start' },
-              id: 'start',
-              position: { x: 0, y: 0 },
-              type: 'startEvent',
-            },
-            ...indexes.flatMap((index) => [
-              task(`g${index}`),
-              task(`a${index}`),
-              task(`b${index}`),
-            ]),
-            task(`g${count}`),
-            {
-              data: { label: 'end' },
-              id: 'end',
-              position: { x: 0, y: 0 },
-              type: 'endEvent',
-            },
-          ],
-        });
-      };
-      const dryRunJson = (
-        workflowDefinitionJson: string,
-      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
-        createServiceFixture({
-          currentVersionId: 'template-version-1',
-          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
-          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
-        }).service.dryRunApprovalWorkflow({
-          formDataJson: '{}',
-          initiatorMemberId: 'member-1',
-          initiatorMetadataSnapshotJson: null,
-          workflowDefinitionJson,
-        });
-
-      it('stops a chain of branching gateways instead of walking every path', (): void => {
-        const startedAt = performance.now();
-        const result = dryRunJson(chainedDiamonds(30));
-
-        expect(performance.now() - startedAt).toBeLessThan(3000);
-        expect(result.valid).toBe(false);
-        expect(result.steps).toEqual([]);
-        expect(result.errors).toEqual([
-          expect.stringContaining('運算量過大'),
-        ]);
-      });
-
-      it('still walks an ordinary branching workflow', (): void => {
-        expect(dryRunJson(chainedDiamonds(3)).valid).toBe(true);
-      });
-
-      it('refuses oversized input before parsing it', (): void => {
-        const result = dryRunJson(' '.repeat(1_048_577));
-
-        expect(result.valid).toBe(false);
-        expect(result.errors).toEqual([
-          expect.stringContaining('試跑資料過大'),
-        ]);
       });
     });
 
@@ -16771,8 +16866,13 @@ function createServiceFixture({
     Promise<readonly ActivityLogEntity[]>,
     [Readonly<Record<string, unknown>>]
   >(() => Promise.resolve([]));
+  // Webhook results are written here, after the transaction has committed.
   const activityLogRepository = createRepository<ActivityLogEntity>({
+    create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
+      transactionalActivityRepository.create(entity),
     find: rootActivityLogFind,
+    save: (entity: ActivityLogEntity): Promise<ActivityLogEntity> =>
+      transactionalActivityRepository.save(entity),
   });
   let processAdhocDirectiveRows: readonly AdhocDirectiveEntity[] = [
     ...processAdhocDirectives,
