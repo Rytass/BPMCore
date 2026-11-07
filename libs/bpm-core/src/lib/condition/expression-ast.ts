@@ -19,7 +19,10 @@ import {
 import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
 import type { BPMExpressionFunctionRegistry } from '../expression-function/expression-function.types';
 import { parseCelLegacy } from './adapters/cel-legacy.adapter';
-import { loadCelV2Environment } from './adapters/cel-v2.adapter';
+import {
+  findCelV2ArgumentTypeMismatch,
+  loadCelV2Environment,
+} from './adapters/cel-v2.adapter';
 import { isRegistryFunctionName } from './expression-function-invocation';
 import {
   DEFAULT_EXPRESSION_DIALECT,
@@ -1709,6 +1712,50 @@ const isTolerated = (node: ASTNode): boolean =>
   ((node.op === '==' || node.op === '!=') &&
     node.args.some((operand) => isCelV2EmptyLiteral(operand)));
 
+/**
+ * The schema type (its base, `list<string>` is `list`) of an argument that is
+ * exactly `form.<key>`, `formData.<key>` or `form["<key>"]` for a field
+ * `runTypeCheck` demoted to `dyn`; `null` for anything else, which keeps the
+ * type the check gave it.
+ */
+const readDemotedFieldType = (
+  argument: ASTNode,
+  schemaTypes: ReadonlyMap<string, string> | null,
+  checkedTypes: ReadonlyMap<string, string> | null,
+): string | null => {
+  if (schemaTypes === null || checkedTypes === null) {
+    return null;
+  }
+
+  const { base, steps } = readCelV2Chain(argument);
+  const step = steps.length === 1 ? steps[0] : null;
+  const literal =
+    step?.kind === 'index' ? readCelV2LiteralKey(step.index) : null;
+  const fieldKey =
+    step?.kind === 'member'
+      ? step.name
+      : literal?.string === true
+        ? literal.key
+        : null;
+
+  if (
+    fieldKey === null ||
+    base.op !== 'id' ||
+    !FORM_ROOTS.has(base.args) ||
+    argument.op === '.?' ||
+    argument.op === '[?]' ||
+    checkedTypes.get(fieldKey) !== 'dyn'
+  ) {
+    return null;
+  }
+
+  const schemaType = schemaTypes.get(fieldKey);
+
+  return schemaType === undefined || schemaType === 'dyn'
+    ? null
+    : schemaType.split('<')[0].trim();
+};
+
 const createLintEnvironment = (
   fieldTypes: ReadonlyMap<string, string> | null,
   base: Environment,
@@ -1746,10 +1793,38 @@ const runTypeCheck = (
     types: ReadonlyMap<string, string> | null,
     rounds: number,
   ): TypeCheckOutcome => {
-    const result = createLintEnvironment(types, base).parse(expression).check();
+    const parsed = createLintEnvironment(types, base).parse(expression);
+    const result = parsed.check();
 
     if (result.valid) {
-      return { status: 'OK', type: result.type };
+      // The engine checks host and built-in parameters through their
+      // signatures, except numbers, which are registered as `dyn` there:
+      // compare each argument's checked type with the declared one here, or
+      // `demo_costBand_v1(form.title)` publishes and fails every case.
+      // A field demoted to `dyn` for a tolerated comparison is demoted in the
+      // whole expression, so an argument that is that field is compared at
+      // its schema type: `form.title != null && f(form.title)` still fails
+      // every case with a text title.
+      const mismatch = findCelV2ArgumentTypeMismatch(
+        parsed.ast,
+        base,
+        (argument): string | null =>
+          readDemotedFieldType(argument as ASTNode, fieldTypes, types),
+      );
+
+      if (mismatch === null) {
+        return { status: 'OK', type: result.type };
+      }
+
+      const argumentFieldKeys = collectCelV2References(
+        mismatch.argument as ASTNode,
+      ).formFieldKeys;
+
+      return {
+        code: 'EXPR_FIELD_TYPE_MISMATCH',
+        fieldKey: argumentFieldKeys.length === 1 ? argumentFieldKeys[0] : null,
+        status: 'FAILED',
+      };
     }
 
     const node = readCheckErrorNode(result.error);

@@ -497,6 +497,43 @@ describe('TemplateService publish lint on the real engines', (): void => {
         status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
     });
+
+    describe('argument types against the real registry (live finding)', (): void => {
+      const registry = new StaticBPMExpressionFunctionRegistry([
+        {
+          description: 'Cost band',
+          handler: (): string => 'HIGH',
+          label: '採購金額級距',
+          name: 'demo_costBand_v1',
+          parameters: [{ name: 'amount', type: 'double' }],
+          returnType: 'string',
+        },
+      ]);
+      const wired = (condition: string): TemplateService =>
+        createService({
+          conditionService: new ConditionService(registry),
+          definition: edgeConditionDefinition(condition, 'cel-v2'),
+          registry,
+        });
+
+      it('refuses a text field handed to a double parameter', async (): Promise<void> => {
+        expect(
+          await readPublishError(
+            wired('demo_costBand_v1(form.title) == "HIGH"'),
+          ),
+        ).toBe(`${EDGE}: EXPR_FIELD_TYPE_MISMATCH title`);
+      });
+
+      it('publishes the same call with a number field', async (): Promise<void> => {
+        await expect(
+          wired(
+            'demo_costBand_v1(form.amount) == "HIGH"',
+          ).publishApprovalTemplateVersion('template-version-1'),
+        ).resolves.toMatchObject({
+          status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      });
+    });
   });
 });
 

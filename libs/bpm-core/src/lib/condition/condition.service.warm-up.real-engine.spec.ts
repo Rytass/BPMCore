@@ -172,6 +172,40 @@ describe('ConditionService boot warm-up', (): void => {
     expect(warmUp).toHaveBeenCalledTimes(1);
   });
 
+  it('logs one line with both timings when the boot warm-up succeeds', (): void => {
+    // The module-level class, so its Logger is the one spied on above.
+    const service = new ConditionService();
+    const log = jest.mocked(Logger.prototype.log);
+
+    service.onApplicationBootstrap();
+
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatch(
+      /^code=EXPRESSION_WARM_UP_DONE cel-legacy=\d+\.\dms cel-v2=\d+\.\dms$/u,
+    );
+    // Fixed words and milliseconds only: never the expression or its data.
+    expect(logged[0]).not.toContain('warmUp');
+    expect(logged[0]).not.toContain('form');
+  });
+
+  it('marks a dialect that failed and logs nothing when both failed', (): void => {
+    const service = new ConditionService();
+
+    jest
+      .spyOn(service, 'warmUp')
+      .mockReturnValueOnce({ 'cel-legacy': 2, 'cel-v2': null })
+      .mockReturnValueOnce({ 'cel-legacy': null, 'cel-v2': null });
+
+    service.onApplicationBootstrap();
+    expect(logged).toEqual([
+      'code=EXPRESSION_WARM_UP_DONE cel-legacy=2.0ms cel-v2=failed',
+    ]);
+
+    service.onApplicationBootstrap();
+    expect(logged).toHaveLength(1);
+  });
+
   it('never throws and logs only a fixed code when the registry cannot be read', (): void => {
     const secret = 'host-secret-registry-message';
     // The module-level class, so its Logger is the one spied on above.

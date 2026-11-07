@@ -107,6 +107,17 @@ const WARM_UP_LABEL = 'warmUp';
 const WARM_UP_BUDGET = { cumulativeMs: 5_000, perExpressionMs: 5_000 };
 const WARM_UP_DIALECTS: readonly ExpressionDialect[] = ['cel-legacy', 'cel-v2'];
 
+/** `code=EXPRESSION_WARM_UP_DONE cel-legacy=1.2ms cel-v2=3.4ms`. */
+const formatWarmUpLine = (result: ExpressionWarmUpResult): string =>
+  [
+    'code=EXPRESSION_WARM_UP_DONE',
+    ...WARM_UP_DIALECTS.map((dialect): string => {
+      const elapsed = result[dialect];
+
+      return `${dialect}=${elapsed === null ? 'failed' : `${elapsed.toFixed(1)}ms`}`;
+    }),
+  ].join(' ');
+
 const DEFAULT_MAX_EXPRESSION_LENGTH = 2000;
 // `has` and `size` are CEL macros, not context identifiers; the root-identifier
 // lint must not report them as unknown. `size` is required by the table field
@@ -141,9 +152,19 @@ export class ConditionService implements OnApplicationBootstrap {
    * Warms both engines at boot so the first case does not pay for it (Phase 23
    * P3 live finding: the first evaluation after a restart took about 90 ms of
    * its 100 ms budget, against about 1 ms warm).
+   *
+   * A warm-up that succeeded for any dialect writes one `log` line with each
+   * dialect's time (a failed one reads `failed` and has already warned with
+   * `EXPRESSION_WARM_UP_FAILED`), so a deployment can see it ran. The line
+   * holds only fixed words and milliseconds: no expression, no data. It is
+   * written here, not in `warmUp()`, so calling `warmUp()` stays silent.
    */
   onApplicationBootstrap(): void {
-    this.warmUp();
+    const result = this.warmUp();
+
+    if (WARM_UP_DIALECTS.some((dialect) => result[dialect] !== null)) {
+      this.logger.log(formatWarmUpLine(result));
+    }
   }
 
   /**

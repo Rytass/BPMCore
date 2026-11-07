@@ -976,3 +976,138 @@ describe('static dependencies in the schema lint', (): void => {
     );
   });
 });
+
+describe('an old value after an EXPRESSION dependency changes (P5 D5, backend)', (): void => {
+  // Cost centers belong to one plant: `CC-TW01` exists only under TW01.
+  const createPlantSource = (): RecordingSource => {
+    const resolveRequests: BPMFormDataSourceResolveRequest[] = [];
+    const searchRequests: BPMFormDataSourceSearchRequest[] = [];
+
+    return {
+      resolveRequests,
+      searchRequests,
+      source: {
+        descriptor: DESCRIPTOR,
+        resolve: (request): Promise<readonly FormFieldOption[]> => {
+          resolveRequests.push(request);
+
+          return Promise.resolve(
+            request.values
+              .filter((value) =>
+                value.startsWith(`CC-${String(request.bindings.plant)}`),
+              )
+              .map((value) => ({ label: value, value })),
+          );
+        },
+        search: (request) => {
+          searchRequests.push(request);
+
+          return Promise.resolve({ options: [] });
+        },
+      },
+    };
+  };
+
+  const SELF_TW01 = {
+    chargeTo: 'SELF',
+    chargedCostCenter: 'CC-TW01',
+    plant: 'TW01',
+  };
+
+  const firstSubmit = async (
+    resolver: FormDataSourceValueResolverService,
+    schema: FormDefinitionSchema,
+  ): ReturnType<FormDataSourceValueResolverService['resolveFormDataOptionSnapshots']> =>
+    resolver.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: SELF_TW01,
+      schema,
+    });
+
+  it('resolves the old value again with the new binding and refuses it on resubmit', async (): Promise<void> => {
+    const recording = createPlantSource();
+    const schema = createSchema();
+    const resolver = new FormDataSourceValueResolverService(
+      new StaticBPMFormDataSourceRegistry([recording.source]),
+      conditionService,
+    );
+    const previousSnapshots = await firstSubmit(resolver, schema);
+
+    expect(recording.resolveRequests[0].bindings).toEqual({ plant: 'TW01' });
+
+    // `chargeTo` is read only by the expression; the field value is untouched.
+    await expect(
+      resolver.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: { ...SELF_TW01, chargeTo: 'OTHER' },
+        previousFormData: SELF_TW01,
+        previousSnapshots,
+        schema,
+      }),
+    ).rejects.toThrow(errorCode(BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED));
+    // Not carried forward: asked again, under the plant the expression now gives.
+    expect(recording.resolveRequests).toHaveLength(2);
+    expect(recording.resolveRequests[1]).toMatchObject({
+      bindings: { plant: 'TW02' },
+      values: ['CC-TW01'],
+    });
+  });
+
+  it('keeps the snapshot when the dependency changed but the expression value did not', async (): Promise<void> => {
+    const recording = createPlantSource();
+    const schema = createSchema();
+    const resolver = new FormDataSourceValueResolverService(
+      new StaticBPMFormDataSourceRegistry([recording.source]),
+      conditionService,
+    );
+    const previousSnapshots = await firstSubmit(resolver, schema);
+    // OTHER of TW02 is TW01 again: the binding, and its hash, are unchanged.
+    const formData = { ...SELF_TW01, chargeTo: 'OTHER', plant: 'TW02' };
+
+    await expect(
+      resolver.resolveFormDataOptionSnapshots({
+        authContext,
+        formData,
+        previousFormData: SELF_TW01,
+        previousSnapshots,
+        schema,
+      }),
+    ).resolves.toEqual({
+      chargedCostCenter: expect.objectContaining({
+        bindingHash: previousSnapshots.chargedCostCenter.bindingHash,
+      }),
+    });
+    expect(recording.resolveRequests).toHaveLength(1);
+  });
+
+  it('reports the old value as unresolved to the read-only resolve the browser asks', async (): Promise<void> => {
+    const recording = createPlantSource();
+    const service = createRuntimeService(recording.source, createSchema());
+    const ask = (
+      formData: Readonly<Record<string, unknown>>,
+    ): ReturnType<FormDataSourceService['resolveFormFieldOptionValues']> =>
+      service.resolveFormFieldOptionValues(
+        {
+          fieldKey: 'chargedCostCenter',
+          formDataJson: JSON.stringify(formData),
+          templateId: 'template-1',
+          valuesJson: JSON.stringify(['CC-TW01']),
+        },
+        authContext,
+      );
+
+    await expect(ask(SELF_TW01)).resolves.toMatchObject({
+      options: [{ label: 'CC-TW01', value: 'CC-TW01' }],
+      unresolvedValues: [],
+    });
+    await expect(ask({ ...SELF_TW01, chargeTo: 'OTHER' })).resolves.toMatchObject({
+      options: [],
+      unresolvedValues: ['CC-TW01'],
+      waitingForFieldKeys: [],
+    });
+    expect(recording.resolveRequests.map((request) => request.bindings)).toEqual([
+      { plant: 'TW01' },
+      { plant: 'TW02' },
+    ]);
+  });
+});

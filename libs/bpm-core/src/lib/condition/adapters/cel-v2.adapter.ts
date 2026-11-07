@@ -212,6 +212,17 @@ const celV2Environments = new WeakMap<
 >();
 
 /**
+ * The declared parameter types of every function registered on a function
+ * environment, by name. Kept beside the environment because numbers are
+ * registered as `dyn` (see `toSignatureParameterType`), so the engine's own
+ * check cannot tell a `string` argument handed to a `double` parameter.
+ */
+const celV2FunctionParameters = new WeakMap<
+  Environment,
+  ReadonlyMap<string, readonly BPMExpressionValueType[]>
+>();
+
+/**
  * The cel-v2 environment for a registry: the base environment plus every
  * function the registry lists (the nine built-ins and the host's), built once
  * per registry and cached. Without a registry it is the built-ins-only one.
@@ -234,8 +245,9 @@ export function loadCelV2Environment(
   }
 
   const environment = loadCelV2BaseEnvironment().clone();
+  const { functions } = readExpressionFunctionTable(registry);
 
-  readExpressionFunctionTable(registry).functions.forEach((fn): void => {
+  functions.forEach((fn): void => {
     environment.registerFunction(
       toSignature(fn),
       createExpressionFunctionInvoker(fn, 'cel-v2'),
@@ -244,9 +256,160 @@ export function loadCelV2Environment(
   // Cloning stops the parent from registering more (documented engine
   // behaviour), so the shared environment cannot be changed by a caller.
   environment.clone();
+  celV2FunctionParameters.set(
+    environment,
+    new Map(
+      functions.map(
+        (fn): readonly [string, readonly BPMExpressionValueType[]] => [
+          fn.name,
+          fn.parameters.map((parameter) => parameter.type),
+        ],
+      ),
+    ),
+  );
   celV2Environments.set(registry, environment);
 
   return environment;
+}
+
+interface CelV2AstNode {
+  readonly args: unknown;
+  readonly op: string;
+}
+
+const isAstNode = (value: unknown): value is CelV2AstNode =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { readonly op?: unknown }).op === 'string';
+
+/** A call argument whose checked type its declared parameter never accepts. */
+export interface CelV2ArgumentTypeMismatch {
+  /** The argument's AST node, for the caller to read the fields it uses. */
+  readonly argument: unknown;
+  readonly functionName: string;
+  readonly parameterType: BPMExpressionValueType;
+}
+
+const NUMERIC_CHECKED_TYPES: ReadonlySet<string> = new Set([
+  'double',
+  'int',
+  'uint',
+]);
+
+/*
+ * The checked types (their base, `list<string>` is `list`) a parameter of
+ * each declared type accepts. `dyn` is accepted everywhere: a value the check
+ * cannot type is decided at evaluation, as before. A `double` parameter takes
+ * an `int` and an `int` one a `double` (a form number is a `double` even when
+ * it is whole); the wrapper decides those at evaluation.
+ */
+const isCheckedTypeAccepted = (
+  checkedType: string,
+  parameterType: BPMExpressionValueType,
+): boolean => {
+  if (checkedType === 'dyn' || parameterType === 'dyn') {
+    return true;
+  }
+
+  switch (parameterType) {
+    case 'double':
+    case 'int':
+      return NUMERIC_CHECKED_TYPES.has(checkedType);
+    case 'null':
+      return checkedType === 'null';
+    default:
+      return checkedType === parameterType;
+  }
+};
+
+const readCheckedBaseType = (node: unknown): string | null => {
+  const checked = (node as { readonly checkedType?: unknown } | null)
+    ?.checkedType;
+  const name =
+    typeof checked === 'object' && checked !== null
+      ? (checked as { readonly name?: unknown }).name
+      : undefined;
+
+  return typeof name === 'string' ? name.split('<')[0].trim() : null;
+};
+
+/**
+ * The first global call to a registered function whose argument the type
+ * check typed as something the declared parameter refuses (ADR 22 §3.5): a
+ * text field handed to a `double` parameter, say. Only meaningful on the AST
+ * of an expression `check()` accepted, parsed in a clone of
+ * `loadCelV2Environment(...)`'s environment (`environment` is that
+ * environment, not the clone); an argument without a checked type, or a
+ * function the environment does not know, is skipped.
+ *
+ * The engine checks every other parameter type itself through the
+ * signature; numbers are registered as `dyn` there, which is what this
+ * closes for the publish lint.
+ *
+ * `readArgumentType`, when given, may name the type to compare instead of
+ * the checked one (a base type, `null` to keep the checked one): the lint
+ * passes the schema type of a field it had to check as `dyn`, so that
+ * `form.title != null && f(form.title)` is compared as the text it is.
+ */
+export function findCelV2ArgumentTypeMismatch(
+  ast: unknown,
+  environment: Environment,
+  readArgumentType: (argument: unknown) => string | null = (): null => null,
+): CelV2ArgumentTypeMismatch | null {
+  const parameters = celV2FunctionParameters.get(environment);
+
+  if (!parameters) {
+    return null;
+  }
+
+  const visit = (node: unknown): CelV2ArgumentTypeMismatch | null => {
+    if (Array.isArray(node)) {
+      return node.reduce<CelV2ArgumentTypeMismatch | null>(
+        (found, child) => found ?? visit(child),
+        null,
+      );
+    }
+
+    if (!isAstNode(node)) {
+      return null;
+    }
+
+    const args = node.args;
+
+    if (
+      node.op === 'call' &&
+      Array.isArray(args) &&
+      typeof args[0] === 'string' &&
+      Array.isArray(args[1])
+    ) {
+      const declared = parameters.get(args[0]);
+      const callArguments: readonly unknown[] = args[1];
+      const mismatchIndex =
+        declared && declared.length === callArguments.length
+          ? callArguments.findIndex((argument, index): boolean => {
+              const checkedType =
+                readArgumentType(argument) ?? readCheckedBaseType(argument);
+
+              return (
+                checkedType !== null &&
+                !isCheckedTypeAccepted(checkedType, declared[index])
+              );
+            })
+          : -1;
+
+      if (declared && mismatchIndex >= 0) {
+        return {
+          argument: callArguments[mismatchIndex],
+          functionName: args[0],
+          parameterType: declared[mismatchIndex],
+        };
+      }
+    }
+
+    return visit(args);
+  };
+
+  return visit(ast);
 }
 
 /**
@@ -268,16 +431,6 @@ export function parseCelV2(
     return null;
   }
 }
-
-interface CelV2AstNode {
-  readonly args: unknown;
-  readonly op: string;
-}
-
-const isAstNode = (value: unknown): value is CelV2AstNode =>
-  typeof value === 'object' &&
-  value !== null &&
-  typeof (value as { readonly op?: unknown }).op === 'string';
 
 /**
  * Names of the global functions an expression calls (`call` nodes; methods are

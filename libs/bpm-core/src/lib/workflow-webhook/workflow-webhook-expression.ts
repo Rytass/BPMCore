@@ -52,7 +52,20 @@ export function isNotifyWebhookExpressionSource(
   );
 }
 
-/** Why an `EXPRESSION` binding produced no value. Never engine text or a value. */
+/**
+ * Why an `EXPRESSION` binding produced no value. Never engine text or a value.
+ *
+ * Six of these are the runtime contract codes (docs/24 §2.1). The seventh,
+ * `EXPRESSION_UNAVAILABLE`, is internal and deliberately not one of them: it
+ * means no expression was evaluated at all, because the host wired no
+ * `ConditionService` (a configuration error, not an expression's failure).
+ * None of the six fits that: `EXPRESSION_FUNCTION_FAILED` would blame a
+ * function nobody called, `EXPRESSION_SYNTAX_ERROR` an expression that is
+ * fine. It never leaves BPM as an error code; it only appears in the
+ * delivery's `lastErrorDetail` (`parameter "<key>" expression failed
+ * (EXPRESSION_UNAVAILABLE)`), which is recorded as `FAILED` with
+ * `WEBHOOK_PARAMETER_INVALID` like every other binding failure (§2.1).
+ */
 export type NotifyWebhookExpressionFailure =
   | 'EXPRESSION_BUDGET_EXCEEDED'
   | 'EXPRESSION_FUNCTION_FAILED'
