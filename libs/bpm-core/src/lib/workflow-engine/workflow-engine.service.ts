@@ -3440,7 +3440,10 @@ export class WorkflowEngineService {
   ): boolean {
     const expression = edge.data.condition?.trim();
 
-    if (expression && !shouldEvaluateStructuredCondition(edge, input.formData)) {
+    if (
+      expression &&
+      !shouldEvaluateStructuredCondition(edge, input.formData)
+    ) {
       return this.conditionService.evaluateBoolean(
         expression,
         buildDryRunExpressionContext(input, lastDecision),

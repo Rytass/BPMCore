@@ -33,7 +33,8 @@ interface CelProbeResult {
 
 const LEGACY_IS_FILLED = 'form.agent != null && form.agent != ""';
 const LEGACY_GREATER_THAN = 'form.amount > 5';
-const LEGACY_NON_IDENTIFIER_IS_FILLED = 'form["a-b"] != null && form["a-b"] != ""';
+const LEGACY_NON_IDENTIFIER_IS_FILLED =
+  'form["a-b"] != null && form["a-b"] != ""';
 
 const PROBES: readonly CelProbe[] = [
   {
@@ -91,9 +92,9 @@ describe('cel-js on a form key that is absent or null', () => {
   };
 
   it('parses every probed expression', (): void => {
-    expect(
-      results.filter((result) => result.outcome === 'PARSE_FAIL'),
-    ).toEqual([]);
+    expect(results.filter((result) => result.outcome === 'PARSE_FAIL')).toEqual(
+      [],
+    );
   });
 
   it('throws on the stored "is filled" CEL when the key is absent', (): void => {
