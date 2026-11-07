@@ -1,4 +1,11 @@
 import { Injectable } from '@nestjs/common';
+import {
+  EXPRESSION_ROOT_IDENTIFIERS_BY_USAGE_POINT,
+  ExpressionLintIssue,
+  formatExpressionLintIssue,
+  isExpressionUsagePoint,
+  readExpressionLintSeverity,
+} from '@rytass/bpm-core-shared';
 import { ExpressionRuntimeError } from './expression-errors';
 import {
   createExpressionBudget,
@@ -9,21 +16,28 @@ import {
 import { ExpressionRuntime } from './expression-runtime';
 import { JsonValue } from './expression-result.walker';
 import { loadCelEngine, parseCelLegacy } from './adapters/cel-legacy.adapter';
-import { loadCelV2Environment, parseCelV2 } from './adapters/cel-v2.adapter';
+import { loadCelV2Environment } from './adapters/cel-v2.adapter';
 import {
   DEFAULT_EXPRESSION_DIALECT,
   ExpressionDialect,
   isExpressionDialect,
   readExpressionDialect,
 } from './expression-dialect';
+import { ExpressionLintContext, lintCelV2Expression } from './expression-ast';
 
 interface ConditionExpression {
   readonly expression: string | null | undefined;
   readonly label: string;
 }
 
-interface ConditionLintOptions {
-  readonly allowedRootIdentifiers?: readonly string[];
+/**
+ * Lint options. Everything beyond `dialect` and `maxExpressionLength` is the
+ * cel-v2 lint context (`ExpressionLintContext`): the use point, the bound
+ * form, the function registry and the field a `SET_FORM_FIELD` writes.
+ * cel-legacy reads only the roots from it (docs/24 §1: the old dialect's lint
+ * does not change).
+ */
+export interface ConditionLintOptions extends ExpressionLintContext {
   /**
    * The engine whose parser decides syntax. Absent means `cel-legacy`; one
    * this version does not know is reported as `EXPRESSION_SYNTAX_ERROR`.
@@ -91,6 +105,56 @@ export class ConditionService {
     );
   }
 
+  /**
+   * The lint as structured findings, warnings included (docs/24 §2.2): what
+   * the designer's preview and the publish lint read. `lintExpression` is the
+   * error half of it, as the lines publish has always returned.
+   */
+  lintExpressionIssues(
+    expression: string | null | undefined,
+    label: string,
+    options: ConditionLintOptions = {},
+  ): readonly ExpressionLintIssue[] {
+    if (typeof expression === 'undefined' || expression === null) {
+      return [];
+    }
+
+    const trimmedExpression = expression.trim();
+    const maxExpressionLength =
+      options.maxExpressionLength ?? DEFAULT_MAX_EXPRESSION_LENGTH;
+
+    if (!trimmedExpression) {
+      return [lintIssue('EXPR_PARSE_FAILED', label)];
+    }
+
+    if (trimmedExpression.length > maxExpressionLength) {
+      return [lintIssue('EXPR_COMPLEXITY_EXCEEDED', label)];
+    }
+
+    if (
+      options.dialect !== undefined &&
+      !isExpressionDialect(options.dialect)
+    ) {
+      return [lintIssue('EXPR_PARSE_FAILED', label)];
+    }
+
+    if (options.dialect === 'cel-v2') {
+      return lintCelV2Expression(trimmedExpression, label, options);
+    }
+
+    if (parseCelLegacy(trimmedExpression) === null) {
+      return [lintIssue('EXPR_PARSE_FAILED', label)];
+    }
+
+    return readUnsupportedRootIdentifiers(
+      trimmedExpression,
+      readLintRoots(options),
+      'cel-legacy',
+    ).map((identifier) =>
+      lintIssue('EXPR_ROOT_NOT_ALLOWED', label, identifier),
+    );
+  }
+
   lintExpression(
     expression: string | null | undefined,
     label: string,
@@ -98,6 +162,15 @@ export class ConditionService {
   ): readonly string[] {
     if (typeof expression === 'undefined' || expression === null) {
       return [];
+    }
+
+    // cel-v2 is linted on its AST (ADR 22 §3.4) and answers with the codes
+    // the preview reads (docs/24 §2.2), blank and over-long included; only
+    // the errors refuse, each as one `<label>: <code>` line.
+    if (options.dialect === 'cel-v2') {
+      return this.lintExpressionIssues(expression, label, options)
+        .filter((finding) => finding.severity === 'ERROR')
+        .map(formatExpressionLintIssue);
     }
 
     const trimmedExpression = expression.trim();
@@ -123,20 +196,15 @@ export class ConditionService {
 
     // The engine's parse message is not returned: it can echo the expression,
     // and the lint result reaches GraphQL clients (ADR 22 §3.2).
-    const parse =
-      (options.dialect ?? DEFAULT_EXPRESSION_DIALECT) === 'cel-v2'
-        ? parseCelV2
-        : parseCelLegacy;
-
-    if (parse(trimmedExpression) === null) {
+    if (parseCelLegacy(trimmedExpression) === null) {
       return [`${label}: EXPRESSION_SYNTAX_ERROR`];
     }
 
     return lintRootIdentifiers(
       trimmedExpression,
       label,
-      options.allowedRootIdentifiers,
-      options.dialect,
+      readLintRoots(options),
+      'cel-legacy',
     );
   }
 
@@ -239,29 +307,71 @@ function assertEvaluable(
   }
 }
 
+function lintIssue(
+  code: ExpressionLintIssue['code'],
+  label: string,
+  subject?: string,
+): ExpressionLintIssue {
+  return {
+    code,
+    label,
+    severity: readExpressionLintSeverity(code),
+    ...(subject === undefined ? {} : { subject }),
+  };
+}
+
+/**
+ * The cel-legacy lint's roots. A use point that is set but is not one (a
+ * client may send `toString`) is never used as an index: it allows nothing
+ * beyond the keywords the scan always skips, so every root is reported. An
+ * empty list would not do that: `readUnsupportedRootIdentifiers` reads it as
+ * "do not check".
+ */
+function readLintRoots(
+  options: ConditionLintOptions,
+): readonly string[] | undefined {
+  if (options.allowedRootIdentifiers?.length) {
+    return options.allowedRootIdentifiers;
+  }
+
+  if (
+    options.usagePoint !== undefined &&
+    options.usagePoint !== null &&
+    !isExpressionUsagePoint(options.usagePoint)
+  ) {
+    return [...CEL_KEYWORDS];
+  }
+
+  return options.usagePoint
+    ? EXPRESSION_ROOT_IDENTIFIERS_BY_USAGE_POINT[options.usagePoint]
+    : options.allowedRootIdentifiers;
+}
+
 // cel-v2 macros that bind a variable as their first argument
 // (`list.map(x, ...)`, `list.exists(x, ...)` ...).
 const CEL_V2_BINDING_MACRO_PATTERN =
   /\.\s*(?:all|exists|exists_one|filter|map)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/gu;
 
 /**
- * Root identifiers the expression reads that its use point does not allow.
+ * Root identifiers the expression reads that its use point does not allow,
+ * found by a textual scan.
  *
- * The scan is textual. For `cel-v2` it also skips what that dialect adds and
+ * The lint uses this for cel-legacy only, which has no AST to read (docs/24
+ * §1); cel-v2 is linted on its AST (`lintCelV2Expression`), where a name a
+ * macro binds is in scope only inside that macro.
+ *
+ * Evaluation still runs this scan before handing an expression to either
+ * engine (`assertEvaluable`). For cel-v2 it skips what that dialect adds and
  * is not a root: names a macro binds (`a` in `form.l.map(a, a.qty)`) and
- * global function calls (`int(form.x)`). This is an interim rule until P2
- * checks roots on the AST (ADR 22 §3.4).
- *
- * A bound name is skipped everywhere in the expression, not only inside its
- * macro, so `[1].exists(lastDecision, true) && lastDecision.d == ""` passes
- * this check (and the lint) even where `lastDecision` is not allowed. What
- * stops it reading that root is evaluation: `evaluateValue` hands the engine
- * only the allowed roots (`pickAllowedRoots`), so the name outside the macro
- * is a missing key. The lint still says nothing; P2 closes that on the AST.
+ * global function calls (`int(form.x)`). A bound name is skipped everywhere in
+ * the expression, not only inside its macro, so
+ * `[1].exists(lastDecision, true) && lastDecision.d == ""` passes the scan
+ * where `lastDecision` is not allowed. The publish lint refuses that on the
+ * AST; at evaluation `evaluateValue` hands the engine only the allowed roots
+ * (`pickAllowedRoots`), so the name outside the macro is a missing key.
  */
-function lintRootIdentifiers(
+function readUnsupportedRootIdentifiers(
   expression: string,
-  label: string,
   allowedRootIdentifiers: readonly string[] | undefined,
   dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT,
 ): readonly string[] {
@@ -294,11 +404,23 @@ function lintRootIdentifiers(
         ),
     )
     .map((match) => match[2]);
-  const unknownIdentifiers = [
+
+  return [
     ...new Set(identifiers.filter((identifier) => !allowed.has(identifier))),
   ];
+}
 
-  return unknownIdentifiers.map(
+function lintRootIdentifiers(
+  expression: string,
+  label: string,
+  allowedRootIdentifiers: readonly string[] | undefined,
+  dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT,
+): readonly string[] {
+  return readUnsupportedRootIdentifiers(
+    expression,
+    allowedRootIdentifiers,
+    dialect,
+  ).map(
     (identifier) => `${label} references unsupported identifier ${identifier}`,
   );
 }

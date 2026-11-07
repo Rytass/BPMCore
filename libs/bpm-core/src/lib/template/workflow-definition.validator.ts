@@ -31,6 +31,8 @@ import {
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { parseIsoDurationParts } from '../common/iso-duration';
+import { UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE } from '@rytass/bpm-core-shared';
+import { isExpressionDialect } from '../condition/expression-dialect';
 
 const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
   'REMIND',
@@ -137,11 +139,23 @@ export function lintWorkflowDefinition(
   };
 }
 
+// Refused at publish (Phase 23 P2): a definition naming a dialect this
+// version does not know cannot have its expressions parsed, and guessing an
+// engine could route cases differently from what its author tested.
+function lintExpressionDialect(definition: WorkflowDefinition): readonly string[] {
+  const dialect: unknown = definition?.expressionDialect;
+
+  return dialect === undefined || dialect === null || isExpressionDialect(dialect)
+    ? []
+    : [UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE];
+}
+
 function lintBasicShape(definition: WorkflowDefinition): readonly string[] {
   const errors = [
     ...(definition?.meta?.schemaVersion === 1
       ? []
       : ['workflow.meta.schemaVersion must be 1']),
+    ...lintExpressionDialect(definition),
     ...(Array.isArray(definition?.nodes)
       ? []
       : ['workflow.nodes must be an array']),

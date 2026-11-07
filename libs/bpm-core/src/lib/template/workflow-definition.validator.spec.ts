@@ -2,6 +2,7 @@ import {
   EMPTY_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
 } from './workflow-definition.validator';
+import { UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE } from '@rytass/bpm-core-shared';
 import { WORKFLOW_LINT_MESSAGES } from '@rytass/bpm-core-shared/workflow-graph';
 import {
   ApproverResolver,
@@ -75,6 +76,37 @@ describe('workflow definition validator', () => {
       valid: true,
       warnings: [],
     });
+  });
+
+  // Phase 23 P2: an unknown dialect is refused at publish; none, or a known
+  // one, passes.
+  it('rejects an expression dialect this version does not know', (): void => {
+    const withDialect = (expressionDialect: unknown): WorkflowDefinition =>
+      ({
+        ...EMPTY_WORKFLOW_DEFINITION,
+        edges: [
+          {
+            data: {},
+            id: 'edge_start_end',
+            source: 'start',
+            target: 'end',
+            type: 'smoothstep',
+          },
+        ],
+        expressionDialect,
+      }) as unknown as WorkflowDefinition;
+
+    expect(lintWorkflowDefinition(withDialect('cel-v3'))).toEqual({
+      errors: [UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE],
+      valid: false,
+      warnings: [],
+    });
+    expect(lintWorkflowDefinition(withDialect(42)).errors).toEqual([
+      UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE,
+    ]);
+    expect(lintWorkflowDefinition(withDialect('cel-v2')).errors).toEqual([]);
+    expect(lintWorkflowDefinition(withDialect('cel-legacy')).errors).toEqual([]);
+    expect(lintWorkflowDefinition(withDialect(undefined)).errors).toEqual([]);
   });
 
   it('rejects unreachable nodes and missing end paths', (): void => {

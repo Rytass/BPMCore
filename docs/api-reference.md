@@ -316,6 +316,21 @@ Expression function contract (ADR 22 §3.5), root export only — not yet releas
 | `BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES` / `BPMBuiltInExpressionFunctionName` | const / type | The nine reserved built-ins: `abs`, `ceil`, `floor`, `lower`, `max`, `min`, `round`, `trim`, `upper` |
 | `BPM_EXPRESSION_FUNCTION_NAME_PATTERN` | const | `^[a-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_v[0-9]+$`: host function names carry their version |
 
+Expression use points and lint codes (ADR 22, docs/24 §2.2–§2.3, Phase 23 P2), in `libs/shared/src/lib/expression-usage-point.ts`, root export only — not yet released:
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `EXPRESSION_USAGE_POINTS` / `ExpressionUsagePoint` | const / type | The nine use points: `INITIATOR_POLICY`, `ENTRY_CONDITION`, `FLOW_CONDITION`, `APPROVER_RESOLVER`, `SERVICE_FORM_FIELD_VALUE`, `WEBHOOK_PAYLOAD`, `DELEGATION_CONDITION`, `DATA_SOURCE_BINDING`, `NOTIFY_WEBHOOK_BINDING` |
+| `EXPRESSION_ROOT_IDENTIFIERS_BY_USAGE_POINT` | const | The root identifiers each use point evaluates with (`FLOW_CONDITION` adds `lastDecision`, `DELEGATION_CONDITION` adds `principal`, `INITIATOR_POLICY` is `env` / `initiator` / `subject`, the two bindings read `form` (and `row`)) |
+| `EXPRESSION_USAGE_POINTS_WITHOUT_HOST_FUNCTIONS` / `allowsHostExpressionFunctions(usagePoint)` | const / function | The bindings, which may call only the built-ins |
+| `isExpressionUsagePoint(value)` | function | Type guard |
+| `EXPRESSION_LINT_ERROR_CODES` / `ExpressionLintErrorCode` | const / type | The twelve codes that refuse a publish (`EXPR_PARSE_FAILED` … `EXPR_FUNCTION_NOT_ALLOWED`) |
+| `EXPRESSION_LINT_WARNING_CODES` / `ExpressionLintWarningCode` | const / type | The warnings: `EXPR_OPTIONAL_FIELD_WITHOUT_HAS`, `EXPR_OR_ABSORBS_ERROR`, `EXPR_HAS_NESTED_PARENT`, `EXPR_APPROVER_READS_FORM`, `EXPR_HIDDEN_FIELD_COPIED`, `EXPR_DIVISOR_IS_FIELD` |
+| `ExpressionLintCode` / `ExpressionLintSeverity` / `ExpressionLintIssue` | type / type / interface | One finding: `code`, `label`, `severity` (`'ERROR' \| 'WARNING'`), optional `subject` (an identifier only) |
+| `isExpressionLintCode(value)` / `readExpressionLintSeverity(code)` | function | Type guard / the severity a code has |
+| `formatExpressionLintIssue(issue)` / `parseExpressionLintLine(line)` / `ParsedExpressionLintLine` / `EXPRESSION_LINT_SUBJECT_PATTERN` | function / function / interface / const | The publish-lint line `<label>: <code>[ <subject>]` and its parser; a subject that is not an identifier is dropped, so a line never carries `'; '` |
+| `UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE` | const | `workflow.expressionDialect must be cel-legacy or cel-v2`, the line publish refuses an unknown dialect with |
+
 ## `@rytass/bpm-core-shared/condition`
 
 Audit-condition evaluation context structures.
@@ -715,7 +730,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Mutations | `createApprovalTemplate()`, `createApprovalTemplateCategory()`, `updateApprovalTemplateCategory()`, `deleteApprovalTemplateCategory()`, `updateApprovalTemplateDraft()`, `forkApprovalTemplate()`, `publishApprovalTemplateVersion()`, `rollbackApprovalTemplateVersion()`, `composeApprovalTemplateWithForm()`, `activateApprovalTemplate(id)`, `deactivateApprovalTemplate(id)` |
 | Types | `ApprovalTemplateActivationStatus` (`'ACTIVE' \| 'ALL' \| 'INACTIVE'`, accepted by `listApprovalTemplates()` / `listApprovalTemplatesPage()`) |
 | Dry-run | `dryRunApprovalWorkflow()` |
-| Publish lint copy | `readWorkflowLintMessage(message, definition, language?)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges, field permission and approver-filled-field lines) into `language` (`'zh-TW'` by default, or `'en'`), naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition`, and nodes or edges it cannot read pass through unchanged, and an unsupported `language` falls back to `'zh-TW'`. `WorkflowLintLanguage` (`'en' \| 'zh-TW'`), `WORKFLOW_LINT_LANGUAGES`, `DEFAULT_WORKFLOW_LINT_LANGUAGE`. |
+| Publish lint copy | `readWorkflowLintMessage(message, definition, language?)` — rewrites the structural publish-lint lines (blank node label, exclusive-split edge count and default edge, parallel-join incoming edges, reachability, path to end, cycles, start/end count, NOTIFY outgoing edges, field permission and approver-filled-field lines, plus — not yet released — the Phase 23 P2 expression lint lines `<label>: EXPR_*[ <subject>]` and the unknown `expressionDialect` line) into `language` (`'zh-TW'` by default, or `'en'`), naming the node by its label from `definition` instead of its id or array index; unknown lines, ids outside `definition`, and nodes or edges it cannot read pass through unchanged, and an unsupported `language` falls back to `'zh-TW'`. `WorkflowLintLanguage` (`'en' \| 'zh-TW'`), `WORKFLOW_LINT_LANGUAGES`, `DEFAULT_WORKFLOW_LINT_LANGUAGE`. |
 | Webhook catalog | `listWorkflowWebhookEndpoints({ includeDeprecated? })` (designer-only; no URL, header or secret), `WorkflowWebhookEndpointRecord` (P6 adds `disabled`), `WorkflowWebhookParameterRecord`, `WorkflowWebhookEndpointSource` |
 | Webhook endpoint administration (P6) | `readWorkflowWebhookEndpointManagement()`, `listWorkflowWebhookManagedEndpoints()`, `listWorkflowWebhookEndpointAudits(endpointId)`, `createWorkflowWebhookEndpoint(input)`, `updateWorkflowWebhookEndpoint(input)`, `setWorkflowWebhookEndpointActive(id, active)`, `rotateWorkflowWebhookEndpointSecret(id, signingSecret)`, `testWorkflowWebhookEndpoint(id)`; records `WorkflowWebhookEndpointManagementRecord`, `WorkflowWebhookManagedEndpointRecord` (header names and `hasSigningSecret` only), `WorkflowWebhookEndpointAuditRecord`, `WorkflowWebhookEndpointAuditAction`, `WorkflowWebhookEndpointTestResultRecord`; inputs `CreateWorkflowWebhookEndpointInput`, `UpdateWorkflowWebhookEndpointInput`, `WorkflowWebhookEndpointHeaderInput`, `WorkflowWebhookEndpointParameterInput` (administrator-only) |
 
@@ -1061,7 +1076,7 @@ definition snapshot rather than whatever version the template publishes today.
 | Objects | `ComposeApprovalTemplateWithFormObject` (the client's result type is `ComposeApprovalTemplateWithFormResult`) |
 | Functions | `parseWorkflowDefinitionJson()`, `lintWorkflowDefinition()`, `WorkflowDefinitionLintResult` (type), `EMPTY_WORKFLOW_DEFINITION` |
 | Enums | `ApprovalTemplateListStatusEnum`, `ApprovalTemplateActivationStatusEnum`, `ApprovalTemplateCategoryStatusEnum`, `ApprovalTemplateVersionStatusEnum`, `BPMTemplateChangeActionEnum` |
-| Service | `TemplateService` |
+| Service | `TemplateService` (injects `BPM_EXPRESSION_FUNCTION_REGISTRY` as `@Optional()`: publish checks every `cel-v2` function call through `assertPublishable`, falling back to the built-in names when no registry is bound; rollback checks only that the version's functions are still registered and does not lint again — not yet released) |
 | Token | `BPM_TEMPLATE_OBSERVER` + `BPMTemplateObserver` / `BPMTemplateChangedEvent` / `BPMTemplateChangeActionEnum` (host observes template changes, for audit) |
 | Module | `TemplateModule` |
 
@@ -1418,7 +1433,8 @@ Registry contract shared by the publish lint and the registry implementation (AD
 
 | Name | Purpose |
 |---|---|
-| `ConditionService` | Condition-expression evaluation engine. `prepareEngine(dialect?)` loads that dialect's engine (default `cel-legacy`) ahead of first use. `evaluateBoolean` / `evaluateValue` take an optional trailing `ExpressionCallOptions`; `lintExpression` / `lintExpressions` options take an optional `dialect`, whose parser decides syntax. A dialect it does not know is refused as `EXPRESSION_SYNTAX_ERROR` by all of them (lint returns `<label>: EXPRESSION_SYNTAX_ERROR`), never replaced by `cel-legacy` |
+| `ConditionService` | Condition-expression evaluation engine. `prepareEngine(dialect?)` loads that dialect's engine (default `cel-legacy`) ahead of first use. `evaluateBoolean` / `evaluateValue` take an optional trailing `ExpressionCallOptions`; `lintExpression` / `lintExpressions` options take an optional `dialect`, whose parser decides syntax. A dialect it does not know is refused as `EXPRESSION_SYNTAX_ERROR` by all of them (lint returns `<label>: EXPRESSION_SYNTAX_ERROR`), never replaced by `cel-legacy`. Under `cel-v2` the lint walks the AST (Phase 23 P2) and returns the ERROR findings as `<label>: EXPR_*` lines (`formatExpressionLintIssue`), a blank or over-long expression included (`EXPR_PARSE_FAILED` / `EXPR_COMPLEXITY_EXCEEDED`, as in `lintExpressionIssues`); `cel-legacy` lines are unchanged. `lintExpressionIssues(expression, label, options?)` returns every finding, warnings included, as `ExpressionLintIssue[]` (not yet released) |
+| `ConditionLintOptions` | Interface (newly exported, not yet released): the lint options — `dialect`, `maxExpressionLength`, `allowedRootIdentifiers`, `usagePoint` (an `ExpressionUsagePoint`, whose roots apply when no whitelist is given; a value that is not a use point allows no root and, under `cel-v2`, no host function), `formSchema`, `targetField` and `functionRegistry` (`Pick<BPMExpressionFunctionRegistry, 'assertPublishable' \| 'get'>`; absent means the nine built-ins) |
 | `ExpressionCallOptions` | Interface: optional `allowedRootIdentifiers` (root whitelist for the use point; when given, only those roots of the context reach the engine), `budget` (an `ExpressionBudget` to share) and `dialect` (the definition's or rule's `ExpressionDialect`; absent means `cel-legacy`) |
 | `ExpressionDialect` | Type: `'cel-legacy' \| 'cel-v2'` (same as the shared `WorkflowExpressionDialect`) |
 | `EXPRESSION_DIALECTS` / `DEFAULT_EXPRESSION_DIALECT` | Const: both dialects; the default `cel-legacy`, which a missing dialect always means |
