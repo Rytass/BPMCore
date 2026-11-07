@@ -305,6 +305,17 @@ The designer's 欄位與關卡總覽, in `libs/shared/src/lib/field-access-matri
 | `readFieldAccessChoice(entry)` | function | The choice an entry (or `null`) stands for; a hidden fill reads as the fill it asks for |
 | `readFieldAccessEntryForChoice(fieldKey, choice)` | function | The entry a choice writes, `null` for `DEFAULT`; a fill is always `display: 'SHOW'` |
 
+Expression function contract (ADR 22 §3.5), root export only — not yet released:
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `BPMExpressionValueType` | type | `'bool' \| 'double' \| 'dyn' \| 'int' \| 'list' \| 'map' \| 'null' \| 'string'`: the CEL type a function parameter or result declares |
+| `BPMExpressionValue` | type | A JSON value as a function receives and returns it |
+| `BPMExpressionFunctionParameter` | interface | `name`, `type`, optional `description` |
+| `BPMExpressionFunctionDescriptor` | interface | A function without its handler — what the designer, catalog and publish lint see: `name`, `label`, `description`, `parameters`, `returnType`, `builtIn` |
+| `BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES` / `BPMBuiltInExpressionFunctionName` | const / type | The nine reserved built-ins: `abs`, `ceil`, `floor`, `lower`, `max`, `min`, `round`, `trim`, `upper` |
+| `BPM_EXPRESSION_FUNCTION_NAME_PATTERN` | const | `^[a-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_v[0-9]+$`: host function names carry their version |
+
 ## `@rytass/bpm-core-shared/condition`
 
 Audit-condition evaluation context structures.
@@ -1391,6 +1402,17 @@ The catalog carries **no URL, header or secret**, whichever source an endpoint c
 Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` writes `PENDING` rows (or `FAILED` ones, with their terminal activity log, when the endpoint is gone, its lookup threw, or a parameter no longer fits); the subscriber kicks `deliverByIds` once that transaction commits, and the scheduler (on by default whenever an endpoint is registered; `workflowWebhookDeliverySchedulerEnabled` overrides) retries the rest. Each attempt calls `buildRequest()`, refuses non-http(s) URLs and — for `DATABASE` endpoints, or all endpoints under `workflowWebhookEnforceAllowlistForRegistry` — URLs outside the allowlist, refuses a URL carrying credentials, a method other than `POST`/`PUT`/`PATCH` and a `buildRequest()` result without a string `url`, then sends with `redirect: 'manual'` and a timeout. Each row is re-stamped as its own attempt starts and written back only while that stamp still matches, so a row another worker reclaimed is never sent twice by this one nor overwritten by its late result. `2xx` is `SENT`; `408`/`429`/`5xx`, timeouts, network errors, a throwing `buildRequest()` and a throwing endpoint lookup retry with `base·2^(n−1)` backoff (±20 % jitter, never above the cap); other `4xx`, `3xx`, a missing endpoint and a refused URL fail at once. Rows are claimed at most five at a time and attempted together, the next five only once those finish, so a claimed row is always a row in flight and one receiver running into its timeout delays at most the other four in its group. Error details keep a host error's kind and a network error's system code, never a message that could quote the URL or a secret; at most 500 characters of a failing response body are kept, read from a 4 KB prefix, and NUL is stripped from every stored detail. An unexpected error inside BPM is recorded as `WEBHOOK_INTERNAL_ERROR` and retried. BPM sets `x-bpm-delivery-id`, `x-bpm-event` and, with a `signingSecret`, `x-bpm-timestamp` (the time of sending) and `x-bpm-signature-sha256 = HMAC-SHA256(secret, "<timestamp>.<body>")`; a host header cannot override any `x-bpm-*` header. Only the terminal outcome reaches the activity log (`SERVICE_TASK_EXECUTED` / `SERVICE_TASK_FAILED` with `action: 'NOTIFY_WEBHOOK'`, the endpoint key, version and label), and never the URL or response body. An administrator's retry adds `WEBHOOK_DELIVERY_RETRIED` (`ActivityLogEventTypeEnum`), carrying the acting member and the previous error code.
 
 `workflowWebhookTargetSources` defaults to `['REGISTRY']`. `'DATABASE'` (P6) is dropped from the resolved list unless both `workflowWebhookAllowedUrlPatterns` and `workflowWebhookSecretEncryptionKey` are set; the module logs a warning naming whichever is missing (`resolveAndReportWorkflowWebhookOptions`). An invalid URL pattern throws while options resolve, so it fails the boot rather than silently allowing or denying everything.
+
+## `@rytass/bpm-core-nestjs-module` — expression functions (root export)
+
+Registry contract shared by the publish lint and the registry implementation (ADR 22 §3.5) — not yet released. No subpath yet.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `BPMExpressionFunction` | interface | A descriptor without `builtIn`, plus a synchronous `handler(...args)` that only sees deep-frozen copies of its arguments |
+| `BPMExpressionFunctionRegistry` | interface | `get(name)` (the function or `null`), `list()` (descriptors, built-ins first), `assertPublishable(names)` (the names that are not available, first-seen order, no duplicates) |
+| `BPM_EXPRESSION_FUNCTIONS` | token | Host-provided functions; unset means none |
+| `BPM_EXPRESSION_FUNCTION_REGISTRY` | token | The resolved registry the core injects |
 
 ## `@rytass/bpm-core-nestjs-module/condition`
 

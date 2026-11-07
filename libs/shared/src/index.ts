@@ -1,4 +1,5 @@
 export * from './lib/condition';
+export * from './lib/expression-function';
 export * from './lib/field-access';
 export * from './lib/field-access-lint';
 export * from './lib/field-access-matrix';
