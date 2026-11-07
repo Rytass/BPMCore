@@ -9271,9 +9271,13 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
  *    definition and an in-flight instance keep their stored CEL for good, so
  *    the engine answers from the structured fields instead. The evaluator
  *    reads such a value as unfilled: EQUALS and the four ordered comparisons
- *    are false, NOT_EQUALS and IS_EMPTY are true, IS_FILLED is false. For
- *    `""` every designer operator already gives that same answer in CEL,
- *    except an ordered comparison, which in CEL throws or misroutes.
+ *    are false, NOT_EQUALS and IS_EMPTY are true, IS_FILLED is false. For a
+ *    single-value field holding `""` every designer operator already gives
+ *    that same answer in CEL, except an ordered comparison, which in CEL
+ *    throws or misroutes. A multiple-selection field holding `""` (not a list)
+ *    differs: the evaluator reads it as empty, while the legacy CEL gives
+ *    `form.t != null && form.t != []` true for IS_FILLED and `"A" in form.t`
+ *    throws.
  *    Whitespace-only text is deliberately not a trigger: CEL's `!= ""` counts
  *    it as filled while the evaluator counts it as empty, so routing it there
  *    would flip an "is filled" result against the stored CEL.

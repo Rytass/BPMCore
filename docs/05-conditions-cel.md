@@ -67,7 +67,7 @@ lastDecision != null && lastDecision.action == 'RETURNED'
 （不是 `null`）。`cel-js` 讀到不存在的 key 會丟 `Identifier "x" not found in context`，整張單送不出去；
 `!= null` 只擋 `null`，擋不了缺 key。手寫表達式請用 `has(form.x)` 防護。
 
-流程設計器（`readConditionExpression`）為識別字 key（`form.x`）編出的條件已內建守衛：缺 key 或 `null`
+流程設計器（`readConditionExpression`）為識別字 key（`form.x`）編出的條件已內建守衛：缺 key、`null`
 都視為「未填」，已填寫／等於／大小比較回 `false`，未填寫／不等於回 `true`，不會丟例外。例：
 
 ```cel
@@ -84,6 +84,15 @@ has(form.amount) && (form.amount != null && (form.amount != "" && form.amount > 
   右向巢狀：`a && (b && c)`。
 
 `has()` 只接受欄位選取，不能守衛非識別字 key（`form["a-b"]`），這類 key 維持不加守衛的原本輸出。
+
+設計器編出的「大小比較」另外把清空後的 `""` 也視為未填（在比較前多一道 `form.x != ""`）。這會翻轉舊結果：
+日期欄位的 `"" < "2026-01-01"` 以前為 `true`、現在為 `false`；數字欄位的 `"" > 5` 以前會丟例外（字串比數字）、
+現在為 `false`。等於／不等於／已填寫／未填寫對 `""` 的結果與舊版相同。
+
+已儲存的流程定義不會重編，仍帶著舊的 CEL。引擎在 edge 同時帶有設計器的結構化欄位（`conditionFieldKey`
+＋ `conditionOperator`）、且該欄位的值是缺 key、`undefined`、`null`、剛好是 `""`（不去頭尾空白）或陣列時，
+改由結構化欄位求值，語意與上面的守衛一致（只讀 `formData` 自身的 key，不讀繼承來的成員）；實際執行與
+設計器試跑都走同一條規則。其他情況與手寫 CEL 一律照儲存的表達式求值，手寫表達式讀到缺 key 仍會失敗。
 
 ---
 

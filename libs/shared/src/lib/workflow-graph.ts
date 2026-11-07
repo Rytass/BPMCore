@@ -2500,7 +2500,11 @@ export function readConditionExpression(
   ]);
 }
 
-/** `a && (b && (c))` — see {@link readConditionExpression} for why. */
+/**
+ * `a && (b && (c))` — see {@link readConditionExpression} for why. `terms` must
+ * not be empty: the caller always passes the comparison itself, and an empty
+ * list would yield `undefined` instead of an expression.
+ */
 function joinNestedConjunction(terms: readonly string[]): string {
   const [last, ...rest] = [...terms].reverse();
 
