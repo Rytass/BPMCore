@@ -11,9 +11,35 @@
 - 已在 publish / dry run / workflow runtime 使用 CEL lint/evaluate。
 - lint 目前檢查四件事：空白、長度上限（2000 字元）、語法（`cel-js` parse），以及根識別字
   是否落在該使用點的白名單內（見 §5）。
-- 目前沒有 context schema registry、靜態型別推導、timeout/maxSteps sandbox
-  wrapper、或自訂函式 registry。
+- 目前沒有 context schema registry、靜態型別推導、步數上限（maxSteps）或自訂函式 registry；
+  時間上限見下方「評估有時間預算」。
 - 因此 lint 不保證引用的欄位一定存在於表單 schema，也不保證表達式回傳型別正確。
+- 字串方法（`contains`、`startsWith`、`endsWith`、`matches`）在目前的 `cel-legacy`（`cel-js` 0.8.2）不存在，
+  執行會得到 `EXPRESSION_TYPE_ERROR`。這些方法預期由 P1 之後的 `cel-v2`（`@marcbachmann/cel-js`）方言提供，尚未實測（待 P1 差異測試確認）；
+  在那之前，字串比對請用 `==`、`in` 或列舉值。
+- Runtime 錯誤只會對外回傳錯誤碼與 label（`EXPRESSION_SYNTAX_ERROR`、`EXPRESSION_MISSING_KEY`、
+  `EXPRESSION_TYPE_ERROR`、`EXPRESSION_BUDGET_EXCEEDED`、`EXPRESSION_INVALID_RESULT`、`EXPRESSION_FUNCTION_FAILED`，見 ADR 22 §3.2），
+  不回傳引擎原文，因此錯誤訊息與 log 不含 context 內的值。dry run 對 `EXPRESSION_MISSING_KEY` 另外附上缺少的
+  key 名稱，但只限表達式裡（字串字面值以外）寫出來的識別字；用計算索引（`form.a[form.b]`）時引擎回報的是
+  context 裡的值，這種情況不附名稱。
+- 評估有時間預算：單次 100 ms、單次操作（一次交易或一次 dry run）累計 250 ms。預算耗盡會回傳
+  `EXPRESSION_BUDGET_EXCEEDED`，不會回傳 `false`。2026-11-07 本機量測一般表達式每次約 0.2 ms（p99 低於 1 ms），
+  之後 `runWithinTimeBudget` 改為重用同一個 vm context，每次約 0.05 ms，一次操作約可容納 4800 次一般評估（原本約 1200 次）。
+  預算維持 ADR 初始值；量測摘要見 [Phase 23](./23-expression-functions-phases.md) P0。
+- 結果會經過正規化：只接受 JSON 值（深度 32、節點 10000、約 64 KiB）；`undefined`、函式、Promise、
+  class instance 與超出安全整數的數字會被拒絕（`EXPRESSION_INVALID_RESULT`）。例如 `form.constructor` 會被拒絕；
+  `form.__proto__` 在 `cel-legacy` 會拿到 `Object.prototype` 本身，同樣被拒絕，不會變成空 map。
+  map 字面值的 `{"__proto__": 1}` 在 `cel-legacy` 建 map 時就沒有成為 own key，結果是 `{}`，不會碰到原型；
+  值是 map 的 `{"__proto__": form.x}` 則會換掉結果的原型而被拒絕。
+  這只檢查最終結果：引擎在中間運算或字面值上已經四捨五入的精度損失，從結果無法偵測（例如 `9007199254740993 - 9007199254740992` 會得到 `0`）。
+- map 字面值的值混用不同型別會失敗：`{"a": "x", "b": 2}` 在 `cel-legacy` 得到 `EXPRESSION_TYPE_ERROR`（`cel-js` 0.8.2 的限制，已實測）。
+  整數與小數也算不同型別（`{"a": 1, "b": 2.5}` 一樣失敗）；值來自欄位時也一樣，所以 webhook payload 寫成
+  `{"title": instance.title, "amount": form.amount}` 這種字串混數字的 map 會在執行時失敗。
+  同型別的 map（全部字串、或全部數字）可以正常運作；list 可以混合型別（`["x", 2]` 正常）。
+  `cel-v2` 是否支援混合型別尚未實測，在 P1 差異測試確認前不要依賴。
+- 不支援 comprehension 巨集：`map`、`filter`、`exists`、`all`、`exists_one` 在 `cel-legacy` 都無法 parse，
+  得到 `EXPRESSION_SYNTAX_ERROR`（已實測）。`has()` 與 `size()` 可以使用。
+- 目前沒有函式 registry：表達式不能呼叫宿主函式，也沒有 AST lint；`cel-v2` 差異與方言欄位屬於 P1 之後的範圍。
 
 ---
 
@@ -25,7 +51,7 @@ form.region == 'TW'
 form.amount > 100000 && initiator.org.code == 'FIN'
 'manager' in initiator.roles
 form.region in ['TW', 'JP', 'KR']
-form.email.contains('@example.com')
+form.email == 'a@example.com'
 form.amount >= 100000 && form.amount <= 1000000
 lastDecision != null && lastDecision.action == 'RETURNED'
 ```

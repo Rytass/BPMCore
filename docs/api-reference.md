@@ -400,7 +400,8 @@ Form-schema definitions.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `WorkflowDefinition` | interface | Full definition (nodes + edges + meta) |
+| `WorkflowDefinition` | interface | Full definition (nodes + edges + meta). Optional `expressionDialect` (ADR 22 §3.3): the engine every expression in the definition is evaluated with; absent means `cel-legacy`, so earlier definitions and case snapshots keep their behaviour. `lintWorkflowDefinition` refuses any other value |
+| `WorkflowExpressionDialect` | type | `'cel-legacy' \| 'cel-v2'` — `cel-js` 0.8.2 and `@marcbachmann/cel-js` 8. Names only; the shared package loads no engine |
 | `WorkflowDefinitionMeta` | interface | Version, author, etc. |
 | `WorkflowNode` | type | Union of all node variants |
 | `NodePosition` | interface | xyflow canvas coords |
@@ -803,7 +804,7 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
 | `buildTypeOrmModuleOptions(config)` | function | Build TypeORM options including migrations |
-| `BPM_CORE_MIGRATIONS` | const | 30-class migration array |
+| `BPM_CORE_MIGRATIONS` | const | 31-class migration array |
 | `AllExceptionsFilter` | ExceptionFilter | Unified GraphQL/REST exception filter |
 
 ## `@rytass/bpm-core-nestjs-module/bpm-auth`
@@ -1395,20 +1396,41 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 
 | Name | Purpose |
 |---|---|
-| `ConditionService` | Condition-expression evaluation engine |
+| `ConditionService` | Condition-expression evaluation engine. `prepareEngine(dialect?)` loads that dialect's engine (default `cel-legacy`) ahead of first use. `evaluateBoolean` / `evaluateValue` take an optional trailing `ExpressionCallOptions`; `lintExpression` / `lintExpressions` options take an optional `dialect`, whose parser decides syntax. A dialect it does not know is refused as `EXPRESSION_SYNTAX_ERROR` by all of them (lint returns `<label>: EXPRESSION_SYNTAX_ERROR`), never replaced by `cel-legacy` |
+| `ExpressionCallOptions` | Interface: optional `allowedRootIdentifiers` (root whitelist for the use point; when given, only those roots of the context reach the engine), `budget` (an `ExpressionBudget` to share) and `dialect` (the definition's or rule's `ExpressionDialect`; absent means `cel-legacy`) |
+| `ExpressionDialect` | Type: `'cel-legacy' \| 'cel-v2'` (same as the shared `WorkflowExpressionDialect`) |
+| `EXPRESSION_DIALECTS` / `DEFAULT_EXPRESSION_DIALECT` | Const: both dialects; the default `cel-legacy`, which a missing dialect always means |
+| `isExpressionDialect` | Function: type guard for `ExpressionDialect` |
+| `readExpressionDialect` / `readWorkflowExpressionDialect` | Function `(value, label)` / `(definition)`: the dialect a stored value names; `undefined` / `null` is `cel-legacy`, any other unknown value throws `ExpressionRuntimeError` `EXPRESSION_SYNTAX_ERROR` |
+| `ExpressionRuntimeError` | Class. The only error an expression raises to a caller; extends `BadRequestException` (HTTP 400). Its message is `label: CODE` (plus an optional fixed detail), never engine text or context values |
+| `EXPRESSION_ERROR_CODES` | Const array of the six ADR 22 §3.2 codes |
+| `toExpressionRuntimeError` | Function `(error, label, expression?) => ExpressionRuntimeError`. Maps anything an evaluation threw to one of the six codes; an unrecognised message becomes `EXPRESSION_TYPE_ERROR` and none of its text is kept. `keyName` is set only when `expression` is given and writes that name as an identifier outside string literals (a computed index such as `form.a[form.b]` reports a context value, which is dropped) |
+| `ExpressionErrorCode` | Type: union of `EXPRESSION_ERROR_CODES` |
+| `ExpressionBudget` | Type (`export type`): the time ledger an operation shares across its expressions. `nextTimeoutMs()` is whole milliseconds; `record()` charges elapsed time |
+| `ExpressionBudgetOptions` | Type (`export type`): `perExpressionMs` (default 100) and `cumulativeMs` (default 250) |
 | `ConditionModule` | Module wrapper |
 
 > `cel-js` is loaded on first parse, not at module import. Importing anything
 > from the package root therefore no longer drags the ESM-only `cel-js` (and
 > its `chevrotain` exports map, which `jest-resolve` cannot follow) into a
 > host's jest run — consumer suites need no `moduleNameMapper` stub.
+>
+> `cel-v2` (`@marcbachmann/cel-js` 8, a new runtime dependency) is loaded the
+> same way, on the first cel-v2 parse, so a host that never uses the dialect
+> never resolves it. Its environment treats undeclared roots as `dyn`, allows
+> mixed-type list and map literals, limits expressions to 200 AST nodes and
+> depth 32 at parse time, and registers mixed `int`/`double` `+ - * / %` (both
+> orders, a zero divisor is `EXPRESSION_TYPE_ERROR`) and exact `int == double`.
+> Integer results come back as `number` (outside the safe range:
+> `EXPRESSION_INVALID_RESULT`). The differences from `cel-legacy` are listed in
+> `docs/23-expression-functions-phases.md` §P1.
 
 ## `@rytass/bpm-core-nestjs-module/delegation`
 
 | Category | Names |
 |---|---|
-| Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules) |
-| DTOs | `CreateDelegationRuleInput`, `UpdateDelegationRuleInput` |
+| Entity | `DelegationRuleEntity` (`priority`: higher wins among a principal's matching active rules, ties go to the rule created first — the same direction as manager rules; `scopeConditionDialect`: the `ExpressionDialect` `scopeConditionCel` is linted and evaluated with, `cel-legacy` for every rule stored before migration `DelegationScopeConditionDialect0000000030000`) |
+| DTOs | `CreateDelegationRuleInput` (optional `scopeConditionDialect`, default `cel-legacy`), `UpdateDelegationRuleInput` (no dialect: an update keeps the rule's) |
 | Enums | `DelegationRuleStatusEnum`, `DelegationScopeTypeEnum` |
 | Service | `DelegationService` (`resolveAssignee` for one member, `resolveAssignees` for a whole node — the first hop of every chain shares one host `resolveInactive` call, which covers only rules in scope; a rule whose agent is deactivated is skipped, and when the host directory fails or has not answered within 5 seconds the dispatch is refused with a `ServiceUnavailableException` naming the `resolveInactive` lookup) |
 | Module | `DelegationModule` |
@@ -1673,7 +1695,7 @@ window as the backstop.
 | Name | Purpose |
 |---|---|
 | `buildTypeOrmModuleOptions(config)` | Wire BPM entities + migrations into host TypeORM |
-| `BPM_CORE_MIGRATIONS` | Full 30-class migration list |
+| `BPM_CORE_MIGRATIONS` | Full 31-class migration list |
 
 ## `@rytass/bpm-core-nestjs-module/migrations`
 
@@ -1724,6 +1746,7 @@ window as the backstop.
 28. `ApprovalInstanceSubmittedBy0000000027000` (adds nullable `approval_instances.submitted_by_member_id` plus `IDX_approval_instances_submitted_by_created_desc` on `(submitted_by_member_id, created_at DESC)` so the `SENT` list's `initiator OR submitter` match stays indexed; existing rows stay `NULL`, which the engine reads as "the initiator submitted it". `down()` drops the index, then the column)
 29. `NotificationUpdatedAt0000000028000` — since `v0.17.2`. Adds `notifications.updated_at` (`timestamptz NOT NULL`, default `date_trunc('milliseconds', clock_timestamp())`), backfilled with each row's latest recorded timestamp (`GREATEST` of created / read / resolved / archived / sent / delivered / last-attempt, truncated to milliseconds); the `BEFORE UPDATE` trigger `TRG_notifications_updated_at` (function `bpm_notifications_touch_updated_at`) that advances it only when a column changed; and `IDX_notifications_recipient_updated_at` on `(recipient_member_id, updated_at)`. The backfill rewrites every notification row once. `down()` drops the index, trigger, function, then the column
 30. `ActivityLogSeq0000000029000` — not yet released. Adds `activity_logs.seq` (`bigint NOT NULL GENERATED ALWAYS AS IDENTITY`), backfilled in write order (`created_at`, then the insert's `cmin`, then `ctid`, then `id`), and the unique index `IDX_activity_logs_instance_seq` on `(instance_id, seq)`. The column is added without `IF NOT EXISTS`, so a database where `seq` already exists fails instead of keeping values numbered without the backfill; drop the column to rerun. The identity and its start value (`COALESCE(MAX(seq), 0) + 1`) are set in one `DO` statement. The backfill rewrites every activity log row once. `down()` drops the index, then the column
+31. `DelegationScopeConditionDialect0000000030000` — not yet released. Adds `delegation_rules.scope_condition_dialect` (`text NOT NULL DEFAULT 'cel-legacy'`, so every existing rule reads as `cel-legacy` without a table rewrite) and the check `CHK_delegation_rules_scope_condition_dialect` (`cel-legacy` or `cel-v2`). No rule is upgraded. `down()` raises an exception while any rule is not `cel-legacy` — dropping the column would silently re-read a cel-v2 condition with the older engine — then drops the check and the column
 
 ---
 
