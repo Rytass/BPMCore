@@ -4,6 +4,13 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { ATTACHMENT_STORAGE } from '../attachment/attachment-storage.token';
 import { BPM_BUSINESS_CALENDAR } from '../calendar/business-calendar.token';
 import { BPM_FORM_DATA_SOURCE_REGISTRY } from '../form-data-source/form-data-source.types';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
+import {
+  BPM_EXPRESSION_FUNCTION_REGISTRY,
+  BPM_EXPRESSION_FUNCTIONS,
+  BPMExpressionFunction,
+  BPMExpressionFunctionRegistry,
+} from '../expression-function/expression-function.types';
 import { DefaultBPMMemberResolver } from '../identity/default-member-resolver';
 import {
   BPM_MEMBER_RESOLVER,
@@ -311,3 +318,119 @@ describe('BPMRootModule bootstrap', (): void => {
   });
 });
 
+describe('BPMRootModule expression functions', (): void => {
+  const expressionFunction = (name: string): BPMExpressionFunction => ({
+    description: name,
+    handler: (): string => 'LOW',
+    label: name,
+    name,
+    parameters: [{ name: 'amount', type: 'double' }],
+    returnType: 'string',
+  });
+  const hostNames = (
+    registry: BPMExpressionFunctionRegistry,
+  ): readonly string[] =>
+    registry
+      .list()
+      .filter((descriptor) => !descriptor.builtIn)
+      .map((descriptor) => descriptor.name);
+
+  it('offers only the built-ins when the host registers none', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+    }).compile();
+
+    try {
+      const registry = moduleRef.get<BPMExpressionFunctionRegistry>(
+        BPM_EXPRESSION_FUNCTION_REGISTRY,
+      );
+
+      expect(registry.list()).toHaveLength(9);
+      expect(hostNames(registry)).toEqual([]);
+      expect(registry).toBe(BUILT_IN_EXPRESSION_FUNCTION_REGISTRY);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('combines the async factory list and the provider list', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRootAsync({
+          expressionFunctionsProvider: {
+            provide: BPM_EXPRESSION_FUNCTIONS,
+            useValue: [expressionFunction('erp_fromProvider_v1')],
+          },
+          useFactory: () => ({
+            expressionFunctions: [expressionFunction('erp_fromFactory_v1')],
+          }),
+        }),
+      ],
+    }).compile();
+
+    try {
+      expect(
+        hostNames(
+          moduleRef.get<BPMExpressionFunctionRegistry>(
+            BPM_EXPRESSION_FUNCTION_REGISTRY,
+          ),
+        ),
+      ).toEqual(['erp_fromFactory_v1', 'erp_fromProvider_v1']);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it.each([
+    [
+      'forRoot',
+      (): ReturnType<typeof BPMRootModule.forRoot> =>
+        BPMRootModule.forRoot({
+          expressionFunctions: [expressionFunction('noVersion')],
+        }),
+      '"noVersion" has an invalid name',
+    ],
+    [
+      'forRootAsync',
+      (): ReturnType<typeof BPMRootModule.forRootAsync> =>
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({
+            expressionFunctions: [
+              {
+                ...expressionFunction('erp_async_v1'),
+                handler: async (): Promise<string> => 'LOW',
+              } as unknown as BPMExpressionFunction,
+            ],
+          }),
+        }),
+      '"erp_async_v1" has an async or generator handler',
+    ],
+  ])(
+    'fails the %s boot on an invalid function',
+    async (_case: string, createModule, message: string): Promise<void> => {
+      await expect(
+        Test.createTestingModule({
+          imports: [FakeDataSourceModule, createModule()],
+        }).compile(),
+      ).rejects.toThrow(message);
+    },
+  );
+
+  it('fails the boot when the same name comes from both sources', async (): Promise<void> => {
+    await expect(
+      Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRoot({
+            expressionFunctions: [expressionFunction('erp_same_v1')],
+            expressionFunctionsProvider: {
+              provide: BPM_EXPRESSION_FUNCTIONS,
+              useValue: [expressionFunction('erp_same_v1')],
+            },
+          }),
+        ],
+      }).compile(),
+    ).rejects.toThrow('"erp_same_v1" is registered more than once');
+  });
+});

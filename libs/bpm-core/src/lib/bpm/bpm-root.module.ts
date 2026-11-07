@@ -17,6 +17,8 @@ import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
 import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
 import { CalendarModule } from '../calendar/calendar.module';
 import { DelegationModule } from '../delegation/delegation.module';
+import { ExpressionFunctionModule } from '../expression-function/expression-function.module';
+import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import { FormModule } from '../form/form.module';
 import {
   BPMFormDataSourceRegistry,
@@ -80,6 +82,20 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * `notificationSlaBusinessCalendarTimeZone`).
    */
   readonly businessCalendarProvider?: Provider<BPMBusinessCalendar>;
+
+  /**
+   * Host expression functions as a Nest provider for
+   * `BPM_EXPRESSION_FUNCTIONS` (a list), for functions that need injected
+   * dependencies to be built.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.expressionFunctions}. Unlike
+   * the other twins the two are **combined**, the runtime list first; a name
+   * in both fails the boot. When neither is given, only the nine built-ins are
+   * available.
+   */
+  readonly expressionFunctionsProvider?: Provider<
+    readonly BPMExpressionFunction[]
+  >;
 
   /**
    * Host-provided registry containing versioned form option DataSources, as a
@@ -340,6 +356,10 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
       inject,
       storageProvider: wiring.attachmentStorageProvider,
       useFactory,
+    }),
+    ExpressionFunctionModule.forRoot({
+      functionsProvider: wiring.expressionFunctionsProvider,
+      imports: wiring.imports,
     }),
     FormModule,
     FormDataSourceModule.forRoot({

@@ -314,7 +314,7 @@ Expression function contract (ADR 22 §3.5), root export only — not yet releas
 | `BPMExpressionFunctionParameter` | interface | `name`, `type`, optional `description` |
 | `BPMExpressionFunctionDescriptor` | interface | A function without its handler — what the designer, catalog and publish lint see: `name`, `label`, `description`, `parameters`, `returnType`, `builtIn` |
 | `BPM_BUILT_IN_EXPRESSION_FUNCTION_NAMES` / `BPMBuiltInExpressionFunctionName` | const / type | The nine reserved built-ins: `abs`, `ceil`, `floor`, `lower`, `max`, `min`, `round`, `trim`, `upper` |
-| `BPM_EXPRESSION_FUNCTION_NAME_PATTERN` | const | `^[a-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_v[0-9]+$`: host function names carry their version |
+| `BPM_EXPRESSION_FUNCTION_NAME_PATTERN` | const | `^[a-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_v[0-9]+$`: host function names carry their version. Matching it is necessary, not sufficient: the registry also refuses a built-in name and a name starting with `true`, `false` or `null` (see `validateExpressionFunctions`) |
 
 ## `@rytass/bpm-core-shared/condition`
 
@@ -809,8 +809,8 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `expressionFunctionsProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), `expressionFunctions` (host expression functions, combined with `expressionFunctionsProvider`; see the expression functions section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -1405,14 +1405,37 @@ Delivery never happens inside the engine transaction. `enqueueNotifyWebhooks` wr
 
 ## `@rytass/bpm-core-nestjs-module` — expression functions (root export)
 
-Registry contract shared by the publish lint and the registry implementation (ADR 22 §3.5) — not yet released. No subpath yet.
+Expression function registry (ADR 22 §3.5, docs/24 §2.6) — not yet released. No subpath yet.
 
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMExpressionFunction` | interface | A descriptor without `builtIn`, plus a synchronous `handler(...args)` that only sees deep-frozen copies of its arguments |
 | `BPMExpressionFunctionRegistry` | interface | `get(name)` (the function or `null`), `list()` (descriptors, built-ins first), `assertPublishable(names)` (the names that are not available, first-seen order, no duplicates) |
-| `BPM_EXPRESSION_FUNCTIONS` | token | Host-provided functions; unset means none |
-| `BPM_EXPRESSION_FUNCTION_REGISTRY` | token | The resolved registry the core injects |
+| `BPM_EXPRESSION_FUNCTIONS` | token | Host-provided functions as a list; unset means none. Supplied through `BPMRootModule`'s `expressionFunctionsProvider` |
+| `BPM_EXPRESSION_FUNCTION_REGISTRY` | token | The resolved registry the core injects (global) |
+| `StaticBPMExpressionFunctionRegistry` | class | `new (hostFunctions?)`: the nine built-ins plus the host functions, validated in the constructor. Lookups are by own name only (`constructor`, `toString` are never found) |
+| `EmptyBPMExpressionFunctionRegistry` | class | The nine built-ins only |
+| `BUILT_IN_EXPRESSION_FUNCTION_REGISTRY` | const | Shared built-ins-only registry; evaluation falls back to it wherever no registry was handed in |
+| `validateExpressionFunctions` | function | `(functions) => readonly BPMExpressionFunction[]`: frozen copies, or a plain `Error` naming the function and the reason — name not matching `BPM_EXPRESSION_FUNCTION_NAME_PATTERN`, a built-in name, a name registered twice, a name starting with `true`, `false` or `null` (cel-js 0.8.2's lexer reads that prefix as a keyword, so cel-legacy could never call it), an `async` / generator handler, a missing label, description or parameter list, an unsupported parameter or return type, a duplicated parameter name |
+| `BPM_EXPRESSION_VALUE_TYPES` | const | The eight declarable value types (`bool`, `double`, `dyn`, `int`, `list`, `map`, `null`, `string`) |
+| `BPM_BUILT_IN_EXPRESSION_FUNCTIONS` | const | The nine built-ins as `BPMExpressionFunction`s (see below) |
+| `ExpressionFunctionModule` / `ExpressionFunctionModuleOptions` | Module / interface | Global module publishing `BPM_EXPRESSION_FUNCTION_REGISTRY`; `forRoot({ imports?, functionsProvider? })`. Wired for you by `BPMRootModule` |
+| `expressionFunctionRegistryProvider` | Provider | Builds the registry from `BPMRootRuntimeOptions.expressionFunctions` followed by the `BPM_EXPRESSION_FUNCTIONS` list (both optional). Validation runs here, so an invalid function fails the boot under `forRoot` and `forRootAsync` alike; a name in both sources is a boot error. With no host function it returns `BUILT_IN_EXPRESSION_FUNCTION_REGISTRY` itself |
+
+`BPMRootModule` takes host functions as the runtime option `expressionFunctions` (a list) and/or the wiring option `expressionFunctionsProvider` (a provider for `BPM_EXPRESSION_FUNCTIONS`). Unlike the other runtime/provider twins the two are **combined**, runtime list first. With neither, only the built-ins exist.
+
+**Built-ins** (names reserved, no version suffix, available in both dialects): `abs`, `ceil`, `floor`, `round` (one number → `double`; `round` rounds halves away from zero, `round(-2.5)` is `-3`), `min`, `max` (exactly two numbers → `double`), `lower`, `upper` (locale independent), `trim` (one string → `string`). Numeric results are `double` in both dialects and never `-0`. In cel-v2 every function is a global call; the global `trim(s)` sits beside cel-v2's own `s.trim()` method, and no built-in shadows a cel-v2 global function (pinned by a real-engine test).
+
+**Runtime rules** (both dialects, `condition/expression-function-invocation.ts`):
+
+- Arguments are copied through the result walker into fresh deep-frozen JSON values (cel-v2 `int`s become numbers), so a handler never reaches `formData`; a strict-mode write throws `TypeError`, which fails the call. An argument that does not match its declared type, is not JSON, or is beyond the 64 KiB result limits is `EXPRESSION_TYPE_ERROR`, as is the wrong number of arguments.
+- A handler that throws (anything, including an `ExpressionRuntimeError`), returns a thenable, or returns a value that is not JSON or not its `returnType` is `EXPRESSION_FUNCTION_FAILED`. Only `function=<name> code=EXPRESSION_FUNCTION_FAILED reason=<threw|thenable|invalid-result|return-type>` is logged, never the handler's message. A native promise gets a rejection handler through the intrinsic `Promise.prototype.then`, so it never becomes an unhandled rejection; a foreign thenable is never adopted and its `then` is never called, so no handler code runs after the evaluation, outside the budget.
+- A failure is never absorbed: cel-v2's `||`, `&&` and `exists` absorb errors per CEL, but an evaluation in which any function failed is failed afterwards. A call cel-v2 short-circuits past is not run and does not fail.
+- Handler time is part of the evaluation, so it is charged to the expression budget and a handler that does not finish is interrupted (`EXPRESSION_BUDGET_EXCEEDED`).
+- A host-shaped name (`…_vN`) the registry does not have — a function withdrawn after publishing — fails the evaluation with `EXPRESSION_FUNCTION_FAILED` before the engine runs, wherever the call sits. Any other unknown name keeps the engine's own error (`EXPRESSION_TYPE_ERROR`).
+- cel-v2 signatures declare `int` / `double` parameters as `dyn` (so `f_v1(1000)` and `f_v1(form.qty)` both reach the handler, which then checks the number); every other parameter type is enforced by the engine. A declared `int` result is handed to cel-v2 as a `bigint`.
+
+`ConditionService` still builds its runtime without a registry, so it calls the built-ins only until it is given the injected registry (P2 integration).
 
 ## `@rytass/bpm-core-nestjs-module/condition`
 

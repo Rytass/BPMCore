@@ -17,7 +17,7 @@
 | P0 | 安全修補：錯誤淨化、評估預算、輸出正規化 | 獨立安全修補 | — | IMPLEMENTED（實機 gate 通過） |
 | P1 | 方言欄位與候選引擎差異測試 | P0 | 引擎去留 | IMPLEMENTED（實機 gate 通過） |
 | P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | PLANNED |
-| P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | PLANNED |
+| P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTING（registry、內建函式、兩方言接線完成；ConditionService 接線與發布 lint 待 P2 整合） |
 | P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | PLANNED |
 | P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | PLANNED |
 
@@ -210,6 +210,58 @@
 - 測試：handler 訊息不出現在 API 回應。
 - 測試：函式下架後，引用它的新版本無法發布，進行中案件 fail closed。
 - `docs/api-reference.md` 同步。
+
+**狀態（2026-11-07）**：IMPLEMENTING。registry、內建函式、兩個方言的評估接線與 `apps/api` 示範函式完成，
+runtime 與 adapter 層的 gate 以真引擎測試通過。宿主函式要進正式評估路徑，還需要 `ConditionService`
+（歸 P2）注入 registry；發布 lint 的函式檢查也由 P2 呼叫 `assertPublishable`。兩者完成前，正式路徑只有內建函式。
+
+| Gate | 結果 |
+| --- | --- |
+| async handler 註冊失敗 | `async`、generator、async generator handler 在註冊時被拒，`forRoot` 與 `forRootAsync` 都在開機時失敗（`bpm-root.module.boot.spec.ts`）。錯誤訊息寫出函式名與原因 |
+| 回傳 Promise 評估失敗 | 真引擎兩方言：`EXPRESSION_FUNCTION_FAILED`。被拒的 native Promise 經內建的 `Promise.prototype.then` 掛上處理函式，不會變成 unhandled rejection，Promise 自己掛的 `then` 不會被呼叫；外來 thenable 不 adopt，評估中與評估後都不呼叫它的 `then`（獨立驗證發現：原本 `Promise.resolve(raw)` 會在評估結束後的 microtask 呼叫 `then`，不受預算限制，已修正） |
+| 改動引數丟錯、`formData` 不變 | 真引擎兩方言：handler 寫入凍結的引數時丟 `TypeError`（測試讓 handler 先記下再重丟），評估得到 `EXPRESSION_FUNCTION_FAILED`，原 `formData` 與快照逐值相同 |
+| handler 訊息不外流 | 真引擎兩方言：錯誤訊息只有 `entry: EXPRESSION_FUNCTION_FAILED`，`getResponse()` 與所有 log 都不含 handler 訊息；log 只有 `function=<name> code=… reason=…`。**API 回應的端到端測試待 ConditionService 接線後補** |
+| 下架後 fail closed | runtime 層：registry 少了某個 `…_vN` 函式時，引用它的式子在兩方言都得到 `EXPRESSION_FUNCTION_FAILED`，引擎不會執行，所以位置在不會走到的分支（`true \|\| f_v1(...)`）也一樣。**引擎層（進行中案件回滾）與「新版本無法發布」待 P2 整合** |
+| `docs/api-reference.md` 同步 | 完成 |
+
+**實作摘要**：
+
+- Registry：`StaticBPMExpressionFunctionRegistry`（內建 + 宿主，建構時驗證）、`EmptyBPMExpressionFunctionRegistry`（只有內建）、
+  `BUILT_IN_EXPRESSION_FUNCTION_REGISTRY`。驗證：命名 regex、拒絕內建名稱與重名、拒絕以 `true`／`false`／`null` 開頭的名稱（`cel-js` 0.8.2 的 lexer 先把這段讀成關鍵字，cel-legacy 永遠呼叫不到；真引擎測試釘住）、拒絕 async／generator handler、
+  參數與回傳型別在八種之內、參數名不重複、label／description／參數清單必填。錯誤是一般 `Error`，不新增錯誤碼。
+  cel-v2 內建的全域函式名稱都沒有 `_vN` 後綴，所以命名 regex 也避開了與引擎內建衝突。
+- 模組：`ExpressionFunctionModule`（global）提供 `BPM_EXPRESSION_FUNCTION_REGISTRY`；`BPMRootRuntimeOptions.expressionFunctions`
+  與 wiring 選項 `expressionFunctionsProvider`（`BPM_EXPRESSION_FUNCTIONS`）**合併**，同名開機失敗。未註冊時只有內建。
+- 內建九個函式：數值一律回 `double`（兩方言一致；cel-v2 靠 P1 的 `int == double` 與混合運算子比較與相加）；
+  `round` 半數遠離零（`round(-2.5)` 為 `-3`）；`min`／`max` 恰好兩個參數；`lower`／`upper` 不讀 locale；
+  全域 `trim(s)` 與 cel-v2 既有的 `s.trim()` 方法並存。真引擎測試確認 cel-v2 沒有同名的全域內建。
+- 執行期（`condition/expression-function-invocation.ts`，兩方言共用）：引數經 walker 複製並深層凍結（cel-v2 的 `int` 轉成 number）；
+  引數型別不符、非 JSON、超過 64 KiB 或個數不對是 `EXPRESSION_TYPE_ERROR`（呼叫端的型別錯誤，與引擎 overload 不符同碼）；
+  handler 丟錯（包括 handler 自己丟 `ExpressionRuntimeError`）、回 thenable、回非 JSON 或型別不符是 `EXPRESSION_FUNCTION_FAILED`；
+  handler 在評估內執行，耗時計入預算，跑不完會被中斷成 `EXPRESSION_BUDGET_EXCEEDED`。
+- **函式失敗不被吸收**：cel-v2 的 `\|\|`、`&&`、`exists` 依 CEL 會吸收錯誤（docs/24 §1）。實測 `throws_v1(1) \|\| true` 在引擎裡得到 `true`，
+  所以評估結束後只要有函式失敗，就整次改判 `EXPRESSION_FUNCTION_FAILED`。被短路而沒有執行的呼叫不算失敗。
+- cel-v2 環境：base 環境（選項、限制、混合運算子）只建一次，每個 registry clone 一份再註冊函式，以 `WeakMap` 快取，建好後凍結。
+  `loadCelV2Environment(registry?)` 給 P2 做 `env.check()`：`clone()` 後再 `registerVariable`。`int`／`double` 參數在簽名寫成 `dyn`
+  （實測宣告 `double` 會拒絕 `f_v1(1000)`），由執行期檢查數字；其他型別由引擎的 overload 檢查。宣告 `int` 的回傳以 `bigint` 交給 cel-v2
+  （實測回 JS number 時 `ret_v1(1) == 5` 是 `false`）。
+- **cel-legacy 可以註冊函式**（真引擎實測）：`cel-js` 0.8.2 的 `evaluate` 第三個參數是函式表，全域呼叫會查它。兩方言都註冊同一份 registry。
+  但 `condition.service.ts` 的 cel-legacy 文字 root 檢查會把函式名當成 root，只要使用點有白名單（正式路徑都有），呼叫在進引擎前就被擋成
+  `EXPRESSION_SYNTAX_ERROR`（測試釘住現況）。要讓 cel-legacy 真正可用，需 P2 調整該檢查；cel-legacy 沒有 AST，發布 lint 的函式檢查也要另想辦法
+  （adapter 內已有讀 CST 全域呼叫名稱的小工具可參考）。
+- `ExpressionRuntime.withFunctions(registry)` 依 registry 建立並快取 runtime；`new ExpressionRuntime()` 仍是只有內建的預設 adapter。
+- `apps/api` 示範函式 `demo_costBand_v1(amount)`：`LOW`／`MEDIUM`／`HIGH`，只屬 wrapper host。
+
+**交給後續 phase**：
+
+- P2：`ConditionService` 以可選 DI 注入 `BPM_EXPRESSION_FUNCTION_REGISTRY` 並改用 `ExpressionRuntime.withFunctions(registry)`；
+  lint 的 cel-v2 解析改用 `parseCelV2(expression, registry)`；發布與回滾呼叫 `assertPublishable`。之後補端到端 gate（API 回應不含 handler 訊息、
+  進行中案件 fail closed 並回滾、下架後新版本無法發布）。
+- P2：cel-legacy 是否開放函式（root 文字檢查、發布 lint）需要決定；未開放前，cel-legacy 的呼叫在正式路徑一律是 `EXPRESSION_SYNTAX_ERROR`。
+- 主線決定（契約偏離，獨立驗證指出）：
+  1. docs/24 §2.1 寫「函式未註冊…一律 `EXPRESSION_FUNCTION_FAILED`」；實作只對 `…_vN` 形狀的名稱這樣判，其他未知名稱（如 `nope(1)`）維持引擎原本的 `EXPRESSION_TYPE_ERROR`。理由：差異語料與既有斷言不必變動，下架的宿主函式仍 fail closed。建議修訂 §2.1 的字面（「宿主函式形狀的名稱未註冊或下架」）。
+  2. docs/24 §1 接受 cel-v2 `||`／`&&` 吸收錯誤；實作在有函式失敗時整次改判 `EXPRESSION_FUNCTION_FAILED`（被短路而沒執行的呼叫不算）。這是 §1 的例外，只限函式失敗，偏向 fail closed；建議回寫 §1 或 ADR 22 §3.5。
+- 既有問題（非本線引入）：`cel-js` 以一般物件查函式名，`constructor(1)` 會查到原型上的成員。正式路徑被 root 白名單擋下，walker 也會拒絕非 JSON 結果。
 
 ## P4 — 設計器
 

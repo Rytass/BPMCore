@@ -1,16 +1,31 @@
 import type { ParseResult } from 'cel-js';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../../expression-function/expression-function.registry';
+import type { BPMExpressionFunctionRegistry } from '../../expression-function/expression-function.types';
+import { ExpressionEngineFailure } from '../expression-engine-failure';
+import {
+  callsUnavailableFunction,
+  createExpressionFunctionInvoker,
+  readExpressionFunctionTable,
+  runWithExpressionFunctionFrame,
+} from '../expression-function-invocation';
 import type {
   ExpressionEngineAdapter,
   ExpressionHandle,
 } from '../expression-runtime';
 
+type CelLegacyFunction = (...args: readonly unknown[]) => unknown;
+
 /**
- * The slice of `cel-js` this adapter uses.
+ * The slice of `cel-js` this adapter uses. The third `evaluate` argument is
+ * the function table: `cel-js` 0.8.2 merges it over its own `has` and `size`
+ * and calls an entry for every global call (`round(x)`), with the evaluated
+ * arguments. Methods (`x.round()`) never reach it.
  */
 interface CelEngine {
   readonly evaluate: (
     cst: unknown,
     context: Readonly<Record<string, unknown>>,
+    functions?: Readonly<Record<string, CelLegacyFunction>>,
   ) => unknown;
   readonly parse: (expression: string) => ParseResult;
 }
@@ -91,8 +106,112 @@ export function parseCelLegacy(expression: string): ExpressionHandle | null {
   return parseResult.isSuccess ? { native: parseResult.cst } : null;
 }
 
-export const celLegacyAdapter: ExpressionEngineAdapter = {
-  compile: parseCelLegacy,
-  evaluate: (handle, roots): unknown =>
-    loadCelEngine().evaluate(handle.native, { ...roots }),
+interface CstNodeShape {
+  readonly children: Readonly<Record<string, readonly unknown[]>>;
+  readonly name: string;
+}
+
+const isCstNode = (value: unknown): value is CstNodeShape =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { readonly name?: unknown }).name === 'string' &&
+  typeof (value as { readonly children?: unknown }).children === 'object' &&
+  (value as { readonly children?: unknown }).children !== null;
+
+const readTokenImage = (token: unknown): string | null =>
+  typeof token === 'object' &&
+  token !== null &&
+  typeof (token as { readonly image?: unknown }).image === 'string'
+    ? (token as { readonly image: string }).image
+    : null;
+
+/**
+ * Names of the global functions a `cel-js` CST calls: its `macrosExpression`
+ * nodes, which is where `cel-js` looks a global call up in the function table.
+ * Anything that is not a CST node yields nothing, so the jest shim's stand-in
+ * CST simply has no calls.
+ */
+const readCalledFunctionNames = (node: unknown): readonly string[] => {
+  if (!isCstNode(node)) {
+    return [];
+  }
+
+  const identifier =
+    node.name === 'macrosExpression'
+      ? readTokenImage(node.children.Identifier?.[0])
+      : null;
+
+  return [
+    ...(identifier === null ? [] : [identifier]),
+    ...Object.values(node.children).flatMap((children) =>
+      children.flatMap(readCalledFunctionNames),
+    ),
+  ];
 };
+
+const celLegacyFunctionTables = new WeakMap<
+  BPMExpressionFunctionRegistry,
+  Readonly<Record<string, CelLegacyFunction>>
+>();
+
+/**
+ * The function table handed to `cel-js` for a registry, built once: every
+ * function the registry lists, wrapped for cel-legacy. Verified on the real
+ * engine (2026-11-07): `cel-js` 0.8.2 accepts the table and calls it.
+ */
+const readCelLegacyFunctions = (
+  registry: BPMExpressionFunctionRegistry,
+): Readonly<Record<string, CelLegacyFunction>> => {
+  const cached = celLegacyFunctionTables.get(registry);
+
+  if (cached) {
+    return cached;
+  }
+
+  const functions = Object.freeze(
+    Object.fromEntries(
+      readExpressionFunctionTable(registry).functions.map(
+        (fn): readonly [string, CelLegacyFunction] => [
+          fn.name,
+          createExpressionFunctionInvoker(fn, 'cel-legacy'),
+        ],
+      ),
+    ),
+  );
+
+  celLegacyFunctionTables.set(registry, functions);
+
+  return functions;
+};
+
+/**
+ * The cel-legacy adapter for a registry. A host function the registry no
+ * longer has fails the evaluation with `EXPRESSION_FUNCTION_FAILED` before the
+ * engine runs; any other unknown name keeps `cel-js`'s own error.
+ */
+export const createCelLegacyAdapter = (
+  registry: BPMExpressionFunctionRegistry,
+): ExpressionEngineAdapter => ({
+  compile: parseCelLegacy,
+  evaluate: (handle, roots): unknown => {
+    if (
+      callsUnavailableFunction(
+        readCalledFunctionNames(handle.native),
+        readExpressionFunctionTable(registry),
+      )
+    ) {
+      throw new ExpressionEngineFailure('EXPRESSION_FUNCTION_FAILED');
+    }
+
+    const functions = readCelLegacyFunctions(registry);
+
+    return runWithExpressionFunctionFrame((): unknown =>
+      loadCelEngine().evaluate(handle.native, { ...roots }, functions),
+    );
+  },
+});
+
+/** The built-ins-only adapter, used wherever no registry was handed in. */
+export const celLegacyAdapter: ExpressionEngineAdapter = createCelLegacyAdapter(
+  BUILT_IN_EXPRESSION_FUNCTION_REGISTRY,
+);
