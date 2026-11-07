@@ -18,11 +18,15 @@ const FORM_MARKER = 'secret-form-value';
 const INITIATOR_MARKER = 'secret-initiator-value';
 const NUMBER_MARKER = '424242';
 const INDEX_MARKER = '9191';
+const LIST_MARKER = 'TWD';
+const SUFFIX_MARKER = 'u';
 const MARKERS: readonly string[] = [
   FORM_MARKER,
   INITIATOR_MARKER,
   NUMBER_MARKER,
   INDEX_MARKER,
+  LIST_MARKER,
+  `"${SUFFIX_MARKER}"`,
 ];
 
 const CONTEXT = {
@@ -33,6 +37,8 @@ const CONTEXT = {
     map: { known: 1 },
     nothing: null,
     other: FORM_MARKER,
+    sel: LIST_MARKER,
+    suffix: SUFFIX_MARKER,
   },
   initiator: { name: INITIATOR_MARKER },
 };
@@ -89,6 +95,16 @@ const PROBES: readonly Probe[] = [
     expression: 'form.nothing > 5',
     name: 'null ordering type error',
   },
+  {
+    expected: 'Identifier not found',
+    expression: 'form.map[form.sel] == 1 || form.sel in ["TWD"]',
+    name: 'one-element list literal equal to the evaluated index',
+  },
+  {
+    expected: 'Identifier not found',
+    expression: 'form.map[form.suffix] == 5u',
+    name: 'number suffix equal to the evaluated index',
+  },
 ];
 
 interface CapturedError {
@@ -140,6 +156,13 @@ describe('CEL evaluation error sanitising', () => {
     expect(readCaptured('null ordering type error').errorName).toBe(
       'CelTypeError',
     );
+    expect(
+      readCaptured('one-element list literal equal to the evaluated index')
+        .message,
+    ).toContain(`Identifier "${LIST_MARKER}" not found`);
+    expect(
+      readCaptured('number suffix equal to the evaluated index').message,
+    ).toContain(`Identifier "${SUFFIX_MARKER}" not found`);
   });
 
   it.each(PROBES)(
@@ -218,6 +241,44 @@ describe('CEL evaluation error sanitising', () => {
     );
     expect(describeCelEvaluationError(error, "form['agent'] == 'x'")).toBe(
       'Identifier "agent" not found',
+    );
+  });
+
+  it('counts a bracketed string as an index only after an expression', (): void => {
+    const error = new Error('Identifier "k" not found, no context passed');
+    const echoed = 'Identifier "k" not found';
+    const dropped = 'Identifier not found';
+
+    ['form.m["k"] == 1', 'form.m [ "k" ] == 1', '(form.m)["k"] == 1'].forEach(
+      (expression) =>
+        expect(describeCelEvaluationError(error, expression)).toBe(echoed),
+    );
+    [
+      '["k"] == form.l',
+      'form.x in ["k"]',
+      'form.x in["k"]',
+      'f(["k"])',
+      '[1, ["k"]]',
+      '[["k"]]',
+    ].forEach((expression) =>
+      expect(describeCelEvaluationError(error, expression)).toBe(dropped),
+    );
+  });
+
+  it('does not take a name from the suffix of a number', (): void => {
+    const error = new Error('Identifier "u" not found, no context passed');
+
+    expect(describeCelEvaluationError(error, 'form.x == 5u')).toBe(
+      'Identifier not found',
+    );
+    expect(
+      describeCelEvaluationError(
+        new Error('Identifier "e5" not found, no context passed'),
+        'form.x == 1e5',
+      ),
+    ).toBe('Identifier not found');
+    expect(describeCelEvaluationError(error, 'form.u == 5u')).toBe(
+      'Identifier "u" not found',
     );
   });
 

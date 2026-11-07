@@ -12,8 +12,12 @@
  *   identifier name, and only when that name is text the designer wrote in the
  *   expression being evaluated: a bare token outside any string literal (a root
  *   identifier or `.name`) or a string literal used as an index (`["a-b"]`).
- *   Without the expression, or when the name is not written there, the message
- *   is `Identifier not found` with no name.
+ *   A token must start at a word boundary, so the suffix of a number
+ *   (`5u`, `1e5`) is not a name; a bracketed string counts as an index only
+ *   when an expression precedes the bracket (an identifier character, `]` or
+ *   `)`, whitespace allowed), so a list literal (`["a"]`, `x in ["a"]`,
+ *   `f(["a"])`) is not an index. Without the expression, or when the name is
+ *   not written there, the message is `Identifier not found` with no name.
  *
  * Why the check against the expression: cel-js also reports an *evaluated
  * index* as the "identifier". `form.rates[form.currency]` fails with
@@ -31,8 +35,9 @@ const MISSING_IDENTIFIER_PATTERN =
 const SAFE_ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
 const FALLBACK_ERROR_NAME = 'EvaluationError';
 const STRING_LITERAL_PATTERN = /"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'/gu;
-const INDEX_LITERAL_PATTERN = /\[\s*(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)')\s*\]/gu;
-const TOKEN_PATTERN = /[A-Za-z_][A-Za-z0-9_]*/gu;
+const INDEX_LITERAL_PATTERN =
+  /(?<=[A-Za-z0-9_\])]\s*)(?<!(?<![A-Za-z0-9_])in\s*)\[\s*(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)')\s*\]/gu;
+const TOKEN_PATTERN = /(?<![0-9A-Za-z_])[A-Za-z_][A-Za-z0-9_]*/gu;
 
 /**
  * The CEL engine could not be loaded on this Node version. It carries no
