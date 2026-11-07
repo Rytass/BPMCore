@@ -126,6 +126,23 @@ export const WORKFLOW_EXPRESSION_LABELS = Object.freeze({
 });
 
 /**
+ * Node types whose completion records a decision, which is what `lastDecision`
+ * reads on the edges leaving them. Every other node (a gateway, a service
+ * task, the start) has no task, so on its outgoing edges `lastDecision` is
+ * always `null` at run time; the expression lint warns about reading it there
+ * (`EXPR_LAST_DECISION_UNAVAILABLE`).
+ */
+export const WORKFLOW_DECISION_NODE_TYPES: readonly WorkflowNode['type'][] =
+  Object.freeze(['userTask']);
+
+/** Whether an edge leaving a node of this type has a `lastDecision` to read. */
+export function hasWorkflowLastDecision(nodeType: string): boolean {
+  return (WORKFLOW_DECISION_NODE_TYPES as readonly string[]).includes(
+    nodeType,
+  );
+}
+
+/**
  * The structural lines of the backend publish lint (`lintWorkflowDefinition`
  * in `@rytass/bpm-core-nestjs-module`). The backend writes them from here and
  * the client (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`)

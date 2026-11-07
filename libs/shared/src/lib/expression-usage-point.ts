@@ -85,6 +85,10 @@ export const EXPRESSION_LINT_ERROR_CODES = [
  * Lint findings that only warn. `EXPR_DIVISOR_IS_FIELD` is the warning
  * docs/24 §2.1 asks for (a `double` divided by a zero field is `Infinity` in
  * cel-v2, which a comparison quietly turns into a routing decision; P1 P35).
+ * `EXPR_LAST_DECISION_UNAVAILABLE` is an edge condition that reads
+ * `lastDecision` on an edge leaving a node without tasks (a gateway, a
+ * service task, the start): no decision is made there, so it is always
+ * `null` at run time (Phase 23 P2 live finding, P4).
  */
 export const EXPRESSION_LINT_WARNING_CODES = [
   'EXPR_OPTIONAL_FIELD_WITHOUT_HAS',
@@ -93,6 +97,7 @@ export const EXPRESSION_LINT_WARNING_CODES = [
   'EXPR_APPROVER_READS_FORM',
   'EXPR_HIDDEN_FIELD_COPIED',
   'EXPR_DIVISOR_IS_FIELD',
+  'EXPR_LAST_DECISION_UNAVAILABLE',
 ] as const;
 
 export type ExpressionLintErrorCode =

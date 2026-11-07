@@ -18,7 +18,7 @@
 | P1 | 方言欄位與候選引擎差異測試 | P0 | 引擎去留 | IMPLEMENTED（實機 gate 通過） |
 | P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | IMPLEMENTED（實機 gate 通過） |
 | P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTED（P2 整合完成；實機 gate 通過） |
-| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | PLANNED |
+| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | IMPLEMENTED（自動化測試通過；實機 gate 待驗） |
 | P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | PLANNED |
 
 ## 獨立安全修補（不依賴本功能，建議先做）
@@ -407,6 +407,21 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 - 測試：非 designer 呼叫 preview 與 catalog 得到 403。
 - E2E：表單填入 `<img src=x onerror=...>`，經表達式寫入欄位後，在案件詳情、通知抽屜都以文字顯示。
 - `apps/client` 補 CSP 與 `nosniff`，驗證 PDF 預覽與 `form-pattern-worker` 的 blob worker 仍可運作。
+
+### P4 實作結果（2026-11-07，待實機 gate）
+
+- **設計器**：`ExpressionField`（Mezzanine Textarea＋Select 插入目錄＋Badge 狀態＋InlineMessage 發現，可選樣本試算）接上 E1 發起權限「自訂運算式」、E2 節點進入條件、E3 連線「進階：自訂運算式」（結構化建構器仍為預設）、E4 簽核人「以運算式指定」、E5 系統動作「寫入表單欄位」獨立編輯器（NOTIFY 選擇器不再能覆寫它）。瀏覽器只送文字，解析、lint、試算都在後端。
+- **後端**（`template/`）：`previewExpression`、`expressionCatalog`、`analyzeWorkflowExpressions`、`previewWorkflowDialectUpgrade`，全部 `@BPMDesignerOnly()`（非 designer 403，有 guard 與存取測試）。分析與升級比對讀設計器送來的草稿，不寫入。catalog 隔離 `registry.list()` 失敗（`functionsAvailable: false`，固定 log code）。
+- **方言**：新範本（後端 `createApprovalTemplate`、設計器 fallback、compose wizard）預設 `cel-v2`；既有範本保留方言。整份草稿升級前以 `runExpressionDifferential`（注入 `ConditionService`）在「欄位都有值／都沒填」兩組樣本比對，列出差異（P04 `7 / 2` 會列出），逾時（2 秒）時 `complete: false` 不能升級；確認後只改草稿，照常儲存。
+- **委派**：client 讀寫 `scopeConditionDialect`，新規則送 `cel-v2`，列表顯示方言；後端預設仍為 `cel-legacy`。
+- **欄位依賴**：欄位總覽矩陣標示「運算式引用 N」；設計器內編輯表單時，改名或刪除仍被運算式讀取的欄位會被擋下。比對基準是「上次套用的表單」（抽屜編輯的是另一份工作副本，取消或關閉即丟棄，發布也只送套用過的版本）；引用以套用當下的草稿向後端查詢，分析尚未回來、請求失敗或 403 時**拒絕**改名／刪除（fail closed）——cel-legacy 的發布 lint 不檢查欄位存在，這是它唯一的防線。（獨立驗證發現第二次編輯可繞過、分析缺席時放行，已修正。）
+- **lint**：新增警告 `EXPR_LAST_DECISION_UNAVAILABLE`（非簽核節點出發的連線讀 `lastDecision`），由 P4 的 preview／analysis 產生。
+- **AI 助理**：新增 `get_expression_catalog`、`preview_expression` 查詢工具；寫入運算式的工具呼叫先經後端 lint，ERROR 即拒絕，沒有注入 lint 也拒絕。工具呼叫改為依序執行，lint 期間畫布被改動則不套用。系統提示加入運算式規則（線上與離線共用）。
+- **`/api/chat`**：未啟用回 404、可選 `authorize` 掛點（401）、過濾 client 的 `system` 訊息、限制請求大小（1 MiB）、訊息數（200）與輸出 token（4 096）。請求大小在讀取時就逐塊計算，沒有 `Content-Length` 的 chunked 請求超過上限即中止讀取，不會整包讀進記憶體。`apps/client` 尚未接 `authorize`。
+- **CSP**：`apps/client/next.config.js` 的 `headers()` 送 `Content-Security-Policy-Report-Only`（非 nonce，保留 `worker-src 'self' blob:`，dev 才加 `'unsafe-eval'` 與 `ws://localhost:*`）與 `X-Content-Type-Options: nosniff`。`connect-src`／`img-src` 依 client 實際選端點的方式納入 API 來源：`NEXT_PUBLIC_API_URL` 與 `NEXT_PUBLIC_API_AUTH_URL`（`/auth/*`、`/attachments/*`，PDF 預覽的檔案來源）的 origin；沒設 API URL 時，以 host 為 `localhost`／`127.0.0.1` 的 `has` 規則加入 `http://localhost:17603`，與 build 模式無關（production build 在 localhost 上同樣連本機 API）。改成強制模式前仍要先看實機 violation 報告。
+- **啟動預熱**：`ConditionService.onApplicationBootstrap` 預熱兩種引擎。冷啟動成本是每個 process 一次（引擎程式碼的載入與編譯），不是每份模組副本一次，所以只有 process 內第一次碰引擎才量得到。實測（jest 單檔、`--runInBand`、新 process）：不預熱時第一次評估 legacy 約 98–108 ms、v2 約 7–8 ms（獨立驗證者探針與舊版 spec 的數字）；改由開機預熱付這筆，`warmUp()` 本身 legacy 約 84–86 ms、v2 約 7 ms，之後第一次評估 legacy 0.2–0.3 ms、v2 0.5–0.6 ms。這筆成本移到開機，不在任何案件的評估預算內。（前一版回報的「預熱本身 1.2–2.3 ms」是在 process 已熱時量的，有誤；舊 spec 的冷熱比較在 `warmUp()` 為空函式時也會通過，已改為驗證預熱確實對兩種方言各做 parse、lint、evaluate。）
+- **E2E**：`apps/client-e2e/specs/expression-xss-real.spec.ts` 已寫，未執行。案件詳情頁驗運算式寫入的 `copy`；通知抽屜驗案件標題中的另一段 HTML（簽核人的 TASK_ASSIGNED 內文引用標題）以文字顯示、不產生元素、不執行。**限制**：通知的 payload 不含表單資料（`notification.service.ts` 只放案件標題、節點名稱與 NOTIFY 樣板），運算式寫入的欄位值目前到不了通知抽屜，所以 Gate「經表達式寫入後在通知抽屜以文字顯示」的字面要求在現行產品上無從觸發；通知抽屜的檢查涵蓋的是使用者輸入經通知顯示的路徑。若之後讓通知樣板讀表單欄位，要補上這條。
+- **未完成**：實機 gate（`contains` 與宿主函式兩條路徑、PDF 預覽與 `form-pattern-worker` 在 CSP 下的實機確認）、XSS E2E 的實際執行、NOTIFY recipients 運算式編輯（留 P5 評估）。
 
 ## P5 — `EXPRESSION` binding
 

@@ -46,6 +46,12 @@ import {
 
 export interface FieldAccessMatrixDrawerProps {
   readonly definition: WorkflowDefinition;
+  /**
+   * Phase 23 P4: per field key, the labels of the expressions that read it
+   * (from `analyzeWorkflowExpressions`). Such a field cannot be renamed or
+   * deleted while they do; the matrix marks it.
+   */
+  readonly expressionReferences?: ReadonlyMap<string, readonly string[]>;
   readonly formSchema: FormDefinitionSchema | null;
   readonly language: BPMLanguage;
   /**
@@ -349,6 +355,7 @@ function readApplicantText(
  */
 export function FieldAccessMatrixDrawer({
   definition,
+  expressionReferences,
   formSchema,
   language,
   onApply,
@@ -471,6 +478,12 @@ export function FieldAccessMatrixDrawer({
           <Typography color="text-neutral" variant="caption">
             {row.fieldKey}
           </Typography>
+          {expressionReferences?.get(row.fieldKey)?.length ? (
+            <Badge
+              text={`運算式引用 ${expressionReferences.get(row.fieldKey)?.length ?? 0}`}
+              variant="dot-info"
+            />
+          ) : null}
         </div>
       ),
       title: '欄位',
