@@ -13,6 +13,7 @@ import {
   isFormDataSourceFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
+  buildFormRendererValues,
   FormDataSourceErrorCode,
   FormDataSourceFieldStatus,
   FormRendererValues,
@@ -52,6 +53,14 @@ export interface FormDataSourceFieldState {
   readonly onSearch: (searchText: string) => void;
   readonly options: readonly FormFieldOption[];
   readonly retry: () => void;
+  /**
+   * True when the held value was valid for the form it was picked in, an
+   * `EXPRESSION` binding's inputs have changed since, and the host's resolve
+   * no longer accounts for it. The status is then `INVALID` and the message is
+   * the host's `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` copy — the same sentence
+   * a `FIELD` binding's stale value gets when the submission is refused.
+   */
+  readonly selectionExpired?: boolean;
   readonly status: FormDataSourceFieldStatus;
 }
 
@@ -87,6 +96,13 @@ export interface UseFormDataSourceFieldInput {
 interface FormDataSourceResolution {
   readonly signature: string;
   readonly unresolvedValues: readonly string[];
+  /**
+   * The value it answered for. A new case leaves the value out of
+   * `signature` (and an `EXPRESSION` binding leaves the field's own key out
+   * of its refresh input), so without this a fresh pick would inherit the
+   * verdict on the value it replaced.
+   */
+  readonly valueSignature: string;
 }
 
 const EMPTY_FIELD_STATE: FormDataSourceFieldState = {
@@ -115,9 +131,11 @@ const MIN_SCROLLABLE_OPTION_COUNT = 10;
 
 /**
  * How long an `EXPRESSION` binding's re-query waits for the form to settle.
- * Its refresh input is the whole form (the browser cannot tell what the
- * expression reads), so without this every keystroke anywhere would query
- * the host. Aligned with the 300 ms `searchDebounceTime` of the renderer's
+ * Its refresh input is the whole form: the browser never parses CEL
+ * (docs/24 §2.5), and the host does not report which fields an expression
+ * reads — `waitingForFieldKeys` only lists the ones still empty, so it is no
+ * dependency list. Without this every keystroke anywhere would query the
+ * host. Aligned with the 300 ms `searchDebounceTime` of the renderer's
  * searchable DataSource controls.
  */
 const FORM_DATA_SOURCE_EXPRESSION_REFRESH_DEBOUNCE_MS = 300;
@@ -209,6 +227,43 @@ function readBindingRefreshInput(
 function readUnknownBindingRefreshInput(from: never): unknown {
   void from;
   return { unsupported: true };
+}
+
+/**
+ * JSON with object keys sorted, so two forms holding the same values compare
+ * equal whatever order their keys arrived in — a stored instance comes back
+ * from the database in its own key order, the renderer builds its values in
+ * schema order.
+ */
+function stringifyStable(value: unknown): string {
+  return JSON.stringify(sortObjectKeys(value)) ?? 'null';
+}
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortObjectKeys);
+  }
+
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => typeof entry !== 'undefined')
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, sortObjectKeys(entry)]),
+    );
+  }
+
+  return value;
+}
+
+/**
+ * The refresh signature a held value was last known good against: the one in
+ * force when it was picked. A form without an `initialFormData` (a new case)
+ * has nothing else to compare with.
+ */
+interface HeldValueBaseline {
+  readonly bindings: string;
+  readonly value: string;
 }
 
 export function useFormDataSourceField(
@@ -360,24 +415,41 @@ export function useFormDataSourceField(
         // The browser cannot tell which fields an expression reads (it never
         // parses CEL, docs/24 §2.5), so any change to the rest of the form or
         // row may have changed its value: the kept value is re-resolved.
+        //
+        // Only where something can be re-resolved: a read-only field has no
+        // query, so calling it stale would only print a warning nobody can
+        // act on. Both sides go through the renderer's own value builder and
+        // a key-order-free comparison, because the stored instance differs
+        // from what the renderer holds in ways that are not edits — its key
+        // order, the defaults the renderer fills in, keys outside the schema.
         if (binding.from.kind === 'EXPRESSION') {
+          if (!effectiveContext) {
+            return false;
+          }
+
           const scope = {
             ownFormKey: readOwnFormKey(dynamicField.fieldKey, input),
             ownRowKey: input.row ? dynamicField.fieldKey : null,
           };
 
           return (
-            JSON.stringify(
+            stringifyStable(
               readBindingRefreshInput(binding, {
                 ...scope,
-                formData: input.initialFormData ?? {},
+                formData: buildFormRendererValues(
+                  input.schema.fields,
+                  input.initialFormData ?? {},
+                ),
                 rowValues: input.row?.initialValues ?? input.row?.values,
               }),
             ) !==
-            JSON.stringify(
+            stringifyStable(
               readBindingRefreshInput(binding, {
                 ...scope,
-                formData: input.formData,
+                formData: buildFormRendererValues(
+                  input.schema.fields,
+                  input.formData,
+                ),
                 rowValues: input.row?.values,
               }),
             )
@@ -387,8 +459,46 @@ export function useFormDataSourceField(
         return false;
       })
     : false;
+  const hasExpressionBinding = Boolean(
+    dynamicField?.dataSource.bindings.some(
+      (binding) => binding.from.kind === 'EXPRESSION',
+    ),
+  );
+  // Re-taken whenever the value itself changes (a pick, a clear), so it always
+  // names the form the current value was chosen in. Kept in settled terms: a
+  // value picked while the form was still settling was picked from options
+  // for the older form, and is re-resolved once it settles.
+  const [heldValueBaseline, setHeldValueBaseline] = useState<HeldValueBaseline>(
+    (): HeldValueBaseline => ({
+      bindings: settledBindingsRefreshSignature,
+      value: currentValueSignature,
+    }),
+  );
+
+  if (heldValueBaseline.value !== currentValueSignature) {
+    setHeldValueBaseline({
+      bindings: settledBindingsRefreshSignature,
+      value: currentValueSignature,
+    });
+  }
+
+  // A `FIELD` binding's stale value is caught by the host when the case is
+  // submitted (`FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`). An `EXPRESSION` one is
+  // re-resolved here instead, once the form settles: its options are only
+  // re-queried after the debounce, and without a resolve nothing would ever
+  // say whether the held value survived the change. Compared with the settled
+  // signature, so the status (and with it the query effect) does not move
+  // before the debounce has passed.
+  const expressionInputsChanged = Boolean(
+    hasExpressionBinding &&
+      effectiveContext &&
+      hasValue &&
+      heldValueBaseline.value === currentValueSignature &&
+      heldValueBaseline.bindings !== settledBindingsRefreshSignature,
+  );
   const isStale = Boolean(
-    (snapshot || hasValue) && (valueChanged || bindingsChanged),
+    (snapshot || hasValue) &&
+      (valueChanged || bindingsChanged || expressionInputsChanged),
   );
   // A stale field with a value is only trustworthy once the host has resolved
   // it: display options may still carry the value through the snapshot merge.
@@ -418,6 +528,8 @@ export function useFormDataSourceField(
       input.row?.values,
     ).length > 0;
   const pendingQueryStatus = readPendingQueryStatus(isStale, waitsForDependencies);
+  const quiescentStatusRef = useRef(quiescentStatus);
+  quiescentStatusRef.current = quiescentStatus;
   const [remoteOptions, setRemoteOptions] = useState<readonly FormFieldOption[]>(
     [],
   );
@@ -464,10 +576,17 @@ export function useFormDataSourceField(
     [remoteOptions, snapshotOptions],
   );
   const currentResolution =
-    resolution && resolution.signature === dataSourceRefreshSignature
+    resolution &&
+    resolution.signature === dataSourceRefreshSignature &&
+    resolution.valueSignature === currentValueSignature
       ? resolution
       : null;
   const resolvePending = needsResolve && !currentResolution;
+  const selectionExpired = Boolean(
+    expressionInputsChanged &&
+      currentResolution &&
+      currentResolution.unresolvedValues.length > 0,
+  );
   const invalidValues = readInvalidFormDataSourceValues({
     options: mergedOptions,
     resolution: currentResolution,
@@ -602,6 +721,7 @@ export function useFormDataSourceField(
     }
 
     const signature = dataSourceRefreshSignature;
+    const valueSignature = currentValueSignature;
     const requestId = resolveSequence.current + 1;
     resolveSequence.current = requestId;
     resolveAbort.current?.abort();
@@ -652,6 +772,7 @@ export function useFormDataSourceField(
         setResolution({
           signature,
           unresolvedValues: result.unresolvedValues,
+          valueSignature,
         });
         // `invalidValues` turns this into `INVALID` when anything went missing.
         setStatus('VALID');
@@ -668,6 +789,7 @@ export function useFormDataSourceField(
         );
       });
   }, [
+    currentValueSignature,
     dataSourceRefreshSignature,
     dynamicFieldSignature,
     effectiveContext,
@@ -704,12 +826,18 @@ export function useFormDataSourceField(
     if (!autoQueries) {
       // AutoComplete queries on search only, so it stays quiescent until the
       // filler types; a context-less field has nothing to query at all.
-      setStatus(quiescentStatus);
+      setStatus(quiescentStatusRef.current);
 
       return;
     }
 
     loadOptionsRef.current('', null);
+    // The pending and quiescent statuses are read, not depended on: both
+    // follow `isStale`, which flips when the filler picks a new value for an
+    // expired `EXPRESSION` selection — and a pick must never re-query the
+    // options (the field's own key is left out of its refresh input for that
+    // reason). Re-querying there left the field `LOADING` right after the
+    // pick, so an immediate submit was refused with the "wait" copy.
   }, [
     autoQueries,
     dynamicFieldSignature,
@@ -719,13 +847,21 @@ export function useFormDataSourceField(
     initialFormDataSignature,
     initialRowValuesSignature,
     input.readonly,
-    pendingQueryStatus,
-    quiescentStatus,
     snapshotSignature,
   ]);
 
+  // A field nobody queries still has to follow its quiescent status (a value
+  // turning stale, or no longer stale), which the effect above now only reads.
   useEffect((): void => {
-    if (!needsResolve) {
+    if (dynamicField && !autoQueries) {
+      setStatus(quiescentStatus);
+    }
+  }, [autoQueries, dynamicFieldSignature, quiescentStatus]);
+
+  useEffect((): void => {
+    // An `EXPRESSION` field resolves only once the form has settled, like its
+    // option re-query; every other binding settles at once.
+    if (!needsResolve || refreshSettling) {
       return;
     }
 
@@ -733,6 +869,7 @@ export function useFormDataSourceField(
   }, [
     effectiveContext,
     needsResolve,
+    refreshSettling,
     settledBindingsRefreshSignature,
     valueRefreshSignature,
   ]);
@@ -786,6 +923,7 @@ export function useFormDataSourceField(
     onSearch,
     options: mergedOptions,
     retry,
+    selectionExpired,
     status:
       refreshSettling && effectiveContext && (autoQueries || hasValue)
         ? autoQueries
@@ -833,6 +971,13 @@ export function readFormDataSourceFieldStatusMessage(
     case 'STALE':
       return '選項需要重新載入或驗證。';
     case 'INVALID':
+      if (state.selectionExpired) {
+        // The host's own copy for the code, not a second wording of it.
+        return readFormDataSourceErrorMessage(
+          'FORM_DATA_SOURCE_VALUE_NOT_RESOLVED',
+        );
+      }
+
       return state.invalidValues.length
         ? `無法辨識選項：${state.invalidValues.join('、')}`
         : '目前選項已失效，請重新選擇。';
@@ -863,12 +1008,25 @@ export function isFormDataSourceFieldSubmissionBlocked(
  * Returns `null` when nothing blocks the submission.
  */
 export function readFormDataSourceSubmissionBlockMessage(
-  states: readonly Pick<FormDataSourceFieldState, 'hasValue' | 'status'>[],
+  states: readonly Pick<
+    FormDataSourceFieldState,
+    'hasValue' | 'selectionExpired' | 'status'
+  >[],
 ): string | null {
   const blocked = states.filter(isFormDataSourceFieldSubmissionBlocked);
 
   if (blocked.length === 0) {
     return null;
+  }
+
+  // An expired selection reads the same as the field (and as a FIELD binding
+  // the server refuses): the host's copy for FORM_DATA_SOURCE_VALUE_NOT_RESOLVED.
+  if (
+    blocked.some(
+      (state) => state.status === 'INVALID' && state.selectionExpired === true,
+    )
+  ) {
+    return readFormDataSourceErrorMessage('FORM_DATA_SOURCE_VALUE_NOT_RESOLVED');
   }
 
   return blocked.every(

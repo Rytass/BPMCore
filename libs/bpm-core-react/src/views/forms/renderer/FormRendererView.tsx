@@ -109,7 +109,7 @@ export interface FormRendererProps {
     fieldKey: string,
     state: Pick<
       FormDataSourceFieldState,
-      'hasValue' | 'invalidValues' | 'status'
+      'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
     >,
   ) => void;
   /**
@@ -403,7 +403,7 @@ function FormRendererField({
     fieldKey: string,
     state: Pick<
       FormDataSourceFieldState,
-      'hasValue' | 'invalidValues' | 'status'
+      'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
     >,
   ) => void;
   readonly fileUpload: FormRendererFileUpload;
@@ -435,6 +435,7 @@ function FormRendererField({
   const dataSourceStateSignature = JSON.stringify({
     hasValue: dataSourceState.hasValue,
     invalidValues: dataSourceState.invalidValues,
+    selectionExpired: dataSourceState.selectionExpired === true,
     status: dataSourceState.status,
   });
 
@@ -446,6 +447,7 @@ function FormRendererField({
     onDataSourceStateChange?.(field.fieldKey, {
       hasValue: dataSourceState.hasValue,
       invalidValues: dataSourceState.invalidValues,
+      selectionExpired: dataSourceState.selectionExpired === true,
       status: dataSourceState.status,
     });
   }, [
@@ -608,7 +610,7 @@ function FormTableField({
     fieldKey: string,
     state: Pick<
       FormDataSourceFieldState,
-      'hasValue' | 'invalidValues' | 'status'
+      'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
     >,
   ) => void;
   readonly optionSnapshots?: FormDataSourceValueSnapshots;
@@ -802,7 +804,7 @@ function FormTableCell({
     fieldKey: string,
     state: Pick<
       FormDataSourceFieldState,
-      'hasValue' | 'invalidValues' | 'status'
+      'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
     >,
   ) => void;
   readonly optionSnapshots?: FormDataSourceValueSnapshots;
@@ -836,6 +838,7 @@ function FormTableCell({
   const stateSignature = JSON.stringify({
     hasValue: dataSourceState.hasValue,
     invalidValues: dataSourceState.invalidValues,
+    selectionExpired: dataSourceState.selectionExpired === true,
     status: dataSourceState.status,
   });
 
@@ -847,6 +850,7 @@ function FormTableCell({
     onDataSourceStateChange?.(path, {
       hasValue: dataSourceState.hasValue,
       invalidValues: dataSourceState.invalidValues,
+      selectionExpired: dataSourceState.selectionExpired === true,
       status: dataSourceState.status,
     });
 

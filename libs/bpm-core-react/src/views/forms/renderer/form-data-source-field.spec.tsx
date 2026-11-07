@@ -7,13 +7,16 @@ import type {
 } from '@rytass/bpm-core-shared/form';
 import {
   previewFormFieldOptions,
+  previewResolveFormFieldOptions,
   readFormFieldOptions,
   resolveFormFieldOptions,
   type FormDataSourceOptionsResultRecord,
+  type FormDataSourceResolveResultRecord,
 } from '@rytass/bpm-core-client/form';
 import {
   isFormDataSourceFieldSubmissionBlocked,
   readFormDataSourceFieldStatusMessage,
+  readFormDataSourceSubmissionBlockMessage,
   useFormDataSourceField,
   type FormDataSourceFieldState,
   type UseFormDataSourceFieldInput,
@@ -38,12 +41,21 @@ jest.mock('@rytass/bpm-core-client/form', (): typeof import('@rytass/bpm-core-cl
 const previewOptionsMock = previewFormFieldOptions as jest.MockedFunction<
   typeof previewFormFieldOptions
 >;
+const previewResolveMock = previewResolveFormFieldOptions as jest.MockedFunction<
+  typeof previewResolveFormFieldOptions
+>;
 const runtimeOptionsMock = readFormFieldOptions as jest.MockedFunction<
   typeof readFormFieldOptions
 >;
 const runtimeResolveMock = resolveFormFieldOptions as jest.MockedFunction<
   typeof resolveFormFieldOptions
 >;
+
+const NEW_CASE_CONTEXT = {
+  instanceId: null,
+  kind: 'runtime',
+  templateId: 'template-1',
+} as const;
 
 const RUNTIME_CONTEXT = {
   instanceId: 'returned-instance-1',
@@ -236,6 +248,8 @@ describe('useFormDataSourceField', () => {
       schema: createSchema(field),
       uiSchema: createUiSchema(),
     };
+    // The held value is re-resolved once the form settles (P5 D5).
+    previewResolveMock.mockResolvedValue(createResolveResult([]));
     const harness = mountHookHarness(input);
 
     await waitForState(harness, (state) => state.status === 'VALID');
@@ -255,6 +269,264 @@ describe('useFormDataSourceField', () => {
         state.status === 'VALID' && previewOptionsMock.mock.calls.length === 2,
     );
     expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(false);
+  });
+
+  it('re-resolves a value held across an EXPRESSION dependency change on a new case, once the form settles', async (): Promise<void> => {
+    // A new case has no initialFormData to compare with. Before the fix the
+    // value was never re-resolved, so nothing could say whether it survived.
+    const field = createField('select', [
+      {
+        from: {
+          expression: 'form.chargeTo == "OTHER" ? "TW02" : form.plant',
+          kind: 'EXPRESSION',
+        },
+        parameter: 'plant',
+      },
+    ]);
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    runtimeResolveMock.mockResolvedValue(createResolveResult(['A']));
+    const input: UseFormDataSourceFieldInput = {
+      context: NEW_CASE_CONTEXT,
+      field,
+      formData: { chargeTo: 'SELF', choice: 'A', plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('B'));
+    await harness.rerender({
+      ...input,
+      formData: { chargeTo: 'OTHER', choice: 'A', plant: 'TW01' },
+    });
+    await flushAsync();
+
+    // Debounced: nothing is resolved while the form may still be changing.
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(true);
+
+    await waitForState(harness, (state) => state.status === 'INVALID');
+    expect(runtimeResolveMock).toHaveBeenCalledTimes(1);
+    expect(runtimeResolveMock.mock.calls[0]?.[0]).toMatchObject({
+      fieldKey: 'choice',
+      formData: { chargeTo: 'OTHER', choice: 'A', plant: 'TW01' },
+      instanceId: null,
+      templateId: 'template-1',
+      values: ['A'],
+    });
+    expect(harness.current().selectionExpired).toBe(true);
+    // The same sentence a FIELD binding's stale value gets from the host.
+    expect(readFormDataSourceFieldStatusMessage(harness.current())).toBe(
+      '已選取的選項已失效，請重新選擇。',
+    );
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(true);
+    // ...and the submit banner says the same, not a generic "validate first".
+    expect(
+      readFormDataSourceSubmissionBlockMessage([harness.current()]),
+    ).toBe('已選取的選項已失效，請重新選擇。');
+  });
+
+  it('takes a new pick over an expired EXPRESSION value at once, without re-querying', async (): Promise<void> => {
+    // A new case leaves the value out of the refresh signature, and an
+    // EXPRESSION leaves the field's own key out of its refresh input. The
+    // answer on the expired value used to stick to the new pick ("無法辨識選
+    // 項：A" under B), and the pick re-queried the options, leaving the field
+    // LOADING so an immediate submit was refused with the "wait" copy.
+    const field = createField('select', [
+      {
+        from: {
+          expression: 'form.chargeTo == "OTHER" ? "TW02" : form.plant',
+          kind: 'EXPRESSION',
+        },
+        parameter: 'plant',
+      },
+    ]);
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    runtimeResolveMock.mockResolvedValue(createResolveResult(['A']));
+    const input: UseFormDataSourceFieldInput = {
+      context: NEW_CASE_CONTEXT,
+      field,
+      formData: { chargeTo: 'SELF', choice: 'A', plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('B'));
+    await harness.rerender({
+      ...input,
+      formData: { chargeTo: 'OTHER', choice: 'A', plant: 'TW01' },
+    });
+    await waitForState(harness, (state) => state.selectionExpired === true);
+
+    const optionCallsBeforePick = runtimeOptionsMock.mock.calls.length;
+
+    await harness.rerender({
+      ...input,
+      formData: { chargeTo: 'OTHER', choice: 'B', plant: 'TW01' },
+    });
+
+    // Right after the pick, with nothing left in flight.
+    expect(harness.current().status).toBe('VALID');
+    expect(harness.current().invalidValues).toEqual([]);
+    expect(harness.current().selectionExpired).toBe(false);
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(false);
+
+    await flushAsync();
+    await flushAsync();
+
+    expect(runtimeOptionsMock.mock.calls.length).toBe(optionCallsBeforePick);
+    expect(runtimeResolveMock).toHaveBeenCalledTimes(1);
+    expect(harness.current().status).toBe('VALID');
+  });
+
+  it('releases a held value the host still resolves after an EXPRESSION dependency change', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    runtimeResolveMock.mockResolvedValue({
+      ...createResolveResult([]),
+      options: [{ label: 'A', value: 'A' }],
+    });
+    const input: UseFormDataSourceFieldInput = {
+      context: NEW_CASE_CONTEXT,
+      field,
+      formData: { choice: 'A', plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    await harness.rerender({
+      ...input,
+      formData: { choice: 'A', plant: 'TW02' },
+    });
+    await waitForState(
+      harness,
+      (state) =>
+        state.status === 'VALID' && runtimeResolveMock.mock.calls.length === 1,
+    );
+
+    expect(harness.current().selectionExpired).toBe(false);
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(false);
+  });
+
+  it('does not re-resolve a value picked after the EXPRESSION dependency changed', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('B'));
+    const input: UseFormDataSourceFieldInput = {
+      context: NEW_CASE_CONTEXT,
+      field,
+      formData: { plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    await harness.rerender({ ...input, formData: { plant: 'TW02' } });
+    await waitForState(
+      harness,
+      (state) =>
+        state.status === 'VALID' && runtimeOptionsMock.mock.calls.length === 2,
+    );
+    await harness.rerender({ ...input, formData: { choice: 'B', plant: 'TW02' } });
+    await flushAsync();
+    await flushAsync();
+
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+    expect(harness.current().status).toBe('VALID');
+  });
+
+  it('leaves a read-only EXPRESSION value alone when the stored case differs only in key order and defaults (P5 D6)', async (): Promise<void> => {
+    // A just-submitted case: the stored formData comes back in the database's
+    // key order and without the defaults the renderer fills in. Before the fix
+    // the whole-form comparison called that a change and showed STALE.
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+        { fieldKey: 'urgent', label: 'Urgent', required: false, type: 'boolean' },
+        field,
+      ],
+      schemaVersion: 1,
+    };
+    const harness = mountHookHarness({
+      context: RUNTIME_CONTEXT,
+      field,
+      formData: { plant: 'TW01', urgent: false, choice: 'A' },
+      initialFormData: { choice: 'A', plant: 'TW01' },
+      initialValue: 'A',
+      optionSnapshots: createSnapshots('A', '歷史標籤'),
+      readonly: true,
+      schema,
+      uiSchema: createUiSchema(),
+    });
+
+    await flushAsync();
+
+    expect(harness.current().status).toBe('VALID');
+    expect(readFormDataSourceFieldStatusMessage(harness.current())).toBeNull();
+    expect(runtimeOptionsMock).not.toHaveBeenCalled();
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+  });
+
+  it('does not take key order or filled-in defaults for an EXPRESSION edit on an editable returned case', async (): Promise<void> => {
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+        { fieldKey: 'urgent', label: 'Urgent', required: false, type: 'boolean' },
+        field,
+      ],
+      schemaVersion: 1,
+    };
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    const harness = mountHookHarness({
+      context: RUNTIME_CONTEXT,
+      field,
+      formData: { plant: 'TW01', urgent: false, choice: 'A' },
+      initialFormData: { choice: 'A', plant: 'TW01' },
+      initialValue: 'A',
+      optionSnapshots: createSnapshots('A', '歷史標籤'),
+      readonly: false,
+      schema,
+      uiSchema: createUiSchema(),
+    });
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    await flushAsync();
+
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+    expect(harness.current().status).toBe('VALID');
   });
 
   it('re-queries a FIELD binding at once, without the EXPRESSION debounce', async (): Promise<void> => {
@@ -777,6 +1049,18 @@ function createOptionsResult(
     dataSourceVersion: 1,
     nextCursor: null,
     options: value ? [{ label: value, value }] : [],
+    waitingForFieldKeys: [],
+  };
+}
+
+function createResolveResult(
+  unresolvedValues: readonly string[],
+): FormDataSourceResolveResultRecord {
+  return {
+    dataSourceKey: 'demo.options',
+    dataSourceVersion: 1,
+    options: [],
+    unresolvedValues: [...unresolvedValues],
     waitingForFieldKeys: [],
   };
 }
