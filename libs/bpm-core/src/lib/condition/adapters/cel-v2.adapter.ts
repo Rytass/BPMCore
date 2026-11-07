@@ -3,8 +3,20 @@ import type {
   EnvironmentOptions,
   ParseResult,
 } from '@marcbachmann/cel-js';
+import type { BPMExpressionValueType } from '@rytass/bpm-core-shared';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../../expression-function/expression-function.registry';
+import type {
+  BPMExpressionFunction,
+  BPMExpressionFunctionRegistry,
+} from '../../expression-function/expression-function.types';
 import { ExpressionEngineFailure } from '../expression-engine-failure';
 import type { ExpressionErrorCode } from '../expression-errors';
+import {
+  callsUnavailableFunction,
+  createExpressionFunctionInvoker,
+  readExpressionFunctionTable,
+  runWithExpressionFunctionFrame,
+} from '../expression-function-invocation';
 import type {
   ExpressionEngineAdapter,
   ExpressionHandle,
@@ -138,7 +150,7 @@ const createEnvironment = (module: CelV2Module): Environment => {
   return environment;
 };
 
-let celV2Environment: Environment | null = null;
+let celV2BaseEnvironment: Environment | null = null;
 
 /**
  * Loads `@marcbachmann/cel-js` on first use, like `loadCelEngine` does for
@@ -146,11 +158,12 @@ let celV2Environment: Environment | null = null;
  * expression never resolves the package, and the ESM-only package is loaded
  * with `require` so every caller stays synchronous (Node >=20.19 / >=22.12).
  *
- * The runtime compiles before any budget starts, and compiling loads the
- * engine, so an interrupt can never land halfway through loading it.
+ * This is the environment every function environment is cloned from: options,
+ * limits and the mixed-number operators, no functions. Cloning freezes it, so
+ * it is complete before the first clone.
  */
-export function loadCelV2Environment(): Environment {
-  if (celV2Environment === null) {
+const loadCelV2BaseEnvironment = (): Environment => {
+  if (celV2BaseEnvironment === null) {
     let module: CelV2Module;
 
     try {
@@ -171,19 +184,83 @@ export function loadCelV2Environment(): Environment {
       throw error;
     }
 
-    celV2Environment = createEnvironment(module);
+    celV2BaseEnvironment = createEnvironment(module);
   }
 
-  return celV2Environment;
+  return celV2BaseEnvironment;
+};
+
+/*
+ * How a declared type is written in a cel-v2 signature. Numbers are `dyn`:
+ * cel-v2 tells an `int` literal (`1000`) from a `double` (a form value, which
+ * is a JS number), so a `double` parameter would refuse `f_v1(1000)` and an
+ * `int` one would refuse `f_v1(form.qty)`. The wrapper checks the number
+ * against the declared type instead. Every other type is enforced by the
+ * engine's overload resolution, which reports a mismatch as a type error.
+ */
+const toSignatureParameterType = (type: BPMExpressionValueType): string =>
+  type === 'double' || type === 'int' ? 'dyn' : type;
+
+const toSignature = (fn: BPMExpressionFunction): string =>
+  `${fn.name}(${fn.parameters
+    .map((parameter) => toSignatureParameterType(parameter.type))
+    .join(', ')}): ${fn.returnType}`;
+
+const celV2Environments = new WeakMap<
+  BPMExpressionFunctionRegistry,
+  Environment
+>();
+
+/**
+ * The cel-v2 environment for a registry: the base environment plus every
+ * function the registry lists (the nine built-ins and the host's), built once
+ * per registry and cached. Without a registry it is the built-ins-only one.
+ *
+ * Every function is registered as a global call (`round(x)`), never as a
+ * method. The name `trim` therefore sits beside cel-v2's own `string.trim()`
+ * method without replacing it; no other built-in name exists in cel-v2.
+ *
+ * The returned environment is frozen: registering on it throws. For a
+ * type check with declared variables (P2's `env.check()`), `clone()` it and
+ * register the variables on the clone.
+ */
+export function loadCelV2Environment(
+  registry: BPMExpressionFunctionRegistry = BUILT_IN_EXPRESSION_FUNCTION_REGISTRY,
+): Environment {
+  const cached = celV2Environments.get(registry);
+
+  if (cached) {
+    return cached;
+  }
+
+  const environment = loadCelV2BaseEnvironment().clone();
+
+  readExpressionFunctionTable(registry).functions.forEach((fn): void => {
+    environment.registerFunction(
+      toSignature(fn),
+      createExpressionFunctionInvoker(fn, 'cel-v2'),
+    );
+  });
+  // Cloning stops the parent from registering more (documented engine
+  // behaviour), so the shared environment cannot be changed by a caller.
+  environment.clone();
+  celV2Environments.set(registry, environment);
+
+  return environment;
 }
 
 /**
  * Parses with cel-v2. Returns `null` when the expression does not parse or
  * breaks a structure limit. The engine is loaded outside the `try`: a failure
  * to load it is a configuration error, not a bad expression.
+ *
+ * Parsing does not check that a called function exists; evaluation does.
  */
-export function parseCelV2(expression: string): ExpressionHandle | null {
-  const environment = loadCelV2Environment();
+export function parseCelV2(
+  expression: string,
+  registry: BPMExpressionFunctionRegistry = BUILT_IN_EXPRESSION_FUNCTION_REGISTRY,
+): ExpressionHandle | null {
+  const environment = loadCelV2Environment(registry);
 
   try {
     return { native: environment.parse(expression) };
@@ -191,6 +268,40 @@ export function parseCelV2(expression: string): ExpressionHandle | null {
     return null;
   }
 }
+
+interface CelV2AstNode {
+  readonly args: unknown;
+  readonly op: string;
+}
+
+const isAstNode = (value: unknown): value is CelV2AstNode =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { readonly op?: unknown }).op === 'string';
+
+/**
+ * Names of the global functions an expression calls (`call` nodes; methods are
+ * `rcall` and never host functions). A small walk of the engine's AST, only
+ * for the evaluation-time check; the publish lint reads references through
+ * P2's AST module.
+ */
+const readCalledFunctionNames = (node: unknown): readonly string[] => {
+  if (Array.isArray(node)) {
+    return node.flatMap(readCalledFunctionNames);
+  }
+
+  if (!isAstNode(node)) {
+    return [];
+  }
+
+  const args = node.args;
+  const own =
+    node.op === 'call' && Array.isArray(args) && typeof args[0] === 'string'
+      ? [args[0]]
+      : [];
+
+  return [...own, ...readCalledFunctionNames(args)];
+};
 
 interface CelErrorShape {
   readonly code: string;
@@ -251,13 +362,39 @@ export function classifyCelV2Error(error: unknown): unknown {
   );
 }
 
-export const celV2Adapter: ExpressionEngineAdapter = {
-  compile: parseCelV2,
+/**
+ * The cel-v2 adapter for a registry. A host function the registry no longer
+ * has (withdrawn after publishing) fails the evaluation with
+ * `EXPRESSION_FUNCTION_FAILED` before the engine runs, wherever the call sits.
+ */
+export const createCelV2Adapter = (
+  registry: BPMExpressionFunctionRegistry,
+): ExpressionEngineAdapter => ({
+  compile: (expression: string): ExpressionHandle | null =>
+    parseCelV2(expression, registry),
   evaluate: (handle, roots): unknown => {
-    try {
-      return (handle.native as ParseResult)({ ...roots });
-    } catch (error: unknown) {
-      throw classifyCelV2Error(error);
+    const parsed = handle.native as ParseResult;
+
+    if (
+      callsUnavailableFunction(
+        readCalledFunctionNames(parsed.ast),
+        readExpressionFunctionTable(registry),
+      )
+    ) {
+      throw new ExpressionEngineFailure('EXPRESSION_FUNCTION_FAILED');
     }
+
+    return runWithExpressionFunctionFrame((): unknown => {
+      try {
+        return parsed({ ...roots });
+      } catch (error: unknown) {
+        throw classifyCelV2Error(error);
+      }
+    });
   },
-};
+});
+
+/** The built-ins-only adapter, used wherever no registry was handed in. */
+export const celV2Adapter: ExpressionEngineAdapter = createCelV2Adapter(
+  BUILT_IN_EXPRESSION_FUNCTION_REGISTRY,
+);

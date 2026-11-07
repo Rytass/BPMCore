@@ -10,8 +10,13 @@ import {
   type JsonValue,
   normalizeExpressionResult,
 } from './expression-result.walker';
-import { celLegacyAdapter } from './adapters/cel-legacy.adapter';
-import { celV2Adapter } from './adapters/cel-v2.adapter';
+import {
+  celLegacyAdapter,
+  createCelLegacyAdapter,
+} from './adapters/cel-legacy.adapter';
+import { celV2Adapter, createCelV2Adapter } from './adapters/cel-v2.adapter';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
+import type { BPMExpressionFunctionRegistry } from '../expression-function/expression-function.types';
 import {
   DEFAULT_EXPRESSION_DIALECT,
   type ExpressionDialect,
@@ -51,6 +56,11 @@ export interface ExpressionEvalRequest {
 
 const logger = new Logger('ExpressionRuntime');
 
+const runtimesByRegistry = new WeakMap<
+  BPMExpressionFunctionRegistry,
+  ExpressionRuntime
+>();
+
 /**
  * The single place where an expression is compiled and evaluated (ADR 22 §3.2).
  * Every caller goes through here: nothing reaches an engine directly.
@@ -63,10 +73,43 @@ const logger = new Logger('ExpressionRuntime');
  * expression that did not finish is not the same as one that is false.
  */
 export class ExpressionRuntime {
+  /**
+   * Without arguments the runtime calls the nine built-in functions only
+   * (ADR 22 §3.5); use {@link ExpressionRuntime.withFunctions} for a host's.
+   */
   constructor(
     private readonly legacyAdapter: ExpressionEngineAdapter = celLegacyAdapter,
     private readonly v2Adapter: ExpressionEngineAdapter = celV2Adapter,
   ) {}
+
+  /**
+   * The runtime for a function registry: both dialects call the functions it
+   * lists, through the same argument, result and failure rules. One runtime
+   * per registry, cached, so every caller shares its compiled environments.
+   * The built-ins-only registry gets the default adapters.
+   */
+  static withFunctions(
+    registry: BPMExpressionFunctionRegistry,
+  ): ExpressionRuntime {
+    if (registry === BUILT_IN_EXPRESSION_FUNCTION_REGISTRY) {
+      return new ExpressionRuntime();
+    }
+
+    const cached = runtimesByRegistry.get(registry);
+
+    if (cached) {
+      return cached;
+    }
+
+    const runtime = new ExpressionRuntime(
+      createCelLegacyAdapter(registry),
+      createCelV2Adapter(registry),
+    );
+
+    runtimesByRegistry.set(registry, runtime);
+
+    return runtime;
+  }
 
   /**
    * Compiles with the dialect's engine. This is also what loads that engine,
