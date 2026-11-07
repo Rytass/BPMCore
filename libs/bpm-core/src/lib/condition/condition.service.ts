@@ -1,67 +1,21 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import type { Failure, ParseResult } from 'cel-js';
-
-/**
- * The slice of `cel-js` this service uses.
- */
-interface CelEngine {
-  readonly evaluate: (
-    cst: unknown,
-    context: Readonly<Record<string, unknown>>,
-  ) => unknown;
-  readonly parse: (expression: string) => ParseResult;
-}
-
-let celEngine: CelEngine | null = null;
-
-/**
- * Loads `cel-js` on first use rather than when this module is imported.
- *
- * `cel-js` is ESM-only and its `chevrotain` dependency ships an exports map
- * that `jest-resolve` cannot follow. While the import sat at the top of this
- * file, the package root pulled it in through
- * `index → bpm-root → delegation → condition`, so *any* consumer test that
- * imported anything from `@rytass/bpm-core-nestjs-module` failed to load with
- * `Cannot find module 'chevrotain'` — pointing deep into `node_modules`, far
- * from the code under test. Hosts had to stub `cel-js` before they could write
- * a single test.
- *
- * Deferring the load means a host that never evaluates a CEL expression never
- * resolves the package at all. `require` (not `await import`) keeps every
- * caller in this file synchronous.
- */
-function loadCelEngine(): CelEngine {
-  if (celEngine === null) {
-    try {
-      celEngine = require('cel-js') as CelEngine;
-    } catch (error: unknown) {
-      // Deferring the load also defers this failure: it used to surface at
-      // boot as a bare ERR_REQUIRE_ESM, and would now surface as a 500 on
-      // whichever request first evaluated a condition. Name the cause where it
-      // is thrown.
-      if (isRequireEsmError(error)) {
-        throw new Error(
-          `[@rytass/bpm-core-nestjs-module] This Node version cannot require the ESM-only 'cel-js'. BPM needs Node >=20.19 or >=22.12 to evaluate CEL conditions. Original error: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-
-      throw error;
-    }
-  }
-
-  return celEngine;
-}
-
-function isRequireEsmError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { readonly code?: unknown }).code === 'ERR_REQUIRE_ESM'
-  );
-}
+import { Injectable } from '@nestjs/common';
+import { ExpressionRuntimeError } from './expression-errors';
+import {
+  createExpressionBudget,
+  currentExpressionBudget,
+  DEFAULT_EXPRESSION_BUDGET,
+  ExpressionBudget,
+} from './expression-budget';
+import { ExpressionRuntime } from './expression-runtime';
+import { JsonValue } from './expression-result.walker';
+import { loadCelEngine, parseCelLegacy } from './adapters/cel-legacy.adapter';
+import { loadCelV2Environment, parseCelV2 } from './adapters/cel-v2.adapter';
+import {
+  DEFAULT_EXPRESSION_DIALECT,
+  ExpressionDialect,
+  isExpressionDialect,
+  readExpressionDialect,
+} from './expression-dialect';
 
 interface ConditionExpression {
   readonly expression: string | null | undefined;
@@ -70,7 +24,33 @@ interface ConditionExpression {
 
 interface ConditionLintOptions {
   readonly allowedRootIdentifiers?: readonly string[];
+  /**
+   * The engine whose parser decides syntax. Absent means `cel-legacy`; one
+   * this version does not know is reported as `EXPRESSION_SYNTAX_ERROR`.
+   */
+  readonly dialect?: ExpressionDialect;
   readonly maxExpressionLength?: number;
+}
+
+/**
+ * Options for one evaluation. Both fields are optional: without them a
+ * evaluation uses the operation's budget if it runs inside one
+ * (see `runExpressionOperation`), or a fresh single-expression budget.
+ */
+export interface ExpressionCallOptions {
+  /**
+   * Roots the expression may read. Checked at evaluation time, so a dry run
+   * cannot read a root that the published definition would be refused for.
+   */
+  readonly allowedRootIdentifiers?: readonly string[];
+  readonly budget?: ExpressionBudget;
+  /**
+   * The dialect of the definition or rule the expression belongs to. Absent
+   * means `cel-legacy`, which is what every expression saved before the
+   * dialect existed was written for (ADR 22 §3.3). One this version does not
+   * know is refused as `EXPRESSION_SYNTAX_ERROR`.
+   */
+  readonly dialect?: ExpressionDialect;
 }
 
 export type CelEvaluationContext = Readonly<Record<string, unknown>>;
@@ -83,6 +63,25 @@ const CEL_KEYWORDS = new Set(['false', 'has', 'in', 'null', 'size', 'true']);
 
 @Injectable()
 export class ConditionService {
+  // Not a Nest provider: `ConditionService` is constructed with `new` in hosts
+  // and tests, so its constructor must stay argument-free.
+  private readonly runtime = new ExpressionRuntime();
+
+  /**
+   * Loads the dialect's engine now, outside any budget. Callers that are about to start a
+   * budgeted run (the dry run) call this first so an interrupt cannot land
+   * halfway through module loading.
+   */
+  prepareEngine(dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT): void {
+    if (readExpressionDialect(dialect, 'expressionDialect') === 'cel-v2') {
+      loadCelV2Environment();
+
+      return;
+    }
+
+    loadCelEngine();
+  }
+
   lintExpressions(
     expressions: readonly ConditionExpression[],
     options: ConditionLintOptions = {},
@@ -113,86 +112,188 @@ export class ConditionService {
       return [`${label} must be ${maxExpressionLength} characters or fewer`];
     }
 
-    const parseResult = loadCelEngine().parse(trimmedExpression);
-
-    if (isParseFailure(parseResult)) {
-      return parseResult.errors.map((error) => `${label}: ${error}`);
+    // A dialect this version does not know is not guessed at: parsing with
+    // the wrong engine could pass what the right one refuses.
+    if (
+      options.dialect !== undefined &&
+      !isExpressionDialect(options.dialect)
+    ) {
+      return [`${label}: EXPRESSION_SYNTAX_ERROR`];
     }
 
-    return lintRootIdentifiers(trimmedExpression, label, options);
+    // The engine's parse message is not returned: it can echo the expression,
+    // and the lint result reaches GraphQL clients (ADR 22 §3.2).
+    const parse =
+      (options.dialect ?? DEFAULT_EXPRESSION_DIALECT) === 'cel-v2'
+        ? parseCelV2
+        : parseCelLegacy;
+
+    if (parse(trimmedExpression) === null) {
+      return [`${label}: EXPRESSION_SYNTAX_ERROR`];
+    }
+
+    return lintRootIdentifiers(
+      trimmedExpression,
+      label,
+      options.allowedRootIdentifiers,
+      options.dialect,
+    );
   }
 
   evaluateBoolean(
     expression: string | null | undefined,
     context: CelEvaluationContext,
     label: string,
+    options: ExpressionCallOptions = {},
   ): boolean {
     if (typeof expression !== 'string' || !expression.trim()) {
       return true;
     }
 
-    const value = this.evaluateValue(expression, context, label);
+    const value = this.evaluateValue(expression, context, label, options);
 
     if (typeof value === 'boolean') {
       return value;
     }
 
-    throw new BadRequestException(`${label} must evaluate to a boolean`);
+    throw new ExpressionRuntimeError('EXPRESSION_TYPE_ERROR', label, {
+      detail: 'must evaluate to a boolean',
+    });
   }
 
   evaluateValue(
     expression: string,
     context: CelEvaluationContext,
     label: string,
-  ): unknown {
+    options: ExpressionCallOptions = {},
+  ): JsonValue {
     const trimmedExpression = expression.trim();
-    const lengthErrors = this.lintExpression(trimmedExpression, label);
+    const dialect = readExpressionDialect(options.dialect, label);
 
-    if (lengthErrors.length) {
-      throw new BadRequestException(lengthErrors.join('; '));
-    }
+    assertEvaluable(
+      trimmedExpression,
+      label,
+      options.allowedRootIdentifiers,
+      dialect,
+    );
 
-    const engine = loadCelEngine();
-    const parseResult = engine.parse(trimmedExpression);
-
-    if (isParseFailure(parseResult)) {
-      throw new BadRequestException(
-        parseResult.errors.map((error) => `${label}: ${error}`).join('; '),
-      );
-    }
-
-    try {
-      return engine.evaluate(parseResult.cst, { ...context });
-    } catch (error: unknown) {
-      throw new BadRequestException(
-        error instanceof Error ? `${label}: ${error.message}` : label,
-      );
-    }
+    return this.runtime.evaluate({
+      budget:
+        options.budget ??
+        currentExpressionBudget() ??
+        createExpressionBudget(DEFAULT_EXPRESSION_BUDGET),
+      dialect,
+      expression: trimmedExpression,
+      label,
+      roots: pickAllowedRoots(context, options.allowedRootIdentifiers),
+    });
   }
 }
 
-function isParseFailure(parseResult: ParseResult): parseResult is Failure {
-  return !parseResult.isSuccess;
+/**
+ * The roots handed to the engine: only the allowed ones when the use point has
+ * an allowlist. The textual root check cannot see a macro variable's scope (it
+ * skips the bound name everywhere in the expression), so this is what keeps a
+ * root the use point may not read out of reach, whatever else the caller's
+ * context holds. Without an allowlist the context is passed as given.
+ */
+function pickAllowedRoots(
+  context: CelEvaluationContext,
+  allowedRootIdentifiers: readonly string[] | undefined,
+): CelEvaluationContext {
+  if (!allowedRootIdentifiers?.length) {
+    return context;
+  }
+
+  return Object.fromEntries(
+    allowedRootIdentifiers
+      .filter((identifier) =>
+        Object.prototype.hasOwnProperty.call(context, identifier),
+      )
+      .map((identifier): readonly [string, unknown] => [
+        identifier,
+        context[identifier],
+      ]),
+  );
 }
 
+/**
+ * Guards that run before anything is parsed or evaluated. A refusal is an
+ * `EXPRESSION_SYNTAX_ERROR`: the expression is not one this runtime will run.
+ */
+function assertEvaluable(
+  expression: string,
+  label: string,
+  allowedRootIdentifiers: readonly string[] | undefined,
+  dialect: ExpressionDialect | undefined,
+): void {
+  if (!expression || expression.length > DEFAULT_MAX_EXPRESSION_LENGTH) {
+    throw new ExpressionRuntimeError('EXPRESSION_SYNTAX_ERROR', label);
+  }
+
+  if (
+    lintRootIdentifiers(expression, label, allowedRootIdentifiers, dialect)
+      .length > 0
+  ) {
+    throw new ExpressionRuntimeError('EXPRESSION_SYNTAX_ERROR', label);
+  }
+}
+
+// cel-v2 macros that bind a variable as their first argument
+// (`list.map(x, ...)`, `list.exists(x, ...)` ...).
+const CEL_V2_BINDING_MACRO_PATTERN =
+  /\.\s*(?:all|exists|exists_one|filter|map)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/gu;
+
+/**
+ * Root identifiers the expression reads that its use point does not allow.
+ *
+ * The scan is textual. For `cel-v2` it also skips what that dialect adds and
+ * is not a root: names a macro binds (`a` in `form.l.map(a, a.qty)`) and
+ * global function calls (`int(form.x)`). This is an interim rule until P2
+ * checks roots on the AST (ADR 22 §3.4).
+ *
+ * A bound name is skipped everywhere in the expression, not only inside its
+ * macro, so `[1].exists(lastDecision, true) && lastDecision.d == ""` passes
+ * this check (and the lint) even where `lastDecision` is not allowed. What
+ * stops it reading that root is evaluation: `evaluateValue` hands the engine
+ * only the allowed roots (`pickAllowedRoots`), so the name outside the macro
+ * is a missing key. The lint still says nothing; P2 closes that on the AST.
+ */
 function lintRootIdentifiers(
   expression: string,
   label: string,
-  options: ConditionLintOptions,
+  allowedRootIdentifiers: readonly string[] | undefined,
+  dialect: ExpressionDialect = DEFAULT_EXPRESSION_DIALECT,
 ): readonly string[] {
-  const allowedRootIdentifiers = options.allowedRootIdentifiers;
-
   if (!allowedRootIdentifiers?.length) {
     return [];
   }
 
-  const allowed = new Set([...allowedRootIdentifiers, ...CEL_KEYWORDS]);
   const sanitizedExpression = stripStringLiterals(expression);
+  const isV2 = dialect === 'cel-v2';
+  const boundNames = isV2
+    ? Array.from(
+        sanitizedExpression.matchAll(CEL_V2_BINDING_MACRO_PATTERN),
+      ).map((match) => match[1])
+    : [];
+  const allowed = new Set([
+    ...allowedRootIdentifiers,
+    ...CEL_KEYWORDS,
+    ...boundNames,
+  ]);
   const identifiers = Array.from(
     sanitizedExpression.matchAll(
       /(^|[^A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
-  ).map((match) => match[2]);
+  )
+    .filter(
+      (match) =>
+        !isV2 ||
+        !/^\s*\(/u.test(
+          sanitizedExpression.slice((match.index ?? 0) + match[0].length),
+        ),
+    )
+    .map((match) => match[2]);
   const unknownIdentifiers = [
     ...new Set(identifiers.filter((identifier) => !allowed.has(identifier))),
   ];

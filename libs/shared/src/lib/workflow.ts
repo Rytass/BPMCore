@@ -1,8 +1,20 @@
 export interface WorkflowDefinition {
   readonly edges: readonly WorkflowEdge[];
+  /**
+   * The expression language every expression in this definition is written
+   * in (ADR 22 §3.3). Absent means `cel-legacy`, so definitions and case
+   * snapshots saved before the field existed keep their behaviour.
+   */
+  readonly expressionDialect?: WorkflowExpressionDialect;
   readonly meta: WorkflowDefinitionMeta;
   readonly nodes: readonly WorkflowNode[];
 }
+
+/**
+ * `cel-legacy` is `cel-js` 0.8.2; `cel-v2` is `@marcbachmann/cel-js` 8. Only
+ * the name lives here: this package never loads an engine (docs/24 §2.5).
+ */
+export type WorkflowExpressionDialect = 'cel-legacy' | 'cel-v2';
 
 export interface WorkflowDefinitionMeta {
   readonly diagramVersion?: string;
