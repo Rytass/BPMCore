@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  FormDataSourceBinding,
+  FormDataSourceBindingSource,
   FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
@@ -121,6 +123,85 @@ const RECOVERABLE_ERROR_CODES: readonly FormDataSourceErrorCode[] = [
   'FORM_DATA_SOURCE_SEARCH_TOO_SHORT',
 ];
 
+interface BindingRefreshScope {
+  readonly formData: FormRendererValues;
+  /** The form key holding this field's own value: never a dependency of it. */
+  readonly ownFormKey: string | null;
+  /** The row key holding this cell's own value, inside a table. */
+  readonly ownRowKey: string | null;
+  readonly rowValues: FormRendererValues | undefined;
+}
+
+/**
+ * The form key this field's own value lives under: the field itself at the top
+ * level, the table for a cell (`<tableKey>.<columnKey>` schema path, ADR 16
+ * §3.3). Leaving it out keeps picking a value from re-querying the options.
+ */
+function readOwnFormKey(
+  fieldKey: string,
+  input: UseFormDataSourceFieldInput,
+): string | null {
+  if (!input.row) {
+    return fieldKey;
+  }
+
+  const separatorIndex = input.fieldPath?.indexOf('.') ?? -1;
+
+  return input.fieldPath && separatorIndex > 0
+    ? input.fieldPath.slice(0, separatorIndex)
+    : null;
+}
+
+function omitKey(
+  values: FormRendererValues,
+  key: string | null,
+): FormRendererValues {
+  return key === null
+    ? values
+    : Object.fromEntries(
+        Object.entries(values).filter(([candidate]) => candidate !== key),
+      );
+}
+
+/**
+ * What one binding feeds its parameter from, for the refresh signature. An
+ * `EXPRESSION` is evaluated only by the backend, which never tells the browser
+ * what it reads, so the whole form (and row) stands in for its dependencies;
+ * the signature then changes whenever anything it could read does. A source
+ * kind this version does not know is listed as such and never read.
+ */
+function readBindingRefreshInput(
+  binding: FormDataSourceBinding,
+  scope: BindingRefreshScope,
+): unknown {
+  const from: FormDataSourceBindingSource = binding.from;
+
+  switch (from.kind) {
+    case 'FIELD':
+      return { fieldKey: from.fieldKey, value: scope.formData[from.fieldKey] };
+    case 'CONSTANT':
+      return { value: from.value };
+    case 'ROW_FIELD':
+      return {
+        columnKey: from.columnKey,
+        value: scope.rowValues?.[from.columnKey],
+      };
+    case 'EXPRESSION':
+      return {
+        expression: from.expression,
+        form: omitKey(scope.formData, scope.ownFormKey),
+        row: scope.rowValues ? omitKey(scope.rowValues, scope.ownRowKey) : null,
+      };
+    default:
+      return readUnknownBindingRefreshInput(from);
+  }
+}
+
+function readUnknownBindingRefreshInput(from: never): unknown {
+  void from;
+  return { unsupported: true };
+}
+
 export function useFormDataSourceField(
   input: UseFormDataSourceFieldInput,
 ): FormDataSourceFieldState {
@@ -175,17 +256,12 @@ export function useFormDataSourceField(
   const dataSourceRefreshSignature = dynamicField
     ? JSON.stringify({
         bindings: dynamicField.dataSource.bindings.map((binding) =>
-          binding.from.kind === 'FIELD'
-            ? {
-                fieldKey: binding.from.fieldKey,
-                value: input.formData[binding.from.fieldKey],
-              }
-            : binding.from.kind === 'CONSTANT'
-              ? { value: binding.from.value }
-              : {
-                  columnKey: binding.from.columnKey,
-                  value: input.row?.values[binding.from.columnKey],
-                },
+          readBindingRefreshInput(binding, {
+            formData: input.formData,
+            ownFormKey: readOwnFormKey(dynamicField.fieldKey, input),
+            ownRowKey: input.row ? dynamicField.fieldKey : null,
+            rowValues: input.row?.values,
+          }),
         ),
         value:
           typeof input.initialFormData !== 'undefined' ||
@@ -244,6 +320,33 @@ export function useFormDataSourceField(
             ) !==
             readFormDataSourceValueSignature(
               input.row.values[binding.from.columnKey],
+            )
+          );
+        }
+
+        // The browser cannot tell which fields an expression reads (it never
+        // parses CEL, docs/24 §2.5), so any change to the rest of the form or
+        // row may have changed its value: the kept value is re-resolved.
+        if (binding.from.kind === 'EXPRESSION') {
+          const scope = {
+            ownFormKey: readOwnFormKey(dynamicField.fieldKey, input),
+            ownRowKey: input.row ? dynamicField.fieldKey : null,
+          };
+
+          return (
+            JSON.stringify(
+              readBindingRefreshInput(binding, {
+                ...scope,
+                formData: input.initialFormData ?? {},
+                rowValues: input.row?.initialValues ?? input.row?.values,
+              }),
+            ) !==
+            JSON.stringify(
+              readBindingRefreshInput(binding, {
+                ...scope,
+                formData: input.formData,
+                rowValues: input.row?.values,
+              }),
             )
           );
         }

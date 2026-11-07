@@ -6,6 +6,7 @@ import {
   FormFieldValue,
   TableColumnDefinition,
   TableFieldDefinition,
+  isFormDataSourceBindingKind,
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
@@ -227,13 +228,35 @@ export function readFormDataSourceBindingValue(
 
 export type FormDataSourceBindingValueKind =
   | 'CONSTANT'
+  | 'EXPRESSION'
   | 'FIELD'
   | 'ROW_FIELD';
 
+/**
+ * The binding's source kind, or `null` when there is none or it is one this
+ * version does not know (a schema saved by a newer one): callers then show
+ * the binding as unusable rather than as some other kind.
+ */
 export function readFormDataSourceBindingValueKind(
   binding: FormDataSourceBinding | null,
 ): FormDataSourceBindingValueKind | null {
-  return binding?.from.kind ?? null;
+  const kind: unknown = binding?.from.kind;
+
+  return isFormDataSourceBindingKind(kind) ? kind : null;
+}
+
+/**
+ * The expression text of an `EXPRESSION` binding, as written. The browser only
+ * edits it as text: it is never parsed or evaluated here (docs/24 §2.5); the
+ * backend lint and every runtime query work from the stored schema.
+ */
+export function readFormDataSourceBindingExpression(
+  field: FormDataSourceOptionFieldDefinition,
+  parameterKey: string,
+): string | undefined {
+  const binding = readFormDataSourceBinding(field, parameterKey);
+
+  return binding?.from.kind === 'EXPRESSION' ? binding.from.expression : undefined;
 }
 
 /**

@@ -13,6 +13,11 @@ import {
 } from './workflow-webhook-delivery.enums';
 import { WorkflowWebhookFrozenEvent } from './workflow-webhook-delivery.entity';
 import {
+  maskNotifyWebhookExpressionSources,
+  NotifyWebhookAnyBindingSource,
+  NotifyWebhookExpressionEvaluator,
+} from './workflow-webhook-expression';
+import {
   BPMWorkflowWebhookEndpointEntry,
   BPMWorkflowWebhookParameter,
 } from './workflow-webhook.types';
@@ -59,17 +64,28 @@ export interface WorkflowWebhookDeliveryDraft {
  */
 export async function buildWorkflowWebhookDeliveryDrafts({
   context,
+  expressions,
   resolveEndpoint,
   targets,
 }: {
   readonly context: WorkflowWebhookEnqueueContext;
+  /**
+   * Evaluates `EXPRESSION` sources (ADR 22 §3.7), one budget for the whole
+   * node. Absent: an `EXPRESSION` binding cannot be evaluated and its target
+   * is recorded `FAILED`.
+   */
+  readonly expressions?: NotifyWebhookExpressionEvaluator;
   readonly resolveEndpoint: (
     key: string,
     version: number,
   ) => Promise<BPMWorkflowWebhookEndpointEntry | null>;
   readonly targets: unknown;
 }): Promise<readonly WorkflowWebhookDeliveryDraft[]> {
-  const issues = readNotifyWebhookStructureIssues(targets);
+  // The shared structural lint does not know `EXPRESSION` sources yet; they
+  // are checked here and by the evaluator, everything else by the lint.
+  const issues = readNotifyWebhookStructureIssues(
+    maskNotifyWebhookExpressionSources(targets),
+  );
 
   // The snapshot passed publish, so this only guards against a definition
   // written around the lint. A malformed list has nothing safe to deliver.
@@ -102,6 +118,7 @@ export async function buildWorkflowWebhookDeliveryDrafts({
             target.bindings,
             entry.endpoint.descriptor.parameters,
             context,
+            expressions,
           )
         : { issue: null, values: {} };
       const failure = lookup.lookupFailed
@@ -159,24 +176,49 @@ export async function buildWorkflowWebhookDeliveryDrafts({
   );
 }
 
+/** A binding as stored: its source may be an `EXPRESSION` too. */
+type StoredNotifyWebhookBinding = Omit<NotifyWebhookBinding, 'from'> & {
+  readonly from: NotifyWebhookAnyBindingSource;
+};
+
+type BindingValueOutcome =
+  | { readonly issue: null; readonly value: unknown }
+  | { readonly issue: string; readonly value: null };
+
 function resolveParameters(
-  bindings: readonly NotifyWebhookBinding[],
+  bindings: readonly StoredNotifyWebhookBinding[],
   declared: readonly BPMWorkflowWebhookParameter[],
   context: WorkflowWebhookEnqueueContext,
+  expressions: NotifyWebhookExpressionEvaluator | undefined,
 ): {
   readonly issue: string | null;
   readonly values: Readonly<Record<string, unknown>>;
 } {
-  const resolved = declared.flatMap((parameter) => {
+  const outcomes = declared.flatMap((parameter) => {
     const binding = bindings.find(
       (candidate) => candidate.parameter === parameter.key,
     );
 
     return binding
-      ? [{ parameter, value: readBindingValue(binding, context) }]
+      ? [
+          {
+            outcome: readBindingValue(binding, context, expressions),
+            parameter,
+          },
+        ]
       : [];
   });
+  const resolved = outcomes.map(({ outcome, parameter }) => ({
+    parameter,
+    value: outcome.value,
+  }));
+  // An expression that produced nothing fails the delivery like a value that
+  // does not fit: recorded `WEBHOOK_PARAMETER_INVALID`, never a rollback.
+  const expressionIssue =
+    outcomes.find(({ outcome }) => outcome.issue !== null)?.outcome.issue ??
+    null;
   const issue =
+    expressionIssue ??
     declared
       .map((parameter): string | null => {
         const match = resolved.find(
@@ -203,26 +245,59 @@ function resolveParameters(
   };
 }
 
+/**
+ * The value one binding sends. Exhaustive: a source kind this version does not
+ * know fails the delivery rather than being read as another kind.
+ */
 function readBindingValue(
-  binding: NotifyWebhookBinding,
+  binding: StoredNotifyWebhookBinding,
   context: WorkflowWebhookEnqueueContext,
-): unknown {
+  expressions: NotifyWebhookExpressionEvaluator | undefined,
+): BindingValueOutcome {
   const from = binding.from;
 
-  if (from.kind === 'CONSTANT') {
-    return from.value;
-  }
+  switch (from.kind) {
+    case 'CONSTANT':
+      return { issue: null, value: from.value };
+    case 'FIELD':
+      return {
+        issue: null,
+        value: Object.prototype.hasOwnProperty.call(
+          context.instance.formData,
+          from.fieldKey,
+        )
+          ? (context.instance.formData[from.fieldKey] ?? null)
+          : null,
+      };
+    case 'CONTEXT':
+      return { issue: null, value: readContextValue(from.path, context) };
+    case 'EXPRESSION': {
+      const outcome = expressions
+        ? expressions.evaluate(from.expression, context.instance.formData)
+        : ({ code: 'EXPRESSION_UNAVAILABLE', ok: false } as const);
 
-  if (from.kind === 'FIELD') {
-    return Object.prototype.hasOwnProperty.call(
-      context.instance.formData,
-      from.fieldKey,
-    )
-      ? (context.instance.formData[from.fieldKey] ?? null)
-      : null;
+      // Only the parameter key and the code: never the expression or a value.
+      return outcome.ok
+        ? { issue: null, value: outcome.value }
+        : {
+            issue: `parameter "${binding.parameter}" expression failed (${outcome.code})`,
+            value: null,
+          };
+    }
+    default:
+      return rejectUnknownSource(binding.parameter, from);
   }
+}
 
-  return readContextValue(from.path, context);
+function rejectUnknownSource(
+  parameter: string,
+  from: never,
+): BindingValueOutcome {
+  void from;
+  return {
+    issue: `parameter "${parameter}" has an unsupported source`,
+    value: null,
+  };
 }
 
 function readContextValue(

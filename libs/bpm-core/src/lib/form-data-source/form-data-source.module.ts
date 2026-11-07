@@ -6,6 +6,7 @@ import {
   Provider,
 } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConditionModule } from '../condition/condition.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
@@ -43,6 +44,9 @@ export class FormDataSourceModule {
       imports: [
         ...(options.imports ?? []),
         WorkflowEngineModule,
+        // `EXPRESSION` bindings are linted and evaluated by the shared
+        // `ConditionService`, with the host's function registry.
+        ConditionModule,
         TypeOrmModule.forFeature([
           ApprovalTemplateVersionEntity,
           FormDefinitionVersionEntity,

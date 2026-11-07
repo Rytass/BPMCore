@@ -1,23 +1,23 @@
-import { createHash } from 'node:crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshot,
   FormDataSourceValueSnapshots,
   FormFieldOption,
-  FormFieldValue,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
+import { ConditionService } from '../condition/condition.service';
+import { runExpressionOperation } from '../condition/expression-budget';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
 } from './form-data-source.errors';
+import { createFormDataSourceExpressionEvaluator } from './form-data-source.expression';
 import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
-  BPMFormDataSourceDescriptor,
   BPMFormDataSourceRegistry,
   BPMFormDataSourceResolveFieldInput,
   BPMFormDataSourceSnapshotResolutionInput,
@@ -28,6 +28,7 @@ import {
   assertDescriptor,
   callProvider,
   isRecord,
+  readBindingHash,
   readBindingValues,
   readDynamicOptionField,
   readMissingSourceCode,
@@ -53,11 +54,34 @@ export class FormDataSourceValueResolverService
   constructor(
     @Inject(BPM_FORM_DATA_SOURCE_REGISTRY)
     private readonly registry: BPMFormDataSourceRegistry,
+    // Evaluates `EXPRESSION` bindings with the host's function registry, the
+    // same service the publish lint uses. Optional so a host that builds this
+    // resolver by hand keeps working; without it an `EXPRESSION` binding
+    // fails closed as `INVALID_BINDING`.
+    @Optional()
+    private readonly conditionService?: ConditionService | null,
   ) {}
 
-  async resolveFormDataOptionSnapshots(
+  /**
+   * One submit is one expression operation: every `EXPRESSION` binding of
+   * every field and table row shares one cumulative budget (ADR 22 §3.2,
+   * §3.7). Running out is `FORM_DATA_SOURCE_TIMEOUT`, thrown before the
+   * engine opens its transaction, so no instance is written.
+   */
+  resolveFormDataOptionSnapshots(
     input: BPMFormDataSourceSnapshotResolutionInput,
   ): Promise<FormDataSourceValueSnapshots> {
+    return runExpressionOperation(() =>
+      this.resolveFormDataOptionSnapshotsInOperation(input),
+    );
+  }
+
+  private async resolveFormDataOptionSnapshotsInOperation(
+    input: BPMFormDataSourceSnapshotResolutionInput,
+  ): Promise<FormDataSourceValueSnapshots> {
+    const expressions = createFormDataSourceExpressionEvaluator({
+      conditionService: this.conditionService,
+    });
     // One work item per dynamic value to resolve, top-level fields and table
     // cells alike. Flattening first keeps the concurrency limit a per-submit
     // budget rather than a per-field one, so a 100-row table does not turn one
@@ -116,6 +140,7 @@ export class FormDataSourceValueResolverService
           descriptor,
           input.formData,
           rowValues,
+          expressions,
         );
 
         if (bindings.missingParameters.length > 0) {
@@ -124,7 +149,7 @@ export class FormDataSourceValueResolverService
           );
         }
 
-        const bindingHash = hashBindings(descriptor, bindings.values);
+        const bindingHash = readBindingHash(descriptor, bindings.values);
         const canReuseSnapshot =
           !input.revalidateAll &&
           descriptor.revalidationPolicy === 'WHEN_VALUE_OR_BINDINGS_CHANGE' &&
@@ -180,7 +205,17 @@ export class FormDataSourceValueResolverService
    * resolve query reports partial results instead, and must never share this
    * path — a half-resolved field cannot be written into an instance.
    */
-  async resolveFormFieldOptions(
+  resolveFormFieldOptions(
+    input: BPMFormDataSourceResolveFieldInput,
+  ): Promise<readonly FormFieldOption[]> {
+    // Joins the submit's operation when called from it, so a field's
+    // expressions are not given a second budget.
+    return runExpressionOperation(() =>
+      this.resolveFormFieldOptionsInOperation(input),
+    );
+  }
+
+  private async resolveFormFieldOptionsInOperation(
     input: BPMFormDataSourceResolveFieldInput,
   ): Promise<readonly FormFieldOption[]> {
     const field = readDynamicOptionField(input.field);
@@ -195,6 +230,9 @@ export class FormDataSourceValueResolverService
       source.descriptor,
       input.formData,
       input.rowValues,
+      createFormDataSourceExpressionEvaluator({
+        conditionService: this.conditionService,
+      }),
     );
 
     if (bindings.missingParameters.length > 0) {
@@ -408,26 +446,6 @@ function readDynamicFieldValues(
   }
 
   return [value];
-}
-
-function hashBindings(
-  descriptor: BPMFormDataSourceDescriptor,
-  values: Readonly<Record<string, FormFieldValue>>,
-): string {
-  const orderedValues = descriptor.parameters.map((parameter) => [
-    parameter.key,
-    readOwnProperty(values, parameter.key) ?? null,
-  ]);
-
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        dataSourceKey: descriptor.key,
-        dataSourceVersion: descriptor.version,
-        values: orderedValues,
-      }),
-    )
-    .digest('hex');
 }
 
 function isSameFieldValue(left: unknown, right: unknown): boolean {

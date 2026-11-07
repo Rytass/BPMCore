@@ -138,6 +138,46 @@ describe('useFormDataSourceField', () => {
     expect(harness.current().options).toEqual([{ label: 'A', value: 'A' }]);
   });
 
+  it('re-queries an EXPRESSION binding whenever another field changes, never its own value', async (): Promise<void> => {
+    // The browser cannot know what an expression reads (docs/24 §2.5), so any
+    // other field stands in for its dependencies; the field's own selection
+    // is not one of them.
+    const field = createField('select', [
+      {
+        from: { expression: 'form.plant', kind: 'EXPRESSION' },
+        parameter: 'plant',
+      },
+    ]);
+    previewOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    const input: UseFormDataSourceFieldInput = {
+      context: { kind: 'preview' },
+      field,
+      formData: { plant: 'TW01' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    };
+    const harness = mountHookHarness(input);
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(previewOptionsMock).toHaveBeenCalledTimes(1);
+
+    await harness.rerender({ ...input, formData: { plant: 'TW02' } });
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+    // Only the form values travel; the expression is read from the schema by
+    // the backend, never sent as a parameter.
+    expect(JSON.stringify(previewOptionsMock.mock.calls[1])).toContain('TW02');
+
+    await harness.rerender({
+      ...input,
+      formData: { choice: 'A', plant: 'TW02' },
+    });
+    await flushAsync();
+    await flushAsync();
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+  });
+
   it('supersedes an older search response', async (): Promise<void> => {
     const field = createField('autocomplete');
     let resolveFirst: ((result: FormDataSourceOptionsResultRecord) => void) | null =

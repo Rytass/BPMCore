@@ -69,6 +69,7 @@ const FORM_IDS = {
   ACCESS: '30000000-0000-4000-8000-000000000003',
   DISCOUNT: '30000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '30000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_EXPRESSION: '30000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_OPTIONAL: '30000000-0000-4000-8000-000000000007',
   EXPENSE: '30000000-0000-4000-8000-000000000001',
   LEAVE: '30000000-0000-4000-8000-000000000002',
@@ -79,6 +80,7 @@ const FORM_IDS = {
 const FORM_VERSION_IDS = {
   ACCESS_V1: '31000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '31000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_EXPRESSION_V1: '31000000-0000-4000-8000-000000000011',
   DYNAMIC_OPTIONS_OPTIONAL_V1: '31000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '31000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '31000000-0000-4000-8000-000000000006',
@@ -93,6 +95,7 @@ const TEMPLATE_IDS = {
   ACCESS: '50000000-0000-4000-8000-000000000003',
   DISCOUNT: '50000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '50000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_EXPRESSION: '50000000-0000-4000-8000-000000000011',
   DYNAMIC_OPTIONS_OPTIONAL: '50000000-0000-4000-8000-000000000007',
   EXPENSE: '50000000-0000-4000-8000-000000000001',
   LEAVE: '50000000-0000-4000-8000-000000000002',
@@ -105,6 +108,7 @@ const TEMPLATE_IDS = {
 const TEMPLATE_VERSION_IDS = {
   ACCESS_V1: '51000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '51000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_EXPRESSION_V1: '51000000-0000-4000-8000-000000000013',
   DYNAMIC_OPTIONS_OPTIONAL_V1: '51000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '51000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '51000000-0000-4000-8000-000000000006',
@@ -473,6 +477,58 @@ const DYNAMIC_OPTIONS_FORM_SCHEMA = {
 } as const;
 
 /**
+ * Phase 23 P5: a cost center whose `plant` parameter is computed by an
+ * `EXPRESSION` binding (ADR 22 §3.7) from two fields, so changing either one
+ * re-queries the options. Charging another plant swaps TW01 and TW02.
+ * Evaluated only by the backend, from this stored schema.
+ */
+const DYNAMIC_OPTIONS_EXPRESSION_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'plant',
+      label: '申請廠別',
+      options: [
+        { label: '台中廠 TW01', value: 'TW01' },
+        { label: '台北廠 TW02', value: 'TW02' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      fieldKey: 'chargeTo',
+      label: '費用負擔',
+      options: [
+        { label: '本廠負擔', value: 'SELF' },
+        { label: '由另一廠負擔', value: 'OTHER' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: {
+              expression:
+                'form.chargeTo == "OTHER" ? (form.plant == "TW01" ? "TW02" : "TW01") : form.plant',
+              kind: 'EXPRESSION',
+            },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'chargedCostCenter',
+      label: '負擔成本中心',
+      required: true,
+      type: 'select',
+    },
+  ],
+  schemaVersion: 1,
+} as const;
+
+/**
  * Companion form for `demo.cost-centers-optional-filter@1`. `costCategory` is an
  * optional field bound to the source's optional `category` parameter, so the
  * dynamic controls must stay usable while it is empty. `projectCostCenterNote`
@@ -626,6 +682,15 @@ const DYNAMIC_OPTIONS_FORM_UI_SCHEMA = {
     { fieldKey: 'costCenterAutocompleteMultiple', width: 'HALF' },
     { fieldKey: 'costCenterRadio', width: 'HALF' },
     { fieldKey: 'costCenterCheckbox', width: 'HALF' },
+  ],
+  schemaVersion: 1,
+} as const;
+
+const DYNAMIC_OPTIONS_EXPRESSION_FORM_UI_SCHEMA = {
+  layout: [
+    { fieldKey: 'plant', width: 'HALF' },
+    { fieldKey: 'chargeTo', width: 'HALF' },
+    { fieldKey: 'chargedCostCenter', width: 'FULL' },
   ],
   schemaVersion: 1,
 } as const;
@@ -1694,6 +1759,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         'member-101',
       ),
       formDefinitionRow(
+        FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        '跨廠成本中心申請單（表達式）',
+        '用 EXPRESSION binding 由申請廠別與費用負擔計算 plant 參數。',
+        'member-101',
+      ),
+      formDefinitionRow(
         FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
         '專案成本中心申請單',
         '用 optional category parameter 驗證未填相依欄位時仍可查詢選項。',
@@ -1814,6 +1885,17 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         null,
       ),
       formVersionRow(
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_EXPRESSION_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_EXPRESSION_FORM_UI_SCHEMA,
+        '2026-11-07T03:00:00.000Z',
+        'member-101',
+        null,
+      ),
+      formVersionRow(
         FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
         FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
         1,
@@ -1879,6 +1961,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     'form_definitions',
     FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+    FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
   );
   await updateCurrentVersion(
     queryRunner,
@@ -2012,6 +2100,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         TEMPLATE_IDS.DYNAMIC_OPTIONS,
         '動態成本中心申請',
         '用 host-owned DataSource 驗證相依選項與歷史 snapshot。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
+      templateRow(
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        '跨廠成本中心申請（表達式）',
+        '用 EXPRESSION binding 驗證依賴欄位變更、重新查詢與退回重送。',
         '採購請款',
         CATEGORY_IDS.FINANCE,
         'member-101',
@@ -2157,6 +2253,17 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         null,
       ),
       templateVersionRow(
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        '2026-11-07T04:00:00.000Z',
+        'member-101',
+        null,
+      ),
+      templateVersionRow(
         TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
         TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
         1,
@@ -2236,6 +2343,12 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     'approval_templates',
     TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+    TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
   );
   await updateCurrentVersion(
     queryRunner,

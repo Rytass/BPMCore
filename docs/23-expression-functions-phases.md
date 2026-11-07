@@ -19,7 +19,7 @@
 | P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | IMPLEMENTED（實機 gate 通過） |
 | P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTED（P2 整合完成；實機 gate 通過） |
 | P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | IMPLEMENTED（自動化測試通過；實機 gate 待驗） |
-| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | PLANNED |
+| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | IMPLEMENTED（程式與測試完成；實機 gate 與 P4 整合待做） |
 
 ## 獨立安全修補（不依賴本功能，建議先做）
 
@@ -440,3 +440,17 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 - 測試：瀏覽器送入的 expression 或 binding 被忽略。
 - 測試：預算耗盡時回傳既有 `UNAVAILABLE` 語意，不寫入 instance。
 - 實機：以 wrapper host 的 `demo.cost-centers` 驗證依賴欄位變更與重新送出。
+
+**狀態（2026-11-07）**：IMPLEMENTED（程式與測試）。實機 gate 尚未跑；NOTIFY webhook 的 `EXPRESSION` 要等 P4 整合 shared 結構 lint 後才能發布。
+
+- 評估：DataSource 的 `EXPRESSION` 在 `form-data-source.validation.ts` 的 `readBindingValues` 內評估，search、resolve、submit 共用同一個 evaluator（`form-data-source.expression.ts`）；
+  一律 cel-v2、root `form`（表格欄另加 `row`）、只允許內建函式、走注入 registry 的 `ConditionService`。依賴欄位缺值時不呼叫引擎，回 WAITING 並指出缺的欄位。
+  執行期 root 依位置收窄、與發布 lint 一致：只有表格欄帶列值（瀏覽器沒送時為空物件），頂層欄位不帶，`row` 不是 root；頂層欄位的已存 expression 若讀 `row`（繞過 lint 寫入）直接 `INVALID_BINDING`，不等待也不讀瀏覽器送的 `rowValuesJson`（獨立驗證發現，2026-11-07 修正）。
+- 預算：每次 search、resolve、submit 各是一個 `runExpressionOperation`（submit 在引擎外層已有 operation 時共用），耗盡回既有 `FORM_DATA_SOURCE_TIMEOUT`，不新增錯誤碼，不寫 instance。
+- `bindingHash` 只雜湊參數值，序列化位元組不變（golden fixture：`form-data-source.validation.hash.spec.ts`）。
+- 未知的 binding 來源 kind 一律 `FORM_DATA_SOURCE_INVALID_BINDING`（以前會落到 `ROW_FIELD` 分支）；builder 顯示「不支援的來源」，不改寫它。
+- 靜態依賴：`EXPRESSION` 讀到的 `form`／`row` 欄位計入循環檢查與 hidden 欄位規則；發布 lint 附 `EXPR_*` 行（`schema.fields[i](.columns[j]).dataSource.bindings[k].from.expression: <code>`）。
+- Webhook：NOTIFY 的 `EXPRESSION` 在引擎交易內以獨立預算評估，失敗記 `FAILED`（`WEBHOOK_PARAMETER_INVALID`，細節只含錯誤碼），不回滾審批。
+- 測試：`form-data-source.expression.real-engine.spec.ts`（三路徑一致、瀏覽器送入的 expression 被忽略、預算耗盡、lint、循環）、`workflow-webhook-expression.real-engine.spec.ts`、`workflow-engine.service.spec.ts`（TIMEOUT 時不寫 instance）。
+- 示範：`pnpm demo:reset` 會建立「跨廠成本中心申請（表達式）」，`chargedCostCenter` 的 `plant` 參數以 `form.chargeTo == "OTHER" ? (form.plant == "TW01" ? "TW02" : "TW01") : form.plant` 綁定 `demo.cost-centers`。
+- 整合待辦（P4 檔案）：`workflow-graph.ts` 的 NOTIFY 結構與 catalog lint 要認得 `EXPRESSION`；`template.service.ts` 要把 `conditionService` 傳給 `lintWorkflowWebhookTargets`；`workflow-lint-errors.ts` 的逐碼中文訊息供 builder 使用。

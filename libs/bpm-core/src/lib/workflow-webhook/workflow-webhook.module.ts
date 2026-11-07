@@ -6,6 +6,7 @@ import {
   Provider,
 } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConditionModule } from '../condition/condition.module';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { DatabaseWorkflowWebhookEndpointSource } from './workflow-webhook-database-source';
 import { WorkflowWebhookDeliverySchedulerService } from './workflow-webhook-delivery-scheduler.service';
@@ -50,6 +51,9 @@ export class WorkflowWebhookModule {
       global: true,
       imports: [
         ...(options.imports ?? []),
+        // `EXPRESSION` bindings are linted and evaluated by the shared
+        // `ConditionService`, with the host's function registry.
+        ConditionModule,
         TypeOrmModule.forFeature([
           ActivityLogEntity,
           WorkflowWebhookDeliveryEntity,
