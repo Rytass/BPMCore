@@ -187,7 +187,9 @@ describe('applyWorkflowCommand', () => {
       (edge) => edge.id === gatewayOutEdge?.id,
     );
 
-    expect(updatedEdge?.data.condition).toBe('form.amount > 1000');
+    expect(updatedEdge?.data.condition).toBe(
+      'has(form.amount) && (form.amount != null && (form.amount != "" && form.amount > 1000))',
+    );
     expect(updatedEdge?.data.isDefault).toBe(false);
   });
 
@@ -232,7 +234,7 @@ describe('applyWorkflowCommand', () => {
     );
 
     expect(updatedEdge?.data.condition).toBe(
-      'form.tags != null && "urgent" in form.tags',
+      'has(form.tags) && (form.tags != null && "urgent" in form.tags)',
     );
     expect(updatedEdge?.data.conditionOperator).toBe('EQUALS');
     expect(updatedEdge?.data.label).toBe('標籤 包含 急件');

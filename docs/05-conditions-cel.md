@@ -61,6 +61,30 @@ lastDecision != null && lastDecision.action == 'RETURNED'
 - 委派條件的 `principal` 只有 `memberId`。委派條件沒有 `subject`、`task`、`template` 根，
   要用模板時請改用 `instance.templateId`。
 
+### 2.1 缺 key 與設計器編出的 edge 條件
+
+`form` 就是送出的 `formData` 原樣，用戶端以 `JSON.stringify` 送出，所以選填欄位**沒碰過就沒有 key**
+（不是 `null`）。`cel-js` 讀到不存在的 key 會丟 `Identifier "x" not found in context`，整張單送不出去；
+`!= null` 只擋 `null`，擋不了缺 key。手寫表達式請用 `has(form.x)` 防護。
+
+流程設計器（`readConditionExpression`）為識別字 key（`form.x`）編出的條件已內建守衛：缺 key 或 `null`
+都視為「未填」，已填寫／等於／大小比較回 `false`，未填寫／不等於回 `true`，不會丟例外。例：
+
+```cel
+has(form.agent) && (form.agent != null && form.agent != "")              // 已填寫
+!(has(form.agent) && (form.agent != null && form.agent != ""))           // 未填寫
+has(form.amount) && (form.amount != null && (form.amount != "" && form.amount > 5))
+```
+
+兩個 `cel-js` 0.8.2 的限制決定了寫法，手寫時一樣適用：
+
+- `||` 不短路：`!has(form.x) || form.x == ""` 在缺 key 時右側照樣評估而丟例外。要表達「沒有」就用受守衛的
+  `&&` 再取否定。
+- 只有攤平 `a && b && c` 的**第一個**運算元會短路（`true && false && <會丟例外>` 仍丟例外），所以守衛要
+  右向巢狀：`a && (b && c)`。
+
+`has()` 只接受欄位選取，不能守衛非識別字 key（`form["a-b"]`），這類 key 維持不加守衛的原本輸出。
+
 ---
 
 ## 3. Shared Context Types

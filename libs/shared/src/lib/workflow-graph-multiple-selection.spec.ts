@@ -64,16 +64,16 @@ const MULTI_FIELDS: readonly (readonly [string, FormFieldDefinition])[] = [
 describe('multiple-selection condition expressions (string shape)', () => {
   it.each(MULTI_FIELDS)('%s compiles list semantics', (_name, field): void => {
     expect(readConditionExpression(field, 'EQUALS', 'A')).toBe(
-      'form.x != null && "A" in form.x',
+      'has(form.x) && (form.x != null && "A" in form.x)',
     );
     expect(readConditionExpression(field, 'NOT_EQUALS', 'A')).toBe(
-      '!(form.x != null && "A" in form.x)',
+      '!(has(form.x) && (form.x != null && "A" in form.x))',
     );
     expect(readConditionExpression(field, 'IS_FILLED', undefined)).toBe(
-      'form.x != null && form.x != []',
+      'has(form.x) && (form.x != null && form.x != [])',
     );
     expect(readConditionExpression(field, 'IS_EMPTY', undefined)).toBe(
-      'form.x == null || form.x == []',
+      '!(has(form.x) && (form.x != null && form.x != []))',
     );
   });
 
@@ -104,16 +104,16 @@ describe('multiple-selection condition expressions (string shape)', () => {
     '%s keeps the single-value expressions unchanged',
     (_name, field): void => {
       expect(readConditionExpression(field, 'EQUALS', 'A')).toBe(
-        'form.x == "A"',
+        'has(form.x) && (form.x != null && form.x == "A")',
       );
       expect(readConditionExpression(field, 'NOT_EQUALS', 'A')).toBe(
-        'form.x != "A"',
+        '!(has(form.x) && (form.x != null && form.x == "A"))',
       );
       expect(readConditionExpression(field, 'IS_FILLED', undefined)).toBe(
-        'form.x != null && form.x != ""',
+        'has(form.x) && (form.x != null && form.x != "")',
       );
       expect(readConditionExpression(field, 'IS_EMPTY', undefined)).toBe(
-        'form.x == null || form.x == ""',
+        '!(has(form.x) && (form.x != null && form.x != ""))',
       );
     },
   );
@@ -183,6 +183,7 @@ const SINGLE_SHAPES: Readonly<
   Record<string, Readonly<Record<string, unknown>>>
 > = {
   a: { x: 'A' },
+  absent: {},
   b: { x: 'B' },
   empty: { x: '' },
   null: { x: null },
@@ -197,12 +198,40 @@ const OPERATORS: readonly WorkflowEdgeConditionOperator[] = [
 
 // operator -> shape -> expected, for the value "A".
 const EXPECTED_MULTI: Readonly<
-  Record<string, Readonly<Record<Exclude<Shape, 'absent'>, boolean>>>
+  Record<string, Readonly<Record<Shape, boolean>>>
 > = {
-  EQUALS: { a: true, ab: true, b: false, empty: false, null: false },
-  IS_EMPTY: { a: false, ab: false, b: false, empty: true, null: true },
-  IS_FILLED: { a: true, ab: true, b: true, empty: false, null: false },
-  NOT_EQUALS: { a: false, ab: false, b: true, empty: true, null: true },
+  EQUALS: {
+    a: true,
+    ab: true,
+    absent: false,
+    b: false,
+    empty: false,
+    null: false,
+  },
+  IS_EMPTY: {
+    a: false,
+    ab: false,
+    absent: true,
+    b: false,
+    empty: true,
+    null: true,
+  },
+  IS_FILLED: {
+    a: true,
+    ab: true,
+    absent: false,
+    b: true,
+    empty: false,
+    null: false,
+  },
+  NOT_EQUALS: {
+    a: false,
+    ab: false,
+    absent: true,
+    b: true,
+    empty: true,
+    null: true,
+  },
 };
 
 describe('multiple-selection condition expressions under cel-js', () => {
@@ -237,13 +266,15 @@ describe('multiple-selection condition expressions under cel-js', () => {
     ).not.toContain('THROW');
   });
 
-  it('throws on an absent key, as every expression shape already does', () => {
-    // An absent key makes cel-js throw "Identifier not found" for every
-    // expression shape, single-value ones included: not something this
-    // change introduces or could fix from the expression alone.
-    expect(OPERATORS.map((operator) => multi[`${operator}:absent`])).toEqual(
-      OPERATORS.map(() => 'THROW'),
-    );
+  it('never throws on an absent key, which a client omits when the field is untouched', () => {
+    // cel-js throws "Identifier not found" when it reads an absent key, so
+    // every expression is gated on has() first.
+    expect(
+      OPERATORS.map((operator) => multi[`${operator}:absent`]),
+    ).not.toContain('THROW');
+    expect(
+      OPERATORS.map((operator) => single[`${operator}:absent`]),
+    ).not.toContain('THROW');
   });
 
   it('control: the single-select expression gives the old answers', () => {
@@ -255,6 +286,10 @@ describe('multiple-selection condition expressions under cel-js', () => {
     expect(single['IS_FILLED:empty']).toBe(false);
     expect(single['IS_EMPTY:empty']).toBe(true);
     expect(single['IS_EMPTY:null']).toBe(true);
+    expect(single['EQUALS:absent']).toBe(false);
+    expect(single['NOT_EQUALS:absent']).toBe(true);
+    expect(single['IS_FILLED:absent']).toBe(false);
+    expect(single['IS_EMPTY:absent']).toBe(true);
   });
 
   it('control: the single-value expression is wrong on a list (the bug)', () => {
