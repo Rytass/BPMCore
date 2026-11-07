@@ -1,6 +1,6 @@
 # P5 細部設計：`EXPRESSION` binding（DataSource 與 webhook）
 
-- **狀態**：DESIGN（本文件為設計，尚未實作；未修改 repo 任何檔案）
+- **狀態**：已實作，以 [docs/24](../24-expression-functions-detailed-design.md) 為準；錯誤碼以 docs/24 §2 為準
 - **權威文件**：[ADR 22 §3.7](../../../../../../Repositories/BPMCore/docs/22-expression-functions-adr.md)、[Phase 23 P5](../../../../../../Repositories/BPMCore/docs/23-expression-functions-phases.md)
 - **部分取代**：ADR 14（DataSource binding 來源）、ADR 18（webhook binding 的「不支援 CEL」條款），僅限 §3.7 定義的受限形式
 - **相依**：P0（錯誤淨化、輸出正規化、預算）、P1（`cel-v2` 引擎與差異測試 lane）、P2（AST helper、依賴抽取、型別推論）、P3（host function，僅純函式）、P4（表達式編輯器元件、`previewExpression`、`expressionCatalog`）

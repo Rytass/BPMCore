@@ -1,6 +1,6 @@
 # 流程表達式 P0 + P1 細部設計：Runtime、預算、錯誤淨化與方言引擎
 
-- **狀態**：DESIGN（2026-11-07 完成設計，尚未實作）
+- **狀態**：已實作，以 [docs/24](../24-expression-functions-detailed-design.md) 為準；錯誤碼以 docs/24 §2 為準
 - **範圍**：[phases P0](../../../../../Repositories/BPMCore/docs/23-expression-functions-phases.md) 安全修補；P1 方言欄位與候選引擎 `cel-v2` 差異測試
 - **權威依據**：[ADR 22](../../../../../Repositories/BPMCore/docs/22-expression-functions-adr.md) §3.2（Runtime 單一入口、預算、輸出 walker、錯誤碼）、§3.3（方言欄位）、§3.4（AST lint，僅 P2）
 - **證據**：差異測試 `engine-spike/out/engine-diff.txt`（136 筆；SAME 87、DIFF 49）、`engine-spike/scripts/probe-*.mjs`、`jest-probe/`。以上皆在 repo 外的 `` 下。

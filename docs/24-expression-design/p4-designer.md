@@ -2,7 +2,7 @@
 
 - **對應文件**：[docs/23 — 流程表達式開發 Phase](docs/23-expression-functions-phases.md) §P4
 - **權威決策**：[docs/22 — ADR：流程表達式與宿主函式](docs/22-expression-functions-adr.md)（本文只引用已讀到的條文：§1.1、§3.1、§3.2、§3.7）
-- **狀態**：DESIGN（本文件僅為設計，未改動任何 repo 檔案）
+- **狀態**：已實作，以 [docs/24](../24-expression-functions-detailed-design.md) 為準；錯誤碼以 docs/24 §2 為準
 - **日期**：2026-11-07
 - **相依**：P3（宿主函式 registry，提供函式目錄的資料來源）；P0 的錯誤淨化與時間預算（preview 與 dry run 共用）
 - **先決條件（阻擋實作）**：docs/23 標註 P4 需「UI 設計稿」。本文沒有設計稿，所有版面都是「文字描述＋元件選型」，需設計確認（見 §12）。

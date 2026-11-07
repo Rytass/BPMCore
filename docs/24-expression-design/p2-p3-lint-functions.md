@@ -1,6 +1,6 @@
 # P2 / P3 細部設計：AST lint 與宿主函式
 
-- **狀態**：DESIGN（2026-11-07），尚未實作
+- **狀態**：已實作，以 [docs/24](../24-expression-functions-detailed-design.md) 為準；錯誤碼以 docs/24 §2 為準
 - **相依**：ADR 22（`docs/22-expression-functions-adr.md`）、Phase 文件（`docs/23-expression-functions-phases.md`）、P1 差異測試結果
 - **範圍**：P2（AST lint、schema 型別、lint 訊息、方言並存、已發布版本）與 P3（宿主函式 registry、`BPMRootModule` 選項、註冊與回傳驗證、內建函式、`apps/api` 示範、發布 lint）
 - **約束**：CEL only；dry run 維持 `@BPMAuthenticated()`；交易內一律使用傳入的 `EntityManager`，不另取連線；API contract 只增不減；UI 只用 `@mezzanine-ui/react`

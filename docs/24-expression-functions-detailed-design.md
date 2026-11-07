@@ -51,6 +51,13 @@ Ad-hoc webhook SSRF 不在這輪範圍（見 Phase 23 獨立安全修補）。
 - 函式失敗不被 `||`、`&&`、`exists` 吸收（§1 例外，2026-11-07 整合定案）：評估中只要有一次函式呼叫失敗，整次判 `EXPRESSION_FUNCTION_FAILED`；被短路而沒有執行的呼叫不算。
 - DataSource：不新增碼。預算耗盡對應 `FORM_DATA_SOURCE_TIMEOUT`，綁定型別不符對應既有 `INVALID_BINDING`。
 - Webhook binding：沿用 `WEBHOOK_PARAMETER_INVALID`，記 `FAILED`，不回滾。
+- 內部碼 `EXPRESSION_UNAVAILABLE`（2026-11-08 確認維持）：只在 NOTIFY webhook binding 的求值器
+  （`workflow-webhook-expression.ts` 的 `NotifyWebhookExpressionFailure`）出現，意思是宿主沒有接上 `ConditionService`，
+  所以根本沒有求值。這是設定錯誤，不是運算式失敗，六個碼都不適用（`EXPRESSION_FUNCTION_FAILED` 會怪到沒有被呼叫的函式，
+  `EXPRESSION_SYNTAX_ERROR` 會怪到沒有問題的式子）。它不是對外的錯誤碼：只寫進 delivery 的 `lastErrorDetail`
+  （`parameter "<key>" expression failed (EXPRESSION_UNAVAILABLE)`），delivery 照上一條記 `FAILED`、`WEBHOOK_PARAMETER_INVALID`。
+  DataSource 在同樣情況直接回既有的 `FORM_DATA_SOURCE_INVALID_BINDING`，不用這個碼。正式接線下不會出現（P4／P5 整合已修正
+  三個 binding 評估點的 DI，`bpm-root.module.boot.spec.ts` 驗證拿到同一個 registry）。
 
 ### 2.2 Lint 碼
 
@@ -61,7 +68,22 @@ Ad-hoc webhook SSRF 不在這輪範圍（見 Phase 23 獨立安全修補）。
 `EXPR_FIELD_TYPE_MISMATCH`、`EXPR_RESULT_TYPE_MISMATCH`、`EXPR_FUNCTION_NOT_REGISTERED`、`EXPR_FUNCTION_NOT_ALLOWED`。
 
 警告碼：`EXPR_OPTIONAL_FIELD_WITHOUT_HAS`、`EXPR_OR_ABSORBS_ERROR`、`EXPR_HAS_NESTED_PARENT`、
-`EXPR_APPROVER_READS_FORM`、`EXPR_HIDDEN_FIELD_COPIED`、`EXPR_DIVISOR_IS_FIELD`（除數是欄位，P1 P35；2026-11-07 整合定案補入）。
+`EXPR_APPROVER_READS_FORM`、`EXPR_HIDDEN_FIELD_COPIED`、`EXPR_DIVISOR_IS_FIELD`（除數是欄位，P1 P35；2026-11-07 整合定案補入）、
+`EXPR_LAST_DECISION_UNAVAILABLE`（P4 補入）。
+
+`EXPR_LAST_DECISION_UNAVAILABLE`：邊條件讀 `lastDecision`，但連線的來源節點不會產生決策（閘道、服務節點、開始事件），
+執行期 `lastDecision` 恆為 `null`（P2 實機發現）。它只由設計器的 `previewExpression` 與 `analyzeWorkflowExpressions`
+（`expression-designer.service.ts` 的 `readLastDecisionIssues`）產生，因為只有設計器知道邊的來源節點型別；
+發布 lint 不產生它，所以也不會出現在發布行。
+
+宿主與內建函式的引數型別（2026-11-08，實機發現後修正）：cel-v2 引擎簽章把 `int`／`double` 參數登記成 `dyn`（見 §2.5），
+`env.check()` 因此不擋 `demo_costBand_v1(form.title)`。現在 `env.check()` 通過後再逐一比對每個 registry 函式呼叫的引數
+checked type 與宣告的參數型別，明確不符時回 `EXPR_FIELD_TYPE_MISMATCH`（引數只讀一個欄位時 subject 是該欄位）；引數型別
+是 `dyn`（表格列的 cell、沒有綁表單）時不擋，留給執行期。發布、preview、`SET_FORM_FIELD`、binding 走同一條 lint。
+被容忍的比較（`form.x != null`、`!= ""`、`!= []`、`in`）會讓該欄位在整個運算式降成 `dyn` 再 check，所以引數若正好是被降級的
+欄位（`form.x`、`formData.x`、`form["x"]`），比對時改用它的 schema 型別；否則 `form.title != null && demo_costBand_v1(form.title)`
+會照樣通過發布（獨立驗證發現，同日修正）。由降級欄位組成的其他引數仍以 check 給的型別比對。
+既有已發布定義若含這種寫法，之後無法重新發布；回滾不重跑 lint，不受影響。
 
 函式檢查（2026-11-07 整合定案）：發布 lint 與回滾只把 `…_vN` 形狀的名稱與九個內建名稱交給 registry 的
 `assertPublishable`，引擎原生的函式（`size`、`has`、`int`、`string`、`matches` 等）不交；其他未知名稱直接是
@@ -96,7 +118,7 @@ registry 是宿主程式碼：`get`／`list`／`assertPublishable` 丟錯或回�
 
 - 全部放在 `libs/bpm-core/src/lib/condition/expression-ast.ts`，由 P2 提供 `readExpressionReferences`。
 - cel-v2 lint 的解析與 `env.check()` 用評估時同一個 registry 的環境（`loadCelV2Environment(registry)` 的 clone），
-  所以宿主函式的引數與回傳也被型別檢查。每個環境在建立時就註冊完並凍結（`clone()` 會鎖住來源），之後只會被 clone，
+  所以宿主函式的引數與回傳也被型別檢查（數字參數在簽章上是 `dyn`，另以 `findCelV2ArgumentTypeMismatch` 補比對，見 §2.2）。每個環境在建立時就註冊完並凍結（`clone()` 會鎖住來源），之後只會被 clone，
   開機、lint、評估任何順序都不會丟 `Cannot modify frozen registry`（2026-11-07 整合，測試涵蓋兩種順序）。
 - `libs/shared` 不得依賴任何 CEL 引擎，瀏覽器也不解析 CEL。
 - 瀏覽器要知道依賴時由後端提供：`waitingForFieldKeys` 與 lint 結果。

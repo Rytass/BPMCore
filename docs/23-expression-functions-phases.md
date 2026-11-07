@@ -3,7 +3,8 @@
 - **狀態**：IMPLEMENTING（2026-11-07 起；細部設計與契約見 [24](./24-expression-functions-detailed-design.md)）
 - **規劃日期**：2026-11-07
 - **權威決策**：[22 — ADR：流程表達式與宿主函式](./22-expression-functions-adr.md)
-- **完成定義**：所有 Phase gate、安全測試、demo seed 場景、E2E matrix 與文件同步完成
+- **完成定義**：所有 Phase gate、安全測試、[demo seed 場景](#demo-seed-場景)、[E2E matrix](#e2e-matrix) 與文件同步完成。
+  目前缺的是 E2E matrix 的實際執行與 P4／P5 實機 gate，見各段的「狀態」欄。
 
 每個 phase 可獨立 ship（typecheck／lint／test／build 全綠），phase 間依序相依。狀態機沿用
 `PLANNED → IMPLEMENTING → IMPLEMENTED → VERIFYING → VERIFIED`，VERIFIED 由未參與實作的獨立 verifier 推進。
@@ -36,7 +37,9 @@
 
 **Gate**：實機以慢速端點驗證案件操作不再被 webhook 卡住，其他案件與登入不受影響。
 
-**狀態（2026-11-07）**：dry run、webhook、連線池三項已實作並通過實機 gate；SSRF 與 `/api/chat` 尚未處理。
+**狀態（2026-11-08）**：dry run、webhook、連線池三項已實作並通過實機 gate。`/api/chat` 已處理：P4 加上未啟用回 404、
+`authorize` 掛點、過濾 `system` 訊息與大小限制；本輪由 `apps/client` 接上 `createBPMApiSessionAuthorize()`，沒有 API session 一律 401
+（見「本輪修正」）。實機驗證未做。路徑 C ad-hoc webhook SSRF 依 docs/24 §1 不在本輪範圍，仍未處理。
 
 ## P0 — 安全修補
 
@@ -422,7 +425,7 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 - **欄位依賴**：欄位總覽矩陣標示「運算式引用 N」；設計器內編輯表單時，改名或刪除仍被運算式讀取的欄位會被擋下。比對基準是「上次套用的表單」（抽屜編輯的是另一份工作副本，取消或關閉即丟棄，發布也只送套用過的版本）；引用以套用當下的草稿向後端查詢，分析尚未回來、請求失敗或 403 時**拒絕**改名／刪除（fail closed）——cel-legacy 的發布 lint 不檢查欄位存在，這是它唯一的防線。（獨立驗證發現第二次編輯可繞過、分析缺席時放行，已修正。）
 - **lint**：新增警告 `EXPR_LAST_DECISION_UNAVAILABLE`（非簽核節點出發的連線讀 `lastDecision`），由 P4 的 preview／analysis 產生。
 - **AI 助理**：新增 `get_expression_catalog`、`preview_expression` 查詢工具；寫入運算式的工具呼叫先經後端 lint，ERROR 即拒絕，沒有注入 lint 也拒絕。工具呼叫改為依序執行，lint 期間畫布被改動則不套用。系統提示加入運算式規則（線上與離線共用）。
-- **`/api/chat`**：未啟用回 404、可選 `authorize` 掛點（401）、過濾 client 的 `system` 訊息、限制請求大小（1 MiB）、訊息數（200）與輸出 token（4 096）。請求大小在讀取時就逐塊計算，沒有 `Content-Length` 的 chunked 請求超過上限即中止讀取，不會整包讀進記憶體。`apps/client` 尚未接 `authorize`。
+- **`/api/chat`**：未啟用回 404、可選 `authorize` 掛點（401）、過濾 client 的 `system` 訊息、限制請求大小（1 MiB）、訊息數（200）與輸出 token（4 096）。請求大小在讀取時就逐塊計算，沒有 `Content-Length` 的 chunked 請求超過上限即中止讀取，不會整包讀進記憶體。`apps/client` 原本沒有接 `authorize`，本輪已接（見「本輪修正」）。
 - **CSP**：`apps/client/next.config.js` 的 `headers()` 送 `Content-Security-Policy-Report-Only`（非 nonce，保留 `worker-src 'self' blob:`，dev 才加 `'unsafe-eval'` 與 `ws://localhost:*`）與 `X-Content-Type-Options: nosniff`。`connect-src`／`img-src` 依 client 實際選端點的方式納入 API 來源：`NEXT_PUBLIC_API_URL` 與 `NEXT_PUBLIC_API_AUTH_URL`（`/auth/*`、`/attachments/*`，PDF 預覽的檔案來源）的 origin；沒設 API URL 時，以 host 為 `localhost`／`127.0.0.1` 的 `has` 規則加入 `http://localhost:17603`，與 build 模式無關（production build 在 localhost 上同樣連本機 API）。改成強制模式前仍要先看實機 violation 報告。
 - **啟動預熱**：`ConditionService.onApplicationBootstrap` 預熱兩種引擎。冷啟動成本是每個 process 一次（引擎程式碼的載入與編譯），不是每份模組副本一次，所以只有 process 內第一次碰引擎才量得到。實測（jest 單檔、`--runInBand`、新 process）：不預熱時第一次評估 legacy 約 98–108 ms、v2 約 7–8 ms（獨立驗證者探針與舊版 spec 的數字）；改由開機預熱付這筆，`warmUp()` 本身 legacy 約 84–86 ms、v2 約 7 ms，之後第一次評估 legacy 0.2–0.3 ms、v2 0.5–0.6 ms。這筆成本移到開機，不在任何案件的評估預算內。（前一版回報的「預熱本身 1.2–2.3 ms」是在 process 已熱時量的，有誤；舊 spec 的冷熱比較在 `warmUp()` 為空函式時也會通過，已改為驗證預熱確實對兩種方言各做 parse、lint、evaluate。）
 - **E2E**：`apps/client-e2e/specs/expression-xss-real.spec.ts` 已寫，未執行。案件詳情頁驗運算式寫入的 `copy`；通知抽屜驗案件標題中的另一段 HTML（簽核人的 TASK_ASSIGNED 內文引用標題）以文字顯示、不產生元素、不執行。**限制**：通知的 payload 不含表單資料（`notification.service.ts` 只放案件標題、節點名稱與 NOTIFY 樣板），運算式寫入的欄位值目前到不了通知抽屜，所以 Gate「經表達式寫入後在通知抽屜以文字顯示」的字面要求在現行產品上無從觸發；通知抽屜的檢查涵蓋的是使用者輸入經通知顯示的路徑。若之後讓通知樣板讀表單欄位，要補上這條。
@@ -534,3 +537,77 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
   `expression-xss-real.spec.ts` 已確認能以 `--list` 載入。
 - P5 實機 gate：`demo.cost-centers`。
 - NOTIFY 運算式設計器 UI 的實機點擊。
+
+## 本輪修正（2026-11-08，P5 之後的實機驗證）
+
+主線在 `pnpm dev` 上實機走過 P4／P5 後發現的缺陷與修法。repo 內只能確認 D5、D6 兩個編號（見
+`expression-data-source-real.spec.ts` 與 `form-data-source-field.spec.tsx` 的註解）；其他項目的 D 編號沒有出處，這裡依缺陷內容列出，
+不另外編號。後端與前端兩條線的程式都還沒 commit，也還沒實機複驗。
+
+| 缺陷 | 根因 | 修法 | 驗證 |
+| --- | --- | --- | --- |
+| 宿主函式的數字參數收到文字欄位仍可發布：`demo_costBand_v1(form.title)` 每張案件都在執行期 `EXPRESSION_TYPE_ERROR`（實機最嚴重的一項） | 不是欄位被宣告成 `dyn`；lint 有依 schema 宣告欄位型別。是 `cel-v2.adapter.ts` 的 `toSignatureParameterType` 把 `int`／`double` 參數在引擎簽章登記成 `dyn`，`env.check()` 因此放行 | `loadCelV2Environment` 記下每個函式宣告的參數型別；`findCelV2ArgumentTypeMismatch` 在 `env.check()` 通過後逐一比對 call 節點的引數 checked type，明確不符回 `EXPR_FIELD_TYPE_MISMATCH`。引數是 `dyn` 時不擋。發布、preview、`SET_FORM_FIELD`、binding 共用 | `condition.service.argument-types.real-engine.spec.ts` 34 個真引擎案例（拿掉修正時 11 個失敗）；發布測試補 2 個（title 被擋、amount 可發布） |
+| 獨立驗證：上一列的修正在判空守衛下被繞過，`form.title != null && demo_costBand_v1(form.title) == "HIGH"`（含 `formData.`、`form["title"]`、string 參數的宿主函式與內建 `upper`）仍可發布，執行期 `EXPRESSION_TYPE_ERROR` | `runTypeCheck` 遇到被容忍的比較時把該欄位在**整個**運算式降成 `dyn` 再 check，`findCelV2ArgumentTypeMismatch` 在降級後的 AST 上看到引數是 `dyn` 就放行 | `findCelV2ArgumentTypeMismatch` 多一個選用參數 `readArgumentType`；`runTypeCheck` 對「正好是被降級欄位」的引數（`form.x`、`formData.x`、`form["x"]`）回傳其 schema 型別再比對。由降級欄位組成的其他引數仍以 check 給的型別比對 | `condition.service.argument-types.real-engine.spec.ts` 新增 8 個守衛下擋下（各驗 `ENTRY_CONDITION` 與 `FLOW_CONDITION`）、1 個執行期對照、6 個守衛下型別相符仍放行；拿掉修正時 5 個失敗；另外 3 個（`!= ""`、`in`、`!= []` 與欄位同型別，不會降級）修正前就擋得住，留作涵蓋。真引擎 14 個 suite 926 個測試通過 |
+| 看不出開機預熱有沒有跑 | 預熱成功時不寫 log | `onApplicationBootstrap` 在至少一個方言預熱成功時寫 `code=EXPRESSION_WARM_UP_DONE cel-legacy=<ms>ms cel-v2=<ms>ms`；寫在這裡而不是 `warmUp()`，既有「`warmUp()` 不寫 log」的斷言不變 | `condition.service.warm-up.real-engine.spec.ts` 新增 2 個 |
+| NOTIFY binding 的 `EXPRESSION_UNAVAILABLE` 不在六個碼內 | 它表示宿主沒接 `ConditionService`，沒有求值 | 維持，只補型別註解；契約寫回 docs/24 §2.1。行為與斷言不變 | — |
+| `/api/chat` 沒有驗證登入 | P4 只提供 `authorize` 掛點，`apps/client` 沒接 | lib 新增 `createBPMApiSessionAuthorize`、`resolveBPMApiSessionBaseUrl`；`apps/client` 的 route 改成 `createWorkflowChatPOST({ authorize: createBPMApiSessionAuthorize() })`。只轉送 Cookie 到 API 的 `GET /auth/me`，200 且帶 `memberId` 才放行；沒有 cookie、其他狀態、redirect、非 JSON、網路錯誤、逾時（5 秒）一律 401。API 位址只從設定讀（`docs/12`） | lib 15 個、client 3 個測試（mock fetch） |
+| demo seed 沒有 cel-v2 路由與 NOTIFY 運算式的場景 | — | 新增兩個模板，見「demo seed 場景」 | 以暫時測試確認 workflow lint、cel-v2 邊條件 lint、binding lint 都是 0 錯誤 0 警告，求值正確；暫存檔已刪。未執行 `pnpm demo:reset` |
+| 設計器頁首的方言 Tag 沒有出現 | Mezzanine `ContentHeader` 的 children 只收按鈕、篩選與返回連結，其他元素被丟掉 | 方言併入 `description` 字串（`readTemplateHeaderDescription`），例如「草稿 v2 · 已發布 v1 · 運算式方言 cel-v2」 | `designer-version-labels.spec.ts` |
+| 函式目錄看不到說明；側欄被內容撐出畫面 | Mezzanine `DropdownOption` 沒有副標欄位；grid 沒有 `minWidth: 0` | 插入選單下方以 Typography caption 逐行列出有說明的函式；側欄與 `ExpressionField` 的 grid 加 `minWidth: 0`、`minmax(0, 1fr)`，插入選單 `fullWidth` | `ExpressionField.spec.tsx`；1600 px 的實際畫面未看過，交 `expression-designer-real.spec.ts` |
+| D5：新案件頁改了 `EXPRESSION` 的依賴後，已選的值不會重新驗證；回報為送出一直停在「選項驗證中」 | 新案件頁不傳 `initialFormData`，依賴變了也從不送 `ResolveFormFieldOptions` | hook 記下值是在哪一份表單狀態（debounce 後的 signature）選的；依賴真的變了且欄位有值時，重新 resolve 舊值。後端回失效時狀態 `INVALID`，`FormDataSourceFieldState.selectionExpired` 為 true，訊息用既有的「已選取的選項已失效，請重新選擇。」。有 `EXPRESSION` binding 的欄位，resolve 也等 debounce 結束才送 | `form-data-source-field.spec.tsx`；後端補 3 個測試，確認舊值以新 binding 重新 resolve 回 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`、結果沒變時沿用 snapshot、`resolveFormFieldOptionValues` 列出 `unresolvedValues`。**只部分重現**：「永遠卡在選項驗證中」在 hook 與 FormRenderer 層各重現一次（mock 延遲 150 ms）都會回到 VALID，若實機另有原因，這次的修改蓋不到 |
+| D6：剛送出的案件，詳情頁顯示「選項需要重新載入或驗證。」 | 詳情頁以整份 JSON 比對資料庫的 `formData` 與 renderer 的值；鍵的順序不同，renderer 又補上預設值，所以判成 stale | 唯讀欄位不讓 `EXPRESSION` 觸發 stale；可編輯時兩邊先經 `buildFormRendererValues` 正規化，再以排序過鍵的 JSON 比對 | `form-data-source-field.spec.tsx` 的 P5 D6 案例 |
+
+未改的建議：
+
+- renderer 在整份表單變動時就重查 `EXPRESSION` 選項，因為後端沒有提供依賴欄位清單（`waitingForFieldKeys` 只列沒填的欄位）。
+  建議後端在 options 與 resolve 結果加 additive 的 `dependencyFieldKeys`。
+- D5 依賴後端 `resolveFormFieldOptions` 在只帶 `templateId` 時能正確評估 `EXPRESSION` binding。service 層已驗證：
+  query 直接呼叫 `resolveFormFieldOptionValues`，真引擎測試「reports the old value as unresolved to the read-only resolve the browser asks」
+  只帶 `templateId` 並得到 `unresolvedValues: ['CC-TW01']`（`instanceId` 經 `readOptionalText`，`null` 與省略相同）。
+  經 GraphQL 與瀏覽器的整條路徑交 `expression-data-source-real.spec.ts`，尚未執行。
+- repo 內的 staging 部署（`tools/deployment-staging.yml`）開了 AI 助理，但沒設 `BPM_API_INTERNAL_URL`、`NEXT_PUBLIC_API_AUTH_URL`、
+  `NEXT_PUBLIC_API_URL`；client image 是 `NODE_ENV=production`，所以 staging 上所有人呼叫 `/api/chat` 都會 401。api 與 client 在同一個
+  pod，client 容器補 `BPM_API_INTERNAL_URL=http://localhost:6001` 即可。`tools/` 不在本輪修改範圍，交主線決定。
+
+**刻意改變的行為**（既有斷言都沒有改寫）：
+
+- cel-v2 lint 不再放行「宿主或內建函式的數字參數收到確定非數字的引數」。已發布定義若含這種寫法，之後無法重新發布；回滾不重跑 lint，不受影響。
+- `ConditionService.onApplicationBootstrap` 預熱成功時多一行 log。
+- `apps/client` 的 `/api/chat` 沒有 API session 時回 401；production 下三個 API 位址變數都沒設也回 401（不從請求推導位址）。
+- `useFormDataSourceField`：持有值的 `EXPRESSION` 欄位在依賴變動、表單穩定後會重新 resolve 舊值，preview 情境也是（送
+  `previewResolveFormFieldOptions`）。既有測試「blocks the submission of a held value while its EXPRESSION re-query settles」因此補上這個
+  mock 的回應，斷言沒有改。
+
+## E2E matrix
+
+E2E 都在 `apps/client-e2e/specs/`，需要 `pnpm dev`（api＋client）且不是 production；每支 spec 自己以 API 建立表單與模板
+（名稱帶各自的前綴），不依賴 `pnpm demo:reset`。**全部尚未執行**：只以
+`npx playwright test --list` 確認四支 spec 能載入，共 8 個測試。
+
+| Phase | E2E 情境 | spec | 狀態 |
+| --- | --- | --- | --- |
+| P0 | 無 E2E；以真引擎測試與實機 gate 代替（錯誤淨化、預算中斷與回滾、非 JSON 結果） | — | 實機 gate 通過 |
+| P1 | 無 E2E；以差異語料真引擎測試與實機 gate 代替 | — | 實機 gate 通過 |
+| P2 | 無專屬 E2E；設計器上的 lint 顯示由 P4 的設計器 spec 涵蓋 | — | 實機 gate 通過 |
+| P3 | 無專屬 E2E；宿主函式 `demo_costBand_v1` 的發布與路由由 P4 的設計器 spec 涵蓋 | — | 實機 gate 通過 |
+| P4 | 在設計器以「進階：自訂運算式」寫 `contains` 與 `demo_costBand_v1` 的邊條件：通過檢查、顯示函式說明、側欄不超出 1600 px、樣本試算、儲存並發布；再以 API 送三張案件，確認依運算式路由 | `expression-designer-real.spec.ts`（`[e2e-expr-designer]`，2 個測試；需 `apps/api` 的示範函式） | 未執行 |
+| P4 | 申請人在 `note` 填 HTML payload，cel-v2 `SET_FORM_FIELD` 寫進 `copy`：案件詳情以文字顯示、不產生元素、不執行；通知抽屜以文字顯示案件標題裡的另一段 payload | `expression-xss-real.spec.ts`（`[e2e-expr-xss]`，3 個測試；本輪補上 review 節點的 `returnBehavior` 與名稱前綴） | 未執行 |
+| P5 | 新案件頁的 `chargedCostCenter` 以運算式綁定 `demo.cost-centers`：改 `chargeTo` 後重查選項、重新 resolve 舊值、顯示失效提示、重選後送出成功；送出後的詳情頁不出現「選項需要重新載入或驗證。」（D5、D6） | `expression-data-source-real.spec.ts`（`[e2e-expr-datasource]`，2 個測試） | 未執行 |
+| P5 | NOTIFY webhook 參數以運算式綁定，簽核後 `demo.purchase-approved@1` 的 demo sink 收到的參數就是運算式的值 | `expression-notify-webhook-real.spec.ts`（`[e2e-expr-webhook]`，1 個測試） | 未執行 |
+
+既有的 `form-data-source-real.spec.ts` 與 `notify-webhook-real.spec.ts` 不涵蓋運算式，不列入。
+
+## demo seed 場景
+
+`apps/api/tools/reset-demo-data.ts`（`pnpm demo:reset`）中含運算式的資料：
+
+| 模板／資料 | 方言 | 運算式 | 涵蓋 |
+| --- | --- | --- | --- |
+| 委派規則（`scope_condition_cel`） | cel-legacy（seed 沒寫方言，取欄位預設值） | `form.systemName == "cloud-console"` | 缺方言時維持 cel-legacy 路由（P1） |
+| 跨廠成本中心申請（表達式） | — （binding 一律 cel-v2） | `chargedCostCenter` 的 `plant` 參數：`form.chargeTo == "OTHER" ? (form.plant == "TW01" ? "TW02" : "TW01") : form.plant`，綁定 `demo.cost-centers` | DataSource `EXPRESSION` binding（P5） |
+| 供應商請款（cel-v2 分流）（本輪新增） | `cel-v2`（定義帶 `expressionDialect`） | 閘道「金額與急件分流」：`demo_costBand_v1(form.amount) == "HIGH"` 送總經理；`form.reason.contains("急件") && ["tooling", "maintenance"].exists(t, t == form.paymentType)` 送製造部主管；其他走 default 邊結束 | cel-v2 方言、宿主函式、`contains`、對 list 字面值用 `exists`（P1、P3） |
+| 供應商請款（運算式通知 ERP）（本輪新增） | — （binding 一律 cel-v2） | NOTIFY webhook `demo.purchase-approved@1` 的參數：`trim(form.vendorName) + "／" + upper(form.paymentType)` | NOTIFY `EXPRESSION` binding、內建函式（P5） |
+
+- 「運算式通知 ERP」與其他 webhook 示範一樣受 `BPM_SEED_WEBHOOK_DEMOS` 控制：未設定時只在 `VAULT_PATH` 不是 `bpm_core/staging`
+  時建立（staging 是 production，沒有 demo endpoint）。「cel-v2 分流」不受這個開關影響。
+- 新增的兩個模板只以暫時測試確認 lint 與求值（見「本輪修正」），尚未執行 `pnpm demo:reset` 實際發起案件。
