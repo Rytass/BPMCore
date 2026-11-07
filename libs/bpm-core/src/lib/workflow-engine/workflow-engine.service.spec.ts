@@ -10986,6 +10986,54 @@ describe('WorkflowEngineService', () => {
       expect(edgeCalls()).toEqual([]);
     });
 
+    it('routes a legacy ordered comparison on an empty string by the structured fields', async (): Promise<void> => {
+      // Real cel-js throws on `"" > 5` (string against number); the spy stands
+      // in for that, and must not be reached.
+      failOnAbsentKey('amount');
+
+      await expect(
+        route(greaterThanWorkflow(), { amount: '' }),
+      ).resolves.toBe('task_default');
+      expect(edgeCalls()).toEqual([]);
+    });
+
+    it('routes an empty-string "is filled" edge by the structured fields', async (): Promise<void> => {
+      failOnAbsentKey('agent');
+
+      await expect(
+        route(isFilledWorkflow('agent'), { agent: '' }),
+      ).resolves.toBe('task_default');
+      await expect(route(isEmptyWorkflow('agent'), { agent: '' })).resolves.toBe(
+        'task_high',
+      );
+      expect(edgeCalls()).toEqual([]);
+    });
+
+    it('routes a blank field named like an inherited member as unfilled', async (): Promise<void> => {
+      failOnAbsentKey('constructor');
+
+      await expect(
+        route(isFilledWorkflow('constructor'), {}),
+      ).resolves.toBe('task_default');
+      expect(edgeCalls()).toEqual([]);
+    });
+
+    it('keeps a whitespace-only text on the stored CEL', async (): Promise<void> => {
+      // CEL's `!= ""` counts "  " as filled, the structured evaluator counts it
+      // as empty; routing it there would flip the result of the stored CEL.
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        return isEdgeCall(args) ? true : realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(
+        route(isFilledWorkflow('agent'), { agent: '  ' }),
+      ).resolves.toBe('task_high');
+      expect(edgeCalls()).toHaveLength(1);
+    });
+
     it('still evaluates the stored CEL once the field holds a value', async (): Promise<void> => {
       // The stored CEL says "not filled" while the form says otherwise, so the
       // route shows which one decided.

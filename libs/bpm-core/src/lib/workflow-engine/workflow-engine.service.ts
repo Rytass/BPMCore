@@ -9259,16 +9259,24 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
  *    designed. `evaluateWorkflowEdgeCondition` already reads a list as
  *    contains / does not contain and an empty list as empty, the meaning the
  *    current designer compiles too.
- * 2. No value: the key is absent from the form data or its value is `null` /
- *    `undefined`. An untouched optional field has no key at all (the client's
- *    JSON drops `undefined`), and cel-js throws `Identifier "agent" not found`
- *    for `form.agent != null && form.agent != ""` — the CEL the designer used
- *    to store for "is filled" — and for `form["a-b"]`, which no compile-time
- *    guard can wrap; `form.amount > 5` throws on `null`. That failed the whole
- *    submit or decision. A published definition and an in-flight instance keep
- *    their stored CEL for good, so the engine answers from the structured
- *    fields instead; the evaluator treats an unfilled value as not matching a
- *    value or ordering comparison.
+ * 2. No usable value: the key is absent from the form data, or its value is
+ *    `null`, `undefined` or exactly `""` (untrimmed). An untouched optional
+ *    field has no key at all (the client's JSON drops `undefined`), and
+ *    cel-js throws `Identifier "agent" not found` for
+ *    `form.agent != null && form.agent != ""` — the CEL the designer used to
+ *    store for "is filled" — and for `form["a-b"]`, which no compile-time
+ *    guard can wrap; `form.amount > 5` throws on `null` and on `""` (string
+ *    against number), and `form.d < "2026-01-01"` is true for `""`. That
+ *    failed the whole submit or decision, or routed it wrongly. A published
+ *    definition and an in-flight instance keep their stored CEL for good, so
+ *    the engine answers from the structured fields instead. The evaluator
+ *    reads such a value as unfilled: EQUALS and the four ordered comparisons
+ *    are false, NOT_EQUALS and IS_EMPTY are true, IS_FILLED is false. For
+ *    `""` every designer operator already gives that same answer in CEL,
+ *    except an ordered comparison, which in CEL throws or misroutes.
+ *    Whitespace-only text is deliberately not a trigger: CEL's `!= ""` counts
+ *    it as filled while the evaluator counts it as empty, so routing it there
+ *    would flip an "is filled" result against the stored CEL.
  *
  * A hand-written CEL carries no structured fields and is never overridden: it
  * keeps evaluating as written, including failing on a key it reads that is
@@ -9288,7 +9296,12 @@ function shouldEvaluateStructuredCondition(
     ? formData[fieldKey]
     : undefined;
 
-  return Array.isArray(value) || value === undefined || value === null;
+  return (
+    Array.isArray(value) ||
+    value === undefined ||
+    value === null ||
+    value === ''
+  );
 }
 
 function edgeHasCondition(edge: WorkflowEdge): boolean {

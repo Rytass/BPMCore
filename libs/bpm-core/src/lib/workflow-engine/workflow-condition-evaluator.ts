@@ -18,7 +18,14 @@ export function evaluateWorkflowEdgeCondition(
     return false;
   }
 
-  const actualValue = context.formData[fieldKey];
+  // Own properties only: an absent key named like an inherited member
+  // (`constructor`, `toString`) must read as unfilled, not as a function.
+  const actualValue = Object.prototype.hasOwnProperty.call(
+    context.formData,
+    fieldKey,
+  )
+    ? context.formData[fieldKey]
+    : undefined;
 
   if (operator === 'IS_FILLED') {
     return !isEmptyWorkflowValue(actualValue);

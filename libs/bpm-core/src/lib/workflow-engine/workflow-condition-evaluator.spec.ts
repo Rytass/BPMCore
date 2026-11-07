@@ -151,6 +151,45 @@ describe('evaluateWorkflowEdgeCondition on an unfilled field', () => {
     ).toBe(true);
   });
 
+  // `{}['constructor']` is Object's constructor function, so an evaluator that
+  // reads inherited members sees a blank field named like one as filled.
+  it.each(['constructor', 'toString', 'valueOf'])(
+    'does not read the inherited member %s as a value',
+    (key): void => {
+      const read = (operator: Operator, value?: string): boolean =>
+        evaluateWorkflowEdgeCondition(createEdge(key, operator, value), {
+          formData: {},
+        });
+
+      expect(read('IS_FILLED')).toBe(false);
+      expect(read('IS_EMPTY')).toBe(true);
+      expect(read('NOT_EQUALS', 'x')).toBe(true);
+      expect(read('EQUALS', 'x')).toBe(false);
+    },
+  );
+
+  it('still compares an own key named like an inherited member by value', (): void => {
+    const formData = { constructor: 'abc' };
+
+    expect(
+      evaluateWorkflowEdgeCondition(createEdge('constructor', 'IS_FILLED'), {
+        formData,
+      }),
+    ).toBe(true);
+    expect(
+      evaluateWorkflowEdgeCondition(
+        createEdge('constructor', 'EQUALS', 'abc'),
+        { formData },
+      ),
+    ).toBe(true);
+    expect(
+      evaluateWorkflowEdgeCondition(
+        createEdge('constructor', 'EQUALS', 'x'),
+        { formData },
+      ),
+    ).toBe(false);
+  });
+
   it('keeps a comparison without a comparison value false', (): void => {
     expect(
       evaluateWorkflowEdgeCondition(createEdge('field', 'NOT_EQUALS'), {
