@@ -18,8 +18,8 @@
 | P1 | 方言欄位與候選引擎差異測試 | P0 | 引擎去留 | IMPLEMENTED（實機 gate 通過） |
 | P2 | AST lint、欄位依賴、schema 型別檢查 | P1 | — | IMPLEMENTED（實機 gate 通過） |
 | P3 | 宿主函式 Registry 與內建函式 | P2 | 內建函式清單 | IMPLEMENTED（P2 整合完成；實機 gate 通過） |
-| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | IMPLEMENTED（自動化測試通過；實機 gate 待驗） |
-| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | IMPLEMENTED（程式與測試完成；實機 gate 與 P4 整合待做） |
+| P4 | 設計器：編輯器、preview、函式目錄、AI 助理 | P3 | UI 設計稿 | IMPLEMENTED（P5 整合完成；實機 gate 待主線執行） |
+| P5 | DataSource／webhook 的 `EXPRESSION` binding | P4 | — | IMPLEMENTED（P4 整合完成；實機 gate 待主線執行） |
 
 ## 獨立安全修補（不依賴本功能，建議先做）
 
@@ -405,10 +405,15 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 
 - 實機：在設計器撰寫、preview、發布、發起案件，走完 `contains` 與宿主函式兩條路徑。
 - 測試：非 designer 呼叫 preview 與 catalog 得到 403。
-- E2E：表單填入 `<img src=x onerror=...>`，經表達式寫入欄位後，在案件詳情、通知抽屜都以文字顯示。
+- E2E：表單填入 `<img src=x onerror=...>`，經表達式寫入欄位後，在案件詳情以文字顯示；通知抽屜驗案件標題中的 HTML 以文字顯示
+  （2026-11-07 改寫，原文為「在案件詳情、通知抽屜都以文字顯示」）。
+  - 理由：通知的 payload 不含表單資料。`notification.service.ts` 只放案件標題、節點名稱與 NOTIFY 樣板，運算式寫入的欄位值
+    在現行產品上到不了通知抽屜，原 Gate 的字面要求無從觸發。
+  - 通知抽屜實際可達的不受信任輸入是申請人填的案件標題（簽核人 `TASK_ASSIGNED` 內文引用它），所以改驗這條路徑。
+  - 若之後讓通知樣板讀表單欄位，要補回「運算式寫入值在通知抽屜以文字顯示」。
 - `apps/client` 補 CSP 與 `nosniff`，驗證 PDF 預覽與 `form-pattern-worker` 的 blob worker 仍可運作。
 
-### P4 實作結果（2026-11-07，待實機 gate）
+### P4 實作結果（2026-11-07；P5 整合完成，實機 gate 待主線執行）
 
 - **設計器**：`ExpressionField`（Mezzanine Textarea＋Select 插入目錄＋Badge 狀態＋InlineMessage 發現，可選樣本試算）接上 E1 發起權限「自訂運算式」、E2 節點進入條件、E3 連線「進階：自訂運算式」（結構化建構器仍為預設）、E4 簽核人「以運算式指定」、E5 系統動作「寫入表單欄位」獨立編輯器（NOTIFY 選擇器不再能覆寫它）。瀏覽器只送文字，解析、lint、試算都在後端。
 - **後端**（`template/`）：`previewExpression`、`expressionCatalog`、`analyzeWorkflowExpressions`、`previewWorkflowDialectUpgrade`，全部 `@BPMDesignerOnly()`（非 designer 403，有 guard 與存取測試）。分析與升級比對讀設計器送來的草稿，不寫入。catalog 隔離 `registry.list()` 失敗（`functionsAvailable: false`，固定 log code）。
@@ -441,7 +446,7 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 - 測試：預算耗盡時回傳既有 `UNAVAILABLE` 語意，不寫入 instance。
 - 實機：以 wrapper host 的 `demo.cost-centers` 驗證依賴欄位變更與重新送出。
 
-**狀態（2026-11-07）**：IMPLEMENTED（程式與測試）。實機 gate 尚未跑；NOTIFY webhook 的 `EXPRESSION` 要等 P4 整合 shared 結構 lint 後才能發布。
+**狀態（2026-11-07）**：IMPLEMENTED（P4 整合完成，見下方「P4／P5 整合」；實機 gate 待主線執行）。NOTIFY webhook 的 `EXPRESSION` 在整合後可以發布。
 
 - 評估：DataSource 的 `EXPRESSION` 在 `form-data-source.validation.ts` 的 `readBindingValues` 內評估，search、resolve、submit 共用同一個 evaluator（`form-data-source.expression.ts`）；
   一律 cel-v2、root `form`（表格欄另加 `row`）、只允許內建函式、走注入 registry 的 `ConditionService`。依賴欄位缺值時不呼叫引擎，回 WAITING 並指出缺的欄位。
@@ -453,4 +458,79 @@ P2 對 `condition.service.ts` 與 `libs/shared/src/index.ts` 的改動核可。
 - Webhook：NOTIFY 的 `EXPRESSION` 在引擎交易內以獨立預算評估，失敗記 `FAILED`（`WEBHOOK_PARAMETER_INVALID`，細節只含錯誤碼），不回滾審批。
 - 測試：`form-data-source.expression.real-engine.spec.ts`（三路徑一致、瀏覽器送入的 expression 被忽略、預算耗盡、lint、循環）、`workflow-webhook-expression.real-engine.spec.ts`、`workflow-engine.service.spec.ts`（TIMEOUT 時不寫 instance）。
 - 示範：`pnpm demo:reset` 會建立「跨廠成本中心申請（表達式）」，`chargedCostCenter` 的 `plant` 參數以 `form.chargeTo == "OTHER" ? (form.plant == "TW01" ? "TW02" : "TW01") : form.plant` 綁定 `demo.cost-centers`。
-- 整合待辦（P4 檔案）：`workflow-graph.ts` 的 NOTIFY 結構與 catalog lint 要認得 `EXPRESSION`；`template.service.ts` 要把 `conditionService` 傳給 `lintWorkflowWebhookTargets`；`workflow-lint-errors.ts` 的逐碼中文訊息供 builder 使用。
+- ~~整合待辦（P4 檔案）~~（已完成，見「P4／P5 整合」）：`workflow-graph.ts` 的 NOTIFY 結構與 catalog lint 要認得 `EXPRESSION`；`template.service.ts` 要把 `conditionService` 傳給 `lintWorkflowWebhookTargets`；`workflow-lint-errors.ts` 的逐碼中文訊息供 builder 使用。
+
+### P4／P5 整合（2026-11-07）
+
+**核可的修改**（P4、P5 的實作改到了本不歸該 phase 的檔案，主線整合時核可）：
+
+- `workflow-definition.validator.ts`：核可。這 11 行（`NEW_TEMPLATE_WORKFLOW_DEFINITION`，新範本預設 `cel-v2`）來自 **P4**（ec36bb7），
+  不是 P5；P5（c2b18d3）沒有改這個檔案。整合時又在同檔補了 `BINDING_EXPRESSION_REQUIRED` 的訊息，`BINDING_SOURCE_INVALID` 的訊息改為列出
+  `EXPRESSION`。
+- `workflow-engine.service.spec.ts`：核可 P5 新增的「TIMEOUT 時不寫 instance」測試；既有斷言沒有改。整合時另外新增 NOTIFY `EXPRESSION`
+  端到端測試（見下方）。
+- 同一個 P5 commit 也改了 `form-schema.validator.ts`（binding 依賴與 `EXPR_*` 行）與 `workflow-webhook.validator.ts`（binding lint），一併核可。
+
+**改動**：
+
+- shared 結構 lint：`NotifyWebhookBindingSource` 的 union 納入 `NotifyWebhookExpressionBindingSource`。
+  - 這是公開型別的型別層級破壞性變更：宿主若對 `from.kind` 做窮舉 switch（以 `never` 收尾），升版後 typecheck 會失敗，commit 時要加 `BREAKING CHANGE:` footer。
+  - `workflow-graph.ts` 的 NOTIFY 結構 lint 只檢查 `expression` 是非空字串（新碼 `BINDING_EXPRESSION_REQUIRED`），以及沒有多餘的鍵。
+  - catalog lint 對 `EXPRESSION` 不判型別，交給後端發布 lint；`PARAMETER_REQUIRED`／`PARAMETER_UNKNOWN` 照報。
+  - 改成窮舉，未知 kind 走 `never`。
+- 移除 P5 的 `maskNotifyWebhookExpressionSources`。它的用途是在 shared lint 不認得 `EXPRESSION` 時把它藏起來，整合後不再需要。
+  - `workflow-webhook.validator.ts` 原本過濾 `EXPRESSION` binding 的 catalog issue，這也吞掉了它的 `PARAMETER_UNKNOWN`。
+    這是 bug，已移除過濾，並補測試。
+- 發布 lint 接線：`template.service.ts` 把注入的 `ConditionService` 傳給 `lintWorkflowWebhookTargets`。沒有接線時，含 `EXPRESSION`
+  binding 的範本一律無法發布（`cannot be checked: no ConditionService is available`）。
+- DI 修正（P5 的 bug）：`WorkflowWebhookDeliveryService`、`FormDataSourceService`、`FormDataSourceValueResolverService` 的
+  `@Optional() conditionService?: ConditionService | null` 在 constructor metadata 會寫成 `Object`。Nest 找不到對應的 provider，又因為是
+  optional，就靜默注入 `undefined`。結果是正式環境所有 binding 評估都回 `EXPRESSION_UNAVAILABLE`，fail closed。
+  - 修法：三處都改為 `@Optional() @Inject(ConditionService)`。
+  - `bpm-root.module.boot.spec.ts` 新增測試，驗證發布 lint 與三個 binding 評估點拿到同一個 registry。修正前這個測試會失敗。
+- 欄位位置：`readBindingValues` 改為明確傳入 `FormDataSourceBindingPosition`（`TOP_LEVEL` 或 `TABLE_COLUMN`）。
+  - 原本以「有沒有列值」推斷位置。現在 search 的兩個查詢（preview、runtime）與 submit 依 schema 判斷位置，表格欄即使瀏覽器沒送列值，也照表格欄處理。
+  - `FormDataSourceService.searchFormFieldOptions` 的輸入改為 `position`（公開方法的破壞性變更，commit 時要加 `BREAKING CHANGE:` footer）。
+  - 例外：公開的 `FormDataSourceValueResolverService.resolveFormFieldOptions` 輸入只有欄位定義、沒有 schema，推不出位置，所以仍以 `rowValues` 有沒有值判斷。沒帶列值的表格欄運算式若讀 `row`，會得到 `INVALID_BINDING`（fail closed）。
+- renderer：有 `EXPRESSION` binding 時，依賴值變動後約 300ms 才重查（debounce）。
+  - 等待期間對外狀態為查詢中或 `STALE`，有值時會擋住送出。
+  - 只有 `FIELD` 等其他 binding 時仍立即重查。
+- 文案：`workflow-lint-errors.ts` 新增 binding 位置描述（表單欄位、表格欄、參數，以及 NOTIFY 節點、第幾個 webhook、參數）與逐碼的
+  `EXPR_*` 句子（中英文，皆不含 `'; '`）。
+  - `FormBuilderView` 改用 `parseFormBindingExpressionLintLine`／`readFormBindingExpressionLintMessage`，移除自己的那份文案。
+  - 用語統一為「運算式」。
+- NOTIFY 設計器：webhook 參數來源新增「運算式」，以 Mezzanine `Textarea` 編輯。
+  - 參數型別不是 `stringArray` 且表單已有欄位時才提供這個選項。
+  - 預設值為 `form.<相容欄位>`。
+
+**刻意改變的既有斷言**：
+
+- `workflow-webhook-expression.real-engine.spec.ts` 的 mask 測試改寫為：結構 lint 對空白 expression 回 `BINDING_EXPRESSION_REQUIRED`。
+  原本驗證的 mask 函式已移除。
+- `FormBuilderView.spec.tsx` 的文案斷言由「的表達式未通過檢查（missing）」改為共用文案「「成本中心」欄位查詢條件「…」的運算式：
+  讀取了表單沒有的欄位「missing」。」。
+- `form-data-source.validation.hash.spec.ts` 與 `form-data-source.expression.real-engine.spec.ts` 只改呼叫點的簽名（傳入 position），
+  斷言值沒有改。
+
+**新增測試**：
+
+- `workflow-engine.service.spec.ts` 的「NOTIFY webhook EXPRESSION bindings end to end」：
+  - 發布通過，delivery 為 `PENDING`，參數為運算式的值。
+  - 缺值時 delivery 記 `FAILED`（`WEBHOOK_PARAMETER_INVALID`，細節只含錯誤碼），審批照常通過。
+  - 宿主函式回 `EXPR_FUNCTION_NOT_ALLOWED`。
+  - 拿掉 `conditionService` 接線時三個測試都失敗。
+- 另有 shared 結構與 catalog lint、`PARAMETER_UNKNOWN`、position、renderer debounce（把延遲改成 0 時其中兩個失敗）、lint 文案等測試。
+
+**驗證**：`pnpm nx run-many -t typecheck lint test build -p shared bpm-core bpm-core-client bpm-core-react api client` 全數通過
+（25 個 task）：
+- shared 12 個 suite／428 個測試；bpm-core-client 15／287；bpm-core-react 47／715。
+- bpm-core 真引擎 13／868；bpm-core 93／1942；api 10／44；client 1／4。
+- lint 0 錯誤，警告都在這次沒改的既有檔案。
+- `apps/client-e2e` 以 `npx playwright test --list specs/expression-xss-real.spec.ts` 載入 3 個測試（未執行）。
+
+**仍待主線**：
+
+- P4 實機 gate：`contains` 與宿主函式兩條路徑；PDF 預覽與 `form-pattern-worker` 在 CSP 下可運作；XSS E2E 實際執行。
+  `expression-xss-real.spec.ts` 已確認能以 `--list` 載入。
+- P5 實機 gate：`demo.cost-centers`。
+- NOTIFY 運算式設計器 UI 的實機點擊。
