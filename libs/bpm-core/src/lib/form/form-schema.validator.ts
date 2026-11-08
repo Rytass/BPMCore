@@ -15,6 +15,10 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import { isSubmittableOrgUnitValue } from './form-org-unit-value.validator';
 import { referencesTableInternals } from './form-table-reference';
+import { readExpressionBindingDependencies } from '../form-data-source/form-data-source.expression';
+
+/** The longest `EXPRESSION` binding the runtime evaluates (ConditionService). */
+const MAX_EXPRESSION_BINDING_LENGTH = 2000;
 
 const SUPPORTED_FIELD_TYPES: readonly FormFieldDefinition['type'][] = [
   'boolean',
@@ -698,7 +702,31 @@ function lintDataSourceBinding(
     ];
   }
 
-  return [...errors, `${path}.from.kind must be FIELD, CONSTANT, or ROW_FIELD`];
+  // Only the shape here: a draft with a half-written expression must still
+  // save. Its cel-v2 lint (roots, functions, field types, the parameter's
+  // type) needs the DataSource descriptor and runs with the registry check at
+  // publish (`FormDataSourceService.lintDefinitionSchemaEnvironment`).
+  if (from.kind === 'EXPRESSION') {
+    // A blank expression is a draft the designer has not written yet; the
+    // publish lint refuses it (`EXPR_PARSE_FAILED`).
+    return [
+      ...errors,
+      ...(typeof from.expression === 'string'
+        ? []
+        : [`${path}.from.expression must be a string`]),
+      ...(typeof from.expression === 'string' &&
+      from.expression.trim().length > MAX_EXPRESSION_BINDING_LENGTH
+        ? [
+            `${path}.from.expression must be ${MAX_EXPRESSION_BINDING_LENGTH} characters or fewer`,
+          ]
+        : []),
+    ];
+  }
+
+  return [
+    ...errors,
+    `${path}.from.kind must be FIELD, CONSTANT, ROW_FIELD, or EXPRESSION`,
+  ];
 }
 
 function lintFieldBindingTarget(
@@ -1139,8 +1167,7 @@ function lintHiddenDataSourceDependencies(
     owner: Readonly<Record<string, unknown>>,
   ): readonly string[] =>
     readBindingSources(owner)
-      .filter((from) => from.kind === 'FIELD')
-      .map((from) => from.fieldKey)
+      .flatMap(readTopLevelBindingDependencies)
       .filter(
         (dependencyKey): dependencyKey is string =>
           typeof dependencyKey === 'string' && visibleKeys.has(dependencyKey),
@@ -1200,15 +1227,30 @@ function readFieldDependencyEntries(
     [
       `top:${fieldKey}`,
       readBindingSources(field)
-        .filter((from) => from.kind === 'FIELD')
-        .map((from) => from.fieldKey)
-        .filter(
-          (dependencyKey): dependencyKey is string =>
-            typeof dependencyKey === 'string',
-        )
+        .flatMap(readTopLevelBindingDependencies)
         .map((dependencyKey) => `top:${dependencyKey}`),
     ],
   ];
+}
+
+/**
+ * The top-level fields a binding reads: a `FIELD`'s key, or every `form.<key>`
+ * an `EXPRESSION` reads, from its AST (ADR 22 §3.7). The lint refuses dynamic
+ * access, so this is the whole dependency set; an expression that does not
+ * parse adds no edge here and is refused by the publish lint instead.
+ */
+function readTopLevelBindingDependencies(
+  from: Readonly<Record<string, unknown>>,
+): readonly string[] {
+  if (from.kind === 'FIELD') {
+    return typeof from.fieldKey === 'string' ? [from.fieldKey] : [];
+  }
+
+  if (from.kind === 'EXPRESSION' && typeof from.expression === 'string') {
+    return readExpressionBindingDependencies(from.expression)?.formFieldKeys ?? [];
+  }
+
+  return [];
 }
 
 function readColumnDependencyNode(
@@ -1221,6 +1263,19 @@ function readColumnDependencyNode(
 
   if (from.kind === 'ROW_FIELD' && typeof from.columnKey === 'string') {
     return [`col:${tableKey}.${from.columnKey}`];
+  }
+
+  if (from.kind === 'EXPRESSION' && typeof from.expression === 'string') {
+    const dependencies = readExpressionBindingDependencies(from.expression);
+
+    return dependencies
+      ? [
+          ...dependencies.formFieldKeys.map((key) => `top:${key}`),
+          ...dependencies.rowColumnKeys.map(
+            (key) => `col:${tableKey}.${key}`,
+          ),
+        ]
+      : [];
   }
 
   return [];

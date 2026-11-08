@@ -162,6 +162,8 @@ V1 不支援 CEL、模板字串、運算式或多欄位組字。直接 binding �
 - DataSource 相依圖是否有 cycle。
 - 刪除或改名欄位會影響哪些下游欄位。
 
+> **部分由 ADR 22 §3.7 取代（2026-11-07）**：binding 新增 `EXPRESSION` 來源（cel-v2，root 只有 `form`、`row`，只允許內建函式，只在後端評估）。見 [ADR 22 §3.7](./22-expression-functions-adr.md)。
+
 ### 3.4 DataSource contract 同時提供 search 與 resolve
 
 每個宿主 DataSource 都要提供 descriptor、`search()` 與 `resolve()`：
@@ -566,6 +568,7 @@ invalid 與明確重新選擇流程。
 - 讓 Designer 建立任意 HTTP connector。
 - Secret 管理 UI。
 - CEL／JSONPath／模板字串 parameter binding。
+  > **部分由 ADR 22 §3.7 取代（2026-11-07）**：CEL parameter binding 已以 `EXPRESSION` 來源納入。見 [ADR 22 §3.7](./22-expression-functions-adr.md)。
 - DataSource result 的跨 request 通用 cache。
 - 動態選項 default value。
 - 離線編輯或 optimistic submit。

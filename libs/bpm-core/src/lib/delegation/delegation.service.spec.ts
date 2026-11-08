@@ -5,7 +5,10 @@ import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { validateSync } from 'class-validator';
 import { Repository } from 'typeorm';
+import { celLegacyAdapter } from '../condition/adapters/cel-legacy.adapter';
+import { celV2Adapter } from '../condition/adapters/cel-v2.adapter';
 import { ConditionService } from '../condition/condition.service';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
 import { CreateDelegationRuleInput } from './dto/delegation-rule.input';
 import { DelegationRuleEntity } from './delegation-rule.entity';
 import {
@@ -873,6 +876,231 @@ describe('DelegationService', () => {
     });
   });
 
+  // ADR 22 §3.3 / docs/24 §2.4: a rule's condition is linted and evaluated
+  // with the rule's own dialect; a rule stored before the column existed has
+  // none and is cel-legacy.
+  describe('scope condition dialect', (): void => {
+    // Parses only in cel-v2: cel-legacy cannot run a macro on a list literal.
+    const V2_ONLY_CONDITION = '[1, 2].all(x, x > 0) && form.amount > 0';
+    const createRepository = (
+      findOne: DelegationRuleEntity | null = null,
+    ): Repository<DelegationRuleEntity> =>
+      createDelegationRuleRepository({
+        create: jest.fn((entity: Partial<DelegationRuleEntity>) =>
+          Object.assign(new DelegationRuleEntity(), entity),
+        ),
+        find: jest.fn((): Promise<readonly DelegationRuleEntity[]> =>
+          Promise.resolve([]),
+        ),
+        findOne: jest.fn(() => Promise.resolve(findOne)),
+        save: jest.fn((rule: DelegationRuleEntity) => Promise.resolve(rule)),
+      });
+    const createInput = (
+      overrides: Partial<CreateDelegationRuleInput>,
+    ): CreateDelegationRuleInput => ({
+      agentMemberId: 'member-101',
+      createdByMemberId: 'member-001',
+      endAt: null,
+      principalMemberId: 'member-001',
+      priority: 100,
+      requiresConfirmation: false,
+      scopeConditionCel: V2_ONLY_CONDITION,
+      scopeTemplateIds: [],
+      scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+      startAt: null,
+      ...overrides,
+    });
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    it('stores and lints a new rule as cel-legacy when no dialect is given', async (): Promise<void> => {
+      const service = new DelegationService(
+        createRepository(),
+        new ConditionService(),
+      );
+
+      // Refused under cel-legacy. The jest `cel-js` here is a shim that parses
+      // anything, so the refusal comes from the bound name `x`; on the real
+      // engine it is the parse (condition.service.cel-v2.real-engine.spec.ts).
+      await expect(
+        service.createDelegationRule(createInput({})),
+      ).rejects.toThrow('scopeConditionCel');
+      await expect(
+        service.createDelegationRule(
+          createInput({ scopeConditionCel: 'form.amount > 0' }),
+        ),
+      ).resolves.toMatchObject({ scopeConditionDialect: 'cel-legacy' });
+    });
+
+    it('lints and stores a cel-v2 rule with cel-v2', async (): Promise<void> => {
+      const service = new DelegationService(
+        createRepository(),
+        new ConditionService(),
+      );
+
+      await expect(
+        service.createDelegationRule(
+          createInput({ scopeConditionDialect: 'cel-v2' }),
+        ),
+      ).resolves.toMatchObject({
+        scopeConditionCel: V2_ONLY_CONDITION,
+        scopeConditionDialect: 'cel-v2',
+      });
+    });
+
+    // Phase 23 integration (2026-11-07): the scope condition is linted at
+    // its use point, `DELEGATION_CONDITION`: a boolean result, and host
+    // functions the injected registry has.
+    it('lints a cel-v2 rule at the DELEGATION_CONDITION use point', async (): Promise<void> => {
+      const lint = jest.spyOn(ConditionService.prototype, 'lintExpression');
+      const service = new DelegationService(
+        createRepository(),
+        new ConditionService(
+          new StaticBPMExpressionFunctionRegistry([
+            {
+              description: 'Band',
+              handler: (): string => 'LOW',
+              label: 'band',
+              name: 'erp_band_v1',
+              parameters: [{ name: 'amount', type: 'double' }],
+              returnType: 'string',
+            },
+          ]),
+        ),
+      );
+
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_band_v1(form.amount)',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).rejects.toThrow('scopeConditionCel: EXPR_RESULT_TYPE_MISMATCH');
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_band_v1(form.amount) == "LOW"',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).resolves.toMatchObject({ scopeConditionDialect: 'cel-v2' });
+      await expect(
+        service.createDelegationRule(
+          createInput({
+            scopeConditionCel: 'erp_gone_v1(form.amount) == "LOW"',
+            scopeConditionDialect: 'cel-v2',
+          }),
+        ),
+      ).rejects.toThrow(
+        'scopeConditionCel: EXPR_FUNCTION_NOT_REGISTERED erp_gone_v1',
+      );
+      expect(lint).toHaveBeenCalledWith(
+        expect.any(String),
+        'scopeConditionCel',
+        expect.objectContaining({ usagePoint: 'DELEGATION_CONDITION' }),
+      );
+    });
+
+    it('keeps the dialect of the rule it updates', async (): Promise<void> => {
+      const service = new DelegationService(
+        createRepository(
+          createDelegationRule({
+            scopeConditionCel: 'form.amount > 0',
+            scopeConditionDialect: 'cel-v2',
+            scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+          }),
+        ),
+        new ConditionService(),
+      );
+
+      const updated = await service.updateDelegationRule({
+        agentMemberId: 'member-102',
+        endAt: null,
+        id: 'delegation-rule-1',
+        priority: 100,
+        requiresConfirmation: false,
+        scopeConditionCel: V2_ONLY_CONDITION,
+        scopeTemplateIds: [],
+        scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+        startAt: null,
+      });
+
+      expect(updated.scopeConditionDialect).toBe('cel-v2');
+      expect(updated.scopeConditionCel).toBe(V2_ONLY_CONDITION);
+    });
+
+    it('refuses a dialect class-validator does not know', (): void => {
+      const input = Object.assign(
+        new CreateDelegationRuleInput(),
+        createInput({
+          scopeConditionDialect: 'cel-v3' as unknown as 'cel-v2',
+        }),
+      );
+
+      expect(
+        validateSync(input).map((error) => error.property),
+      ).toContain('scopeConditionDialect');
+    });
+
+    it.each([
+      [undefined, 'cel-legacy'],
+      ['cel-legacy', 'cel-legacy'],
+      ['cel-v2', 'cel-v2'],
+    ] as const)(
+      'evaluates a rule whose dialect is %s with %s',
+      async (dialect, engine): Promise<void> => {
+        const legacyEvaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+        const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+        const rule = createDelegationRule({
+          agentMemberId: 'member-101',
+          id: 'rule-1',
+          principalMemberId: 'member-001',
+          scopeConditionCel: 'form.amount > 1',
+          scopeType: DelegationScopeTypeEnum.CONDITION_BASED,
+          ...(dialect === undefined ? {} : { scopeConditionDialect: dialect }),
+        });
+        const service = new DelegationService(
+          createDelegationRuleRepository({
+            find: jest.fn(
+              ({
+                where,
+              }: Readonly<{
+                readonly where: Readonly<{ readonly principalMemberId: string }>;
+              }>): Promise<readonly DelegationRuleEntity[]> =>
+                Promise.resolve(
+                  where.principalMemberId === rule.principalMemberId
+                    ? [rule]
+                    : [],
+                ),
+            ),
+          }),
+          new ConditionService(),
+        );
+
+        await expect(
+          service.resolveAssignee('member-001', {
+            formData: { amount: 5 },
+            initiatorMemberId: 'member-000',
+            initiatorMetadataSnapshot: {},
+            instanceId: 'instance-1',
+            nodeId: 'task-1',
+            state: 'RUNNING',
+            templateId: 'template-1',
+            templateVersionId: 'template-version-1',
+            title: '費用申請',
+          }),
+        ).resolves.toMatchObject({ finalAssigneeMemberId: 'member-101' });
+        expect(legacyEvaluate).toHaveBeenCalledTimes(
+          engine === 'cel-legacy' ? 1 : 0,
+        );
+        expect(v2Evaluate).toHaveBeenCalledTimes(engine === 'cel-v2' ? 1 : 0);
+      },
+    );
+  });
+
   // `save` here returns exactly what it was handed, which is what real TypeORM
   // does — so these two assertions genuinely check the shape the service
   // passed in. A row spread into a plain object loses the prototype, and with
@@ -965,6 +1193,10 @@ function createDelegationRule(
     revokedAt: value.revokedAt ?? null,
     revokedByMemberId: value.revokedByMemberId ?? null,
     scopeConditionCel: value.scopeConditionCel ?? null,
+    // Left out unless given, like a row written before the column existed.
+    ...(value.scopeConditionDialect === undefined
+      ? {}
+      : { scopeConditionDialect: value.scopeConditionDialect }),
     scopeTemplateIds: value.scopeTemplateIds ?? [],
     scopeType: value.scopeType ?? DelegationScopeTypeEnum.ALL,
     startAt: value.startAt ?? new Date('2026-05-09T00:00:00.000Z'),

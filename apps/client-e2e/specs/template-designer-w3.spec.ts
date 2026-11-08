@@ -1,4 +1,4 @@
-import { expect, Page, Route, test } from '@playwright/test';
+import { expect, Locator, Page, Route, test } from '@playwright/test';
 import { authenticateApiMember } from './_helpers/auth';
 
 interface GraphQlPayload {
@@ -474,8 +474,10 @@ test.describe('M1 W3 template designer', () => {
     let savedData: Readonly<Record<string, unknown>> | null = null;
 
     // Taller than the other specs: this one opens the timeout-action select,
-    // which sits far enough down the panel that 1200 leaves its options below
-    // the fold.
+    // which sits far down the panel. The selects near the bottom are also
+    // opened through `openSelectCentred`, so the panel growing again (as it
+    // did with the entry-condition and expression-approver fields) cannot
+    // push their options below the fold.
     await page.setViewportSize({ height: 1800, width: 1440 });
     await mockTemplateGraphQl(page, {
       onDraftUpdate: (input): void => {
@@ -500,12 +502,14 @@ test.describe('M1 W3 template designer', () => {
     await expect(page.getByText('計算方式')).toBeVisible();
 
     await page.locator('input[name="slaDurationValue"]').fill('3');
-    await page.getByRole('combobox', { name: '日曆日' }).click();
+    await openSelectCentred(page.getByRole('combobox', { name: '日曆日' }));
     await page.locator('[role="option"]').filter({ hasText: '工作日' }).click();
 
     // `exact` matters: the warning selector's value is 「不提醒」, which the
     // non-exact accessible-name match would also hit.
-    await page.getByRole('combobox', { exact: true, name: '提醒' }).click();
+    await openSelectCentred(
+      page.getByRole('combobox', { exact: true, name: '提醒' }),
+    );
     await page
       .locator('[role="option"]')
       .filter({ hasText: '升級主管' })
@@ -658,7 +662,9 @@ test.describe('M1 W3 template designer', () => {
       .filter({ hasText: '簽核節點' })
       .click();
 
-    await page.getByRole('combobox', { name: '單人簽核' }).click();
+    // 達到指定門檻 is the last option, and Mezzanine's Select never flips
+    // upward, so the trigger is centred first.
+    await openSelectCentred(page.getByRole('combobox', { name: '單人簽核' }));
     await page
       .locator('[role="option"]')
       .filter({ hasText: '達到指定門檻' })
@@ -671,7 +677,7 @@ test.describe('M1 W3 template designer', () => {
     await page.locator('input[name="quorumThreshold"]').fill('3');
 
     // Switching to a percentage relabels the same field rather than adding one.
-    await page.getByRole('combobox', { name: '人數' }).click();
+    await openSelectCentred(page.getByRole('combobox', { name: '人數' }));
     await page
       .locator('[role="option"]')
       .filter({ hasText: '百分比' })
@@ -2251,6 +2257,18 @@ async function switchApproverToDirectMembers(page: Page): Promise<void> {
   await page.getByRole('combobox', { name: '發起人主管' }).click();
   await page.locator('[role="option"]').filter({ hasText: '指定會員' }).click();
   await expect(page.getByRole('combobox', { name: '指定會員' })).toBeVisible();
+}
+
+// Mezzanine's Select opens its options below the trigger and never flips
+// (`flip` defaults to false), in a portal outside the panel's scroll box. A
+// trigger that a plain click leaves at the bottom edge therefore opens options
+// no scrolling can reach. Centre it first, the way a user scrolls to a field
+// before opening it.
+async function openSelectCentred(trigger: Locator): Promise<void> {
+  await trigger.evaluate((element): void => {
+    element.scrollIntoView({ block: 'center' });
+  });
+  await trigger.click();
 }
 
 async function clickDropdownOption(page: Page, text: string): Promise<void> {

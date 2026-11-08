@@ -840,6 +840,40 @@ describe('readNotifyWebhookStructureIssues', () => {
     expect(sourceCodes({ kind: 'CONSTANT', value: null })).toEqual([]);
     expect(sourceCodes({ kind: 'CONSTANT', value: false })).toEqual([]);
   });
+
+  it('accepts an EXPRESSION source by shape only (ADR 22 §3.7)', () => {
+    function sourceIssues(
+      from: unknown,
+    ): readonly (readonly [string, string | null])[] {
+      return readNotifyWebhookStructureIssues([
+        { ...ERP_WEBHOOK, bindings: [{ from, parameter: 'p' }] },
+      ]).map((issue) => [issue.code, issue.property]);
+    }
+
+    // Whatever the text says: the browser never parses CEL, the backend
+    // publish lint does.
+    expect(sourceIssues({ expression: 'form.amount * 2', kind: 'EXPRESSION' }))
+      .toEqual([]);
+    expect(sourceIssues({ expression: 'not cel at all ((', kind: 'EXPRESSION' }))
+      .toEqual([]);
+    expect(sourceIssues({ expression: '  ', kind: 'EXPRESSION' })).toEqual([
+      ['BINDING_EXPRESSION_REQUIRED', null],
+    ]);
+    expect(sourceIssues({ kind: 'EXPRESSION' })).toEqual([
+      ['BINDING_EXPRESSION_REQUIRED', null],
+    ]);
+    expect(sourceIssues({ expression: 1, kind: 'EXPRESSION' })).toEqual([
+      ['BINDING_EXPRESSION_REQUIRED', null],
+    ]);
+    // No dialect, row or anything else rides along with it.
+    expect(
+      sourceIssues({
+        dialect: 'cel-legacy',
+        expression: 'form.amount',
+        kind: 'EXPRESSION',
+      }),
+    ).toEqual([['UNKNOWN_PROPERTY', 'from.dialect']]);
+  });
 });
 
 describe('isFormFieldCompatibleWithWebhookParameter', () => {
@@ -1177,6 +1211,38 @@ describe('readNotifyWebhookTargetCatalogIssues', () => {
   ): NotifyWebhookTarget {
     return { bindings, endpoint: { key: 'erp.po', version: 1 }, id: 'wh' };
   }
+
+  it('leaves the type of an EXPRESSION source to the backend', () => {
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint,
+        formFields,
+        target: target([
+          {
+            from: { expression: 'form.total * 2', kind: 'EXPRESSION' },
+            parameter: 'amount',
+          },
+          {
+            from: { expression: 'form.note', kind: 'EXPRESSION' },
+            parameter: 'urgent',
+          },
+        ]),
+      }),
+    ).toEqual([]);
+    // Everything else about the binding is still checked.
+    expect(
+      readNotifyWebhookTargetCatalogIssues({
+        endpoint,
+        formFields,
+        target: target([
+          {
+            from: { expression: 'form.note', kind: 'EXPRESSION' },
+            parameter: 'nope',
+          },
+        ]),
+      }).map((issue) => issue.code),
+    ).toEqual(['PARAMETER_REQUIRED', 'PARAMETER_UNKNOWN']);
+  });
 
   it('reports only the endpoint when it is missing or deprecated', () => {
     const bindings: NotifyWebhookTarget['bindings'] = [

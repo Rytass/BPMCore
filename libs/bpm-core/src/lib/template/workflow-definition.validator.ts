@@ -31,6 +31,8 @@ import {
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { parseIsoDurationParts } from '../common/iso-duration';
+import { UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE } from '@rytass/bpm-core-shared';
+import { isExpressionDialect } from '../condition/expression-dialect';
 
 const SLA_TIMEOUT_ACTIONS: readonly SlaConfig['onTimeout'][] = [
   'REMIND',
@@ -70,6 +72,17 @@ export const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
       type: 'endEvent',
     },
   ],
+};
+
+/**
+ * The first draft of a template created from scratch. New templates are
+ * written in `cel-v2` (ADR 22 §3.3); existing definitions keep the dialect
+ * they have, and `EMPTY_WORKFLOW_DEFINITION` (the fallback for a missing
+ * definition) keeps naming none.
+ */
+export const NEW_TEMPLATE_WORKFLOW_DEFINITION: WorkflowDefinition = {
+  ...EMPTY_WORKFLOW_DEFINITION,
+  expressionDialect: 'cel-v2',
 };
 
 export function parseWorkflowDefinitionJson(
@@ -137,11 +150,23 @@ export function lintWorkflowDefinition(
   };
 }
 
+// Refused at publish (Phase 23 P2): a definition naming a dialect this
+// version does not know cannot have its expressions parsed, and guessing an
+// engine could route cases differently from what its author tested.
+function lintExpressionDialect(definition: WorkflowDefinition): readonly string[] {
+  const dialect: unknown = definition?.expressionDialect;
+
+  return dialect === undefined || dialect === null || isExpressionDialect(dialect)
+    ? []
+    : [UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE];
+}
+
 function lintBasicShape(definition: WorkflowDefinition): readonly string[] {
   const errors = [
     ...(definition?.meta?.schemaVersion === 1
       ? []
       : ['workflow.meta.schemaVersion must be 1']),
+    ...lintExpressionDialect(definition),
     ...(Array.isArray(definition?.nodes)
       ? []
       : ['workflow.nodes must be an array']),
@@ -607,13 +632,15 @@ function formatNotifyWebhookIssue(
     case 'BINDING_PARAMETER_DUPLICATE':
       return `${bindingPath}.parameter "${issue.parameter ?? ''}" is bound more than once`;
     case 'BINDING_SOURCE_INVALID':
-      return `${bindingPath}.from.kind must be FIELD, CONSTANT or CONTEXT`;
+      return `${bindingPath}.from.kind must be FIELD, CONSTANT, CONTEXT or EXPRESSION`;
     case 'BINDING_FIELD_KEY_REQUIRED':
       return `${bindingPath}.from.fieldKey is required`;
     case 'BINDING_CONTEXT_PATH_INVALID':
       return `${bindingPath}.from.path is not a supported context path`;
     case 'BINDING_CONSTANT_INVALID':
       return `${bindingPath}.from.value must be a string, finite number, boolean or null`;
+    case 'BINDING_EXPRESSION_REQUIRED':
+      return `${bindingPath}.from.expression is required`;
     case 'UNKNOWN_PROPERTY':
       return `${issue.bindingIndex === null ? targetPath : bindingPath}.${issue.property ?? ''} is not allowed`;
   }

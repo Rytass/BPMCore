@@ -84,6 +84,11 @@ spec:
             # (the assistant then shows a disabled placeholder).
             - name: BPM_AI_ASSISTANT_ENABLED
               value: 'true'
+            # /api/chat checks the caller's session against the API's /auth/me.
+            # The address comes from configuration only (never the request's
+            # Host); api and client share this pod.
+            - name: BPM_API_INTERNAL_URL
+              value: 'http://localhost:6001'
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

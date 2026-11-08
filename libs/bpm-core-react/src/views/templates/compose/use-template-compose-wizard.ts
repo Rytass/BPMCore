@@ -197,8 +197,10 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
   };
 }
 
+// Phase 23 P4: templates created through the wizard start on cel-v2.
 const EMPTY_WORKFLOW_DEFINITION: WorkflowDefinition = {
   edges: [],
+  expressionDialect: 'cel-v2',
   meta: { schemaVersion: 1 },
   nodes: [
     {

@@ -4,7 +4,12 @@ import {
   FormFieldOption,
   TableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { MemberMetadata } from '@rytass/bpm-core-shared';
+import {
+  type BPMExpressionValue,
+  MemberMetadata,
+} from '@rytass/bpm-core-shared';
+import { StaticBPMExpressionFunctionRegistry } from '../expression-function/expression-function.registry';
+import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import {
   ApproverResolver,
   DecisionPolicy,
@@ -19,16 +24,37 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { FormService } from '../form/form.service';
+import { ApprovalTemplateCategoryEntity } from '../template/approval-template-category.entity';
+import { TemplateService } from '../template/template.service';
+import {
+  WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES,
+  WorkflowWebhookDeliveryStatusEnum,
+} from '../workflow-webhook/workflow-webhook-delivery.enums';
+import { WorkflowWebhookDeliveryEntity } from '../workflow-webhook/workflow-webhook-delivery.entity';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
-import { FindOperator, In, ObjectLiteral } from 'typeorm';
+import { DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS } from '../workflow-webhook/workflow-webhook-options';
+import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
+import type { BPMWorkflowWebhookEndpoint } from '../workflow-webhook/workflow-webhook.types';
+import {
+  EntityManager,
+  FindOperator,
+  In,
+  ObjectLiteral,
+  Repository,
+} from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
 import { BPMSlaScheduleService } from '../calendar/sla-schedule.service';
 import { BPMWeekdayBusinessCalendar } from '../calendar/weekday-business-calendar';
-import { CelEngineUnavailableError } from '../condition/cel-error-message';
+import { celLegacyAdapter } from '../condition/adapters/cel-legacy.adapter';
+import { celV2Adapter } from '../condition/adapters/cel-v2.adapter';
 import { ConditionService } from '../condition/condition.service';
+import { ExpressionRuntimeError } from '../condition/expression-errors';
 import {
   DelegationResolution,
   DelegationService,
@@ -36,7 +62,11 @@ import {
 } from '../delegation/delegation.service';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
-import { BPMFormDataSourceValueResolver } from '../form-data-source';
+import {
+  BPM_FORM_DATA_SOURCE_ERROR_CODES,
+  BPMFormDataSourceException,
+  BPMFormDataSourceValueResolver,
+} from '../form-data-source';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationResolutionEnum,
@@ -71,6 +101,7 @@ import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
 import * as textFieldPatternTest from './text-field-pattern-test';
+import * as timeBudget from './time-budget';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
@@ -195,6 +226,43 @@ describe('WorkflowEngineService', () => {
         title: null,
       }),
     ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_MISSING' });
+  });
+
+  it('writes no instance when the expression budget runs out while options resolve', async (): Promise<void> => {
+    // Phase 23 P5 gate: an EXPRESSION binding that exhausts the operation
+    // budget surfaces as the existing UNAVAILABLE code (TIMEOUT); the real
+    // resolver raising it is covered by
+    // form-data-source.expression.real-engine.spec.ts.
+    const resolver: BPMFormDataSourceValueResolver = {
+      resolveFormDataOptionSnapshots: jest.fn(() =>
+        Promise.reject(
+          new BPMFormDataSourceException(
+            BPM_FORM_DATA_SOURCE_ERROR_CODES.TIMEOUT,
+          ),
+        ),
+      ),
+      resolveFormFieldOptions: jest.fn(() =>
+        Promise.resolve([] as readonly FormFieldOption[]),
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createDynamicOptionFormSchema(),
+      formDataSourceValueResolver: resolver,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(
+      fixture.service.submitApprovalInstance({
+        formDataJson: '{"costCenter":"CC-001","plant":"TPE"}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      }),
+    ).rejects.toMatchObject({ code: 'FORM_DATA_SOURCE_TIMEOUT' });
+    expect(fixture.savedInstance).toBeNull();
   });
 
   it('still accepts a static submission when the host registered no resolver', async (): Promise<void> => {
@@ -3180,6 +3248,340 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  // Phase 23 P4／P5 integration, end to end: one definition carrying NOTIFY
+  // webhook `EXPRESSION` bindings is published through `TemplateService`, then
+  // an approval reaches the NOTIFY node through the engine with the real
+  // `WorkflowWebhookDeliveryService`. Publish lint and evaluation are handed
+  // the same `ConditionService` (one function registry), as `BPMRootModule`
+  // injects it. The real cel-v2 adapter runs here; only `cel-js` is shimmed.
+  describe('NOTIFY webhook EXPRESSION bindings end to end (Phase 23 P4／P5)', (): void => {
+    const formSchema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'amount', label: '金額', required: true, type: 'money' },
+        { fieldKey: 'title', label: '標題', required: true, type: 'text' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+    const band: BPMExpressionFunction = {
+      description: 'Band of an amount',
+      handler: (...args: readonly BPMExpressionValue[]): BPMExpressionValue =>
+        (args[0] as number) > 1000 ? 'HIGH' : 'LOW',
+      label: 'band',
+      name: 'erp_band_v1',
+      parameters: [{ name: 'amount', type: 'double' }],
+      returnType: 'string',
+    };
+    const endpoint: BPMWorkflowWebhookEndpoint = {
+      buildRequest: async () => ({ url: 'https://erp.example.test/hooks' }),
+      descriptor: {
+        key: 'erp.po',
+        label: 'ERP 採購',
+        parameters: [
+          { key: 'amount', label: '金額', required: true, type: 'number' },
+          { key: 'summary', label: '摘要', required: false, type: 'string' },
+        ],
+        version: 1,
+      },
+    };
+    const webhookService = new WorkflowWebhookService({
+      get: (key, version) =>
+        key === 'erp.po' && version === 1 ? endpoint : null,
+      list: () => [endpoint],
+    });
+    const edge = (
+      id: string,
+      source: string,
+      target: string,
+    ): WorkflowDefinition['edges'][number] => ({
+      data: {},
+      id,
+      source,
+      target,
+      type: 'smoothstep',
+    });
+    // start → 財務簽核 → parallel split → { NOTIFY 通知 ERP, 完成 }
+    const definition = (summary: string): WorkflowDefinition => ({
+      edges: [
+        edge('edge_start_task', 'start', 'task_finance'),
+        edge('edge_task_split', 'task_finance', 'split'),
+        edge('edge_split_notify', 'split', 'notify_erp'),
+        edge('edge_split_end', 'split', 'end'),
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 0, y: 160 },
+          type: 'startEvent',
+        },
+        createUserTaskNode('task_finance', '財務簽核', 'member-finance', 160, 160),
+        {
+          data: { direction: 'split', label: '分流' },
+          id: 'split',
+          position: { x: 320, y: 160 },
+          type: 'parallelGateway',
+        },
+        {
+          data: {
+            action: {
+              channels: ['IN_APP'],
+              recipients: { memberIds: [], type: 'DIRECT' },
+              type: 'NOTIFY',
+              webhooks: [
+                {
+                  bindings: [
+                    {
+                      from: { expression: 'form.amount * 2.0', kind: 'EXPRESSION' },
+                      parameter: 'amount',
+                    },
+                    {
+                      from: { expression: summary, kind: 'EXPRESSION' },
+                      parameter: 'summary',
+                    },
+                  ],
+                  endpoint: { key: 'erp.po', version: 1 },
+                  id: 'webhook_erp',
+                },
+              ],
+            },
+            label: '通知 ERP',
+          },
+          id: 'notify_erp',
+          position: { x: 480, y: 80 },
+          type: 'serviceTask',
+        },
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 480, y: 240 },
+          type: 'endEvent',
+        },
+      ],
+    });
+    const publish = async (
+      conditionService: ConditionService,
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<string> => {
+      const version = Object.assign(new ApprovalTemplateVersionEntity(), {
+        archivedAt: null,
+        formDefinitionVersionId: 'form-version-1',
+        id: 'template-version-1',
+        initiatorPolicyCel: null,
+        status: ApprovalTemplateVersionStatusEnum.DRAFT,
+        templateId: 'template-1',
+        version: 1,
+        workflowDefinition,
+      });
+      const formVersion = Object.assign(new FormDefinitionVersionEntity(), {
+        id: 'form-version-1',
+        schema: formSchema,
+        status: FormDefinitionVersionStatusEnum.PUBLISHED,
+      });
+      const template = Object.assign(new ApprovalTemplateEntity(), {
+        currentVersionId: null,
+        id: 'template-1',
+        isActive: true,
+      });
+      const passThrough = {
+        merge: <T extends ObjectLiteral>(entity: T, patch: Partial<T>): T =>
+          Object.assign(entity, patch),
+        save: <T,>(entity: T): Promise<T> => Promise.resolve(entity),
+        update: (): Promise<void> => Promise.resolve(),
+      };
+      const manager = {
+        getRepository: (target: unknown): ObjectLiteral =>
+          target === ApprovalTemplateEntity
+            ? { ...passThrough, findOne: () => Promise.resolve(template) }
+            : passThrough,
+      } as unknown as EntityManager;
+      const service = new TemplateService(
+        {
+          manager: {
+            transaction: <T,>(
+              operation: (txManager: EntityManager) => Promise<T>,
+            ): Promise<T> => operation(manager),
+          },
+        } as unknown as Repository<ApprovalTemplateEntity>,
+        {} as Repository<ApprovalTemplateCategoryEntity>,
+        {
+          findOne: () => Promise.resolve(version),
+        } as unknown as Repository<ApprovalTemplateVersionEntity>,
+        {
+          findOne: () => Promise.resolve(formVersion),
+        } as unknown as Repository<FormDefinitionVersionEntity>,
+        conditionService,
+        {} as FormService,
+        {
+          get: (token: unknown): unknown => {
+            if (token === WorkflowWebhookService) {
+              return webhookService;
+            }
+
+            throw new Error('no host module');
+          },
+        } as unknown as ModuleRef,
+        registry(),
+      );
+
+      try {
+        return (await service.publishApprovalTemplateVersion('template-version-1'))
+          .status;
+      } catch (error: unknown) {
+        if (error instanceof BadRequestException) {
+          return error.message;
+        }
+
+        throw error;
+      }
+    };
+    const registry = (): StaticBPMExpressionFunctionRegistry =>
+      new StaticBPMExpressionFunctionRegistry([band]);
+    const approve = async (
+      conditionService: ConditionService,
+      workflowDefinition: WorkflowDefinition,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<ServiceFixture> => {
+      const fixture = createServiceFixture({
+        conditionService,
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          assigneeMemberId: 'member-finance',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processWorkflowSnapshot: workflowDefinition,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        webhookDeliveryService: new WorkflowWebhookDeliveryService(
+          {} as Repository<WorkflowWebhookDeliveryEntity>,
+          {} as Repository<ActivityLogEntity>,
+          webhookService,
+          DEFAULT_BPM_WORKFLOW_WEBHOOK_OPTIONS,
+          // Nothing is sent inside the engine transaction (ADR 18 §3.5).
+          (): Promise<Response> => {
+            throw new Error('a delivery was attempted inside the transaction');
+          },
+          conditionService,
+        ),
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      return fixture;
+    };
+    const SUMMARY = 'form.title + "：" + form.note';
+
+    it('publishes, then freezes the evaluated parameters once the approval reaches NOTIFY', async (): Promise<void> => {
+      const conditionService = new ConditionService(registry());
+      const lint = jest.spyOn(conditionService, 'lintExpression');
+
+      expect(await publish(conditionService, definition(SUMMARY))).toBe(
+        ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      );
+      // Linted by the injected service, as the NOTIFY binding use point.
+      expect(lint).toHaveBeenCalledWith(
+        SUMMARY,
+        'workflow.nodes.notify_erp.action.webhooks[0].bindings[1].from.expression',
+        expect.objectContaining({
+          dialect: 'cel-v2',
+          usagePoint: 'NOTIFY_WEBHOOK_BINDING',
+        }),
+      );
+
+      const fixture = await approve(conditionService, definition(SUMMARY), {
+        amount: 1200,
+        note: '急件',
+        title: '筆電採購',
+      });
+
+      expect(fixture.savedWebhookDeliveries).toEqual([
+        expect.objectContaining({
+          endpointKey: 'erp.po',
+          event: expect.objectContaining({
+            node: { id: 'notify_erp', label: '通知 ERP' },
+            parameters: { amount: 2400, summary: '筆電採購：急件' },
+          }),
+          lastErrorCode: null,
+          nodeId: 'notify_erp',
+          status: WorkflowWebhookDeliveryStatusEnum.PENDING,
+          targetId: 'webhook_erp',
+        }),
+      ]);
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    it('records a failing binding FAILED (WEBHOOK_PARAMETER_INVALID) without rolling the approval back', async (): Promise<void> => {
+      const conditionService = new ConditionService(registry());
+
+      // `note` is optional: publish only warns (no `has()`), and a case that
+      // leaves it empty makes the expression fail at the NOTIFY node.
+      expect(await publish(conditionService, definition(SUMMARY))).toBe(
+        ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      );
+
+      const fixture = await approve(conditionService, definition(SUMMARY), {
+        amount: 1200,
+        title: '筆電採購',
+      });
+
+      expect(fixture.savedWebhookDeliveries).toEqual([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            parameters: { amount: 2400, summary: null },
+          }),
+          lastErrorCode: WORKFLOW_WEBHOOK_DELIVERY_ERROR_CODES.PARAMETER_INVALID,
+          lastErrorDetail:
+            'parameter "summary" expression failed (EXPRESSION_MISSING_KEY)',
+          status: WorkflowWebhookDeliveryStatusEnum.FAILED,
+        }),
+      ]);
+      expect(fixture.savedActivityLogs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+          }),
+        ]),
+      );
+      // The decision and the rest of the case went through.
+      expect(fixture.savedDecision).toMatchObject({
+        action: TaskDecisionActionEnum.APPROVED,
+      });
+      expect(fixture.savedInstance?.state).toBe(
+        ApprovalInstanceStateEnum.APPROVED,
+      );
+    });
+
+    it('lints with the host registry: a registered host function is refused as not allowed', async (): Promise<void> => {
+      // A NOT_REGISTERED answer would mean the lint ran without the injected
+      // registry; NOT_ALLOWED means it knows the function and still refuses
+      // it, since bindings take built-in functions only (docs/24 §1).
+      expect(
+        await publish(
+          new ConditionService(registry()),
+          definition('erp_band_v1(form.amount)'),
+        ),
+      ).toBe(
+        'workflow.nodes.notify_erp.action.webhooks[0].bindings[1].from.expression: EXPR_FUNCTION_NOT_ALLOWED erp_band_v1',
+      );
+    });
+  });
+
   it('does not touch webhook delivery for a notify node without webhooks', async (): Promise<void> => {
     const enqueueNotifyWebhooks = jest.fn();
     const fixture = createServiceFixture({
@@ -3502,6 +3904,7 @@ describe('WorkflowEngineService', () => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
       formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1000 },
       processWorkflowSnapshot: createWebhookServiceTaskWorkflow(),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
@@ -3634,6 +4037,731 @@ describe('WorkflowEngineService', () => {
       'rolled back',
     );
     expect(serviceTaskDispatcher.dispatchWebhook).not.toHaveBeenCalled();
+  });
+
+  // ADR 22 §3.3 / Phase 23 P1: every evaluation point reads the dialect of
+  // the definition it belongs to; a snapshot without one is cel-legacy.
+  describe('expression dialect', (): void => {
+    const SECRET_VALUE = 'TOPSECRET-VALUE-42';
+    // 60^4 ≈ 1.3 × 10^7 elements: several 100 ms budgets on cel-v2.
+    const NESTED_MAP_CONDITION =
+      'size(form.l.map(a, form.l.map(b, form.l.map(c, form.l.map(d, a))))) > 0';
+    const withDialect = (
+      definition: WorkflowDefinition,
+      dialect: WorkflowDefinition['expressionDialect'] | null,
+    ): WorkflowDefinition =>
+      dialect === null ? definition : { ...definition, expressionDialect: dialect };
+    const recordTransactionOutcomes = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly string[] => {
+      const { transaction } = (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager;
+      const runTransaction = transaction.getMockImplementation() as (
+        work: unknown,
+      ) => Promise<unknown>;
+      const outcomes: string[] = [];
+
+      transaction.mockImplementation(
+        async (work: unknown): Promise<unknown> => {
+          try {
+            const result = await runTransaction(work);
+
+            outcomes.push('commit');
+
+            return result;
+          } catch (error: unknown) {
+            outcomes.push('rollback');
+
+            throw error;
+          }
+        },
+      );
+
+      return outcomes;
+    };
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    // Phase 23 P1 gate: a case started before dialects existed routes as it
+    // did before the upgrade.
+    it.each([
+      [1500, 'task_high'],
+      [500, 'task_default'],
+    ])(
+      'routes a snapshot without a dialect through cel-legacy, as before (amount %d)',
+      async (amount, expectedNodeId): Promise<void> => {
+        const routeWith = async (
+          dialect: WorkflowDefinition['expressionDialect'] | null,
+        ): Promise<readonly string[]> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            processFormData: { amount },
+            processWorkflowSnapshot: withDialect(
+              createExclusiveGatewayWorkflow({
+                highCondition: 'form.amount > 1000',
+                includeStructuredCondition: false,
+              }),
+              dialect,
+            ),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          await fixture.service.processInstance('instance-1');
+
+          return fixture.savedTasks.map((task) => task.nodeId);
+        };
+        const legacyEvaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+        const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+
+        const withoutDialect = await routeWith(null);
+
+        expect(legacyEvaluate).toHaveBeenCalledTimes(1);
+        expect(v2Evaluate).not.toHaveBeenCalled();
+        expect(withoutDialect).toEqual([expectedNodeId]);
+        expect(await routeWith('cel-legacy')).toEqual(withoutDialect);
+        expect(v2Evaluate).not.toHaveBeenCalled();
+      },
+    );
+
+    it('evaluates a cel-v2 snapshot with cel-v2', async (): Promise<void> => {
+      const legacyEvaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1500, email: 'a@example.com' },
+        processWorkflowSnapshot: withDialect(
+          createExclusiveGatewayWorkflow({
+            // `contains` exists only in cel-v2; the mixed `*` needs its overloads.
+            highCondition:
+              'form.email.contains("@example.com") && form.amount * 2 > 1000',
+            includeStructuredCondition: false,
+          }),
+          'cel-v2',
+        ),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(legacyEvaluate).not.toHaveBeenCalled();
+      expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+        'task_high',
+      ]);
+    });
+
+    it('refuses a snapshot whose dialect it does not know, and rolls back', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1500 },
+        processWorkflowSnapshot: {
+          ...createExclusiveGatewayWorkflow({ includeStructuredCondition: false }),
+          expressionDialect: 'cel-v3',
+        } as unknown as WorkflowDefinition,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const outcomes = recordTransactionOutcomes(fixture);
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).code).toBe(
+        'EXPRESSION_SYNTAX_ERROR',
+      );
+      expect(outcomes).toEqual(['rollback']);
+      expect(fixture.savedTasks).toEqual([]);
+    });
+
+    // An unknown dialect is refused only where there is an expression to
+    // evaluate with it. Publishing does not check the field yet (P2), and
+    // before dialects existed an extra field was simply ignored.
+    describe('an unknown dialect with nothing to evaluate', (): void => {
+      const UNKNOWN_DIALECT_WORKFLOW = {
+        ...createStartEndWorkflow(),
+        expressionDialect: 'cel-v3',
+      } as unknown as WorkflowDefinition;
+      const startWith = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): Promise<unknown> =>
+        fixture.service
+          .submitApprovalInstance({
+            formDataJson: '{"amount":1000}',
+            initiatorMemberId: 'member-001',
+            initiatorMetadataSnapshotJson:
+              '{"memberId":"member-001","roles":["IT"]}',
+            templateId: 'template-1',
+            title: null,
+          })
+          .then(
+            (instance: unknown): unknown => instance,
+            (thrown: unknown): unknown => thrown,
+          );
+
+      it('starts a case when the version has no initiator policy', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const result = await startWith(fixture);
+
+        expect(result).not.toBeInstanceOf(Error);
+        expect(fixture.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.APPROVED,
+        );
+      });
+
+      it('still refuses to start a case whose initiator policy it cannot evaluate', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel: '"IT" in subject.roles',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const result = await startWith(fixture);
+
+        expect(result).toBeInstanceOf(ExpressionRuntimeError);
+        expect((result as ExpressionRuntimeError).code).toBe(
+          'EXPRESSION_SYNTAX_ERROR',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lists the template as launchable when the version has no initiator policy', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        const launchable =
+          await fixture.service.listLaunchableApprovalTemplates('member-001');
+
+        expect(launchable.map((template) => template.id)).toEqual([
+          'template-1',
+        ]);
+      });
+
+      // Fail closed for that template only: one hand-edited version must not
+      // break the list for every member.
+      it('leaves out only that template when its initiator policy cannot be evaluated', async (): Promise<void> => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel: '"IT" in subject.roles',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: UNKNOWN_DIALECT_WORKFLOW,
+        });
+
+        await expect(
+          fixture.service.listLaunchableApprovalTemplates('member-001'),
+        ).resolves.toEqual([]);
+      });
+
+      it('advances a case past a user task without an entry condition', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processFormData: { amount: 1200 },
+          processWorkflowSnapshot: {
+            ...createLinearUserTaskWorkflow(),
+            expressionDialect: 'cel-v3',
+          } as unknown as WorkflowDefinition,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks).toHaveLength(1);
+      });
+    });
+
+    // Phase 23 P1 gate (moved from P0): a nested `map` on the real cel-v2
+    // engine, interrupted inside the engine transaction.
+    it('interrupts a nested map on cel-v2 with a stable code, rolls back and leaves the case as it was', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const formData = {
+        amount: 5000,
+        l: Array.from({ length: 60 }, (_item, index) => index),
+        secret: SECRET_VALUE,
+      };
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: withDialect(
+          createExclusiveGatewayWorkflow({
+            highCondition: NESTED_MAP_CONDITION,
+            includeStructuredCondition: false,
+          }),
+          'cel-v2',
+        ),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const outcomes = recordTransactionOutcomes(fixture);
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const startedAt = performance.now();
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).message).toBe(
+        'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect(
+        JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+      ).not.toContain(SECRET_VALUE);
+      // 100 ms per expression; the rest is slack for a loaded runner.
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(outcomes).toEqual(['rollback']);
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedInstance).toBeNull();
+      expect(formData.secret).toBe(SECRET_VALUE);
+      expect(formData.l).toHaveLength(60);
+    });
+
+    // Phase 23 P3 gate, end to end through the engine (integration of P2 and
+    // P3, 2026-11-07). The real cel-v2 adapter runs here: only `cel-js`
+    // (cel-legacy) is shimmed in this jest project. No adapter is spied on:
+    // a registry's runtime builds adapters of its own.
+    describe('host functions (Phase 23 P3 gate)', (): void => {
+      const HANDLER_SECRET = 'HANDLER-SECRET-ENGINE-13';
+      const band: BPMExpressionFunction = {
+        description: 'Band of an amount',
+        handler: (
+          ...args: readonly BPMExpressionValue[]
+        ): BPMExpressionValue => ((args[0] as number) > 1000 ? 'HIGH' : 'LOW'),
+        label: 'band',
+        name: 'erp_band_v1',
+        parameters: [{ name: 'amount', type: 'double' }],
+        returnType: 'string',
+      };
+      const leaky: BPMExpressionFunction = {
+        ...band,
+        handler: (): never => {
+          throw new Error(`${HANDLER_SECRET} while reading ${SECRET_VALUE}`);
+        },
+        name: 'erp_leaky_v1',
+      };
+      const fixtureWith = (
+        registry: StaticBPMExpressionFunctionRegistry,
+        highCondition: string,
+        formData: Readonly<Record<string, unknown>>,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          conditionService: new ConditionService(registry),
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processFormData: formData,
+          processWorkflowSnapshot: withDialect(
+            createExclusiveGatewayWorkflow({
+              highCondition,
+              includeStructuredCondition: false,
+            }),
+            'cel-v2',
+          ),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const captureLogs = (): readonly string[] => {
+        const logged: string[] = [];
+
+        (['debug', 'log', 'warn', 'error', 'verbose'] as const).forEach(
+          (level): void => {
+            jest
+              .spyOn(Logger.prototype, level)
+              .mockImplementation((...messages: unknown[]): void => {
+                logged.push(messages.map(String).join(' '));
+              });
+          },
+        );
+
+        return logged;
+      };
+      const expectFailedAndUnmoved = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        error: unknown,
+        outcomes: readonly string[],
+      ): void => {
+        expect(error).toBeInstanceOf(ExpressionRuntimeError);
+        expect((error as ExpressionRuntimeError).code).toBe(
+          'EXPRESSION_FUNCTION_FAILED',
+        );
+        expect((error as ExpressionRuntimeError).message).toBe(
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_FUNCTION_FAILED',
+        );
+        expect(outcomes).toEqual(['rollback']);
+        expect(fixture.savedTasks).toEqual([]);
+        expect(fixture.savedInstance).toBeNull();
+      };
+
+      it('routes with a registered host function', async (): Promise<void> => {
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([band]),
+          'erp_band_v1(form.amount) == "HIGH"',
+          { amount: 5000 },
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+          'task_high',
+        ]);
+      });
+
+      it('keeps a handler’s message out of the error, its response and every log, and rolls back', async (): Promise<void> => {
+        const logged = captureLogs();
+        const formData = { amount: 5000, secret: SECRET_VALUE };
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([band, leaky]),
+          // `|| true` would absorb the failure under plain CEL rules: it must
+          // not (docs/24 §1, decided 2026-11-07).
+          'erp_leaky_v1(form.amount) == "HIGH" || true',
+          formData,
+        );
+        const outcomes = recordTransactionOutcomes(fixture);
+
+        const error: unknown = await fixture.service
+          .processInstance('instance-1')
+          .then(
+            (): null => null,
+            (thrown: unknown): unknown => thrown,
+          );
+
+        expectFailedAndUnmoved(fixture, error, outcomes);
+
+        const visible = [
+          (error as ExpressionRuntimeError).message,
+          JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+          ...logged,
+        ].join('\n');
+
+        expect(visible).not.toContain(HANDLER_SECRET);
+        expect(visible).not.toContain(SECRET_VALUE);
+        expect(logged).toContainEqual(
+          expect.stringContaining(
+            'function=erp_leaky_v1 code=EXPRESSION_FUNCTION_FAILED reason=threw',
+          ),
+        );
+        expect(formData).toEqual({ amount: 5000, secret: SECRET_VALUE });
+      });
+
+      it('fails a case on a published version closed once the function is withdrawn', async (): Promise<void> => {
+        captureLogs();
+        const formData = { amount: 5000 };
+        // The published version calls `erp_band_v1`; the host no longer
+        // registers it. Even behind `true ||`, where the engine would never
+        // reach the call, the evaluation fails before the engine runs.
+        const fixture = fixtureWith(
+          new StaticBPMExpressionFunctionRegistry([leaky]),
+          'true || erp_band_v1(form.amount) == "HIGH"',
+          formData,
+        );
+        const outcomes = recordTransactionOutcomes(fixture);
+
+        const error: unknown = await fixture.service
+          .processInstance('instance-1')
+          .then(
+            (): null => null,
+            (thrown: unknown): unknown => thrown,
+          );
+
+        expectFailedAndUnmoved(fixture, error, outcomes);
+        expect(
+          fixture.savedWorkflowTokens.map((token) => token.currentNodeId),
+        ).not.toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^(task_high|task_default|end)$/u),
+          ]),
+        );
+        expect(formData).toEqual({ amount: 5000 });
+      });
+    });
+
+    it('dry-runs a cel-v2 draft with cel-v2, loading it before the budget', (): void => {
+      const prepareEngine = jest.spyOn(ConditionService.prototype, 'prepareEngine');
+      const v2Evaluate = jest.spyOn(celV2Adapter, 'evaluate');
+      const result = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      }).service.dryRunApprovalWorkflow({
+        formDataJson: JSON.stringify({ amount: 5000, items: [{ qty: 3 }] }),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(
+          withDialect(
+            createExclusiveGatewayWorkflow({
+              // A macro with a bound name passes the dry run's root check.
+              highCondition: 'form.items.exists(row, row.qty * 2 > 5)',
+              includeStructuredCondition: false,
+            }),
+            'cel-v2',
+          ),
+        ),
+      });
+
+      expect(prepareEngine).toHaveBeenCalledWith('cel-v2');
+      expect(v2Evaluate).toHaveBeenCalledTimes(1);
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // ADR 22 §3.2 / Phase 23 P0 gate: an expression that runs out of budget
+  // inside the engine transaction. The slow engine is a stand-in: the jest
+  // `cel-js` here is a shim. The real cel-legacy engine is interrupted the
+  // same way in condition.service.real-engine.spec.ts, and a real nested `map`
+  // on cel-v2 in the 'expression dialect' tests above (Phase 23 P1).
+  describe('when an expression runs out of time', (): void => {
+    const SECRET_VALUE = 'TOPSECRET-VALUE-42';
+    // Spins until interrupted. Bounded on its own so a broken interrupt fails
+    // the test instead of hanging it.
+    const spinUntilInterrupted = (): never => {
+      const startedAt = performance.now();
+
+      while (performance.now() - startedAt < 10_000) {
+        // Busy on purpose: only the `vm` timeout can stop this.
+      }
+
+      throw new Error('The time budget never interrupted the evaluation');
+    };
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    it('raises a stable code, rolls the transaction back and leaves the case as it was', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const formData = { amount: 5000, secret: SECRET_VALUE };
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: createExclusiveGatewayWorkflow({
+          highCondition: 'form.amount > 1000',
+          includeStructuredCondition: false,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const { transaction } = (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager;
+      const runTransaction = transaction.getMockImplementation() as (
+        work: unknown,
+      ) => Promise<unknown>;
+      const outcomes: string[] = [];
+
+      // TypeORM rolls back exactly when the callback rejects; record which
+      // way this transaction ended.
+      transaction.mockImplementation(
+        async (work: unknown): Promise<unknown> => {
+          try {
+            const result = await runTransaction(work);
+
+            outcomes.push('commit');
+
+            return result;
+          } catch (error: unknown) {
+            outcomes.push('rollback');
+
+            throw error;
+          }
+        },
+      );
+      const evaluate = jest
+        .spyOn(celLegacyAdapter, 'evaluate')
+        .mockImplementation(spinUntilInterrupted);
+      const startedAt = performance.now();
+
+      const error: unknown = await fixture.service
+        .processInstance('instance-1')
+        .then(
+          (): null => null,
+          (thrown: unknown): unknown => thrown,
+        );
+
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(error).toBeInstanceOf(ExpressionRuntimeError);
+      expect((error as ExpressionRuntimeError).code).toBe(
+        'EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect((error as ExpressionRuntimeError).message).toBe(
+        'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+      );
+      expect(
+        JSON.stringify((error as ExpressionRuntimeError).getResponse()),
+      ).not.toContain(SECRET_VALUE);
+      // 100 ms per expression; the rest is slack for a loaded runner.
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(outcomes).toEqual(['rollback']);
+      // Nothing about the case moved past the condition: no task, the
+      // instance row (state included) was never written, and its form data is
+      // untouched. The mock keeps rows written inside the transaction, which
+      // the database discards on rollback, so a token saved on its way into
+      // the gateway is still listed here; none of them got beyond it.
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedInstance).toBeNull();
+      expect(
+        fixture.savedWorkflowTokens.map((token) => token.currentNodeId),
+      ).not.toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^(task_high|task_default|end)$/u),
+        ]),
+      );
+      expect(formData).toEqual({ amount: 5000, secret: SECRET_VALUE });
+    });
+
+    describe('in a dry run', (): void => {
+      const dryRunWithCondition = (
+        highCondition: string,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson: JSON.stringify({ amount: 5000, secret: SECRET_VALUE }),
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(
+            createExclusiveGatewayWorkflow({
+              highCondition,
+              includeStructuredCondition: false,
+            }),
+          ),
+        });
+
+      it('answers valid: false with only the code when the budget runs out', (): void => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        jest
+          .spyOn(celLegacyAdapter, 'evaluate')
+          .mockImplementation(spinUntilInterrupted);
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_BUDGET_EXCEEDED',
+        ]);
+      });
+
+      // p0-p1-runtime §4.3 / §12.2: the dry run's own budget (2000 ms) running
+      // out while an expression budget (100 ms) is still running inside it.
+      // The outer budget is shortened here so it fires first; the interrupt
+      // must reach the dry run as its own timeout, not as an EXPRESSION_* code.
+      it('answers the fixed timeout text when its own budget runs out during an expression', (): void => {
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        const runWithinTimeBudget = timeBudget.runWithinTimeBudget;
+        const outerTimeouts: number[] = [];
+
+        jest
+          .spyOn(timeBudget, 'runWithinTimeBudget')
+          .mockImplementation(
+            <TResult>(work: () => TResult, timeoutMs: number): TResult => {
+              if (timeoutMs === 2_000) {
+                outerTimeouts.push(timeoutMs);
+
+                return runWithinTimeBudget(work, 30);
+              }
+
+              return runWithinTimeBudget(work, timeoutMs);
+            },
+          );
+        const evaluate = jest
+          .spyOn(celLegacyAdapter, 'evaluate')
+          .mockImplementation(spinUntilInterrupted);
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(outerTimeouts).toEqual([2_000]);
+        expect(evaluate).toHaveBeenCalledTimes(1);
+        // Had the 100 ms inner budget fired first, the error would be the
+        // expression's EXPRESSION_BUDGET_EXCEEDED, not the dry run's own text.
+        expect(result.valid).toBe(false);
+        expect(result.steps).toEqual([]);
+        expect(result.errors).toEqual([
+          '流程或條件的運算量過大，無法完成試跑，請減少連續的閘道分支或簡化條件',
+        ]);
+
+        // The engine still evaluates once the interrupt has unwound.
+        evaluate.mockRestore();
+        expect(dryRunWithCondition('form.amount > 1000').valid).toBe(true);
+      });
+
+      it('does not pass engine text on to the caller', (): void => {
+        jest.spyOn(Logger.prototype, 'debug').mockReturnValue(undefined);
+        // The shape cel-js 0.8.2 really throws: the whole context after the
+        // colon.
+        jest.spyOn(celLegacyAdapter, 'evaluate').mockImplementation(() => {
+          throw new Error(
+            `Identifier "missing" not found in context: {"form":{"secret":"${SECRET_VALUE}"}}`,
+          );
+        });
+
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(false);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain('EXPRESSION_MISSING_KEY');
+        expect(result.errors[0]).not.toContain(SECRET_VALUE);
+        expect(result.errors[0]).not.toContain('not found in context');
+      });
+
+      it('refuses a root the edge condition may not read', (): void => {
+        const evaluate = jest.spyOn(celLegacyAdapter, 'evaluate');
+
+        const result = dryRunWithCondition('secretRoot.amount > 1');
+
+        expect(evaluate).not.toHaveBeenCalled();
+        expect(result.valid).toBe(false);
+        expect(result.errors).toEqual([
+          'workflow.edges.edge_gateway_high.data.condition: EXPRESSION_SYNTAX_ERROR',
+        ]);
+      });
+
+      it('control: an allowed root still evaluates', (): void => {
+        const result = dryRunWithCondition('form.amount > 1000');
+
+        expect(result.valid).toBe(true);
+        expect(result.steps).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ edgeMatched: true, nodeId: 'task_high' }),
+          ]),
+        );
+      });
+    });
   });
 
   it('keeps a committed decision when a webhook result cannot be recorded', async (): Promise<void> => {
@@ -10853,11 +11981,13 @@ describe('WorkflowEngineService', () => {
     // Real cel-js throws `Identifier "x" not found` for a key absent from the
     // form data (docs: libs/bpm-core/src/lib/condition/cel-js-absent-form-key
     // .spec.ts), but jest maps cel-js to a JavaScript-eval shim that answers
-    // `undefined` instead. So the CEL path is made observable: the spy throws
-    // the real error, which turns "the CEL ran" into a failed route instead of
-    // letting the shim hide it.
-    const absentKeyError = (key: string): BadRequestException =>
-      new BadRequestException(`Identifier "${key}" not found`);
+    // `undefined` instead. So the spy throws what ConditionService throws for
+    // it: the stored CEL runs first, and only its failure hands the edge to the
+    // structured fields.
+    const absentKeyError = (key: string): ExpressionRuntimeError =>
+      new ExpressionRuntimeError('EXPRESSION_MISSING_KEY', 'workflow.edges', {
+        keyName: key,
+      });
     const realEvaluateBoolean = ConditionService.prototype.evaluateBoolean;
     let evaluateBoolean: jest.SpyInstance;
 
@@ -10949,7 +12079,7 @@ describe('WorkflowEngineService', () => {
         await expect(route(isFilledWorkflow('agent'), formData)).resolves.toBe(
           'task_default',
         );
-        expect(edgeCalls()).toEqual([]);
+        expect(edgeCalls().length).toBeGreaterThan(0);
       },
     );
 
@@ -10959,7 +12089,7 @@ describe('WorkflowEngineService', () => {
       await expect(route(isEmptyWorkflow('agent'), {})).resolves.toBe(
         'task_high',
       );
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('catches a key that is not an identifier, which no CEL guard can wrap', async (): Promise<void> => {
@@ -10971,7 +12101,7 @@ describe('WorkflowEngineService', () => {
       await expect(route(isEmptyWorkflow('a-b'), {})).resolves.toBe(
         'task_high',
       );
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('does not match an ordered comparison on a null or absent number', async (): Promise<void> => {
@@ -10983,7 +12113,7 @@ describe('WorkflowEngineService', () => {
       await expect(route(greaterThanWorkflow(), {})).resolves.toBe(
         'task_default',
       );
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('routes a legacy ordered comparison on an empty string by the structured fields', async (): Promise<void> => {
@@ -10994,7 +12124,7 @@ describe('WorkflowEngineService', () => {
       await expect(
         route(greaterThanWorkflow(), { amount: '' }),
       ).resolves.toBe('task_default');
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('routes an empty-string "is filled" edge by the structured fields', async (): Promise<void> => {
@@ -11006,7 +12136,7 @@ describe('WorkflowEngineService', () => {
       await expect(route(isEmptyWorkflow('agent'), { agent: '' })).resolves.toBe(
         'task_high',
       );
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('routes a blank field named like an inherited member as unfilled', async (): Promise<void> => {
@@ -11015,7 +12145,7 @@ describe('WorkflowEngineService', () => {
       await expect(
         route(isFilledWorkflow('constructor'), {}),
       ).resolves.toBe('task_default');
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('keeps a whitespace-only text on the stored CEL', async (): Promise<void> => {
@@ -11052,6 +12182,7 @@ describe('WorkflowEngineService', () => {
           'form["agent"] != null && form["agent"] != ""',
           expect.anything(),
           'workflow.edges.edge_gateway_high.data.condition',
+          { dialect: 'cel-legacy' },
         ],
       ]);
     });
@@ -11067,8 +12198,48 @@ describe('WorkflowEngineService', () => {
           }),
           {},
         ),
-      ).rejects.toThrow('Identifier "agent" not found');
+      ).rejects.toThrow('EXPRESSION_MISSING_KEY');
       expect(edgeCalls()).toHaveLength(1);
+    });
+
+    it('keeps the stored CEL result when it evaluates, even for an empty value', async (): Promise<void> => {
+      // Review of PR #135: answering every "" from the structured fields turned
+      // a stored `form.due < "2026-01-01"` (true for "") into false and left a
+      // gateway without a default edge on a 409. Only a failing CEL hands over.
+      await expect(
+        route(
+          createExclusiveGatewayWorkflow({
+            highCondition: 'form.due < "2026-01-01"',
+            structuredCondition: {
+              conditionFieldKey: 'due',
+              conditionOperator: 'LESS_THAN',
+              conditionValue: '2026-01-01',
+            },
+          }),
+          { due: '' },
+        ),
+      ).resolves.toBe('task_high');
+      expect(edgeCalls()).toHaveLength(1);
+    });
+
+    it('does not absorb a budget overrun into the structured fields', async (): Promise<void> => {
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        if (isEdgeCall(args)) {
+          throw new ExpressionRuntimeError(
+            'EXPRESSION_BUDGET_EXCEEDED',
+            'workflow.edges',
+          );
+        }
+
+        return realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(route(isFilledWorkflow('agent'), {})).rejects.toThrow(
+        'EXPRESSION_BUDGET_EXCEEDED',
+      );
     });
 
     it('routes a dry run by the structured fields when the key is absent', (): void => {
@@ -11102,7 +12273,7 @@ describe('WorkflowEngineService', () => {
           expect.objectContaining({ edgeMatched: true, nodeId: 'task_high' }),
         ]),
       );
-      expect(edgeCalls()).toEqual([]);
+      expect(edgeCalls().length).toBeGreaterThan(0);
     });
 
     it('leaves a hand-written CEL alone in the dry run too', (): void => {
@@ -11177,14 +12348,14 @@ describe('WorkflowEngineService', () => {
 
         const errors = dryRunErrors(handWrittenWorkflow());
 
-        expect(errors).toEqual(['Dry run failed: Identifier not found']);
+        expect(errors).toEqual(['Dry run failed']);
         errors.forEach((message) => {
           expect(message).not.toContain(FORM_MARKER);
           expect(message).not.toContain(INITIATOR_MARKER);
         });
       });
 
-      it('reduces any other raw evaluation error to its class', (): void => {
+      it('replaces any other raw evaluation error with the generic message', (): void => {
         throwOnEdge(
           Object.assign(
             new Error(
@@ -11194,21 +12365,7 @@ describe('WorkflowEngineService', () => {
           ),
         );
 
-        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
-          'Dry run failed: CelTypeError',
-        ]);
-      });
-
-      it('names the engine-load failure without exposing its message', (): void => {
-        throwOnEdge(
-          new CelEngineUnavailableError(
-            `cannot load cel-js (${FORM_MARKER})`,
-          ),
-        );
-
-        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
-          'Dry run failed: CelEngineUnavailableError',
-        ]);
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual(['Dry run failed']);
       });
 
       it('keeps the engine own message readable', (): void => {
@@ -16946,6 +18103,9 @@ interface ServiceFixture {
   readonly savedTaskCandidates: readonly TaskCandidateEntity[];
   readonly savedTasks: readonly TaskEntity[];
   readonly savedWorkflowTokens: readonly WorkflowTokenEntity[];
+  // Outbox rows a real `WorkflowWebhookDeliveryService` wrote through the
+  // transaction manager, in save order.
+  readonly savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[];
   readonly savedToken: WorkflowTokenEntity | null;
   readonly service: WorkflowEngineService;
   readonly templateFind: jest.Mock<
@@ -16985,6 +18145,7 @@ interface OrgUnitQueryBuilderMock {
 
 function createServiceFixture({
   additionalProcessTasks = [],
+  conditionService = new ConditionService(),
   currentVersionId,
   delegationResolution,
   delegationResolutionByMember = {},
@@ -17014,6 +18175,7 @@ function createServiceFixture({
   rootOptions,
   serviceTaskDispatcher,
   submittedByMemberId,
+  templateInitiatorPolicyCel = null,
   templateIsActive = true,
   templateVersionStatus,
   templateWorkflowDefinition,
@@ -17021,6 +18183,9 @@ function createServiceFixture({
   webhookDeliveryService,
 }: {
   readonly additionalProcessTasks?: readonly TaskEntity[];
+  // Defaults to the built-ins-only service; a test hands in one built with a
+  // function registry, as `ConditionModule` injects it.
+  readonly conditionService?: ConditionService;
   readonly currentVersionId: string | null;
   readonly delegationResolution?: DelegationResolution;
   // Per-member delegation, taking precedence over `delegationResolution`.
@@ -17059,6 +18224,8 @@ function createServiceFixture({
   // The person who filed the processed instance; unset reads like a row
   // written before the column existed (the initiator submitted it).
   readonly submittedByMemberId?: string | null;
+  // The published template version's initiator policy; defaults to none.
+  readonly templateInitiatorPolicyCel?: string | null;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
   // The published template version's workflow; defaults to start -> end.
@@ -17102,6 +18269,7 @@ function createServiceFixture({
   const templateVersion = createTemplateVersion(
     templateVersionStatus,
     templateWorkflowDefinition,
+    templateInitiatorPolicyCel,
   );
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<
@@ -17424,6 +18592,7 @@ function createServiceFixture({
   });
   const templateVersionRepository =
     createRepository<ApprovalTemplateVersionEntity>({
+      find: jest.fn(() => Promise.resolve([templateVersion])),
       findOne: jest.fn(() => Promise.resolve(templateVersion)),
     });
   const formVersionRepository = createRepository<FormDefinitionVersionEntity>({
@@ -17906,6 +19075,31 @@ function createServiceFixture({
   const managerQuery = jest.fn<Promise<unknown>, [string, readonly unknown[]]>(
     () => Promise.resolve([]),
   );
+  let savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[] =
+    [];
+  const transactionalWebhookDeliveryRepository = createRepository<ObjectLiteral>(
+    {
+      create: jest.fn(
+        (value: Readonly<Record<string, unknown>>): Readonly<
+          Record<string, unknown>
+        > => ({ ...value }),
+      ),
+      save: jest.fn(
+        (
+          rows: readonly Readonly<Record<string, unknown>>[],
+        ): Promise<readonly Readonly<Record<string, unknown>>[]> => {
+          const withIds = rows.map((row, index) => ({
+            ...row,
+            id: `delivery-${savedWebhookDeliveries.length + index + 1}`,
+          }));
+
+          savedWebhookDeliveries = [...savedWebhookDeliveries, ...withIds];
+
+          return Promise.resolve(withIds);
+        },
+      ),
+    },
+  );
   const transactionManager = {
     getRepository: jest.fn((target: unknown): unknown => {
       if (target === ApprovalInstanceEntity) {
@@ -17954,6 +19148,10 @@ function createServiceFixture({
 
       if (target === AdhocDirectiveEntity) {
         return transactionalAdhocDirectiveRepository;
+      }
+
+      if (target === WorkflowWebhookDeliveryEntity) {
+        return transactionalWebhookDeliveryRepository;
       }
 
       return createRepository<ObjectLiteral>({});
@@ -18007,6 +19205,9 @@ function createServiceFixture({
     get savedAdhocDirectives(): readonly AdhocDirectiveEntity[] {
       return processAdhocDirectiveRows;
     },
+    get savedWebhookDeliveries(): readonly Readonly<Record<string, unknown>>[] {
+      return savedWebhookDeliveries;
+    },
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;
     },
@@ -18052,7 +19253,7 @@ function createServiceFixture({
       templateVersionRepository,
       formVersionRepository,
       attachmentService as unknown as AttachmentService,
-      new ConditionService(),
+      conditionService,
       delegationService as unknown as DelegationService,
       notificationService as unknown as NotificationService,
       signatureService as unknown as SignatureService,
@@ -18161,13 +19362,14 @@ function createTemplate(
 function createTemplateVersion(
   status: ApprovalTemplateVersionStatusEnum,
   workflowDefinition: WorkflowDefinition = createStartEndWorkflow(),
+  initiatorPolicyCel: string | null = null,
 ): ApprovalTemplateVersionEntity {
   return {
     archivedAt: null,
     createdAt: new Date('2026-05-04T09:00:00.000Z'),
     formDefinitionVersionId: 'form-version-1',
     id: 'template-version-1',
-    initiatorPolicyCel: null,
+    initiatorPolicyCel,
     notificationConfig: null,
     notificationConfigJson: null,
     publishedAt: new Date('2026-05-04T09:00:00.000Z'),

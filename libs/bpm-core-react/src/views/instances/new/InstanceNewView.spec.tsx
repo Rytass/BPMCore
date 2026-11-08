@@ -6,6 +6,10 @@ import {
   readLaunchContext,
   submitApprovalInstance,
 } from '@rytass/bpm-core-client/workflow';
+import {
+  useFormDataSourceField,
+  type FormDataSourceFieldState,
+} from '../../forms/renderer/form-data-source-field';
 import { InstanceNewView } from './InstanceNewView';
 
 Object.assign(globalThis, {
@@ -142,6 +146,21 @@ jest.mock(
   },
 );
 
+// The real hook by default; one test pins the state a DataSource field reports.
+jest.mock(
+  '../../forms/renderer/form-data-source-field',
+  (): typeof import('../../forms/renderer/form-data-source-field') => {
+    const actual = jest.requireActual(
+      '../../forms/renderer/form-data-source-field',
+    ) as typeof import('../../forms/renderer/form-data-source-field');
+
+    return {
+      ...actual,
+      useFormDataSourceField: jest.fn(actual.useFormDataSourceField),
+    };
+  },
+);
+
 jest.mock('../../../lib/auth-provider', () => ({
   useAuth: (): Readonly<Record<string, unknown>> => ({
     member: { memberId: 'member-001' },
@@ -166,6 +185,9 @@ const readLaunchContextMock = readLaunchContext as jest.MockedFunction<
 >;
 const submitMock = submitApprovalInstance as jest.MockedFunction<
   typeof submitApprovalInstance
+>;
+const useFormDataSourceFieldMock = useFormDataSourceField as jest.MockedFunction<
+  typeof useFormDataSourceField
 >;
 
 /**
@@ -351,6 +373,92 @@ describe('InstanceNewView approver-filled fields', () => {
       expect(harness.container.textContent).not.toContain('必填');
       expect(harness.container.textContent).not.toContain('至少需要');
       expect(submitMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmountLaunchView(harness);
+    }
+  });
+});
+
+/**
+ * The field reports an expired `EXPRESSION` selection through
+ * `onDataSourceStateChange`. The page kept only `hasValue` and `status`, so
+ * the submit banner never learnt the selection had expired and fell back to
+ * the generic "請先完成動態選項驗證。" instead of the field's own sentence.
+ */
+describe('InstanceNewView expired DataSource selection', () => {
+  const expiredState: FormDataSourceFieldState = {
+    canRetry: true,
+    error: null,
+    hasNextPage: false,
+    hasValue: true,
+    invalidValues: ['CC-TW01-001'],
+    onReachBottom: (): void => undefined,
+    onSearch: (): void => undefined,
+    options: [],
+    retry: (): void => undefined,
+    selectionExpired: true,
+    status: 'INVALID',
+  };
+
+  beforeEach((): void => {
+    readLaunchContextMock.mockResolvedValue({
+      formVersion: {
+        schema: {
+          fields: [
+            {
+              dataSource: {
+                bindings: [
+                  {
+                    from: { expression: 'form.plant', kind: 'EXPRESSION' },
+                    parameter: 'plant',
+                  },
+                ],
+                key: 'demo.cost-centers',
+                version: 1,
+              },
+              fieldKey: 'chargedCostCenter',
+              label: '負擔成本中心',
+              required: false,
+              type: 'select',
+            },
+          ],
+          schemaVersion: 1,
+        },
+        uiSchema: {
+          layout: [{ fieldKey: 'chargedCostCenter', width: 'FULL' }],
+          schemaVersion: 1,
+        },
+      },
+      template: { id: 'template-1', name: '請購單' },
+      templateVersion: { workflowDefinition: createWorkflowDefinition([]) },
+    } as unknown as Awaited<ReturnType<typeof readLaunchContext>>);
+    useFormDataSourceFieldMock.mockImplementation(
+      (): FormDataSourceFieldState => expiredState,
+    );
+  });
+
+  afterEach((): void => {
+    useFormDataSourceFieldMock.mockImplementation(
+      jest.requireActual<
+        typeof import('../../forms/renderer/form-data-source-field')
+      >('../../forms/renderer/form-data-source-field').useFormDataSourceField,
+    );
+    jest.clearAllMocks();
+  });
+
+  it('refuses the submission with the expired-selection copy', async (): Promise<void> => {
+    const harness = await mountLaunchView();
+
+    try {
+      await clickSubmit(harness.container);
+
+      expect(submitMock).not.toHaveBeenCalled();
+      expect(harness.container.textContent).not.toContain(
+        '請先完成動態選項驗證。',
+      );
+      expect(harness.container.textContent).toContain(
+        '已選取的選項已失效，請重新選擇。',
+      );
     } finally {
       await unmountLaunchView(harness);
     }

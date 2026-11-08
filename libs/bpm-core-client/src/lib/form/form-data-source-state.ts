@@ -1,4 +1,5 @@
 import {
+  FormDataSourceBindingSource,
   FormDataSourceOptionFieldDefinition,
   FormFieldOption,
   FormFieldValue,
@@ -82,31 +83,46 @@ export function readMissingFormDataSourceOptionValues(
  * cannot tell a required parameter from an optional one. Runtime callers must
  * take `waitingForFieldKeys` from the server result instead of blocking a
  * control on this list — an optional binding left empty is not a blocker.
+ *
+ * An `EXPRESSION` binding adds nothing: which fields it reads is known only to
+ * the backend, which never hands the browser a CEL parser (docs/24 §2.5), and
+ * reports them through `waitingForFieldKeys`. A source kind this version does
+ * not know adds nothing either.
  */
 export function readMissingFormDataSourceDependencies(
   field: FormDataSourceOptionFieldDefinition,
   values: FormRendererValues,
   rowValues?: FormRendererValues,
 ): readonly string[] {
-  return field.dataSource.bindings.flatMap((binding) => {
-    if (binding.from.kind === 'FIELD') {
-      return isPresentFormDataSourceValue(values[binding.from.fieldKey])
-        ? []
-        : [binding.from.fieldKey];
-    }
+  return field.dataSource.bindings.flatMap((binding): readonly string[] => {
+    const from: FormDataSourceBindingSource = binding.from;
 
-    // A `ROW_FIELD` binding reads the sibling cell of its own row. Without row
-    // values there is nothing to read, so it counts as missing — the same
-    // optimistic guess the top-level case makes, corrected by the host's
-    // `waitingForFieldKeys` on the first answer (ADR 16 §3.5).
-    if (binding.from.kind === 'ROW_FIELD') {
-      return isPresentFormDataSourceValue(rowValues?.[binding.from.columnKey])
-        ? []
-        : [binding.from.columnKey];
+    switch (from.kind) {
+      case 'FIELD':
+        return isPresentFormDataSourceValue(values[from.fieldKey])
+          ? []
+          : [from.fieldKey];
+      // A `ROW_FIELD` binding reads the sibling cell of its own row. Without
+      // row values there is nothing to read, so it counts as missing — the
+      // same optimistic guess the top-level case makes, corrected by the
+      // host's `waitingForFieldKeys` on the first answer (ADR 16 §3.5).
+      case 'ROW_FIELD':
+        return isPresentFormDataSourceValue(rowValues?.[from.columnKey])
+          ? []
+          : [from.columnKey];
+      case 'CONSTANT':
+      case 'EXPRESSION':
+        return [];
+      default:
+        return readNoDependencies(from);
     }
-
-    return [];
   });
+}
+
+/** A source kind from a newer schema: no dependency the browser can name. */
+function readNoDependencies(from: never): readonly string[] {
+  void from;
+  return [];
 }
 
 export function readFormDataSourceValueSignature(

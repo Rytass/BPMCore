@@ -26,8 +26,37 @@
       }
     },
     "test": {
+      "dependsOn": [
+        "test-real-engine"
+      ],
       "options": {
         "passWithNoTests": true
+      }
+    },
+    "test-real-engine": {
+      "executor": "nx:run-commands",
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/jest.preset.js",
+        "{workspaceRoot}/.env.test",
+        {
+          "externalDependencies": [
+            "jest",
+            "ts-jest",
+            "cel-js",
+            "@marcbachmann/cel-js"
+          ]
+        }
+      ],
+      "outputs": [],
+      "cache": true,
+      "options": {
+        "command": "jest --config libs/bpm-core/jest.real-engine.config.cts --maxWorkers=2",
+        "envFile": ".env.test",
+        "env": {
+          "TS_NODE_COMPILER_OPTIONS": "{\"moduleResolution\":\"node10\",\"module\":\"commonjs\",\"customConditions\":null}"
+        }
       }
     },
     "typecheck": {

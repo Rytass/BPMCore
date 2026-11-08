@@ -93,8 +93,10 @@ import {
   NotificationResolutionEnum,
 } from '../notification/notification.enums';
 import { SignatureService } from '../signature/signature.service';
-import { describeCelEvaluationError } from '../condition/cel-error-message';
-import { ConditionService } from '../condition/condition.service';
+import {
+  ConditionService,
+  type ExpressionCallOptions,
+} from '../condition/condition.service';
 import { BPMAuthContext } from '../bpm-auth';
 import { ManagerResolutionEntity } from '../organization/manager-resolution.entity';
 import { MembershipEntity } from '../organization/membership.entity';
@@ -148,12 +150,21 @@ import {
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
 } from './workflow-engine.enums';
-import { evaluateWorkflowEdgeCondition } from './workflow-condition-evaluator';
+import {
+  evaluateWorkflowEdgeCondition,
+  readOwnFormValue,
+} from './workflow-condition-evaluator';
 import {
   WorkflowDryRunResultObject,
   WorkflowDryRunStepObject,
 } from './workflow-dry-run.object';
 import { runWithinTimeBudget, TimeBudgetExceededError } from './time-budget';
+import { runExpressionOperation } from '../condition/expression-budget';
+import { ExpressionRuntimeError } from '../condition/expression-errors';
+import {
+  isExpressionDialect,
+  readWorkflowExpressionDialect,
+} from '../condition/expression-dialect';
 import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
@@ -213,6 +224,58 @@ const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
+// The dry run checks each expression against the roots its use point may read,
+// as publish does. Keep these in step with `WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS`
+// in template.service.ts; P2 moves both to one place.
+const DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS: readonly string[] = [
+  'env',
+  'form',
+  'formData',
+  'initiator',
+  'instance',
+];
+const DRY_RUN_EDGE_ROOT_IDENTIFIERS: readonly string[] = [
+  ...DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+  'lastDecision',
+];
+
+type ExpressionDialectSource =
+  { readonly expressionDialect?: unknown } | null | undefined;
+
+const hasExpressionText = (
+  expression: string | null | undefined,
+): expression is string =>
+  typeof expression === 'string' && expression.trim() !== '';
+
+/**
+ * Whether a definition's dialect can be read: missing (`cel-legacy`) or one
+ * this version knows. Never throws, unlike `readWorkflowExpressionDialect`.
+ */
+const isReadableExpressionDialect = (
+  definition: ExpressionDialectSource,
+): boolean => {
+  const dialect = definition?.expressionDialect;
+
+  return (
+    dialect === undefined || dialect === null || isExpressionDialect(dialect)
+  );
+};
+
+/**
+ * Options for evaluating an expression that may be blank. The dialect is read
+ * only when there is an expression: an unknown dialect is refused because the
+ * expression cannot be evaluated as its author tested it, and a blank one is
+ * never evaluated at all. Publishing does not check the field yet (Phase 23
+ * P2), so reading it eagerly would turn a stray field on a version with no
+ * expressions into an error, where before dialects existed it was ignored.
+ */
+const readExpressionDialectOptions = (
+  expression: string | null | undefined,
+  definition: ExpressionDialectSource,
+): ExpressionCallOptions =>
+  hasExpressionText(expression)
+    ? { dialect: readWorkflowExpressionDialect(definition) }
+    : {};
 
 /** A webhook whose payload is settled and which waits for its transaction. */
 interface DeferredWebhookDispatch {
@@ -635,12 +698,15 @@ export class WorkflowEngineService {
     // Mutable on purpose: every step of the transaction appends to it, and
     // threading it through each of them would change a dozen signatures.
     const dispatches: DeferredWebhookDispatch[] = [];
-    const result = await this.approvalInstanceRepository.manager.transaction(
-      (manager): Promise<TResult> => {
-        this.deferredWebhookDispatches.set(manager, dispatches);
+    // One transaction is one operation: its evaluations share one budget.
+    const result = await runExpressionOperation(() =>
+      this.approvalInstanceRepository.manager.transaction(
+        (manager): Promise<TResult> => {
+          this.deferredWebhookDispatches.set(manager, dispatches);
 
-        return work(manager);
-      },
+          return work(manager);
+        },
+      ),
     );
 
     await dispatches.reduce<Promise<void>>(async (previous, dispatch) => {
@@ -776,6 +842,11 @@ export class WorkflowEngineService {
         templateVersion.initiatorPolicyCel,
         buildInitiatorPolicyContext(initiatorMetadataSnapshot),
         'initiatorPolicyCel',
+        // The policy is written in its version's dialect (ADR 22 §3.3).
+        readExpressionDialectOptions(
+          templateVersion.initiatorPolicyCel,
+          templateVersion.workflowDefinition,
+        ),
       )
     ) {
       throw new ConflictException(
@@ -3203,26 +3274,32 @@ export class WorkflowEngineService {
       : readDefaultInitiatorMetadataSnapshot(input.initiatorMemberId);
 
     try {
-      // The CEL engine loads on its first evaluation. Do that outside the budget
-      // so an interrupt can never land halfway through loading a module.
-      this.conditionService.evaluateBoolean('true', {}, 'dryRun.engine');
+      // The CEL engine loads outside the budget so an interrupt can never land
+      // halfway through loading a module.
+      this.conditionService.prepareEngine(
+        readWorkflowExpressionDialect(workflowDefinition),
+      );
 
+      // The outer budget bounds the whole walk, and the operation budget
+      // bounds the expressions inside it. Both are charged to this dry run only.
       return Object.assign(new WorkflowDryRunResultObject(), {
         errors: [],
-        steps: runWithinTimeBudget(
-          () =>
-            this.simulateWorkflow({
-              formData,
-              initiatorMemberId: input.initiatorMemberId,
-              initiatorMetadataSnapshot,
-              workflowDefinition,
-            }),
-          DRY_RUN_TIME_BUDGET_MS,
+        steps: runExpressionOperation(() =>
+          runWithinTimeBudget(
+            () =>
+              this.simulateWorkflow({
+                formData,
+                initiatorMemberId: input.initiatorMemberId,
+                initiatorMetadataSnapshot,
+                workflowDefinition,
+              }),
+            DRY_RUN_TIME_BUDGET_MS,
+          ),
         ),
         valid: true,
       });
     } catch (error: unknown) {
-      return createFailedDryRunResult(describeDryRunFailure(error));
+      return createFailedDryRunResult(readDryRunFailureMessage(error));
     }
   }
 
@@ -3299,6 +3376,10 @@ export class WorkflowEngineService {
       entryCondition,
       buildDryRunExpressionContext(input, input.lastDecision),
       `workflow.nodes.${node.id}.data.entryCondition`,
+      {
+        allowedRootIdentifiers: DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+        dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+      },
     );
     const assignment =
       entryConditionMet && node.type === 'userTask'
@@ -3442,13 +3523,23 @@ export class WorkflowEngineService {
 
     if (
       expression &&
-      !shouldEvaluateStructuredCondition(edge, input.formData)
+      !isListValuedStructuredCondition(edge, input.formData)
     ) {
-      return this.conditionService.evaluateBoolean(
-        expression,
-        buildDryRunExpressionContext(input, lastDecision),
-        `workflow.edges.${edge.id}.data.condition`,
-      );
+      try {
+        return this.conditionService.evaluateBoolean(
+          expression,
+          buildDryRunExpressionContext(input, lastDecision),
+          `workflow.edges.${edge.id}.data.condition`,
+          {
+            allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
+            dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+          },
+        );
+      } catch (error: unknown) {
+        if (!canAnswerFromStructuredCondition(edge, error)) {
+          throw error;
+        }
+      }
     }
 
     return evaluateWorkflowEdgeCondition(edge, { formData: input.formData });
@@ -3598,6 +3689,10 @@ export class WorkflowEngineService {
           resolver.expression,
           buildDryRunExpressionContext(input, null),
           `${label}.expression`,
+          {
+            allowedRootIdentifiers: DRY_RUN_WORKFLOW_ROOT_IDENTIFIERS,
+            dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+          },
         ),
       );
     }
@@ -3940,10 +4035,33 @@ export class WorkflowEngineService {
         return false;
       }
 
-      return this.conditionService.evaluateBoolean(
-        currentVersion.initiatorPolicyCel,
-        buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-        'initiatorPolicyCel',
+      // A policy in a dialect this version does not know cannot be evaluated,
+      // so the template is not launchable (fail closed), but only that one:
+      // publishing does not check the field yet (Phase 23 P2), and one such
+      // version must not break the list for every member.
+      if (
+        hasExpressionText(currentVersion.initiatorPolicyCel) &&
+        !isReadableExpressionDialect(currentVersion.workflowDefinition)
+      ) {
+        this.logger.warn(
+          `template=${template.id} version=${currentVersion.id} left out of launchable templates: unknown expression dialect`,
+        );
+
+        return false;
+      }
+
+      // Each template is its own operation, so one slow template cannot use
+      // up the allowance of the rest of the list.
+      return runExpressionOperation(() =>
+        this.conditionService.evaluateBoolean(
+          currentVersion.initiatorPolicyCel,
+          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+          'initiatorPolicyCel',
+          readExpressionDialectOptions(
+            currentVersion.initiatorPolicyCel,
+            currentVersion.workflowDefinition,
+          ),
+        ),
       );
     });
   }
@@ -4655,6 +4773,7 @@ export class WorkflowEngineService {
       entryCondition,
       buildWorkflowExpressionContext(instance),
       `workflow.nodes.${node.id}.data.entryCondition`,
+      readExpressionDialectOptions(entryCondition, instance.workflowSnapshot),
     );
   }
 
@@ -4786,20 +4905,29 @@ export class WorkflowEngineService {
 
     if (
       expression &&
-      !shouldEvaluateStructuredCondition(edge, instance.formData)
+      !isListValuedStructuredCondition(edge, instance.formData)
     ) {
-      return this.conditionService.evaluateBoolean(
-        expression,
-        {
-          ...buildWorkflowExpressionContext(instance),
-          lastDecision: await this.readLastDecisionContext(
-            manager,
-            instance.id,
-            node.id,
-          ),
-        },
-        `workflow.edges.${edge.id}.data.condition`,
-      );
+      const context = {
+        ...buildWorkflowExpressionContext(instance),
+        lastDecision: await this.readLastDecisionContext(
+          manager,
+          instance.id,
+          node.id,
+        ),
+      };
+
+      try {
+        return this.conditionService.evaluateBoolean(
+          expression,
+          context,
+          `workflow.edges.${edge.id}.data.condition`,
+          { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
+        );
+      } catch (error: unknown) {
+        if (!canAnswerFromStructuredCondition(edge, error)) {
+          throw error;
+        }
+      }
     }
 
     return evaluateWorkflowEdgeCondition(edge, { formData: instance.formData });
@@ -6818,6 +6946,7 @@ export class WorkflowEngineService {
           resolver.expression,
           buildWorkflowExpressionContext(instance),
           `${label}.expression`,
+          { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
         ),
         label,
         subject,
@@ -7947,6 +8076,11 @@ export class WorkflowEngineService {
               action.payload,
               buildWorkflowExpressionContext(instance),
               `workflow.nodes.${node.id}.data.action.payload`,
+              {
+                dialect: readWorkflowExpressionDialect(
+                  instance.workflowSnapshot,
+                ),
+              },
             )
           : {
               instance: buildWorkflowExpressionContext(instance).instance,
@@ -7988,6 +8122,7 @@ export class WorkflowEngineService {
         action.value,
         buildWorkflowExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
+        { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
 
       assertServiceTaskTextValue(
@@ -9249,65 +9384,56 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
 }
 
 /**
- * Whether a designer-built edge (it carries `conditionFieldKey` and
- * `conditionOperator` beside its CEL) is routed by those structured fields
- * instead of by the stored CEL. Two cases, both decided by the submitted value
- * of the edge's field:
- *
- * 1. A list. A multiple-selection field (checkbox, or a select / autocomplete
- *    in `multiple` mode) submits a list. Definitions saved before the designer
- *    compiled such fields with list semantics carry a single-value CEL
- *    (`form.tags == "A"`), which is false for `["A"]` — `!=` is always true
- *    and `!= ""` counts `[]` as filled — so those edges never routed as
- *    designed. `evaluateWorkflowEdgeCondition` already reads a list as
- *    contains / does not contain and an empty list as empty, the meaning the
- *    current designer compiles too.
- * 2. No usable value: the key is absent from the form data, or its value is
- *    `null`, `undefined` or exactly `""` (untrimmed). An untouched optional
- *    field has no key at all (the client's JSON drops `undefined`), and
- *    cel-js throws `Identifier "agent" not found` for
- *    `form.agent != null && form.agent != ""` — the CEL the designer used to
- *    store for "is filled" — and for `form["a-b"]`, which no compile-time
- *    guard can wrap; `form.amount > 5` throws on `null` and on `""` (string
- *    against number), and `form.d < "2026-01-01"` is true for `""`. That
- *    failed the whole submit or decision, or routed it wrongly. A published
- *    definition and an in-flight instance keep their stored CEL for good, so
- *    the engine answers from the structured fields instead. The evaluator
- *    reads such a value as unfilled: EQUALS and the four ordered comparisons
- *    are false, NOT_EQUALS and IS_EMPTY are true, IS_FILLED is false. For a
- *    single-value field holding `""` every designer operator already gives
- *    that same answer in CEL, except an ordered comparison, which in CEL
- *    throws or misroutes. A multiple-selection field holding `""` (not a list)
- *    differs: the evaluator reads it as empty, while the legacy CEL gives
- *    `form.t != null && form.t != []` true for IS_FILLED and `"A" in form.t`
- *    throws.
- *    Whitespace-only text is deliberately not a trigger: CEL's `!= ""` counts
- *    it as filled while the evaluator counts it as empty, so routing it there
- *    would flip an "is filled" result against the stored CEL.
- *
- * A hand-written CEL carries no structured fields and is never overridden: it
- * keeps evaluating as written, including failing on a key it reads that is
- * absent.
+ * A designer-built edge whose value is a list is answered by its structured
+ * fields: `evaluateWorkflowEdgeCondition` reads a list as contains / does not
+ * contain and an empty list as empty, which the stored CEL of older
+ * definitions did not.
  */
-function shouldEvaluateStructuredCondition(
+function isListValuedStructuredCondition(
   edge: WorkflowEdge,
   formData: Readonly<Record<string, unknown>>,
 ): boolean {
   const fieldKey = edge.data.conditionFieldKey;
 
-  if (!fieldKey || !edge.data.conditionOperator) {
-    return false;
-  }
+  return Boolean(
+    fieldKey &&
+    edge.data.conditionOperator &&
+    Array.isArray(readOwnFormValue(formData, fieldKey)),
+  );
+}
 
-  const value = Object.prototype.hasOwnProperty.call(formData, fieldKey)
-    ? formData[fieldKey]
-    : undefined;
+/**
+ * The expression errors a designer-built edge answers from its structured
+ * fields instead of failing the submit or decision.
+ */
+const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
+  'EXPRESSION_MISSING_KEY',
+  'EXPRESSION_TYPE_ERROR',
+]);
 
-  return (
-    Array.isArray(value) ||
-    value === undefined ||
-    value === null ||
-    value === ''
+/**
+ * Whether a designer-built edge may answer from its structured fields
+ * (`conditionFieldKey` + `conditionOperator`) after its stored CEL failed.
+ *
+ * Published definitions and in-flight instances keep the CEL they were
+ * stored with, and that CEL throws for an optional field left untouched: the
+ * key is absent (`Identifier "agent" not found`), or an ordered comparison
+ * meets `null` or `""` (`null > 5`, `"" > 5`). Only then does the structured
+ * evaluator answer, reading the value as unfilled (`EQUALS` and the ordered
+ * comparisons false, `NOT_EQUALS` and `IS_EMPTY` true, `IS_FILLED` false).
+ * A stored CEL that evaluates keeps its result, so no route that worked
+ * before changes. A hand-written CEL has no structured fields and still
+ * fails as written; a budget overrun or a function failure is never absorbed.
+ */
+function canAnswerFromStructuredCondition(
+  edge: WorkflowEdge,
+  error: unknown,
+): boolean {
+  return Boolean(
+    edge.data.conditionFieldKey &&
+    edge.data.conditionOperator &&
+    error instanceof ExpressionRuntimeError &&
+    STRUCTURED_FALLBACK_ERROR_CODES.has(error.code),
   );
 }
 
@@ -9820,30 +9946,27 @@ function normalizeFormFieldPath(path: string): readonly string[] {
 }
 
 /**
- * What the designer is told when a dry run throws.
- *
- * The messages the engine writes for the designer are all `HttpException`s
- * (the stop messages, the visit cap, and the ones `ConditionService` has
- * already reduced to a label plus a safe description), so those stay readable.
- * Anything else is not a message anyone wrote for the designer: a raw cel-js
- * error carries the evaluation context (form values, initiator metadata) in
- * its text, so it is cut down to the error class (`Identifier not found` for a
- * missing identifier). No expression is at hand here, so the identifier name
- * is not echoed either; a name can only be vouched for against the expression
- * it came from, which `ConditionService` does before the error gets this far.
+ * The message a failed dry run shows its caller. Only the fixed budget text, an
+ * HTTP exception's own message, or an expression error's label and code reach
+ * this point. Any other error is replaced with a generic message, since its text
+ * may carry engine or context details.
  */
-function describeDryRunFailure(error: unknown): string {
+function readDryRunFailureMessage(error: unknown): string {
   if (error instanceof TimeBudgetExceededError) {
     return DRY_RUN_TOO_COMPLEX_MESSAGE;
+  }
+
+  if (error instanceof ExpressionRuntimeError) {
+    return error.keyName
+      ? `${error.message}（找不到「${error.keyName}」）`
+      : error.message;
   }
 
   if (error instanceof HttpException) {
     return error.message;
   }
 
-  return error instanceof Error
-    ? `Dry run failed: ${describeCelEvaluationError(error)}`
-    : 'Dry run failed';
+  return 'Dry run failed';
 }
 
 function createFailedDryRunResult(message: string): WorkflowDryRunResultObject {

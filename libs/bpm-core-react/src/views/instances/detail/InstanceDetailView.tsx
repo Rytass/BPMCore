@@ -339,7 +339,10 @@ export function InstanceDetailView({
   } = useResubmitCommentDraft(instanceId);
   const [resubmitDataSourceStates, setResubmitDataSourceStates] = useState<
     Readonly<
-      Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
+      Record<
+        string,
+        Pick<FormDataSourceFieldState, 'hasValue' | 'selectionExpired' | 'status'>
+      >
     >
   >({});
   const [previewAttachment, setPreviewAttachment] =
@@ -391,7 +394,7 @@ export function InstanceDetailView({
       fieldKey: string,
       state: Pick<
         FormDataSourceFieldState,
-        'hasValue' | 'invalidValues' | 'status'
+        'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
       >,
     ): void => {
       setResubmitDataSourceStates((currentStates) => {
@@ -399,6 +402,7 @@ export function InstanceDetailView({
 
         if (
           currentState?.hasValue === state.hasValue &&
+          currentState.selectionExpired === (state.selectionExpired === true) &&
           currentState.status === state.status
         ) {
           return currentStates;
@@ -408,6 +412,7 @@ export function InstanceDetailView({
           ...currentStates,
           [fieldKey]: {
             hasValue: state.hasValue,
+            selectionExpired: state.selectionExpired === true,
             status: state.status,
           },
         };

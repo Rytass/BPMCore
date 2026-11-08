@@ -126,6 +126,23 @@ export const WORKFLOW_EXPRESSION_LABELS = Object.freeze({
 });
 
 /**
+ * Node types whose completion records a decision, which is what `lastDecision`
+ * reads on the edges leaving them. Every other node (a gateway, a service
+ * task, the start) has no task, so on its outgoing edges `lastDecision` is
+ * always `null` at run time; the expression lint warns about reading it there
+ * (`EXPR_LAST_DECISION_UNAVAILABLE`).
+ */
+export const WORKFLOW_DECISION_NODE_TYPES: readonly WorkflowNode['type'][] =
+  Object.freeze(['userTask']);
+
+/** Whether an edge leaving a node of this type has a `lastDecision` to read. */
+export function hasWorkflowLastDecision(nodeType: string): boolean {
+  return (WORKFLOW_DECISION_NODE_TYPES as readonly string[]).includes(
+    nodeType,
+  );
+}
+
+/**
  * The structural lines of the backend publish lint (`lintWorkflowDefinition`
  * in `@rytass/bpm-core-nestjs-module`). The backend writes them from here and
  * the client (`readWorkflowLintMessage` in `@rytass/bpm-core-client/template`)
@@ -1474,6 +1491,7 @@ export type NotifyWebhookTargetIdFactory = () => string;
 export type NotifyWebhookStructureIssueCode =
   | 'BINDING_CONSTANT_INVALID'
   | 'BINDING_CONTEXT_PATH_INVALID'
+  | 'BINDING_EXPRESSION_REQUIRED'
   | 'BINDING_FIELD_KEY_REQUIRED'
   | 'BINDING_INVALID'
   | 'BINDING_PARAMETER_DUPLICATE'
@@ -1828,11 +1846,22 @@ export function readNotifyWebhookTargetCatalogIssues({
           : [createNotifyWebhookCatalogIssue('CONSTANT_INCOMPATIBLE', typed)];
       }
 
-      // Every CONTEXT path resolves to a string, so anything but a string or
-      // an opaque json parameter is a mistake the author should see.
-      return parameter.type === 'string' || parameter.type === 'json'
-        ? []
-        : [createNotifyWebhookCatalogIssue('CONTEXT_INCOMPATIBLE', typed)];
+      if (from.kind === 'CONTEXT') {
+        // Every CONTEXT path resolves to a string, so anything but a string
+        // or an opaque json parameter is a mistake the author should see.
+        return parameter.type === 'string' || parameter.type === 'json'
+          ? []
+          : [createNotifyWebhookCatalogIssue('CONTEXT_INCOMPATIBLE', typed)];
+      }
+
+      if (from.kind === 'EXPRESSION') {
+        // The browser never parses CEL (docs/24 §2.5): whether the result
+        // fits the parameter is the backend publish lint's call
+        // (`EXPR_RESULT_TYPE_MISMATCH`), against the same endpoint.
+        return [];
+      }
+
+      return rejectUnknownNotifyWebhookSource(from);
     },
   );
 
@@ -1876,6 +1905,16 @@ export function readNotifyWebhookCatalogIssueMessage({
     case 'CONTEXT_INCOMPATIBLE':
       return `${target}的${parameter}無法使用案件資訊（案件資訊皆為文字）。`;
   }
+}
+
+function rejectUnknownNotifyWebhookSource(
+  from: never,
+): readonly NotifyWebhookCatalogIssue[] {
+  void from;
+
+  // Unreachable for a structurally valid target; a kind this version does not
+  // know is never read as some other kind.
+  return [];
 }
 
 function createNotifyWebhookCatalogIssue(
@@ -2015,13 +2054,19 @@ const SOURCE_PROPERTIES: Readonly<
 > = {
   CONSTANT: ['kind', 'value'],
   CONTEXT: ['kind', 'path'],
+  EXPRESSION: ['expression', 'kind'],
   FIELD: ['fieldKey', 'kind'],
 };
 
 function isNotifyWebhookSourceKind(
   value: unknown,
 ): value is NotifyWebhookBindingSource['kind'] {
-  return value === 'CONSTANT' || value === 'CONTEXT' || value === 'FIELD';
+  return (
+    value === 'CONSTANT' ||
+    value === 'CONTEXT' ||
+    value === 'EXPRESSION' ||
+    value === 'FIELD'
+  );
 }
 
 function readUnknownProperties(
@@ -2067,6 +2112,16 @@ function readNotifyWebhookSourceIssues(
       (typeof value === 'number' && Number.isFinite(value))
       ? []
       : [createNotifyWebhookIssue('BINDING_CONSTANT_INVALID', location)];
+  }
+
+  // Only the shape: a non-blank string. Roots, fields, functions and the
+  // result type are the backend publish lint's (ADR 22 §3.7).
+  if (source['kind'] === 'EXPRESSION') {
+    const expression = source['expression'];
+
+    return typeof expression === 'string' && expression.trim()
+      ? []
+      : [createNotifyWebhookIssue('BINDING_EXPRESSION_REQUIRED', location)];
   }
 
   return [createNotifyWebhookIssue('BINDING_SOURCE_INVALID', location)];
@@ -2116,6 +2171,8 @@ function readNotifyWebhookIssueMessage(
       return `${target}的參數「${issue.parameter ?? ''}」需要選擇案件資訊。`;
     case 'BINDING_CONSTANT_INVALID':
       return `${target}的參數「${issue.parameter ?? ''}」固定值格式錯誤。`;
+    case 'BINDING_EXPRESSION_REQUIRED':
+      return `${target}的參數「${issue.parameter ?? ''}」需要填寫運算式。`;
     case 'UNKNOWN_PROPERTY':
       return `${target}包含不支援的設定「${issue.property ?? ''}」，請移除後重新新增。`;
     default:

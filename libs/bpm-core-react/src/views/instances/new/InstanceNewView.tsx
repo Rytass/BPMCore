@@ -112,7 +112,10 @@ function NewApprovalInstanceContent({
   const [submitting, setSubmitting] = useState(false);
   const [dataSourceStates, setDataSourceStates] = useState<
     Readonly<
-      Record<string, Pick<FormDataSourceFieldState, 'hasValue' | 'status'>>
+      Record<
+        string,
+        Pick<FormDataSourceFieldState, 'hasValue' | 'selectionExpired' | 'status'>
+      >
     >
   >({});
   const fileUploads = useFileUploadFieldStates();
@@ -135,7 +138,7 @@ function NewApprovalInstanceContent({
       fieldKey: string,
       state: Pick<
         FormDataSourceFieldState,
-        'hasValue' | 'invalidValues' | 'status'
+        'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
       >,
     ): void => {
       setDataSourceStates((currentStates) => {
@@ -143,6 +146,7 @@ function NewApprovalInstanceContent({
 
         if (
           currentState?.hasValue === state.hasValue &&
+          currentState.selectionExpired === (state.selectionExpired === true) &&
           currentState.status === state.status
         ) {
           return currentStates;
@@ -152,6 +156,7 @@ function NewApprovalInstanceContent({
           ...currentStates,
           [fieldKey]: {
             hasValue: state.hasValue,
+            selectionExpired: state.selectionExpired === true,
             status: state.status,
           },
         };

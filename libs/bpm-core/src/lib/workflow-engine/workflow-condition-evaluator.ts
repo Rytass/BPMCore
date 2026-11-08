@@ -7,6 +7,20 @@ export type WorkflowConditionContext = Readonly<{
   formData: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * A form value by key, own properties only: an absent key named like an
+ * inherited member (`constructor`, `toString`) reads as `undefined`, not as a
+ * function.
+ */
+export function readOwnFormValue(
+  formData: Readonly<Record<string, unknown>>,
+  fieldKey: string,
+): unknown {
+  return Object.prototype.hasOwnProperty.call(formData, fieldKey)
+    ? formData[fieldKey]
+    : undefined;
+}
+
 export function evaluateWorkflowEdgeCondition(
   edge: WorkflowEdge,
   context: WorkflowConditionContext,
@@ -18,14 +32,7 @@ export function evaluateWorkflowEdgeCondition(
     return false;
   }
 
-  // Own properties only: an absent key named like an inherited member
-  // (`constructor`, `toString`) must read as unfilled, not as a function.
-  const actualValue = Object.prototype.hasOwnProperty.call(
-    context.formData,
-    fieldKey,
-  )
-    ? context.formData[fieldKey]
-    : undefined;
+  const actualValue = readOwnFormValue(context.formData, fieldKey);
 
   if (operator === 'IS_FILLED') {
     return !isEmptyWorkflowValue(actualValue);

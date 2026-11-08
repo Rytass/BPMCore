@@ -1,8 +1,20 @@
 export interface WorkflowDefinition {
   readonly edges: readonly WorkflowEdge[];
+  /**
+   * The expression language every expression in this definition is written
+   * in (ADR 22 §3.3). Absent means `cel-legacy`, so definitions and case
+   * snapshots saved before the field existed keep their behaviour.
+   */
+  readonly expressionDialect?: WorkflowExpressionDialect;
   readonly meta: WorkflowDefinitionMeta;
   readonly nodes: readonly WorkflowNode[];
 }
+
+/**
+ * `cel-legacy` is `cel-js` 0.8.2; `cel-v2` is `@marcbachmann/cel-js` 8. Only
+ * the name lives here: this package never loads an engine (docs/24 §2.5).
+ */
+export type WorkflowExpressionDialect = 'cel-legacy' | 'cel-v2';
 
 export interface WorkflowDefinitionMeta {
   readonly diagramVersion?: string;
@@ -425,7 +437,23 @@ export type NotifyWebhookBindingSource =
       readonly kind: 'CONSTANT';
       readonly value: boolean | number | string | null;
     }
-  | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath };
+  | { readonly kind: 'CONTEXT'; readonly path: NotifyWebhookContextPath }
+  | NotifyWebhookExpressionBindingSource;
+
+/**
+ * A webhook parameter computed by a cel-v2 expression over `form` (ADR 22
+ * §3.7; NOTIFY has no row). Always cel-v2, built-in functions only, evaluated
+ * by the backend inside the engine transaction with its own budget.
+ *
+ * The shared structural lint (`workflow-graph`) only checks that the
+ * expression is a non-blank string: the browser never parses CEL. The
+ * backend publish lint checks roots, fields, functions and the result type
+ * against the endpoint parameter.
+ */
+export interface NotifyWebhookExpressionBindingSource {
+  readonly expression: string;
+  readonly kind: 'EXPRESSION';
+}
 
 export type NotifyWebhookContextPath =
   | 'initiator.memberId'

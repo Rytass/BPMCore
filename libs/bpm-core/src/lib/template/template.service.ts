@@ -1,15 +1,20 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  ExpressionUsagePoint,
+  formatExpressionLintIssue,
   readApproverFilledFieldKeys,
   readFormFieldAccessIssues,
+  readFormFieldPathTopLevelKey,
   readNodeFillableFieldKeys,
   readReachableWorkflowNodeIds,
   readTopLevelFieldKey,
@@ -42,6 +47,24 @@ import {
   Repository,
 } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
+import {
+  DEFAULT_EXPRESSION_DIALECT,
+  ExpressionDialect,
+  isExpressionDialect,
+} from '../condition/expression-dialect';
+import {
+  ExpressionReferences,
+  readExpressionHostFunctionNames,
+  readExpressionReferences,
+  readUnavailableExpressionFunctions,
+  readsFormField,
+  readsTableInternals,
+  RESERVED_PATH_SEGMENTS,
+} from '../condition/expression-ast';
+import {
+  BPM_EXPRESSION_FUNCTION_REGISTRY,
+  BPMExpressionFunctionRegistry,
+} from '../expression-function/expression-function.types';
 import {
   isTableInternalFieldKey,
   readTableFieldKeys,
@@ -80,6 +103,7 @@ import {
 } from './template.enums';
 import {
   EMPTY_WORKFLOW_DEFINITION,
+  NEW_TEMPLATE_WORKFLOW_DEFINITION,
   lintWorkflowDefinition,
   parseWorkflowDefinitionJson,
 } from './workflow-definition.validator';
@@ -145,6 +169,12 @@ export class TemplateService {
     private readonly conditionService: ConditionService,
     private readonly formService: FormService,
     private readonly moduleRef: ModuleRef,
+    // The same registry `ConditionService` evaluates and lints with. Without
+    // one only the nine built-in functions exist, so a template calling a host
+    // function cannot be published or rolled back to.
+    @Optional()
+    @Inject(BPM_EXPRESSION_FUNCTION_REGISTRY)
+    private readonly expressionFunctionRegistry?: BPMExpressionFunctionRegistry | null,
   ) {}
 
   async createApprovalTemplate(
@@ -204,7 +234,7 @@ export class TemplateService {
         status: ApprovalTemplateVersionStatusEnum.DRAFT,
         templateId: template.id,
         version: 1,
-        workflowDefinition: EMPTY_WORKFLOW_DEFINITION,
+        workflowDefinition: NEW_TEMPLATE_WORKFLOW_DEFINITION,
       }),
     );
 
@@ -841,6 +871,19 @@ export class TemplateService {
       );
     }
 
+    // A rollback is a recovery path: the version passed the lint of its day
+    // and is not linted again, since a rule tightened since could refuse it
+    // (ADR 22 §5, docs/24 §1). The one check is that every function it calls
+    // is still registered; without it every case would fail on evaluation.
+    const unregisteredFunctionErrors = this.lintRegisteredFunctions(
+      target.workflowDefinition,
+      target.initiatorPolicyCel,
+    );
+
+    if (unregisteredFunctionErrors.length) {
+      throw new BadRequestException(unregisteredFunctionErrors.join('; '));
+    }
+
     const rolledBack = await this.templateRepository.manager.transaction(
       async (manager): Promise<PublishedVersionResult> => {
         const templateRepository = manager.getRepository(
@@ -970,7 +1013,80 @@ export class TemplateService {
     }
 
     const workflowResult = lintWorkflowDefinition(version.workflowDefinition);
-    const conditionErrors = [
+    // An unknown dialect is refused by `lintWorkflowDefinition`; its
+    // expressions are not parsed with a guessed engine.
+    const dialect = readPublishDialect(version.workflowDefinition);
+    const fieldReader = createExpressionFieldReader(
+      dialect ?? DEFAULT_EXPRESSION_DIALECT,
+    );
+    const conditionErrors =
+      dialect === 'cel-v2'
+        ? this.lintCelV2Expressions(version, formVersion.schema)
+        : dialect === null
+          ? []
+          : this.lintCelLegacyExpressions(version);
+    // ADR 22 §5.5 names no dialect, and a write path is not CEL: its reserved
+    // segments are refused in either. That it names a declared field is
+    // checked for cel-v2 only (`lintCelV2Expressions`).
+    const setFormFieldPathErrors =
+      dialect === null
+        ? []
+        : lintSetFormFieldReservedSegments(version.workflowDefinition);
+    const tableReferenceErrors = lintWorkflowTableReferences(
+      version.workflowDefinition,
+      version.initiatorPolicyCel,
+      formVersion.schema,
+      fieldReader,
+    );
+    const memberReferenceErrors = lintWorkflowMemberReferences(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
+    const orgUnitReferenceErrors = lintWorkflowOrgUnitReferences(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
+    // The graph checks read a sound graph (the publish lint refuses cycles
+    // first), and only run once the structural lint passed, so a node whose
+    // `nodeIds` it already refused is not reported a second time.
+    const nodeActorSourceErrors = workflowResult.valid
+      ? lintWorkflowNodeActorSources(version.workflowDefinition)
+      : [];
+    const approverFilledFieldErrors = readFormFieldAccessIssues(
+      version.workflowDefinition,
+      formVersion.schema,
+    ).map((issue): string => issue.message);
+    const approverFilledReadErrors = lintApproverFilledFieldReads(
+      version.workflowDefinition,
+      fieldReader,
+    );
+    const webhookErrors = await this.lintWorkflowWebhooks(
+      version.workflowDefinition,
+      formVersion.schema,
+    );
+    const errors = [
+      ...workflowResult.errors,
+      ...conditionErrors,
+      ...setFormFieldPathErrors,
+      ...tableReferenceErrors,
+      ...memberReferenceErrors,
+      ...orgUnitReferenceErrors,
+      ...nodeActorSourceErrors,
+      ...approverFilledFieldErrors,
+      ...approverFilledReadErrors,
+      ...webhookErrors,
+    ];
+
+    if (errors.length) {
+      throw new BadRequestException(errors.join('; '));
+    }
+  }
+
+  /** The cel-legacy publish lint, unchanged (docs/24 §1). */
+  private lintCelLegacyExpressions(
+    version: ApprovalTemplateVersionEntity,
+  ): readonly string[] {
+    return [
       ...this.conditionService.lintExpressions(
         [
           {
@@ -996,51 +1112,74 @@ export class TemplateService {
         },
       ),
     ];
-    const tableReferenceErrors = lintWorkflowTableReferences(
-      version.workflowDefinition,
-      version.initiatorPolicyCel,
-      formVersion.schema,
-    );
-    const memberReferenceErrors = lintWorkflowMemberReferences(
-      version.workflowDefinition,
-      formVersion.schema,
-    );
-    const orgUnitReferenceErrors = lintWorkflowOrgUnitReferences(
-      version.workflowDefinition,
-      formVersion.schema,
-    );
-    // The graph checks read a sound graph (the publish lint refuses cycles
-    // first), and only run once the structural lint passed, so a node whose
-    // `nodeIds` it already refused is not reported a second time.
-    const nodeActorSourceErrors = workflowResult.valid
-      ? lintWorkflowNodeActorSources(version.workflowDefinition)
-      : [];
-    const approverFilledFieldErrors = readFormFieldAccessIssues(
-      version.workflowDefinition,
-      formVersion.schema,
-    ).map((issue): string => issue.message);
-    const approverFilledReadErrors = lintApproverFilledFieldReads(
-      version.workflowDefinition,
-    );
-    const webhookErrors = await this.lintWorkflowWebhooks(
-      version.workflowDefinition,
-      formVersion.schema,
-    );
-    const errors = [
-      ...workflowResult.errors,
-      ...conditionErrors,
-      ...tableReferenceErrors,
-      ...memberReferenceErrors,
-      ...orgUnitReferenceErrors,
-      ...nodeActorSourceErrors,
-      ...approverFilledFieldErrors,
-      ...approverFilledReadErrors,
-      ...webhookErrors,
-    ];
+  }
 
-    if (errors.length) {
-      throw new BadRequestException(errors.join('; '));
+  /**
+   * The cel-v2 publish lint (ADR 22 §3.4, §5): every expression on its AST
+   * with its use point's roots, the bound form's fields and types and the
+   * function registry, plus the `SET_FORM_FIELD` write targets. Warnings do
+   * not refuse a publish; the designer reads them through
+   * `ConditionService.lintExpressionIssues`.
+   */
+  private lintCelV2Expressions(
+    version: ApprovalTemplateVersionEntity,
+    formSchema: FormDefinitionSchema | null,
+  ): readonly string[] {
+    const fields = new Map(
+      (formSchema?.fields ?? []).map((entry) => [entry.fieldKey, entry]),
+    );
+
+    return [
+      ...readUsagePointExpressions(
+        version.workflowDefinition,
+        version.initiatorPolicyCel,
+      ).flatMap(({ expression, label, targetFieldKey, usagePoint }) =>
+        this.conditionService.lintExpression(expression, label, {
+          dialect: 'cel-v2',
+          formSchema,
+          functionRegistry: this.expressionFunctionRegistry ?? null,
+          targetField:
+            targetFieldKey === null ? null : (fields.get(targetFieldKey) ?? null),
+          usagePoint,
+        }),
+      ),
+      ...lintSetFormFieldDeclaredFields(version.workflowDefinition, formSchema),
+    ];
+  }
+
+  /**
+   * The functions a version calls that the registry no longer has, as lint
+   * lines. Only cel-v2 can call registered functions at all.
+   */
+  private lintRegisteredFunctions(
+    definition: WorkflowDefinition,
+    initiatorPolicyCel: string | null,
+  ): readonly string[] {
+    if (readPublishDialect(definition) !== 'cel-v2') {
+      return [];
     }
+
+    const registry = this.expressionFunctionRegistry ?? null;
+
+    return readUsagePointExpressions(definition, initiatorPolicyCel).flatMap(
+      ({ expression, label }): readonly string[] => {
+        const names =
+          typeof expression === 'string'
+            ? (readExpressionHostFunctionNames(expression.trim(), 'cel-v2') ?? [])
+            : [];
+        // Same name rule and registry isolation as the publish lint.
+        const missing = readUnavailableExpressionFunctions(names, registry);
+
+        return missing.map((name) =>
+          formatExpressionLintIssue({
+            code: 'EXPR_FUNCTION_NOT_REGISTERED',
+            label,
+            severity: 'ERROR',
+            subject: name,
+          }),
+        );
+      },
+    );
   }
 
   /**
@@ -1064,6 +1203,9 @@ export class TemplateService {
     })();
 
     return lintWorkflowWebhookTargets({
+      // The injected service: the NOTIFY `EXPRESSION` lint sees the same
+      // function registry the engine evaluates with (docs/23 P4／P5 交接).
+      conditionService: this.conditionService,
       definition,
       formSchema,
       hasEndpointSources: Boolean(webhookService?.hasEndpointSources()),
@@ -1375,6 +1517,7 @@ function lintWorkflowTableReferences(
   definition: WorkflowDefinition,
   initiatorPolicyCel: string | null,
   schema: FormDefinitionSchema | null,
+  fieldReader: ExpressionFieldReader,
 ): readonly string[] {
   const tableFieldKeys = readTableFieldKeys(schema);
 
@@ -1388,7 +1531,9 @@ function lintWorkflowTableReferences(
   ).flatMap(({ expression, label }) =>
     typeof expression === 'string'
       ? [...tableFieldKeys]
-          .filter((tableKey) => referencesTableInternals(expression, tableKey))
+          .filter((tableKey) =>
+            fieldReader.readsTableInternals(expression, tableKey),
+          )
           .map(
             (tableKey) =>
               `${label} must not reference table field internals: ${tableKey}`,
@@ -1595,6 +1740,7 @@ function lintWorkflowNodeActorSources(
  */
 function lintApproverFilledFieldReads(
   definition: WorkflowDefinition,
+  fieldReader: ExpressionFieldReader,
 ): readonly string[] {
   const fieldKeys = [...readApproverFilledFieldKeys(definition)];
 
@@ -1644,12 +1790,12 @@ function lintApproverFilledFieldReads(
         ({ expression, nodeId }) =>
           nodeIdsReadingEarly.has(nodeId) &&
           typeof expression === 'string' &&
-          referencesFormField(expression, fieldKey),
+          fieldReader.readsField(expression, fieldKey),
       )
       .map(({ label }) => label);
     const edgeLabels = definition.edges
       .filter((edge) => earlyNodeIds.has(edge.source))
-      .flatMap((edge) => readEdgeFieldReadLabels(edge, fieldKey));
+      .flatMap((edge) => readEdgeFieldReadLabels(edge, fieldKey, fieldReader));
 
     return [...nodeLabels, ...edgeLabels].map((label) =>
       WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(label, fieldKey),
@@ -1668,13 +1814,17 @@ function hasEntryCondition(node: UserTaskNode): boolean {
 function readEdgeFieldReadLabels(
   edge: WorkflowEdge,
   fieldKey: string,
+  fieldReader: ExpressionFieldReader,
 ): readonly string[] {
   // A draft's edge may carry no `data` at all.
   const data: WorkflowEdge['data'] | undefined = edge.data;
   const condition: unknown = data?.condition;
   const conditionFieldKey: unknown = data?.conditionFieldKey;
 
-  if (typeof condition === 'string' && referencesFormField(condition, fieldKey)) {
+  if (
+    typeof condition === 'string' &&
+    fieldReader.readsField(condition, fieldKey)
+  ) {
     return [WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id)];
   }
 
@@ -1803,9 +1953,339 @@ function readNodeExpressions(node: WorkflowNode): readonly ExpressionSource[] {
   return [];
 }
 
-interface ExpressionSource {
+export interface ExpressionSource {
   readonly expression: string | null | undefined;
   readonly label: string;
+}
+
+/**
+ * The dialect a definition is published with: the default when it names
+ * none, `null` when it names one this version does not know (refused by
+ * `lintWorkflowDefinition`).
+ */
+function readPublishDialect(
+  definition: WorkflowDefinition | null | undefined,
+): ExpressionDialect | null {
+  const value: unknown = definition?.expressionDialect;
+
+  if (value === undefined || value === null) {
+    return DEFAULT_EXPRESSION_DIALECT;
+  }
+
+  return isExpressionDialect(value) ? value : null;
+}
+
+/**
+ * "Does this expression read field X / step inside table T", per dialect.
+ * cel-v2 answers from the AST, so `form["sec" + "ret"]` is not missed the way
+ * a pattern misses it; cel-legacy keeps the textual rules (docs/24 §1). An
+ * expression the AST cannot be read for falls back to the textual rules:
+ * the lint has refused it already, and a false hit only adds a line.
+ */
+interface ExpressionFieldReader {
+  readonly readsField: (expression: string, fieldKey: string) => boolean;
+  readonly readsTableInternals: (
+    expression: string,
+    tableKey: string,
+  ) => boolean;
+}
+
+const TEXTUAL_FIELD_READER: ExpressionFieldReader = {
+  readsField: referencesFormField,
+  readsTableInternals: referencesTableInternals,
+};
+
+function createExpressionFieldReader(
+  dialect: ExpressionDialect,
+): ExpressionFieldReader {
+  if (dialect !== 'cel-v2') {
+    return TEXTUAL_FIELD_READER;
+  }
+
+  const cache = new Map<string, ExpressionReferences | null>();
+  const read = (expression: string): ExpressionReferences | null => {
+    if (!cache.has(expression)) {
+      const result = readExpressionReferences(expression.trim(), 'cel-v2');
+
+      cache.set(expression, result.status === 'OK' ? result.references : null);
+    }
+
+    return cache.get(expression) ?? null;
+  };
+
+  return {
+    readsField: (expression, fieldKey): boolean => {
+      const references = read(expression);
+
+      return references
+        ? readsFormField(references, fieldKey)
+        : referencesFormField(expression, fieldKey);
+    },
+    readsTableInternals: (expression, tableKey): boolean => {
+      const references = read(expression);
+
+      return references
+        ? readsTableInternals(references, tableKey)
+        : referencesTableInternals(expression, tableKey);
+    },
+  };
+}
+
+export interface UsagePointExpression extends ExpressionSource {
+  /** The top-level field a `SET_FORM_FIELD` value is written to. */
+  readonly targetFieldKey: string | null;
+  readonly usagePoint: ExpressionUsagePoint;
+}
+
+/**
+ * Every expression of a version with its use point (docs/24 §2.3). Unlike
+ * the cel-legacy readers this includes the NOTIFY recipients expression,
+ * which is evaluated like an approver expression. A draft is not
+ * shape-checked, so every read is guarded. Also read by the designer's
+ * expression analysis and dialect upgrade check (Phase 23 P4).
+ */
+export function readUsagePointExpressions(
+  definition: WorkflowDefinition,
+  initiatorPolicyCel: string | null,
+): readonly UsagePointExpression[] {
+  const nodes: readonly WorkflowNode[] = Array.isArray(definition?.nodes)
+    ? definition.nodes
+    : [];
+  const edges: readonly WorkflowEdge[] = Array.isArray(definition?.edges)
+    ? definition.edges
+    : [];
+  const entry = (
+    expression: string | null | undefined,
+    label: string,
+    usagePoint: ExpressionUsagePoint,
+    targetFieldKey: string | null = null,
+  ): UsagePointExpression => ({ expression, label, targetFieldKey, usagePoint });
+
+  return [
+    entry(initiatorPolicyCel, 'initiatorPolicyCel', 'INITIATOR_POLICY'),
+    ...nodes.flatMap((node): readonly UsagePointExpression[] => {
+      const data: unknown = node?.data;
+
+      if (!isRecord(data) || typeof node.id !== 'string') {
+        return [];
+      }
+
+      const entryCondition = entry(
+        readOptionalString(data['entryCondition']),
+        WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition(node.id),
+        'ENTRY_CONDITION',
+      );
+
+      if (node.type === 'userTask') {
+        const resolver = data['approverResolver'];
+
+        return [
+          entryCondition,
+          ...(isRecord(resolver) && resolver['type'] === 'EXPRESSION'
+            ? [
+                entry(
+                  readOptionalString(resolver['expression']),
+                  WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(
+                    node.id,
+                  ),
+                  'APPROVER_RESOLVER',
+                ),
+              ]
+            : []),
+        ];
+      }
+
+      if (node.type !== 'serviceTask') {
+        return [];
+      }
+
+      const action = data['action'];
+
+      if (!isRecord(action)) {
+        return [entryCondition];
+      }
+
+      if (action['type'] === 'WEBHOOK') {
+        return [
+          entryCondition,
+          entry(
+            readOptionalString(action['payload']),
+            WORKFLOW_EXPRESSION_LABELS.nodeActionPayload(node.id),
+            'WEBHOOK_PAYLOAD',
+          ),
+        ];
+      }
+
+      if (action['type'] === 'SET_FORM_FIELD') {
+        const fieldPath = action['fieldPath'];
+
+        return [
+          entryCondition,
+          entry(
+            readOptionalString(action['value']),
+            WORKFLOW_EXPRESSION_LABELS.nodeActionValue(node.id),
+            'SERVICE_FORM_FIELD_VALUE',
+            typeof fieldPath === 'string' ? readWholeFieldTarget(fieldPath) : null,
+          ),
+        ];
+      }
+
+      const recipients = action['recipients'];
+
+      return action['type'] === 'NOTIFY' &&
+        isRecord(recipients) &&
+        recipients['type'] === 'EXPRESSION'
+        ? [
+            entryCondition,
+            entry(
+              readOptionalString(recipients['expression']),
+              WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression(node.id),
+              'APPROVER_RESOLVER',
+            ),
+          ]
+        : [entryCondition];
+    }),
+    ...edges.flatMap((edge): readonly UsagePointExpression[] => {
+      const data: unknown = edge?.data;
+
+      return typeof edge?.id === 'string' && isRecord(data)
+        ? [
+            entry(
+              readOptionalString(data['condition']),
+              WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id),
+              'FLOW_CONDITION',
+            ),
+          ]
+        : [];
+    }),
+  ];
+}
+
+/**
+ * The field a `SET_FORM_FIELD` path writes as a whole: `amount`, `form.amount`.
+ * A deeper path (`meta.code`) writes inside a field, whose declared type then
+ * says nothing about the value, so it has no target.
+ */
+function readWholeFieldTarget(fieldPath: string): string | null {
+  const segments = fieldPath
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const fieldSegments =
+    segments[0] === 'form' || segments[0] === 'formData'
+      ? segments.slice(1)
+      : segments;
+
+  return fieldSegments.length === 1 && !/[[\]]/u.test(fieldSegments[0])
+    ? fieldSegments[0]
+    : null;
+}
+
+function readOptionalString(value: unknown): string | null | undefined {
+  return typeof value === 'string' || value === null ? value : undefined;
+}
+
+interface SetFormFieldPath {
+  readonly fieldPath: string;
+  readonly label: string;
+  /** The reserved segments in the path, each once. */
+  readonly reserved: readonly string[];
+}
+
+/**
+ * Every non-blank `SET_FORM_FIELD` write path in a definition. A blank path is
+ * reported by the structural lint already.
+ */
+function readSetFormFieldPaths(
+  definition: WorkflowDefinition,
+): readonly SetFormFieldPath[] {
+  const nodes: readonly WorkflowNode[] = Array.isArray(definition?.nodes)
+    ? definition.nodes
+    : [];
+
+  return nodes.flatMap((node): readonly SetFormFieldPath[] => {
+    const data: unknown = node?.data;
+    const action = isRecord(data) ? data['action'] : undefined;
+    const fieldPath =
+      isRecord(action) && action['type'] === 'SET_FORM_FIELD'
+        ? action['fieldPath']
+        : undefined;
+
+    if (typeof fieldPath !== 'string' || !fieldPath.trim()) {
+      return [];
+    }
+
+    return [
+      {
+        fieldPath,
+        label: `workflow.nodes.${node.id}.action.fieldPath`,
+        reserved: [
+          ...new Set(
+            fieldPath
+              .split(/[.[\]"']/u)
+              .map((segment) => segment.trim())
+              .filter((segment) => RESERVED_PATH_SEGMENTS.has(segment)),
+          ),
+        ],
+      },
+    ];
+  });
+}
+
+/**
+ * ADR 22 §5.5, the half that holds in both dialects: a `SET_FORM_FIELD` path
+ * has no `__proto__`, `constructor` or `prototype` segment.
+ */
+function lintSetFormFieldReservedSegments(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  return readSetFormFieldPaths(definition).flatMap(
+    ({ label, reserved }): readonly string[] =>
+      reserved.map((segment) =>
+        formatExpressionLintIssue({
+          code: 'EXPR_RESERVED_PATH_SEGMENT',
+          label,
+          severity: 'ERROR',
+          subject: segment,
+        }),
+      ),
+  );
+}
+
+/**
+ * ADR 22 §3.4 / §5.5 for cel-v2 definitions: a `SET_FORM_FIELD` writes a
+ * field the bound form declares. A path with a reserved segment is reported
+ * by `lintSetFormFieldReservedSegments` instead. cel-legacy does not get this
+ * half yet: a fork of an older version may write a field its form dropped.
+ */
+function lintSetFormFieldDeclaredFields(
+  definition: WorkflowDefinition,
+  schema: FormDefinitionSchema | null,
+): readonly string[] {
+  if (!schema) {
+    return [];
+  }
+
+  const fieldKeys = new Set(
+    (schema.fields ?? []).map((entry) => entry.fieldKey),
+  );
+
+  return readSetFormFieldPaths(definition)
+    .filter(({ reserved }) => reserved.length === 0)
+    .flatMap(({ fieldPath, label }): readonly string[] => {
+      const fieldKey = readFormFieldPathTopLevelKey(fieldPath);
+
+      return fieldKeys.has(fieldKey)
+        ? []
+        : [
+            formatExpressionLintIssue({
+              code: 'EXPR_FIELD_UNKNOWN',
+              label,
+              severity: 'ERROR',
+              subject: fieldKey,
+            }),
+          ];
+    });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

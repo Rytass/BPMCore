@@ -9,6 +9,7 @@ import { BPMRootAttachmentOptions } from '../attachment/attachment-options';
 import { AttachmentStorage } from '../attachment/attachment-storage.token';
 import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
 import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
+import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import { BPMFormDataSourceRegistry } from '../form-data-source/form-data-source.types';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
@@ -84,6 +85,19 @@ export interface BPMRootRuntimeOptions
    * chain never runs through BPM's module context.
    */
   readonly businessCalendar?: BPMBusinessCalendar;
+
+  /**
+   * Host functions that expressions may call (ADR 22 §3.5), next to the nine
+   * built-ins that are always available. Each name ends in its version
+   * (`erp_costBand_v1`); handlers must be synchronous and pure, and only see
+   * deep-frozen copies of their arguments. Validated while BPM boots: a bad
+   * name, an async handler or an unsupported type fails the boot.
+   *
+   * Keep every function a published version still calls: once one is gone,
+   * cases on that version fail closed with `EXPRESSION_FUNCTION_FAILED`.
+   * When omitted, only the built-ins are available.
+   */
+  readonly expressionFunctions?: readonly BPMExpressionFunction[];
 
   /**
    * Versioned form option DataSource catalog, as a ready instance. When

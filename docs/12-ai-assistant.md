@@ -75,6 +75,21 @@ client 執行工具」的分工：
 
 以上變數皆為選用。不設 `BPM_AI_ASSISTANT_ENABLED` 時 AI 助理隱藏；設了開關但沒有 `OPENAI_API_KEY` 時顯示為 disabled placeholder。兩者都不影響設計器其他功能。
 
+**`/api/chat` 的登入檢查要知道 API 在哪裡。** `apps/client` 以
+`createBPMApiSessionAuthorize()` 把請求的 Cookie 轉給 BPM API 的 `GET /auth/me`，
+只有回 200 且帶 `memberId` 才放行，否則 401。API 位址**只從設定讀，不從請求推導**
+（`Host`／`X-Forwarded-Host` 由呼叫者控制，不能讓它決定誰來替自己背書），依序取：
+
+1. `BPM_API_INTERNAL_URL`（server-only，例如叢集內的 API 位址，建議部署時設這個）
+2. `NEXT_PUBLIC_API_AUTH_URL`
+3. `NEXT_PUBLIC_API_URL` 的 origin
+
+三者都必須是絕對 http(s) URL，相對值不算。都沒有時：非 production 退回
+`http://localhost:17603`；**production 一律回 401**。所以「API 與前端同源、沒設這些
+變數」的部署，開啟 AI 助理前要先補 `BPM_API_INTERNAL_URL`。repo 內的 staging 部署
+（`tools/deployment-staging.yml`）目前開了助理卻沒設這些變數；api 與 client 在同一個 pod，client 容器要補
+`BPM_API_INTERNAL_URL=http://localhost:6001`，否則 staging 上的 `/api/chat` 一律 401。
+
 元件層 props（`TemplateDesignerView`，供直接整合者控制）：
 
 | Prop                   | 預設    | 行為                                                    |

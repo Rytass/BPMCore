@@ -29,6 +29,7 @@
 | 21  | [簽核人補填欄位開發 Phase](./21-approver-filled-fields-phases.md)        | P0–P4 分階段交付、gate 與 E2E matrix               |
 | 22  | [流程表達式 ADR](./22-expression-functions-adr.md)                       | 表達式 Runtime、方言、宿主函式與安全模型（Accepted） |
 | 23  | [流程表達式開發 Phase](./23-expression-functions-phases.md)              | P0–P5 分階段交付、gate 與安全測試                  |
+| 24  | [流程表達式細部設計](./24-expression-functions-detailed-design.md)       | 已定案的決定、跨 phase 契約與檔案歸屬              |
 | ★   | [Public API Reference](./api-reference.md)                               | 4 個 lib 套件所有 export 的完整清冊（必維護）      |
 
 ## Stack

@@ -5,6 +5,7 @@ import {
   WorkflowDesignerState,
   WorkflowMacroCommand,
   WorkflowDirectory,
+  WorkflowExpressionTools,
   WorkflowSnapshot,
   WORKFLOW_TOOLSET,
   WorkflowTool,
@@ -36,6 +37,14 @@ export interface UseWorkflowDesignerControllerOptions {
   readonly onLayout?: (definition: WorkflowDefinition) => void;
   /** Org directory backing the LLM's member/org lookup query tools. */
   readonly directory?: WorkflowDirectory;
+  /**
+   * Backend expression lint / preview / catalog for the assistant (Phase 23
+   * P4). Read per tool call with the state the call runs against. Without it
+   * every tool call that writes an expression is refused.
+   */
+  readonly expressionTools?: (
+    state: WorkflowDesignerState,
+  ) => WorkflowExpressionTools;
 }
 
 export interface WorkflowDesignerController {
@@ -67,6 +76,7 @@ export interface WorkflowDesignerController {
 
 export function useWorkflowDesignerController({
   directory,
+  expressionTools,
   initialState,
   layout,
   onLayout,
@@ -78,6 +88,8 @@ export function useWorkflowDesignerController({
   // Latest directory, read at tool-call time (avoids re-creating executeTool).
   const directoryRef = useRef<WorkflowDirectory | undefined>(directory);
   directoryRef.current = directory;
+  const expressionToolsRef = useRef(expressionTools);
+  expressionToolsRef.current = expressionTools;
 
   const commit = useCallback(
     (result: WorkflowCommandResult): WorkflowCommandResult => {
@@ -117,16 +129,29 @@ export function useWorkflowDesignerController({
     [commit],
   );
 
-  const executeTool = useCallback(
+  // Tool calls run one after another: each reads the state the previous one
+  // committed, so parallel calls from one assistant turn cannot overwrite
+  // each other while one waits on the backend lint.
+  const toolQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const runTool = useCallback(
     async (toolName: string, input: unknown): Promise<WorkflowToolResult> => {
-      const result = await executeWorkflowTool(
-        stateRef.current,
-        toolName,
-        input,
-        { directory: directoryRef.current },
-      );
+      const before = stateRef.current;
+      const result = await executeWorkflowTool(before, toolName, input, {
+        directory: directoryRef.current,
+        expressions: expressionToolsRef.current?.(before),
+      });
 
       if (result.ok && (result.kind === 'mutation' || result.kind === 'macro')) {
+        // An expression write waits on the backend lint; committing a result
+        // computed from a state the user has since edited would drop that edit.
+        if (stateRef.current !== before) {
+          return {
+            error: '檢查運算式期間畫布已被修改，這次變更沒有套用，請重新讀取 snapshot 後再試。',
+            ok: false,
+          };
+        }
+
         const committed = commit(result.result);
 
         return {
@@ -139,6 +164,19 @@ export function useWorkflowDesignerController({
       return result;
     },
     [commit],
+  );
+
+  const executeTool = useCallback(
+    (toolName: string, input: unknown): Promise<WorkflowToolResult> => {
+      const run = toolQueueRef.current.then(
+        (): Promise<WorkflowToolResult> => runTool(toolName, input),
+      );
+
+      toolQueueRef.current = run.catch((): void => undefined);
+
+      return run;
+    },
+    [runTool],
   );
 
   const replaceState = useCallback(

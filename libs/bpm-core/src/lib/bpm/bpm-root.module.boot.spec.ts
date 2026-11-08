@@ -4,6 +4,16 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { ATTACHMENT_STORAGE } from '../attachment/attachment-storage.token';
 import { BPM_BUSINESS_CALENDAR } from '../calendar/business-calendar.token';
 import { BPM_FORM_DATA_SOURCE_REGISTRY } from '../form-data-source/form-data-source.types';
+import { FormDataSourceValueResolverService } from '../form-data-source/form-data-source-value-resolver.service';
+import { FormDataSourceService } from '../form-data-source/form-data-source.service';
+import { ConditionService } from '../condition/condition.service';
+import { BUILT_IN_EXPRESSION_FUNCTION_REGISTRY } from '../expression-function/expression-function.registry';
+import {
+  BPM_EXPRESSION_FUNCTION_REGISTRY,
+  BPM_EXPRESSION_FUNCTIONS,
+  BPMExpressionFunction,
+  BPMExpressionFunctionRegistry,
+} from '../expression-function/expression-function.types';
 import { DefaultBPMMemberResolver } from '../identity/default-member-resolver';
 import {
   BPM_MEMBER_RESOLVER,
@@ -11,6 +21,7 @@ import {
 } from '../identity/member-resolver.interface';
 import { OrganizationService } from '../organization/organization.service';
 import { BPMRootModule } from './bpm-root.module';
+import { TemplateService } from '../template/template.service';
 import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
@@ -311,3 +322,245 @@ describe('BPMRootModule bootstrap', (): void => {
   });
 });
 
+describe('BPMRootModule expression functions', (): void => {
+  const expressionFunction = (name: string): BPMExpressionFunction => ({
+    description: name,
+    handler: (): string => 'LOW',
+    label: name,
+    name,
+    parameters: [{ name: 'amount', type: 'double' }],
+    returnType: 'string',
+  });
+  const hostNames = (
+    registry: BPMExpressionFunctionRegistry,
+  ): readonly string[] =>
+    registry
+      .list()
+      .filter((descriptor) => !descriptor.builtIn)
+      .map((descriptor) => descriptor.name);
+
+  it('offers only the built-ins when the host registers none', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+    }).compile();
+
+    try {
+      const registry = moduleRef.get<BPMExpressionFunctionRegistry>(
+        BPM_EXPRESSION_FUNCTION_REGISTRY,
+      );
+
+      expect(registry.list()).toHaveLength(9);
+      expect(hostNames(registry)).toEqual([]);
+      expect(registry).toBe(BUILT_IN_EXPRESSION_FUNCTION_REGISTRY);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('combines the async factory list and the provider list', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRootAsync({
+          expressionFunctionsProvider: {
+            provide: BPM_EXPRESSION_FUNCTIONS,
+            useValue: [expressionFunction('erp_fromProvider_v1')],
+          },
+          useFactory: () => ({
+            expressionFunctions: [expressionFunction('erp_fromFactory_v1')],
+          }),
+        }),
+      ],
+    }).compile();
+
+    try {
+      expect(
+        hostNames(
+          moduleRef.get<BPMExpressionFunctionRegistry>(
+            BPM_EXPRESSION_FUNCTION_REGISTRY,
+          ),
+        ),
+      ).toEqual(['erp_fromFactory_v1', 'erp_fromProvider_v1']);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it.each([
+    [
+      'forRoot',
+      (): ReturnType<typeof BPMRootModule.forRoot> =>
+        BPMRootModule.forRoot({
+          expressionFunctions: [expressionFunction('noVersion')],
+        }),
+      '"noVersion" has an invalid name',
+    ],
+    [
+      'forRootAsync',
+      (): ReturnType<typeof BPMRootModule.forRootAsync> =>
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({
+            expressionFunctions: [
+              {
+                ...expressionFunction('erp_async_v1'),
+                handler: async (): Promise<string> => 'LOW',
+              } as unknown as BPMExpressionFunction,
+            ],
+          }),
+        }),
+      '"erp_async_v1" has an async or generator handler',
+    ],
+  ])(
+    'fails the %s boot on an invalid function',
+    async (_case: string, createModule, message: string): Promise<void> => {
+      await expect(
+        Test.createTestingModule({
+          imports: [FakeDataSourceModule, createModule()],
+        }).compile(),
+      ).rejects.toThrow(message);
+    },
+  );
+
+  // Phase 23 integration (2026-11-07): `ConditionService` injects the
+  // registry optionally, so a token it cannot see would still boot, silently
+  // with the built-ins only. Every copy Nest builds must hold the registry
+  // and call the host function with it.
+  it.each([
+    [
+      'forRoot',
+      (): ReturnType<typeof BPMRootModule.forRoot> =>
+        BPMRootModule.forRoot({
+          expressionFunctions: [expressionFunction('erp_band_v1')],
+        }),
+    ],
+    [
+      'forRootAsync',
+      (): ReturnType<typeof BPMRootModule.forRootAsync> =>
+        BPMRootModule.forRootAsync({
+          useFactory: () => ({
+            expressionFunctions: [expressionFunction('erp_band_v1')],
+          }),
+        }),
+    ],
+  ])(
+    'hands the registry to every ConditionService copy (%s)',
+    async (_case: string, createModule): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [FakeDataSourceModule, createModule()],
+      }).compile();
+
+      try {
+        const registry = moduleRef.get<BPMExpressionFunctionRegistry>(
+          BPM_EXPRESSION_FUNCTION_REGISTRY,
+        );
+        const container = (
+          moduleRef as unknown as {
+            readonly container: {
+              getModules(): Map<
+                string,
+                {
+                  readonly providers: Map<
+                    unknown,
+                    { readonly instance: unknown }
+                  >;
+                }
+              >;
+            };
+          }
+        ).container;
+        const services = [...container.getModules().values()].flatMap(
+          (module) => {
+            const wrapper = module.providers.get(ConditionService);
+
+            return wrapper?.instance instanceof ConditionService
+              ? [wrapper.instance]
+              : [];
+          },
+        );
+
+        expect(services.length).toBeGreaterThanOrEqual(1);
+        services.forEach((service): void => {
+          expect(Reflect.get(service, 'functionRegistry')).toBe(registry);
+          expect(
+            service.evaluateValue(
+              'erp_band_v1(form.amount)',
+              { form: { amount: 1 } },
+              'entry',
+              { allowedRootIdentifiers: ['form'], dialect: 'cel-v2' },
+            ),
+          ).toBe('LOW');
+        });
+      } finally {
+        await moduleRef.close();
+      }
+    },
+  );
+
+  // Phase 23 P4／P5 integration: `EXPRESSION` bindings are linted by
+  // `TemplateService` / `FormDataSourceService` and evaluated by the webhook
+  // delivery service and the DataSource services. Those inject
+  // `ConditionService` optionally, so one they could not see would boot and
+  // fail every such binding closed (found by this test: without an explicit
+  // token the `| null` union reached Nest as `Object`).
+  it('hands the publish lint and every binding evaluator the same registry', async (): Promise<void> => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRoot({
+          expressionFunctions: [expressionFunction('erp_band_v1')],
+        }),
+      ],
+    }).compile();
+
+    try {
+      const registry = moduleRef.get<BPMExpressionFunctionRegistry>(
+        BPM_EXPRESSION_FUNCTION_REGISTRY,
+      );
+      const readRegistry = (owner: object): unknown => {
+        const service: unknown = Reflect.get(owner, 'conditionService');
+
+        return service instanceof ConditionService
+          ? Reflect.get(service, 'functionRegistry')
+          : null;
+      };
+
+      expect(
+        readRegistry(moduleRef.get(TemplateService, { strict: false })),
+      ).toBe(registry);
+      expect(
+        readRegistry(
+          moduleRef.get(WorkflowWebhookDeliveryService, { strict: false }),
+        ),
+      ).toBe(registry);
+      // DataSource `EXPRESSION` bindings: search, resolve (FormDataSource
+      // service) and submit (the value resolver) inject it the same way.
+      expect(
+        readRegistry(moduleRef.get(FormDataSourceService, { strict: false })),
+      ).toBe(registry);
+      expect(
+        readRegistry(
+          moduleRef.get(FormDataSourceValueResolverService, { strict: false }),
+        ),
+      ).toBe(registry);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('fails the boot when the same name comes from both sources', async (): Promise<void> => {
+    await expect(
+      Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRoot({
+            expressionFunctions: [expressionFunction('erp_same_v1')],
+            expressionFunctionsProvider: {
+              provide: BPM_EXPRESSION_FUNCTIONS,
+              useValue: [expressionFunction('erp_same_v1')],
+            },
+          }),
+        ],
+      }).compile(),
+    ).rejects.toThrow('"erp_same_v1" is registered more than once');
+  });
+});

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UIMessage } from 'ai';
 import { WORKFLOW_TOOLSET } from '@rytass/bpm-core-shared';
 import type { WorkflowDesignerController } from './use-workflow-designer-controller';
+import { WORKFLOW_CHAT_EXPRESSION_GUIDANCE } from './workflow-chat-prompt';
 
 /**
  * EXPERIMENTAL offline fallback that drives the workflow toolset with Chrome's
@@ -90,6 +91,8 @@ function readOfflineSystemPrompt(): string {
 - 回覆使用者（完成或詢問）：{"action":"message","text":"<繁體中文訊息>"}
 
 規則：先用 get_workflow_snapshot 了解現況再規劃；完成後用 validate_workflow 檢查並以 message 說明做了什麼。
+
+${WORKFLOW_CHAT_EXPRESSION_GUIDANCE}
 
 可用工具：
 ${toolLines}`;

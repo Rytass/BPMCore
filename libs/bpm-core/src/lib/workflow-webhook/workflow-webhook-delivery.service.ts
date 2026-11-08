@@ -11,6 +11,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, MoreThan, Repository } from 'typeorm';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
+import { ConditionService } from '../condition/condition.service';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ActivityLogEventTypeEnum } from '../workflow-engine/workflow-engine.enums';
 import { readNotifyWebhookStructureIssues } from '@rytass/bpm-core-shared/workflow-graph';
@@ -24,6 +25,7 @@ import {
   buildWorkflowWebhookDeliveryDrafts,
   WorkflowWebhookEnqueueContext,
 } from './workflow-webhook-enqueue';
+import { createNotifyWebhookExpressionEvaluator } from './workflow-webhook-expression';
 import {
   BPM_WORKFLOW_WEBHOOK_OPTIONS,
   BPMResolvedWorkflowWebhookOptions,
@@ -116,6 +118,15 @@ export class WorkflowWebhookDeliveryService {
     @Optional()
     @Inject(BPM_WORKFLOW_WEBHOOK_FETCH)
     fetchImpl?: WorkflowWebhookFetch,
+    // Evaluates `EXPRESSION` bindings with the host's function registry
+    // (ADR 22 §3.7). Optional so a hand-built service keeps working; without
+    // it an `EXPRESSION` binding records its delivery `FAILED`.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
+    @Optional()
+    @Inject(ConditionService)
+    private readonly conditionService?: ConditionService | null,
   ) {
     this.fetchImpl =
       fetchImpl ??
@@ -155,6 +166,12 @@ export class WorkflowWebhookDeliveryService {
 
     const drafts = await buildWorkflowWebhookDeliveryDrafts({
       context,
+      // Evaluated here, inside the engine transaction and before the outbox
+      // rows are written, with one budget for this node's bindings that is
+      // separate from the transaction's own (ADR 22 §3.7).
+      expressions: createNotifyWebhookExpressionEvaluator(
+        this.conditionService,
+      ),
       resolveEndpoint: (key, version) =>
         this.webhookService.getEndpoint(key, version, manager),
       targets,
