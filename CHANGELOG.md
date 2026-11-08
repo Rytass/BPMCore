@@ -1,3 +1,40 @@
+## 0.20.0 (2026-11-08)
+
+### 🚀 Features
+
+- **condition:** evaluate expressions under a budget with sanitized errors ([38ef1f8](https://github.com/Rytass/BPMCore/commit/38ef1f8))
+- **condition:** call registered functions from every evaluation and lint ([0c2a18f](https://github.com/Rytass/BPMCore/commit/0c2a18f))
+- **delegation:** store the dialect of a rule's scope condition ([acea3d0](https://github.com/Rytass/BPMCore/commit/acea3d0))
+- **designer:** write, preview and upgrade expressions in the designer ([ec36bb7](https://github.com/Rytass/BPMCore/commit/ec36bb7))
+- **expression-function:** define the function registry contract ([31e7e16](https://github.com/Rytass/BPMCore/commit/31e7e16))
+- **expression-function:** register host and built-in functions ([f8763b4](https://github.com/Rytass/BPMCore/commit/f8763b4))
+- **form-data-source:** bind DataSource and webhook parameters to expressions ([c2b18d3](https://github.com/Rytass/BPMCore/commit/c2b18d3))
+- ⚠️  **form-data-source:** pass a binding's position explicitly and lint NOTIFY expressions ([9987b12](https://github.com/Rytass/BPMCore/commit/9987b12))
+- **template:** lint expressions against their AST at publish ([61d07f5](https://github.com/Rytass/BPMCore/commit/61d07f5))
+- **workflow-chat:** require a BPM API session for /api/chat ([9906851](https://github.com/Rytass/BPMCore/commit/9906851))
+- **workflow-engine:** evaluate each definition in its expression dialect ([45b15c3](https://github.com/Rytass/BPMCore/commit/45b15c3))
+
+### 🩹 Fixes
+
+- **condition:** check cel-v2 function argument types and log engine warm-up ([0834758](https://github.com/Rytass/BPMCore/commit/0834758))
+- **designer:** show the expression dialect, function help and type hints ([387d580](https://github.com/Rytass/BPMCore/commit/387d580))
+- **form-data-source:** take a new pick over an expired EXPRESSION value ([3499115](https://github.com/Rytass/BPMCore/commit/3499115))
+- **workflow-engine:** keep transaction reads on one connection ([9bd9ee7](https://github.com/Rytass/BPMCore/commit/9bd9ee7))
+- **workflow-engine:** bound the work of one dry run ([7afacec](https://github.com/Rytass/BPMCore/commit/7afacec))
+- **workflow-engine:** send webhooks after the transaction commits ([d74aba6](https://github.com/Rytass/BPMCore/commit/d74aba6))
+
+### ⚠️  Breaking Changes
+
+- **form-data-source:** pass a binding's position explicitly and lint NOTIFY expressions  ([9987b12](https://github.com/Rytass/BPMCore/commit/9987b12))
+  FormDataSourceService.searchFormFieldOptions takes a
+  required position instead of optional rowValues, and the
+  NotifyWebhookBindingSource union gains an EXPRESSION member, so an
+  exhaustive switch over from.kind needs a new case.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.19.0 (2026-11-04)
 
 ### 🩹 Fixes
