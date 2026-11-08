@@ -2429,17 +2429,10 @@ export function readConditionExpression(
 
   const fieldReference = readFormFieldReference(field.fieldKey);
   const guarded = isFormIdentifierKey(field.fieldKey);
-  // The terms that must hold before the field's value is read.
-  const present: readonly string[] = guarded
-    ? [`has(${fieldReference})`, `${fieldReference} != null`]
-    : [`${fieldReference} != null`];
-  const join = (terms: readonly string[]): string =>
-    guarded ? joinNestedConjunction(terms) : terms.join(' && ');
-
-  // IS_EMPTY is the negation of "filled" when guarded; the unguarded key keeps
-  // its original `null ||` form.
-  const readEmpty = (filled: readonly string[], unguarded: string): string =>
-    guarded ? `!(${join(filled)})` : unguarded;
+  const { join, present, readEmpty } = createConditionGuard(
+    fieldReference,
+    guarded,
+  );
 
   if (field.type === 'member') {
     // The value is a string (single) or a list (multiple), so the flat `== ""`
@@ -2510,9 +2503,7 @@ export function readConditionExpression(
       field,
       operator,
       value,
-      present,
-      join,
-      readEmpty,
+      createConditionGuard(fieldReference, guarded),
     );
   }
 
@@ -2563,13 +2554,46 @@ export function readConditionExpression(
  * list would yield `undefined` instead of an expression.
  */
 function joinNestedConjunction(terms: readonly string[]): string {
-  const [last, ...rest] = [...terms].reverse();
+  const [first = '', ...rest] = terms;
 
-  return rest.reduce(
-    (accumulated, term, index) =>
-      `${term} && ${index === 0 ? accumulated : `(${accumulated})`}`,
-    last,
-  );
+  if (rest.length === 0) {
+    return first;
+  }
+
+  return rest.length === 1
+    ? `${first} && ${rest[0]}`
+    : `${first} && (${joinNestedConjunction(rest)})`;
+}
+
+/**
+ * How a designer condition guards the field it reads: the terms that must
+ * hold before the value is read, how terms are joined, and how "empty" is
+ * written. An identifier key (`form.x`) is guarded with `has()` and nested
+ * `&&` (cel-js only short-circuits a nested `&&`, never `||`); IS_EMPTY is
+ * then the negation of "filled". Any other key (`form["a-b"]`) cannot be
+ * guarded by `has()` and keeps its original flat `null ||` form.
+ */
+interface ConditionGuard {
+  readonly join: (terms: readonly string[]) => string;
+  readonly present: readonly string[];
+  readonly readEmpty: (filled: readonly string[], unguarded: string) => string;
+}
+
+function createConditionGuard(
+  fieldReference: string,
+  guarded: boolean,
+): ConditionGuard {
+  const join = (terms: readonly string[]): string =>
+    guarded ? joinNestedConjunction(terms) : terms.join(' && ');
+
+  return {
+    join,
+    present: guarded
+      ? [`has(${fieldReference})`, `${fieldReference} != null`]
+      : [`${fieldReference} != null`],
+    readEmpty: (filled: readonly string[], unguarded: string): string =>
+      guarded ? `!(${join(filled)})` : unguarded,
+  };
 }
 
 /**
@@ -2590,9 +2614,7 @@ function readMultipleSelectionConditionExpression(
   field: FormFieldDefinition,
   operator: WorkflowEdgeConditionOperator,
   value: string | undefined,
-  present: readonly string[],
-  join: (terms: readonly string[]) => string,
-  readEmpty: (filled: readonly string[], unguarded: string) => string,
+  { join, present, readEmpty }: ConditionGuard,
 ): string | undefined {
   const filled = [...present, `${fieldReference} != []`];
 
